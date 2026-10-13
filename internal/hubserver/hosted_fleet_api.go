@@ -48,6 +48,7 @@ type hostedFleetRunner struct {
 	Hostname           string                                     `json:"hostname"`
 	ConnectionHealth   string                                     `json:"connection_health"`
 	Health             string                                     `json:"health"`
+	CapacityHealth     string                                     `json:"capacity_health,omitempty"`
 	State              string                                     `json:"state"`
 	OS                 string                                     `json:"os"`
 	Architecture       string                                     `json:"architecture"`
@@ -341,6 +342,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		view.ProviderCapacity = []providercapacity.View{}
 	}
 	if view.Update.Status == "refused" || view.Update.Status == "uncertain" {
+		view.CapacityHealth = view.Health
 		view.Health = "needs_attention"
 	}
 	view.Problems = slices.Clone(runner.Problems)

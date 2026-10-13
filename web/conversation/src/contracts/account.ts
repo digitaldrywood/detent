@@ -601,6 +601,7 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  capacity_health: Schema.optional(Schema.String),
   connection_health: Schema.optional(Schema.String),
   problems: Schema.optional(Schema.Array(Schema.Struct({
     subject: Schema.optional(Schema.String),
