@@ -35,7 +35,7 @@ import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
 import { Input } from "../../src/components/ui/input.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
-import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
+import { clearBoardCache, confirmWorkItem } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
@@ -1409,6 +1409,31 @@ describe("the filter-first Work surface", () => {
     await screen.findByTestId("work-board");
     expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({ ...view, view: "board" });
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).length).toBeGreaterThan(reads.length);
+  });
+
+  it("filters by the caller and retains that filter through URLs, cache reads and updates", async () => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&q=Older+title+needle");
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Filed by me" }));
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.queryByText("Older title needle b")).toBeNull();
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+    expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBe("me");
+    const request = fixture.requests.findLast(({ url }) => url.pathname.endsWith("/work-items"))!;
+    expect(request.url.searchParams.get("created_by")).toBe("me");
+    expect(request.url.searchParams.get("q")).toBe("Older title needle");
+    const response = await fixture.fetch(`${fixture.client.http.apiBase}/projects/proj_alpha/work-items?q=Older+title+needle`);
+    const other = (await response.json()).items.find((issue: NativeIssue) => issue.title === "Older title needle b");
+    act(() => confirmWorkItem({ ...other, revision: "900" }));
+    expect(screen.queryByText("Older title needle b")).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Filed by me" }));
+    await settledWork();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBeUndefined();
   });
 
   it("keeps a second filter choice available after the first narrows results", async () => {

@@ -246,7 +246,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 				}
 			}
 			for _, changes := range []map[string]any{
-				{"state": "Done"}, {"label": "other"}, {"query": "other"},
+				{"state": "Done"}, {"label": "other"}, {"query": "other"}, {"created_by": "other"},
 				{"project_id": string(foreign.project.ID)}, {"cursor": firstCursor + "invalid"},
 			} {
 				args := map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "limit": 200, "cursor": firstCursor}

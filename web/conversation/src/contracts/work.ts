@@ -51,6 +51,7 @@ export const NativeActorKind = Schema.Literals(["human", "runner", "integration"
 export const NativeActor = Schema.Struct({
   kind: NativeActorKind,
   principal_id: Schema.String,
+  display_name: Schema.optional(Schema.String),
 });
 export type NativeActor = typeof NativeActor.Type;
 

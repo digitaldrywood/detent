@@ -81,6 +81,16 @@ export function WorkToolbar({
           ) : null}
         </MenuTrigger>
         <MenuPopup align="start" className="w-64">
+          <MenuCheckboxItem
+            checked={view.createdBy === "me"}
+            onCheckedChange={() => {
+              const { createdBy, ...rest } = view;
+              onChange(createdBy === "me" ? rest : { ...rest, createdBy: "me" });
+            }}
+          >
+            Filed by me
+          </MenuCheckboxItem>
+          <MenuSeparator />
           {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
               reads its group's context and throws without one. */}
           {FILTER_KEYS.filter((key) => view.view === "board" || key !== "state").map((key) => (
