@@ -629,6 +629,10 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 	}
 	project, err := s.createHostedProjectRecord(c.Request().Context(), credential, name, request.States)
 	if err != nil {
+		var application *nativeError
+		if errors.As(err, &application) {
+			return s.nativeAPIError(c, err)
+		}
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
 			return s.hostedJSONError(c, http.StatusTooManyRequests, limit.Error())

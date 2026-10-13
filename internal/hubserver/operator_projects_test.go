@@ -361,7 +361,8 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatalf("MCP lost workflow apply history: %+v", policyRead.Data.History)
 			}
 			integration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project})
-			if err != nil || integration.Authority["workflow"] != "repository" || integration.WorkflowSource != candidate.Workflow.Source || integration.WorkflowSourceRevision != candidate.SourceRevision || !reflect.DeepEqual(integration.States, candidate.Workflow.States) {
+			wantStates := append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}}}, candidate.Workflow.States...)
+			if err != nil || integration.Authority["workflow"] != "repository" || integration.WorkflowSource != candidate.Workflow.Source || integration.WorkflowSourceRevision != candidate.SourceRevision || !reflect.DeepEqual(integration.States, wantStates) {
 				t.Fatalf("approved workflow = %+v, %v", integration, err)
 			}
 			if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read("get_change_review_policy")); err != nil {

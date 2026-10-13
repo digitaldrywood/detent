@@ -128,6 +128,9 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 			return nil, nativeNotFound()
 		}
 		project := tracker.NativeProject{ID: tracker.ProjectID(newNativeID("prj")), OrganizationID: scope.organization, Name: request.Name, Profile: "native", States: nativeTriageStates(request.States), RequireDependencies: true}
+		if err := validateNativeStates(project.States); err != nil {
+			return nil, err
+		}
 		if request.RequireDependencies != nil {
 			project.RequireDependencies = *request.RequireDependencies
 		}

@@ -365,6 +365,9 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 		states = HostedProjectStates()
 	}
 	states = nativeTriageStates(states)
+	if err := validateNativeStates(states); err != nil {
+		return "", err
+	}
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
 	if err != nil {

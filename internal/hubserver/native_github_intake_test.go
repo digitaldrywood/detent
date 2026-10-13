@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -207,33 +208,49 @@ func TestNativeGitHubSourceUpdates(t *testing.T) {
 
 func TestNativeTriageWorkflowProjection(t *testing.T) {
 	t.Parallel()
-	for _, bound := range []bool{false, true} {
-		t.Run(strconv.FormatBool(bound), func(t *testing.T) {
-			f := newNativeFixture(t, nil, "", "triage")
-			if bound {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'acme/orders' WHERE id = ?", f.project.ID); err != nil {
+	for _, custom := range []bool{false, true} {
+		for _, bound := range []bool{false, true} {
+			t.Run(strconv.FormatBool(custom)+"/"+strconv.FormatBool(bound), func(t *testing.T) {
+				f := newNativeFixture(t, nil, "", "triage")
+				if bound {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = 'acme/orders' WHERE id = ?", f.project.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			states := nativeFixtureStates()
-			states = append(states, tracker.NativeState{Name: "Triage", Dispatchable: true, Transitions: []string{"Todo"}})
-			if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
-				t.Fatal(err)
-			}
-			project, err := readNativeProject(t.Context(), tx, scope)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if project.States[0].Name != "Triage" || project.States[0].Terminal || project.States[0].Dispatchable {
-				t.Fatalf("lanes = %+v", project.States)
-			}
-		})
+				defer tx.Rollback()
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				states := nativeFixtureStates()
+				states = append(states, tracker.NativeState{Name: "Triage", Dispatchable: true, Transitions: []string{"Todo"}})
+				if custom {
+					states = []tracker.NativeState{
+						{Name: "Ready", Transitions: []string{"Working"}},
+						{Name: "Working", Dispatchable: true},
+						{Name: "Triage", Dispatchable: true, Transitions: []string{"Working"}},
+					}
+				}
+				if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				project, err := readNativeProject(t.Context(), tx, scope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if project.States[0].Name != "Triage" || project.States[0].Terminal || project.States[0].Dispatchable {
+					t.Fatalf("lanes = %+v", project.States)
+				}
+				if custom && !reflect.DeepEqual(project.States, []tracker.NativeState{
+					{Name: "Triage", Transitions: []string{"Working"}},
+					{Name: "Ready", Transitions: []string{"Working"}},
+					{Name: "Working", Dispatchable: true},
+				}) {
+					t.Fatalf("custom workflow changed: %+v", project.States)
+				}
+			})
+		}
 	}
 }
 
@@ -291,6 +308,16 @@ func TestNativeGitHubTriageMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
+			states, err := json.Marshal(nativeFixtureStates())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", string(states), f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id=? AND detent_state='Triage'", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := tx.ExecContext(t.Context(), up); err != nil {
 				t.Fatal(err)
 			}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -23,11 +24,14 @@ func TestReporterNativeCommands(t *testing.T) {
 	for _, test := range []struct {
 		name, transport string
 		upgraded        bool
+		triage          *tracker.NativeState
 	}{
-		{"browser/new", "browser", false},
-		{"key/new", "key", false},
-		{"browser/upgraded", "browser", true},
-		{"key/upgraded", "key", true},
+		{"browser/new", "browser", false, nil},
+		{"key/new", "key", false, nil},
+		{"browser/upgraded", "browser", true, nil},
+		{"key/upgraded", "key", true, nil},
+		{"browser/terminal intake", "browser", true, &tracker.NativeState{Name: "Triage", Terminal: true, Transitions: []string{"Todo"}}},
+		{"key/dispatchable intake", "key", true, &tracker.NativeState{Name: "Triage", Dispatchable: true, OperatorOnly: true, Transitions: []string{"Todo"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
@@ -41,12 +45,19 @@ func TestReporterNativeCommands(t *testing.T) {
 			f.project = project.ID
 			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
 			if test.upgraded {
-				previous, err := json.Marshal(reporterPreviousHostedStates())
+				previousStates := reporterPreviousHostedStates()
+				if test.triage != nil {
+					previousStates = append([]tracker.NativeState{*test.triage}, previousStates...)
+				}
+				previous, err := json.Marshal(previousStates)
 				if err != nil {
 					t.Fatal(err)
 				}
 				operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET states_json=? WHERE id=?", string(previous), project.ID)
 				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM workflow_states WHERE project_id=? AND source_name IN ('Triage','Backlog','Cancelled')", project.ID)
+				if test.triage != nil {
+					operatorSQL(t, f.hostedSecurityFixture, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Triage','Triage',?,?,?,?)", project.ID, test.triage.Terminal, test.triage.Dispatchable, testTimestamp, testTimestamp)
+				}
 				operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hub_schema_version WHERE version_id IN (20261013050001,20261013085000)")
 				if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
 					t.Fatal(err)
@@ -327,57 +338,178 @@ func TestReporterRoleAssignment(t *testing.T) {
 }
 
 func TestReporterCustomHostedProjectCreation(t *testing.T) {
-	f, ctx := newHostedKeyMCPFixture(t, "dedicated", "owner")
-	reporter := f.hostedSecurityFixture.user(t, "reporter", "reporter", "reporter@example.test", "", "")
-	states := []tracker.NativeState{
-		{Name: "Planned", Transitions: []string{"Todo"}},
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"Cancelled"}},
-		{Name: "Cancelled", Terminal: true, Transitions: []string{}},
-	}
-	for _, entry := range []string{"JSON", "MCP"} {
-		t.Run(entry, func(t *testing.T) {
-			var project tracker.NativeProject
-			if entry == "JSON" {
-				response := f.request(t, f.user, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "create-json", "name": "JSON custom project", "grant_access": true, "states": states})
-				requireNativeStatus(t, response, http.StatusCreated)
-				decodeHubResponse(t, response, &project)
-			} else {
-				call := projectCall(t, "create_hosted_project", "", "create-mcp", operatortool.HostedProjectCreateInput{Name: "MCP custom project", GrantAccess: true, States: &states})
-				rawResult, err := (hubProjectExecutor{service: f.service}).Execute(ctx, call)
-				if err != nil {
-					t.Fatalf("creation error=%T %+v", err, err)
-				}
-				var result chatpkg.Action
-				if err := json.Unmarshal(rawResult.Content, &result); err != nil {
-					t.Fatal(err)
-				}
-				if result.Status != chatpkg.ActionSucceeded {
-					t.Fatalf("creation=%+v", result)
-				}
-				if err := json.Unmarshal([]byte(result.Result), &project); err != nil {
-					t.Fatal(err)
-				}
-			}
-			want := []tracker.NativeState{
+	for _, test := range []struct {
+		name         string
+		states, want []tracker.NativeState
+		promotion    string
+	}{
+		{
+			name: "conventional destinations",
+			states: []tracker.NativeState{
+				{Name: "Planned", Transitions: []string{"Todo"}},
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"Cancelled"}},
+				{Name: "Cancelled", Terminal: true, Transitions: []string{}},
+			},
+			want: []tracker.NativeState{
 				{Name: "Triage", Transitions: []string{"Todo", "Cancelled"}},
 				{Name: "Planned", Transitions: []string{"Todo"}},
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"Cancelled"}},
 				{Name: "Cancelled", Terminal: true, Transitions: []string{}},
+			},
+			promotion: "Todo",
+		},
+		{
+			name: "custom destinations",
+			states: []tracker.NativeState{
+				{Name: "Ready", Transitions: []string{"Working"}},
+				{Name: "Working", Dispatchable: true, Transitions: []string{}},
+			},
+			want: []tracker.NativeState{
+				{Name: "Triage", Transitions: []string{"Ready"}},
+				{Name: "Ready", Transitions: []string{"Working"}},
+				{Name: "Working", Dispatchable: true, Transitions: []string{}},
+			},
+			promotion: "Ready",
+		},
+		{
+			name: "declared custom intake",
+			states: []tracker.NativeState{
+				{Name: "Ready", Transitions: []string{"Working"}},
+				{Name: "Working", Dispatchable: true, Transitions: []string{}},
+				{Name: "Triage", OperatorOnly: true, Dispatchable: true, Transitions: []string{"Working"}},
+			},
+			want: []tracker.NativeState{
+				{Name: "Triage", Transitions: []string{"Working"}},
+				{Name: "Ready", Transitions: []string{"Working"}},
+				{Name: "Working", Dispatchable: true, Transitions: []string{}},
+			},
+			promotion: "Working",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "owner")
+			reporter := f.hostedSecurityFixture.user(t, "reporter", "reporter", "reporter@example.test", "", "")
+			member := f.hostedSecurityFixture.user(t, "member", "member", "member@example.test", "", "")
+			for _, entry := range []string{"JSON", "MCP"} {
+				t.Run(entry, func(t *testing.T) {
+					var project tracker.NativeProject
+					if entry == "JSON" {
+						response := f.request(t, f.user, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "create-json", "name": "JSON custom project", "grant_access": true, "states": test.states})
+						requireNativeStatus(t, response, http.StatusCreated)
+						decodeHubResponse(t, response, &project)
+					} else {
+						call := projectCall(t, "create_hosted_project", "", "create-mcp", operatortool.HostedProjectCreateInput{Name: "MCP custom project", GrantAccess: true, States: &test.states})
+						rawResult, err := (hubProjectExecutor{service: f.service}).Execute(ctx, call)
+						if err != nil {
+							t.Fatalf("creation error=%T %+v", err, err)
+						}
+						var result chatpkg.Action
+						if err := json.Unmarshal(rawResult.Content, &result); err != nil {
+							t.Fatal(err)
+						}
+						if result.Status != chatpkg.ActionSucceeded {
+							t.Fatalf("creation=%+v", result)
+						}
+						if err := json.Unmarshal([]byte(result.Result), &project); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if !reflect.DeepEqual(project.States, test.want) {
+						t.Fatalf("workflow=%+v, want %+v", project.States, test.want)
+					}
+					f.project = project.ID
+					f.grantContext(ctx, t, reporter, true, false)
+					f.grantContext(ctx, t, member, true, false)
+					base := "/api/v2/organizations/org_security/projects/" + string(project.ID)
+					for i, state := range []string{"", "Todo", "Planned", "Cancelled", "Triage", "Unknown"} {
+						response := f.request(t, reporter, http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%s-%d", entry, i)}, Title: "Custom workflow report", State: state})
+						requireNativeStatus(t, response, http.StatusOK)
+						var issue tracker.NativeIssue
+						decodeHubResponse(t, response, &issue)
+						if issue.State != "Triage" {
+							t.Fatalf("requested=%q resulting=%q", state, issue.State)
+						}
+						response = f.request(t, member, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("promote-%s-%d", entry, i)}, ExpectedRevision: issue.Revision, State: test.promotion, Reason: "user_requested"})
+						requireNativeStatus(t, response, http.StatusOK)
+						decodeHubResponse(t, response, &issue)
+						if issue.State != test.promotion {
+							t.Fatalf("promotion=%q, want %q", issue.State, test.promotion)
+						}
+					}
+				})
 			}
-			if !reflect.DeepEqual(project.States, want) {
-				t.Fatalf("workflow=%+v, want %+v", project.States, want)
-			}
-			f.project = project.ID
-			f.grantContext(ctx, t, reporter, true, false)
-			base := "/api/v2/organizations/org_security/projects/" + string(project.ID)
-			for i, state := range []string{"", "Todo", "Planned", "Cancelled", "Triage", "Unknown"} {
-				response := f.request(t, reporter, http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%s-%d", entry, i)}, Title: "Custom workflow report", State: state})
-				requireNativeStatus(t, response, http.StatusOK)
-				var issue tracker.NativeIssue
-				decodeHubResponse(t, response, &issue)
-				if issue.State != "Triage" {
-					t.Fatalf("requested=%q resulting=%q", state, issue.State)
+		})
+	}
+}
+
+func TestNativeProjectCreationWorkflowBounds(t *testing.T) {
+	for _, hosted := range []bool{false, true} {
+		t.Run(strconv.FormatBool(hosted), func(t *testing.T) {
+			var request func(any) *httptest.ResponseRecorder
+			var createdStatus int
+			var service *Service
+			if hosted {
+				f, _ := newHostedKeyMCPFixture(t, "dedicated", "owner")
+				service = f.service
+				request = func(body any) *httptest.ResponseRecorder {
+					return f.request(t, f.user, http.MethodPost, "/api/v2/organizations/org_security/projects", body)
 				}
+				createdStatus = http.StatusCreated
+			} else {
+				f := newNativeFixture(t, nil, "", "bounds")
+				service = f.service
+				request = func(body any) *httptest.ResponseRecorder {
+					return performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/projects", testHubAdminToken, body)
+				}
+				createdStatus = http.StatusOK
+			}
+			for _, test := range []struct {
+				name    string
+				count   int
+				triage  bool
+				allowed bool
+			}{
+				{"49 custom lanes", 49, false, true},
+				{"50 custom lanes", 50, false, false},
+				{"50 including Triage", 50, true, true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					states := make([]tracker.NativeState, test.count)
+					for i := range states {
+						states[i] = tracker.NativeState{Name: fmt.Sprintf("Lane %d", i), Transitions: []string{}}
+					}
+					if test.triage {
+						states[0].Name = "Triage"
+					}
+					body := map[string]any{"idempotency_key": test.name, "name": test.name, "states": states}
+					if hosted {
+						body["grant_access"] = true
+					}
+					var before, after int
+					if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&before); err != nil {
+						t.Fatal(err)
+					}
+					response := request(body)
+					if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM projects").Scan(&after); err != nil {
+						t.Fatal(err)
+					}
+					if !test.allowed {
+						requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+						if after != before {
+							t.Fatalf("rejected creation changed project count: %d to %d", before, after)
+						}
+						return
+					}
+					requireNativeStatus(t, response, createdStatus)
+					if after != before+1 {
+						t.Fatalf("creation changed project count: %d to %d", before, after)
+					}
+					var project tracker.NativeProject
+					decodeHubResponse(t, response, &project)
+					if len(project.States) != 50 || project.States[0].Name != "Triage" {
+						t.Fatalf("workflow=%+v", project.States)
+					}
+				})
 			}
 		})
 	}

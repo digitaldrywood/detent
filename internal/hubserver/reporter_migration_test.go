@@ -77,8 +77,13 @@ func TestReporterAndTriageMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := map[string][]tracker.NativeState{
-		"prj_without":  {{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}},
-		"prj_existing": {{Name: "Custom", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Custom"}}},
+		"prj_without":       {{Name: "Backlog", Transitions: []string{"Todo"}}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}},
+		"prj_existing":      {{Name: "Custom", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Custom"}}},
+		"prj_dispatchable":  {{Name: "Ready", Dispatchable: true}, {Name: "Triage", Dispatchable: true, OperatorOnly: true, Transitions: []string{"Ready"}}},
+		"prj_terminal":      {{Name: "Ready", Dispatchable: true}, {Name: "Triage", Terminal: true, Transitions: []string{"Ready"}}},
+		"prj_custom":        {{Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}},
+		"prj_empty_triage":  {{Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}, {Name: "Triage"}},
+		"prj_custom_triage": {{Name: "Ready"}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}, {Name: "Triage", Transitions: []string{"Ready"}}},
 	}
 	before["prj_default_one"] = reporterPreviousHostedStates()
 	before["prj_default_two"] = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Todo"}}}, reporterPreviousHostedStates()...)
@@ -140,6 +145,16 @@ func TestReporterAndTriageMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := states
+		switch id {
+		case "prj_dispatchable", "prj_terminal":
+			want = []tracker.NativeState{{Name: "Ready", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Ready"}}}
+		case "prj_custom":
+			want = []tracker.NativeState{{Name: "Triage", Transitions: []string{"Ready"}}, {Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}}
+		case "prj_empty_triage":
+			want = []tracker.NativeState{{Name: "Ready", Transitions: []string{"Working"}}, {Name: "Working", Dispatchable: true}, {Name: "Triage", Transitions: []string{"Ready"}}}
+		case "prj_custom_triage":
+			want = []tracker.NativeState{{Name: "Ready"}, {Name: "Todo", Dispatchable: true}, {Name: "Cancelled", Terminal: true}, {Name: "Triage", Transitions: []string{"Ready", "Todo", "Cancelled"}}}
+		}
 		if id == "prj_without" || id == "prj_custom_default" || id == "prj_repository_default" {
 			transitions := []string{"Backlog", "Todo", "Cancelled"}
 			if id != "prj_without" {
