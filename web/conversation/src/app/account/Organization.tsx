@@ -472,7 +472,8 @@ export function OrganizationRoute(): React.ReactElement {
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
-  const shared = useSharedOrganizations();
+  const sharedListing = useSharedOrganizations();
+  const shared = sharedListing.error ? [] : sharedListing.value;
   const sharedEntry = behindSharedEntry();
   const organizations = shared ?? bootstrap?.organizations ?? [];
   const projects = React.useMemo(
