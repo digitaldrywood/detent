@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -37,6 +39,7 @@ type mappedPolicyScheduling struct {
 	approved       policy.Descriptor
 	observed       policy.Descriptor
 	modelSelection workflowconfig.ModelSelection
+	checkError     error
 }
 
 type cloudPolicyScheduling struct {
@@ -136,6 +139,9 @@ func (s *mappedPolicyScheduling) CheckProjectPolicy(_ context.Context, _, _ stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.observed = descriptor
+	if s.checkError != nil {
+		return s.checkError
+	}
 	return descriptor.Match(s.approved)
 }
 
@@ -489,8 +495,31 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	scheduling.mu.Lock()
 	scheduling.approved = upgradedPolicy
 	scheduling.mu.Unlock()
-	if err := p.reconcileWorkflow(t.Context()); err != nil {
-		t.Fatalf("canonical upgrade stopped project with active attempt: %v", err)
+	for _, tick := range []struct {
+		name    string
+		pending bool
+	}{
+		{name: "first rejection", pending: true},
+		{name: "still pending", pending: true},
+		{name: "approved"},
+	} {
+		t.Run(tick.name, func(t *testing.T) {
+			scheduling.mu.Lock()
+			scheduling.checkError = nil
+			if tick.pending {
+				scheduling.checkError = &hubclient.APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "repository policy approval pending"}
+			}
+			scheduling.mu.Unlock()
+			err := p.reconcileWorkflow(t.Context())
+			if tick.pending {
+				var failure *hubclient.APIError
+				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || p.Workflow().Config.Policy.ID != approved.ID {
+					t.Fatalf("pending approval changed effective policy: %s, %v", p.Workflow().Config.Policy.ID, err)
+				}
+			} else if err != nil || p.Workflow().Config.Policy.ID != upgradedPolicy.ID || p.WorkflowSourceStatus().LastReloadError != "" {
+				t.Fatalf("approved unchanged selection was not applied on the next tick: %s, %v", p.Workflow().Config.Policy.ID, err)
+			}
+		})
 	}
 	active, err := attempts.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{ProjectID: cfg.ID})
 	if err != nil || len(active) != 1 || active[0].ID != attemptID || p.Workflow().Config.Policy.ID != upgradedPolicy.ID || !p.Running() {
