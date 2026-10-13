@@ -515,7 +515,10 @@ export function makeAccountApi(options: AccountApiOptions) {
         let lastTick: string | null = null;
         do {
           const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? "open"}${options.since ? `&since=${encodeURIComponent(options.since)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-          items.push(...page.items);
+          items.push(...page.items.map((finding) => ({
+            ...finding,
+            subject: { ...finding.subject, project_id: finding.subject.project_id ?? project },
+          })));
           lastTick = page.last_tick_at;
           cursor = page.next_cursor ?? "";
         } while (cursor);

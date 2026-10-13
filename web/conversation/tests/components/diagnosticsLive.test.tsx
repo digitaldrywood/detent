@@ -8,12 +8,18 @@ import health from "../../src/contracts/fixtures/health-findings.json";
 
 const mocks = vi.hoisted(() => ({
   api: { diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
-  bootstrap: { organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", profile: "native" }] },
+  bootstrap: { organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }] },
   http: { eventsUrl: () => "/events" },
 }));
 vi.mock("../../src/app/account/context.ts", () => ({ useAccountApi: () => mocks.api, useAccountBootstrap: () => mocks.bootstrap }));
 vi.mock("../../src/app/work/lib/useWork.ts", () => ({ useWorkHttp: () => mocks.http }));
 vi.mock("../../src/app/pageTitle.ts", () => ({ usePageTitle: () => {} }));
+vi.mock("../../src/app/diagnostics/FindingAsk.tsx", () => ({
+  FindingAskWorkspace: ({ finding, project, children }: { finding: { id: string; summary: string }; project: { name: string }; children: (controls: React.ReactNode) => React.ReactNode }) => <>
+    {children(null)}
+    <section aria-label="Ask about this finding">{project.name}: {finding.id}: {finding.summary}</section>
+  </>,
+}));
 vi.mock("@tanstack/react-router", () => ({ Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a> }));
 
 class FindingEvents extends EventTarget {
@@ -21,7 +27,8 @@ class FindingEvents extends EventTarget {
   close = vi.fn();
   constructor() { super(); FindingEvents.current = this; }
 }
-const original = decodeHealthFindings(health).items[0]!;
+const healthFinding = decodeHealthFindings(health).items[0]!;
+const original = { ...healthFinding, subject: { ...healthFinding.subject, project_id: "prj_fixture" } };
 const next = { ...original, id: "new_finding", summary: "New finding" };
 const tick = "2026-10-07T10:00:00Z";
 let open = [original];
@@ -38,6 +45,7 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FindingEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   open = [original];
+  mocks.bootstrap.projects[0]!.can_write = true;
   resolved = [];
   mocks.api.diagnostics.mockResolvedValue(decodeDiagnostics(report));
   mocks.api.fleet.mockResolvedValue({ runners: [] });
@@ -116,4 +124,23 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   mocks.api.healthFindings.mockClear();
   act(() => { emit("unmounted"); document.dispatchEvent(new Event("visibilitychange")); });
   expect(mocks.api.healthFindings).not.toHaveBeenCalled();
+});
+
+it("opens the selected finding in its project chat from every Needs attention row", async () => {
+  open = [original, next];
+  render(<DiagnosticsRoute />);
+  await screen.findByRole("button", { name: `Ask about ${original.summary}` });
+  for (const finding of open) {
+    fireEvent.click(screen.getByRole("button", { name: `Ask about ${finding.summary}` }));
+    expect(screen.getByRole("region", { name: "Ask about this finding" }).textContent).toBe(`Example project: ${finding.id}: ${finding.summary}`);
+  }
+});
+
+it("keeps Ask visible but unavailable when the viewer cannot write project chat", async () => {
+  mocks.bootstrap.projects[0]!.can_write = false;
+  render(<DiagnosticsRoute />);
+  const ask = await screen.findByRole("button", { name: `Ask about ${original.summary}` });
+  expect(ask.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(ask);
+  expect(screen.queryByRole("region", { name: "Ask about this finding" })).toBeNull();
 });

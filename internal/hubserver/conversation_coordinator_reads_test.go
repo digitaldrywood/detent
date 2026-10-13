@@ -115,6 +115,7 @@ func TestCoordinatorScreenReads(t *testing.T) {
 				{"get_project_policy", `{}`, true, ""}, {operatortool.GetProjectModelSelection, `{}`, true, ""},
 				{"project_secret_metadata", `{}`, true, ""}, {"repository_freshness", `{}`, true, ""}, {"monthly_usage_costs", `{}`, true, ""},
 				{operatortool.WorkList, `{}`, true, ""}, {operatortool.HealthFindings, `{}`, true, ""}, {operatortool.BoardState, `{}`, true, ""},
+				{operatortool.TimeSeries, `{"window":"1h","bucket":"5m"}`, true, ""},
 				{operatortool.AnalyticsDashboard, `{}`, true, ""}, {operatortool.Reports, `{}`, true, ""}, {"get_project_usage", `{"range":"24h"}`, true, ""},
 				{"get_project_diagnostics", `{}`, true, ""}, {"get_project_reports", `{}`, true, ""},
 			}

@@ -29,6 +29,8 @@ describe("diagnostics read", () => {
     });
     const read = await api.healthFindings(["prj_first", "prj_second"], options);
     expect(read.items.map((finding) => finding.id)).toEqual(["finding_watch", "finding_attention"]);
+    expect(findingsFromRead(read)[0]?.subject.project_id).toBe("prj_second");
+    expect(findingsFromRead(read)[1]?.subject.project_id).toBe("prj_fixture");
     expect(read.last_tick_at).toBe(healthFixture.last_tick_at);
     const query = options.state === "resolved" ? "state=resolved&since=2026-10-07T10%3A00%3A00Z" : "state=open";
     expect(requests.toSorted()).toEqual([

@@ -149,7 +149,7 @@ export function findingsFromRead(
           }
         : finding.subject.kind === "project"
           ? { kind: "project", project_id: finding.subject.id }
-          : { kind: "fleet" },
+          : { kind: "fleet", project_id: finding.subject.project_id },
   }));
 }
 
