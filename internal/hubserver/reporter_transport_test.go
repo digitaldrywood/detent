@@ -235,6 +235,34 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 					})
 				}
 			}
+			for _, path := range []string{"/api/v2/organizations/org_security/work-view-preference", f.base + "/work-view-preference"} {
+				t.Run("personal preference "+path, func(t *testing.T) {
+					for _, operation := range []struct {
+						method string
+						want   *string
+					}{{http.MethodPut, new("view=list")}, {http.MethodGet, new("view=list")}, {http.MethodDelete, nil}, {http.MethodGet, nil}} {
+						response := send(t, "web-session", operation.method, path, []byte(`{"query":"view=list"}`), nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						var preference workViewPreference
+						decodeHubResponse(t, response, &preference)
+						if operation.want == nil && preference.Query != nil || operation.want != nil && (preference.Query == nil || *preference.Query != *operation.want) {
+							t.Fatalf("preference not stored: %s", response.Body.String())
+						}
+					}
+				})
+			}
+			if deployment == "dedicated" {
+				t.Run("personal organization switch", func(t *testing.T) {
+					f.service.config.Hosted.Directory = []HostedDestination{{OrganizationID: "org_security", WorkOSOrganizationID: "org_provider", PublicURL: "https://example.test"}}
+					response := send(t, "web-session", http.MethodPost, "/api/v2/organizations/org_security/switch", []byte(`{"organization":"org_security"}`), nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var next hostedNextResponse
+					decodeHubResponse(t, response, &next)
+					if next.Next != "https://example.test/auth/oidc/start" {
+						t.Fatalf("switch destination=%q", next.Next)
+					}
+				})
+			}
 			var title string
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT title FROM issues WHERE native_id=?", item).Scan(&title); err != nil {
 				t.Fatal(err)
