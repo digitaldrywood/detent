@@ -752,6 +752,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	Evidence         []tracker.NativeEvidence
 	EvidenceTools    []AgentTool
 	EvidenceHandler  AgentToolHandler
 	NativeVersion    *tracker.ChangeVersion

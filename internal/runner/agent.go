@@ -3462,6 +3462,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	}
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
+	promptOptions.Evidence = req.Evidence
 	if commands != nil {
 		var commandErr error
 		promptOptions.Commands, commandErr = commands.evidence()
