@@ -28,6 +28,7 @@ export interface WorkViewState {
   readonly archived?: boolean;
   readonly q: string;
   readonly state: readonly string[];
+  readonly type: readonly string[];
   readonly label: readonly string[];
   readonly assignee: readonly string[];
   readonly priority: readonly string[];
@@ -41,6 +42,7 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
   tab: "active",
   q: "",
   state: [],
+  type: [],
   label: [],
   assignee: [],
   priority: [],
@@ -51,11 +53,12 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
 };
 
 /** The multi-valued filters, in the order the Filters menu renders them. */
-export const FILTER_KEYS = ["state", "label", "assignee", "priority"] as const;
+export const FILTER_KEYS = ["state", "type", "label", "assignee", "priority"] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 export const FILTER_LABELS: Readonly<Record<FilterKey, string>> = {
   state: "State",
+  type: "Type",
   label: "Label",
   assignee: "Assignee",
   priority: "Priority",
@@ -87,6 +90,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
     state: readList(params.get("state")),
+    type: readList(params.get("type")).filter((value) => value === "bug" || value === "change_request"),
     label: readList(params.get("label")),
     assignee: readList(params.get("assignee")),
     priority: readList(params.get("priority")),

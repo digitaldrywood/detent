@@ -392,6 +392,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
     createFirstIssue: (input: {
       projectId: string;
+      type?: "bug" | "change_request";
 	  githubIssueUrl?: string;
       title: string;
       body: string;
@@ -400,6 +401,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
 	    github_issue_url: input.githubIssueUrl,
+        type: input.type,
         title: input.title,
         body: input.body,
         state: input.state,

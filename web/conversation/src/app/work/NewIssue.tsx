@@ -98,6 +98,8 @@ export function NewIssueDialog({
   readonly onCreated: (input: { readonly projectId: string; readonly title: string }) => void;
 }): React.ReactElement {
   const api = useAccountApi();
+  const reporter = useAccountBootstrap()?.actor.role === "reporter";
+  const [issueType, setIssueType] = React.useState<"" | "bug" | "change_request">("");
   const [target, setTarget] = React.useState(() => newIssueProject(projects, projectId)?.id ?? "");
   const project = projects.find((candidate) => candidate.id === target);
   const [title, setTitle] = React.useState("");
@@ -107,10 +109,11 @@ export function NewIssueDialog({
   const [state, setState] = React.useState(() => newIssueState(project, requestedState));
   const key = React.useRef(newKey());
   const create = useMutation(async () => {
-    if (uploading) return;
+    if (uploading || reporter && project?.profile === "native" && issueType === "") return;
     const created = await api.createFirstIssue({
       projectId: target,
 	  githubIssueUrl: githubIssueUrl.trim() || undefined,
+      type: project?.profile === "native" && issueType !== "" ? issueType : undefined,
       title: title.trim(),
       body: body.trim(),
       state,
@@ -119,6 +122,7 @@ export function NewIssueDialog({
     key.current = newKey();
     const createdTitle = title.trim() || githubIssueUrl.trim();
     setTitle("");
+    setIssueType("");
     setBody("");
 	setGithubIssueUrl("");
     onOpenChange(false);
@@ -175,6 +179,17 @@ export function NewIssueDialog({
               />
               <p className="text-xs text-muted-foreground">Link an issue from this project's repository. The runner imports its context before the first run.</p>
             </div>
+            {project?.profile === "native" ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="new-issue-type">{reporter ? "Type" : "Type (optional)"}</Label>
+                <NativeSelect
+                  id="new-issue-type"
+                  value={issueType}
+                  options={[{ value: "", label: "Choose a type" }, { value: "bug", label: "Bug" }, { value: "change_request", label: "Change request" }]}
+                  onValueChange={(value) => setIssueType(value as typeof issueType)}
+                />
+              </div>
+            ) : null}
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="new-issue-title">Title</Label>
               <Input
@@ -218,7 +233,7 @@ export function NewIssueDialog({
           <Button
             type="submit"
             form="new-issue-form"
-            disabled={uploading || create.pending || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
+            disabled={uploading || create.pending || (reporter && project?.profile === "native" && issueType === "") || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
           >
             {create.pending ? "Creating…" : "Create issue"}
           </Button>

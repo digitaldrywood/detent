@@ -31,6 +31,7 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
+import { IssuePage } from "../../src/app/work/IssuePage.tsx";
 import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
 import { Input } from "../../src/components/ui/input.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
@@ -877,7 +878,17 @@ describe("the Diff surface's source order", () => {
 });
 
 vi.mock("../../src/app/App.tsx", () => ({
-  useShell: () => ({ connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+  useShell: () => ({ conversations: [], connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+}));
+
+vi.mock("../../src/app/components/ChatWorkspace.tsx", () => ({
+  ChatWorkspace: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useWorkspacePanel: () => ({ open: false, active: null, activate: vi.fn(), close: vi.fn() }),
+}));
+
+vi.mock("../../src/app/work/IssueAsk.tsx", () => ({
+  useIssueAsk: () => ({ threads: [], selected: null, loading: false, pending: false, error: null }),
+  IssueAskPanel: () => null,
 }));
 
 afterEach(() => { vi.unstubAllGlobals(); globalThis.localStorage.clear(); resetRunnerNamesForTests(); });
@@ -888,12 +899,13 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
   vi.stubGlobal("fetch", wrapFetch?.(fixture.fetch) ?? fixture.fetch);
   const root = createRootRoute({ component: () => <SidebarProvider><SidebarSearchProvider work><aside className="dc-side"><Input nativeInput type="search" aria-label="Search threads" /></aside><Outlet /></SidebarSearchProvider></SidebarProvider> });
   const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
+  const issue = createRoute({ getParentRoute: () => root, path: "/work/i/$workItemId", component: IssuePage });
   const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
     const { projectId } = project.useParams();
     return <WorkBoard projectId={projectId} />;
   } });
   const history = createMemoryHistory({ initialEntries: [path] });
-  const router = createRouter({ routeTree: root.addChildren([all, project]), history, ...plainSearchOptions });
+  const router = createRouter({ routeTree: root.addChildren([all, project, issue]), history, ...plainSearchOptions });
   const mounted = render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
   const setOrganization = (name?: string) => {
     const organization = { ...fixture.client.bootstrap.organization, name: name ?? "" };
@@ -1235,6 +1247,45 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it.each(["/work", "/work/p/proj_alpha"])("selects Change request from the visible list filter in %s", async (path) => {
+    const fixture = await pagedWork(`${path}?view=list&tab=all&completed_window=all`);
+    await settledWork();
+    expect(screen.getAllByText("Queue item 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Queue item 2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Queue item 3").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Change request" }));
+    await waitFor(() => expect(parseViewState(fixture.router.state.location.searchStr).type).toEqual(["change_request"]));
+    await settledWork();
+    await waitFor(() => expect(screen.queryByText("Queue item 1")).toBeNull());
+    expect(screen.getAllByText("Queue item 2").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Queue item 3")).toBeNull();
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("type"))
+      .toEqual(["change_request"]);
+    expect(screen.getByRole("menuitemcheckbox", { name: "Change request" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it.each([
+    { title: "Queue item 1", badge: "Bug" },
+    { title: "Queue item 2", badge: "Change request" },
+    { title: "Queue item 3", badge: null },
+  ])("renders the issue type beside $title only when classified", async ({ title, badge }) => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all");
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    const issue = page.items.find((item) => item.title === title)!;
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: issue.work_item_id } }));
+    const heading = await screen.findByRole("heading", { level: 1, name: title });
+    const header = within(heading.closest("header")!);
+    if (badge === null) {
+      expect(header.queryByText("Bug")).toBeNull();
+      expect(header.queryByText("Change request")).toBeNull();
+    } else {
+      expect(header.getByText(badge)).not.toBeNull();
+    }
+  });
+
   it("names the organization, follows organization changes and preserves project scope", async () => {
     const fixture = await pagedWork();
     await settledWork();
@@ -1296,7 +1347,7 @@ describe("the filter-first Work surface", () => {
     fireEvent.change(search, { target: { value: "42" } });
     await settledWork();
     expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({
-      archived: true, view: "list", tab: "all", q: "42", state: ["42"], label: ["true"],
+      archived: true, view: "list", tab: "all", q: "42", type: [], state: ["42"], label: ["true"],
       assignee: ["null"], priority: ["4"], sort: "title", lanes: ["false"], collapsed: ["0"], completedWindow: "7d",
     });
   });

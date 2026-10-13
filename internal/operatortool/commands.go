@@ -36,6 +36,7 @@ func CommandCatalog() []Definition {
 type FileIssueArguments struct {
 	ProjectID      string   `json:"project_id"`
 	GitHubIssueURL string   `json:"github_issue_url,omitempty"`
+	Type           string   `json:"type,omitempty"`
 	Title          string   `json:"title,omitempty"`
 	Description    string   `json:"description,omitempty"`
 	State          string   `json:"state,omitempty"`
@@ -44,7 +45,7 @@ type FileIssueArguments struct {
 }
 
 func fileIssueDefinition() Definition {
-	return Definition{Name: FileIssue, Description: "Create an issue through the dashboard command. Native descriptions may be empty. Native projects may link a permitted github_issue_url without title or description. Priority ranks 1–4 map to native priorities 0–3. Embed upload_attachment reference in description to attach a file.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","request_id"],"anyOf":[{"required":["title"],"properties":{"title":{"minLength":1}}},{"required":["github_issue_url"]}],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","minLength":1,"maxLength":128},"github_issue_url":{"type":"string","minLength":1,"maxLength":2048},"title":{"type":"string","maxLength":500},"description":{"type":"string","maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: toolset(FileIssue)}
+	return Definition{Name: FileIssue, Description: "Create an issue through the dashboard command. Native descriptions may be empty. Type is bug or change_request and is required for Reporters. Native projects may link a permitted github_issue_url without title or description. Priority ranks 1–4 map to native priorities 0–3. Embed upload_attachment reference in description to attach a file.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","request_id"],"anyOf":[{"required":["title"],"properties":{"title":{"minLength":1}}},{"required":["github_issue_url"]}],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","minLength":1,"maxLength":128},"github_issue_url":{"type":"string","minLength":1,"maxLength":2048},"type":{"type":"string","enum":["bug","change_request"]},"title":{"type":"string","maxLength":500},"description":{"type":"string","maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: toolset(FileIssue)}
 }
 
 func DecodeFileIssue(raw json.RawMessage) (FileIssueArguments, error) {
@@ -66,6 +67,9 @@ func DecodeFileIssue(raw json.RawMessage) (FileIssueArguments, error) {
 	}
 	if fields["github_issue_url"] != nil && strings.TrimSpace(request.GitHubIssueURL) == "" || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
 		return request, ErrInvalidArguments
+	}
+	if fields["type"] != nil && request.Type != "bug" && request.Type != "change_request" {
+		return request, invalidArgument("type", "must be bug or change_request")
 	}
 	if request.GitHubIssueURL != "" {
 		if _, _, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL); err != nil {

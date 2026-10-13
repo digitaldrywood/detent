@@ -531,11 +531,11 @@ func TestReporterAttachmentMCPRoundTrip(t *testing.T) {
 	if failed || json.Unmarshal(raw, &record) != nil || record.ID == "" || record.ContentType != "image/png" || record.Size != int64(pixels.Len()) {
 		t.Fatalf("PNG upload=%s failed=%v", raw, failed)
 	}
-	raw, failed = call(operatortool.FileIssue, map[string]any{"request_id": "reporter-file", "project_id": project, "title": "Screenshot report", "description": "![Screenshot](attachment:" + record.ID + ")", "state": "Todo"})
+	raw, failed = call(operatortool.FileIssue, map[string]any{"request_id": "reporter-file", "project_id": project, "type": "bug", "title": "Screenshot report", "description": "![Screenshot](attachment:" + record.ID + ")", "state": "Todo"})
 	var filed struct {
 		Data tracker.NativeIssue `json:"data"`
 	}
-	if failed || json.Unmarshal(raw, &filed) != nil || filed.Data.State != "Triage" || filed.Data.WorkItemID == "" {
+	if failed || json.Unmarshal(raw, &filed) != nil || filed.Data.State != "Triage" || filed.Data.Type != "bug" || filed.Data.WorkItemID == "" {
 		t.Fatalf("file=%s failed=%v", raw, failed)
 	}
 	raw, failed = call(operatortool.ReadAttachment, map[string]any{"project_id": project, "attachment_id": record.ID})

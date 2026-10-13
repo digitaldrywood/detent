@@ -323,6 +323,8 @@ refresh approved policy inputs; uncertain mutation outcomes still require resour
 inspection before retrying. Unexpected failures remain redacted as
 `service_unavailable` with a correlation ID.
 
+Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
+
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
 and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
