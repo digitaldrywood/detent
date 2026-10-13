@@ -77,6 +77,9 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		policyScope, err = operatorPolicyScope(ctx, s.database.db, scope, r.RepositoryPolicy)
 		if err == nil {
 			value, err = readProjectPolicyHistory(ctx, s.database.db, policyScope, r.Limit, r.After, false)
+			if errors.Is(err, errNoApprovedRepositoryPolicy) {
+				return operatortool.Result{}, &operatortool.ConflictError{Code: "policy_mismatch", Message: "No approved repository policy exists for this project"}
+			}
 		}
 	case "project_secret_metadata":
 		var status projectSecretStatus
