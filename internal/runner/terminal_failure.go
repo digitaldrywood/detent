@@ -28,24 +28,25 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 		failure.Error = strings.TrimSpace(failure.Provider + " " + strings.ReplaceAll(failure.Operation, "/", "_") + ": " + carrier.BackendErrorMessage())
 	}
 	var hook *workspace.HookError
+	var issueConfiguration *IssueConfigurationError
+	if capacity, ok := backendcapacity.As(err); ok && backendcapacity.IsStartupFailureKind(capacity.Details.Kind) {
+		failure.ErrorClass = "backend_startup"
+	}
 	switch {
-	case errors.As(err, &hook), errors.Is(err, ErrWorkspacePreparation), errors.Is(err, ErrNativeRecoveryRequired):
+	case errors.As(err, &issueConfiguration):
+		failure.ErrorClass = "issue_configuration"
+	case errors.Is(err, ErrNativeRecoveryRequired):
+		failure.ErrorClass = "source_recovery"
+	case errors.As(err, &hook), errors.Is(err, ErrWorkspacePreparation):
 		failure.ErrorClass = "workspace_hook"
 		failure.Stage = "workspace_preparation"
 		if hook != nil {
-			output, _, _ := strings.Cut(strings.TrimSpace(hook.Output), "\n")
 			failure.Error = fmt.Sprintf("workspace hook %s failed (exit status %d)", hook.Hook, hook.ExitCode)
-			if output != "" {
-				failure.Error += ": " + output
-			}
 		}
-	case errors.Is(err, ErrMergeWorkerStartupTimeout), failure.Operation == "initialize":
+	case errors.Is(err, ErrMergeWorkerStartupTimeout), failure.Operation == "initialize", failure.ErrorClass == "backend_startup":
 		failure.ErrorClass = "backend_startup"
 	case failure.RPCCode != nil:
 		failure.ErrorClass = "protocol"
-	}
-	if capacity, ok := backendcapacity.As(err); ok && backendcapacity.IsStartupFailureKind(capacity.Details.Kind) {
-		failure.ErrorClass = "backend_startup"
 	}
 	failure.ObservedAt = at
 	failure.TurnStartRefused = turnStartRefused

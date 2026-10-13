@@ -33,7 +33,7 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook":
+	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery":
 	default:
 		f.ErrorClass = ""
 	}
@@ -43,8 +43,11 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 		f.Stage = ""
 	}
 	f.Attribution = ""
-	if f.ErrorClass != "" || f.Stage == "pre_provider" {
+	switch f.ErrorClass {
+	case "backend_startup", "protocol", "workspace_hook":
 		f.Attribution = "instance"
+	case "issue_configuration", "source_recovery":
+		f.Attribution = "issue"
 	}
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"

@@ -22,8 +22,12 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 		merge         bool
 		preProvider   bool
 		olderHub      bool
+		issueOwned    bool
+		unclassified  bool
 	}{
 		{name: "older Hub setup unavailable", outcome: "failed", preProvider: true, olderHub: true},
+		{name: "issue configuration before provider", outcome: "failed", preProvider: true, issueOwned: true},
+		{name: "unclassified before provider", outcome: "failed", preProvider: true, unclassified: true},
 		{name: "workspace setup", outcome: "failed", preProvider: true},
 		{name: "failed", outcome: "failed", duration: 20 * time.Second},
 		{name: "two seconds", outcome: "succeeded", duration: 2 * time.Second},
@@ -49,7 +53,14 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 				if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "completed", HeartbeatAt: clock}); err != nil {
 					t.Fatal(err)
 				}
-				if err := execution.PrepareFinish(t.Context(), "failed", "", &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found token=private-secret", ErrorClass: "workspace_hook", ObservedAt: clock}); err != nil {
+				failure := &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found token=private-secret", ErrorClass: "workspace_hook", ObservedAt: clock}
+				if tt.issueOwned {
+					failure = &tracker.NativeTerminalFailure{Error: "agent override rejected: effort: unsupported value", ErrorClass: "issue_configuration", ObservedAt: clock}
+				}
+				if tt.unclassified {
+					failure = &tracker.NativeTerminalFailure{Error: "unclassified setup failure", ObservedAt: clock}
+				}
+				if err := execution.PrepareFinish(t.Context(), "failed", "", failure); err != nil {
 					t.Fatal(err)
 				}
 			} else if tt.merge {
@@ -71,6 +82,20 @@ func TestNativeAttemptTerminalActivityReceipts(t *testing.T) {
 			if tt.olderHub {
 				if err != nil || evidence.Attempt != nil || !slices.Contains(evidence.Unavailable, "native_attempt") {
 					t.Fatalf("older Hub fabricated setup history: %+v err=%v", evidence, err)
+				}
+				return
+			}
+			if tt.unclassified {
+				a := evidence.Attempt
+				if err != nil || a == nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "" || !slices.Contains(a.TerminalFailure.Unavailable, "attribution") {
+					t.Fatalf("unclassified failure fabricated an owner: %+v err=%v", a, err)
+				}
+				return
+			}
+			if tt.issueOwned {
+				a := evidence.Attempt
+				if err != nil || a == nil || a.Identity != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.ErrorClass != "issue_configuration" || a.TerminalFailure.Attribution != "issue" {
+					t.Fatalf("issue configuration misattributed: %+v err=%v", a, err)
 				}
 				return
 			}

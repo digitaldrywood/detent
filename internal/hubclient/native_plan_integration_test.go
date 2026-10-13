@@ -91,7 +91,8 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	nativeChangeGit(t, source, "config", "url."+source+".insteadOf", nativeChangeRepository)
 	hooks := workspace.Hooks{}
 	if failure == "workspace" {
-		hooks.AfterCreate = "printf 'required script not found token=private-secret\\n'; exit 127"
+		t.Setenv("WORKSPACE_TEST_PRIVATE_VALUE", "correcthorsebatterystaple")
+		hooks.AfterCreate = "printf '%s\\n' \"$WORKSPACE_TEST_PRIVATE_VALUE\"; exit 127"
 	}
 	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Hooks: hooks, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
@@ -395,7 +396,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Fatalf("setup failure lost receipt or started provider: attempts=%+v changes=%v calls=%d err=%v", current.Attempts, changes, provider.calls.Load(), err)
 		}
 		a := current.Attempts[0]
-		if a.Identity != nil || a.Status != "failed" || a.TerminalFailure == nil || a.TerminalFailure.Error != "workspace hook after_create failed (exit status 127): required script not found [redacted]" || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ObservedAt.IsZero() || a.Runtime == nil || a.Runtime.LocalAttemptID == 0 || a.Runtime.Generation == 0 || a.Runtime.Activity != nil {
+		if a.Identity != nil || a.Status != "failed" || a.TerminalFailure == nil || a.TerminalFailure.Error != "workspace hook after_create failed (exit status 127)" || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ObservedAt.IsZero() || a.Runtime == nil || a.Runtime.LocalAttemptID == 0 || a.Runtime.Generation == 0 || a.Runtime.Activity != nil {
 			t.Fatalf("setup failure diagnostic or identity incorrect: %+v", a)
 		}
 		state, err := orch.State(t.Context())
@@ -676,7 +677,7 @@ func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt) {
 		t.Fatal("setup refusal receipt absent")
 	}
 	a := attempts[len(attempts)-1]
-	if a.Identity != nil || a.Status != "failed" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
+	if a.Identity != nil || a.Status != "failed" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "issue" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
 		t.Fatalf("setup refusal replaced source or lost diagnostic: %+v", a)
 	}
 }

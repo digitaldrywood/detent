@@ -1456,9 +1456,13 @@ and close an attempt with `run.finished` at sequence 1, without provider
 attribution in `runtime`; provider activity, usage, checkpoints, finalization,
 disposition and completion responses are excluded. The existing lease, runner,
 project and pinned-policy checks still apply. The terminal diagnostic retains
-its observation time, `stage: pre_provider`, `attribution: instance` and a bounded
-redacted first line. Hook failures include the hook name, exit status and first
-output line; hook commands, environment assignments and local paths are omitted.
+its observation time, `stage: pre_provider` and a bounded redacted diagnostic.
+Attribution follows the recorded error class: infrastructure failures belong to
+the instance, while issue configuration and source recovery refusals belong to
+the issue. Timing alone does not establish ownership; unclassified failures leave
+attribution explicitly unavailable. Hook diagnostics contain only the hook name
+and exit status; hook output, commands, environment values and local paths are
+omitted.
 Existing attempt, runtime and MCP reads expose this receipt independently of a
 provider session. Older runners and unsupported Hubs retain explicit unavailable
 history; no attempt or provider metadata is backfilled.
