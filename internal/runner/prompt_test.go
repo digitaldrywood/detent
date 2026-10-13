@@ -1125,6 +1125,24 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 			want: []string{"host", `receipt_id="timing_build"`, "receipt_ids", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
 		},
 		{
+			name:      "native omitted patch reads pinned source",
+			opts:      ValidatorPromptOptions{VersionID: "version_example", Repository: "example-org/example-project", WorkspacePath: "workspace", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", DiffStat: &stat, DiffTruncated: true, MaxInlineDiffBytes: len(patch)},
+			want:      []string{"Reviewed native version: version_example", "base=base head=head sha256=digest", "Full diff omitted", "git rev-parse --verify base^{commit}", "git rev-parse --verify head^{commit}", "git --no-pager diff --no-ext-diff --no-textconv base head --", "do not call GitHub", "Never substitute working-tree or index edits", "instance/evidence limitation", "Missing source is not approval"},
+			forbidden: []string{"use the named GitHub PR diff", "do not use workspace git diff", "+seeded validator diff"},
+		},
+		{
+			name:      "native source read unavailable",
+			opts:      ValidatorPromptOptions{VersionID: "version_example", DiffError: "source unavailable"},
+			want:      []string{"Diff collection error: source unavailable", "instance/evidence limitation", "Missing source is not approval"},
+			forbidden: []string{"use the named GitHub PR diff", "git --no-pager diff", "git rev-parse"},
+		},
+		{
+			name:      "native implementation review reads pinned source",
+			opts:      ValidatorPromptOptions{implementationReview: true, VersionID: "version_example", Repository: "example-org/example-project", WorkspacePath: "workspace", BaseSHA: "base", HeadSHA: "head", DiffStat: &stat, DiffTruncated: true},
+			want:      []string{"git --no-pager diff --no-ext-diff --no-textconv base head --", "instance/evidence limitation", "wait when source review cannot be completed"},
+			forbidden: []string{"use the named GitHub PR diff", "Map every acceptance criterion"},
+		},
+		{
 			name:      "clean physical observation",
 			opts:      ValidatorPromptOptions{DiffStat: &clean},
 			want:      []string{"Stat: 0 files changed", "Full diff: no workspace changes detected."},
@@ -1157,6 +1175,7 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 				"Diff context:",
 				"Stat: 1 file changed, 1 insertion(+)",
 				"Full diff omitted because it exceeds the inline diff limit.",
+				"use the named GitHub PR diff at the stated head; do not use workspace git diff",
 			},
 			forbidden: []string{"+seeded validator diff"},
 		},
@@ -1196,7 +1215,7 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 			t.Parallel()
 
 			prompt := BuildValidatorPrompt(config.Workflow{}, connector.Issue{
-				Identifier:  "digitaldrywood/detent#854",
+				Identifier:  "example-org/example-project#854",
 				Title:       "Seed validator prompt",
 				Description: "## Acceptance Criteria\n- Inline small diffs.",
 			}, tt.opts)
