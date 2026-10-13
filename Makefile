@@ -35,10 +35,6 @@ GOSEC_VERSION ?= v2.28.0
 GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
 GOSEC_PATCH ?= scripts/gosec-v2.28.0-deterministic.patch
 GOSEC_DETERMINISM_RUNS ?= 8
-# Several worktrees run gates on the same host at once. TEST_PROCS bounds how
-# many packages build or test concurrently, the Go scheduler threads each test
-# binary uses, lint workers, and vitest workers, so one invocation cannot take
-# the whole machine. Raise it per invocation: TEST_PROCS=8 make test.
 TEST_PROCS ?= 4
 GOMAXPROCS ?= $(TEST_PROCS)
 export GOMAXPROCS
