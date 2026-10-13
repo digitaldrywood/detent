@@ -19,6 +19,9 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 	complete := "## Acceptance criteria\nFix the endpoint.\n## Must not break\nExisting requests.\n## How we know it worked\nRun the endpoint tests."
 	for _, test := range []struct {
 		name      string
+		lane      string
+		target    string
+		native    bool
 		body      string
 		exempt    bool
 		confirmed bool
@@ -27,6 +30,11 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 		restart   bool
 	}{
 		{name: "missing", blocked: true},
+		{name: "native Triage exempt", lane: "Triage", target: "Triage", native: true},
+		{name: "external active Triage", lane: "Triage", target: "Triage", blocked: true},
+		{name: "external active Triage scheduler preview", lane: "Triage", target: "Triage", blocked: true, preview: true},
+		{name: "Reporter promoted without engineering sections", body: "## Actual\nSaving fails.", blocked: true},
+		{name: "Reporter promoted with engineering sections", body: "## Actual\nSaving fails.\n" + complete, confirmed: true},
 		{name: "scheduler preview places the hold before claiming", blocked: true, preview: true},
 		{name: "configured failure lane recovers after restart", blocked: true, restart: true},
 		{name: "human owned", body: complete, confirmed: true},
@@ -41,6 +49,12 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			}
 			issue := connector.NewIssue()
 			issue.ID, issue.Identifier, issue.Title, issue.State = "issue", "prj_contract#1", "Fix endpoint", "Todo"
+			if test.lane != "" {
+				issue.State = test.lane
+			}
+			if test.native {
+				issue.Metadata["hub_profile"] = "native"
+			}
 			issue.Description = test.body
 			issue.IssueContract = &issuecontract.State{Exempt: test.exempt}
 			if test.confirmed {
@@ -50,6 +64,12 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			cfg := laneMutationTestConfig()
 			cfg.IssueContract = &contract
 			cfg.StopRunTargetState = "Blocked"
+			if test.target != "" {
+				cfg.AdmissionTargetState = test.target
+				if !test.native {
+					cfg.ActiveStates = append(cfg.ActiveStates, test.target)
+				}
+			}
 			if test.restart {
 				cfg.StopRunTargetState = "Needs criteria"
 				cfg.ObservedStates = append(cfg.ObservedStates, cfg.StopRunTargetState)
@@ -84,6 +104,15 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 				t.Fatalf("candidates = %v, blocked = %t", candidates, test.blocked)
 			}
 			if !test.blocked {
+				if test.native {
+					allowed, err := orch.enforceIssueContract(t.Context(), &state, issue, issue.State, now)
+					if err != nil || !allowed {
+						t.Fatalf("native Triage contract=%t, %v", allowed, err)
+					}
+				}
+				if len(state.Blocked) != 0 {
+					t.Fatalf("unexpected contract hold: %+v", state.Blocked)
+				}
 				return
 			}
 			blocked, found := state.Blocked[issue.ID]
@@ -96,7 +125,7 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			issue = blocked.Issue
 			issue.Description = complete
 			issue.Metadata["hub_profile"] = "native"
-			issue.Metadata["hub_disposition_return_state"] = "Todo"
+			issue.Metadata["hub_disposition_return_state"] = firstNonBlank(test.target, "Todo")
 			issue.StageUpdatedAt = &now
 			if test.restart {
 				state = newState(cfg)

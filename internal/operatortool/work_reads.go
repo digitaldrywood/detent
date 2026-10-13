@@ -122,7 +122,7 @@ func WorkReadCatalog() []Definition {
 	for _, spec := range []struct{ name, description, fields string }{
 		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), type (bug or change_request), created_by (principal ID or me for a human caller), archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open type state label states labels created_by assignee assignees priority priorities archived include cursor offset limit"},
 		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
-		{WorkConfig, "Read configured project lanes, priorities and available labels.", ""},
+		{WorkConfig, "Read configured project lanes, priorities, available labels and effective Reporter filing templates by issue type.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
 		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
 		{WorkPRComments, "Read a bounded page of the work item's linked PR discussion through the existing forge reader. The application selects the repository and PR; deployments without a PR discussion reader are unavailable.", "reference offset limit"},

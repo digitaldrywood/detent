@@ -26,6 +26,14 @@ func nativeIssueContract(ctx context.Context, q nativeQueryer, scope nativeScope
 	return config.ResolvePolicyIssueContract(approval.Policy)
 }
 
+func nativeReporterContracts(ctx context.Context, q nativeQueryer, scope nativeScope) (config.ReporterContracts, error) {
+	contract, err := nativeIssueContract(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	return config.ResolveReporterContracts(contract.Context)
+}
+
 func nativeContractIssue(issue tracker.NativeIssue) connector.Issue {
 	return connector.Issue{Title: issue.Title, Description: issue.Body, IssueContract: issue.IssueContract}
 }
@@ -57,7 +65,7 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" {
 		return true, "", nil
 	}
-	if issue.IssueContract.Exempt {
+	if strings.EqualFold(issue.State, "Triage") || issue.IssueContract.Exempt {
 		return true, "", nil
 	}
 	cfg, err := nativeIssueContractConfig(ctx, q, scope)
@@ -87,6 +95,9 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 }
 
 func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) error {
+	if strings.EqualFold(issue.State, "Triage") {
+		return nil
+	}
 	cfg, err := nativeIssueContractConfig(ctx, q, scope)
 	if err != nil {
 		return nil

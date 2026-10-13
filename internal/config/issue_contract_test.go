@@ -119,3 +119,29 @@ func TestScheduledRepairContract(t *testing.T) {
 		})
 	}
 }
+
+func TestReporterContracts(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, prompt string
+		want         ReporterContracts
+		invalid      bool
+	}{
+		{name: "defaults", want: ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}},
+		{name: "override", prompt: "## Reporter Contract\n### bug\n- **Reproduction** — steps\n- Outcome\n### change_request\n- Motivation\n## Other\n- Unrelated", want: ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}},
+		{name: "partial override", prompt: "## Reporter Contract\n### Change request\n- Motivation", want: ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Motivation"}}},
+		{name: "duplicate heading", prompt: "## Reporter Contract\n### bug\n- Result\n### bug\n- Evidence", invalid: true},
+		{name: "duplicate section", prompt: "## Reporter Contract\n### bug\n- Result\n- RESULT", invalid: true},
+		{name: "unknown type", prompt: "## Reporter Contract\n### question\n- Result", invalid: true},
+		{name: "empty type", prompt: "## Reporter Contract\n### bug\nNo sections.", invalid: true},
+		{name: "no types", prompt: "## Reporter Contract\n- Result", invalid: true},
+		{name: "duplicate contract", prompt: "## Reporter Contract\n### bug\n- Result\n## Reporter Contract\n### bug\n- Result", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ResolveReporterContracts(test.prompt)
+			if (err != nil) != test.invalid || !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("ResolveReporterContracts() = %v, %v; want %v, invalid %t", got, err, test.want, test.invalid)
+			}
+		})
+	}
+}
