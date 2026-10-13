@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,10 +12,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type operatorEntryOriginKey struct{}
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
@@ -61,11 +65,23 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 		}
 		claims, shared := hostedSharedClaims(c)
+		var entryOrigin string
+		if credential.EntryKey != nil && claims.Key != nil && len(claims.Key.CredentialBinding) == 64 && s.config.Hosted.SharedEntry.ResolveKey != nil {
+			encoded, err := json.Marshal(entryauthority.Origin{KeyID: claims.Key.ID, CredentialBinding: claims.Key.CredentialBinding, Subject: claims.Subject, Issuer: claims.Issuer, Generation: claims.Generation})
+			if err != nil {
+				return err
+			}
+			entryOrigin = string(encoded)
+		}
 		resolve := func(ctx context.Context) (apiCredential, error) {
 			current := credential
 			if credential.EntryKey != nil {
 				var err error
-				current, _, err = s.entryKeyCredential(ctx, claims)
+				if entryOrigin != "" {
+					current, err = s.currentEntryOriginCredential(ctx, entryOrigin)
+				} else {
+					current, _, err = s.entryKeyCredential(ctx, claims)
+				}
 				if err != nil {
 					return apiCredential{}, err
 				}
@@ -106,6 +122,10 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			return s.operatorCurrentAuthority(ctx, current, organization)
 		}}
 		ctx := operatortool.WithConnection(context.WithValue(c.Request().Context(), operatorCredentialKey{}, billingAuthorization(resolve)), connection)
+		if credential.EntryKey != nil {
+			ctx = context.WithValue(ctx, operatorEntryOriginKey{}, entryOrigin)
+		}
+
 		ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(ctx context.Context) (nativeScope, error) {
 			current, err := resolve(ctx)

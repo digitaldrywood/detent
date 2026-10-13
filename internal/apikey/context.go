@@ -37,10 +37,11 @@ func (p ProjectContext) Allows(project string) bool {
 
 type KeyAuthority struct {
 	ProjectContext
-	ID              string   `json:"id"`
-	Kind            string   `json:"kind"`
-	Permission      Scope    `json:"permission"`
-	BlockedProjects []string `json:"blocked_project_ids,omitempty"`
+	ID                string   `json:"id"`
+	CredentialBinding string   `json:"credential_binding,omitempty"`
+	Kind              string   `json:"kind"`
+	Permission        Scope    `json:"permission"`
+	BlockedProjects   []string `json:"blocked_project_ids,omitempty"`
 }
 
 func (k KeyAuthority) Valid() bool {

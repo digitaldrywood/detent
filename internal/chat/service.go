@@ -41,7 +41,7 @@ type Service struct {
 	mu           sync.Mutex
 	sessions     map[string]*session
 	store        SessionStore
-	resolve      func(context.Context, operatortool.Identity) (operatortool.Authority, error)
+	resolve      func(context.Context, operatortool.Identity, string) (operatortool.Authority, error)
 }
 
 type session struct {

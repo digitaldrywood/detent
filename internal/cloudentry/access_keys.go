@@ -2,7 +2,9 @@ package cloudentry
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,10 +120,19 @@ func (s *Service) activeAccessKey(ctx context.Context, hash string) (accessKey, 
 	if err != nil {
 		return k, err
 	}
-	if k.RevokedAt != nil || k.ExpiresAt != nil && !k.ExpiresAt.After(s.config.now()) || k.CreatedAt.After(s.config.now()) {
+	if !k.active(s.config.now()) {
 		return k, &apikey.Refusal{Code: "key_inactive", Message: "The key is expired or revoked"}
 	}
 	return k, nil
+}
+
+func (k accessKey) active(now time.Time) bool {
+	return k.RevokedAt == nil && (k.ExpiresAt == nil || k.ExpiresAt.After(now)) && !k.CreatedAt.After(now)
+}
+
+func (k accessKey) credentialBinding() string {
+	sum := sha256.Sum256([]byte("detent-entry-coordinator-credential-v1\x00" + k.Hash))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Service) keyMembership(ctx context.Context, owner string, organization Organization) (auth.Membership, error) {
@@ -184,7 +195,7 @@ func (s *Service) keyClaims(ctx context.Context, k accessKey, organization Organ
 	if blocked {
 		return cloudassert.Claims{}, &apikey.Refusal{Code: "organization_key_blocked", Message: "An organization administrator blocked this key"}
 	}
-	key := &apikey.KeyAuthority{ID: k.ID, Kind: k.Kind, Permission: k.Permission, ProjectContext: projects}
+	key := &apikey.KeyAuthority{ID: k.ID, CredentialBinding: k.credentialBinding(), Kind: k.Kind, Permission: k.Permission, ProjectContext: projects}
 	if blockedJSON != "" && json.Unmarshal([]byte(blockedJSON), &key.BlockedProjects) != nil {
 		return cloudassert.Claims{}, errors.New("stored project exclusions are invalid")
 	}
