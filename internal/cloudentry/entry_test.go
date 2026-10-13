@@ -43,6 +43,7 @@ type fakeProvider struct {
 	mu              sync.Mutex
 	users           map[string]string
 	sessions        map[string]auth.HostedIdentity
+	sessionErrors   map[string]error
 	memberships     map[string]auth.Membership
 	invitations     map[string]auth.Invitation
 	revokeErr       error
@@ -210,6 +211,9 @@ func (p *fakeProvider) CurrentSession(_ context.Context, identity auth.HostedIde
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.verifications++
+	if err := p.sessionErrors[identity.SessionID]; err != nil {
+		return auth.HostedIdentity{}, err
+	}
 	current, ok := p.sessions[identity.SessionID]
 	if !ok || current.Subject != identity.Subject || !current.CreatedAt.Equal(identity.CreatedAt) {
 		return auth.HostedIdentity{}, auth.ErrHostedIdentity

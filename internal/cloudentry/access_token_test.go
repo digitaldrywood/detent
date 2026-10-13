@@ -105,7 +105,7 @@ func TestSharedEntryAccountSessionValidity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				access, rotated, err := f.provider.RefreshAccess(t.Context(), tokens.RefreshToken)
+				access, rotated, err := f.provider.RefreshAccess(t.Context(), tokens.RefreshToken, authorized.Identity.OrganizationID)
 				if err != nil || access.SessionID != authorized.Identity.SessionID {
 					t.Fatalf("carried session cannot refresh: %+v, %v", access, err)
 				}
@@ -251,6 +251,31 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			}
 			if f.provider.refreshes != 0 {
 				t.Fatalf("refreshes = %d, want 0 for an ended session", f.provider.refreshes)
+			}
+		}},
+		{"carried session provider outage preserves authorization", func(t *testing.T, f entryFixture, alice *browser) {
+			organizationSession := f.provider.lastSession
+			alice.login("/auth/oidc/start", "user_alice:")
+			clock := time.Now().Add(providerSessionRecheck)
+			f.service.config.now = func() time.Time { return clock }
+			f.provider.mu.Lock()
+			f.provider.sessionErrors = map[string]error{organizationSession: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable}}
+			f.provider.mu.Unlock()
+			for _, path := range []string{target, "/organizations/org_alpha/organization"} {
+				response, _ := alice.get(path)
+				if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Location") != "" || len(response.Header.Values("Set-Cookie")) != 0 {
+					t.Fatalf("carried session outage %s = %d %v, want 503 without redirect or cookies", path, response.StatusCode, response.Header)
+				}
+			}
+			if response, _ := alice.get("/api/cloud/session"); response.StatusCode != http.StatusOK {
+				t.Fatalf("active account during org session outage = %d, want 200", response.StatusCode)
+			}
+			f.provider.mu.Lock()
+			f.provider.sessionErrors = nil
+			f.provider.mu.Unlock()
+			f.service.config.now = time.Now
+			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
+				t.Fatalf("carried session after provider recovery = %d, want 200", response.StatusCode)
 			}
 		}},
 		{"removed member is refused at the next refresh", func(t *testing.T, f entryFixture, alice *browser) {
@@ -436,12 +461,14 @@ func TestSharedEntrySessionRecheckAgreement(t *testing.T) {
 		advance  time.Duration
 		method   string
 		shorten  bool
+		outage   bool
 		wantCode int
 	}{
-		{"cached revocation", providerSessionRecheck - time.Second, http.MethodGet, false, http.StatusOK},
-		{"rechecked revocation", providerSessionRecheck, http.MethodGet, false, http.StatusUnauthorized},
-		{"mutation rechecks revocation", 0, http.MethodPost, false, http.StatusUnauthorized},
-		{"shortened expiry ends cached access", 2 * time.Second, http.MethodGet, true, http.StatusUnauthorized},
+		{"cached revocation", providerSessionRecheck - time.Second, http.MethodGet, false, false, http.StatusOK},
+		{"rechecked revocation", providerSessionRecheck, http.MethodGet, false, false, http.StatusUnauthorized},
+		{"mutation rechecks revocation", 0, http.MethodPost, false, false, http.StatusUnauthorized},
+		{"shortened expiry ends cached access", 2 * time.Second, http.MethodGet, true, false, http.StatusUnauthorized},
+		{"provider outage denies access without signing out", providerSessionRecheck, http.MethodGet, false, true, http.StatusServiceUnavailable},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -461,7 +488,11 @@ func TestSharedEntrySessionRecheckAgreement(t *testing.T) {
 			if response, _ := alice.get("/api/cloud/session"); response.StatusCode != http.StatusOK {
 				t.Fatalf("initial account check = %d", response.StatusCode)
 			}
-			if !test.shorten {
+			if test.outage {
+				f.provider.mu.Lock()
+				f.provider.sessionErrors = map[string]error{f.provider.lastSession: &auth.HostedIdentityError{Reason: auth.HostedReasonProviderUnavailable}}
+				f.provider.mu.Unlock()
+			} else if !test.shorten {
 				f.provider.endSessions("user_alice")
 			}
 			clock = clock.Add(test.advance)
@@ -477,11 +508,35 @@ func TestSharedEntrySessionRecheckAgreement(t *testing.T) {
 				t.Fatal(err)
 			}
 			var claims cloudassert.Claims
-			if status, _, err := f.service.browserClaims(c, organization, &claims); status != test.wantCode || (err == nil) != (test.wantCode == http.StatusOK) {
+			status, _, err := f.service.browserClaims(c, organization, &claims)
+			if status != test.wantCode || (err == nil) != (test.wantCode == http.StatusOK) {
 				t.Fatalf("proxy session check = %d, %v", status, err)
+			}
+			if test.outage && (auth.HostedIdentityReason(err) != auth.HostedReasonProviderUnavailable || errors.Is(err, errNoSession)) {
+				t.Fatalf("provider outage classification = %v", err)
+			}
+			if test.wantCode != http.StatusOK && claims.Subject != "" {
+				t.Fatalf("failed session check issued browser claims: %+v", claims)
 			}
 			if response, _ := alice.get("/api/cloud/session"); response.StatusCode != test.wantCode {
 				t.Fatalf("entry session check = %d, want %d", response.StatusCode, test.wantCode)
+			}
+			if test.outage {
+				for _, path := range []string{"/api/cloud/session", "/api/cloud/organizations", "/organizations", "/api/v2/organizations/org_alpha/usage", "/organizations/org_alpha/organization"} {
+					response, _ := alice.get(path)
+					if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Location") != "" || len(response.Header.Values("Set-Cookie")) != 0 {
+						t.Fatalf("session outage %s = %d %v, want 503 without redirect or cookies", path, response.StatusCode, response.Header)
+					}
+				}
+				f.provider.mu.Lock()
+				f.provider.sessionErrors = nil
+				f.provider.mu.Unlock()
+				clock = time.Now()
+				for _, path := range []string{"/api/cloud/session", "/api/v2/organizations/org_alpha/usage"} {
+					if response, _ := alice.get(path); response.StatusCode != http.StatusOK {
+						t.Fatalf("session after provider recovery %s = %d, want 200", path, response.StatusCode)
+					}
+				}
 			}
 		})
 	}

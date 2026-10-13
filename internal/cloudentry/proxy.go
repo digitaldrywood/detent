@@ -125,6 +125,9 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 	ctx := c.Request().Context()
 	session, err := s.session(c)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return http.StatusServiceUnavailable, "", err
+		}
 		return http.StatusUnauthorized, "", err
 	}
 	method := c.Request().Method
@@ -150,6 +153,9 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 		cacheable := s.platformRole(ctx, session.Email) == "" && !authorized.Support
 		current, err := s.verifySession(c, authorized.Binding, authorized.Identity, cacheable)
 		if err != nil {
+			if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+				return http.StatusServiceUnavailable, "", err
+			}
 			return http.StatusUnauthorized, "", err
 		}
 		authorized.Identity = current

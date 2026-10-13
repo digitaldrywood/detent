@@ -392,6 +392,9 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 func (s *Service) chooser(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return s.refuse(c, http.StatusServiceUnavailable, "unavailable", "Service is temporarily unavailable")
+		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
 	}
 	if served, err := s.clientShell(c); served || err != nil {
@@ -423,6 +426,9 @@ func (s *Service) chooser(c echo.Context) error {
 func (s *Service) sessionJSON(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
+		}
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
 	account, err := s.accountContextFor(c.Request().Context(), session)
@@ -443,6 +449,9 @@ func (s *Service) sessionJSON(c echo.Context) error {
 func (s *Service) organizationsJSON(c echo.Context) error {
 	session, err := s.session(c)
 	if err != nil {
+		if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+			return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
+		}
 		return c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
 	}
 	choices, err := s.organizationChoices(c.Request().Context(), session)

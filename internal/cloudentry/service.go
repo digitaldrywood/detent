@@ -432,6 +432,9 @@ func (s *Service) verifySession(c echo.Context, key string, identity auth.Hosted
 			reason = auth.HostedReasonSessionInvalid
 		}
 		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
+		if reason == auth.HostedReasonProviderUnavailable {
+			return auth.HostedIdentity{}, err
+		}
 		return auth.HostedIdentity{}, errNoSession
 	}
 	if current.ExpiresAt.Before(identity.ExpiresAt) {
