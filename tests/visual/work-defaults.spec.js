@@ -22,7 +22,7 @@ async function openWork(page, route, instance = hub) {
   await expect(page.getByTestId("stat-completed")).toBeVisible();
 }
 
-const active = ["Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review", "Triage"];
+const active = ["Triage", "Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review"];
 
 for (const scope of ["all", "project"]) {
   test(`${scope} board shows only active lanes with a persisted Backlog rail`, async ({ page }) => {
@@ -55,7 +55,7 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("lane-body-Backlog")).toHaveCount(0);
     await expect(page.getByTestId("lane-count-Backlog")).toHaveText(String(130 * copies));
     await expect(page.getByTestId("lane-collapse-Backlog")).toHaveAttribute("aria-expanded", "false");
-    for (const lane of active.slice(1)) {
+    for (const lane of active.filter((lane) => lane !== "Backlog")) {
       await expect(page.getByTestId(`lane-collapse-${lane}`)).toHaveAttribute("aria-expanded", "true");
     }
     await expect(page.locator('[data-testid="board-lane"][data-terminal="true"]')).toHaveCount(0);
