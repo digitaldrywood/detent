@@ -31,7 +31,7 @@ import {
 } from "../settings/settingsLayout.tsx";
 import { behindSharedEntry, useSharedOrganizations } from "../entry/shared.ts";
 import { makeEntryApi, type EntrySession } from "../entry/api.ts";
-import { type MembersResponse } from "../../contracts/account.ts";
+import { useOrganizationMembers } from "./OrganizationMembers.tsx";
 import { signInPath } from "../../runtime/basePath.ts";
 import { AccountError } from "./api.ts";
 import { ControlError } from "./controls.tsx";
@@ -79,6 +79,7 @@ function CreateOrganizationDialog({
   const [price, setPrice] = React.useState("");
   const key = React.useMemo(() => newKey(), []);
   const used = session.value?.free_slot_used === true;
+  const canCreate = shared && session.value?.can_create === true;
   const create = useMutation(async () => {
     try {
       const result = shared
@@ -110,6 +111,7 @@ function CreateOrganizationDialog({
             onSubmit={(event) => {
               event.preventDefault();
               if (
+                canCreate &&
                 !create.pending &&
                 name.trim() &&
                 (!used || price) &&
@@ -199,6 +201,7 @@ function CreateOrganizationDialog({
               create.pending ||
               session.loading ||
               session.error !== null ||
+              !canCreate ||
               !name.trim() ||
               (used && !price)
             }
@@ -215,7 +218,14 @@ export function OrganizationOverviewRoute(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
   const navigate = useNavigate();
-  const members = useResource<MembersResponse>(() => api.members(), [api]);
+  const members = useOrganizationMembers();
+  const entry = React.useMemo(() => makeEntryApi(), []);
+  const sharedEntry = behindSharedEntry();
+  const creation = useResource<EntrySession | null>(
+    () => (sharedEntry ? entry.session() : Promise.resolve(null)),
+    [entry, sharedEntry],
+  );
+  const canCreate = sharedEntry && creation.value?.can_create === true;
   const sharedListing = useSharedOrganizations();
   const shared = sharedListing.error ? [] : sharedListing.value;
   const organizations = shared ?? bootstrap?.organizations ?? [];
@@ -224,8 +234,9 @@ export function OrganizationOverviewRoute(): React.ReactElement {
   const [creating, setCreating] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [copyError, setCopyError] = React.useState<string | null>(null);
+  const renameKey = React.useMemo(() => newKey(), [name]);
   const rename = useMutation(async () => {
-    await api.renameOrganization(name.trim());
+    await api.renameOrganization({ name: name.trim(), key: renameKey });
     globalThis.location.reload();
   });
   const switchTo = useMutation(async (id: string) => {
@@ -425,23 +436,27 @@ export function OrganizationOverviewRoute(): React.ReactElement {
             }
           />
         ))}
-        <SettingsRow
-          title="New organization"
-          description="Its own projects, runners and plan. You sign in again to switch into it."
-          control={
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setCreating(true)}
-            >
-              <PlusIcon />
-              Create organization
-            </Button>
-          }
+        {canCreate ? (
+          <SettingsRow
+            title="New organization"
+            description="Its own projects, runners and plan. You sign in again to switch into it."
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCreating(true)}
+              >
+                <PlusIcon />
+                Create organization
+              </Button>
+            }
+          />
+        ) : null}
+        <ControlError
+          message={creation.error?.message ?? sharedListing.error?.message ?? switchTo.error?.message ?? null}
         />
-        <ControlError message={sharedListing.error?.message ?? switchTo.error?.message ?? null} />
       </SettingsSection>
-      {creating ? (
+      {creating && canCreate ? (
         <CreateOrganizationDialog onClose={() => setCreating(false)} />
       ) : null}
     </SettingsPageContainer>

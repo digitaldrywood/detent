@@ -586,24 +586,32 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 		if err := json.Unmarshal([]byte(response.Body), &bootstrap); err != nil {
 			t.Fatal(err)
 		}
-		request := httptest.NewRequest(http.MethodPut, testPublicURL+"/api/v2/organizations/"+organization+"/name", strings.NewReader(`{"name":"Renamed `+organization+`"}`))
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Origin", testPublicURL)
-		request.Header.Set("X-CSRF-Token", bootstrap.CSRF)
-		for _, cookie := range alice.jar.Cookies(base) {
-			request.AddCookie(cookie)
-		}
-		recorder := httptest.NewRecorder()
-		f.service.Handler().ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("rename status = %d: %s", recorder.Code, recorder.Body.String())
-		}
-		updated, err := f.service.registry.Organization(t.Context(), organization)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if updated.Name != "Renamed "+organization {
-			t.Fatalf("chooser organization name = %q", updated.Name)
+		for _, rename := range []struct {
+			name, key, current string
+		}{
+			{"Renamed " + organization, "rename-" + organization, "Renamed " + organization},
+			{"Latest " + organization, "later-" + organization, "Latest " + organization},
+			{"Renamed " + organization, "rename-" + organization, "Latest " + organization},
+		} {
+			request := httptest.NewRequest(http.MethodPut, testPublicURL+"/api/v2/organizations/"+organization+"/name", strings.NewReader(`{"name":"`+rename.name+`","idempotency_key":"`+rename.key+`"}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Origin", testPublicURL)
+			request.Header.Set("X-CSRF-Token", bootstrap.CSRF)
+			for _, cookie := range alice.jar.Cookies(base) {
+				request.AddCookie(cookie)
+			}
+			recorder := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("rename status = %d: %s", recorder.Code, recorder.Body.String())
+			}
+			updated, err := f.service.registry.Organization(t.Context(), organization)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Name != rename.current {
+				t.Fatalf("chooser organization name = %q, want %q", updated.Name, rename.current)
+			}
 		}
 	}
 	alphaCSRF, betaCSRF := csrfFrom(t, alphaPage), csrfFrom(t, betaPage)

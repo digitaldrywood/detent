@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
 import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
 import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
+import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
 import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
@@ -160,16 +161,16 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
   const navigated: string[] = [];
   const root = createRootRoute({ component: served ? () => {
     const current = useLocation({ select: (location) => location.pathname });
-    return <SidebarProvider><SettingsSidebarNav pathname={current} /><Outlet /></SidebarProvider>;
+    return <OrganizationMembersProvider><SidebarProvider><SettingsSidebarNav pathname={current} /><Outlet /></SidebarProvider></OrganizationMembersProvider>;
   } : undefined });
   const section = createRoute({
     getParentRoute: () => root,
     path: "/settings/$section",
     component: () => (
-      <SidebarProvider>
+      <OrganizationMembersProvider><SidebarProvider>
         <SettingsSidebarNav pathname={pathname} />
         {content}
-      </SidebarProvider>
+      </SidebarProvider></OrganizationMembersProvider>
     ),
   });
   const router = createRouter({
@@ -1053,20 +1054,24 @@ describe("organization settings pages", () => {
     { id: "org_second", name: "Second team", public_url: "", current: false, role: "member" },
   ] };
   const client = { ...OWNER_ACCOUNT, account, bootstrap: account };
-  function stubOrganizationApi() {
+  function stubOrganizationApi(options: { canCreate?: boolean; dialogCanCreate?: boolean; sessionError?: boolean; renameRetry?: boolean; removableMember?: boolean; freeSlotUsed?: boolean } = {}) {
+    let sessionReads = 0;
+    let renameAttempts = 0;
+    let removed = false;
     const reload = vi.fn();
     const assign = vi.fn();
     vi.stubGlobal("location", { reload, assign });
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
-      if (input.endsWith("/members")) return Response.json({ member_count: 3, members: [], invitations: [] });
+      if (input.endsWith("/members")) return Response.json({ member_count: removed ? 2 : 3, members: options.removableMember && !removed ? [{ id: "mem_example", user_id: "user_example", email: "member@example.test", role: "member", status: "active", grants: [] }] : [], invitations: [] });
+      if (input.endsWith("/members/mem_example") && init?.method === "DELETE") { removed = true; return Response.json({}); }
       if (input.endsWith("/slug")) return Response.json({ slug: "example-team" });
       if (input.endsWith("/model-selection")) return Response.json({ revision: "1", selection: null, effective: { enabled: true, normal_model: "gpt-6.1-sol" } });
-      if (input.endsWith("/name")) return Response.json({ name: "Renamed team" });
+      if (input.endsWith("/name")) { renameAttempts++; return options.renameRetry && renameAttempts === 1 ? Response.json({ code: "unavailable", message: "Try again" }, { status: 503 }) : Response.json({ name: "Renamed team" }); }
       if (input.endsWith("/switch")) return Response.json({ next: "/auth/oidc/start?organization=org_second" });
       if (input.endsWith("/api/v2/organizations") && init?.method === "POST") return Response.json({ organization: { id: "org_new", name: "New team", public_url: "" }, next: "/auth/oidc/start?organization=org_new" });
-      if (input === "/api/cloud/session") return Response.json({ email: "owner@example.test", csrf: "entry-csrf", free_slot_used: true, creation_prices: [{ id: "price_team", label: "Team" }] });
+      if (input === "/api/cloud/session") { sessionReads++; return options.sessionError ? Response.json({ message: "Eligibility unavailable" }, { status: 503 }) : Response.json({ email: "owner@example.test", csrf: "entry-csrf", can_create: sessionReads > 1 ? options.dialogCanCreate ?? options.canCreate ?? true : options.canCreate ?? true, free_slot_used: options.freeSlotUsed ?? true, creation_prices: [{ id: "price_team", label: "Team" }] }); }
       if (input === "/api/cloud/organizations") return Response.json({ email: "owner@example.test", csrf: "entry-csrf", organizations: account.organizations.map((item) => ({ ...item, url: `/organizations/${item.id}` })) });
       if (input === "/organizations" && init?.method === "POST") return Response.json({ next: "/organizations/org_new/provisioning" });
       throw new Error(`Unexpected organization request: ${input}`);
@@ -1091,21 +1096,34 @@ describe("organization settings pages", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Organization name" }), { target: { value: " Renamed team " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
-    expect(fetcher.mock.calls.find(([url]) => url.endsWith("/name"))?.[1]).toMatchObject({ method: "PUT", body: JSON.stringify({ name: "Renamed team" }) });
+    const savedName = fetcher.mock.calls.find(([url]) => url.endsWith("/name"))?.[1];
+    expect(savedName?.method).toBe("PUT");
+    expect(JSON.parse(savedName!.body as string)).toMatchObject({ name: "Renamed team", idempotency_key: expect.any(String) });
     fireEvent.click(screen.getByRole("button", { name: "Switch to Second team" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_second"));
   });
 
   it("creates only through the dialog and preserves re-sign-in", async () => {
-    const { assign, fetcher } = stubOrganizationApi();
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { assign, fetcher } = stubOrganizationApi({ freeSlotUsed: false });
     renderSidebarNav("/settings/organization", client, null, true);
     fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
     await waitFor(() => expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(within(dialog).getByRole("button", { name: "Create organization" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_new"));
-    expect(JSON.parse(fetcher.mock.calls.find(([url]) => url.endsWith("/api/v2/organizations"))![1]!.body as string)).toMatchObject({ name: "New team" });
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
+    expect(new URLSearchParams(String(fetcher.mock.calls.find(([url]) => url === "/organizations")![1]!.body)).get("name")).toBe("New team");
+  });
+
+  it("hides bootstrap-only creation in a provisioned dedicated organization", async () => {
+    const { fetcher } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    await screen.findByText("You are the owner · 3 members · 2 projects");
+    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByText("New organization")).toBeNull();
+    expect(fetcher.mock.calls.some(([url]) => url === "/api/cloud/session" || url === "/api/v2/organizations")).toBe(false);
+    expect(screen.getByRole("button", { name: "Switch to Second team" })).toBeTruthy();
   });
 
   it("requires a paid plan when the shared owner's Free slot is used", async () => {
@@ -1122,6 +1140,57 @@ describe("organization settings pages", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Create organization" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
     expect(String(fetcher.mock.calls.find(([url]) => url === "/organizations")![1]!.body)).toContain("price=price_team");
+  });
+
+  it.each([{ canCreate: false }, { sessionError: true }])("hides shared creation when eligibility is unavailable: %o", async (options) => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { fetcher } = stubOrganizationApi(options);
+    renderSidebarNav("/settings/organization", client, null, true);
+    await screen.findByRole("button", { name: "Switch to Second team" });
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url === "/api/cloud/session")).toBe(true));
+    if (options.sessionError) await screen.findByText("Eligibility unavailable");
+    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByText("New organization")).toBeNull();
+  });
+
+  it("refuses creation if eligibility changes while opening the dialog", async () => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { fetcher, assign } = stubOrganizationApi({ dialogCanCreate: false, freeSlotUsed: false });
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/cloud/session")).toHaveLength(2));
+    expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(within(dialog).getByRole("textbox", { name: "Organization name" }).closest("form")!);
+    expect(fetcher.mock.calls.some(([url]) => url === "/organizations")).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("reuses the rename key after a failed request", async () => {
+    const { fetcher, reload } = stubOrganizationApi({ renameRetry: true });
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Organization name" }), { target: { value: "Renamed team" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Try again");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    const requests = fetcher.mock.calls.filter(([url]) => url.endsWith("/name"));
+    expect(requests).toHaveLength(2);
+    expect(requests[1]![1]!.body).toBe(requests[0]![1]!.body);
+  });
+
+  it("refreshes sidebar and Overview counts after removing a member", async () => {
+    stubOrganizationApi({ removableMember: true });
+    const { router } = renderSidebarNav("/settings/organization/members", client, null, true);
+    await screen.findByRole("button", { name: "Members 3 members" });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await screen.findByRole("button", { name: "Members 2 members" });
+    expect(screen.queryByText("member@example.test")).toBeNull();
+    await router.navigate({ to: "/settings/organization" });
+    await screen.findByText("You are the owner · 2 members · 2 projects");
   });
 
   it.each(["member", "viewer"])("keeps %s views read-only", async (role) => {
