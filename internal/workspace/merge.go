@@ -445,7 +445,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
-	result.Evidence = validationEnvironment(ctx, cmd)
+	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
+	if !result.Evidence.Environment.Known() {
+		result.Evidence = validationEnvironment(ctx, cmd)
+	}
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
 	result.StartedAt = started.UTC()
@@ -472,7 +475,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 
 func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
 	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
-	probe := exec.CommandContext(ctx, "go", "env", "-json", "GOHOSTOS", "GOHOSTARCH", "GOVERSION")
+	probe := exec.CommandContext(ctx, "go", "env", "-json")
 	probe.Dir, probe.Env = command.Dir, command.Env
 	probe.WaitDelay = workspaceCommandWaitDelay
 	var observed struct {
@@ -485,6 +488,7 @@ func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.Command
 		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
 		if environment.Valid() {
 			evidence.Environment = environment
+			evidence.InputsSHA = validationInputs(command, output)
 		}
 	}
 	return evidence
