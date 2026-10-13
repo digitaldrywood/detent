@@ -34,8 +34,6 @@ Run `make check-land` before reporting source work complete, fix failures in the
 same run, and report its printed wall time. It uses the scheduled lint version
 and configuration, vet and baseline-aware NilAway, `go build ./...`,
 `go test -short ./...`, invariants, migration and generated-source checks.
-Affected browser journeys run for UI changes; shared UI infrastructure widens
-that selection to the full browser suite.
 Conversation typecheck, vitest and build run when `web/conversation` differs
 from the merge base with `origin/develop`, including staged, unstaged and
 untracked changes. Set `CHECK_LAND_BASE` to the actual landing base when it
@@ -59,8 +57,10 @@ its output. Full browser, race, repository-wide NilAway and integration checks
 stay in the scheduled suite and never hold landing. The host also uses the
 approved short command during source finalization, so its durable receipt proves
 that command. The full source gate remains the worker's completion requirement.
-Affected browser checks run before landing; interactions introduced by combining
-UI changes remain a risk covered by the scheduled full suite.
+Browser journeys run in the scheduled full suite. For an explicit focused
+diagnostic, run `bash scripts/check-browser.sh "$TEST_PROCS" false tests/visual/<journey>.spec.js`;
+use `true` when the current conversation assets
+are already prepared.
 Focused diagnostics and full scheduled
 suites do not publish a required local commit status. The
 scheduled suite validates pinned develop commits and release branch heads;
