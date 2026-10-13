@@ -207,6 +207,7 @@ func TestOperatorMutationRefusalPrecedence(t *testing.T) {
 		{"work", safeNativeWorkError},
 		{"Change", hubSafeChangeError},
 		{"project", projectToolError},
+		{"workspace", safeWorkspaceError},
 	} {
 		for _, test := range []struct {
 			name      string
@@ -215,6 +216,7 @@ func TestOperatorMutationRefusalPrecedence(t *testing.T) {
 			{"uncertain outcome", errors.Join(mutation.ErrUncertain, limit), mutation.ErrUncertain},
 			{"access denied", errors.Join(operatortool.ErrAccessDenied, limit), operatortool.ErrAccessDenied},
 			{"native access denied", errors.Join(&nativeError{Code: "access_denied", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
+			{"denied revision", errors.Join(&nativeError{Code: "revision_conflict", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
 		} {
 			t.Run(projection.name+"/"+test.name, func(t *testing.T) {
 				projected := projection.project(test.err)

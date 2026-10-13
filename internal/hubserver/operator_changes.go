@@ -228,23 +228,27 @@ func hubSafeChangeError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}
+	var failure *nativeError
+	if errors.As(err, &failure) && (failure.status == http.StatusNotFound || failure.status == http.StatusForbidden || failure.status == http.StatusUnauthorized) {
+		return operatortool.ErrAccessDenied
+	}
 	if errors.Is(err, mutation.ErrConflict) || isNativeConflict(err) {
 		return mutation.ErrConflict
 	}
 	if errors.Is(err, mutation.ErrUncertain) {
 		return mutation.ErrUncertain
 	}
-	var failure *nativeError
 	if errors.As(err, &failure) {
-		if failure.status == 404 || failure.status == 403 || failure.status == 401 {
-			return operatortool.ErrAccessDenied
-		}
 		if failure.Code == "idempotency_conflict" {
 			return mutation.ErrConflict
 		}
 		if failure.Code == "policy_mismatch" {
 			return &operatortool.ConflictError{Code: failure.Code, Message: "Inspect get_project_policy and refresh the approved policy inputs before submitting this operation"}
 		}
+	}
+	var allowance *operatortool.AllowanceError
+	if errors.As(err, &allowance) {
+		return allowance
 	}
 	var limit *hostedLimitError
 	if errors.As(err, &limit) {

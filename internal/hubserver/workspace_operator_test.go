@@ -677,20 +677,21 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 // internal errors, even when discovery is bypassed.
 func TestWorkspaceOperatorUnavailable(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		err  error
-		want string
+		name    string
+		err     error
+		want    string
+		wantErr error
 	}{
-		{"revision projection", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`},
-		{"stale projection", &nativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`},
-		{"internal", errors.New("credential-secret"), ""},
-		{"unrelated conflict", &nativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusConflict}, ""},
-		{"denied revision", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusForbidden}, ""},
+		{"revision projection", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`, nil},
+		{"stale projection", &nativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`, nil},
+		{"internal", errors.New("credential-secret"), "", errWorkspaceOperationUnavailable},
+		{"unrelated conflict", &nativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusConflict}, "", errWorkspaceOperationUnavailable},
+		{"denied revision", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusForbidden}, "", operatortool.ErrAccessDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := safeWorkspaceError(test.err)
 			if test.want == "" {
-				if !errors.Is(err, errWorkspaceOperationUnavailable) {
+				if !errors.Is(err, test.wantErr) {
 					t.Fatalf("unsafe projection=%v", err)
 				}
 				return

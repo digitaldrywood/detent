@@ -225,13 +225,15 @@ func TestHostedProjectTools(t *testing.T) {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
 			var shared hostedSharedFixture
+			configure := func(cfg *Config) { cfg.Workspace = &WorkspaceConfig{Enabled: true} }
 			if deployment == "shared" {
-				shared = newHostedSharedFixture(t)
+				shared = newHostedSharedFixture(t, configure)
 				f = shared.hostedSecurityFixture
 			} else {
-				f = newHostedSecurityFixture(t)
+				f = newHostedSecurityFixture(t, configure)
 			}
 			owner := f.user(t, "owner-tools", "owner", "owner-tools@example.test", "write", "")
+			f.grant(t, owner, true, true)
 			viewer := f.user(t, "quota-viewer", "member", "quota-viewer@example.test", "read", "")
 			captureds := make(chan context.Context, 1)
 			f.service.echo.GET("/operator-project-test", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
@@ -372,6 +374,8 @@ func TestHostedProjectTools(t *testing.T) {
 						}{
 							{operatortool.AddComment, "collaboration_bytes", comment},
 							{"approve_project_policy", "api_mutations", approvalArguments},
+							{"create_workspace", "api_mutations", map[string]any{"project_id": id, "request_id": "quota-workspace-" + transport, "input": map[string]any{"work_item_id": issue.WorkItemID}}},
+							{"create_project_action", "api_mutations", map[string]any{"project_id": id, "request_id": "quota-action-" + transport, "input": map[string]any{"name": "Refused action", "command": "true"}}},
 						} {
 							t.Run(test.name, func(t *testing.T) {
 								consumption := usage.Allowances[test.resource] + 1
@@ -419,6 +423,12 @@ func TestHostedProjectTools(t *testing.T) {
 				var comments int
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&comments); err != nil || comments != 0 {
 					t.Fatalf("refused comment effects=%d err=%v", comments, err)
+				}
+				for _, table := range []string{"workspace_sessions", "project_actions"} {
+					var effects int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE project_id=?", f.project).Scan(&effects); err != nil || effects != 0 {
+						t.Fatalf("refused %s effects=%d err=%v", table, effects, err)
+					}
 				}
 				var receipts int
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key IN ('quota-comment','quota-approve-stdio','quota-approve-http')").Scan(&receipts); err != nil || receipts != 0 {
