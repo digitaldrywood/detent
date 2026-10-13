@@ -167,13 +167,25 @@ esac
 			if err != nil || len(manifest.Checks) != 1 || manifest.Checks[0].CheckRunID != 101 {
 				t.Fatalf("provenance = %+v, %v", manifest, err)
 			}
-			replayed, err := generate(commit, "v9.9.9", runNumber)
-			if err != nil || replayed != output {
-				t.Fatalf("replay = %q, %v, want %q", replayed, err, output)
-			}
-			replayedMessage, err := os.ReadFile(messagePath)
-			if err != nil || string(replayedMessage) != string(message) {
-				t.Fatalf("replay replaced immutable provenance: %v", err)
+			for _, retry := range []struct {
+				latest  string
+				refused bool
+			}{
+				{latest: latest},
+				{latest: stable, refused: true},
+				{latest: "v0.121.99", refused: true},
+				{latest: "v0.122.0", refused: true},
+				{latest: "v1.0.0", refused: true},
+				{latest: "v9.9.9", refused: true},
+			} {
+				replayed, err := generate(commit, retry.latest, runNumber)
+				if (err != nil) != retry.refused || !retry.refused && replayed != output {
+					t.Fatalf("replay with stable %s = %q, %v, refused=%t", retry.latest, replayed, err, retry.refused)
+				}
+				replayedMessage, err := os.ReadFile(messagePath)
+				if err != nil || string(replayedMessage) != string(message) {
+					t.Fatalf("replay replaced immutable provenance: %v", err)
+				}
 			}
 		})
 	}

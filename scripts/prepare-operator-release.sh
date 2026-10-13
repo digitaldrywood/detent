@@ -9,7 +9,10 @@ run_number="${5:?release workflow run number required}"
 scratch="${TMPDIR:-${TMP:-${TEMP:?operator release requires provided scratch}}}"
 [[ "$commit" =~ ^[a-f0-9]{40}$ ]]
 [[ "$latest" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-tag="v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-op.r.${run_number}.g${commit:0:12}"
+stable_major="${BASH_REMATCH[1]}"
+stable_minor="${BASH_REMATCH[2]}"
+stable_patch="${BASH_REMATCH[3]}"
+tag="v${stable_major}.${stable_minor}.$((stable_patch + 1))-op.r.${run_number}.g${commit:0:12}"
 [[ "$run_number" =~ ^[1-9][0-9]*$ ]]
 [[ "$check_id" =~ ^[1-9][0-9]*$ ]]
 test "$(git rev-parse HEAD)" = "$commit"
@@ -17,6 +20,12 @@ git merge-base --is-ancestor "$commit" origin/develop
 existing="$(git tag --list "v*-op.r.${run_number}.g*")"
 if [ -n "$existing" ]; then
   [[ "$existing" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-op\.r\.${run_number}\.g${commit:0:12}$ ]]
+  if ! (( BASH_REMATCH[1] > stable_major ||
+          BASH_REMATCH[1] == stable_major && BASH_REMATCH[2] > stable_minor ||
+          BASH_REMATCH[1] == stable_major && BASH_REMATCH[2] == stable_minor && BASH_REMATCH[3] > stable_patch )); then
+    printf '%s\n' 'operator release was superseded by the latest stable release' >&2
+    exit 1
+  fi
   tag="$existing"
 fi
 
