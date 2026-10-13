@@ -263,6 +263,9 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
+		if c.Get("readable_url") == true {
+			return readableNotFound(c)
+		}
 		if pending, lookupErr := s.registry.Organization(ctx, c.Param("organization")); lookupErr == nil && pending.Managed && (pending.State == "requested" || pending.State == "allocating" || pending.State == "failed") && request.Method == http.MethodGet && !strings.HasPrefix(request.URL.Path, "/api/") {
 			return c.Redirect(http.StatusSeeOther, "/organizations/"+pending.ID+"/provisioning")
 		}

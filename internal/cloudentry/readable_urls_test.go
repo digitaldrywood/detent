@@ -132,4 +132,23 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	if issue.WebURL != testPublicURL+"/second-name/alpha-secret-project/issues/1" {
 		t.Fatalf("edited URL=%q", issue.WebURL)
 	}
+	for _, state := range []string{"requested", "allocating", "failed", "disabled", "deleting", "deleted"} {
+		t.Run(state, func(t *testing.T) {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state=?,managed=1 WHERE id=?", state, "org_alpha"); err != nil {
+				t.Fatal(err)
+			}
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				missing := anonymous.do(method, "/missing/secret-project/issues/1", nil, nil)
+				for _, visitor := range []struct {
+					name    string
+					browser *browser
+				}{{"anonymous", anonymous}, {"member", alice}} {
+					response := visitor.browser.do(method, "/second-name/alpha-secret-project/issues/1", nil, nil)
+					if response.StatusCode != http.StatusNotFound || response.Body != missing.Body || response.Header.Get("Location") != "" || response.Header.Get("Content-Type") != missing.Header.Get("Content-Type") {
+						t.Errorf("%s %s response=%+v missing=%+v", visitor.name, method, response, missing)
+					}
+				}
+			}
+		})
+	}
 }
