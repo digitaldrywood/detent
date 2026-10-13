@@ -190,7 +190,13 @@ On a release branch, the finalizer verifies the validated SHA is still the branc
 an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
 and dispatches the existing release workflow. Green develop commits select
 future cuts but do not publish stable tags. Cuts are weekly by default or
-operator-dispatched. Automatic selection uses the newest green develop ancestor
+operator-dispatched. Automatic cuts proceed only when no cut, release
+validation, signed build or deployment is active and
+no successful production deployment and smoke completed within one cadence
+derived from the cut workflow's UTC cron. Explicit manual SHA cuts remain
+available within that window. Actions history owns admission; API failures are
+errors, and inactive branches alone do not defer newer uncovered source.
+Automatic source selection uses the newest green develop ancestor
 not already covered by a release series or stable tag, or unreleased develop tip
 if none exists; it succeeds without cutting when develop is already covered.
 Explicit covered sources remain errors. Picks are develop-to-release only, with
