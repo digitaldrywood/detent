@@ -43,14 +43,21 @@ async function open(page, report = fixture, longErrors = false) {
   await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
     route.fulfill({ json: report }),
   );
-  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) =>
-    report.findings === null
-      ? route.fulfill({
-          status: 404,
-          json: { code: "not_found", message: "Not available" },
-        })
-      : route.fulfill({ json: { ...healthFixture, items: healthFixture.items.map((finding) => finding.subject.kind === "work_item" ? { ...finding, subject: { ...finding.subject, id: hub.fixture.work_item, project_id: hub.fixture.project_id } } : finding.subject.kind === "runner" ? { ...finding, summary: "Runner connection needs review", next_action: "Runner operator: check the runner process and its Hub connection.", subject: { ...finding.subject, id: "runner_0", project_id: hub.fixture.project_id } } : { ...finding, subject: { ...finding.subject, id: hub.fixture.project_id } }) } }),
-  );
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) => {
+    if (report.findings === null) return route.fulfill({
+      status: 404,
+      json: { code: "not_found", message: "Not available" },
+    });
+    const project = new URL(route.request().url()).pathname.split("/").at(-3);
+    const items = healthFixture.items
+      .filter((finding) => finding.subject.kind === "runner" || project === hub.fixture.project_id)
+      .map((finding) => finding.subject.kind === "work_item"
+        ? { ...finding, subject: { kind: "work_item", id: hub.fixture.work_item } }
+        : finding.subject.kind === "runner"
+          ? { ...finding, summary: "Runner connection needs review", next_action: "Runner operator: check the runner process and its Hub connection.", subject: { ...finding.subject, id: "runner_0", project_id: hub.fixture.project_id } }
+          : { ...finding, subject: { ...finding.subject, id: hub.fixture.project_id } });
+    return route.fulfill({ json: { ...healthFixture, items } });
+  });
   await page.goto(hub.fixture.accounts.owner, {
     waitUntil: "domcontentloaded",
   });
@@ -77,6 +84,8 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
   await expect(rows.first()).toContainText(
     "Repeated attempts without progress",
   );
+  await expect(rows.first()).toContainText("Example project");
+  await expect(rows.first()).not.toContainText("Project unavailable to you");
   await expect(rows.first().getByRole("link")).toHaveAttribute(
     "href",
     /\/work\/i\/wi_[^?]+\?tab=diagnostics$/,
