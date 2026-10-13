@@ -99,11 +99,16 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkExport:
 		return hubWorkResult(r, request, item, nil)
 	case operatortool.WorkRelationships:
+		related, err := readNativeRelated(ctx, s.database.db, scope, item.WorkItemID)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
 		return hubWorkResult(r, request, struct {
 			Dependencies []tracker.NativeWorkItemID  `json:"dependencies"`
 			Blockers     []tracker.NativeDependency  `json:"blockers"`
 			References   []tracker.ExternalReference `json:"references"`
-		}{item.Dependencies, item.Blockers, item.ExternalReferences}, nil)
+			Related      []tracker.NativeDependency  `json:"related"`
+		}{item.Dependencies, item.Blockers, item.ExternalReferences, related}, nil)
 	case operatortool.WorkComments:
 		page, err := s.readComments(ctx, scope, request.Reference, params)
 		return hubWorkResult(r, request, page, err)

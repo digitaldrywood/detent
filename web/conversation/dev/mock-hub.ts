@@ -89,6 +89,7 @@ interface ProjectRow {
 }
 
 interface IntegrationRow {
+  duplicate_challenge?: boolean;
   profile: string;
   /** A JSON *string*: the hub marshals the counter with `json:",string"`. */
   revision: string;
@@ -2934,6 +2935,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: String(body.intake ?? current.intake),
           projection: String(body.projection ?? current.projection),
           repository_enabled: body.repository_enabled === true,
+          duplicate_challenge: body.duplicate_challenge === undefined ? current.duplicate_challenge ?? true : body.duplicate_challenge === true,
           archive_completed_after_days: body.archive_completed_after_days === undefined ? current.archive_completed_after_days : body.archive_completed_after_days === null ? null : Number(body.archive_completed_after_days),
           archive_cancelled_after_days: body.archive_cancelled_after_days === undefined ? current.archive_cancelled_after_days : body.archive_cancelled_after_days === null ? null : Number(body.archive_cancelled_after_days),
           revision: String(Number(current.revision) + 1),
