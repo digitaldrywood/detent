@@ -39,6 +39,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	administration := s.hostedAdministrationSession
 	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
 	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
+	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
 	e.GET(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.projectSecretMetadata), session)
 	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), administration)
 	e.DELETE(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.removeProjectSecret), administration)
@@ -164,6 +165,7 @@ type hostedInvitationView struct {
 }
 
 type hostedMembersResponse struct {
+	MemberCount int                    `json:"member_count"`
 	Members     []hostedMemberView     `json:"members"`
 	Invitations []hostedInvitationView `json:"invitations"`
 }

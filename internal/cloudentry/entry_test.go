@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -573,6 +574,37 @@ func TestSharedEntryTwoOrganizationsOneOrigin(t *testing.T) {
 	response, alphaAgain := alice.get("/organizations/org_alpha/organization")
 	if response.StatusCode != http.StatusOK || !strings.Contains(alphaAgain, "Alpha secret project") {
 		t.Fatal("authorizing beta replaced the alpha authorization")
+	}
+	for _, organization := range []string{"org_alpha", "org_beta"} {
+		var bootstrap struct {
+			CSRF string `json:"csrf_token"`
+		}
+		response := alice.do(http.MethodGet, "/organizations/"+organization+"/app/bootstrap", nil, map[string]string{"Accept": "application/json"})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("bootstrap status = %d", response.StatusCode)
+		}
+		if err := json.Unmarshal([]byte(response.Body), &bootstrap); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPut, testPublicURL+"/api/v2/organizations/"+organization+"/name", strings.NewReader(`{"name":"Renamed `+organization+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", testPublicURL)
+		request.Header.Set("X-CSRF-Token", bootstrap.CSRF)
+		for _, cookie := range alice.jar.Cookies(base) {
+			request.AddCookie(cookie)
+		}
+		recorder := httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("rename status = %d: %s", recorder.Code, recorder.Body.String())
+		}
+		updated, err := f.service.registry.Organization(t.Context(), organization)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if updated.Name != "Renamed "+organization {
+			t.Fatalf("chooser organization name = %q", updated.Name)
+		}
 	}
 	alphaCSRF, betaCSRF := csrfFrom(t, alphaPage), csrfFrom(t, betaPage)
 	if alphaCSRF == betaCSRF {

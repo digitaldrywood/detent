@@ -5,6 +5,8 @@ import {
   createRoute,
   createRouter,
   RouterProvider,
+  Outlet,
+  useLocation,
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +15,7 @@ import * as Schema from "effect/Schema";
 import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
 import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
 import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
+import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { ClientContext } from "../../src/app/client.ts";
@@ -65,6 +68,8 @@ describe("which sections an actor gets", () => {
       "General",
       "API keys",
       "Organization",
+      "Members",
+      "Models",
       "Appearance",
       "Projects",
       "Providers & runners",
@@ -151,9 +156,12 @@ describe("which sections an actor gets", () => {
   });
 });
 
-function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT, content: React.ReactNode = null) {
+function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT, content: React.ReactNode = null, served = false) {
   const navigated: string[] = [];
-  const root = createRootRoute();
+  const root = createRootRoute({ component: served ? () => {
+    const current = useLocation({ select: (location) => location.pathname });
+    return <SidebarProvider><SettingsSidebarNav pathname={current} /><Outlet /></SidebarProvider>;
+  } : undefined });
   const section = createRoute({
     getParentRoute: () => root,
     path: "/settings/$section",
@@ -165,7 +173,7 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
     ),
   });
   const router = createRouter({
-    routeTree: root.addChildren([section]),
+    routeTree: root.addChildren(served ? accountRoutes(root) : [section, createRoute({ getParentRoute: () => root, path: "/settings/organization/$organizationPage", component: section.options.component })]),
     history: createMemoryHistory({ initialEntries: [pathname] }),
   });
   const subscribe = router.subscribe("onResolved", (event) => {
@@ -176,7 +184,7 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
       <RouterProvider router={router as never} />
     </ClientContext.Provider>,
   );
-  return { navigated, subscribe };
+  return { navigated, subscribe, router };
 }
 
 const OWNER_ACCOUNT = {
@@ -572,6 +580,9 @@ describe("the settings navigation in the sidebar", () => {
       "General",
       "API keys",
       "Organization",
+      "Overview",
+      "Members",
+      "Models",
       "Appearance",
       "Projects",
       "Providers & runners",
@@ -1032,5 +1043,112 @@ describe("plan billing usage", () => {
 
   it("does not recommend a tier whose storage has the same limit", () => {
     expect(nextFittingPlan({ ...planFixture, usage: { ...planFixture.usage, collaboration_bytes: 1000000000 } }, usageFixture.comparison_plans)).toBeUndefined();
+  });
+});
+
+
+describe("organization settings pages", () => {
+  const account = { ...OWNER_ACCOUNT.account, organization: { id: "org_example", name: "Example team" }, organizations: [
+    { id: "org_example", name: "Example team", public_url: "", current: true, role: "owner" },
+    { id: "org_second", name: "Second team", public_url: "", current: false, role: "member" },
+  ] };
+  const client = { ...OWNER_ACCOUNT, account, bootstrap: account };
+  function stubOrganizationApi() {
+    const reload = vi.fn();
+    const assign = vi.fn();
+    vi.stubGlobal("location", { reload, assign });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/members")) return Response.json({ member_count: 3, members: [], invitations: [] });
+      if (input.endsWith("/slug")) return Response.json({ slug: "example-team" });
+      if (input.endsWith("/model-selection")) return Response.json({ revision: "1", selection: null, effective: { enabled: true, normal_model: "gpt-6.1-sol" } });
+      if (input.endsWith("/name")) return Response.json({ name: "Renamed team" });
+      if (input.endsWith("/switch")) return Response.json({ next: "/auth/oidc/start?organization=org_second" });
+      if (input.endsWith("/api/v2/organizations") && init?.method === "POST") return Response.json({ organization: { id: "org_new", name: "New team", public_url: "" }, next: "/auth/oidc/start?organization=org_new" });
+      if (input === "/api/cloud/session") return Response.json({ email: "owner@example.test", csrf: "entry-csrf", free_slot_used: true, creation_prices: [{ id: "price_team", label: "Team" }] });
+      if (input === "/api/cloud/organizations") return Response.json({ email: "owner@example.test", csrf: "entry-csrf", organizations: account.organizations.map((item) => ({ ...item, url: `/organizations/${item.id}` })) });
+      if (input === "/organizations" && init?.method === "POST") return Response.json({ next: "/organizations/org_new/provisioning" });
+      throw new Error(`Unexpected organization request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    return { fetcher, reload, assign, writeText };
+  }
+
+  it("shows Overview rows, copies the ID, saves the name and switches from the list", async () => {
+    const { fetcher, reload, assign, writeText } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    await screen.findByRole("heading", { name: "Example team", level: 2 });
+    await screen.findByText("You are the owner · 3 members · 2 projects");
+    expect(screen.getByText("Organization ID")).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Organization slug" }) as HTMLInputElement).value).toBe("example-team"));
+    expect(screen.getByText("Current")).toBeTruthy();
+    expect(screen.queryByText("Your first organization")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy organization ID" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("org_example"));
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Organization name" }), { target: { value: " Renamed team " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(fetcher.mock.calls.find(([url]) => url.endsWith("/name"))?.[1]).toMatchObject({ method: "PUT", body: JSON.stringify({ name: "Renamed team" }) });
+    fireEvent.click(screen.getByRole("button", { name: "Switch to Second team" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_second"));
+  });
+
+  it("creates only through the dialog and preserves re-sign-in", async () => {
+    const { assign, fetcher } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
+    await waitFor(() => expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create organization" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_new"));
+    expect(JSON.parse(fetcher.mock.calls.find(([url]) => url.endsWith("/api/v2/organizations"))![1]!.body as string)).toMatchObject({ name: "New team" });
+  });
+
+  it("requires a paid plan when the shared owner's Free slot is used", async () => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { fetcher, assign } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
+    await within(dialog).findByText(/Your Free organization slot is used/);
+    expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Paid plan" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Team" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create organization" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
+    expect(String(fetcher.mock.calls.find(([url]) => url === "/organizations")![1]!.body)).toContain("price=price_team");
+  });
+
+  it.each(["member", "viewer"])("keeps %s views read-only", async (role) => {
+    stubOrganizationApi();
+    renderSidebarNav("/settings/organization", { ...client, account: { ...account, actor: { ...account.actor, can_manage: false, role } } }, null, true);
+    await screen.findByRole("heading", { name: "Example team", level: 2 });
+    expect(screen.queryByRole("textbox", { name: "Organization name" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Plan & usage" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy organization ID" })).toBeTruthy();
+  });
+
+  it.each([["/settings/organization/members", "Members", "Invite somebody"], ["/settings/organization/models", "Models", "Model selection"]])("serves the deep link %s and marks its sidebar row", async (path, label, content) => {
+    stubOrganizationApi();
+    renderSidebarNav(path!, client, null, true);
+    await screen.findByText(content!);
+    expect(screen.getByRole("button", { name: label === "Members" ? "Members 3 members" : label }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByText("Your organizations")).toBeNull();
+    if (label === "Members") expect(screen.queryByRole("heading", { name: "Model selection" })).toBeNull();
+    else expect(screen.queryByRole("heading", { name: "Invitations" })).toBeNull();
+  });
+
+  it.each([["invitations", "/settings/organization/members"], ["model selection", "/settings/organization/models"]])("searches %s on its new page", async (query, path) => {
+    stubOrganizationApi();
+    const { router } = renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.change(await screen.findByRole("combobox", { name: "Search settings" }), { target: { value: query } });
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search settings" }), { key: "Enter" });
+    await waitFor(() => expect(router.state.location.pathname).toBe(path));
   });
 });

@@ -1,4 +1,3 @@
-import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -30,8 +29,8 @@ import { ControlError, NativeSelect } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
+import { behindSharedEntry } from "../entry/shared.ts";
 import { signInPath } from "../../runtime/basePath.ts";
-import { behindSharedEntry, ENTRY_CREATE_ORGANIZATION, ENTRY_ORGANIZATIONS, useSharedOrganizations } from "../entry/shared.ts";
 
 const ROLES = ["owner", "admin", "member", "reporter", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((role) => ({
@@ -158,50 +157,6 @@ export function SupportBanner({
         {exiting ? "Exiting…" : "Exit support session"}
       </Button>
     </div>
-  );
-}
-
-export function CreateOrganizationCard({
-  onCreate,
-  pending = false,
-  error = null,
-}: {
-  readonly onCreate: (name: string) => void;
-  readonly pending?: boolean;
-  readonly error?: string | null;
-}): React.ReactElement {
-  const [name, setName] = React.useState("");
-  return (
-    <SettingsSection title="Create an organization">
-      <SettingsRow
-        title="Your first organization"
-        description="An organization owns the projects, the runners and the plan. You will sign in again once it exists, because the session is scoped to one organization."
-      >
-        <form
-          className="flex flex-col gap-2 pt-2 pb-3 sm:flex-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const value = name.trim();
-            if (value.length > 0) onCreate(value);
-          }}
-        >
-          <Label htmlFor="org-create-name" className="sr-only">
-            Organization name
-          </Label>
-          <Input
-            id="org-create-name"
-            value={name}
-            placeholder="Your company name"
-            onChange={(event) => setName(event.currentTarget.value)}
-            className="flex-1"
-          />
-          <Button type="submit" disabled={pending || name.trim().length === 0}>
-            {pending ? "Creating…" : "Create organization"}
-          </Button>
-        </form>
-        <ControlError message={error} />
-      </SettingsRow>
-    </SettingsSection>
   );
 }
 
@@ -463,7 +418,7 @@ export function OrganizationSwitcher({
   );
 }
 
-export function OrganizationRoute(): React.ReactElement {
+export function OrganizationMembersRoute(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
   const members = useResource<MembersResponse>(() => api.members(), [api]);
@@ -476,10 +431,6 @@ export function OrganizationRoute(): React.ReactElement {
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
-  const sharedListing = useSharedOrganizations();
-  const shared = sharedListing.error ? [] : sharedListing.value;
-  const sharedEntry = behindSharedEntry();
-  const organizations = shared ?? bootstrap?.organizations ?? [];
   const projects = React.useMemo(
     () => bootstrap?.projects ?? [],
     [bootstrap],
@@ -544,27 +495,6 @@ export function OrganizationRoute(): React.ReactElement {
     },
   );
 
-  const create = useMutation(async (name: string) => {
-    if (sharedEntry) {
-      globalThis.location?.assign(ENTRY_CREATE_ORGANIZATION);
-      return null;
-    }
-    const result = await api.createOrganization({ name, key: newKey() });
-    globalThis.location?.assign(result.next);
-    return result;
-  });
-
-  const switchTo = useMutation(async (organization: string) => {
-    const target = shared?.find((candidate) => candidate.id === organization);
-    if (target !== undefined) {
-      globalThis.location?.assign(target.url);
-      return null;
-    }
-    const result = await api.switchOrganization({ organization, key: newKey() });
-    globalThis.location?.assign(result.next);
-    return result;
-  });
-
   const exitSupport = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
@@ -573,39 +503,9 @@ export function OrganizationRoute(): React.ReactElement {
 
   const removeError = removing === null ? null : (memberErrors[removing.id] ?? null);
 
-  if (members.error !== null && members.error.isAccessError && organizations.length === 0) {
-    // A subject with no organization at all: the only thing to offer is the
-    // first one (§12, "Organization").
-    return (
-      <SettingsPageContainer>
-        <h2 className="px-3 text-xl font-semibold tracking-[-0.01em] sm:px-4">Organization</h2>
-        <CreateOrganizationCard
-          onCreate={(name) => void create.call(name)}
-          pending={create.pending}
-          error={create.error?.message ?? null}
-        />
-      </SettingsPageContainer>
-    );
-  }
-
   return (
     <SettingsPageContainer>
-      <SlugSettings canManage={bootstrap?.actor.can_manage ?? false} />
-      <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
-        <h2 className="text-xl font-semibold tracking-[-0.01em]">
-          {bootstrap?.organization.name ?? "Organization"}
-        </h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <OrganizationSwitcher
-            organizations={organizations}
-            onSwitch={(id) => void switchTo.call(id)}
-            pending={switchTo.pending}
-          />
-          {sharedEntry ? (
-            <Button size="sm" variant="outline" render={<a href={ENTRY_ORGANIZATIONS}>All organizations</a>} />
-          ) : null}
-        </div>
-      </div>
+      <h2 className="px-3 text-xl font-semibold tracking-tight sm:px-4">Members</h2>
 
       {bootstrap?.support == null ? null : (
         <SupportBanner
@@ -617,17 +517,7 @@ export function OrganizationRoute(): React.ReactElement {
         />
       )}
 
-      {organizations.length === 0 ? (
-        <CreateOrganizationCard
-          onCreate={(name) => void create.call(name)}
-          pending={create.pending}
-          error={create.error?.message ?? null}
-        />
-      ) : null}
-
-      <ModelSelectionSettings canManage={bootstrap?.actor.can_manage ?? false} />
-
-      <SettingsSection title="Members" variant="plain">
+      <SettingsSection id="settings-organization-members" title="Members" variant="plain">
         {members.loading && members.value === undefined ? (
           <p role="status" className="px-3 py-6 text-sm text-muted-foreground sm:px-4">
             Loading the members.
@@ -669,7 +559,7 @@ export function OrganizationRoute(): React.ReactElement {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Invitations">
+      <SettingsSection id="settings-organization-invitations" title="Invitations">
         <ControlError message={editInvitation.error?.message ?? null} />
         {(members.value?.invitations ?? []).map((invitation) => (
           <SettingsRow
