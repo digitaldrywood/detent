@@ -70,6 +70,9 @@ type WorkReadRequest struct {
 	Since           string   `json:"since,omitempty"`
 	Reference       string   `json:"reference,omitempty"`
 	Query           string   `json:"query,omitempty"`
+	CreatedAfter    string   `json:"created_after,omitempty"`
+	CreatedBefore   string   `json:"created_before,omitempty"`
+	UpdatedAfter    string   `json:"updated_after,omitempty"`
 	Fingerprint     string   `json:"fingerprint,omitempty"`
 	Open            *bool    `json:"open,omitempty"`
 	State           string   `json:"state,omitempty"`
@@ -115,7 +118,7 @@ func EncodeResult(value any) (Result, error) { return encodeResult(value) }
 func WorkReadCatalog() []Definition {
 	var definitions []Definition
 	for _, spec := range []struct{ name, description, fields string }{
-		{WorkList, "List or search work items in one authorized project. Native projects support archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query fingerprint open state label states labels assignee assignees priority priorities archived include cursor offset limit"},
+		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open state label states labels assignee assignees priority priorities archived include cursor offset limit"},
 		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
 		{WorkConfig, "Read configured project lanes, priorities and available labels.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
@@ -240,6 +243,13 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 			return request, ErrInvalidArguments
 		}
 	}
+	for _, date := range []string{request.CreatedAfter, request.CreatedBefore, request.UpdatedAfter} {
+		if date != "" {
+			if _, err := time.Parse(time.RFC3339Nano, date); err != nil {
+				return request, ErrInvalidArguments
+			}
+		}
+	}
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Reference = strings.TrimSpace(request.Reference)
 	if request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.Reference) > 256 || len(request.Query) > 256 || len(request.Fingerprint) > 256 || len(request.State) > 256 || len(request.Label) > 256 || len(request.CommentID) > 256 || len(request.Cursor) > 4096 || request.Offset < 0 || request.Offset > 1000000 || request.Limit < 0 || request.Limit > MaxItemLimit {
@@ -317,6 +327,11 @@ func (r WorkReadRequest) NativeWorkQuery() url.Values {
 	}
 	if r.Fingerprint != "" {
 		params.Set("fingerprint", r.Fingerprint)
+	}
+	for name, value := range map[string]string{"created_after": r.CreatedAfter, "created_before": r.CreatedBefore, "updated_after": r.UpdatedAfter} {
+		if value != "" {
+			params.Set(name, value)
+		}
 	}
 	if r.Query != "" {
 		params.Set("q", r.Query)

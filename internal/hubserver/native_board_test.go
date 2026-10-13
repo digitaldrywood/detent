@@ -103,7 +103,7 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 			if !reflect.DeepEqual(actual, recount) {
 				t.Fatalf("counts=%v recount=%v", actual, recount)
 			}
-			full, err := readNativeWorkSummary(t.Context(), tx, scope, "SELECT i.native_id FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.archived=0", []any{scope.organization, scope.project}, 50, f.service.config.now(), "48h")
+			full, err := readNativeWorkSummary(t.Context(), tx, scope, "SELECT i.native_id FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.archived=0", []any{scope.organization, scope.project}, 50, f.service.config.now(), "48h", "")
 			if err != nil {
 				t.Fatal(err)
 			}

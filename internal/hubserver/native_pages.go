@@ -131,7 +131,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort", "created_after", "created_before", "updated_after")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -165,6 +165,9 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
+		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
+			return tracker.NativeIssuePage{}, nativeInvalid("Date filters require an issue list projection")
+		}
 		return s.readBoardIssues(ctx, scope, params)
 	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items"
@@ -203,6 +206,25 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? `
 	args := []any{scope.organization, scope.project}
+	searchQuery := strings.TrimSpace(params.Get("q"))
+	if searchQuery != "" {
+		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+"WHERE i.organization_id", 1)
+		args = append([]any{nativeSearchExpression(searchQuery), scope.organization, scope.project}, args...)
+	}
+	var dateClauses strings.Builder
+	for _, filter := range []struct{ name, column, operator string }{
+		{"created_after", "native_created_at", ">="}, {"created_before", "native_created_at", "<"}, {"updated_after", "native_updated_at", ">="},
+	} {
+		if value := params.Get(filter.name); value != "" {
+			date, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return tracker.NativeIssuePage{}, nativeInvalid("Date filters must be RFC3339 timestamps")
+			}
+			dateClauses.WriteString(" AND rtrim(i." + filter.column + ", 'Z') " + filter.operator + " ?")
+			args = append(args, strings.TrimSuffix(formatHubTime(date), "Z"))
+		}
+	}
+	query += dateClauses.String()
 	switch params.Get("archived") {
 	case "", "false":
 		query += " AND i.archived = 0"
@@ -261,7 +283,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		if !workIncluded {
 			text += " || ' ' || i.body"
 		}
-		query += " AND (instr(lower(" + text + "), lower(?)) > 0" +
+		query += " AND (search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
 			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
 			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
 			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"
@@ -270,12 +292,12 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 
 	var work *tracker.NativeWorkSummary
 	if workIncluded {
-		work, err = readNativeWorkSummary(ctx, s.database.reader, scope, query, args, limit, s.config.now(), params.Get("completed_window"))
+		work, err = readNativeWorkSummary(ctx, s.database.reader, scope, query, args, limit, s.config.now(), params.Get("completed_window"), searchQuery)
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
 	}
-	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"))
+	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"), searchQuery)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
@@ -301,6 +323,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			}
 		}
 		issue = s.nativeIssueResponse(issue)
+		issue.Snippet = item.Snippet
 		next := cursor
 		next.Issues = &item.Position
 		if summary {
