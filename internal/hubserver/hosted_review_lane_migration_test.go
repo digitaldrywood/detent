@@ -110,7 +110,14 @@ func TestHostedBlockedLaneMigration(t *testing.T) {
 	hostedLaneMigrationTest(t, hostedLaneMigration{
 		from: 47, to: 48, file: "migrations/00048_hosted_blocked_lane.sql", lane: "Blocked", dispatchable: false,
 		before: hostedDirectLandingStates(),
-		after:  HostedProjectStates(),
+		after: []tracker.NativeState{
+			{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+			{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
+			{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
+			{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
+			{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
+			{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+		},
 	})
 }
 
