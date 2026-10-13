@@ -476,10 +476,9 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 				return result, err
 			}
 		}
-		var merged githubLandingMerge
 		mergePath := fmt.Sprintf("repos/%s/pulls/%d/merge", repository, pull.Number)
-		if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", mergePath,
-			"merge_method="+opts.Method, "sha="+head); err != nil {
+		merged, err := mergeGitHubLanding(ctx, opts, repository, pull.Number, head)
+		if err != nil {
 			if githubLandingSourceRefusal(mergePath, err) {
 				verified := l.verifyGitHubLandingSource(ctx, normalized, issue, opts, remote, repository, base, pull.Number, head, baseBefore, err)
 				retryHead := head
@@ -508,8 +507,8 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 						return result, err
 					}
 				}
-				if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", mergePath,
-					"merge_method="+opts.Method, "sha="+retryHead); err != nil {
+				merged, err = mergeGitHubLanding(ctx, opts, repository, pull.Number, retryHead)
+				if err != nil {
 					if githubLandingSourceRefusal(mergePath, err) {
 						verified := l.verifyGitHubLandingSource(ctx, normalized, issue, opts, remote, repository, base, pull.Number, retryHead, baseBefore, err)
 						if verified != nil {
@@ -519,10 +518,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 					}
 					return result, err
 				}
-			} else if threadsErr := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, pull.Number, head, err); threadsErr != nil {
-				return result, threadsErr
-			} else if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", mergePath,
-				"merge_method="+opts.Method, "sha="+head); err != nil {
+			} else {
 				return result, err
 			}
 		}
@@ -556,6 +552,20 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		}
 	}
 	return result, nil
+}
+
+func mergeGitHubLanding(ctx context.Context, opts LandOptions, repository string, number int, head string) (githubLandingMerge, error) {
+	var merged githubLandingMerge
+	if opts.External != nil {
+		if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil); err != nil {
+			return merged, err
+		}
+	}
+	if err := githubLandingAPI(ctx, opts.GitHubClient, &merged, "PUT", fmt.Sprintf("repos/%s/pulls/%d/merge", repository, number),
+		"merge_method="+opts.Method, "sha="+head); err != nil {
+		return merged, resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, err)
+	}
+	return merged, nil
 }
 
 func verifyGitHubLandingMerge(ctx context.Context, path, remote, base, baseRef, mergeSHA string) error {
