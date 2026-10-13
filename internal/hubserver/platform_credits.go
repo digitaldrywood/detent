@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -20,11 +21,44 @@ func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
 		return c.NoContent(http.StatusForbidden)
 	}
 	d := s.database
-	var balance int64
-	if err := d.db.QueryRowContext(c.Request().Context(), "SELECT balance_micros FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&balance); err != nil {
+	var result struct {
+		BalanceMicros int64                 `json:"balance_micros"`
+		SpentMicros   int64                 `json:"spent_micros"`
+		Month         string                `json:"month"`
+		AutoEnabled   bool                  `json:"auto_enabled"`
+		History       []aiCreditTransaction `json:"history"`
+	}
+	ctx := c.Request().Context()
+	now := d.now().UTC()
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	result.Month = start.Format("2006-01")
+	result.History = []aiCreditTransaction{}
+	if err := d.db.QueryRowContext(ctx, "SELECT balance_micros,auto_enabled FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&result.BalanceMicros, &result.AutoEnabled); err != nil {
 		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
 	}
-	return c.JSON(http.StatusOK, map[string]int64{"balance_micros": balance})
+	if err := d.db.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
+ WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, d.hostedOrganization, d.aiCreditMode, start.UnixMicro(), start.AddDate(0, 1, 0).UnixMicro()).Scan(&result.SpentMicros); err != nil {
+		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+	}
+	rows, err := d.db.QueryContext(ctx, `SELECT amount_micros,kind,actor,reason,recorded_at FROM ai_credit_transactions
+ WHERE organization_id=? AND mode=? AND kind IN ('complimentary','purchase','auto_fund') ORDER BY recorded_at DESC,id DESC`, d.hostedOrganization, d.aiCreditMode)
+	if err != nil {
+		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item aiCreditTransaction
+		var at int64
+		if err := rows.Scan(&item.AmountMicros, &item.Kind, &item.Actor, &item.Reason, &at); err != nil {
+			return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+		}
+		item.At = time.UnixMicro(at).UTC()
+		result.History = append(result.History, item)
+	}
+	if err := rows.Err(); err != nil {
+		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) adjustPlatformAICredits(c echo.Context) error {
