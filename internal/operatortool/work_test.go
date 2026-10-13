@@ -14,6 +14,10 @@ func TestFileIssueArguments(t *testing.T) {
 		valid        bool
 	}{
 		{"ordinary", `"title":"Title","description":"Body"`, true},
+		{"bug type", `"title":"Title","type":"bug"`, true},
+		{"change request type", `"title":"Title","type":"change_request"`, true},
+		{"unknown type", `"title":"Title","type":"question"`, false},
+		{"null type", `"title":"Title","type":null`, false},
 		{"linked only", `"github_issue_url":"github.com/owner/repo/issues/1"`, true},
 		{"linked priority", `"github_issue_url":"github.com/owner/repo/issues/1","priority":4`, true},
 		{"native empty body", `"title":"Title"`, true},
@@ -55,6 +59,8 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		{"field from another command", AddComment, `"body":"hello","labels":[]`, false},
 		{"null comment", AddComment, `"body":null`, false},
 		{"oversized comment", AddComment, `"body":"` + strings.Repeat("x", 32769) + `"`, false},
+		{"type-only edit", EditItem, `"type":"change_request","expected_revision":"1"`, true},
+		{"invalid type edit", EditItem, `"type":"question","expected_revision":"1"`, false},
 		{"empty edit", EditItem, `"expected_revision":"1"`, false},
 		{"revision required", EditItem, `"title":"title"`, false},
 		{"zero revision", EditItem, `"title":"title","expected_revision":"0"`, false},

@@ -943,6 +943,8 @@ clients negotiate major 2 and schema 1. A native claim supplies `protocol_major:
 and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
 negotiation fails without switching tracker or scheduler.
 
+Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type; Reporters cannot edit issue fields. Type edits appear in issue history, and labels remain independent of the type.
+
 The following paths are relative to
 `/api/v2/organizations/{organization_id}/projects/{project_id}`. Worker and
 operator tokens can read and author collaboration; claims, machines and run
@@ -951,11 +953,11 @@ events require worker scope. Instance administrators can perform these operation
 | Method and path | Input or result |
 | --- | --- |
 | `GET /` | Project profile, states, transitions and readiness policy |
-| `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `priority`, `labels`, `assignees`, import `provenance` |
+| `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `type` (`bug` or `change_request`), `priority`, `labels`, `assignees`, import `provenance` |
 | `POST /work-items` (scheduled reporter evidence) | `idempotency_key`, `scheduled_validation` with `repository`, `run_id`, `run_attempt`, canonical `run_url`, pinned `head_sha`, and `conclusion: success`, `failure`, or `skipped`; no issue fields |
-| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
+| `GET /work-items` | Paged issues; optional exact `type` (`bug` or `change_request`); repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
 | `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
-| `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `title`, `body`, `priority`, `labels` or `assignees` |
+| `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `type`, `title`, `body`, `priority`, `labels` or `assignees` |
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
 | `POST /work-items/{id}/dependencies` | `idempotency_key`, `expected_revision`, `related_work_item_id`, `operation: add` or `remove` |
 | `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |

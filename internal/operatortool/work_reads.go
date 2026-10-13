@@ -75,6 +75,7 @@ type WorkReadRequest struct {
 	UpdatedAfter    string   `json:"updated_after,omitempty"`
 	Fingerprint     string   `json:"fingerprint,omitempty"`
 	Open            *bool    `json:"open,omitempty"`
+	Type            string   `json:"type,omitempty"`
 	State           string   `json:"state,omitempty"`
 	Label           string   `json:"label,omitempty"`
 	States          []string `json:"states,omitempty"`
@@ -119,7 +120,7 @@ func EncodeResult(value any) (Result, error) { return encodeResult(value) }
 func WorkReadCatalog() []Definition {
 	var definitions []Definition
 	for _, spec := range []struct{ name, description, fields string }{
-		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), created_by (principal ID or me for a human caller), archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open state label states labels created_by assignee assignees priority priorities archived include cursor offset limit"},
+		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), type (bug or change_request), created_by (principal ID or me for a human caller), archived selection, OR selections within each filter, and workspace/work projections. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open type state label states labels created_by assignee assignees priority priorities archived include cursor offset limit"},
 		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
 		{WorkConfig, "Read configured project lanes, priorities and available labels.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
@@ -142,6 +143,8 @@ func WorkReadCatalog() []Definition {
 		required := []string{"project_id"}
 		for field := range strings.FieldsSeq(spec.fields) {
 			switch field {
+			case "type":
+				properties[field] = map[string]any{"type": "string", "enum": []string{"bug", "change_request"}}
 			case "open":
 				properties[field] = map[string]any{"type": "boolean"}
 			case "limit":
@@ -306,6 +309,7 @@ func (r WorkReadRequest) NativeWorkQuery() url.Values {
 		name, single string
 		values       []string
 	}{
+		{"type", r.Type, nil},
 		{"state", r.State, r.States},
 		{"label", r.Label, r.Labels},
 		{"assignee", r.Assignee, r.Assignees},

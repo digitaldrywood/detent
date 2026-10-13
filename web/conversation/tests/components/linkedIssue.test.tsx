@@ -5,13 +5,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import { NewIssueDialog } from "../../src/app/work/NewIssue.tsx";
 import type { AccountProject } from "../../src/contracts/account.ts";
 
-const { create } = vi.hoisted(() => ({ create: vi.fn(async () => ({ work_item_id: "wi_linked" })) }));
+const { create, role } = vi.hoisted(() => ({ role: { value: "member" }, create: vi.fn(async () => ({ work_item_id: "wi_linked" })) }));
 vi.mock("../../src/app/account/context.ts", () => ({
   useAccountApi: () => ({ createFirstIssue: create }),
-  useAccountBootstrap: () => null,
+  useAccountBootstrap: () => ({ actor: { role: role.value } }),
 }));
 
-afterEach(() => { cleanup(); create.mockClear(); });
+afterEach(() => { cleanup(); create.mockClear(); role.value = "member"; });
 
 it("links a GitHub issue without requiring a copied title or body", async () => {
   const project: AccountProject = {
@@ -27,4 +27,18 @@ it("links a GitHub issue without requiring a copied title or body", async () => 
     githubIssueUrl: "https://github.com/acme/orders/issues/12", title: "", body: "", state: "Todo",
   })));
   expect(created).toHaveBeenCalledOnce();
+});
+
+it.each(["bug", "change_request"])("requires a Reporter to choose %s and submits the selected type", async (type) => {
+  role.value = "reporter";
+  const project: AccountProject = {
+    id: "prj_example", name: "Example", profile: "native", can_write: true,
+    can_manage_runners: false, states: [{ name: "Triage", terminal: false, dispatchable: false }],
+  };
+  render(<NewIssueDialog open onOpenChange={() => {}} projects={[project]} projectId={project.id} onCreated={() => {}} />);
+  fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Tester report" } });
+  expect((screen.getByRole("button", { name: "Create issue" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("Type"), { target: { value: type } });
+  fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+  await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ type, title: "Tester report" })));
 });

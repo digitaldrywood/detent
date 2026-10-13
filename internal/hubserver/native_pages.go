@@ -138,6 +138,15 @@ func validateNativeIssueQuery(params url.Values) error {
 	single := url.Values{}
 	for key, values := range params {
 		switch key {
+		case "type":
+			if len(values) > 2 {
+				return nativeInvalid("type must be bug or change_request")
+			}
+			for _, value := range values {
+				if err := validateNativeIssueType(value, true); err != nil {
+					return err
+				}
+			}
 		case "state", "label", "assignee", "priority":
 			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
 				return nativeInvalid("Query contains an unsupported field or value")
@@ -284,6 +293,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	}
 	var filterClauses strings.Builder
 	for _, filter := range []struct{ name, clause string }{
+		{"type", "i.issue_type = ?"},
 		{"state", "ws.detent_state = ?"},
 		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
 		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},

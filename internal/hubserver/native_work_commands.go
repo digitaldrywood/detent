@@ -24,6 +24,9 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		scope.action = ""
 		return s.recordScheduledValidation(ctx, scope, request)
 	}
+	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
+		return nil, err
+	}
 	scope.action = operatortool.FileIssue
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
 	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
@@ -227,6 +230,13 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			return nil, err
 		}
 		fields := []string{}
+		if request.Type != nil {
+			if err := validateNativeIssueType(*request.Type, true); err != nil {
+				return nil, err
+			}
+			issue.Type = *request.Type
+			fields = append(fields, "type")
+		}
 		if request.Title != nil {
 			issue.Title = *request.Title
 			fields = append(fields, "title")
@@ -477,7 +487,7 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 	case operatortool.TransferItem:
 		return s.transferNativeSourceCommand(ctx, scope, request.Identifier, sourceTransferRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), VersionID: request.VersionID, DestinationRunnerID: request.DestinationRunnerID})
 	case operatortool.EditItem:
-		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
+		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Type: request.Type, Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
 	case operatortool.AddComment:
 		return s.createNativeCommentCommand(ctx, scope, request.Identifier, tracker.CreateComment{Mutation: command, Body: *request.Body})
 	case operatortool.EditComment:

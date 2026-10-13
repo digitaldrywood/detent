@@ -128,6 +128,7 @@ export const NativeDependency = Schema.Struct({
 export type NativeDependency = typeof NativeDependency.Type;
 
 export const NativeIssue = Schema.Struct({
+  type: Schema.optional(Schema.Literals(["bug", "change_request"])),
 	linked_source: Schema.optional(Schema.Struct({
 		url: Schema.String,
 		status: Schema.String,

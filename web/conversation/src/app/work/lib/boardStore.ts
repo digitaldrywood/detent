@@ -144,7 +144,7 @@ function getProject(http: WorkHttp, id: string): Promise<NativeProject> {
 
 function normalized(view: WorkViewState): WorkViewState {
   const values = (entries: readonly string[]) => [...new Set(entries)].sort();
-  return { ...view, q: view.q.trim(), state: view.view === "list" ? [] : values(view.state), label: values(view.label),
+  return { ...view, q: view.q.trim(), state: view.view === "list" ? [] : values(view.state), type: view.view === "list" ? values(view.type) : [], label: values(view.label),
     assignee: values(view.assignee), priority: values(view.priority), lanes: view.lanes === null ? null : values(view.lanes) };
 }
 
@@ -154,7 +154,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
   const accessible = client.bootstrap.projects.map((project) => project.id).sort();
   const scope = projectId === null ? accessible : accessible.includes(projectId) ? [projectId] : [];
   const view = normalized(input);
-  const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.label, view.assignee,
+  const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.type, view.label, view.assignee,
     view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow,
     view.createdBy, view.view, view.view === "list" ? view.tab : view.lanes, effectiveSort(view) === "closed"]);
   let board = boards.get(key);
@@ -271,7 +271,7 @@ export class BoardRead {
       if (continuing && previous?.nextCursor === undefined) return previous!;
       const filters = {
         projectId: id, includeBoard: true, completedWindow: this.view.completedWindow, q: this.view.q,
-        createdBy: this.view.createdBy, archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
+        createdBy: this.view.createdBy, archived: this.view.archived === true, type: this.view.type, label: this.view.label, assignee: this.view.assignee,
         priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
       };
       const issues = continuing ? [...(previous?.issues ?? [])] : [];
@@ -342,7 +342,7 @@ export class BoardRead {
   }
 
   streamFilters = (projectId: string) => ({ projectId, completedWindow: this.view.completedWindow, q: this.view.q,
-    createdBy: this.view.createdBy, archived: this.view.archived === true, label: this.view.label, assignee: this.view.assignee,
+    createdBy: this.view.createdBy, archived: this.view.archived === true, type: this.view.type, label: this.view.label, assignee: this.view.assignee,
     priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)) });
 
   sequence = (projectId: string): number => this.entries.find((entry) => entry.project.project_id === projectId)?.sequence ?? 0;
@@ -391,6 +391,7 @@ export class BoardRead {
       (view.lanes === null || view.lanes.includes(issue.state)))) && (issue.archived === true) === (view.archived === true) &&
       (view.view === "list" ? tabMatches(view.tab, { state: issue.state, terminal: project.states.find((state) => state.name === issue.state)?.terminal ?? issue.terminal })
         : view.state.length === 0 || view.state.includes(issue.state)) &&
+      (view.type.length === 0 || issue.type !== undefined && view.type.includes(issue.type)) &&
       (view.label.length === 0 || view.label.some((label) => issue.labels.includes(label))) &&
       (view.assignee.length === 0 || view.assignee.some((assignee) => issue.assignees.includes(assignee))) &&
       (view.priority.length === 0 || view.priority.some((name) => String(priorityValue(name) ?? name) === String(issue.priority))) &&

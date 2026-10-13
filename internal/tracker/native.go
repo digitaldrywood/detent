@@ -92,6 +92,7 @@ type NativeIssue struct {
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
+	Type               string              `json:"type,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	Snippet            string              `json:"snippet,omitempty"`
@@ -219,6 +220,7 @@ type CreateIssue struct {
 	NotDuplicateOf      []int                           `json:"not_duplicate_of,omitempty"`
 	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
 	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
+	Type                string                          `json:"type,omitempty"`
 	Title               string                          `json:"title"`
 	Body                string                          `json:"body"`
 	State               string                          `json:"state"`
@@ -316,6 +318,7 @@ func (p PriorityPatch) MarshalJSON() ([]byte, error) {
 type UpdateIssue struct {
 	Mutation
 	ExpectedRevision Revision      `json:"expected_revision,string"`
+	Type             *string       `json:"type,omitempty"`
 	Title            *string       `json:"title,omitempty"`
 	Body             *string       `json:"body,omitempty"`
 	Priority         PriorityPatch `json:"priority,omitzero"`
