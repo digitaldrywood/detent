@@ -55,7 +55,7 @@ it.each([
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Repository action required/ }));
   const field = await screen.findByLabelText("Which repository should Detent work on?");
-  expect(screen.getByText(/GitHub API integration is optional/)).toBeTruthy();
+  expect(screen.getByText(/Private repositories work too, without a GitHub integration/)).toBeTruthy();
   fireEvent.change(field, { target: { value: "https://github.com/example-org/example-repository" } });
   await user.click(screen.getByRole("button", { name: "Associate" }));
   expect(await screen.findByText("Enter the repository as owner/name, then retry.")).toBeTruthy();
@@ -262,8 +262,8 @@ it.each([
   mount();
   await userEvent.setup().click(await screen.findByRole("button", { name: /Local validation/ }));
   expect(await screen.findByText(label)).toBeTruthy();
-  if (connection_health === "offline") expect(screen.getByText(/Reconnect the host/)).toBeTruthy();
-  else expect(screen.queryByText(/Reconnect the host/)).toBeNull();
+  if (connection_health === "offline") expect(screen.getByText(/Reconnect the runner’s computer/)).toBeTruthy();
+  else expect(screen.queryByText(/Reconnect the runner’s computer/)).toBeNull();
 });
 
 
