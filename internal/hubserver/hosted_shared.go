@@ -220,6 +220,7 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/platform/usage", s.platformTenantUsage)
 	e.POST("/internal/v1/platform/users", s.hostedPlatformUsers)
 	e.POST("/internal/v1/platform/ai-credits", s.adjustPlatformAICredits)
+	e.POST("/internal/v1/platform/ai-credits/balance", s.platformTenantAICreditBalance)
 	e.POST("/internal/v1/owner/bootstrap", s.bootstrapHostedSharedOwner)
 	e.POST("/internal/v1/billing/binding", s.hostedSharedBillingBinding)
 	e.POST("/internal/v1/billing/events", s.hostedSharedBillingEvent)
