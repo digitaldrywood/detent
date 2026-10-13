@@ -25,6 +25,7 @@ import (
 
 type resolvingReworkAgent struct {
 	fakeCodexClient
+	preserved     bool
 	unresolved    bool
 	staged        bool
 	signer        string
@@ -51,6 +52,17 @@ func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest
 		return AgentTurnResult{}, err
 	}
 	a.beforeHead = strings.TrimSpace(string(head))
+	if a.preserved {
+		conflicts, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "diff", "--name-only", "--diff-filter=U").Output()
+		if err != nil {
+			return AgentTurnResult{}, err
+		}
+		_, targetErr := os.Stat(filepath.Join(req.Workspace, "target-fix.md"))
+		if len(conflicts) != 0 || targetErr != nil {
+			return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: "\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: stale_base\nblockers: []\nhuman_action: null\n```"})
+		}
+		return AgentTurnResult{ThreadID: "native-rework", TurnID: "1"}, nil
+	}
 	if !a.unresolved {
 		path := "README.md"
 		if a.staged {
@@ -127,6 +139,7 @@ if git -C "$1" commit -m worker-signing-attempt; then exit 4; fi
 
 type reworkArtifactsExecution struct {
 	testExecution
+	validation      *gate.CommandResult
 	base            string
 	head            string
 	diffHead        string
@@ -134,6 +147,18 @@ type reworkArtifactsExecution struct {
 	diffSource      AttemptDiffSource
 	denyAuthority   bool
 	authorityChecks int
+}
+
+type reworkValidationExecution struct {
+	*reworkArtifactsExecution
+}
+
+func (e *reworkValidationExecution) RecordSourceValidation(ctx context.Context, receipt gate.CommandResult) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.validation = &receipt
+	return nil
 }
 
 func (e *reworkArtifactsExecution) Validate(ctx context.Context) error {
@@ -251,6 +276,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		signed                   bool
 		signingFail              bool
 		authorityLost            bool
+		resolvedPause            bool
+		pausedLaterConflict      bool
+		failedFinalGate          bool
 		lateConflict             bool
 		followOnConflict         bool
 		refusal                  string
@@ -260,6 +288,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		resume                   bool
 	}{
 		{name: "resolved source"},
+		{name: "resolved pause integrates target before validation with two remaining picks", resolvedPause: true},
+		{name: "resolved pause preserves later replay conflict", resolvedPause: true, pausedLaterConflict: true},
+		{name: "resolved pause retains genuine final gate failure", resolvedPause: true, failedFinalGate: true},
 		{name: "complete evidence wait resumes review only", reviewResume: "wait", staged: true},
 		{name: "complete operator resume in code lane only reviews", reviewResume: "pass", normal: true, staged: true},
 		{name: "complete source review and acceptance resume without coding", reviewResume: "pass", staged: true},
@@ -331,6 +362,15 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			runRunnerGit(t, info.Path, "add", "README.md")
 			runRunnerGit(t, info.Path, "commit", "-m", "feature")
+			if test.resolvedPause {
+				for _, path := range []string{"later-one.md", "later-two.md"} {
+					if err := os.WriteFile(filepath.Join(info.Path, path), []byte(path+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runRunnerGit(t, info.Path, "add", path)
+					runRunnerGit(t, info.Path, "commit", "-m", path)
+				}
+			}
 			original := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
 			runRunnerGit(t, source, "branch", "unrelated", original)
 			basePath := "README.md"
@@ -341,6 +381,12 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			runRunnerGit(t, source, "add", basePath)
+			if test.pausedLaterConflict {
+				if err := os.WriteFile(filepath.Join(source, "later-one.md"), []byte("parallel later change\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "later-one.md")
+			}
 			if test.followOnConflict {
 				if err := os.WriteFile(filepath.Join(source, "repair.md"), []byte("parallel repair\n"), 0o600); err != nil {
 					t.Fatal(err)
@@ -349,6 +395,29 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
+			if test.resolvedPause {
+				ownedIssue := workspaceIssue("default", issue)
+				ownedIssue.NativeRework = true
+				prepared, err := backend.(workspace.ReworkPreparer).PrepareRework(t.Context(), info, ownedIssue, workspace.MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
+					t.Fatalf("pause original replay: %+v, %v", prepared, err)
+				}
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("resolved\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "add", "README.md")
+				if err := os.WriteFile(filepath.Join(source, "target-fix.md"), []byte("required target fix\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "target-fix.md")
+				runRunnerGit(t, source, "commit", "-m", "target validation fix")
+				runRunnerGit(t, source, "push", "origin", "main")
+				oldGate := exec.CommandContext(t.Context(), "sh", "-c", "test -f target-fix.md && test -f later-one.md && test -f later-two.md")
+				oldGate.Dir = info.Path
+				if err := oldGate.Run(); err == nil {
+					t.Fatal("obsolete paused source unexpectedly passes the final gate")
+				}
+			}
 			target := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 			if !test.staged {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
@@ -406,7 +475,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				runRunnerGit(t, info.Path, "add", "repair.md")
 			}
-			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
+			agent := &resolvingReworkAgent{preserved: test.resolvedPause, unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
 			if test.signingFail {
 				agent.signer = ""
 				agent.afterStage = func() {
@@ -417,6 +486,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
 			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
+			if test.resolvedPause {
+				request.Execution = &reworkValidationExecution{execution}
+			}
 			if test.reviewResume != "" {
 				runRunnerGit(t, source, "remote", "set-url", "origin", "https://github.com/example-org/example-project")
 				runRunnerGit(t, source, "config", "url."+remote+".insteadOf", "https://github.com/example-org/example-project")
@@ -648,11 +720,62 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					execution.denyAuthority = true
 				}
 			}
-			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Resolve the source"}, Workspace: backend, AgentBackend: agent})
+			cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}
+			if test.resolvedPause {
+				cfg.Gate.Run = "test -f target-fix.md && test -f later-one.md && test -f later-two.md"
+				if test.failedFinalGate {
+					cfg.Gate.Run += " && echo actual-final-gate-failure && exit 1"
+				}
+			}
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Resolve the source"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
 			}
 			_, err = r.Run(t.Context(), request)
+			if test.resolvedPause {
+				if test.pausedLaterConflict {
+					if err != nil || execution.head != "" || execution.validation != nil || execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" {
+						t.Fatalf("later conflict published unfinished source: %v, %+v", err, execution)
+					}
+					if got := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U")); got != "later-one.md" {
+						t.Fatalf("replay did not advance to the later conflict: %q", got)
+					}
+					todo := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "--git-path", "rebase-merge/git-rebase-todo"))
+					remaining, readErr := os.ReadFile(todo)
+					if readErr != nil || !strings.Contains(string(remaining), "later-two.md") {
+						t.Fatalf("last replay pick lost: %q, %v", remaining, readErr)
+					}
+					if got := runRunnerGit(t, info.Path, "show", "HEAD:README.md"); got != "resolved\n" {
+						t.Fatalf("earlier resolution lost: %q", got)
+					}
+					return
+				}
+				if execution.validation == nil {
+					t.Fatalf("resolved paused replay never reached the final gate: %v, checkpoint=%+v", err, execution.checkpoint)
+				}
+				head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+				tree := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD^{tree}"))
+				if execution.validation.HeadSHA != head || execution.validation.TreeSHA != tree {
+					t.Fatalf("gate did not validate final source: %+v", execution.validation)
+				}
+				runRunnerGit(t, info.Path, "merge-base", "--is-ancestor", target, head)
+				for _, path := range []string{"later-one.md", "later-two.md"} {
+					if got := runRunnerGit(t, info.Path, "show", "HEAD:"+path); got != path+"\n" {
+						t.Fatalf("remaining pick lost: %s = %q", path, got)
+					}
+				}
+				if test.failedFinalGate {
+					var failure *workspace.ValidationError
+					if !errors.As(err, &failure) || failure.Stage != workspace.ValidationStageSourceFinalization || !strings.Contains(failure.Output, "actual-final-gate-failure") || execution.head != "" || execution.finish != "failed" || execution.validation.ExitCode != 1 {
+						t.Fatalf("genuine gate failure was suppressed: %v, %+v", err, execution)
+					}
+					return
+				}
+				if err != nil || execution.validation.ExitCode != 0 || execution.head != head || execution.diffHead != head || execution.finish != "succeeded" {
+					t.Fatalf("finalized source publication failed: %v, %+v", err, execution)
+				}
+				return
+			}
 			if test.signingFail || test.authorityLost {
 				want := ErrWorkspacePreparation
 				if test.authorityLost {
