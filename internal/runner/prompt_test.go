@@ -50,13 +50,16 @@ func TestNativeIssuePromptOwnership(t *testing.T) {
 func TestBuildPromptNativeCompletionContract(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name  string
-		kind  string
-		state string
-		want  bool
+		name     string
+		kind     string
+		state    string
+		want     bool
+		recovery bool
 	}{
 		{name: "native code", kind: config.TrackerHubNative, state: "In Progress", want: true},
 		{name: "native rework", kind: config.TrackerHubNative, state: "Rework", want: true},
+		{name: "native recovery", kind: config.TrackerHubNative, state: "Rework", want: true, recovery: true},
+		{name: "github recovery", kind: config.TrackerGitHub, state: "Rework", recovery: true},
 		{name: "github", kind: config.TrackerGitHub, state: "In Progress"},
 		{name: "linear", kind: config.TrackerLinear, state: "Rework"},
 		{name: "memory", kind: config.TrackerMemory, state: "In Progress"},
@@ -68,13 +71,25 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
 			}
 			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
-			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			opts := PromptOptions{}
+			if tt.recovery {
+				opts.RecoveryState = &workspace.RecoveryState{DiffStat: workspace.DiffStat{Files: 1, Added: 2}, TrackedPaths: []string{"internal/example.go"}}
+			}
+			prompt, err := BuildPrompt(workflow, issue, opts)
 			if err != nil {
 				t.Fatal(err)
 			}
 			index := strings.Index(prompt, "## Native completion contract")
 			if got := index >= 0; got != tt.want {
 				t.Fatalf("native completion contract present = %t, want %t", got, tt.want)
+			}
+			if tt.recovery {
+				if strings.Contains(prompt, "commit and publish work that belongs to the issue") == tt.want || strings.Contains(prompt, "native completion contract governs recovery") != tt.want {
+					t.Fatalf("recovery instructions conflict with selected completion authority: %s", prompt)
+				}
+				if tt.want && (strings.Contains(prompt, "Do not repeat `status: complete` while the worktree remains dirty") || !strings.Contains(prompt, "Staged issue-owned work is the expected handoff")) {
+					t.Fatalf("native recovery rejects staged source handoff: %s", prompt)
+				}
 			}
 			if !tt.want {
 				return
@@ -1338,7 +1353,7 @@ func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
 	}
 	for _, commits := range []int{0, 1} {
 		state := &workspace.RecoveryState{UnpushedCommits: commits, DiffStat: workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}}
-		cleanPrompt := appendWorkspaceRecoveryBlock("base", state)
+		cleanPrompt := appendWorkspaceRecoveryBlock("base", state, false)
 		if strings.Contains(cleanPrompt, "diffstat:") || (commits == 0 && cleanPrompt != "base") || (commits == 1 && !strings.Contains(cleanPrompt, "unpushed commits: 1")) {
 			t.Fatalf("clean recovery observation changed prompt: %q", cleanPrompt)
 		}

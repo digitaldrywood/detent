@@ -20,6 +20,40 @@ type validatorCommands struct {
 	issue   workspace.Issue
 }
 
+func (v *validatorCommands) reuse(ctx context.Context, tree string, receipts []gate.CommandResult) {
+	provider, ok := v.run.(interface {
+		ReviewCommandEnvironment(context.Context, workspace.Info, workspace.Issue) gate.CheckEnvironment
+	})
+	if !ok || tree == "" {
+		return
+	}
+	environment := provider.ReviewCommandEnvironment(ctx, v.info, v.issue)
+	if !environment.Known() {
+		return
+	}
+	latest := make(map[string]gate.CommandResult)
+	var commands []string
+	for _, receipt := range receipts {
+		if receipt.HeadSHA != v.issue.PullRequestHeadSHA || receipt.TreeSHA != tree {
+			continue
+		}
+		previous, exists := latest[receipt.Command]
+		if exists && receipt.StartedAt.Before(previous.StartedAt) {
+			continue
+		}
+		if !exists {
+			commands = append(commands, receipt.Command)
+		}
+		latest[receipt.Command] = receipt
+	}
+	for _, command := range commands {
+		receipt := latest[command]
+		if workspace.ValidationCoversHead(&receipt, command, v.issue.PullRequestHeadSHA) && receipt.Evidence != nil && receipt.Evidence.Environment == environment {
+			v.results = append(v.results, receipt)
+		}
+	}
+}
+
 func (v *validatorCommands) execute(ctx context.Context, command string) (receipt gate.CommandResult, resultErr error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

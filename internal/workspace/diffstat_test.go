@@ -230,6 +230,9 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			if !test.wantErr && (receipt.Command != test.command || receipt.HeadSHA != issue.PullRequestHeadSHA || receipt.TreeSHA == "" || receipt.ExitCode != test.exit || receipt.Output == "") {
 				t.Fatalf("missing command evidence: %+v", receipt)
 			}
+			if !test.wantErr && (receipt.Evidence == nil || !receipt.Evidence.Environment.Known() || backend.ReviewCommandEnvironment(t.Context(), info, request) != receipt.Evidence.Environment) {
+				t.Fatalf("reuse environment differs from host command environment: %+v", receipt.Evidence)
+			}
 		})
 	}
 	if err := os.Remove(filepath.Join(info.Path, "untracked.txt")); err != nil {

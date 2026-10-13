@@ -7,10 +7,18 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 type ReviewCommandRunner interface {
 	RunReviewCommand(context.Context, Info, Issue, string) (gate.CommandResult, error)
+}
+
+func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issue Issue) gate.CheckEnvironment {
+	command := commandshell.Command(ctx, "", l.hooks.Shell)
+	command.Dir = info.Path
+	command.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
+	return validationEnvironment(ctx, command).Environment
 }
 
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
