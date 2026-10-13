@@ -97,6 +97,7 @@ export const DiagnosticFinding = Schema.Struct({
   next_action: Schema.String,
   subject: Schema.Struct({
     kind: Schema.Literals(["issue", "fleet", "project"]),
+    runner_id: Schema.optional(Schema.String),
     project_id: Schema.optional(Schema.String),
     work_item_id: Schema.optional(Schema.String),
   }),
@@ -149,7 +150,7 @@ export function findingsFromRead(
           }
         : finding.subject.kind === "project"
           ? { kind: "project", project_id: finding.subject.id }
-          : { kind: "fleet" },
+          : { kind: "fleet", runner_id: finding.subject.kind === "runner" ? finding.subject.id : undefined, project_id: finding.subject.project_id },
   }));
 }
 

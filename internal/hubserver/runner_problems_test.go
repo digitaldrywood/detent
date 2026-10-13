@@ -41,6 +41,21 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			if problems[0].Subject != "codex" || problems[0].Check != "codex login status" || problems[0].FixCommand != "codex login --device-auth" || problems[0].ReportedAt.IsZero() || strings.Contains(problems[0].ErrorOutput, "private-key") {
 				t.Fatalf("unsafe or missing details: %+v", problems)
 			}
+			runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, connection := range []string{"online", "offline"} {
+				runner.ConnectionHealth = connection
+				fleet := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{f.project.ID: true}, f.service.config.now())
+				if fleet.Health != "needs_attention" || fleet.CapacityHealth != connection {
+					t.Fatalf("project warning changed host availability: health=%s capacity_health=%s connection=%s", fleet.Health, fleet.CapacityHealth, connection)
+				}
+			}
+			runner.Problems[0].ProjectID = ""
+			if fleet := hostedFleetRunnerView(runner, "test", nil, f.service.config.now()); fleet.CapacityHealth != "" || fleet.Health != "needs_attention" {
+				t.Fatalf("runner-wide failure lost its availability warning: %+v", fleet)
+			}
 			reported := problems[0].ReportedAt
 			_, again := read()
 			if !again[0].ReportedAt.Equal(reported) {

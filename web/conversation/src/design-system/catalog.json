@@ -2183,6 +2183,37 @@
       "related": ["project-favicon", "right-panel-tabs"]
     },
     {
+      "id": "capacity-panel",
+      "name": "Capacity panel",
+      "kind": "composition",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/app/fleet/CapacityPanel.tsx",
+      "files": [
+        "src/app/fleet/capacity.ts"
+      ],
+      "exports": [
+        "CapacityPanel"
+      ],
+      "variants": {},
+      "states": [
+        "running",
+        "free",
+        "unavailable",
+        "offline",
+        "draining",
+        "no runners"
+      ],
+      "keyboard": "Tab reaches runner destinations; Enter opens existing runner settings or the runner detail sheet.",
+      "use": "Live host capacity in Settings and Diagnostics, with one shared used/free/unavailable derivation and compact host rows.",
+      "avoid": "Historical charts, project eligibility decisions or inferred provider pacing; use their existing owners.",
+      "related": [
+        "workspace-page-container",
+        "badge",
+        "button"
+      ]
+    },
+    {
       "id": "runner-status-dot",
       "name": "Runner status dot",
       "source": "src/components/RunnerStatusDot.tsx",

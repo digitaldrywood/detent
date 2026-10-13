@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 140 entries; by kind: 52 primitive, 81 composition, 7 surface; by status: 140 available, 0 proposed, 0 exception.
+Catalog totals: 141 entries; by kind: 52 primitive, 82 composition, 7 surface; by status: 141 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -904,6 +904,19 @@ The runner update control in the sidebar footer, for readers who manage runners;
 - Keyboard: A focusable button with the status as its accessible name; Enter or Space checks for updates or opens the runner settings.
 - Avoid: Announcing other updates with it; SidebarProviderUpdatePill and SidebarUpdateArchitectureWarning render nothing here, so use a toast or a composer notice instead.
 - Related: [Sidebar chrome](#sidebar-chrome), [Refresh icon](#refresh-icon).
+
+### Capacity panel
+
+Live host capacity in Settings and Diagnostics, with one shared used/free/unavailable derivation and compact host rows.
+
+- Kind: Composition; status: available; id: `capacity-panel`.
+- Import: `import { CapacityPanel } from "~/app/fleet/CapacityPanel";`
+- Source: [src/app/fleet/CapacityPanel.tsx](../../web/conversation/src/app/fleet/CapacityPanel.tsx), with [src/app/fleet/capacity.ts](../../web/conversation/src/app/fleet/capacity.ts).
+- Variants: none.
+- States: running, free, unavailable, offline, draining, no runners.
+- Keyboard: Tab reaches runner destinations; Enter opens existing runner settings or the runner detail sheet.
+- Avoid: Historical charts, project eligibility decisions or inferred provider pacing; use their existing owners.
+- Related: [Workspace page container](#workspace-page-container), [Badge](#badge), [Button](#button).
 
 ### Activity page
 

@@ -4,35 +4,60 @@ const fixture = require("../../web/conversation/src/contracts/fixtures/diagnosti
 const healthFixture = require("../../web/conversation/src/contracts/fixtures/health-findings.json");
 const fleetFixture = require("../../web/conversation/src/contracts/fixtures/account-fleet.json");
 
-test.describe.configure({ mode: "serial" });
 let hub;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("diagnostics", {
     env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" },
   });
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   await hub?.stop();
 });
 
-async function open(page, report = fixture) {
+function fleet(longErrors = false) {
+  const base = fleetFixture.runners[0];
+  const raw = "policy_digest git command error_output ".repeat(50);
+  return { ...fleetFixture, runners: [8, 4, 8].map((capacity, index) => ({
+    ...base, id: `runner_${index}`, machine_id: `machine_${index}`, display_name: ["Example desktop", "Example laptop", "Example build host"][index], hostname: `example-host-${index}`,
+    health: "online", capacity_health: "online", connection_health: "online", state: index === 2 ? "draining" : "active", claim_refusal_reason: "", host_capacity: capacity, host_used: 1, capacity_limit: capacity, reported_capacity: capacity, provider_capacity: [],
+    update: index === 2 ? { status: "draining", desired: { version: "v1.0.0" } } : undefined,
+    problems: longErrors ? [{ code: index === 1 ? "policy_mismatch" : "settings_invalid", project_id: index === 1 ? hub.fixture.project_id : "prj_optional", subject: "project configuration", check: "load settings", message: raw, error_output: raw, fix_hint: raw, first_seen: "2026-10-07T10:00:00Z" }] : [],
+  })) };
+}
+
+async function open(page, report = fixture, longErrors = false) {
+  await page.route("**/app/bootstrap", async (route) => {
+    const response = await route.fetch();
+    const bootstrap = await response.json();
+    bootstrap.organization.name = "Example organization";
+    bootstrap.projects = bootstrap.projects.map((project) => ({ ...project, name: "Example project" }));
+    if (longErrors) bootstrap.projects.push({ ...bootstrap.projects[0], id: "prj_optional", name: "Optional project" });
+    await route.fulfill({ response, json: bootstrap });
+  });
   await page.route("**/api/v2/organizations/*/fleet", (route) =>
-    route.fulfill({ json: fleetFixture }),
+    route.fulfill({ json: fleet(longErrors) }),
   );
   await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
     route.fulfill({ json: report }),
   );
-  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) =>
-    report.findings === null
-      ? route.fulfill({
-          status: 404,
-          json: { code: "not_found", message: "Not available" },
-        })
-      : route.fulfill({ json: { ...healthFixture, items: healthFixture.items.map((finding) => finding.subject.kind === "work_item" ? { ...finding, subject: { ...finding.subject, id: hub.fixture.work_item } } : finding) } }),
-  );
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) => {
+    if (report.findings === null) return route.fulfill({
+      status: 404,
+      json: { code: "not_found", message: "Not available" },
+    });
+    const project = new URL(route.request().url()).pathname.split("/").at(-3);
+    const items = healthFixture.items
+      .filter((finding) => finding.subject.kind === "runner" || project === hub.fixture.project_id)
+      .map((finding) => finding.subject.kind === "work_item"
+        ? { ...finding, subject: { kind: "work_item", id: hub.fixture.work_item } }
+        : finding.subject.kind === "runner"
+          ? { ...finding, summary: "Runner connection needs review", next_action: "Runner operator: check the runner process and its Hub connection.", subject: { ...finding.subject, id: "runner_0", project_id: hub.fixture.project_id } }
+          : { ...finding, subject: { ...finding.subject, id: hub.fixture.project_id } });
+    return route.fulfill({ json: { ...healthFixture, items } });
+  });
   await page.goto(hub.fixture.accounts.owner, {
     waitUntil: "domcontentloaded",
   });
@@ -46,7 +71,7 @@ async function open(page, report = fixture) {
     page
       .getByRole("region", { name: "Needs attention", exact: true })
       .getByRole("article"),
-  ).toHaveCount(report.findings?.length ?? 0);
+  ).toHaveCount((report.findings?.length ?? 0) + (longErrors ? 2 : 0));
 }
 
 test("Browse opens Diagnostics, orders findings, and changes the read window", async ({
@@ -59,6 +84,8 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
   await expect(rows.first()).toContainText(
     "Repeated attempts without progress",
   );
+  await expect(rows.first()).toContainText("Example project");
+  await expect(rows.first()).not.toContainText("Project unavailable to you");
   await expect(rows.first().getByRole("link")).toHaveAttribute(
     "href",
     /\/work\/i\/wi_[^?]+\?tab=diagnostics$/,
@@ -69,14 +96,14 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
   );
   await expect(rows.nth(2).getByRole("link")).toHaveAttribute(
     "href",
-    /\/work\/p\/prj_fixture$/,
+    `/work/p/${hub.fixture.project_id}`,
   );
   await expect(
     page.getByRole("img", { name: "Hourly slots in use and Todo queue depth" }),
   ).toBeVisible();
-  const capacity = page.getByRole("region", { name: "Capacity", exact: true });
-  await expect(capacity).toContainText("Limit 2 · Reported 2 · 1 in use");
-  await expect(capacity.getByLabel("1 of 2 slots in use")).toBeVisible();
+  const capacity = page.getByRole("region", { name: "Capacity right now", exact: true });
+  await expect(capacity).toContainText("3 of 20 slots running work");
+  await expect(capacity.getByRole("link", { name: "Example desktop" })).toBeVisible();
   await rows.first().getByRole("link").click();
   await expect(page).toHaveURL(/\/work\/i\/wi_[^?]+\?tab=diagnostics$/);
   await expect(page.getByRole("tab", { name: "Diagnostics", exact: true })).toHaveAttribute("aria-selected", "true");
@@ -109,7 +136,7 @@ test("an unavailable findings read differs from an empty detector result", async
   });
   await expect(attention).toContainText("Findings are unavailable");
   await expect(
-    page.getByRole("region", { name: "Scheduler decisions", exact: true }),
+    page.getByRole("region", { name: "Work throughput", exact: true }),
   ).toContainText("Not recorded");
   await page.unroute("**/api/v2/organizations/*/diagnostics?*");
   await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
@@ -145,20 +172,20 @@ test("an unavailable findings read differs from an empty detector result", async
 for (const theme of ["light", "dark"]) {
   for (const width of [1440, 390]) {
     test(`Diagnostics ${theme} at ${width}px`, async ({ page }, testInfo) => {
-      await page.setViewportSize({ width, height: 1100 });
+      await page.setViewportSize({ width, height: 900 });
       await page.emulateMedia({ colorScheme: theme });
-      await open(page);
+      await open(page, fixture, true);
       await page.evaluate((theme) => {
         document.documentElement.classList.toggle("dark", theme === "dark");
         document.documentElement.dataset.theme = theme;
       }, theme);
       for (const section of [
         "Needs attention",
-        "Capacity",
-        "Scheduler decisions",
-        "Merge queue",
-        "Instrumentation coverage",
-        "Configuration that shapes these numbers",
+        "Capacity right now",
+        "Capacity and throughput history",
+        "Hourly capacity",
+        "Work throughput",
+        "Merge throughput",
       ]) {
         await expect(
           page.getByRole("heading", { name: section, exact: true }),
@@ -181,16 +208,24 @@ for (const theme of ["light", "dark"]) {
         path: screenshot,
         contentType: "image/png",
       });
-      const coverage = page.getByRole("region", {
-        name: "Instrumentation coverage",
-        exact: true,
-      });
-      await coverage.scrollIntoViewIfNeeded();
-      await expect(coverage).toContainText("841 / 841");
-      await expect(coverage).toContainText("Detector last tick:");
-      await expect(
-        page.getByRole("meter", { name: "Transitions coverage" }),
-      ).toHaveAttribute("aria-valuenow", "841");
+      const live = page.getByRole("region", { name: "Capacity right now", exact: true });
+      const attention = page.getByRole("region", { name: "Needs attention", exact: true });
+      const liveBounds = await live.boundingBox();
+      const attentionBounds = await attention.boundingBox();
+      expect(liveBounds.y + liveBounds.height).toBeLessThanOrEqual(attentionBounds.y);
+      for (const name of ["Example desktop", "Example laptop", "Example build host"]) {
+        const summary = live.getByRole("link", { name });
+        await expect(summary).toBeVisible();
+        const summaryBounds = await summary.boundingBox();
+        expect(summaryBounds.y + summaryBounds.height).toBeLessThan(900);
+      }
+      await expect(live).toContainText("Finishing work before updating");
+      await expect(attention).toContainText("Optional project");
+      await expect(attention).toContainText("Example project");
+      await expect(attention.getByRole("link", { name: "Review policy" })).toHaveAttribute("href", `/settings/integrations?project=${hub.fixture.project_id}`);
+      await expect(page.getByText("Instrumentation coverage", { exact: true })).toHaveCount(0);
+      await expect(page.getByText(/policy_digest|git command error_output/)).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Refresh diagnostics" })).toBeEnabled();
     });
   }
 }
