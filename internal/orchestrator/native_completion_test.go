@@ -116,6 +116,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	opened := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, Files: 2}
 	waiting := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2}
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
+	sourceWait := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, ImplementationReview: &gate.ValidatorResult{VersionID: "version_1", HeadSHA: head, Verdict: "wait", Commands: []gate.CommandResult{{Command: "unavailable-host-tool", HeadSHA: head, ExitCode: 127}}}}
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
 		optout        bool
@@ -125,6 +126,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		finalMessage  string
 		runErr        error
 		wantHuman     bool
+		wantWait      bool
 		noUsage       bool
 		change        *runpkg.NativeChange
 		states        []connector.WorkflowState
@@ -262,7 +264,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "an accepted version lands directly without a dispatchable landing lane", change: accepted, states: undispatched, wantDirect: true},
 		{name: "validator rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, wantState: "Rework"},
 		{name: "source review rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
-		{name: "source review wait routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "wait"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "acknowledged current source rework outranks summary evidence error", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{VersionID: "version", HeadSHA: head, Verdict: "rework"}, ImplementationReviewError: "summary unavailable"}, states: unfinishedWorkflow, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Rework"},
+		{name: "source review wait preserves operator evidence owner", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantWait: true, roundTrip: true},
+		{name: "source review producer failure retains operator evidence owner", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, ImplementationReviewError: "required source review backend unavailable"}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", runErr: runpkg.NewSSHRunResponse(runpkg.RunResult{}, &runpkg.NativeImplementationReviewError{Err: errors.New("required source review backend unavailable")}).Err(), wantState: "Blocked", wantWait: true, roundTrip: true},
+		{name: "source review evidence hold publication refusal retains completion", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("tracker unavailable"), wantDeferred: true},
+		{name: "source review evidence hold needs an executable recovery destination", change: sourceWait, states: append(append([]connector.WorkflowState(nil), unfinishedWorkflow[:len(unfinishedWorkflow)-2]...), connector.WorkflowState{Name: "Blocked"}, unfinishedWorkflow[len(unfinishedWorkflow)-1]), sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantDeferred: true},
+		{name: "source review wait respects custom Rework", change: sourceWait, states: customRework, reworkState: "Fixing", humanReview: &no, wantSettled: true},
+		{name: "source review wait with disabled Rework settles", change: sourceWait, states: noDispatchRework, humanReview: &no, wantSettled: true},
+		{name: "source review wait without Rework settles", change: sourceWait, states: fourLanes, humanReview: &no, wantSettled: true},
+		{name: "source review wait retains human review lane", change: sourceWait, states: unfinishedWorkflow, wantState: "In Review"},
+		{name: "source review wait without review destination defers", change: sourceWait, states: hosted, wantDeferred: true},
+		{name: "source review wait preserves prerequisite authority", change: sourceWait, states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
+		{name: "source review wait preserves human action", change: sourceWait, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "source review rework preserves prerequisite authority", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "source review rework preserves human action", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "reviewed validator rework cannot land", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Reviewed: true, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
@@ -652,6 +665,25 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if err := json.Unmarshal([]byte(attempts.completions[0].MetricsJSON), &metrics); err != nil || metrics.TokenUSD != 0.25 {
 					t.Fatalf("landing lost source usage: %s, %v", attempts.completions[0].MetricsJSON, err)
+				}
+				return
+			}
+			if test.wantWait {
+				if tick.stateIssues[0].State != "Blocked" || len(state.Retry) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
+					t.Fatalf("source review wait remained runnable or lost settlement: state=%s retry=%v releases=%d", tick.stateIssues[0].State, state.Retry, scheduling.releases)
+				}
+				blocked, held := state.Blocked[issue.ID]
+				if !held || blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerOperator || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged || blocked.Recovery.OperatorRemedy == "" {
+					t.Fatalf("technical wait has no protected operator owner: %+v", blocked)
+				}
+				if len(tick.comments) < 2 || !strings.Contains(tick.comments[0].body, "operator") || !strings.Contains(tick.comments[len(tick.comments)-1].body, "applied") {
+					t.Fatalf("operator hold was not published: %+v", tick.comments)
+				}
+				for range 3 {
+					orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				}
+				if len(state.Retry) != 0 || scheduling.releases != 1 {
+					t.Fatal("technical evidence wait started automatic retry")
 				}
 				return
 			}

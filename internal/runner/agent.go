@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -1540,13 +1541,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}
+	var reviewRecovery *tracker.NativeAttempt
+	if req.Execution != nil && mode == RunModeImplement {
+		reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
+	}
 	publicationRecovery := false
 	if req.Execution != nil && mode == RunModeImplement && runRole(mode, req.Issue) == RoleRework {
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
 			publicationRecovery = previous.Checkpoint.UncertainForgeEffect()
 		}
 	}
-	if req.Execution != nil && !nativeLanding && !publicationRecovery && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
 		if !freshCheckout && !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
@@ -1601,7 +1606,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = freshCheckout
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding) {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil) {
 		if local, ok := runWorkspace.(interface {
 			Existing(workspace.Issue) (workspace.Info, error)
 		}); ok {
@@ -1926,15 +1931,24 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	resumeState := store.AgentResumeState{}
-	if mode != RunModeRoutine {
+	if mode != RunModeRoutine && reviewRecovery == nil {
 		resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 		if err != nil {
 			return RunResult{}, err
 		}
 	}
-	resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
-	if err != nil {
-		return RunResult{}, err
+	if reviewRecovery != nil {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return RunResult{}, err
+		}
+		if !nativeReviewResumeMatches(req.Execution.Recovery(), recoveryState, workspaceIssue.Source) {
+			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
+		}
+	} else {
+		resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	if req.Execution != nil {
 		if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
@@ -1976,6 +1990,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
 			ctx = conversation.attach(ctx)
 			defer func() { conversation.close(ctx, returnValue, returnErr) }()
+			if reviewRecovery != nil && conversation.session.Continuation() {
+				reviewRecovery = nil
+				resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
+				if err != nil {
+					return RunResult{}, err
+				}
+				resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
+				if err != nil {
+					return RunResult{}, err
+				}
+			}
 		}
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
@@ -1991,14 +2016,38 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	if publicationRecovery {
-		if !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
+	if publicationRecovery || reviewRecovery != nil {
+		if publicationRecovery && !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
 			return RunResult{}, fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired)
 		}
 		req.finalizeNativeWork = true
+		req.reviewOnly = reviewRecovery != nil
+		result := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
+		var sessionID int64
+		var sessionStarted bool
+		if reviewRecovery != nil {
+			if req.AcquireModelPermit != nil {
+				if err := req.AcquireModelPermit(ctx); err != nil {
+					return RunResult{}, err
+				}
+			}
+			sessionID, sessionStarted, err = r.startSession(ctx, req, startedAt, runtimeIdentity, store.AgentResumeState{}, "", "")
+			if err != nil {
+				return RunResult{}, err
+			}
+			if runtime, ok := req.Execution.(RuntimeExecution); ok {
+				if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: sessionID, Stage: nativeRuntimePhase(req), StartedAt: startedAt, AsOf: r.now(), Status: "running"}}); err != nil {
+					return RunResult{}, err
+				}
+			}
+			result.FinalMessage = reviewRecovery.CompletionBody
+		}
 		afterRunPending = false
 		err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
-		return RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}, err
+		if reviewRecovery != nil {
+			err = errors.Join(err, r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, r.now(), result, sessionModel, backendConfig.Kind, 0, AgentTurnResult{}, 0))
+		}
+		return result, err
 	}
 	reworkPrecheck := workspace.MergePrepareResult{}
 	if workspaceIssue.NativeRework {
@@ -3497,6 +3546,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
 	promptOptions.Evidence = req.Evidence
 	promptOptions.implementationReview = req.implementationReview
+	promptOptions.Discussion = req.Discussion
 	if commands != nil {
 		var commandErr error
 		promptOptions.Commands, commandErr = commands.evidence()

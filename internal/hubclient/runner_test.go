@@ -542,6 +542,22 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if _, err := native.Renew(t.Context(), retained, 90); err != nil {
 		t.Fatalf("interruption released the original lease: %v", err)
 	}
+	resumedScheduler, err := NewScheduler(restarted, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedCandidates, err := resumedScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
+	if err != nil || len(resumedCandidates) != 1 || resumedCandidates[0].ID != string(issue.WorkItemID) {
+		t.Fatalf("incomplete interruption did not reconnect: candidates=%+v error=%v", resumedCandidates, err)
+	}
+	if _, err := resumedScheduler.AdoptClaim(t.Context(), resumedCandidates[0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	resumedLease := resumedScheduler.nativeClaims[string(issue.WorkItemID)].lease
+	if resumedLease.ID != retained.ID || resumedLease.FencingToken != retained.FencingToken {
+		t.Fatalf("incomplete interruption replaced reconnect authority: old=%+v new=%+v", retained, resumedLease)
+	}
+	t.Log("genuine incomplete interruption retained its original lease/fence on reconnect")
 	if err := native.Release(t.Context(), retained, "cancelled"); err != nil {
 		t.Fatal(err)
 	}

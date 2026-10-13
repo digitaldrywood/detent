@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	gatepkg "github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -183,23 +184,34 @@ func sshTestProvider(ctx context.Context) error {
 				_, err = io.Copy(io.Discard, os.Stdin)
 				return err
 			}
-			if err := os.WriteFile(filepath.Join(message.Params.Cwd, "feature.txt"), []byte("remote worker\n"), 0o644); err != nil {
-				return err
-			}
-			for _, args := range [][]string{{"add", "feature.txt"}, {"-c", "user.name=SSH fixture", "-c", "user.email=ssh@example.test", "commit", "-m", "remote fixture"}, {"push", "origin", "HEAD"}} {
-				cmd := exec.CommandContext(ctx, "git", args...)
-				cmd.Dir = message.Params.Cwd
-				if data, err := cmd.CombinedOutput(); err != nil {
-					return fmt.Errorf("git fixture: %w: %s", err, data)
+			_, featureErr := os.Stat(filepath.Join(message.Params.Cwd, "feature.txt"))
+			reviewFailure := os.Getenv("DETENT_SSH_TEST_REVIEW_FAILURE") == "1" && featureErr == nil
+			if !reviewFailure {
+				if err := os.WriteFile(filepath.Join(message.Params.Cwd, "feature.txt"), []byte("remote worker\n"), 0o644); err != nil {
+					return err
+				}
+				for _, args := range [][]string{{"add", "feature.txt"}, {"-c", "user.name=SSH fixture", "-c", "user.email=ssh@example.test", "commit", "-m", "remote fixture"}, {"push", "origin", "HEAD"}} {
+					cmd := exec.CommandContext(ctx, "git", args...)
+					cmd.Dir = message.Params.Cwd
+					if data, err := cmd.CombinedOutput(); err != nil {
+						return fmt.Errorf("git fixture: %w: %s", err, data)
+					}
+				}
+				gate := exec.CommandContext(ctx, "sh", "-c", os.Getenv("DETENT_SSH_TEST_GATE"))
+				gate.Dir = message.Params.Cwd
+				if err := gate.Run(); err != nil {
+					return fmt.Errorf("remote gate: %w", err)
 				}
 			}
-			gate := exec.CommandContext(ctx, "sh", "-c", os.Getenv("DETENT_SSH_TEST_GATE"))
-			gate.Dir = message.Params.Cwd
-			if err := gate.Run(); err != nil {
-				return fmt.Errorf("remote gate: %w", err)
+			finalMessage := "Finished remote work."
+			if os.Getenv("DETENT_SSH_TEST_REVIEW_FAILURE") == "1" {
+				finalMessage += "\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+			}
+			if reviewFailure {
+				finalMessage = "malformed source-review output"
 			}
 			for _, notification := range []map[string]any{
-				{"jsonrpc": "2.0", "method": "item/agentMessage/delta", "params": map[string]any{"threadId": "remote-thread", "turnId": "remote-turn", "itemId": "final", "delta": "Finished remote work."}},
+				{"jsonrpc": "2.0", "method": "item/agentMessage/delta", "params": map[string]any{"threadId": "remote-thread", "turnId": "remote-turn", "itemId": "final", "delta": finalMessage}},
 				{"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": map[string]any{"threadId": "remote-thread", "turnId": "remote-turn", "tokenUsage": map[string]any{"total": map[string]any{"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}}}},
 				{"jsonrpc": "2.0", "method": "turn/completed", "params": map[string]any{"threadId": "remote-thread", "turn": map[string]any{"id": "remote-turn", "status": "completed"}}},
 			} {
@@ -227,6 +239,7 @@ func TestSSHWorkerLifecycle(t *testing.T) {
 	for _, native := range []bool{false, true} {
 		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native) })
 	}
+	t.Run("native source producer parse failure", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, true) })
 }
 
 func TestSSHLocalTargetIntegration(t *testing.T) {
@@ -239,7 +252,7 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 	testSSHWorkerLifecycle(t, true, true)
 }
 
-func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool) {
+func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure ...bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
@@ -339,6 +352,11 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool) {
 	cfg.Hooks.Shell = "sh"
 	gate := "test -f \"$HOME/before-run\" && test -f \"$GH_CONFIG_DIR/hosts.yml\" && printf passed > \"$HOME/gate\""
 	cfg.Codex.Command = "env DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
+	failingReview := len(producerFailure) != 0 && producerFailure[0]
+	if failingReview {
+		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
+		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
+	}
 	cfg.Gate.Run = gate
 	cfg.Budget.Enabled = false
 	cfg.Hooks.AfterCreate = "printf created > \"$HOME/after-create\""
@@ -393,10 +411,20 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool) {
 	}}
 	var probe *sshNativeProbe
 	if native {
-		probe = &sshNativeProbe{}
+		probe = &sshNativeProbe{producerFailure: failingReview}
 		request.Execution = probe
 	}
 	result, err := run.Run(ctx, request)
+	if failingReview {
+		if probe == nil {
+			t.Fatal("source review failure fixture requires a native publisher")
+		}
+		var status interface{ BackendErrorStatus() string }
+		if err == nil || !strings.Contains(err.Error(), "parse validator result") || !errors.As(err, &status) || status.BackendErrorStatus() != "interrupted" || probe.outcome != "interrupted" || probe.finished != 1 || result.NativeChange == nil || result.NativeChange.VersionID != "central-version" || result.NativeChange.HeadSHA != probe.lastDiff.HeadSHA || result.NativeChange.ImplementationReviewError == "" || !strings.Contains(result.FinalMessage, "status: complete") || probe.lastDiff.HeadSHA == probe.base {
+			t.Fatalf("remote producer failure lost preserved source or interrupted owner: error=%v outcome=%s finishes=%d change=%+v", err, probe.outcome, probe.finished, result.NativeChange)
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("remote lifecycle: %v", err)
 	}

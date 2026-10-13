@@ -756,9 +756,10 @@ func TestNativeConversationBindKeepsResumeThreadOverTranscript(t *testing.T) {
 // the runner can log a transcript hand-over instead of a resumed thread.
 func TestNativeConversationResumeMode(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		body string
-		want string
+		name     string
+		body     string
+		want     string
+		ordinary bool
 	}{
 		{
 			name: "thread",
@@ -769,6 +770,19 @@ func TestNativeConversationResumeMode(t *testing.T) {
 			name: "transcript",
 			body: `{"conversation_id":"conv_1","resume":{"thread_id":"","transcript":[{"role":"user","kind":"text","text":"earlier"}]},"pending":[],"cursor":0}`,
 			want: runner.ConversationResumeTranscript,
+		},
+		{
+			name:     "ordinary worker binding",
+			body:     `{"conversation_id":"conv_1","continuation":false,"resume":{},"pending":[],"cursor":0}`,
+			ordinary: true,
+		},
+		{
+			name: "explicit continuation",
+			body: `{"conversation_id":"conv_1","continuation":true,"resume":{},"pending":[],"cursor":0}`,
+		},
+		{
+			name: "unknown continuation retains conservative owner",
+			body: `{"conversation_id":"conv_1","continuation":null,"resume":{},"pending":[],"cursor":0}`,
 		},
 		{
 			name: "nothing to resume",
@@ -789,6 +803,9 @@ func TestNativeConversationResumeMode(t *testing.T) {
 					t.Errorf("close error = %v", err)
 				}
 			}()
+			if session.Continuation() == test.ordinary || execution.conversationContinuation != session.Continuation() {
+				t.Fatalf("bound continuation ownership diverged: session=%t execution=%t ordinary=%t", session.Continuation(), execution.conversationContinuation, test.ordinary)
+			}
 			if got := session.ResumeMode(); got != test.want {
 				t.Fatalf("resume mode = %q, want %q", got, test.want)
 			}
