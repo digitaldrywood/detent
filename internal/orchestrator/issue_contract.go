@@ -14,7 +14,7 @@ import (
 )
 
 func (o *Orchestrator) issueContractApplies(issue connector.Issue) bool {
-	if o.cfg.IssueContract == nil {
+	if o.cfg.IssueContract == nil || strings.EqualFold(issue.State, "Triage") {
 		return false
 	}
 	if issue.IssueContract != nil {
@@ -28,7 +28,7 @@ func (o *Orchestrator) issueContractApplies(issue connector.Issue) bool {
 }
 
 func (o *Orchestrator) enforceIssueContract(ctx context.Context, state *State, issue connector.Issue, returnState string, now time.Time) (bool, error) {
-	if o.cfg.IssueContract == nil || issue.IssueContract != nil && issue.IssueContract.Exempt {
+	if strings.EqualFold(issue.State, "Triage") || o.cfg.IssueContract == nil || issue.IssueContract != nil && issue.IssueContract.Exempt {
 		return true, nil
 	}
 	if strings.Contains(strings.ToLower(issue.Description), "detent:no-dispatch") {

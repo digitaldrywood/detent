@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -59,12 +60,17 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
+		templates, err := nativeReporterContracts(ctx, s.database.db, scope)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
 		labels, err := readNativeLabels(ctx, s.database.db, scope)
 		return hubWorkResult(r, request, struct {
-			Project    tracker.NativeProject `json:"project"`
-			Priorities []int                 `json:"priorities"`
-			Labels     []nativeLabel         `json:"labels"`
-		}{project, []int{0, 1, 2, 3}, labels}, err)
+			Project           tracker.NativeProject    `json:"project"`
+			Priorities        []int                    `json:"priorities"`
+			Labels            []nativeLabel            `json:"labels"`
+			ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
+		}{project, []int{0, 1, 2, 3}, labels, templates}, err)
 	}
 	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.db, scope, request.Reference)
 	if err != nil {

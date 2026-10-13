@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -347,6 +348,16 @@ func validateNativeIssueType(value string, required bool) error {
 func validateNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue) (tracker.NativeProject, error) {
 	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
 		return tracker.NativeProject{}, err
+	}
+	if scope.credential.HostedRole == "reporter" {
+		contracts, err := nativeReporterContracts(ctx, tx, scope)
+		if err != nil {
+			return tracker.NativeProject{}, err
+		}
+		contract := config.IssueContract{Sections: contracts[request.Type]}
+		if missing := contract.Evaluate(connector.Issue{Description: request.Body}).Missing; len(missing) > 0 {
+			return tracker.NativeProject{}, &nativeError{Code: "invalid_request", Message: "Add or complete these required Reporter sections: " + strings.Join(missing, ", "), status: http.StatusUnprocessableEntity, publicMessage: true}
+		}
 	}
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
 		return tracker.NativeProject{}, err
