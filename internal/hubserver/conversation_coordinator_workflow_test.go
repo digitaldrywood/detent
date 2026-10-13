@@ -43,6 +43,11 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 		{name: "member approval denied", tool: "approve_project_policy", role: "member", refuse: true},
 		{name: "stale approval preview", tool: "approve_project_policy", role: "owner", refuse: true},
 		{name: "stale approval submission", tool: "approve_project_policy", role: "owner", status: http.StatusConflict},
+		{name: "selected policy changes after preview", tool: "approve_project_policy", role: "owner", status: http.StatusConflict},
+		{name: "selected policy unavailable after preview", tool: "approve_project_policy", role: "owner", status: http.StatusConflict},
+		{name: "selected source becomes read only", tool: "approve_project_policy", role: "owner", status: http.StatusConflict},
+		{name: "approval foreign project submission", tool: "approve_project_policy", role: "owner", status: http.StatusForbidden},
+		{name: "approval foreign request submission", tool: "approve_project_policy", role: "owner", status: http.StatusForbidden},
 		{name: "grant revoked", tool: "approve_project_policy", role: "owner", status: http.StatusNotFound},
 		{name: "apply pending then adopted", tool: "apply_local_project_policy", role: "owner", status: http.StatusOK},
 		{name: "member application denied", tool: "apply_local_project_policy", role: "member", refuse: true},
@@ -52,6 +57,9 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 		{name: "stale cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusConflict},
 		{name: "changed selected policy", tool: "approve_project_policy", role: "owner", refuse: true},
 		{name: "cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusOK},
+		{name: "maximum cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusOK},
+		{name: "escaped cloud workflow", tool: "update_project_integration", role: "owner", status: http.StatusOK},
+		{name: "oversized cloud workflow", tool: "update_project_integration", role: "owner", refuse: true},
 		{name: "repository workflow refusal", tool: "update_project_integration", role: "owner", refuse: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -144,6 +152,24 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			requireNativeStatus(t, holdResponse, http.StatusOK)
 			var held tracker.NativeIssue
 			decodeHubResponse(t, holdResponse, &held)
+			foreignScope := ""
+			if test.name == "approval foreign project submission" {
+				response := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/projects", map[string]any{"idempotency_key": "second-project", "name": "Second workflow project", "grant_access": true, "states": HostedProjectStates()})
+				requireNativeStatus(t, response, http.StatusCreated)
+				var second tracker.NativeProject
+				decodeHubResponse(t, response, &second)
+				secondFixture := f
+				secondFixture.project = second.ID
+				secondFixture.grant(t, user, true, true)
+				secondScope := "org_security/" + string(second.ID)
+				foreignScope = secondScope
+				if _, err := f.service.database.approvePolicy(t.Context(), secondScope, "fixture", policy.Change{Policy: current}); err != nil {
+					t.Fatal(err)
+				}
+				if err := storeObservedPolicy(t.Context(), f.service.database.db, secondScope, r.binding.RunnerID, policy.Observation{Descriptor: selected, Source: &policy.RepositorySource{Repository: repository, Commit: selected.SourceRevision}}, f.service.config.now()); err != nil {
+					t.Fatal(err)
+				}
+			}
 			chatOwner := user
 			if test.role == "viewer" {
 				chatOwner = owner
@@ -199,6 +225,30 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				args = map[string]any{"runner_id": r.binding.RunnerID, "expected_runner_revision": revision, "expected_config_revision": view.ConfigRevision, "expected_policy_id": current.ID, "source_revision": selected.SourceRevision, "policy_id": selected.ID}
 			case "update_project_integration":
 				args["workflow_markdown"] = "---\ntracker:\n  kind: hub_native\n  lanes: [{name: Backlog, role: holding}, {name: Todo, role: active}, {name: In Progress, role: active}, {name: Rework, role: active}, {name: Merging, role: active}, {name: Blocked, role: holding}, {name: Human Review, role: holding}, {name: Plan Review, role: holding}, {name: Done, role: terminal}, {name: Cancelled, role: terminal}]\nplan:\n  enabled: true\n---\nComplete the issue.\n"
+				if test.name == "maximum cloud workflow" || test.name == "escaped cloud workflow" || test.name == "oversized cloud workflow" {
+					markdown := args["workflow_markdown"].(string)
+					size, padding := 128*1024, "w"
+					if test.name == "oversized cloud workflow" {
+						size++
+					}
+					if test.name == "escaped cloud workflow" {
+						padding = "&"
+						operatorSQL(t, f, "UPDATE projects SET workflow_markdown=? WHERE id=?", markdown+strings.Repeat(">", size-len(markdown)), f.project)
+					}
+					args["workflow_markdown"] = markdown + strings.Repeat(padding, size-len(markdown))
+					for _, tool := range tools.tools() {
+						if tool.Name == test.tool {
+							var schema struct {
+								Properties map[string]struct {
+									MaxLength int `json:"maxLength"`
+								} `json:"properties"`
+							}
+							if err := json.Unmarshal(tool.InputSchema, &schema); err != nil || schema.Properties["workflow_markdown"].MaxLength != 128*1024 {
+								t.Fatalf("workflow tool does not advertise the supported document limit: %s err=%v", tool.InputSchema, err)
+							}
+						}
+					}
+				}
 			}
 			if test.name == "changed selected policy" {
 				args["selected_policy_id"] = "policy_old_observation"
@@ -339,6 +389,32 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				t.Fatalf("missing diff: %s", action.Description)
 			}
 			switch test.name {
+			case "selected policy changes after preview":
+				newSelected := selected
+				newSelected.SourceRevision = strings.Repeat("d", 40)
+				newSelected = newSelected.WithID()
+				view.SelectedPolicy = &newSelected
+				post()
+			case "selected policy unavailable after preview":
+				view.SelectedPolicy = nil
+				post()
+			case "selected source becomes read only":
+				view.Source = "configured_local_workflow_read_only"
+				post()
+			case "approval foreign project submission", "approval foreign request submission":
+				var payload map[string]json.RawMessage
+				if err := json.Unmarshal(action.Arguments, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if test.name == "approval foreign project submission" {
+					payload["project_id"], _ = json.Marshal(strings.TrimPrefix(foreignScope, "org_security/"))
+				} else {
+					payload["request_id"], _ = json.Marshal("another-request")
+				}
+				action.Arguments, err = json.Marshal(payload)
+				if err != nil {
+					t.Fatal(err)
+				}
 			case "stale approval submission":
 				other := selected
 				other.Gates.AutoPromote = true
@@ -355,7 +431,13 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			}
 			response = f.request(t, user, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
 			requireNativeStatus(t, response, test.status)
-			if test.status != http.StatusOK {
+			if foreignScope != "" {
+				approval, err := readProjectPolicy(t.Context(), f.service.database.db, foreignScope)
+				if err != nil || !reflect.DeepEqual(approval.Policy, current) {
+					t.Fatalf("foreign project policy changed: %+v err=%v", approval, err)
+				}
+			}
+			if test.name == "grant revoked" {
 				return
 			}
 			holdResponse = f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(held.WorkItemID), nil)
@@ -364,6 +446,19 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			decodeHubResponse(t, holdResponse, &preserved)
 			if preserved.State != held.State || preserved.Body != held.Body || preserved.Revision != held.Revision {
 				t.Fatalf("issue hold was changed: %+v", preserved)
+			}
+			if test.status != http.StatusOK {
+				if test.name != "stale approval submission" {
+					approval, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+					want := current
+					if test.tool == "apply_local_project_policy" {
+						want = selected
+					}
+					if err != nil || !reflect.DeepEqual(approval.Policy, want) {
+						t.Fatalf("refused submission changed policy: %+v err=%v", approval, err)
+					}
+				}
+				return
 			}
 			if test.tool == "approve_project_policy" {
 				approval, err := readProjectPolicy(t.Context(), f.service.database.db, scope)

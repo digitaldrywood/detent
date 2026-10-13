@@ -22,16 +22,17 @@ import (
 
 // Bounds for coordinator tool arguments and results.
 const (
-	coordinatorToolArgumentBytes  = 16 << 10
-	coordinatorToolResultBytes    = 64 << 10
-	coordinatorAttentionDefault   = 20
-	coordinatorAttentionMax       = 50
-	coordinatorAttentionScan      = 500
-	coordinatorIssueBodyRunes     = 4000
-	coordinatorCommentRunes       = 1000
-	coordinatorCommentCount       = 5
-	coordinatorProposalTitleBytes = 500
-	coordinatorProposalBodyRunes  = 4000
+	coordinatorToolArgumentBytes     = 16 << 10
+	coordinatorWorkflowArgumentBytes = 6*(128<<10) + coordinatorToolArgumentBytes
+	coordinatorToolResultBytes       = 64 << 10
+	coordinatorAttentionDefault      = 20
+	coordinatorAttentionMax          = 50
+	coordinatorAttentionScan         = 500
+	coordinatorIssueBodyRunes        = 4000
+	coordinatorCommentRunes          = 1000
+	coordinatorCommentCount          = 5
+	coordinatorProposalTitleBytes    = 500
+	coordinatorProposalBodyRunes     = 4000
 )
 
 const (
@@ -118,8 +119,12 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	if err != nil {
 		return coordinatorToolError(fmt.Errorf("encode %s result: %w", call.Name, err)), nil
 	}
-	if len(encoded) > coordinatorToolResultBytes {
-		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, coordinatorToolResultBytes)), nil
+	limit := coordinatorToolResultBytes
+	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
+		limit = coordinatorWorkflowArgumentBytes
+	}
+	if len(encoded) > limit {
+		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, limit)), nil
 	}
 	return runner.AgentToolResult{Content: string(encoded), Success: true}, nil
 }
@@ -243,11 +248,15 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 }
 
 func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
+	return decodeCoordinatorArgumentsWithLimit(raw, target, coordinatorToolArgumentBytes)
+}
+
+func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit int) error {
 	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
 		raw = json.RawMessage(`{}`)
 	}
-	if len(raw) > coordinatorToolArgumentBytes {
-		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, coordinatorToolArgumentBytes)
+	if len(raw) > limit {
+		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, limit)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

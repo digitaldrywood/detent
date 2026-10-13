@@ -61,7 +61,7 @@ func coordinatorConnectionData(ctx context.Context) json.RawMessage {
 func coordinatorActionTools() []runner.AgentTool {
 	return []runner.AgentTool{
 		coordinatorTool("get_project_integration", "Read this project's integration settings and GitHub transport availability. Runner PR landing is selected by the approved repository policy.", `{"type":"object","properties":{},"additionalProperties":false}`),
-		coordinatorTool("update_project_integration", "Preview Hub integration or Cloud-owned workflow Markdown changes (lanes, transitions and dispatch). Repository-owned definitions require a reviewed source change and policy approval. This does not change the runner's approved PR landing policy. The client controls confirmation and submits the proposed call.", `{"type":"object","properties":{"workflow_markdown":{"type":"string","maxLength":12000},"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
+		coordinatorTool("update_project_integration", "Preview Hub integration or Cloud-owned workflow Markdown changes (lanes, transitions and dispatch). Repository-owned definitions require a reviewed source change and policy approval. This does not change the runner's approved PR landing policy. The client controls confirmation and submits the proposed call.", `{"type":"object","properties":{"workflow_markdown":{"type":"string","maxLength":131072},"repository_enabled":{"type":"boolean"},"intake":{"type":"string","enum":["disabled","manual"]},"projection":{"type":"string","enum":["disabled","summary"]}},"additionalProperties":false}`),
 		coordinatorTool("move_item", "Preview moving a native issue to a workflow state. Retry a blocked issue by moving it to Todo. Current workflow rules and revision apply; the client controls confirmation and submission.", `{"type":"object","required":["work_item_id","state"],"properties":{"work_item_id":{"type":"string"},"state":{"type":"string"}},"additionalProperties":false}`),
 		coordinatorTool("edit_item", "Preview editing an issue's title, body, labels or priority (0 urgent through 3 low). The client controls confirmation and submission.", `{"type":"object","required":["work_item_id"],"properties":{"work_item_id":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"labels":{"type":"array","items":{"type":"string"}},"priority":{"type":"integer","minimum":0,"maximum":3}},"additionalProperties":false}`),
 		coordinatorTool(string(chat.ActionArchiveItems), "Preview archiving a set of native issues in this project. The client controls confirmation and submission. Running and Merging issues are refused. Archived issues leave the board and dispatch and can be restored.", `{"type":"object","required":["work_item_ids"],"properties":{"work_item_ids":{"type":"array","minItems":1,"maxItems":50,"uniqueItems":true,"items":{"type":"string"}}},"additionalProperties":false}`),
@@ -128,7 +128,11 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	}
 	scope.project = record.ProjectID
 	var args coordinatorActionArguments
-	if err := decodeCoordinatorArguments(call.Arguments, &args); err != nil {
+	limit := coordinatorToolArgumentBytes
+	if call.Name == "update_project_integration" {
+		limit = coordinatorWorkflowArgumentBytes
+	}
+	if err := decodeCoordinatorArgumentsWithLimit(call.Arguments, &args, limit); err != nil {
 		return nil, err
 	}
 	var fields map[string]json.RawMessage

@@ -25,6 +25,14 @@ func coordinatorWorkflowTool(name string) bool {
 	return coordinatorWorkflowMutation(name) || name == operatortool.LocalProjectConfiguration
 }
 
+type coordinatorPolicyApprovalArguments struct {
+	ProjectID  string                           `json:"project_id"`
+	RequestID  string                           `json:"request_id"`
+	RunnerID   string                           `json:"runner_id"`
+	SelectedID string                           `json:"selected_policy_id"`
+	Input      operatortool.PolicyApprovalInput `json:"input"`
+}
+
 func coordinatorWorkflowTools() []runner.AgentTool {
 	var result []runner.AgentTool
 	for _, name := range []string{operatortool.LocalProjectConfiguration, "approve_project_policy", "apply_local_project_policy"} {
@@ -79,6 +87,7 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 		return nil, err
 	}
 	executor := hubProjectExecutor{t.coordinator.service.server}
+	var approval coordinatorPolicyApprovalArguments
 	if call.Name == "approve_project_policy" {
 		var args struct {
 			RunnerID         string `json:"runner_id"`
@@ -111,6 +120,7 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 			return nil, err
 		}
 		fields = map[string]json.RawMessage{"project_id": fields["project_id"], "input": input}
+		approval.RunnerID, approval.SelectedID = configuration.RunnerID, configuration.SelectedPolicy.ID
 	}
 	requestID := coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
 	if coordinatorWorkflowMutation(call.Name) {
@@ -165,6 +175,11 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 			return nil, err
 		}
 		action.Description += "\nApproval persists the policy in the Hub. Runner application remains pending until each runner reports adoption; existing issue holds and active lease policies remain authoritative."
+		approval.ProjectID, approval.RequestID, approval.Input = action.ProjectID, action.RequestID, request.Input
+		action.Arguments, err = json.Marshal(approval)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		args, err := operatortool.DecodeLocalProjectArguments(call.Name, raw, true)
 		if err != nil {
@@ -322,7 +337,31 @@ func (s *Service) executeCoordinatorWorkflowAction(ctx context.Context, action c
 		}
 		message = "Policy application submitted. Read local_project_configuration for pending status and the runner's adoption receipt."
 	} else {
-		raw, err = executor.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: action.Arguments}, projectCommandExecute)
+		var args coordinatorPolicyApprovalArguments
+		err = decodeCoordinatorArguments(action.Arguments, &args)
+		if err == nil && (args.ProjectID != action.ProjectID || args.RequestID != action.RequestID) {
+			err = operatortool.ErrAccessDenied
+		}
+		if err == nil && (args.RunnerID == "" || args.SelectedID == "") {
+			err = operatortool.ErrInvalidArguments
+		}
+		if err == nil {
+			var result operatortool.Result
+			result, err = executor.localProjectConfiguration(ctx, operatortool.LocalProjectConfiguration, operatortool.LocalProjectArguments{ProjectID: args.ProjectID, RunnerID: args.RunnerID})
+			if err == nil {
+				var configuration runnerauth.ProjectConfiguration
+				err = json.Unmarshal(result.Content, &configuration)
+				if err == nil && (configuration.Source == "configured_local_workflow_read_only" || configuration.RunnerID != args.RunnerID || configuration.SelectedPolicy == nil || configuration.SelectedPolicy.ID != args.SelectedID || !reflect.DeepEqual(*configuration.SelectedPolicy, args.Input.Policy)) {
+					err = policyMismatch("Selected policy changed or is unavailable; read local_project_configuration and preview the change again")
+				}
+			}
+		}
+		if err == nil {
+			raw, err = json.Marshal(operatortool.ProjectRequest[operatortool.PolicyApprovalInput]{ProjectID: args.ProjectID, RequestID: args.RequestID, Input: args.Input})
+			if err == nil {
+				raw, err = executor.command(ctx, operatortool.Call{Name: string(action.Kind), Arguments: raw}, projectCommandExecute)
+			}
+		}
 	}
 	if err != nil {
 		executor.AuditAction(ctx, action, "failed")

@@ -20,6 +20,9 @@ func TestProjectArgumentBounds(t *testing.T) {
 		invalid   bool
 	}{
 		{"workflow document", `{"input":{"workflow_markdown":"` + strings.Repeat("w", 300) + `"}}`, func() any { return &ProjectRequest[IntegrationInput]{} }, false},
+		{"maximum workflow document", `{"input":{"workflow_markdown":"` + strings.Repeat("w", 128*1024) + `"}}`, func() any { return &ProjectRequest[IntegrationInput]{} }, false},
+		{"escaped workflow document", `{"input":{"workflow_markdown":"` + strings.Repeat(`\u003c`, 128*1024) + `"}}`, func() any { return &ProjectRequest[IntegrationInput]{} }, false},
+		{"escaped oversized workflow document", `{"input":{"workflow_markdown":"` + strings.Repeat(`\u003c`, 128*1024+1) + `"}}`, func() any { return &ProjectRequest[IntegrationInput]{} }, true},
 		{"oversized workflow document", `{"input":{"workflow_markdown":"` + strings.Repeat("w", 128*1024+1) + `"}}`, func() any { return &ProjectRequest[IntegrationInput]{} }, true},
 		{"bounded read", `{"project_id":"p","limit":200}`, func() any { return &ProjectReadRequest{} }, false},
 		{"large page", `{"limit":201}`, func() any { return &ProjectReadRequest{} }, true},
