@@ -636,6 +636,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 	}{
 		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}},
 		{"override", "## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}},
+		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "reporter")
@@ -689,6 +690,9 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			if issue.State != "Triage" {
 				t.Fatalf("state=%s", issue.State)
 			}
+			if len(issue.IssueContract.ConfirmedSections) != 0 {
+				t.Fatalf("Reporter filing confirmed engineering sections: %+v", issue.IssueContract.ConfirmedSections)
+			}
 			scope := nativeScope{organization: "org_security", project: f.project}
 			_, id, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
 			if err != nil {
@@ -703,10 +707,16 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &issue)
 			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
-			if err != nil || claimable || !strings.Contains(reason, "Acceptance criteria") {
+			wantReason := "Acceptance criteria"
+			engineeredBody := test.body + issueContractTestSections
+			if test.name == "engineering overlap" {
+				wantReason = "A human must confirm"
+				engineeredBody = test.body
+			}
+			if err != nil || claimable || !strings.Contains(reason, wantReason) {
 				t.Fatalf("promoted contract=%t, %s, %v", claimable, reason, err)
 			}
-			response = f.request(t, member, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "engineer"}, ExpectedRevision: issue.Revision, Body: new(test.body + issueContractTestSections)})
+			response = f.request(t, member, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "engineer"}, ExpectedRevision: issue.Revision, Body: new(engineeredBody)})
 			requireNativeStatus(t, response, http.StatusOK)
 			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
 			if err != nil || !claimable || reason != "" {
