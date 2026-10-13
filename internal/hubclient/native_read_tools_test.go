@@ -278,8 +278,11 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 			}
 			result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.GetChange, Arguments: arguments})
 			var value operatortool.ChangeResult
-			if err != nil || !result.Success || len(result.Content) > operatortool.MaxResultBytes || json.Unmarshal([]byte(result.Content), &value) != nil || value.Read == nil || value.Read.VersionID != version.ID || len(value.Detail.Discussion) > 2 || value.ValidationAudit == nil || value.Read.Sections["versions"].NextCursor == "" {
+			if err != nil || !result.Success || len(result.Content) > operatortool.MaxResultBytes || json.Unmarshal([]byte(result.Content), &value) != nil || value.Read == nil || value.Read.VersionID != version.ID || len(value.Detail.Discussion) > 2 || value.Read.Sections["versions"].NextCursor == "" {
 				t.Fatalf("unbounded or incomplete native Change: bytes=%d %v", len(result.Content), err)
+			}
+			if value.ValidationAudit != nil || !value.Read.PolicyDetailsOmitted {
+				t.Fatal("native Change repeated project audit or omitted policy details without disclosure")
 			}
 			for _, discussion := range value.Detail.Discussion {
 				if seen[discussion.ID] || discussion.VersionID != version.ID {
