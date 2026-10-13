@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -125,7 +126,10 @@ func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversati
 	ownerCall := operatortool.Call{Name: call.Name, Arguments: raw}
 	if !coordinatorWorkflowMutation(call.Name) {
 		result, err := executor.Execute(ctx, ownerCall)
-		return result.Content, err
+		if err != nil {
+			return nil, err
+		}
+		return coordinatorPolicyEvidence(result.Content)
 	}
 	action := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Arguments: raw, Material: true}
 	if call.Name == "approve_project_policy" {
@@ -252,6 +256,39 @@ func coordinatorSettingsDiff(before, after any) (string, error) {
 		return "No settings changed.", nil
 	}
 	return strings.Join(lines, "\n"), nil
+}
+
+func coordinatorPolicyEvidence(raw json.RawMessage) (json.RawMessage, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var normalize func(any)
+	normalize = func(value any) {
+		switch fields := value.(type) {
+		case map[string]any:
+			if id, ok := fields["policy_id"].(string); ok && id != "" && fields["schema"] == json.Number("1") {
+				if gates, ok := fields["gates"].(map[string]any); ok {
+					for _, key := range []string{"human_review", "github_pull_request"} {
+						if _, present := gates[key]; !present {
+							gates[key] = false
+						}
+					}
+				}
+			}
+			for _, field := range fields {
+				normalize(field)
+			}
+		case []any:
+			for _, field := range fields {
+				normalize(field)
+			}
+		}
+	}
+	normalize(value)
+	return json.Marshal(value)
 }
 
 func (t *coordinatorToolset) workflowEvidence(ctx context.Context, record conversationRecord) map[string]any {

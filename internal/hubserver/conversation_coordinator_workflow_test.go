@@ -28,6 +28,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 		status           int
 	}{
 		{name: "grounded reads", tool: "get_project_policy", role: "member"},
+		{name: "disabled delivery", tool: "get_project_policy", role: "member"},
 		{name: "runner discovery", tool: operatortool.LocalProjectConfiguration, role: "member"},
 		{name: "ambiguous runners", tool: operatortool.LocalProjectConfiguration, role: "owner", refuse: true},
 		{name: "explicit runner selection", tool: operatortool.LocalProjectConfiguration, role: "owner"},
@@ -85,8 +86,8 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			r := enroll()
 			r.enroll(t)
 			current := hubTestPolicy()
-			if test.name == "grounded reads" {
-				current.Gates.GitHubPullRequest = true
+			if test.name == "grounded reads" || test.name == "disabled delivery" {
+				current.Gates.GitHubPullRequest = test.name == "grounded reads"
 				current.Gates.Validator = true
 				states := HostedProjectStates()
 				states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging", "Blocked"}})
@@ -96,7 +97,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			selected := current
 			selected.SourceRevision = strings.Repeat("b", 40)
 			selected.Gates.GitHubPullRequest = true
-			selected.Gates.HumanReview = false
+			selected.Gates.HumanReview = test.name == "disabled delivery"
 			selected.Gates.Validator = true
 			selected = selected.WithID()
 			repository := "example-org/example-project"
@@ -216,7 +217,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if err != nil || result.Success == test.refuse {
 				t.Fatalf("tool result=%+v err=%v", result, err)
 			}
-			if test.name == "grounded reads" {
+			if test.name == "grounded reads" || test.name == "disabled delivery" {
 				backend.waitStarted(t)
 				request := backend.request(t, 0)
 				seen := map[string]bool{}
@@ -226,7 +227,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 					}
 					seen[tool.Name] = true
 				}
-				if !strings.Contains(request.Prompt, "<workflow_evidence>") || !strings.Contains(request.Prompt, current.ID) || !strings.Contains(request.Prompt, `"workflow_source":"detent.yaml"`) || !strings.Contains(request.Prompt, `"name":"Rework","terminal":false,"dispatchable":true`) || !strings.Contains(request.Prompt, `"github_pull_request":true`) {
+				if !strings.Contains(request.Prompt, "<workflow_evidence>") || !strings.Contains(request.Prompt, current.ID) || !strings.Contains(request.Prompt, `"workflow_source":"detent.yaml"`) || !strings.Contains(request.Prompt, `"name":"Rework","terminal":false,"dispatchable":true`) || !strings.Contains(request.Prompt, `"human_review":false`) || !strings.Contains(request.Prompt, fmt.Sprintf(`"github_pull_request":%t`, current.Gates.GitHubPullRequest)) {
 					t.Fatalf("coordinator lacked workflow grounding: %s", request.Prompt)
 				}
 				evidence := tools.workflowEvidence(t.Context(), record)
@@ -237,6 +238,61 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 				if !strings.Contains(string(encoded), current.ID) || !strings.Contains(string(encoded), selected.ID) || !strings.Contains(string(encoded), r.binding.RunnerID) || !strings.Contains(string(encoded), `"project_id":"`+string(f.project)+`"`) {
 					t.Fatalf("missing workflow evidence: %s", encoded)
 				}
+				var approved struct {
+					Data struct {
+						Policy json.RawMessage `json:"policy"`
+					} `json:"data"`
+				}
+				decodeToolResult(t, result, &approved)
+				configuration, err := tools.handle(t.Context(), runner.AgentToolCall{Name: operatortool.LocalProjectConfiguration, Arguments: json.RawMessage(`{}`)})
+				if err != nil || !configuration.Success {
+					t.Fatalf("configuration result=%+v err=%v", configuration, err)
+				}
+				var policies struct {
+					Selected  json.RawMessage `json:"selected_policy"`
+					Effective json.RawMessage `json:"effective_policy"`
+				}
+				decodeToolResult(t, configuration, &policies)
+				for _, check := range []struct {
+					name string
+					raw  json.RawMessage
+					want policy.Descriptor
+				}{
+					{"approved", approved.Data.Policy, current},
+					{"selected", policies.Selected, selected},
+					{"effective", policies.Effective, current},
+				} {
+					var descriptor policy.Descriptor
+					var fields struct {
+						Gates map[string]any `json:"gates"`
+					}
+					if err := json.Unmarshal(check.raw, &descriptor); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(check.raw, &fields); err != nil {
+						t.Fatal(err)
+					}
+					for key, want := range map[string]bool{"human_review": check.want.Gates.HumanReview, "github_pull_request": check.want.Gates.GitHubPullRequest} {
+						if got, present := fields.Gates[key]; !present || got != want {
+							t.Fatalf("%s gate %s=%v present=%t, want %t", check.name, key, got, present, want)
+						}
+					}
+					if !reflect.DeepEqual(descriptor, check.want) || descriptor.WithID().ID != check.want.ID {
+						t.Fatalf("%s explanatory policy changed identity or settings", check.name)
+					}
+				}
+				stored, err := readProjectPolicy(t.Context(), f.service.database.db, scope)
+				if err != nil || !reflect.DeepEqual(stored.Policy, current) {
+					t.Fatalf("grounded reads changed stored policy: %+v err=%v", stored, err)
+				}
+				holdResponse = f.request(t, owner, http.MethodGet, f.base+"/work-items/"+string(held.WorkItemID), nil)
+				requireNativeStatus(t, holdResponse, http.StatusOK)
+				var preserved tracker.NativeIssue
+				decodeHubResponse(t, holdResponse, &preserved)
+				if preserved.State != held.State || preserved.Body != held.Body || preserved.Revision != held.Revision {
+					t.Fatalf("grounded reads changed issue hold: %+v", preserved)
+				}
+
 			}
 			if test.name == "runner discovery" || test.name == "explicit runner selection" {
 				var configuration runnerauth.ProjectConfiguration
