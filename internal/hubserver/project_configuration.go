@@ -23,12 +23,20 @@ func (e hubProjectExecutor) localProjectConfiguration(ctx context.Context, name 
 }
 
 func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, name string, args operatortool.LocalProjectArguments, preview bool) (operatortool.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	scope, err := e.projectScope(ctx)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
 	scope.project = tracker.ProjectID(args.ProjectID)
-	tx, err := e.service.database.db.BeginTx(ctx, nil)
+	pool := e.service.database.db
+	var options *sql.TxOptions
+	if name == operatortool.LocalProjectConfiguration || preview {
+		pool = e.service.database.reader
+		options = &sql.TxOptions{ReadOnly: true}
+	}
+	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
 		return operatortool.Result{}, err
 	}

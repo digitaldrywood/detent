@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -12,6 +13,8 @@ import (
 )
 
 func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, project string, write bool) (nativeScope, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	permission := apikey.ScopeRead
 	if write {
 		permission = apikey.ScopeWrite
@@ -37,7 +40,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 		if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin {
 			return scope, operatortool.ErrAccessDenied
 		}
-		tx, err := e.service.database.db.BeginTx(ctx, nil)
+		tx, err := e.service.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return scope, err
 		}
