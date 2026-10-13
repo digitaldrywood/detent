@@ -461,7 +461,7 @@ const discoveryList: GalleryDoc = {
             <DiscoveryListRow
               icon={<FolderGit2Icon className="size-4 text-muted-foreground" />}
               title="detent"
-              description="~/Development/digitaldrywood/detent"
+              description="~/Development/example-org/example-project"
               action={<Badge variant="success">Found</Badge>}
             />
             <DiscoveryListRow

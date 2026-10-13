@@ -105,7 +105,7 @@ function mockLabelColor(name: string): string {
   }
   return LABEL_PALETTE[hash % LABEL_PALETTE.length]!;
 }
-const ASSIGNEES = ["michaelhvisser", "octocat", ""];
+const ASSIGNEES = ["example-owner", "octocat", ""];
 const TITLES = [
   "checkout: renewal waits on a healthy handoff",
   "board: show scheduler dispatch waits",
@@ -588,7 +588,7 @@ export function createWorkMock(options: {
           base_sha: pad(1).slice(0, 40),
           head_sha: head,
           merge_base_sha: pad(1).slice(0, 40),
-          repository: "digitaldrywood/detent",
+          repository: "example-org/example-project",
           code: {
             kind: "code",
             uri: `artifact://artifact_${pad(issue.number)}`,
@@ -602,7 +602,7 @@ export function createWorkMock(options: {
           external: {
             provider: "github",
             id: String(issue.number + 9),
-            url: `https://github.com/digitaldrywood/detent/pull/${issue.number + 9}`,
+            url: `https://github.com/example-org/example-project/pull/${issue.number + 9}`,
           },
           version_id: `version_${pad(issue.number)}`,
           change_id: `change_${pad(issue.number)}`,

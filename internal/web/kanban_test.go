@@ -128,7 +128,7 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	server.kanbanMutations.NoteCardState("project:detent", "detent", telemetry.Issue{
 		ID:         "blocker",
-		Identifier: "digitaldrywood/detent#429",
+		Identifier: "example-org/example-project#429",
 		ProjectID:  "detent",
 		Title:      "Dependency blocker",
 		State:      "In Progress",
@@ -138,19 +138,19 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:         "blocker",
-				Identifier: "digitaldrywood/detent#429",
+				Identifier: "example-org/example-project#429",
 				ProjectID:  "detent",
 				Title:      "Dependency blocker",
 				State:      "In Progress",
 			},
 			{
 				ID:         "dependent",
-				Identifier: "digitaldrywood/detent#430",
+				Identifier: "example-org/example-project#430",
 				ProjectID:  "detent",
 				Title:      "Dependent card",
 				State:      "Merging",
 				BlockedBy: []telemetry.BlockedRef{
-					{ID: "blocker", Identifier: "digitaldrywood/detent#429", State: "In Progress"},
+					{ID: "blocker", Identifier: "example-org/example-project#429", State: "In Progress"},
 				},
 			},
 		},
@@ -178,19 +178,19 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefsFromCompletedRows(t *t
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:         "dependent",
-				Identifier: "digitaldrywood/detent#953",
+				Identifier: "example-org/example-project#953",
 				ProjectID:  "detent",
 				Title:      "Dependent card",
 				State:      "Merging",
 				BlockedBy: []telemetry.BlockedRef{
-					{ID: "blocker", Identifier: "digitaldrywood/detent#950"},
+					{ID: "blocker", Identifier: "example-org/example-project#950"},
 				},
 			},
 		},
 		Completed: []telemetry.Completed{{
 			Issue: telemetry.Issue{
 				ID:         "blocker",
-				Identifier: "digitaldrywood/detent#950",
+				Identifier: "example-org/example-project#950",
 				ProjectID:  "detent",
 				Title:      "Dependency blocker",
 				State:      "Done",
@@ -215,7 +215,7 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefsFromCompletedRows(t *t
 	if err := templates.BoardSnapshot(data).Render(context.Background(), &html); err != nil {
 		t.Fatalf("render board snapshot: %v", err)
 	}
-	if strings.Contains(html.String(), "blocked — digitaldrywood/detent#950") {
+	if strings.Contains(html.String(), "blocked — example-org/example-project#950") {
 		t.Fatalf("completed dependency rendered as active blocker:\n%s", html.String())
 	}
 	if snapshot.BoardIssues[0].BlockedBy[0].State != "" {
@@ -232,19 +232,19 @@ func TestKanbanSnapshotWithPendingStatesPrefersCompletedRowTrackerState(t *testi
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:         "dependent",
-				Identifier: "digitaldrywood/detent#953",
+				Identifier: "example-org/example-project#953",
 				ProjectID:  "detent",
 				Title:      "Dependent card",
 				State:      "Merging",
 				BlockedBy: []telemetry.BlockedRef{
-					{ID: "blocker", Identifier: "digitaldrywood/detent#950"},
+					{ID: "blocker", Identifier: "example-org/example-project#950"},
 				},
 			},
 		},
 		Completed: []telemetry.Completed{{
 			Issue: telemetry.Issue{
 				ID:         "blocker",
-				Identifier: "digitaldrywood/detent#950",
+				Identifier: "example-org/example-project#950",
 				ProjectID:  "detent",
 				Title:      "Dependency blocker",
 				State:      "Human Review",
@@ -265,7 +265,7 @@ func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPending
 	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	pendingIssue := telemetry.Issue{
 		ID:         "history-card",
-		Identifier: "digitaldrywood/detent#432",
+		Identifier: "example-org/example-project#432",
 		ProjectID:  "detent",
 		Title:      "Completed history pending card",
 		State:      "Backlog",
@@ -277,7 +277,7 @@ func TestKanbanSnapshotWithPendingStatesIgnoresCompletedHistoryForMissingPending
 		Completed: []telemetry.Completed{{
 			Issue: telemetry.Issue{
 				ID:         "history-card",
-				Identifier: "digitaldrywood/detent#432",
+				Identifier: "example-org/example-project#432",
 				ProjectID:  "detent",
 				Title:      "Completed history pending card",
 				State:      "Backlog",
@@ -298,7 +298,7 @@ func TestKanbanSnapshotWithPendingStatesKeepsAdvancedPendingMoveVisible(t *testi
 	server := &Server{kanbanMutations: kanbanstate.NewMutationTracker()}
 	pendingIssue := telemetry.Issue{
 		ID:         "completed-card",
-		Identifier: "digitaldrywood/detent#431",
+		Identifier: "example-org/example-project#431",
 		ProjectID:  "detent",
 		Title:      "Completed pending card",
 		State:      "Backlog",
@@ -311,7 +311,7 @@ func TestKanbanSnapshotWithPendingStatesKeepsAdvancedPendingMoveVisible(t *testi
 		Completed: []telemetry.Completed{{
 			Issue: telemetry.Issue{
 				ID:         "completed-card",
-				Identifier: "digitaldrywood/detent#431",
+				Identifier: "example-org/example-project#431",
 				ProjectID:  "detent",
 				Title:      "Completed pending card",
 				State:      "Production",

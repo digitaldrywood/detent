@@ -93,7 +93,7 @@ func (s *Server) apiKanbanMoveDialog(c echo.Context) error {
 			return render(c, templates.KanbanMoveDialogContent(templates.KanbanMoveDialogData{
 				ProjectID:    demoPrimaryProjectID,
 				IssueID:      "demo-todo",
-				Identifier:   "digitaldrywood/detent-core#5251",
+				Identifier:   "example-org/detent-core#5251",
 				Title:        "Add screenshot manifest smoke test",
 				CurrentState: "Todo",
 				TargetState:  "In Progress",
@@ -411,9 +411,9 @@ func (s *Server) apiKanbanCommentDialog(c echo.Context) error {
 			return render(c, templates.KanbanCommentDialogContent(templates.KanbanCommentDialogData{
 				ProjectID:    demoPrimaryProjectID,
 				Target:       "pr",
-				PRRepository: "digitaldrywood/detent-core",
+				PRRepository: "example-org/detent-core",
 				PRNumber:     5290,
-				Identifier:   "digitaldrywood/detent-core#5290",
+				Identifier:   "example-org/detent-core#5290",
 				Title:        "Review deterministic chart colors",
 				Body:         "Looks good for the screenshot demo.",
 			}))
@@ -422,7 +422,7 @@ func (s *Server) apiKanbanCommentDialog(c echo.Context) error {
 				ProjectID:  demoPrimaryProjectID,
 				Target:     "issue",
 				IssueID:    "demo-todo",
-				Identifier: "digitaldrywood/detent-core#5251",
+				Identifier: "example-org/detent-core#5251",
 				Title:      "Add screenshot manifest smoke test",
 				Body:       "Please verify the screenshot manifest route.",
 			}))

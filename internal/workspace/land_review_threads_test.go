@@ -52,7 +52,7 @@ func reviewThreadsPage(next string, nodes ...string) string {
 func reviewThreadNode(id string, resolved bool, author, typename, body string, replies ...string) string {
 	comments := []any{map[string]any{"body": body, "author": map[string]any{"__typename": typename, "login": author}}}
 	for _, reply := range replies {
-		comments = append(comments, map[string]any{"body": reply, "author": map[string]any{"__typename": "User", "login": "corylanou"}})
+		comments = append(comments, map[string]any{"body": reply, "author": map[string]any{"__typename": "User", "login": "example-user"}})
 	}
 	encoded, _ := json.Marshal(map[string]any{"id": id, "isResolved": resolved, "path": "web/app.ts", "line": 7, "comments": map[string]any{"nodes": comments}})
 	return string(encoded)
@@ -122,8 +122,8 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 		{
 			name:        "human conversations are surfaced in the refusal and never resolved",
 			refusal:     conversation,
-			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "corylanou", "User", "Please rename this", surfacedEarlier))}},
-			wantReason:  []string{"corylanou on web/app.ts:7: Please rename this"},
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "example-user", "User", "Please rename this", surfacedEarlier))}},
+			wantReason:  []string{"example-user on web/app.ts:7: Please rename this"},
 			wantCursors: 1,
 			wantRework:  true,
 		},

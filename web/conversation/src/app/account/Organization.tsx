@@ -191,7 +191,7 @@ export function CreateOrganizationCard({
           <Input
             id="org-create-name"
             value={name}
-            placeholder="Threefold Solutions"
+            placeholder="Your company name"
             onChange={(event) => setName(event.currentTarget.value)}
             className="flex-1"
           />

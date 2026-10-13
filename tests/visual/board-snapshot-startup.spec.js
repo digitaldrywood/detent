@@ -14,10 +14,10 @@ test("boot renders a seeded last-known board before the live morph", async ({ pa
     fixturePath,
     `issues:
   - id: snapshot-live-card
-    identifier: digitaldrywood/detent#9135
+    identifier: example-org/example-project#9135
     title: Live board card after hydration
     state: Todo
-    url: https://github.test/digitaldrywood/detent/issues/9135
+    url: https://github.test/example-org/example-project/issues/9135
     priority: ${priority}
     priority_name: P1
 `,
@@ -50,11 +50,11 @@ test("boot renders a seeded last-known board before the live morph", async ({ pa
         board_issues: [
           {
             issue_id: "snapshot-live-card",
-            identifier: "digitaldrywood/detent#9135",
+            identifier: "example-org/example-project#9135",
             project_id: "dogfood",
             title: "Cached board card before hydration",
             state: "Todo",
-            url: "https://github.test/digitaldrywood/detent/issues/9135",
+            url: "https://github.test/example-org/example-project/issues/9135",
             priority,
             priority_name: "P1",
           },

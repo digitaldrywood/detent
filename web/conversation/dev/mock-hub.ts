@@ -231,8 +231,8 @@ const SEED_MEMBERS: MemberRow[] = [
   },
   {
     id: "mem_admin",
-    user_id: "usr_dana",
-    email: "dana@example.test",
+    user_id: "usr_member",
+    email: "member@example.test",
     role: "admin",
     status: "active",
     grants: [
@@ -863,7 +863,7 @@ const SEED_BILLING = {
 
 /** An open support session: somebody from Detent acting as this organization. */
 const SEED_SUPPORT: SupportRow = {
-  actor: "support@detent.dev",
+  actor: "support@example.com",
   reason: "Investigating a stuck lease reported in ticket 4471",
   expires_at: "2026-09-10T22:30:00Z",
 };

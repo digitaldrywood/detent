@@ -122,7 +122,7 @@ async function mountTree(
   const utils = render(
     <FileBrowserPanel
       files={files}
-      projectName="parable"
+      projectName="example-project"
       selectedPath={null}
       onOpenFile={onOpenFile}
       theme="dark"
@@ -197,10 +197,10 @@ describe("the Files surface", () => {
 
   it("draws the explorer as the whole surface while nothing is open", async () => {
     const files = client({ "": [entry()] });
-    mount({ state: "ready", files, projectName: "parable" });
+    mount({ state: "ready", files, projectName: "example-project" });
     await waitFor(() => expect(files.listed).toEqual([""]));
     expect(screen.getByTestId("files-tree")).toBeTruthy();
-    expect(screen.getByRole("searchbox", { name: "Search parable files" })).toBeTruthy();
+    expect(screen.getByRole("searchbox", { name: "Search example-project files" })).toBeTruthy();
     expect(screen.queryByTestId("files-view")).toBeNull();
     expect(document.querySelector("[data-file-breadcrumbs]")).toBeNull();
   });
@@ -211,7 +211,7 @@ describe("the Files surface", () => {
       { "src/main.go": content({ path: "src/main.go", data: "package main" }) },
     );
     const onOpenFile = vi.fn();
-    mount({ state: "ready", files, projectName: "parable", onOpenFile });
+    mount({ state: "ready", files, projectName: "example-project", onOpenFile });
     await waitFor(() => expect(files.listed).toEqual(["", "src"]));
 
     await clickTreeRow("src/main.go");
@@ -221,7 +221,7 @@ describe("the Files surface", () => {
     // The explorer stays beside the code, and the path sits above it.
     expect(screen.getByTestId("files-tree")).toBeTruthy();
     const crumbs = document.querySelector("[data-file-breadcrumbs]");
-    expect(crumbs?.textContent).toContain("parable");
+    expect(crumbs?.textContent).toContain("example-project");
     expect(crumbs?.textContent).toContain("main.go");
     // And the panel was offered the file as its own tab.
     expect(onOpenFile).toHaveBeenCalledWith("src/main.go");
@@ -425,7 +425,7 @@ describe("the tree", () => {
     rerender(
       <FileBrowserPanel
         files={files}
-        projectName="parable"
+        projectName="example-project"
         selectedPath="apps/api/cmd/main.go"
         onOpenFile={onOpenFile}
         theme="dark"
@@ -465,15 +465,15 @@ describe("the single-file surface", () => {
       { "": [entry({ name: "src", kind: "dir" })], src: [entry({ name: "main.ts" })] },
       { "src/main.ts": content({ path: "src/main.ts", data: "export {};" }) },
     );
-    const { rerender } = render(<FileSurface path="src/main.ts" files={null} projectName="parable" />);
+    const { rerender } = render(<FileSurface path="src/main.ts" files={null} projectName="example-project" />);
     expect(screen.getByTestId("file-surface-unavailable").textContent).toContain(
       "needs an open workspace",
     );
-    rerender(<FileSurface path="src/main.ts" files={files} projectName="parable" />);
+    rerender(<FileSurface path="src/main.ts" files={files} projectName="example-project" />);
     await waitFor(() => expect(screen.getByTestId("files-view-code").textContent).toBe("export {};"));
     // The path above the code, project first.
     const crumbs = document.querySelector("[data-file-breadcrumbs]");
-    expect(crumbs?.textContent).toContain("parable");
+    expect(crumbs?.textContent).toContain("example-project");
     expect(crumbs?.textContent).toContain("src");
     expect(crumbs?.textContent).toContain("main.ts");
     // And the explorer beside it, revealed on the open file.

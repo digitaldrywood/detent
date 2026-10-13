@@ -498,7 +498,7 @@ func TestServiceMarksOnlyPostBoundarySchemaAttributionTrustworthy(t *testing.T) 
 		wantOrigin string
 		wantTrust  bool
 	}{
-		{name: "legacy human row remains untrusted", at: now, metadata: `{"provenance":{"origin":"human","actor":{"login":"corylanou","kind":"User"}}}`, wantOrigin: "human"},
+		{name: "legacy human row remains untrusted", at: now, metadata: `{"provenance":{"origin":"human","actor":{"login":"example-user","kind":"User"}}}`, wantOrigin: "human"},
 		{name: "backdated schema row remains untrusted", at: boundary.Add(-time.Minute), metadata: trusted, wantOrigin: "agent"},
 		{name: "post-boundary schema row is trusted", at: boundary.Add(time.Minute), metadata: trusted, wantOrigin: "agent", wantTrust: true},
 	}

@@ -367,11 +367,11 @@ func TestRefreshStalenessWarningsAppliesAuthorizationPolicy(t *testing.T) {
 	issue := func(id string, authorized bool) connector.Issue {
 		labels := []string{"bug"}
 		if authorized {
-			labels = append(labels, "detent:cory")
+			labels = append(labels, "detent:operator")
 		}
 		return connector.Issue{
 			ID:             id,
-			Identifier:     "getparable/parable#" + id,
+			Identifier:     "example-org/example-project#" + id,
 			State:          "Blocked",
 			Labels:         labels,
 			StageUpdatedAt: &enteredAt,
@@ -392,10 +392,10 @@ func TestRefreshStalenessWarningsAppliesAuthorizationPolicy(t *testing.T) {
 			name:   "authorization boundary warning survives",
 			issues: []connector.Issue{issue("2267", false)},
 			decisions: []telemetry.SchedulerDecision{
-				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-time.Hour)},
-				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-30 * time.Minute)},
+				{IssueID: "2267", Identifier: "example-org/example-project#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-time.Hour)},
+				{IssueID: "2267", Identifier: "example-org/example-project#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-30 * time.Minute)},
 			},
-			want: map[string]string{"getparable/parable#2267": staleness.KindRepeatedDecision},
+			want: map[string]string{"example-org/example-project#2267": staleness.KindRepeatedDecision},
 		},
 		{
 			name: "count includes actionable and authorization boundary warnings only",
@@ -409,12 +409,12 @@ func TestRefreshStalenessWarningsAppliesAuthorizationPolicy(t *testing.T) {
 				issue("2267", false),
 			},
 			decisions: []telemetry.SchedulerDecision{
-				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-time.Hour)},
-				{IssueID: "2267", Identifier: "getparable/parable#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-30 * time.Minute)},
+				{IssueID: "2267", Identifier: "example-org/example-project#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-time.Hour)},
+				{IssueID: "2267", Identifier: "example-org/example-project#2267", Result: "skipped", Reason: dispatchSkipAuthorizationSelector, DecisionAt: now.Add(-30 * time.Minute)},
 			},
 			want: map[string]string{
-				"getparable/parable#2267": staleness.KindRepeatedDecision,
-				"getparable/parable#1967": staleness.KindLaneAging,
+				"example-org/example-project#2267": staleness.KindRepeatedDecision,
+				"example-org/example-project#1967": staleness.KindLaneAging,
 			},
 		},
 	}
@@ -423,7 +423,7 @@ func TestRefreshStalenessWarningsAppliesAuthorizationPolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := normalizeConfig(Config{
-				Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:cory"}}},
+				Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:operator"}}},
 				Staleness: staleness.Config{
 					Enabled:                true,
 					Lanes:                  []staleness.LaneThreshold{{State: "Blocked", Threshold: 48 * time.Hour}},
@@ -431,7 +431,7 @@ func TestRefreshStalenessWarningsAppliesAuthorizationPolicy(t *testing.T) {
 					RepeatedDecisionWindow: 24 * time.Hour,
 				},
 			})
-			cfg.Project.ID = "parable"
+			cfg.Project.ID = "example-project"
 			orch := &Orchestrator{cfg: cfg}
 			state := newState(cfg)
 			state.BoardIssues = tt.issues

@@ -281,7 +281,7 @@ func TestObservedLaneAttribution(t *testing.T) {
 	t.Parallel()
 
 	issue := connector.Issue{ID: "issue-1761"}
-	operatorActor := connector.IssueActor{Login: "corylanou", Kind: "User"}
+	operatorActor := connector.IssueActor{Login: "example-user", Kind: "User"}
 	activeAgent := newState(Config{})
 	activeAgent.Running[issue.ID] = Running{Issue: issue}
 	tests := []struct {
@@ -470,7 +470,7 @@ func TestRefreshCurrentLaneEntriesUsesHydratedTrackerReentry(t *testing.T) {
 		Identifier:        "gopherguides/corp#74",
 		State:             "Human Review",
 		StageUpdatedAt:    &latestEntry,
-		StageUpdatedActor: connector.IssueActor{Login: "corylanou", Kind: "User"},
+		StageUpdatedActor: connector.IssueActor{Login: "example-user", Kind: "User"},
 	}}
 	orch := &Orchestrator{cfg: cfg, workflowMetrics: backend}
 

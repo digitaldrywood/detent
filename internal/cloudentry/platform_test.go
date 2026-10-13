@@ -260,7 +260,7 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) {
-		a.AllowedEmails, a.AllowedDomains = []string{"dana@example.test"}, []string{"example.org"}
+		a.AllowedEmails, a.AllowedDomains = []string{"member@example.test"}, []string{"example.org"}
 	})
 	f.service.config.ConfigPath = "/etc/detent/cloud.yaml"
 	if err := os.MkdirAll(f.roots[0], 0o700); err != nil {
@@ -281,7 +281,7 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 		} `json:"source"`
 	}
 	decodeJSON(t, body, &allowlist)
-	if !allowlist.SelfService || allowlist.Open || strings.Join(allowlist.AllowedEmails, ",") != "dana@example.test" || strings.Join(allowlist.AllowedDomains, ",") != "example.org" ||
+	if !allowlist.SelfService || allowlist.Open || strings.Join(allowlist.AllowedEmails, ",") != "member@example.test" || strings.Join(allowlist.AllowedDomains, ",") != "example.org" ||
 		allowlist.Source.File != "/etc/detent/cloud.yaml" || strings.Join(allowlist.Source.Keys, ",") != "allocation.allowed_emails,allocation.allowed_domains" {
 		t.Fatalf("allowlist = %s", body)
 	}
@@ -605,7 +605,7 @@ func TestStaffSessionsReverifyEveryRead(t *testing.T) {
 		wantExtra   int
 	}{
 		{name: "staff re-verify every read", email: "support@example.test", staff: true, wantExtra: 3},
-		{name: "customers reuse the recent check", email: "dana@example.test", wantExtra: 0},
+		{name: "customers reuse the recent check", email: "member@example.test", wantExtra: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -851,7 +851,7 @@ func TestPlatformUsersSearch(t *testing.T) {
 		{"carol-new", "user_carol", "carol@example.test", now, ""},
 		{"carol-support", "user_carol", "carol@example.test", now.Add(time.Hour), "support@example.test"},
 		{"session-only", "user_only", "only@example.test", now, ""},
-		{"suffix", "user_suffix", "only@example.test.extra", now, ""},
+		{"suffix", "user_suffix", "only@example.test.example.org", now, ""},
 		{"literal", "user_literal", "literal_%@example.test", now, ""},
 	} {
 		identity := auth.Identity{Subject: item.subject, Email: item.email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: item.subject, ExpiresAt: now.Add(time.Hour), SupportActor: item.support}}

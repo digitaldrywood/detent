@@ -129,7 +129,7 @@ describe("settings help interactions", () => {
     }
     expect((screen.getByRole("switch", { name: "Existing issues" }) as HTMLInputElement).getAttribute("aria-checked")).toBe("false");
     const row = screen.getByRole("heading", { name: "New issues" }).closest('[data-slot="settings-row"]')!;
-    expect(row.textContent).toContain(installed ? "Every issue opened on getparable/parable enters Triage." : "Waiting for the GitHub App.");
+    expect(row.textContent).toContain(installed ? "Every issue opened on example-org/example-project enters Triage." : "Waiting for the GitHub App.");
     expect(row.querySelector('span[aria-hidden="true"]')).toBeTruthy();
     expect(screen.getByRole("link", { name: installed ? "Manage installation" : "Install the Detent Cloud GitHub App" }).getAttribute("href")).toContain("github.com/apps/detent-cloud");
     expect(screen.getByRole("link", { name: "the project's Intake page" }).getAttribute("href")).toBe("/projects/prj_example/setup");

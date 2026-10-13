@@ -18,7 +18,7 @@ function ActivitySpecimen({
   const [now] = useState(Date.now);
   const ago = (minutes: number) =>
     new Date(now - minutes * 60_000).toISOString();
-  const projects: AccountProject[] = ["detent", "parable", "detent.build"].map(
+  const projects: AccountProject[] = ["detent", "example-project", "detent.build"].map(
     (name) => ({
       id: name,
       name,
@@ -31,8 +31,8 @@ function ActivitySpecimen({
   const base = decodeFleet(fleet).runners[0]!;
   const names = [
     "mac-studio",
-    "jarvis-1",
-    "jarvis-2",
+    "example-runner-1",
+    "example-runner-2",
     "sprite-a",
     "sprite-b",
     "sprite-c",

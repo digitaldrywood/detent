@@ -225,14 +225,14 @@ describe("the feed", () => {
     render(
       <ActivityFeed
         rows={[
-          row({ key: "a", actor: "michael", sentence: "created the issue", at: 10 }),
+          row({ key: "a", actor: "example-owner", sentence: "created the issue", at: 10 }),
           row({
             key: "c",
             kind: "comment",
-            actor: "michael",
+            actor: "example-owner",
             sentence: "commented",
             at: 20,
-            comment: { id: "c1", body: "Add a test too.", actor: "michael", at: "" },
+            comment: { id: "c1", body: "Add a test too.", actor: "example-owner", at: "" },
           }),
         ]}
         live={null}
@@ -255,7 +255,7 @@ describe("the feed", () => {
             key: "c",
             kind: "comment",
             at: 20,
-            comment: { id: "c1", body: "Read only.", actor: "michael", at: "" },
+            comment: { id: "c1", body: "Read only.", actor: "example-owner", at: "" },
           }),
         ]}
         live={null}
