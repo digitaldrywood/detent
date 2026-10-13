@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 
@@ -166,6 +166,8 @@ it.each([
 ])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted)", async ({ ready, unrouted }) => {
   const onNavigate = vi.fn();
   const mount = await mountSetup(onNavigate);
+  const intervals = vi.spyOn(window, "setInterval");
+  let onboardingReads = 0;
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
@@ -174,6 +176,7 @@ it.each([
     }
     if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
       const onboarding = await response.json();
+      onboardingReads += 1;
       onboarding.runners = ready ? onboarding.runners : [];
       if (unrouted) {
         onboarding.runners = [{
@@ -232,6 +235,16 @@ it.each([
     expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
     expect(screen.getByRole("button", { name: "Skip for now" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: "Save choice" }).hasAttribute("disabled")).toBe(true);
+    await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+    expect(await screen.findByLabelText("Publisher token id")).toBeTruthy();
+    const reads = onboardingReads;
+    const poll = intervals.mock.calls.find(([, timeout]) => timeout === 5_000)?.[0];
+    expect(poll).toBeTypeOf("function");
+    await act(async () => {
+      (poll as () => void)();
+      await waitFor(() => expect(onboardingReads).toBeGreaterThan(reads));
+    });
+    expect(screen.getByLabelText("Publisher token id")).toBeTruthy();
     await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
     const saveChoice = screen.getByRole("button", { name: "Save choice" });
     expect(saveChoice.classList.contains("bg-primary")).toBe(true);

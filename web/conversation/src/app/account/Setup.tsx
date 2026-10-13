@@ -368,13 +368,15 @@ export function SetupRoute({
   // The editable progress, seeded from the hub and written back whole: the
   // endpoint replaces the object, so sending half of it would clear the rest.
   const progress = onboarding.value?.progress;
+  const progressRepository = progress?.repository;
+  const progressArtifacts = progress?.artifacts;
   const [repository, setRepository] = React.useState("");
   const [artifacts, setArtifacts] = React.useState("");
   React.useEffect(() => {
-    if (progress === undefined) return;
-    setRepository(progress.repository);
-    setArtifacts(progress.artifacts);
-  }, [progress]);
+    if (progressRepository === undefined || progressArtifacts === undefined) return;
+    setRepository(progressRepository);
+    setArtifacts(progressArtifacts);
+  }, [progressRepository, progressArtifacts]);
 
   const [repositoryName, setRepositoryName] = React.useState("");
   const [pastedPolicy, setPastedPolicy] = React.useState("");
