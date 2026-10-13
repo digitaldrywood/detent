@@ -127,6 +127,23 @@ func (a platformCredits) adjust(ctx context.Context, input operatortool.Platform
 	if status != http.StatusOK {
 		return operatortool.Result{}, &platformCreditFailure{status: status, body: body}
 	}
+	event, err := json.Marshal(struct {
+		Kind   string `json:"kind"`
+		Key    string `json:"idempotency_key"`
+		Amount string `json:"amount_usd"`
+		Reason string `json:"reason"`
+	}{"ai_credits_adjusted", input.IdempotencyKey, input.AmountUSD, strings.TrimSpace(input.Reason)})
+	if err != nil {
+		return operatortool.Result{}, err
+	}
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_, err = a.service.auth.store.db.ExecContext(recordCtx, `INSERT INTO audit(subject,organization_id,event,recorded_at)
+ SELECT ?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM audit WHERE organization_id=? AND subject=?
+ AND CASE WHEN json_valid(event) THEN json_extract(event,'$.kind')='ai_credits_adjusted' AND json_extract(event,'$.idempotency_key')=? ELSE 0 END)`, actor, organization.ID, string(event), formatTime(a.service.config.now()), organization.ID, actor, input.IdempotencyKey)
+	if err != nil {
+		return operatortool.Result{}, err
+	}
 	return operatortool.Result{Content: body}, nil
 }
 

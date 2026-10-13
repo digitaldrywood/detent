@@ -36,6 +36,29 @@
     ]
   },
   "detail": {
+    "credit_balance_micros": 100000000,
+    "ai_credits": {
+      "balance_micros": 100000000,
+      "spent_micros": 750000,
+      "month": "2026-10",
+      "auto_enabled": false,
+      "history": [
+        {
+          "amount_micros": 100000000,
+          "kind": "complimentary",
+          "actor": "staff@example.test",
+          "reason": "Complimentary pilot credits",
+          "at": "2026-10-09T12:00:00Z"
+        },
+        {
+          "amount_micros": 5000000,
+          "kind": "purchase",
+          "actor": "",
+          "reason": "",
+          "at": "2026-10-08T12:00:00Z"
+        }
+      ]
+    },
     "organization": {
       "id": "org_preview",
       "name": "Model Choice Labs",
@@ -60,7 +83,6 @@
     "can_grant": true,
     "can_resume": false,
     "usage": {"window_ends_at": "2026-10-10T15:00:00Z", "allowances": {"projects": {"used": 2, "limit": 5}, "members": {"used": 1, "limit": null}, "collaboration_bytes": {"used": 408944640, "limit": 1073741824}, "api_mutations": {"used": 511, "limit": 20000}}},
-    "credit_balance_micros": null,
     "unavailable": [],
     "members": [
       {
