@@ -231,13 +231,10 @@ func projectToolError(err error) error {
 	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.publicMessage {
 		return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
 	}
-	if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
-		return &operatortool.ConflictError{Code: failure.Code, Message: failure.Message}
-	}
 	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "idempotency_conflict") {
 		return mutation.ErrConflict
 	}
-	return err
+	return hubSafeChangeError(err)
 }
 func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), OrganizationID: action.OrganizationID, ProjectID: action.ProjectID})

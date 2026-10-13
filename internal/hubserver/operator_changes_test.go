@@ -198,6 +198,35 @@ func TestOperatorChangePublication(t *testing.T) {
 	}
 }
 
+func TestOperatorMutationRefusalPrecedence(t *testing.T) {
+	limit := &hostedLimitError{Resource: "collaboration_bytes", Allowance: 10, Consumption: 11}
+	for _, projection := range []struct {
+		name    string
+		project func(error) error
+	}{
+		{"work", safeNativeWorkError},
+		{"Change", hubSafeChangeError},
+		{"project", projectToolError},
+	} {
+		for _, test := range []struct {
+			name      string
+			err, want error
+		}{
+			{"uncertain outcome", errors.Join(mutation.ErrUncertain, limit), mutation.ErrUncertain},
+			{"access denied", errors.Join(operatortool.ErrAccessDenied, limit), operatortool.ErrAccessDenied},
+			{"native access denied", errors.Join(&nativeError{Code: "access_denied", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
+		} {
+			t.Run(projection.name+"/"+test.name, func(t *testing.T) {
+				projected := projection.project(test.err)
+				var allowance *operatortool.AllowanceError
+				if !errors.Is(projected, test.want) || errors.As(projected, &allowance) {
+					t.Fatalf("projected refusal=%v want=%v without quota details", projected, test.want)
+				}
+			})
+		}
+	}
+}
+
 // Catches discovery bypass reaching foreign nested resources, stale review
 // identities, and replay repeating discussion effects after reconnect.
 func TestOperatorChangeCommands(t *testing.T) {
