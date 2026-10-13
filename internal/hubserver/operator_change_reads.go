@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -241,16 +240,7 @@ func boundedChangeCommand(command *gate.CommandResult) *gate.CommandResult {
 	if command == nil {
 		return nil
 	}
-	result := *command
-	const outputBytes = 4 << 10
-	if len(result.Output) > outputBytes {
-		end := outputBytes
-		for !utf8.ValidString(result.Output[:end]) {
-			end--
-		}
-		result.Output = result.Output[:end]
-		result.OutputTruncated = true
-	}
+	result := tracker.PublicGateResult(*command)
 	return &result
 }
 
