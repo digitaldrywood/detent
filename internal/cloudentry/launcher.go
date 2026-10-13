@@ -165,7 +165,7 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 			err = l.runTenant(attempt, spec, cmd, cancel)
 		}
 		if authority != nil {
-			authority.Close()
+			err = errors.Join(err, authority.Close())
 		}
 		cancel()
 		if ctx.Err() != nil {
@@ -192,7 +192,9 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 func (l *ExecLauncher) runTenant(ctx context.Context, spec TenantSpec, cmd *exec.Cmd, cancel context.CancelFunc) error {
 	err := cmd.Start()
 	for _, file := range cmd.ExtraFiles {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			l.logger().Warn("close inherited authority descriptor", "error", closeErr)
+		}
 	}
 	if err != nil {
 		return err

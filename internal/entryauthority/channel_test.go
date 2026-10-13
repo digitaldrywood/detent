@@ -73,7 +73,13 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				t.Fatal(err)
 			}
 			var closeOnce sync.Once
-			closeParent := func() { closeOnce.Do(parent.Close) }
+			closeParent := func() {
+				closeOnce.Do(func() {
+					if err := parent.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+			}
 			t.Cleanup(closeParent)
 			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second}
 			t.Cleanup(func() { _ = client.Close() })

@@ -48,22 +48,30 @@ type channel struct {
 func (c channel) Read(p []byte) (int, error) { return c.reader.Read(p) }
 func (c channel) Write(p []byte) (int, error) {
 	if err := c.writer.SetWriteDeadline(time.Now().Add(c.budget)); err != nil {
-		_ = c.Close()
-		return 0, err
+		return 0, errors.Join(err, c.Close())
 	}
 	n, err := c.writer.Write(p)
 	if err != nil {
-		_ = c.Close()
+		err = errors.Join(err, c.Close())
 	}
 	return n, err
 }
-func (c channel) Close() error { return errors.Join(c.reader.Close(), c.writer.Close()) }
+func (c channel) Close() error { return closeFiles(c.reader, c.writer) }
+
+func closeFiles(files ...*os.File) error {
+	var result error
+	for _, file := range files {
+		if err := file.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
 
 type authorityServer struct {
-	ctx     context.Context
 	binding Binding
 	budget  time.Duration
-	resolve Resolver
+	resolve func(Request) (cloudassert.Claims, error)
 }
 
 func (s *authorityServer) Handshake(binding Binding, result *Handshake) error {
@@ -78,11 +86,7 @@ func (s *authorityServer) Resolve(request Request, result *cloudassert.Claims) e
 	if request.Origin.Issuer != s.binding.Issuer || request.Origin.Generation != s.binding.Generation || request.Deadline.IsZero() {
 		return cloudassert.ErrInvalid
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, s.budget)
-	defer cancel()
-	ctx, stop := context.WithDeadline(ctx, request.Deadline)
-	defer stop()
-	claims, err := s.resolve(ctx, request.Origin)
+	claims, err := s.resolve(request)
 	if err != nil {
 		return cloudassert.ErrInvalid
 	}
@@ -104,17 +108,21 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 	}
 	childRead, parentWrite, err := os.Pipe()
 	if err != nil {
-		_ = parentRead.Close()
-		_ = childWrite.Close()
-		return nil, err
+		return nil, errors.Join(err, closeFiles(parentRead, childWrite))
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	p := &Parent{Files: []*os.File{childRead, childWrite}, stream: channel{reader: parentRead, writer: parentWrite, budget: budget}, cancel: cancel, done: make(chan struct{})}
 	server := rpc.NewServer()
-	if err := server.RegisterName("Authority", &authorityServer{ctx: ctx, binding: binding, budget: budget, resolve: resolve}); err != nil {
+	current := func(request Request) (cloudassert.Claims, error) {
+		lookup, stop := context.WithTimeout(ctx, budget)
+		defer stop()
+		lookup, end := context.WithDeadline(lookup, request.Deadline)
+		defer end()
+		return resolve(lookup, request.Origin)
+	}
+	if err := server.RegisterName("Authority", &authorityServer{binding: binding, budget: budget, resolve: current}); err != nil {
 		close(p.done)
-		p.Close()
-		return nil, err
+		return nil, errors.Join(err, p.Close())
 	}
 	go func() {
 		defer close(p.done)
@@ -123,13 +131,11 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 	return p, nil
 }
 
-func (p *Parent) Close() {
+func (p *Parent) Close() error {
 	p.cancel()
-	for _, file := range p.Files {
-		_ = file.Close()
-	}
-	_ = p.stream.Close()
+	err := errors.Join(closeFiles(p.Files...), p.stream.Close())
 	<-p.done
+	return err
 }
 
 type Client struct {
@@ -138,9 +144,6 @@ type Client struct {
 }
 
 func Open(ctx context.Context, marker string, binding Binding, budget time.Duration) (*Client, error) {
-	if marker == "" {
-		return nil, nil
-	}
 	if marker != BootstrapVersion {
 		return nil, cloudassert.ErrInvalid
 	}
@@ -152,8 +155,7 @@ func Open(ctx context.Context, marker string, binding Binding, budget time.Durat
 	client := &Client{client: rpc.NewClient(stream), budget: budget}
 	handshake, err := callAuthority[Handshake](ctx, client, "Handshake", binding)
 	if err != nil || handshake.Binding != binding || handshake.Budget <= 0 || handshake.Budget > budget {
-		_ = client.Close()
-		return nil, cloudassert.ErrInvalid
+		return nil, errors.Join(cloudassert.ErrInvalid, client.Close())
 	}
 	client.budget = handshake.Budget
 	return client, nil
@@ -187,4 +189,9 @@ func (c *Client) Resolve(ctx context.Context, origin Origin) (cloudassert.Claims
 	return callAuthority[cloudassert.Claims](ctx, c, "Resolve", Request{Origin: origin, Deadline: deadline})
 }
 
-func (c *Client) Close() error { return c.client.Close() }
+func (c *Client) Close() error {
+	if err := c.client.Close(); err != nil && !errors.Is(err, rpc.ErrShutdown) {
+		return err
+	}
+	return nil
+}

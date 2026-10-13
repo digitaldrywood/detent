@@ -160,7 +160,9 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			}
 			marker := os.Getenv(entryauthority.BootstrapEnvironment)
 			if marker != "" {
-				_ = os.Unsetenv(entryauthority.BootstrapEnvironment)
+				if err := os.Unsetenv(entryauthority.BootstrapEnvironment); err != nil {
+					return err
+				}
 				if hosted == nil || hosted.SharedEntry == nil {
 					return errors.New("entry authority bootstrap requires shared hosted configuration")
 				}
@@ -168,7 +170,11 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 				if err != nil {
 					return err
 				}
-				defer authority.Close()
+				defer func() {
+					if err := authority.Close(); err != nil {
+						logger.Warn("close entry authority channel", "error", err)
+					}
+				}()
 				hosted.SharedEntry.ResolveKey = authority.Resolve
 			}
 			var conversation *hubserver.ConversationConfig
