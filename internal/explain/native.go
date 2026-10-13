@@ -136,7 +136,10 @@ func projectNativeGate(r *IssueExplanation, e tracker.NativeRuntimeEvidence) {
 			case landing.Landed:
 				merge.State, g.State = GatePassed, GatePassed
 				g.Reason, g.Source, g.ObservedAt = "landed", "native_landing_receipt", merge.ObservedAt
-			case landing.RefusalKind != "" && !landing.Waiting:
+			case landing.Waiting || landing.RefusalKind == "base_moved" || landing.Path == "batch_member" && landing.RefusalKind == "conflict" || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending":
+				merge.State, g.State = GatePending, GatePending
+				g.SourceState, g.Reason, g.Source, g.ObservedAt = SourceLastKnown, landing.Refusal, "native_landing_receipt", merge.ObservedAt
+			case landing.RefusalKind != "":
 				merge.State, g.State = GateFailed, GateFailed
 				g.SourceState, g.Source, g.ObservedAt = SourceLastKnown, "native_landing_receipt", merge.ObservedAt
 				g.Reason = merge.Detail
@@ -145,9 +148,6 @@ func projectNativeGate(r *IssueExplanation, e tracker.NativeRuntimeEvidence) {
 				}
 				g.Failures = append(g.Failures, g.Reason)
 				r.Reasons = append(r.Reasons, Reason{Code: merge.Reason, Detail: g.Reason, Action: "Address the recorded landing refusal before another landing attempt"})
-			case landing.Waiting:
-				merge.State, g.State = GatePending, GatePending
-				g.Reason, g.Source, g.ObservedAt = landing.Refusal, "native_landing_receipt", merge.ObservedAt
 			}
 		}
 	}
