@@ -767,7 +767,7 @@ test("confirms automatic chat linking when creating an issue on a phone", async 
   // on Detent's own defaults rather than on a blank.
   const next = form.getByTestId("handoff-next");
   await expect(next).toContainText("What happens next");
-  await expect(next.getByLabel("Lane")).toHaveValue("Todo");
+  await expect(next.getByLabel("Lane")).toHaveValue("Backlog");
   await expect(next.getByLabel("Dispatch")).toHaveValue("later");
   await page.keyboard.press("Tab");
   await expect(next.getByLabel("Lane")).toBeFocused();
