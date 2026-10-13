@@ -184,6 +184,40 @@ const OWNER_ACCOUNT = {
   account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 };
 
+describe("issue notification preference", () => {
+  it.each([false, true])("loads the saved preference (%s) and persists a toggle", async (enabled) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("issue-notification-preference")) {
+        return new Response(JSON.stringify({ enabled: init?.method === "PUT" ? !enabled : enabled }));
+      }
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Notify me about issues I filed or commented on" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(enabled)));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(!enabled)));
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("issue-notification-preference") && init?.method === "PUT" && init.body === JSON.stringify({ enabled: !enabled }) && (init.headers as Record<string, string>)["X-CSRF-Token"] === accountFixture.csrf_token)).toBe(true);
+  });
+
+  it("keeps the saved preference and shows a failed save", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("issue-notification-preference")) {
+        return init?.method === "PUT"
+          ? new Response(JSON.stringify({ code: "unavailable", message: "Notification preference could not be saved" }), { status: 503 })
+          : new Response(JSON.stringify({ enabled: true }));
+      }
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Notify me about issues I filed or commented on" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(toggle);
+    await screen.findByText("Notification preference could not be saved");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
 describe("MCP setup", () => {
   const account = accountFixture as unknown as AccountBootstrap;
 

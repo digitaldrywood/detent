@@ -343,6 +343,7 @@ func (s *Service) routes() {
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
 	e.Any("/organizations/:organization", s.proxy)
+	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }
