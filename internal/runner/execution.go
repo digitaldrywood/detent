@@ -45,6 +45,11 @@ type NativeValidatorExecution interface {
 	RecordValidator(context.Context, gate.ValidatorResult) error
 }
 
+type NativeSecurityAuditExecution interface {
+	SecurityAuditVersion(context.Context) (NativeValidation, error)
+	RecordSecurityAudit(context.Context, tracker.SecurityAuditReview) error
+}
+
 type NativeReviewExecution interface {
 	ReviewVersion(context.Context) (NativeValidation, error)
 	RecordReview(context.Context, gate.ValidatorResult) error
@@ -875,6 +880,9 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 }
 
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
+	if approved, err := r.auditNativeChange(ctx, req); err != nil || !approved {
+		return err
+	}
 	if approved, err := r.reviewNativeChange(ctx, req); err != nil || !approved {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -130,11 +131,21 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !current.ReviewPolicy.RequireReview {
 		summary.NativeReview = "not_required"
 	}
+	auditPassed := !current.Policy.Gates.SecurityAudit
 	validatorPassed := !current.Policy.Gates.Validator
 	implementationReviewed := current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired
 	latest := map[string]string{}
 	staleApproval := priorApproval
 	for _, review := range detail.Reviews {
+		if review.SecurityAudit != nil {
+			if review.VersionID == current.ID {
+				run := review.SecurityAudit.Run
+				evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(detail.Change.ProjectID), Repository: current.Repository, PRNumber: run.PRNumber, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA}, "", []string{"none"})
+				auditPassed = evaluation.Allowed && review.Decision == "approved"
+			}
+			continue
+		}
+
 		if review.ImplementationReview != nil {
 			if review.VersionID == current.ID {
 				implementationReviewed = review.Decision == "approved" && review.ImplementationReview.Verdict == "pass"
@@ -196,7 +207,7 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !checksSatisfied {
 		summary.Messages = append(summary.Messages, "Current version checks are "+summary.Checks+". Missing or stale evidence does not pass review.")
 	}
-	if validatorPassed && implementationReviewed && checksSatisfied && slices.Contains([]string{"approved", "not_required"}, summary.NativeReview) {
+	if auditPassed && validatorPassed && implementationReviewed && checksSatisfied && slices.Contains([]string{"approved", "not_required"}, summary.NativeReview) {
 		summary.Status = "reviewed"
 	}
 	if policyID != current.PolicyID || reviewPolicyID != current.ReviewPolicy.ID {

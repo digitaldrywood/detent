@@ -9,16 +9,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, request tracker.ReviewChange) (tracker.MachineID, error) {
 	worker := scope.credential.Scope == apiScopeWorker
 	implementationReview := request.ImplementationReview != nil
-	if implementationReview && request.Validator != nil {
+	audit := request.SecurityAudit != nil
+	if implementationReview && request.Validator != nil || audit && (implementationReview || request.Validator != nil) {
 		return "", nativeInvalid("implementation review and acceptance validation must be separate results")
 	}
-	if request.Validator == nil && !implementationReview {
+	if request.Validator == nil && !implementationReview && !audit {
 		if worker {
 			return "", &nativeError{status: 403, Code: "forbidden", Message: "workers may only submit validator reviews"}
 		}
@@ -29,6 +31,11 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if implementationReview {
 		result = request.ImplementationReview
 		required = version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
+	}
+	if audit {
+		run := request.SecurityAudit.Run
+		result = &gate.ValidatorResult{VersionID: version.ID, SessionID: request.SecurityAudit.SessionID, Submitted: true, Repository: run.Repository, BaseSHA: run.BaseSHA, HeadSHA: run.HeadSHA, DiffDigest: request.SecurityAudit.DiffDigest, Score: 1, Verdict: request.SecurityAudit.Verdict}
+		required = version.Policy.Gates.SecurityAudit
 	}
 	if !worker || !required || change.CurrentVersion != version.ID || !result.Submitted || result.SessionID <= 0 || result.VersionID != version.ID || result.Repository != version.Repository || result.BaseSHA != version.BaseSHA || result.HeadSHA != version.HeadSHA || !changerequest.ValidHash(result.DiffDigest, 64) || math.IsNaN(result.Score) || math.IsInf(result.Score, 0) || result.Score < 0 || result.Score > 1 {
 		return "", nativeInvalid("validator review must identify the current immutable version and a fresh validator session")
@@ -49,7 +56,23 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if err != nil {
 		return "", err
 	}
-	if !implementationReview {
+	if audit {
+		run := request.SecurityAudit.Run
+		if run.IssueID != string(change.WorkItemID) || run.ProjectID != string(scope.project) || run.ID != result.SessionID {
+			return "", nativeInvalid("security audit identity differs from the work item")
+		}
+		evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}, "", workflow.Config.Gate.SecurityAudit.BlockOn)
+		verdict := gate.ValidatorVerdictPass
+		if evaluation.Reason == securityaudit.ReasonUnresolvedFindings {
+			verdict = gate.ValidatorVerdictRework
+		} else if !evaluation.Allowed {
+			return "", nativeInvalid("security audit evidence is incomplete")
+		}
+		if result.Verdict != verdict {
+			return "", nativeInvalid("security audit verdict differs from the configured gate")
+		}
+	}
+	if !implementationReview && !audit {
 		gate.NormalizeCriterionEvidence(result, contract.AcceptanceCriteria(issue.Body), tree)
 		gate.ApplyCriterionPolicy(workflow.Config.Gate.Validator, result)
 	}
@@ -92,9 +115,16 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return "", err
 	}
 	for _, review := range reviews {
+		if review.SecurityAudit != nil && review.SessionMachineID == current.MachineID && review.SecurityAudit.SessionID == result.SessionID {
+			return "", nativeInvalid("security audit requires a separate session")
+		}
+
 		other := review.ImplementationReview
 		if implementationReview {
 			other = review.Validator
+		}
+		if audit && review.Validator != nil && review.SessionMachineID == current.MachineID && review.Validator.SessionID == result.SessionID {
+			return "", nativeInvalid("security audit requires a separate session")
 		}
 		if other != nil && review.SessionMachineID == current.MachineID && other.SessionID == result.SessionID {
 			return "", nativeInvalid("implementation review and acceptance validation require separate sessions")

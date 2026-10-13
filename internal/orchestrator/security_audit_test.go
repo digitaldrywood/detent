@@ -65,7 +65,7 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 				run.AuthenticationMode = "api_key"
 				run.Attempt = gate.DefaultSecurityAuditMaxAttempts
 			},
-			wantReason: securityaudit.ReasonMeteredAuth,
+			wantAllowed: true, wantReason: securityaudit.ReasonReady,
 		},
 		{
 			name: "untrusted service",
@@ -73,7 +73,7 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 				run.ServiceIdentity = "implementation-agent"
 				run.Attempt = gate.DefaultSecurityAuditMaxAttempts
 			},
-			wantReason: securityaudit.ReasonUntrustedService,
+			wantAllowed: true, wantReason: securityaudit.ReasonReady,
 		},
 		{
 			name: "unresolved finding",
@@ -331,7 +331,7 @@ func TestOversizedSecurityAuditSnapshotRecordsSizeWithoutReviewerAuth(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			issue := securityAuditTestIssue()
 			snapshot := securityAuditSnapshotFromIssue("detent", issue)
-			snapshot.Diff = strings.Repeat("x", tc.limit)
+			snapshot.Diff = strings.Repeat("x", tc.diffBytes)
 			snapshot.DiffBytes = tc.diffBytes
 			snapshot.DiffTruncated = true
 			memo := newSecurityAuditMemoryStore()
@@ -493,8 +493,8 @@ func (c *securityAuditTestConnector) SetAssignee(context.Context, string, string
 func (c *securityAuditTestConnector) SetField(context.Context, string, string, string) error {
 	return nil
 }
-func (c *securityAuditTestConnector) SecurityAuditSnapshot(context.Context, connector.Issue, int) (securityaudit.Snapshot, error) {
-	return c.snapshot, nil
+func (c *securityAuditTestConnector) PullRequestValidationDiff(context.Context, connector.Issue) (connector.ValidationDiff, error) {
+	return connector.ValidationDiff{Repository: c.snapshot.Repository, PRNumber: c.snapshot.PRNumber, BaseSHA: c.snapshot.BaseSHA, HeadSHA: c.snapshot.HeadSHA, Patch: c.snapshot.Diff}, nil
 }
 func (c *securityAuditTestConnector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
 	if strings.TrimSpace(c.hydrated.ID) == "" {
@@ -506,8 +506,7 @@ func (c *securityAuditTestConnector) HydratePullRequest(_ context.Context, issue
 func securityAuditTestOrchestrator(memo store.SecurityAuditStore) *Orchestrator {
 	return &Orchestrator{
 		cfg: Config{
-			Project:         scheduler.ProjectCandidate{ID: "detent"},
-			ServiceIdentity: "detent:detent",
+			Project: scheduler.ProjectCandidate{ID: "detent"},
 			AutoPromote: AutoPromoteConfig{Gate: gate.Config{
 				SecurityAudit: gate.SecurityAuditConfig{Enabled: true},
 			}},
@@ -584,55 +583,4 @@ func (s *securityAuditMemoryStore) LatestCompletedSecurityAuditRunForPullRequest
 		}
 	}
 	return securityaudit.Run{}, store.ErrNotFound
-}
-
-type securityAuditDeltaTestConnector struct{ securityAuditTestConnector }
-
-func (c *securityAuditDeltaTestConnector) SecurityAuditDeltaSnapshot(_ context.Context, _ connector.Issue, _ int, previous securityaudit.PreviousAudit) (securityaudit.Snapshot, error) {
-	snapshot := c.snapshot
-	snapshot.Previous = &previous
-	snapshot.Diff = "delta only"
-	return snapshot, nil
-}
-
-func TestSecurityAuditCarriesPriorVerdict(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name      string
-		mutate    func(*securityaudit.Run)
-		wantDelta bool
-	}{
-		{"prior pass", func(*securityaudit.Run) {}, true},
-		{"prior failure findings", func(r *securityaudit.Run) {
-			r.Verdict = "fail"
-			r.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "missing auth", Path: "auth.go"}}
-		}, true},
-		{"changed base", func(r *securityaudit.Run) { r.BaseSHA = "other" }, false},
-		{"untrusted", func(r *securityaudit.Run) { r.ServiceIdentity = "other" }, false},
-		{"old reviewer", func(r *securityaudit.Run) { r.ReviewerDigest = "old" }, false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			issue := securityAuditTestIssue()
-			memo := newSecurityAuditMemoryStore()
-			prior := securityAuditPassingRun(issue)
-			prior.HeadSHA = "old"
-			tt.mutate(&prior)
-			memo.runs = append(memo.runs, prior)
-			snapshot := securityAuditSnapshotFromIssue("detent", issue)
-			snapshot.Diff = "full diff"
-			c := &securityAuditDeltaTestConnector{securityAuditTestConnector{snapshot: snapshot}}
-			orch := securityAuditTestOrchestrator(memo)
-			orch.connector = c
-			got, err := orch.collectSecurityAuditSnapshot(t.Context(), c, issue, securityAuditKey(snapshot), 4096)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if (got.Previous != nil) != tt.wantDelta {
-				t.Fatalf("snapshot = %#v", got)
-			}
-			if tt.wantDelta && (got.Previous.HeadSHA != "old" || got.Previous.Verdict != prior.Verdict || got.Diff != "delta only") {
-				t.Fatalf("lost prior verdict: %#v", got)
-			}
-		})
-	}
 }

@@ -5,11 +5,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -29,6 +31,23 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		want   int
 		status string
 	}{
+
+		{"security audit metered pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
+		{"security audit stale base", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.BaseSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"security audit stale head", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.HeadSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"security audit old reviewer", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ReviewerDigest = "other" }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"security audit implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"security audit backend failure", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed }, http.StatusUnprocessableEntity, "needs_evidence"},
+		{"security audit blocking finding", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Verdict = "fail"
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "authorization bypass"}}
+			r.SecurityAudit.Verdict = "rework"
+			r.Decision = "changes_requested"
+		}, http.StatusOK, "needs_evidence"},
+		{"security audit advisory", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Verdict = "fail"
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "advisory", Severity: "p3", Body: "advisory finding"}}
+		}, http.StatusOK, "reviewed"},
 		{"source review from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
 		{"same machine source session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence"},
 		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence"},
@@ -84,7 +103,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				descriptor = resolved
 			}
-			descriptor.Gates.Validator = true
+			audit := strings.HasPrefix(test.name, "security audit")
+			descriptor.Gates.Validator = !audit
+			descriptor.Gates.SecurityAudit = audit
 			implementation := strings.HasPrefix(test.name, "implementation review")
 			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
 			if implementation || counterCollision {
@@ -120,6 +141,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			mutation.IdempotencyKey = "validator"
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
+			if audit {
+				now := f.service.config.now()
+				request.SecurityAudit = &tracker.SecurityAuditReview{SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), IssueID: string(issue.WorkItemID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now.Add(-time.Second), CompletedAt: now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+				request.Validator = nil
+			}
 			test.edit(&request)
 			if counterCollision {
 				machine := tracker.MachineID("machine")
@@ -166,6 +192,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					if storedReview.Validator != nil {
 						t.Fatal("implementation review was stored as acceptance")
 					}
+				}
+				if audit {
+					stored = &gate.ValidatorResult{SessionID: storedReview.SecurityAudit.SessionID}
 				}
 				if stored == nil || stored.SessionID != 42 || storedReview.SessionMachineID != lease.MachineID {
 					t.Fatalf("review session was not persisted: %+v", detail.Reviews)

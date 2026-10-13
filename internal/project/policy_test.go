@@ -252,7 +252,7 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			cfg := globalconfig.Project{ID: test.name, Workflow: filepath.Join(root, "WORKFLOW.md"), Workdir: root}
-			raw := fmt.Sprintf("---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/%s\n  api_key: test-token\ngate:\n  kind: %s\n  automated_review: off\nagent:\n  auto_promote:\n    enabled: %t\n---\nPrivate instructions.\n", test.name, test.kind, test.automatic)
+			raw := fmt.Sprintf("---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: acme/%s\n  api_key: test-token\ngate:\n  kind: %s\n  automated_review: off\n  security_audit:\n    enabled: false\nagent:\n  auto_promote:\n    enabled: %t\n---\nPrivate instructions.\n", test.name, test.kind, test.automatic)
 			if err := os.WriteFile(cfg.Workflow, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}

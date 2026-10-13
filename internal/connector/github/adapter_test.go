@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -5973,79 +5972,6 @@ func TestValidationDiffRejectsOtherPRFiles(t *testing.T) {
 	}
 }
 
-func TestConnectorSecurityAuditSnapshotUsesStableMetadataAndTextualDiff(t *testing.T) {
-	t.Parallel()
-
-	metadata := `{"number":42,"title":"Trusted audit","body":"Review this change","head":{"ref":"detent/audit","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"}}`
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", accept: "application/vnd.github.diff", body: "diff --git a/a.go b/a.go\n@@ -0,0 +1 @@\n+safe\ndiff --git a/z.go b/z.go\n@@ -1 +1 @@\n-old\n+new\n"},
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
-	})
-	c := newGitHubTestConnector(t, server, Config{})
-	prNumber := 42
-	issue := connector.Issue{
-		ID:           "issue-1",
-		Identifier:   "example/repo#1",
-		Title:        "Security issue",
-		Description:  "Acceptance criteria",
-		URL:          "https://github.test/example/repo/issues/1",
-		PRNumber:     &prNumber,
-		PRRepository: "example/repo",
-		PullRequest:  &connector.PullRequest{Number: prNumber},
-	}
-
-	snapshot, err := c.SecurityAuditSnapshot(t.Context(), issue, 4096)
-	if err != nil {
-		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
-	}
-	if snapshot.Repository != "example/repo" || snapshot.PRNumber != 42 || snapshot.BaseSHA != "base-sha" || snapshot.HeadSHA != "head-sha" || snapshot.DiffTruncated {
-		t.Fatalf("SecurityAuditSnapshot() = %#v", snapshot)
-	}
-	if !strings.Contains(snapshot.Diff, "diff --git a/a.go b/a.go") || !strings.Contains(snapshot.Diff, "+safe") {
-		t.Fatalf("SecurityAuditSnapshot().Diff = %q", snapshot.Diff)
-	}
-}
-
-func TestConnectorSecurityAuditSnapshotRejectsHeadChangeDuringCollection(t *testing.T) {
-	t.Parallel()
-
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: `{"number":42,"head":{"sha":"old-head"},"base":{"sha":"base"}}`},
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", accept: "application/vnd.github.diff", body: "diff --git a/main.go b/main.go\n@@ -1 +1 @@\n-old\n+new\n"},
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: `{"number":42,"head":{"sha":"new-head"},"base":{"sha":"base"}}`},
-	})
-	c := newGitHubTestConnector(t, server, Config{})
-	prNumber := 42
-	issue := connector.Issue{Identifier: "example/repo#1", PRNumber: &prNumber, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42}}
-
-	if _, err := c.SecurityAuditSnapshot(t.Context(), issue, 4096); err == nil || !strings.Contains(err.Error(), "head changed") {
-		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
-	}
-}
-
-func TestConnectorSecurityAuditSnapshotMarksOversizedRawDiff(t *testing.T) {
-	t.Parallel()
-
-	metadata := `{"number":42,"head":{"sha":"head"},"base":{"sha":"base"}}`
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", accept: "application/vnd.github.diff", body: "12345"},
-		{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata},
-	})
-	c := newGitHubTestConnector(t, server, Config{})
-	prNumber := 42
-	issue := connector.Issue{Identifier: "example/repo#1", PRNumber: &prNumber, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: 42}}
-
-	snapshot, err := c.SecurityAuditSnapshot(t.Context(), issue, 4)
-	if err != nil {
-		t.Fatalf("SecurityAuditSnapshot() error = %v", err)
-	}
-	if snapshot.Diff != "1234" || !snapshot.DiffTruncated || snapshot.DiffBytes != 5 {
-		t.Fatalf("SecurityAuditSnapshot() diff = %q truncated=%t bytes=%d", snapshot.Diff, snapshot.DiffTruncated, snapshot.DiffBytes)
-	}
-}
-
 func TestConnectorHydratePullRequestNormalizesStaleSuccessfulWorkflowCheckRun(t *testing.T) {
 	t.Parallel()
 
@@ -7735,76 +7661,6 @@ func TestCheckRunFailureEvidence(t *testing.T) {
 			inventory := pullRequestCheckInventory(runs, nil)
 			if len(inventory) != 1 || inventory[0].FailureDetail != tt.want {
 				t.Fatalf("failure evidence = %#v, want %q", inventory, tt.want)
-			}
-		})
-	}
-}
-
-func TestSecurityAuditDeltaSnapshot(t *testing.T) {
-	t.Parallel()
-	metadata := `{"number":42,"head":{"sha":"new"},"base":{"sha":"base"}}`
-	for _, tt := range []struct {
-		name, status, base string
-		delta              bool
-	}{
-		{"renamed", "ahead", "base", true}, {"descendant", "ahead", "base", true}, {"same tree", "identical", "base", true}, {"force push", "diverged", "base", false}, {"base changed", "ahead", "other", false},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			responses := []graphqlTestResponse{{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata}}
-			comparison := `{"status":"` + tt.status + `"}`
-			filePath := "auth.go"
-			if tt.name == "renamed" {
-				comparison = `{"status":"ahead","files":[{"status":"renamed","previous_filename":"auth.go","filename":"new_auth.go"}]}`
-				filePath = "new_auth.go"
-			}
-			if tt.base == "base" {
-				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/compare/old...new", body: comparison})
-			}
-			diffPath := "/repos/example/repo/pulls/42"
-			if tt.delta {
-				diffPath = "/repos/example/repo/compare/old...new"
-			}
-			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: diffPath, accept: "application/vnd.github.diff", body: "delta"})
-			if tt.delta {
-				responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=new", accept: "application/vnd.github.raw", body: "authorization now checked"})
-			}
-			responses = append(responses, graphqlTestResponse{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: metadata})
-			server := newGraphQLTestServer(t, responses)
-			c := newGitHubTestConnector(t, server, Config{})
-			number := 42
-			snapshot, err := c.SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, securityaudit.PreviousAudit{BaseSHA: tt.base, HeadSHA: "old", Verdict: "fail", Findings: []securityaudit.Finding{{ID: "auth", Path: "auth.go", Severity: "p1", Body: "missing authorization"}}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if (snapshot.Previous != nil) != tt.delta {
-				t.Fatalf("snapshot = %#v", snapshot)
-			}
-			if tt.delta && snapshot.FindingFiles[filePath] != "authorization now checked" {
-				t.Fatalf("missing finding file: %#v", snapshot)
-			}
-			if tt.delta {
-				if snapshot.Previous.Findings[0].Path != filePath {
-					t.Fatalf("carried path = %q, want %q", snapshot.Previous.Findings[0].Path, filePath)
-				}
-				// The next pass has no rename metadata: the carried verdict must
-				// already identify the file at its current path.
-				nextMetadata := strings.ReplaceAll(metadata, "new", "next")
-				nextServer := newGraphQLTestServer(t, []graphqlTestResponse{
-					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
-					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", body: `{"status":"ahead"}`},
-					{method: http.MethodGet, path: "/repos/example/repo/compare/new...next", accept: "application/vnd.github.diff", body: "next delta"},
-					{method: http.MethodGet, path: "/repos/example/repo/contents/" + filePath + "?ref=next", accept: "application/vnd.github.raw", body: "authorization now checked"},
-					{method: http.MethodGet, path: "/repos/example/repo/pulls/42", body: nextMetadata},
-				})
-				carried := *snapshot.Previous
-				carried.HeadSHA = snapshot.HeadSHA
-				next, err := newGitHubTestConnector(t, nextServer, Config{}).SecurityAuditDeltaSnapshot(t.Context(), connector.Issue{PRNumber: &number, PRRepository: "example/repo", PullRequest: &connector.PullRequest{Number: number}}, 4096, carried)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if next.FindingFiles[filePath] != "authorization now checked" {
-					t.Fatalf("next finding files = %#v", next.FindingFiles)
-				}
 			}
 		})
 	}
