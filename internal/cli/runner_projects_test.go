@@ -15,13 +15,17 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -418,45 +422,172 @@ func TestRunnerCloudProjects(t *testing.T) {
 
 func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		status int
-		kept   bool
+		name                string
+		status              int
+		kept                bool
+		revoked             bool
+		identityUnavailable bool
 	}{
 		{name: "hub unavailable keeps the running project", status: http.StatusServiceUnavailable, kept: true},
-		{name: "project refusal drops the project", status: http.StatusNotFound},
+		{name: "identity unavailable keeps the runtime unapplied", kept: true, identityUnavailable: true},
+		{name: "project unauthorized drops the project", status: http.StatusUnauthorized},
+		{name: "project forbidden drops the project", status: http.StatusForbidden},
+		{name: "project not found drops the project", status: http.StatusNotFound},
+		{name: "routing revocation drops the project", status: http.StatusServiceUnavailable, revoked: true},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				if strings.HasSuffix(r.URL.Path, "/capabilities") {
-					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}})
-					return
+		for _, periodic := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/periodic=%v", test.name, periodic), func(t *testing.T) {
+				var identity runnerauth.Identity
+				var projectReads, legacyReads atomic.Int32
+				var reloading atomic.Bool
+				descriptor := policy.Descriptor{
+					SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
+					Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
+				}.WithID()
+				lease := tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", PolicyID: descriptor.ID, FencingToken: 7, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					switch {
+					case strings.HasSuffix(r.URL.Path, "/capabilities"):
+						_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy"}})
+					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
+						if test.identityUnavailable && reloading.Load() {
+							w.WriteHeader(http.StatusServiceUnavailable)
+							return
+						}
+						response := identity
+						if test.revoked && reloading.Load() {
+							response.ProjectIDs = nil
+						}
+						_ = json.NewEncoder(w).Encode(response)
+					case strings.HasSuffix(r.URL.Path, "/projects/prj_orders"):
+						if !reloading.Load() {
+							_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: "prj_orders", OrganizationID: "org_example", Profile: "native", Repository: "example-org/orders", States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
+							return
+						}
+						projectReads.Add(1)
+						w.WriteHeader(test.status)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": http.StatusText(test.status)})
+					case strings.HasSuffix(r.URL.Path, "/projects/prj_orders/policy"):
+						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor})
+					case strings.HasSuffix(r.URL.Path, "/policy/observed"), strings.HasSuffix(r.URL.Path, "/machines/register"):
+						w.WriteHeader(http.StatusNoContent)
+					case strings.HasSuffix(r.URL.Path, "/claims"), strings.HasSuffix(r.URL.Path, "/leases/lease_example/renew"):
+						_ = json.NewEncoder(w).Encode(lease)
+					case strings.HasSuffix(r.URL.Path, "/leases/lease_example/validate"):
+						_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
+					case strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
+						_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_orders", WorkItemID: "wi_example"}, State: "Todo"}})
+					default:
+						if strings.Contains(r.URL.Path, "/repositories/") {
+							legacyReads.Add(1)
+						} else {
+							t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+						}
+						w.WriteHeader(http.StatusNotFound)
+					}
+				}))
+				t.Cleanup(server.Close)
+				root := t.TempDir()
+				if err := os.Chmod(root, 0o700); err != nil {
+					t.Fatal(err)
 				}
-				w.WriteHeader(test.status)
-				_ = json.NewEncoder(w).Encode(map[string]any{"code": "unavailable", "message": "unavailable"})
-			}))
-			t.Cleanup(server.Close)
-			client, err := hubclient.New(hubclient.Config{URL: server.URL + "/organizations/org_example", TokenSource: func() string { return "test" }})
-			if err != nil {
-				t.Fatal(err)
-			}
-			running := globalconfig.Project{ID: "orders", Workflow: "/work/orders/WORKFLOW.md", Workdir: "/work/orders"}
-			cfg := globalconfig.Config{Projects: []globalconfig.Project{running}}
-			cfg.Client.OrganizationID = "org_example"
-			cfg.Client.NativeProjects = map[string]string{"orders": "prj_orders"}
-			got, err := runnerProjectsForIdentity(t.Context(), cfg, client, runnerauth.Identity{OrganizationID: "org_example", ProjectIDs: []tracker.ProjectID{"prj_orders"}}, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if kept := slices.ContainsFunc(got.Projects, func(project globalconfig.Project) bool {
-				return project.ID == running.ID && project.Workdir == running.Workdir
-			}); kept != test.kept {
-				t.Fatalf("projects=%+v, kept=%v want %v", got.Projects, kept, test.kept)
-			}
-			if mapped := got.Client.NativeProjects["orders"] == "prj_orders"; mapped != test.kept {
-				t.Fatalf("native projects=%v", got.Client.NativeProjects)
-			}
-		})
+				identityPath := filepath.Join(root, "identity.json")
+				file, err := runnerauth.Initialize(identityPath, server.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				file.Identity.OrganizationID = "org_example"
+				file.Identity.ProjectIDs = []tracker.ProjectID{"prj_orders"}
+				file.Identity.Operations = []string{runnerauth.Read}
+				file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+				identity = file.Identity
+				if err := runnerauth.Save(identityPath, file); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(root, "global.yaml")
+				machine := reloadTestConfig(path, 2, nil)
+				machine.WorkspaceRoot = filepath.Join(root, "checkouts")
+				machine.Client.URL, machine.Client.OrganizationID, machine.Client.IdentityFile = server.URL, "org_example", identityPath
+				raw := "apiVersion: detent/v1\nkind: GlobalConfig\nworkspace_root: " + machine.WorkspaceRoot + "\nclient:\n  hub_url: " + server.URL + "\n  organization_id: org_example\n  identity_file: " + identityPath + "\n  capacity: 2\n"
+				if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				current, err := globalconfig.Read(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(current.Projects) != 0 || len(current.Client.NativeProjects) != 0 {
+					t.Fatal("disk config is not machine-only")
+				}
+				files := createBootProjectFiles(t)
+				running := globalconfig.Project{ID: "orders", Workflow: files.workflowPath, Workdir: files.workdirPath, Weight: 1}
+				current.Projects = []globalconfig.Project{running}
+				current.Client.NativeProjects = map[string]string{"orders": "prj_orders"}
+				client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return "test" }})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+					OrganizationID: "org_example", NativeProjects: map[string]tracker.ProjectID{"orders": "prj_orders"},
+					Machine: hubclient.Machine{ID: identity.MachineID, Hostname: "host", Capacity: 2, Version: "test"}, HeartbeatInterval: time.Minute, LeaseTTL: time.Hour,
+					LeaseHold: func(context.Context) (func(), error) { return func() {}, nil },
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issues, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "orders", Repository: "example-org/orders", Policy: descriptor})
+				if err != nil || len(issues) != 1 {
+					t.Fatalf("initial native claim = %+v, %v", issues, err)
+				}
+				if err := os.WriteFile(path, []byte(strings.Replace(raw, "capacity: 2", "capacity: 3", 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				reloading.Store(true)
+				manager := &globalReloadManager{}
+				reloader := &globalConfigReloader{current: current, manager: manager, applyRuntime: func(next globalconfig.Config) error {
+					if test.kept && (len(next.Projects) == 0 || next.Client.NativeProjects["orders"] != "prj_orders") {
+						t.Error("reload published a partial project set before manager reconciliation")
+					}
+					return scheduler.SetNativeProjects(tracker.OrganizationID(next.Client.OrganizationID), nativeProjectsFromConfig(next.Client.NativeProjects), nil)
+				}}
+				if periodic {
+					syncLatestGlobalConfig(t.Context(), path, reloader)
+				} else {
+					reloader.handle(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Path: path, Value: machine})
+				}
+				expectedCalls := 1
+				if test.identityUnavailable {
+					expectedCalls = 0
+				}
+				if manager.calls != expectedCalls {
+					t.Errorf("manager reconciliations = %d, want %d", manager.calls, expectedCalls)
+				}
+				_, mapped := scheduler.ConnectorForProject("orders")
+				_, renewErr := scheduler.RenewClaim(t.Context(), "wi_example", time.Now())
+				if test.kept && (renewErr != nil || legacyReads.Load() != 0) {
+					t.Errorf("existing native claim renewal = %v, legacy policy reads = %d", renewErr, legacyReads.Load())
+				}
+				if !test.kept && renewErr == nil {
+					t.Error("revoked project claim remained usable")
+				}
+				managed := manager.config.Projects
+				if test.identityUnavailable {
+					managed = reloader.current.Projects
+				}
+				if kept := slices.ContainsFunc(managed, func(selected globalconfig.Project) bool {
+					return selected.ID == running.ID && selected.Workdir == running.Workdir && selected.Workflow == running.Workflow
+				}); kept != test.kept {
+					t.Errorf("manager projects = %+v, kept = %v want %v", manager.config.Projects, kept, test.kept)
+				}
+				if mapped != test.kept || (reloader.current.Client.NativeProjects["orders"] == "prj_orders") != test.kept {
+					t.Errorf("scheduler mapped = %v, native projects = %v, want retained = %v", mapped, reloader.current.Client.NativeProjects, test.kept)
+				}
+				if !test.revoked && !test.identityUnavailable && projectReads.Load() == 0 {
+					t.Error("reload did not read the assigned project")
+				}
+			})
+		}
 	}
 }
 
