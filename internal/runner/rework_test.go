@@ -235,14 +235,15 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			runRunnerGit(t, source, "commit", "-m", "base")
 			runRunnerGit(t, source, "push", "origin", "main")
 			target := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-			if !test.staged || test.signingFail {
+			if !test.staged {
 				runRunnerGit(t, source, "config", "commit.gpgsign", "true")
 				runRunnerGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-personal-signer"))
 			}
 			signer := ""
+			signingUnavailable := ""
 			var allowed string
 			var signerBefore []byte
-			if test.signed {
+			if test.signed || test.signingFail {
 				signer = filepath.Join(t.TempDir(), "signing-key")
 				if output, err := exec.CommandContext(t.Context(), "ssh-keygen", "-t", "ed25519", "-N", "", "-f", signer).CombinedOutput(); err != nil {
 					t.Fatalf("create signing fixture: %v: %s", err, output)
@@ -263,6 +264,22 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, source, "config", "gpg.format", "ssh")
 				runRunnerGit(t, source, "config", "user.signingkey", signer)
 				runRunnerGit(t, source, "config", "gpg.ssh.allowedSignersFile", allowed)
+				if test.signingFail {
+					signingUnavailable = filepath.Join(filepath.Dir(signer), "signing-unavailable")
+					program := filepath.Join(filepath.Dir(signer), "signer")
+					script := fmt.Sprintf("#!/bin/sh\nif [ -f %q ]; then\n  rm -- %q || exit 2\n  exit 1\nfi\nexec ssh-keygen \"$@\"\n", signingUnavailable, signingUnavailable)
+					if err := os.WriteFile(program, []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					runRunnerGit(t, source, "config", "gpg.ssh.program", program)
+				}
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Dir(info.Path), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if report := backend.(*workspace.LocalGit).CommitReport(); report.Signing != "ssh" {
+					t.Fatalf("signing fixture was not captured at startup: %+v", report)
+				}
 			}
 			configBefore, err := os.ReadFile(filepath.Join(source, ".git", "config"))
 			if err != nil {
@@ -275,6 +292,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				runRunnerGit(t, info.Path, "add", "repair.md")
 			}
 			agent := &resolvingReworkAgent{unresolved: test.unresolved, staged: test.staged, signer: signer, t: t}
+			if test.signingFail {
+				agent.signer = ""
+				agent.afterStage = func() {
+					if err := os.WriteFile(signingUnavailable, nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
 			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
 			prepareConflict := (test.refusal == workspace.LandRefusalConflict || test.baseRefresh) && !test.historical && test.laterRefusal == ""
@@ -354,7 +379,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					t.Fatalf("failed finalization lost staged repair: %s", staged)
 				}
 				if test.signingFail && (execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty") {
-					t.Fatal("signing failure omitted dirty checkpoint")
+					t.Fatalf("signing failure omitted dirty checkpoint: %+v", execution.checkpoint)
 				}
 				if test.authorityLost && (execution.checkpoint != priorCheckpoint || execution.authorityChecks < 2) {
 					t.Fatal("lost authority wrote checkpoint")
