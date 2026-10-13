@@ -31,10 +31,14 @@ import { useSidebarData } from "../adapters/sidebarData.tsx";
 
 export const ISSUE_CREATION_NEEDS_WRITE = "You need write access to a project to create issues";
 
+function newIssueStates(project: AccountProject | undefined) {
+  return project?.states.filter((state) => project.profile !== "native" || state.name !== "Triage") ?? [];
+}
+
 /** The lane a new issue starts in when nobody chose one. */
 export function firstIssueState(project: AccountProject | undefined): string {
   if (project?.profile === "native") {
-    return project.states.find((state) => state.name !== "Triage")?.name ?? "";
+    return newIssueStates(project)[0]?.name ?? "";
   }
   return (
     project?.states.find((state) => state.dispatchable === true && state.terminal !== true)
@@ -46,7 +50,7 @@ export function firstIssueState(project: AccountProject | undefined): string {
 
 /** The requested lane when the project has it, otherwise the project's first working lane. */
 export function newIssueState(project: AccountProject | undefined, requested: string | null): string {
-  if (requested !== null && project?.states.some((state) => state.name === requested) === true) {
+  if (requested !== null && newIssueStates(project).some((state) => state.name === requested)) {
     return requested;
   }
   return firstIssueState(project);
@@ -63,7 +67,7 @@ export function newIssueProjects(
 ): readonly AccountProject[] {
   return projects.filter(
     (project) =>
-      project.can_write && (state === null || project.states.some((entry) => entry.name === state)),
+      project.can_write && (state === null || newIssueStates(project).some((entry) => entry.name === state)),
   );
 }
 
@@ -102,6 +106,7 @@ export function NewIssueDialog({
   const [issueType, setIssueType] = React.useState<"" | "bug" | "change_request">("");
   const [target, setTarget] = React.useState(() => newIssueProject(projects, projectId)?.id ?? "");
   const project = projects.find((candidate) => candidate.id === target);
+  const states = newIssueStates(project);
   const [title, setTitle] = React.useState("");
 	const [githubIssueUrl, setGithubIssueUrl] = React.useState("");
   const [body, setBody] = React.useState("");
@@ -211,13 +216,13 @@ export function NewIssueDialog({
                 onChange={setBody}
               />
             </div>
-            {project !== undefined && project.states.length > 1 ? (
+            {project !== undefined && states.length > 1 ? (
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="new-issue-state">Lane</Label>
                 <NativeSelect
                   id="new-issue-state"
                   value={state}
-                  options={project.states.map((entry) => ({
+                  options={states.map((entry) => ({
                     value: entry.name,
                     label: entry.name,
                   }))}

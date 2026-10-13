@@ -394,6 +394,7 @@ describe("where a new issue goes", () => {
     can_write,
     can_manage_runners: false,
     states: [
+      { name: "Triage", terminal: false, dispatchable: false },
       { name: "Backlog", terminal: false, dispatchable: false },
       { name: "Todo", terminal: false, dispatchable: true },
       { name: "Done", terminal: true, dispatchable: false },
@@ -414,6 +415,7 @@ describe("where a new issue goes", () => {
     { name: "every writable project without a lane", state: null, want: ["b", "c"] },
     { name: "only writable projects with the lane", state: "Review", want: ["c"] },
     { name: "none when no writable project has the lane", state: "Missing", want: [] },
+    { name: "none for native reserved intake", state: "Triage", want: [] },
   ])("offers $name", ({ state, want }) => {
     const review = project("c", true);
     const projects = [
@@ -432,8 +434,15 @@ describe("where a new issue goes", () => {
     { name: "the lane it was started from", requested: "Backlog", want: "Backlog" },
     { name: "the native backlog without a request", requested: null, want: "Backlog" },
     { name: "the native backlog for a lane the project lacks", requested: "Review", want: "Backlog" },
+    { name: "the native backlog for reserved intake", requested: "Triage", want: "Backlog" },
   ])("starts in $name", ({ requested, want }) => {
     expect(newIssueState(project("a", true), requested)).toBe(want);
+  });
+
+  it("preserves compatibility projects' Triage creation lane", () => {
+    const projects = [project("a", true), { ...project("b", true), profile: "github_compatible" as const }];
+    expect(newIssueProjects(projects, "Triage").map((entry) => entry.id)).toEqual(["b"]);
+    expect(newIssueState(projects[1], "Triage")).toBe("Triage");
   });
 });
 
