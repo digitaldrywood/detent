@@ -40,6 +40,8 @@ const NativeProjectConfigurationCapability = "runner_project_configuration"
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
 const NativeProjectCheckoutCapability = "runner_project_checkout"
+const NativeRunnerCommitPolicyCapability = "runner_commit_policy"
+
 const NativeRunnerSetupCapability = "runner_project_setup"
 const NativeRunnerSetupDeclarationCapability = "runner_setup_declaration"
 

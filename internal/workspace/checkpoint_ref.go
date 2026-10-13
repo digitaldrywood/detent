@@ -44,8 +44,6 @@ func CheckpointRefName(issue Issue) string {
 func checkpointRefGit(path string, env ...string) checkpointGitRunner {
 	env = append([]string{
 		"GIT_LITERAL_PATHSPECS=1", "GIT_TERMINAL_PROMPT=0",
-		"GIT_AUTHOR_NAME=Detent", "GIT_AUTHOR_EMAIL=checkpoint@detent.invalid",
-		"GIT_COMMITTER_NAME=Detent", "GIT_COMMITTER_EMAIL=checkpoint@detent.invalid",
 	}, env...)
 	return func(ctx context.Context, args ...string) (string, error) {
 		return runGitAtWithEnv(ctx, path, env, args...)
@@ -100,7 +98,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if previous.CommitSHA != "" {
 		parents = append(parents, previous.CommitSHA)
 	}
-	commit, err := checkpointCommit(ctx, git, tree, parents)
+	commit, err := l.checkpointCommit(ctx, info.Path, tree, parents)
 	if err != nil {
 		return previous, false, fmt.Errorf("create checkpoint commit: %w", err)
 	}

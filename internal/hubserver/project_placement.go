@@ -128,7 +128,10 @@ func placementRunnerCompatible(r placementRunner, project tracker.ProjectID, req
 		r.Health, r.ConnectionHealth = "online", "online"
 		r.Paused = false
 	}
-	if r.Paused && !r.Pending || len(r.Problems) != 0 || len(r.Exclusions(project, requirements, false)) != 0 {
+	blockingProblem := slices.ContainsFunc(r.Problems, func(p runnerauth.Problem) bool {
+		return p.Code != "settings_invalid" || p.Check != "commit_signing"
+	})
+	if r.Paused && !r.Pending || blockingProblem || len(r.Exclusions(project, requirements, false)) != 0 {
 		return false
 	}
 	availability, err := r.Availability.Evaluate(now)

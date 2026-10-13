@@ -471,6 +471,9 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &registration); err != nil {
 		t.Fatal(err)
 	}
+	if registration.Commit.Identity.Name == "" || registration.Commit.Identity.Email == "" || registration.Commit.Signing == "" {
+		t.Fatalf("registration omitted commit policy: %+v", registration.Commit)
+	}
 	steps := strings.Join(registration.NextSteps, "\n")
 	if len(started) != 1 || !registration.ServiceRun || steps != "" {
 		t.Fatalf("service did not start with a missing checkout (%v):\n%s", started, output)

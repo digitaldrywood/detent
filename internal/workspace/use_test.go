@@ -87,7 +87,9 @@ func TestWorkspaceUseCancellation(t *testing.T) {
 func TestFilesystemCleanupProtectsWorker(t *testing.T) {
 	for _, kind := range []string{KindFilesystem, KindLocalGit} {
 		t.Run(kind, func(t *testing.T) {
-			opts := LocalGitOptions{Root: t.TempDir(), SourceRoot: t.TempDir()}
+			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			opts := LocalGitOptions{Root: t.TempDir(), SourceRoot: t.TempDir(), CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "runner@example.com"}}
 			backend, err := NewBackend(kind, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -106,9 +108,17 @@ func TestFilesystemCleanupProtectsWorker(t *testing.T) {
 				t.Fatal(err)
 			}
 			opts.Hooks.AfterCreate = "printf updated"
+			opts.CommitIdentity = CommitIdentity{Name: "Changed identity", Email: "changed@example.com"}
 			updated, err := ReconfigureBackend(backend, kind, opts)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if kind == KindLocalGit {
+				before := backend.(*LocalGit).CommitReport()
+				after := updated.(*LocalGit).CommitReport()
+				if after != before || after.Identity.Email != "runner@example.com" {
+					t.Fatalf("reload changed startup commit policy: before=%+v after=%+v", before, after)
+				}
 			}
 			for _, candidate := range []Backend{backend, updated} {
 				if _, err := candidate.(IssueCleaner).CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {

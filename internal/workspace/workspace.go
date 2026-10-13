@@ -291,15 +291,17 @@ type Hooks struct {
 }
 
 type LocalGitOptions struct {
-	Root       string
-	SourceRoot string
-	OutputRoot string
-	AutoBranch bool
-	Hooks      Hooks
-	Logger     *slog.Logger
+	CommitIdentity CommitIdentity
+	Root           string
+	SourceRoot     string
+	OutputRoot     string
+	AutoBranch     bool
+	Hooks          Hooks
+	Logger         *slog.Logger
 }
 
 type LocalGit struct {
+	commits            commitPolicy
 	uses               *workspaceUses
 	root               string
 	sourceRoot         string
@@ -456,9 +458,17 @@ func IsMissingWorkspaceError(err error) bool {
 }
 
 func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
+	return NewBackendContext(context.Background(), kind, opts)
+}
+
+func NewBackendContext(ctx context.Context, kind string, opts LocalGitOptions) (Backend, error) {
+	return newBackendContext(ctx, kind, opts, nil)
+}
+
+func newBackendContext(ctx context.Context, kind string, opts LocalGitOptions, policy *commitPolicy) (Backend, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case KindLocalGit:
-		return NewLocalGit(opts)
+		return newLocalGitContext(ctx, opts, policy)
 	case KindFilesystem:
 		return NewFilesystem(FilesystemOptions{
 			Root:       opts.Root,
@@ -473,7 +483,15 @@ func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
 }
 
 func ReconfigureBackend(current Backend, kind string, opts LocalGitOptions) (Backend, error) {
-	backend, err := NewBackend(kind, opts)
+	return ReconfigureBackendContext(context.Background(), current, kind, opts)
+}
+
+func ReconfigureBackendContext(ctx context.Context, current Backend, kind string, opts LocalGitOptions) (Backend, error) {
+	var policy *commitPolicy
+	if previous, ok := current.(*LocalGit); ok {
+		policy = &previous.commits
+	}
+	backend, err := newBackendContext(ctx, kind, opts, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -499,6 +517,14 @@ func ReconfigureBackend(current Backend, kind string, opts LocalGitOptions) (Bac
 }
 
 func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
+	return NewLocalGitContext(context.Background(), opts)
+}
+
+func NewLocalGitContext(ctx context.Context, opts LocalGitOptions) (*LocalGit, error) {
+	return newLocalGitContext(ctx, opts, nil)
+}
+
+func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commitPolicy) (*LocalGit, error) {
 	root, err := prepareRoot(opts.Root)
 	if err != nil {
 		return nil, err
@@ -523,9 +549,20 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
+	var commits commitPolicy
+	if policy != nil {
+		commits = *policy
+	} else {
+		commits, err = probeCommitPolicy(ctx, sourceRoot, opts.CommitIdentity)
+		if err != nil {
+			return nil, err
+		}
+	}
+	logger.Info("runner commit policy", "identity", commits.report.Identity, "signing", commits.report.Signing)
 	return &LocalGit{
 		uses:               &workspaceUses{},
 		createMu:           &sync.Mutex{},
+		commits:            commits,
 		root:               root,
 		sourceRoot:         sourceRoot,
 		autoBranch:         opts.AutoBranch,

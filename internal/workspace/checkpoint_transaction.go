@@ -35,8 +35,8 @@ type checkpointTransaction struct {
 	Rewritten     [][2]string
 }
 
-func checkpointCommit(ctx context.Context, git checkpointGitRunner, tree string, parents []string) (string, error) {
-	args := []string{"-c", "commit.gpgsign=false", "commit-tree", tree}
+func (l *LocalGit) checkpointCommit(ctx context.Context, path, tree string, parents []string) (string, error) {
+	args := []string{"commit-tree", tree}
 	seen := make(map[string]bool)
 	for _, parent := range parents {
 		if !seen[parent] {
@@ -45,7 +45,7 @@ func checkpointCommit(ctx context.Context, git checkpointGitRunner, tree string,
 		}
 	}
 	args = append(args, "-m", "detent: checkpoint")
-	output, err := git(ctx, args...)
+	output, err := l.runCommit(ctx, path, nil, args...)
 	return strings.TrimSpace(output), err
 }
 
@@ -367,7 +367,7 @@ func (l *LocalGit) pushReworkCheckpoint(ctx context.Context, info Info, issue Is
 	if previous.CommitSHA != "" {
 		parents = append(parents, previous.CommitSHA)
 	}
-	commit, err := checkpointCommit(ctx, git, wrapper, parents)
+	commit, err := l.checkpointCommit(ctx, info.Path, wrapper, parents)
 	if err != nil {
 		return previous, false, err
 	}
