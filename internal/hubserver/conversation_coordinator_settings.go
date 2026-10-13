@@ -18,7 +18,7 @@ import (
 )
 
 func coordinatorSettingsNames() []string {
-	return []string{operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting, operatortool.UpdateProjectModelSelection, "bind_native_repository", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "save_onboarding"}
+	return []string{operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting, operatortool.UpdateProjectModelSelection, "bind_native_repository", "revoke_project_policy", "remove_project_secret", "save_onboarding"}
 }
 
 func coordinatorSettingsTool(name string) bool {

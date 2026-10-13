@@ -173,6 +173,9 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 			var result operatortool.Result
 			result, err = (hostedOperatorExecutor{service: s}).Execute(ctx, operatortool.Call{Name: target, Arguments: raw})
 			value = result.Content
+			if err == nil && target == "get_project_policy" {
+				value, err = coordinatorPolicyEvidence(result.Content)
+			}
 			if err == nil && target == operatortool.MembershipList {
 				value, err = coordinatorProjectMembers(result.Content, record.ProjectID)
 			}

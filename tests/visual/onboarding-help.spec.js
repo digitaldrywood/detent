@@ -5,7 +5,7 @@ const path = require("node:path");
 let server;
 let origin;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   server = spawn(process.execPath, ["--import", path.resolve("web/conversation/node_modules/tsx/dist/loader.mjs"), "tests/visual/onboarding-help-server.ts"], { stdio: ["pipe", "pipe", "pipe"] });
   origin = await new Promise((resolve, reject) => {
     let output = "";
@@ -22,7 +22,7 @@ test.beforeAll(async () => {
   });
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   if (server?.exitCode === null) {
     await new Promise((resolve) => { server.once("exit", resolve); server.stdin.end(); });
   }

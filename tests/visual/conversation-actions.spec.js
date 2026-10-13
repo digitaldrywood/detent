@@ -14,20 +14,78 @@ test.afterAll(async () => {
   await hub?.stop();
 });
 
-async function projectRead(page, suffix) {
+async function projectRead(page, suffix, fixture = hub.fixture) {
   return page.evaluate(async ({ project, suffix }) => {
     const bootstrap = await (await fetch("/chat/bootstrap")).json();
     const response = await fetch(`${bootstrap.api_base}/projects/${project}/${suffix}`);
     if (!response.ok) throw new Error(`Project read failed: ${response.status}`);
     return response.json();
-  }, { project: hub.fixture.project_id, suffix });
+  }, { project: fixture.project_id, suffix });
 }
 
 async function askLuna(page, text) {
   await page.getByRole("textbox", { name: "Message" }).focus();
   await page.keyboard.type(text);
-  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
 }
+
+test("workflow chat previews approval and preserves pending runner adoption", async ({ page }, testInfo) => {
+  test.setTimeout(STARTUP_TIMEOUT_MS + 60_000);
+  const workflowHub = await startHostedHub("conversation-workflow", {
+    env: { DETENT_HOSTED_BROWSER_CHAT_WORKFLOW: "1" },
+  });
+  try {
+    const fixture = workflowHub.fixture;
+    const read = (suffix) => projectRead(page, suffix, fixture);
+    await page.goto(fixture.accounts.owner);
+    await page.goto(`${fixture.chat}/p/${fixture.project_id}`);
+    const original = await read("policy");
+
+    await askLuna(page, "Inspect workflow policy.");
+    await expect(page.getByText(/Rework dispatchable: true/).first()).toBeVisible();
+    await expect(page.getByTestId("operator-action-card")).toHaveCount(0);
+    expect((await read("policy")).policy).toEqual(original.policy);
+
+    await askLuna(page, "Approve workflow policy.");
+    const approval = page.getByTestId("operator-action-card").last();
+    await expect(approval.getByText(/gates.github_pull_request: false → true/)).toBeVisible();
+    await expect(approval.getByRole("checkbox", { name: "Ask me to confirm chat changes" })).toBeChecked();
+    expect((await read("policy")).policy).toEqual(original.policy);
+    await approval.screenshot({ path: testInfo.outputPath("workflow-approval-preview.png") });
+    await approval.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(approval.getByText("Change completed.", { exact: true })).toBeVisible();
+    const approved = await read("policy");
+    expect(approved.policy.gates.github_pull_request).toBe(true);
+    expect(approved.policy.gates.validator).toBe(true);
+    expect(approved.policy.policy_id).not.toBe(original.policy.policy_id);
+
+    await page.reload();
+    expect((await read("policy")).policy).toEqual(approved.policy);
+    await askLuna(page, "Apply workflow policy.");
+    const application = page.getByTestId("operator-action-card").last();
+    await expect(application.getByText(/Application is pending until this runner reports it applied/)).toBeVisible();
+    await application.getByRole("checkbox", { name: "Ask me to confirm chat changes" }).uncheck();
+    await expect(application.getByText("Change completed.", { exact: true })).toBeVisible();
+
+    await askLuna(page, "Inspect workflow policy again.");
+    const pending = page.getByText(/Runner application pending: true/).last();
+    await expect(pending).toBeVisible();
+    const conversation = page.url().split("/").pop();
+    await expect.poll(async () => {
+      const snapshot = await read(`conversations/${conversation}`);
+      const reply = snapshot.messages.filter((message) => message.role === "assistant").at(-1);
+      return { delivery: reply?.delivery, pending: reply?.text.includes("Runner application pending: true") };
+    }).toEqual({ delivery: "completed", pending: true });
+    await page.reload();
+    await expect(pending).toBeVisible();
+    await expect(pending).toContainText(`Approved policy: ${approved.policy.policy_id}`);
+    await expect(pending).toContainText(`Effective runner policy: ${original.policy.policy_id}`);
+    expect((await read("policy")).policy).toEqual(approved.policy);
+    await pending.screenshot({ path: testInfo.outputPath("workflow-pending-adoption.png") });
+  } finally {
+    await workflowHub.stop();
+  }
+});
 
 test("unavailable Hub PR mode is refused and the owner can retry a blocked issue", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);

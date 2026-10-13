@@ -236,7 +236,11 @@ func projectSchema(t reflect.Type) map[string]any {
 // DecodeProjectArguments applies bounds before application services or approval
 // are reached, including recursive fields that JSON schema cannot enforce alone.
 func DecodeProjectArguments(raw json.RawMessage, target any) error {
-	if err := DecodeArguments(raw, target); err != nil {
+	limit := MaxArgumentBytes
+	if _, ok := target.(*ProjectRequest[IntegrationInput]); ok {
+		limit += 6 * 128 * 1024
+	}
+	if err := decodeArgumentsWithLimit(raw, target, limit); err != nil {
 		return err
 	}
 	var value any
@@ -316,6 +320,8 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 
 func projectStringLimit(key string) int {
 	switch key {
+	case "workflow_markdown":
+		return 128 * 1024
 	case "rate_source", "evidence_source", "resource_name":
 		return 512
 	case "prompt", "shared_prompt", "agents_prompt", "files":
