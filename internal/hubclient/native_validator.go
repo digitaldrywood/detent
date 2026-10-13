@@ -12,18 +12,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (e *nativeExecution) ValidatorVersion(ctx context.Context) (runner.NativeValidation, error) {
-	return e.validationVersion(ctx, false)
+	return e.validationVersion(ctx, "validator")
 }
 
 func (e *nativeExecution) ReviewVersion(ctx context.Context) (runner.NativeValidation, error) {
-	return e.validationVersion(ctx, true)
+	return e.validationVersion(ctx, "review")
 }
 
-func (e *nativeExecution) validationVersion(ctx context.Context, implementationReview bool) (runner.NativeValidation, error) {
+func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change == nil || e.change.Landing != nil || e.change.VersionID == "" || e.lastDiff == nil {
@@ -41,7 +42,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 			return runner.NativeValidation{}, errors.New("native validator version differs from the published source")
 		}
 		var discussion runner.NativeReviewDiscussion
-		if implementationReview {
+		if stage == "review" {
 			if version.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired {
 				return runner.NativeValidation{}, nil
 			}
@@ -59,6 +60,15 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 			}
 			if latest != nil && latest.Decision == "approved" && !discussion.HumanFeedbackSince(latest.CreatedAt) {
 				return runner.NativeValidation{}, nil
+			}
+		} else if stage == "security_audit" {
+			if !version.Policy.Gates.SecurityAudit {
+				return runner.NativeValidation{}, nil
+			}
+			for _, review := range detail.Reviews {
+				if review.VersionID == version.ID && review.SecurityAudit != nil && review.Decision == "approved" && review.SecurityAudit.Run.BaseSHA == version.BaseSHA && review.SecurityAudit.Run.HeadSHA == version.HeadSHA && review.SecurityAudit.Run.ReviewerVersion == securityaudit.ReviewerVersion && review.SecurityAudit.Run.ReviewerDigest == securityaudit.ReviewerDigest() {
+					return runner.NativeValidation{}, nil
+				}
 			}
 		} else if !version.Policy.Gates.Validator || detail.Summary.Status == "reviewed" {
 			return runner.NativeValidation{}, nil
@@ -185,5 +195,42 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	}
 	e.change.Validator = &result
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
+	return nil
+}
+
+func (e *nativeExecution) SecurityAuditVersion(ctx context.Context) (runner.NativeValidation, error) {
+	return e.validationVersion(ctx, "security_audit")
+}
+
+func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracker.SecurityAuditReview) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil || e.lastDiff == nil || e.lastDiff.HeadSHA != result.Run.HeadSHA || e.lastDiff.BaseSHA != result.Run.BaseSHA {
+		return errors.New("security audit differs from the published source")
+	}
+	decision := "approved"
+	if result.Verdict == "rework" {
+		decision = "changes_requested"
+	}
+
+	var body strings.Builder
+	fmt.Fprintf(&body, "Security audit of base %s and head %s; reviewer %s (%s).\n\n%s", result.Run.BaseSHA, result.Run.HeadSHA, result.Run.ReviewerVersion, result.Run.ReviewerDigest, result.Run.Summary)
+	for _, finding := range result.Run.Findings {
+		fmt.Fprintf(&body, "\n\n%s %s: %s", finding.Severity, finding.Path, finding.Body)
+	}
+	client, item := e.claim.source.client, e.claim.lease.WorkItemID
+	_, err := client.ReviewChange(ctx, item, e.change.ChangeID, e.change.VersionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":security-audit:" + result.Run.InvocationID, LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, ExpectedVersionID: e.change.VersionID, Decision: decision, Body: body.String(), SecurityAudit: &result})
+	if err != nil {
+		return err
+	}
+	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
+	if err != nil {
+		return err
+	}
+	e.change.SecurityAudit = &result
+	e.change.Reviewed = detail.Change.CurrentVersion == e.change.VersionID && detail.Summary.Status == "reviewed"
 	return nil
 }

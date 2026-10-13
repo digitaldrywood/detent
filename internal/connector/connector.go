@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 type progressReporterContextKey struct{}
@@ -232,14 +230,6 @@ type PullRequestDraftCreator interface {
 
 type PullRequestDiffFingerprintReader interface {
 	PullRequestDiffFingerprint(context.Context, Issue) (string, error)
-}
-
-type SecurityAuditDeltaReader interface {
-	SecurityAuditDeltaSnapshot(context.Context, Issue, int, securityaudit.PreviousAudit) (securityaudit.Snapshot, error)
-}
-
-type SecurityAuditSnapshotReader interface {
-	SecurityAuditSnapshot(context.Context, Issue, int) (securityaudit.Snapshot, error)
 }
 
 // ValidationDiff is a PR-scoped snapshot. Digest covers the complete patch, even

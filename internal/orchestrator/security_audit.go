@@ -30,7 +30,7 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 	if identity.key.HeadSHA == "" {
 		return securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}
 	}
-	if o.securityAuditStore == nil || strings.TrimSpace(o.cfg.ServiceIdentity) == "" {
+	if o.securityAuditStore == nil {
 		return securityaudit.Evaluation{Reason: securityaudit.ReasonFailed}
 	}
 	run, err := o.securityAuditStore.LatestSecurityAuditRun(ctx, identity.key)
@@ -52,7 +52,7 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 		o.logSecurityAuditFailure(issue, "disposition_lookup_failed", err)
 		return securityaudit.Evaluation{RunID: run.ID, Reason: securityaudit.ReasonFailed}
 	}
-	evaluation := securityaudit.Evaluate(run, dispositions, identity.key, o.cfg.ServiceIdentity, cfg.BlockOn)
+	evaluation := securityaudit.Evaluate(run, dispositions, identity.key, securityaudit.ServiceIdentity(o.workflowMetricsProjectID()), cfg.BlockOn)
 	if !evaluation.Allowed && runningAudit() {
 		return securityaudit.Evaluation{Running: true}
 	}
@@ -110,8 +110,8 @@ func (o *Orchestrator) startSecurityAuditStage(ctx context.Context, issue connec
 			o.securityAuditMu.Unlock()
 		}()
 
-		reader, readerOK := o.connector.(connector.SecurityAuditSnapshotReader)
-		if !readerOK || o.securityAuditor == nil || strings.TrimSpace(o.cfg.ServiceIdentity) == "" {
+		reader, readerOK := o.connector.(connector.ValidationDiffReader)
+		if !readerOK || o.securityAuditor == nil {
 			reason := errors.New("trusted security audit dependencies are unavailable")
 			o.recordSecurityAuditFailure(ctx, issue, securityAuditSnapshotFromIssue(o.workflowMetricsProjectID(), issue), cfg.MaxAttempts, now, reason)
 			return
@@ -222,7 +222,7 @@ func (o *Orchestrator) recordSecurityAuditFailure(ctx context.Context, issue con
 		PRNumber:           snapshot.PRNumber,
 		BaseSHA:            strings.TrimSpace(snapshot.BaseSHA),
 		HeadSHA:            strings.TrimSpace(snapshot.HeadSHA),
-		ServiceIdentity:    strings.TrimSpace(o.cfg.ServiceIdentity),
+		ServiceIdentity:    strings.TrimSpace(securityaudit.ServiceIdentity(o.workflowMetricsProjectID())),
 		ReviewerVersion:    securityaudit.ReviewerVersion,
 		ReviewerDigest:     securityaudit.ReviewerDigest(),
 		AuthenticationMode: securityaudit.AuthenticationNotRun,
@@ -258,6 +258,7 @@ func (o *Orchestrator) recordSecurityAuditExecution(ctx context.Context, snapsho
 	exitStatus := securityaudit.ExitStatusSuccess
 	failure := ""
 	if auditErr != nil {
+		execution.Result = securityaudit.Result{}
 		exitStatus = securityaudit.ExitStatusFailed
 		failure = auditErr.Error()
 		o.logSecurityAuditFailure(
@@ -280,7 +281,7 @@ func (o *Orchestrator) recordSecurityAuditExecution(ctx context.Context, snapsho
 		PRNumber:           snapshot.PRNumber,
 		BaseSHA:            strings.TrimSpace(snapshot.BaseSHA),
 		HeadSHA:            strings.TrimSpace(snapshot.HeadSHA),
-		ServiceIdentity:    strings.TrimSpace(o.cfg.ServiceIdentity),
+		ServiceIdentity:    strings.TrimSpace(securityaudit.ServiceIdentity(o.workflowMetricsProjectID())),
 		ReviewerVersion:    securityaudit.ReviewerVersion,
 		ReviewerDigest:     securityaudit.ReviewerDigest(),
 		AuthenticationMode: authenticationMode,
@@ -361,37 +362,15 @@ func securityAuditFindingsComment(issue connector.Issue, audit securityaudit.Eva
 	return body.String()
 }
 
-func (o *Orchestrator) collectSecurityAuditSnapshot(ctx context.Context, reader connector.SecurityAuditSnapshotReader, issue connector.Issue, key securityaudit.Key, limit int) (securityaudit.Snapshot, error) {
-	deltaReader, ok := o.connector.(connector.SecurityAuditDeltaReader)
-	if !ok {
-		return reader.SecurityAuditSnapshot(ctx, issue, limit)
-	}
-	prior, err := o.securityAuditStore.LatestCompletedSecurityAuditRunForPullRequest(ctx, key.ProjectID, key.Repository, key.PRNumber)
-	if errors.Is(err, store.ErrNotFound) {
-		return reader.SecurityAuditSnapshot(ctx, issue, limit)
-	}
+func (o *Orchestrator) collectSecurityAuditSnapshot(ctx context.Context, reader connector.ValidationDiffReader, issue connector.Issue, key securityaudit.Key, limit int) (securityaudit.Snapshot, error) {
+	diff, err := reader.PullRequestValidationDiff(ctx, issue)
 	if err != nil {
 		return securityaudit.Snapshot{}, err
 	}
-	priorKey := key
-	priorKey.BaseSHA, priorKey.HeadSHA = prior.BaseSHA, prior.HeadSHA
-	evaluation := securityaudit.Evaluate(prior, nil, priorKey, o.cfg.ServiceIdentity, []string{"p1", "p2", "p3"})
-	if (!evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings) || prior.BaseSHA != key.BaseSHA {
-		return reader.SecurityAuditSnapshot(ctx, issue, limit)
+	if diff.BaseSHA != key.BaseSHA || diff.HeadSHA != key.HeadSHA {
+		return securityaudit.Snapshot{}, errors.New("security audit change moved during collection")
 	}
-	dispositions, err := o.securityAuditStore.ListSecurityAuditDispositions(ctx, prior.ID)
-	if err != nil {
-		return securityaudit.Snapshot{}, err
-	}
-	for i, finding := range prior.Findings {
-		for _, disposition := range dispositions {
-			if disposition.FindingID == finding.ID && disposition.ServiceIdentity == o.cfg.ServiceIdentity && disposition.Status == securityaudit.DispositionFalsePositive && strings.TrimSpace(disposition.Evidence) != "" {
-				prior.Findings[i].Status = "resolved"
-				prior.Findings[i].Body += "\nAccepted false positive: " + disposition.Evidence
-			}
-		}
-	}
-	return deltaReader.SecurityAuditDeltaSnapshot(ctx, issue, limit, securityaudit.PreviousAudit{BaseSHA: prior.BaseSHA, HeadSHA: prior.HeadSHA, Verdict: prior.Verdict, Summary: prior.Summary, Findings: prior.Findings})
+	return connector.SecurityAuditSnapshot(key.ProjectID, issue, diff, limit)
 }
 
 func securityAuditFindingStatus(finding securityaudit.Finding) string {
