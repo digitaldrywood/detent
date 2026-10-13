@@ -970,6 +970,17 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
 
+With project `duplicate_challenge` enabled (the default), native filing may
+return HTTP 409 with `code: possible_duplicates`, up to five
+`possible_duplicates`, and a `challenge_token`, creating no issue. MCP
+`file_issue` returns those challenge fields as a structured result. To confirm
+new work, repeat the unchanged content and request identity with the token and
+`not_duplicate_of` issue numbers; the new issue links those matches as related.
+For an existing problem, comment on the returned `work_item_id` instead.
+Tokens expire after one hour; expired filings need a new request identity.
+Confirmation deletes the token, while request replay retains its original
+result. Machine reports and linked GitHub intake are never challenged.
+
 Scheduled reporter evidence requires operator or administrator authority and
 the project's selected checkout repository. This report-only variant returns
 the report and the Hub's `recorded_at` receipt time without creating or changing

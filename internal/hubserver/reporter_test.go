@@ -102,7 +102,11 @@ func TestReporterNativeCommands(t *testing.T) {
 			for i, state := range []string{"", "Todo", "Backlog", "Cancelled", "Triage", "Missing"} {
 				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Title: "Tester report", Body: "![Screenshot](attachment:" + record.ID + ")", State: state}
 				r := request(u, http.MethodPost, f.base+"/work-items", draft)
-				requireNativeStatus(t, r, http.StatusOK)
+				wantStatus := http.StatusOK
+				if i > 0 {
+					wantStatus = http.StatusConflict
+				}
+				requireNativeStatus(t, r, wantStatus)
 				if i > 0 {
 					var challenge duplicateChallenge
 					decodeHubResponse(t, r, &challenge)
