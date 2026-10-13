@@ -31,14 +31,15 @@ import (
 )
 
 type testExecution struct {
-	recovery     tracker.NativeRecovery
-	validateErr  error
-	checkpoint   *tracker.NativeCheckpoint
-	runtime      tracker.NativeRuntimeObservation
-	finish       string
-	started      bool
-	onCheckpoint func(tracker.NativeCheckpoint)
-	onValidate   func()
+	recovery      tracker.NativeRecovery
+	validateErr   error
+	checkpoint    *tracker.NativeCheckpoint
+	checkpointErr error
+	runtime       tracker.NativeRuntimeObservation
+	finish        string
+	started       bool
+	onCheckpoint  func(tracker.NativeCheckpoint)
+	onValidate    func()
 }
 
 func (*testExecution) ReviewVersion(context.Context) (NativeValidation, error) {
@@ -66,6 +67,9 @@ func (e *testExecution) Start(context.Context, tracker.NativeExecutionIdentity) 
 func (e *testExecution) Checkpoint(_ context.Context, checkpoint tracker.NativeCheckpoint) error {
 	if e.onCheckpoint != nil {
 		e.onCheckpoint(checkpoint)
+	}
+	if e.checkpointErr != nil {
+		return e.checkpointErr
 	}
 	e.checkpoint = &checkpoint
 	return nil
