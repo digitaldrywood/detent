@@ -37,11 +37,16 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 	current := approval.Policy.ID
 	carryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
 	if current != "" && !carryover {
-		var previouslyApproved bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ?)", scope, descriptor.ID).Scan(&previouslyApproved); err != nil {
+		if source == nil || approval.Policy.Workflow == nil || !validCommitID(approval.Policy.Workflow.Revision) {
+			return d.commit(ctx, tx)
+		}
+		var previouslyApproved, repositoryAdopted bool
+		if err := tx.QueryRowContext(ctx, `SELECT
+EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ?),
+EXISTS (SELECT 1 FROM project_workflow_applies WHERE scope = ? AND repository = ? COLLATE NOCASE AND source_commit = ? AND definition_digest = ?)`, scope, descriptor.ID, scope, source.Repository, approval.Policy.Workflow.Revision, approval.Policy.SourceDigest).Scan(&previouslyApproved, &repositoryAdopted); err != nil {
 			return err
 		}
-		if previouslyApproved {
+		if previouslyApproved || !repositoryAdopted {
 			return d.commit(ctx, tx)
 		}
 	}
