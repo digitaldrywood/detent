@@ -340,6 +340,17 @@ describe("the members table", () => {
     expect((within(row).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("assigns Reporter from the member role picker and describes its access", () => {
+    const onRoleChange = vi.fn();
+    const reporter = { ...MEMBERS[1]!, role: "reporter", email: "reporter@example.test" };
+    render(<MembersTable members={[reporter]} projects={PROJECTS} canManage actorRole="owner" busyMember={null} errorFor={() => null} onRoleChange={onRoleChange} onGrantChange={vi.fn()} onRemove={vi.fn()} />);
+    const select = screen.getByRole("combobox", { name: "Role for reporter@example.test" });
+    expect(within(select).getByRole("option", { name: "Reporter" })).toBeTruthy();
+    expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
+    fireEvent.change(select, { target: { value: "reporter" } });
+    expect(onRoleChange).toHaveBeenCalledWith(reporter, "reporter");
+  });
+
   it("offers a role control and a removal for a manager", () => {
     renderMembers();
     expect(
@@ -451,17 +462,18 @@ describe("the organization's own rules", () => {
     const onInvite = vi.fn().mockResolvedValue(success);
     render(<InviteForm onInvite={onInvite} projects={PROJECTS} />);
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rae@example.test" } });
-    fireEvent.change(screen.getByLabelText("Role"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("Role"), { target: { value: "reporter" } });
+    expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
     const access = screen.getByLabelText("Access to parable for invitation");
     expect((access as HTMLSelectElement).value).toBe("none");
     fireEvent.change(access, { target: { value: "read" } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Send invitation" }));
     });
-    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "admin", grants: [{ project_id: "proj_parable", write: false, runner: false }] });
+    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "reporter", grants: [{ project_id: "proj_parable", write: false, runner: false }] });
     expect((access as HTMLSelectElement).value).toBe(success ? "none" : "read");
     expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe(success ? "" : "rae@example.test");
-    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "admin");
+    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "reporter");
     if (success) expect(screen.getByRole("status").textContent).toContain("Invitation sent to rae@example.test.");
     else expect(screen.queryByRole("status")).toBeNull();
   });

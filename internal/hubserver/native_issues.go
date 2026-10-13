@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -342,6 +343,10 @@ func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 	if request.GitHubIssueURL != "" {
 		return createLinkedIssueTx(ctx, tx, scope, request, now)
 	}
+	if scope.credential.HostedRole == "reporter" {
+		request.State = "Triage"
+		return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+	}
 	if request.State == "Triage" {
 		return tracker.NativeIssue{}, nativeInvalid("Triage is reserved for linked GitHub issue intake")
 	}
@@ -592,6 +597,8 @@ func (s *Service) transitionNativeIssue(c echo.Context) error {
 }
 
 func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (json.RawMessage, error) {
+	scope.action = operatortool.MoveItem
+	scope.actionItem, scope.actionTarget = item, request.State
 	recordedRecovery := request.Reason == "dependency_ready" && request.BlockerAttemptID != ""
 	signal, contractHold := workpad.SignalFromComment(request.ReasonDetail, "", "")
 	contractHold = contractHold && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != ""

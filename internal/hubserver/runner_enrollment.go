@@ -76,7 +76,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		return s.nativeAPIError(c, err)
 	}
 	if credential, ok := c.Get("hub_api_credential").(apiCredential); ok {
-		if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if err := requireCredentialAuthority(ctx, tx, credential, now); err != nil {
@@ -158,7 +158,7 @@ func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.C
 		return s.nativeAPIError(c, err)
 	}
 	if credential, ok := c.Get("hub_api_credential").(apiCredential); ok {
-		if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if err := requireCredentialAuthority(ctx, tx, credential, now); err != nil {

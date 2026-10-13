@@ -399,9 +399,6 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft intake.IssueDra
 	if len(project.States) == 0 {
 		return connector.Issue{}, errors.New("native project has no workflow states")
 	}
-	if state == "" {
-		state = project.States[0].Name
-	}
 	mutation := nativeMutationKeyForContext(ctx)
 	if hostIntake {
 		mutation.LeaseID = authority.lease.ID

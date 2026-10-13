@@ -19,8 +19,12 @@ func TestHostedProjectTemplateHasReviewLane(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var created tracker.NativeProject
 	decodeHubResponse(t, response, &created)
-	if !reflect.DeepEqual(created.States, HostedProjectStates()) {
-		t.Fatalf("hosted project states = %#v, want the template %#v", created.States, HostedProjectStates())
+	names := make([]string, 0, len(created.States))
+	for _, state := range created.States {
+		names = append(names, state.Name)
+	}
+	if want := []string{"Triage", "Todo", "In Progress", "Blocked", "Human Review", "Merging", "Done", "Backlog", "Cancelled"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("hosted project lanes = %v, want %v", names, want)
 	}
 	byName := map[string]tracker.NativeState{}
 	for _, state := range created.States {
@@ -32,6 +36,9 @@ func TestHostedProjectTemplateHasReviewLane(t *testing.T) {
 		{"In Progress", "Human Review"},
 		{"Human Review", "Done"},
 		{"Human Review", "In Progress"},
+		{"Triage", "Todo"},
+		{"Triage", "Backlog"},
+		{"Triage", "Cancelled"},
 	} {
 		t.Run(test.from+" to "+test.to, func(t *testing.T) {
 			from, target := byName[test.from], byName[test.to]
@@ -43,6 +50,10 @@ func TestHostedProjectTemplateHasReviewLane(t *testing.T) {
 				t.Fatalf("%s may not move to %s (operator only %t): %#v", test.from, test.to, target.OperatorOnly, from)
 			}
 		})
+	}
+	triage := byName["Triage"]
+	if triage.Terminal || triage.Dispatchable || triage.OperatorOnly {
+		t.Fatalf("Triage must be a non-dispatchable intake lane: %#v", triage)
 	}
 	review := byName["Human Review"]
 	if review.Terminal || review.Dispatchable || review.OperatorOnly {

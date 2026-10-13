@@ -20,16 +20,16 @@ func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name st
 	if err != nil {
 		return ctx, nativeScope{}, r, err
 	}
-	if !e.service.hostedShared() {
-		return ctx, nativeScope{}, r, operatortool.ErrServiceUnavailable
-	}
 	scopeRequired := apikey.ScopeWrite
 	if name == operatortool.ReadAttachment || name == operatortool.ReadAttachmentMetadata {
 		scopeRequired = apikey.ScopeRead
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, ProjectID: r.ProjectID})
+	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, Action: name, ProjectID: r.ProjectID})
 	if err != nil {
 		return ctx, nativeScope{}, r, err
+	}
+	if !e.service.hostedShared() {
+		return ctx, nativeScope{}, r, operatortool.ErrServiceUnavailable
 	}
 	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 	if !ok {
@@ -40,6 +40,7 @@ func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name st
 		return ctx, nativeScope{}, r, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(r.ProjectID)
+	scope.action = name
 	return ctx, scope, r, nil
 }
 
@@ -134,7 +135,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
 	}
 	defer tx.Rollback()
-	if err := e.service.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := e.service.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return chat.ActionExecution{}, hubSafeChangeError(err)
 	}
 	record, err := readCloudAttachment(ctx, tx, scope, r.AttachmentID)

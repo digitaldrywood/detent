@@ -21,8 +21,10 @@ import (
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	if request.ScheduledValidation != nil {
+		scope.action = ""
 		return s.recordScheduledValidation(ctx, scope, request)
 	}
+	scope.action = operatortool.FileIssue
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
 	scope.scheduledRepair = s.observeScheduledRepair(ctx, scope, request)
 	var snapshot *tracker.GitHubIssueSnapshot
@@ -72,7 +74,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		origin, machine := issueorigin.Parse(request.Body)
 		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
 		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
-		if request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
+		if scope.credential.HostedRole != "reporter" && request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
 			if origin.Kind == "worker" {
 				if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
 					return nil, err
@@ -316,6 +318,7 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 }
 
 func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeScope, item string, request tracker.CreateComment) (json.RawMessage, error) {
+	scope.action = operatortool.AddComment
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments", Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
@@ -346,6 +349,8 @@ func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeSc
 }
 
 func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeScope, item string, comment string, request tracker.UpdateComment) (json.RawMessage, error) {
+	scope.action = operatortool.EditComment
+	scope.actionItem, scope.actionComment = item, comment
 	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments/" + comment, Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		comment, err := readNativeComment(ctx, tx, scope, item, comment)

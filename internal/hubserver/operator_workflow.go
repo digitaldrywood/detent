@@ -18,7 +18,7 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 	if err != nil {
 		return ctx, nativeScope{}, err
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: request.ProjectID, ResourceKind: "work_item", ResourceID: request.Identifier})
+	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: operatortool.MoveItem, ProjectID: request.ProjectID, ResourceKind: "work_item", ResourceID: request.Identifier})
 	if err != nil {
 		return ctx, nativeScope{}, err
 	}
@@ -31,6 +31,8 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 		return ctx, nativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(request.ProjectID)
+	scope.action = operatortool.MoveItem
+	scope.actionItem, scope.actionTarget = request.Identifier, request.TargetState
 	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
 	if err != nil {
 		return ctx, nativeScope{}, hubSafeChangeError(err)

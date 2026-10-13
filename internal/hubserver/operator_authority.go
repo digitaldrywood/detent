@@ -194,6 +194,9 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		if credential.HostedRole == "reporter" && !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
+			return operatortool.ErrAccessDenied
+		}
 		if requirement.ResourceKind == "credentials" && s.config.Hosted != nil {
 			if requirement.ProjectID != "" || requirement.ResourceID != "" {
 				return operatortool.ErrAccessDenied
@@ -234,6 +237,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 			}
 		}
 		checkScope := scope
+		checkScope.action = requirement.Action
 		if requirement.ProjectID != "" {
 			checkScope.project = tracker.ProjectID(requirement.ProjectID)
 			if err := s.requireHostedProject(ctx, s.database.db, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
@@ -245,7 +249,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		}
 		if requirement.Scope != apikey.ScopeRead {
 			if credential.Hosted != nil {
-				if credential.HostedRole == "viewer" || requirement.Scope == apikey.ScopeAdmin && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				if !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 					return operatortool.ErrAccessDenied
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
@@ -254,7 +258,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 					return err
 				}
 				defer tx.Rollback()
-				if err := s.recheckHostedMutation(ctx, tx, checkScope); err != nil {
+				if err := s.recheckHostedMutation(ctx, tx, &checkScope); err != nil {
 					return err
 				}
 				if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {

@@ -102,7 +102,7 @@ type HostedProvider interface {
 
 func ValidOrganizationRole(role string) bool {
 	switch role {
-	case "owner", "admin", "member", "viewer":
+	case "owner", "admin", "member", "reporter", "viewer":
 		return true
 	default:
 		return false
