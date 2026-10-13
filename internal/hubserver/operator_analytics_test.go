@@ -52,6 +52,9 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	if err := rebuildAnalyticsRollups(t.Context(), tx, scope); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -498,6 +501,9 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 				if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions (id,change_id,number,record_json) VALUES (?,?,1,json_object('head_sha',?))`, versionID, changeID, headSHA); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if err := rebuildAnalyticsRollups(t.Context(), tx, nativeScope{organization: "org_security", project: f.project}); err != nil {
+				t.Fatal(err)
 			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)

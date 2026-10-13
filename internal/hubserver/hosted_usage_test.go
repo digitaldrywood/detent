@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -305,6 +306,18 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	if stored[1].input != 3000 || stored[1].cost != 0.75 {
 		t.Fatalf("replaced row = %+v, want the running total, not a sum", stored[1])
 	}
+	window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
+	raw, err := readUsageRows(t.Context(), f.service.database.reader, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := readUsageRows(t.Context(), analyticsRollupReader{f.service.database.reader}, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projected) != 2 || !reflect.DeepEqual(raw, projected) {
+		t.Fatalf("finished usage not immediately projected: raw=%+v projected=%+v", raw, projected)
+	}
 }
 
 func TestNativeRunEventRejectsInvalidUsage(t *testing.T) {
@@ -398,6 +411,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 	})
 	t.Run("diagnostics", func(t *testing.T) {
 		for _, account := range []string{"owner", "viewer"} {
+
 			var report diagnosticsReport
 			usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/diagnostics?range=30d", http.StatusOK), &report)
 			if report.Findings != nil || report.Ready != nil || report.DetectorTick != nil || report.Refused != nil {
@@ -438,6 +452,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 			t.Fatal(err)
 		}
 		var report diagnosticsReport
+		rebuildTestAnalyticsRollups(t, f.service, scope)
 		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
 		if report.Ready == nil || *report.Ready != 1 || report.Skipped == nil || *report.Skipped != 1 || len(report.SkipReasons) != 1 || report.SkipReasons[0].Reason != "host_capacity" {
 			t.Fatalf("recorded scheduler decisions missing: %+v", report)
@@ -449,6 +464,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing',json(?)),updated_at=?`, fmt.Sprintf(`{"landed":false,"refusal_kind":"conflict","observed_at":%q}`, formatHubTime(now)), formatHubTime(now)); err != nil {
 				t.Fatal(err)
 			}
+			rebuildTestAnalyticsRollups(t, f.service, scope)
 			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/diagnostics?range=24h", http.StatusOK), &report)
 			if len(report.Refused) != 1 || report.Refused[0].Count != browserUsageDays*len(browserUsageEntries) {
 				t.Fatalf("repeated refusal missing: %+v", report.Refused)
@@ -794,6 +810,7 @@ func (f usageHostedFixture) seedUsage(t *testing.T) {
 			}
 		}
 	}
+	rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)})
 }
 
 // enrollUsageRunner registers one runner in the fixture's organization and
