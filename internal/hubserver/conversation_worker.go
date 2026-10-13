@@ -414,7 +414,13 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if issue.Actor.PrincipalID != "" {
-		record.OwnerPrincipalID = issue.Actor.PrincipalID
+		var owner string
+		switch err := tx.QueryRowContext(ctx, "SELECT id FROM api_tokens WHERE id = ?", issue.Actor.PrincipalID).Scan(&owner); {
+		case err == nil:
+			record.OwnerPrincipalID = owner
+		case !errors.Is(err, sql.ErrNoRows):
+			return conversationRecord{}, fmt.Errorf("read issue actor token: %w", err)
+		}
 	}
 	if err := c.store.createConversation(ctx, tx, &record); err != nil {
 		return conversationRecord{}, err

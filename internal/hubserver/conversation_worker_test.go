@@ -452,6 +452,25 @@ func TestConversationWorkerBind(t *testing.T) {
 		}
 	})
 
+	t.Run("imported issue with integration actor", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET actor_json = '{"kind":"integration","principal_id":"github"}' WHERE native_id = ?`, f.issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		response := f.bind(t, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var bound workerBindResponse
+		decodeHubResponse(t, response, &bound)
+		f.record.ID = bound.ConversationID
+		var tokens int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM api_tokens WHERE id = ?", f.load(t).OwnerPrincipalID).Scan(&tokens); err != nil || tokens != 1 {
+			t.Fatalf("integration-authored binding owner is not a token: %d, %v", tokens, err)
+		}
+	})
+
 	f := newConversationWorkerFixture(t)
 	first := f.queue(t, conversation.MessageText, "key-1", "First question", nil)
 	second := f.queue(t, conversation.MessageContinue, "key-2", "Keep going", nil)
