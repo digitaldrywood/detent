@@ -100,13 +100,32 @@ func TestReporterNativeCommands(t *testing.T) {
 			decodeHubResponse(t, attachmentResponse, &record)
 			var own tracker.NativeIssue
 			for i, state := range []string{"", "Todo", "Backlog", "Cancelled", "Triage", "Missing"} {
-				r := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Title: "Tester report", Body: "![Screenshot](attachment:" + record.ID + ")", State: state})
-				requireNativeStatus(t, r, http.StatusOK)
+				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Title: "Tester report", Body: "![Screenshot](attachment:" + record.ID + ")", State: state}
+				r := request(u, http.MethodPost, f.base+"/work-items", draft)
+				wantStatus := http.StatusOK
+				if i > 0 {
+					wantStatus = http.StatusConflict
+				}
+				requireNativeStatus(t, r, wantStatus)
+				if i > 0 {
+					var challenge duplicateChallenge
+					decodeHubResponse(t, r, &challenge)
+					if challenge.ChallengeToken == "" || len(challenge.PossibleDuplicates) == 0 {
+						t.Fatalf("Reporter was not challenged: %s", r.Body.String())
+					}
+					draft.ChallengeToken = challenge.ChallengeToken
+					for _, match := range challenge.PossibleDuplicates {
+						draft.NotDuplicateOf = append(draft.NotDuplicateOf, match.Number)
+					}
+					r = request(u, http.MethodPost, f.base+"/work-items", draft)
+					requireNativeStatus(t, r, http.StatusOK)
+				}
 				decodeHubResponse(t, r, &own)
 				if own.State != "Triage" {
 					t.Fatalf("requested %q: state=%s", state, own.State)
 				}
 			}
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
 			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil)
 			requireNativeStatus(t, attachmentResponse, http.StatusOK)
 			var fetched attachment.Metadata
