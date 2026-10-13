@@ -131,6 +131,8 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(selector.ProjectID)
+	metadata.ActorKind = scope.actor().Kind
+	metadata.ViaKey = scope.actor().ViaKey
 	if call.Name == operatortool.UploadAttachment {
 		if !e.service.hostedShared() {
 			return operatortool.Result{}, operatortool.ErrAccessDenied

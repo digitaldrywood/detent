@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -502,6 +503,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 	s.fixtures["work_item_id"] = related
 	s.fixtures["identifier"] = s.item
 	var failures []error
+	contractBody := "## Acceptance criteria\nPersonal-key body saves confirm the contract.\n## Must not break\nService and runner keys cannot confirm contracts.\n## How we know it worked\nThe MCP smoke checks the confirmed sections."
 	if _, err := s.call(ctx, operatortool.WorkItem, map[string]any{"project_id": s.project, "reference": related}); err != nil {
 		failures = append(failures, err)
 	}
@@ -509,7 +511,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 		name string
 		args map[string]any
 	}{
-		{operatortool.EditItem, map[string]any{"title": "MCP staging smoke edited " + s.prefix}},
+		{operatortool.EditItem, map[string]any{"title": "MCP staging smoke edited " + s.prefix, "body": contractBody}},
 		{operatortool.SetDependency, map[string]any{"related": related, "operation": "add"}},
 		{operatortool.SetDependency, map[string]any{"related": related, "operation": "remove"}},
 		{operatortool.MoveItem, map[string]any{"target_state": second}},
@@ -522,12 +524,19 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 				continue
 			}
 		}
-		_, next, stepErr := s.mutate(ctx, step.name, step.args, s.revision)
+		result, next, stepErr := s.mutate(ctx, step.name, step.args, s.revision)
 		if stepErr != nil {
 			failures = append(failures, stepErr)
 			break
 		}
 		s.revision = next
+		if step.name == operatortool.EditItem {
+			raw, err := json.Marshal(result["data"])
+			var issue tracker.NativeIssue
+			if err != nil || json.Unmarshal(raw, &issue) != nil || issue.IssueContract == nil || !maps.Equal(issue.IssueContract.ConfirmedSections, config.IssueContractSectionDigests(contractBody)) {
+				failures = append(failures, errors.New("edit_item: personal smoke key did not confirm issue_contract.confirmed_sections"))
+			}
+		}
 	}
 	comment, commentRevision, commentErr := s.mutate(ctx, operatortool.AddComment, map[string]any{"body": "MCP staging smoke comment"}, 0)
 	if commentErr != nil {

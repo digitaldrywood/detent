@@ -89,7 +89,7 @@ func hostedRoleAllows(role string, scope apikey.Scope) bool {
 func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCredential, created string, expires sql.NullString) (apiCredential, error) {
 	var user, organization, membership, scope sql.NullString
 	var access hostedProjectAccess
-	err := s.database.auth().QueryRowContext(ctx, "SELECT hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access FROM api_tokens WHERE id=?", credential.ID).Scan(&user, &organization, &membership, &scope, &access)
+	err := s.database.auth().QueryRowContext(ctx, "SELECT hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind FROM api_tokens WHERE id=?", credential.ID).Scan(&user, &organization, &membership, &scope, &access, &credential.HostedKeyKind)
 	if err != nil {
 		return apiCredential{}, err
 	}
@@ -158,6 +158,7 @@ func (s *Service) hostedKeyCredentialFor(ctx context.Context, credential apiCred
 }
 
 type hostedAPIKey struct {
+	Kind          string              `json:"kind"`
 	ProjectAccess hostedProjectAccess `json:"project_access"`
 	ID            string              `json:"id"`
 	Name          string              `json:"name"`
@@ -190,7 +191,7 @@ func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential
 		return nil, err
 	}
 	keys := []hostedAPIKey{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at,operator_project_access,created_at FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC,id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
+	rows, err := s.database.db.QueryContext(ctx, `SELECT id,name,operator_key_scope,expires_at,token_fingerprint,revoked_at,operator_project_access,created_at,key_kind FROM api_tokens WHERE hosted_user_id=? AND hosted_organization_id=? ORDER BY created_at DESC,id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +199,7 @@ func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential
 	for rows.Next() {
 		var key hostedAPIKey
 		var expiry, revoked sql.NullString
-		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &expiry, &key.Fingerprint, &revoked, &key.ProjectAccess, &key.CreatedAt); err != nil {
+		if err := rows.Scan(&key.ID, &key.Name, &key.Scope, &expiry, &key.Fingerprint, &revoked, &key.ProjectAccess, &key.CreatedAt, &key.Kind); err != nil {
 			return nil, err
 		}
 		if expiry.Valid {
@@ -244,6 +245,7 @@ func (s *Service) hostedAPIKeysFor(ctx context.Context, credential apiCredential
 }
 
 type hostedKeyRequest struct {
+	Kind          string              `json:"kind,omitempty"`
 	ProjectAccess hostedProjectAccess `json:"project_access"`
 	Name          string              `json:"name"`
 	Scope         apikey.Scope        `json:"scope"`
@@ -279,6 +281,9 @@ func (s *Service) createHostedAPIKey(c echo.Context) error {
 }
 
 func (s *Service) authorizeHostedKeyRequest(ctx context.Context, credential apiCredential, request hostedKeyRequest) error {
+	if request.Kind != "" && request.Kind != "personal" && request.Kind != "service" {
+		return operatortool.ErrInvalidArguments
+	}
 	if !request.validExpiry() || len(request.Projects) > 200 || !apikey.ValidScope(request.Scope) {
 		return operatortool.ErrInvalidArguments
 	}
@@ -322,7 +327,7 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCrede
 	if request.Scope == apikey.ScopeAdmin {
 		scope = apiScopeAdmin
 	}
-	key, err := s.createAPITokenFor(ctx, tokenRequest{Name: request.Name, Scope: scope, Issuer: &credential, KeyScope: request.Scope, ExpiresAt: expiry, ProjectIDs: request.Projects, ProjectAccess: request.ProjectAccess})
+	key, err := s.createAPITokenFor(ctx, tokenRequest{Kind: request.Kind, Name: request.Name, Scope: scope, Issuer: &credential, KeyScope: request.Scope, ExpiresAt: expiry, ProjectIDs: request.Projects, ProjectAccess: request.ProjectAccess})
 	if err != nil {
 		return tokenResponse{}, err
 	}

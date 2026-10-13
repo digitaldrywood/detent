@@ -67,6 +67,7 @@ type NativeReference struct {
 type Actor struct {
 	Kind        string `json:"kind"`
 	PrincipalID string `json:"principal_id"`
+	ViaKey      string `json:"via_key,omitempty"`
 }
 
 type Provenance struct {

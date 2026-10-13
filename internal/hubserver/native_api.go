@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -320,10 +321,27 @@ func (scope nativeScope) actor() tracker.Actor {
 	if scope.credential.Scope == apiScopeWorker {
 		kind = "runner"
 	}
-	if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" {
+	if scope.credential.Runner.RunnerID != "" {
+		kind = "runner"
+	}
+	if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" || scope.credential.HostedKeyKind == "service" {
 		kind = "integration"
 	}
-	return tracker.Actor{Kind: kind, PrincipalID: operatorIdentity(scope.credential, string(scope.organization)).PrincipalID}
+	principal := operatorIdentity(scope.credential, string(scope.organization)).PrincipalID
+	if kind == "integration" && scope.credential.HostedKeyKind == "service" {
+		principal = scope.credential.ID
+	}
+	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.viaKey()}
+}
+
+func (credential apiCredential) viaKey() string {
+	if credential.EntryKey != nil {
+		return credential.EntryKey.ID
+	}
+	if credential.HostedKeyScope != "" {
+		return credential.ID
+	}
+	return ""
 }
 
 func newNativeID(prefix string) string {
@@ -362,6 +380,13 @@ type nativeCommandOptions struct {
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
 	ctx = s.linkedSourceContext(ctx)
+	actor := scope.actor()
+	if metadata, ok := mutation.FromContext(ctx); ok {
+		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
+		ctx = mutation.WithContext(ctx, metadata)
+	} else if actor.ViaKey != "" {
+		ctx = mutation.WithContext(ctx, mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")})
+	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -461,6 +486,15 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		}
 	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return nil, err
+	}
+	if metadata, ok := mutation.FromContext(ctx); ok && (metadata.Source == "mcp" || metadata.Source == "api") {
+		route := metadata.Action
+		if metadata.Source == "mcp" {
+			route = "mcp " + route
+		}
+		if err := s.hostedAuditWith(ctx, tx, scope.credential.Hosted, "action", route, string(scope.project), http.StatusOK); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.database.commit(ctx, tx); err != nil {
 		return nil, err

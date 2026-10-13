@@ -716,7 +716,7 @@ func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenRespon
 	var view tokenResponse
 	var created string
 	var revoked sql.NullString
-	err := s.database.db.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at,CASE WHEN hosted_user_id IS NOT NULL THEN operator_project_access ELSE '' END FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked, &view.ProjectAccess)
+	err := s.database.db.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at,CASE WHEN hosted_user_id IS NOT NULL THEN operator_project_access ELSE '' END,key_kind FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked, &view.ProjectAccess, &view.Kind)
 	if err != nil {
 		return view, err
 	}

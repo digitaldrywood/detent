@@ -29,6 +29,8 @@ func TestRunnerOperationAllowed(t *testing.T) {
 		{name: "dispatch waits with claim", method: http.MethodGet, path: nativeBase + "/claims/wait", operations: all, want: true},
 		{name: "claims with claim", method: http.MethodPost, path: nativeBase + "/claims", operations: all, want: true},
 		{name: "work item change is collaboration", method: http.MethodPost, path: nativeBase + "/work-items/:item/changes", operations: []string{runnerauth.Collaborate}, want: true},
+		{name: "work item body needs collaboration", method: http.MethodPatch, path: nativeBase + "/work-items/:item", operations: []string{runnerauth.Read}},
+		{name: "work item body with collaboration", method: http.MethodPatch, path: nativeBase + "/work-items/:item", operations: all, want: true},
 		{name: "item events need events", method: http.MethodPost, path: nativeBase + "/work-items/:item/events", operations: []string{runnerauth.Collaborate}},
 		{name: "conversation events with events", method: http.MethodPost, path: nativeBase + "/conversations/:conversation/turn-events", operations: []string{runnerauth.Events}, want: true},
 		{name: "conversation events without events", method: http.MethodPost, path: nativeBase + "/conversations/:conversation/turn-events", operations: []string{runnerauth.Collaborate}},
