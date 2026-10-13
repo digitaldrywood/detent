@@ -213,9 +213,12 @@ evidence, refuses superseded evidence, and resumes dispatch only when no release
 run exists for that tag. Operator-landed
 Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
 its successful `make check-land` Actions check is authenticated by the existing
-provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
-prerelease before deploying the same version and binary through staging and
-production. These prereleases do not replace stable installer or package feeds;
+provenance owner, and the workflow publishes a signed next-patch
+`op.r.<run-number>.g<sha12>` prerelease. The workflow run number orders successive
+operator releases independently of source hashes. A retry reuses its original
+tag only while the latest stable release has not superseded it. Staging and
+production deploy the same version and binary. These prereleases do not replace
+stable installer or package feeds;
 enrolled runners follow the Hub through the existing coordinated update owner.
 Every failing scheduled job is reported through the
 selected native owner at least High into Todo under a stable job fingerprint,

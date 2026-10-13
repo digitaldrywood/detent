@@ -111,7 +111,7 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs"
             check_url="$(jq -er '[.[] | select(.name == "Verify operator-landed source" and .conclusion == "success")] | if length == 1 then .[0].check_run_url else error("operator source check is missing or ambiguous") end' "$jobs")"
             check_id="${check_url##*/}"
-            release_tag="$(bash scripts/prepare-operator-release.sh "$GITHUB_SHA" "$latest" "$check_runs" "$check_id")"
+            release_tag="$(bash scripts/prepare-operator-release.sh "$GITHUB_SHA" "$latest" "$check_runs" "$check_id" "$GITHUB_RUN_NUMBER")"
             DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON='["Verify operator-landed source"]'
           else
             git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
