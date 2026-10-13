@@ -93,12 +93,14 @@ SELECT (SELECT count(*) FROM organizations),
 }
 
 func (d *database) hostedMetadata(ctx context.Context) (HostedMetadata, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if d.hostedOrganization == "" {
 		return HostedMetadata{}, ErrHostedMetadataUnavailable
 	}
 	var result HostedMetadata
 	var activity sql.NullString
-	err := d.db.QueryRowContext(ctx, `
+	err := d.reader.QueryRowContext(ctx, `
 SELECT h.organization_id, h.provider_id,
        (SELECT count(*) FROM hosted_members WHERE active = 1),
        (SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = h.organization_id),

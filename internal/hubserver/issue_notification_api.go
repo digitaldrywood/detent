@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -50,7 +51,9 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	} else {
-		if err := s.database.db.QueryRowContext(ctx, "SELECT notify_issues FROM hosted_members WHERE user_id=?", credential.Hosted.Subject).Scan(&value.Enabled); err != nil {
+		ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancel()
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT notify_issues FROM hosted_members WHERE user_id=?", credential.Hosted.Subject).Scan(&value.Enabled); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}

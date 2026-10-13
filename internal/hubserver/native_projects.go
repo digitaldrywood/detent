@@ -43,6 +43,8 @@ type nativeCapabilitiesResponse struct {
 }
 
 func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitiesResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var serverID string
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return nativeCapabilitiesResponse{}, err
@@ -61,7 +63,9 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT id, name, slug, local FROM organizations ORDER BY id")
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local FROM organizations ORDER BY id")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -222,7 +226,9 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 }
 
 func (s *Service) getNativeProject(c echo.Context) error {
-	project, err := readNativeProject(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	project, err := readNativeProject(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

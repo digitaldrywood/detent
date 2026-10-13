@@ -42,18 +42,22 @@ type coordinatorRunnerChange struct {
 }
 
 func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id string) (runnerauth.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var visible bool
-	err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)))`, scope.organization, id, scope.project).Scan(&visible)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)))`, scope.organization, id, scope.project).Scan(&visible)
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	return readRunnerWithClock(ctx, s.database.db, scope.organization, id, s.config.now)
+	return readRunnerWithClock(ctx, s.database.reader, scope.organization, id, s.config.now)
 }
 
 func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var args coordinatorRunnerArguments
 	if decodeCoordinatorArguments(call.Arguments, &args) != nil || args.Limit < 0 || args.Limit > 50 || args.Offset < 0 {
 		return nil, operatortool.ErrInvalidArguments
@@ -121,7 +125,7 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		if limit == 0 {
 			limit = 20
 		}
-		rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)) ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
+		rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)) ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
 		if err != nil {
 			return nil, err
 		}

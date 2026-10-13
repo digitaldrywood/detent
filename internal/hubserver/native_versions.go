@@ -25,7 +25,9 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 }
 
 func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comment string, revision int64) (json.RawMessage, error) {
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
 	recordID := item
@@ -33,7 +35,7 @@ func (s *Service) readVersion(ctx context.Context, scope nativeScope, item, comm
 		recordID = comment
 	}
 	var body string
-	err := s.database.db.QueryRowContext(ctx, `SELECT record_json FROM collaboration_versions
+	err := s.database.reader.QueryRowContext(ctx, `SELECT record_json FROM collaboration_versions
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id = ? AND revision = ?`, scope.organization, scope.project, item, recordID, revision).Scan(&body)
 	if err != nil {
 		return nil, err
@@ -48,7 +50,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 			var count int
 			condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 			args := append([]any{scope.organization, id}, grantArgs...)
-			err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
+			err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
 			if err != nil {
 				return nil, err
 			}

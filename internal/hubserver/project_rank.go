@@ -22,11 +22,13 @@ func readOrganizationProjectRank(ctx context.Context, db nativeQueryer, organiza
 }
 
 func (s *Service) hostedProjectRank(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	_, err := s.hostedAdministrator(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	value, err := readOrganizationProjectRank(c.Request().Context(), s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+	value, err := readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

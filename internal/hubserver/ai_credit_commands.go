@@ -29,6 +29,8 @@ func (s *Service) creditAvailable() bool {
 }
 
 func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthorization, priceID, requestID string) (billingDestination, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
@@ -61,7 +63,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	var raw string
 	var cents, at int64
 	var price, mode, state string
-	err = s.database.db.QueryRowContext(ctx, "SELECT price_id,usd_cents,created_at,session_json,mode,state FROM ai_credit_purchases WHERE purchase_key=? AND organization_id=? AND automatic=0", key, binding.OrganizationID).Scan(&price, &cents, &at, &raw, &mode, &state)
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT price_id,usd_cents,created_at,session_json,mode,state FROM ai_credit_purchases WHERE purchase_key=? AND organization_id=? AND automatic=0", key, binding.OrganizationID).Scan(&price, &cents, &at, &raw, &mode, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		price, cents, at, mode, state = pack.PriceID, pack.USDCents, s.config.now().UnixMicro(), cfg.mode(), "pending"
 		_, err = s.database.db.ExecContext(ctx, "INSERT INTO ai_credit_purchases(purchase_key,organization_id,mode,price_id,usd_cents,automatic,created_at) VALUES(?,?,?,?,?,0,?)", key, binding.OrganizationID, mode, price, cents, at)
@@ -101,6 +103,8 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 }
 
 func (s *Service) configureCreditFunding(ctx context.Context, authorize billingAuthorization, request creditFundingInput, key string) (creditFundingInput, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if _, err := authorize(ctx); err != nil {
 		return creditFundingInput{}, err
 	}
@@ -141,7 +145,7 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 		if !ok || request.Threshold <= 0 || request.Threshold >= pack.USDCents {
 			return creditFundingInput{}, billingFailure(http.StatusBadRequest, "Choose a threshold greater than zero and smaller than the credit pack")
 		}
-		if err := s.database.db.QueryRowContext(ctx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
 			return creditFundingInput{}, err
 		}
 		binding, err := s.database.hostedBillingBinding(ctx, cfg)

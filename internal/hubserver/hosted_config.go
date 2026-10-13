@@ -119,6 +119,8 @@ func hostedEmailListed(emails []string, value string) bool {
 }
 
 func (s *Service) hostedProviderOrganization(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var id string
 	err := s.database.auth().QueryRowContext(ctx, "SELECT provider_id FROM hosted_tenant WHERE singleton = 1").Scan(&id)
 	return id, err

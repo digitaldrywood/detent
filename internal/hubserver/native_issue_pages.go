@@ -81,6 +81,8 @@ type nativeIssuePageItem struct {
 // list total. A first page also returns the whole frozen order, which the
 // caller keeps only when it hands out a continuation cursor.
 func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor, sort, search string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	position := cursor.Issues
 	if position == nil {
 		if cursor.After != "" {
@@ -237,6 +239,8 @@ i.project_id || '#' || i.number`
 const nativeIssuePageItemColumns = 9
 
 func (s *Service) projectIssuePage(ctx context.Context, query string, args []any, sort, search string) (_ [][]any, resultErr error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	selected := nativeIssuePageProjection
 	if sort == "closed" {
 		selected = nativeClosedIssuePageProjection

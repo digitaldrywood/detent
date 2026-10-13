@@ -80,9 +80,11 @@ func resolveHostedBilling(config *HostedBillingConfig, previous hostedBillingSta
 }
 
 func (d *database) readHostedBilling(ctx context.Context) (hostedBillingState, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var state hostedBillingState
 	var raw string
-	err := d.db.QueryRowContext(ctx, "SELECT state_json FROM hosted_billing_accounts WHERE organization_id=?", d.hostedOrganization).Scan(&raw)
+	err := d.reader.QueryRowContext(ctx, "SELECT state_json FROM hosted_billing_accounts WHERE organization_id=?", d.hostedOrganization).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return hostedBillingState{Status: "free"}, nil
 	}

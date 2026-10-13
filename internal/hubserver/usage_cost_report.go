@@ -285,7 +285,9 @@ WHERE (? OR project_id IN (SELECT value FROM json_each(?))) ORDER BY project_id,
 }
 
 func (d *database) monthlyCosts(ctx context.Context, organization, scope string, projects []string, window usageWindow, now time.Time) (monthlyCostReport, error) {
-	tx, err := d.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := d.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return monthlyCostReport{}, err
 	}

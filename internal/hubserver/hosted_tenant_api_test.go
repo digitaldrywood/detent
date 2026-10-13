@@ -268,6 +268,7 @@ func TestHostedInvitationLifecycle(t *testing.T) {
 func TestHostedProjectsAPI(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
+	guard := installWriterReadGuard(t, f.service)
 	for _, test := range []struct {
 		account  string
 		projects []string
@@ -319,6 +320,13 @@ func TestHostedProjectsAPI(t *testing.T) {
 	if slices.ContainsFunc(projects, func(project hostedProjectView) bool { return project.ID == string(created.ID) }) {
 		t.Fatal("a new project was shared with a member who was not granted it")
 	}
+	f.service.tokenUseWork.Wait()
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	if len(guard.violations) > 0 {
+		t.Fatalf("hosted GET writer reads: %v", guard.violations)
+	}
+
 }
 
 func TestHostedSharedTenantAPI(t *testing.T) {

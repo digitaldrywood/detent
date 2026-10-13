@@ -16,6 +16,8 @@ import (
 )
 
 func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if !s.hostedShared() || claims.Kind != cloudassert.KindKey || claims.Key == nil || !claims.Key.Valid() || !claims.ExpiresAt.After(s.config.now()) || claims.Audience != s.config.Hosted.OrganizationID {
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 	}
@@ -73,12 +75,14 @@ func (s *Service) entryKeyCatalog(c echo.Context) error {
 }
 
 func (s *Service) entryKeyAdmin(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
 		return c.NoContent(http.StatusForbidden)
 	}
 	var role string
-	err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
 	if err != nil || role != "owner" && role != "admin" {
 		return c.NoContent(http.StatusForbidden)
 	}

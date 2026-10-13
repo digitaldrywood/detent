@@ -24,6 +24,8 @@ type operatorWorkReads struct {
 }
 
 func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (result operatortool.Result, resultErr error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	defer func() {
 		if resultErr != nil {
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
@@ -56,15 +58,15 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return hubWorkResult(r, request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
-		project, err := readNativeProject(ctx, s.database.db, scope)
+		project, err := readNativeProject(ctx, s.database.reader, scope)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
-		templates, err := nativeReporterContracts(ctx, s.database.db, scope)
+		templates, err := nativeReporterContracts(ctx, s.database.reader, scope)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
-		labels, err := readNativeLabels(ctx, s.database.db, scope)
+		labels, err := readNativeLabels(ctx, s.database.reader, scope)
 		return hubWorkResult(r, request, struct {
 			Project           tracker.NativeProject    `json:"project"`
 			Priorities        []int                    `json:"priorities"`
@@ -72,7 +74,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
 		}{project, []int{0, 1, 2, 3}, labels, templates}, err)
 	}
-	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.db, scope, request.Reference)
+	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.reader, scope, request.Reference)
 	if err != nil {
 		return operatortool.Result{}, safeWorkReadError(err)
 	}
@@ -94,7 +96,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
 		if name == operatortool.WorkAttemptReceipt && evidence.Attempt != nil {
-			evidence.ValidationAudit, err = readValidationAudit(ctx, s.database.db, scope, "", request.Reference, "", evidence.Attempt.AttemptID)
+			evidence.ValidationAudit, err = readValidationAudit(ctx, s.database.reader, scope, "", request.Reference, "", evidence.Attempt.AttemptID)
 			if err != nil {
 				return operatortool.Result{}, safeWorkReadError(err)
 			}
@@ -103,13 +105,13 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkItem:
 		view := operatortool.NativeItemView(request.ProjectID, item)
 		if strings.Contains(item.Body, "detent-checks") {
-			view.ValidationAudit, err = readValidationAudit(ctx, s.database.db, scope, request.Reference, "", "", "")
+			view.ValidationAudit, err = readValidationAudit(ctx, s.database.reader, scope, request.Reference, "", "", "")
 		}
 		return hubWorkResult(r, request, view, err)
 	case operatortool.WorkExport:
 		return hubWorkResult(r, request, item, nil)
 	case operatortool.WorkRelationships:
-		related, err := readNativeRelated(ctx, s.database.db, scope, item.WorkItemID)
+		related, err := readNativeRelated(ctx, s.database.reader, scope, item.WorkItemID)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
@@ -261,13 +263,15 @@ func (operatorWorkReads) WorkReadNames(context.Context) []string {
 }
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
 	if err != nil {
 		return explain.IssueExplanation{}, err
 	}
 	scope := r.scope
 	scope.project = tracker.ProjectID(query.ProjectID)
-	issue, err := r.service.resolveOperatorNativeReadItem(ctx, r.service.database.db, scope, query.Reference)
+	issue, err := r.service.resolveOperatorNativeReadItem(ctx, r.service.database.reader, scope, query.Reference)
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
@@ -275,7 +279,7 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	failures, partial, err := readNativeFailures(ctx, r.service.database.db, scope, string(issue.WorkItemID), nil)
+	failures, partial, err := readNativeFailures(ctx, r.service.database.reader, scope, string(issue.WorkItemID), nil)
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}

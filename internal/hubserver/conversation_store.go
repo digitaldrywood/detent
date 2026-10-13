@@ -20,7 +20,8 @@ import (
 // product. Transactional operations take the caller's *sql.Tx so that state
 // and the events describing it commit together.
 type conversationStore struct {
-	db *sql.DB
+	db     *sql.DB
+	reader *sql.DB
 }
 
 func newConversationStore(db *sql.DB) *conversationStore {

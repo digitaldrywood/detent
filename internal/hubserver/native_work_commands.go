@@ -20,6 +20,8 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if request.ScheduledValidation != nil {
 		scope.action = ""
 		return s.recordScheduledValidation(ctx, scope, request)
@@ -53,7 +55,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			return nil, nativeInvalid(err.Error())
 		}
 		var exists int
-		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
 			return nil, err
 		}
 		if exists == 0 {
@@ -61,7 +63,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			if _, found, err := resolveWebhookRepositoryID(ctx, s.database.db, repository); err != nil {
+			if _, found, err := resolveWebhookRepositoryID(ctx, s.database.reader, repository); err != nil {
 				return nil, err
 			} else if !found {
 				if s.config.ReconcileBackend == nil {
@@ -454,7 +456,7 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) nativeWorkObservation(ctx context.Context, scope nativeScope, item string) (tracker.NativeIssue, error) {
-	issue, _, err := readNativeIssue(ctx, s.database.db, scope, item)
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
 	return s.nativeIssueResponse(issue), err
 }
 
@@ -464,7 +466,7 @@ func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, ite
 }
 
 func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
-	project, err := readNativeProject(ctx, s.database.db, scope)
+	project, err := readNativeProject(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +515,7 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 }
 
 func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
-	_, id, err := readNativeIssue(ctx, s.database.db, scope, request.Identifier)
+	_, id, err := readNativeIssue(ctx, s.database.reader, scope, request.Identifier)
 	if err != nil {
 		return nil, err
 	}

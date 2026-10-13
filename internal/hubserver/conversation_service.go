@@ -157,6 +157,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
 	service.settled = make(chan struct{})
+	service.store.reader = server.database.reader
 	go service.settleLoop()
 	return service
 }
@@ -242,7 +243,9 @@ func (c *conversationService) settleLoop() {
 // linked conversations with queued controls to the control router. Nothing
 // is replayed; the components re-read durable state.
 func (c *conversationService) wakePending(ctx context.Context) error {
-	rows, err := c.store.db.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := c.store.reader.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
 JOIN conversations c ON c.id = m.conversation_id
 WHERE m.role = 'user' AND m.delivery IN ('saved', 'queued')`)
 	if err != nil {

@@ -144,7 +144,7 @@ func (t *coordinatorToolset) spriteTool(ctx context.Context, record conversation
 		return nil, nativeInvalid("Configure and enable the Sprite pool with set_sprite_pool before scaling up")
 	}
 	if call.Name == "scale_up_sprite_pool" {
-		if _, err := s.spritePoolAuthority(ctx, s.database.db, scope); err != nil {
+		if _, err := s.spritePoolAuthority(ctx, s.database.reader, scope); err != nil {
 			return nil, operatortool.ErrAccessDenied
 		}
 	}
@@ -181,7 +181,7 @@ func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope nat
 		if s.config.SecretKeys == nil || s.config.Hosted == nil {
 			return nativeInvalid("Sprite pools require hosted configuration and the organization secret store")
 		}
-		status, err := readSecretStatus(ctx, s.database.db, scope)
+		status, err := readSecretStatus(ctx, s.database.reader, scope)
 		if err != nil {
 			return err
 		}
@@ -244,7 +244,7 @@ func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action cha
 }
 
 func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeScope, view spritePoolView, connector string, project tracker.ProjectID) (any, error) {
-	secret, err := readSecretStatus(ctx, s.database.db, scope)
+	secret, err := readSecretStatus(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 	for _, member := range view.Members {
 		item := map[string]any{"name": member.Name, "state": member.State, "runner_id": member.RunnerID, "connected": false, "provider_readiness": "unavailable"}
 		if member.RunnerID != "" && member.State == "enrolled" {
-			r, err := readRunnerWithClock(ctx, s.database.db, scope.organization, member.RunnerID, s.config.now)
+			r, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
 			if err != nil {
 				return nil, err
 			}

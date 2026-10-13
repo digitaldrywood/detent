@@ -86,6 +86,8 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 }
 
 func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAnalyticsReport) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	w := analytics.Window
 	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}}
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {

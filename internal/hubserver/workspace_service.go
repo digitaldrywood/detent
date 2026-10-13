@@ -236,7 +236,7 @@ func relayEndReason(state string, servingRunner bool) (string, bool) {
 // the close ran after the attach and found the connection, or the attach ran
 // after the commit and this read sees the ended state.
 func (w *workspaceService) closeIfEndedSinceUpgrade(ctx context.Context, connection *relayConnection) {
-	record, err := readWorkspaceByID(ctx, w.server.database.db, connection.workspaceID)
+	record, err := readWorkspaceByID(ctx, w.server.database.reader, connection.workspaceID)
 	if err != nil {
 		// The periodic authority re-check reads the same row and closes the
 		// connection when it can, so a failed read here is logged, not fatal.
@@ -321,7 +321,9 @@ func (w *workspaceService) sweep(ctx context.Context) {
 // plan.workspaces.max_open bounds it per organization, so the sweep reads it
 // whole rather than encoding each deadline as a separate query.
 func (w *workspaceService) dueWorkspaces(ctx context.Context, now time.Time) ([]workspaceRecord, error) {
-	rows, err := w.server.database.db.QueryContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := w.server.database.reader.QueryContext(ctx, `SELECT `+workspaceColumns+` FROM workspace_sessions
 WHERE state IN `+openWorkspaceStates+` ORDER BY created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("query open workspaces: %w", err)

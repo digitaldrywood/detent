@@ -147,7 +147,9 @@ func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) f
 }
 
 func (s *Service) getGitHubImport(c echo.Context) error {
-	result, err := readGitHubImport(c.Request().Context(), s.database.db, nativeRequestScope(c), c.Param("import"))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	result, err := readGitHubImport(ctx, s.database.reader, nativeRequestScope(c), c.Param("import"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -167,7 +169,9 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 	if key == "" {
 		// Legacy callers do not supply a retry key; preserve their revision
 		// conflict semantics. Explicit keys use the shared durable receipt.
-		current, err := readGitHubImport(c.Request().Context(), s.database.db, nativeRequestScope(c), id)
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		current, err := readGitHubImport(readCtx, s.database.reader, nativeRequestScope(c), id)
+		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -180,6 +184,7 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 	if err != nil {
 		var failure *nativeError
 		if errors.As(err, &failure) && failure.status == http.StatusTooManyRequests {
+			// Read back the import state advanced by this request on the writer.
 			current, readErr := readGitHubImport(c.Request().Context(), s.database.db, nativeRequestScope(c), id)
 			if readErr != nil {
 				return s.nativeAPIError(c, readErr)
@@ -202,7 +207,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 	if s.config.ImportBackend == nil {
 		return nil, nativeInvalid("GitHub import transport is not configured")
 	}
-	current, err := readGitHubImport(ctx, s.database.db, scope, id)
+	current, err := readGitHubImport(ctx, s.database.reader, scope, id)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +220,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 	if current.RetryAfter != nil && s.config.now().Before(*current.RetryAfter) {
 		return nil, &nativeError{Code: "invalid_request", Message: "Import retry is not ready", status: http.StatusTooManyRequests}
 	}
-	integration, err := readProjectIntegration(ctx, s.database.db, scope)
+	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -344,10 +349,12 @@ func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 }
 
 func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegration, job GitHubImport) (GitHubImportPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	request := GitHubImportRequest{Repository: integration.Repository, Profile: integration.Profile, IssueNumber: job.IssueNumber, Stage: job.Stage, Cursor: job.Cursor}
 	var sequence int64
 	if job.Stage == "edits" {
-		err := s.database.db.QueryRowContext(ctx, `SELECT sequence, COALESCE(json_extract(record_json, '$.provenance.external_id'), '') FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &request.SourceID)
+		err := s.database.reader.QueryRowContext(ctx, `SELECT sequence, COALESCE(json_extract(record_json, '$.provenance.external_id'), '') FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &request.SourceID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return GitHubImportPage{EditsFinished: true}, nil
 		}
@@ -449,8 +456,10 @@ SELECT 1 FROM issues i WHERE i.project_id = github_imports.project_id AND i.gith
 }
 
 func (s *Service) listGitHubImportRecords(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	scope := nativeRequestScope(c)
-	if _, err := readGitHubImport(c.Request().Context(), s.database.db, scope, c.Param("import")); err != nil {
+	if _, err := readGitHubImport(ctx, s.database.reader, scope, c.Param("import")); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	limit, cursor, key, err := s.nativePage(c)
@@ -461,7 +470,7 @@ func (s *Service) listGitHubImportRecords(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid import cursor"))
 	}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT sequence, record_json, current_dependency FROM github_import_records WHERE import_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", c.Param("import"), after, limit+1)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT sequence, record_json, current_dependency FROM github_import_records WHERE import_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", c.Param("import"), after, limit+1)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

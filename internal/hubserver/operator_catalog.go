@@ -20,16 +20,18 @@ type operatorCatalogAuthority struct {
 }
 
 func (s *Service) withOperatorCatalog(ctx context.Context, credential apiCredential, organization string) context.Context {
+	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	catalog := operatorCatalogAuthority{identity: operatorIdentity(credential, organization), credential: credential}
 	if credential.Hosted != nil && credential.HostedRole != "account" {
-		catalog.runnerAccess = s.requireHostedRunnerAdministration(ctx, s.database.db, credential)
+		catalog.runnerAccess = s.requireHostedRunnerAdministration(readCtx, s.database.reader, credential)
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {
-		if session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now()); err == nil {
+		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.now()); err == nil {
 			catalog.support = hostedEmailListed(s.config.Hosted.SupportActors, session.Email)
 			if credential.Hosted.Subject == s.config.Hosted.BootstrapSubject && !hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) {
 				var count int
-				catalog.createOrganization = s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&count) == nil && count == 0
+				catalog.createOrganization = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&count) == nil && count == 0
 			}
 		}
 	}
