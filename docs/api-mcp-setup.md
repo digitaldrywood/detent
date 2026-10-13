@@ -534,7 +534,12 @@ version and record boundary and is rejected if the current head changes.
 An omitted record is not passing evidence. `section: "versions"` traverses
 historical versions excluding the selected version already returned by the
 default read; `version_id` selects exact historical evidence. Existing
-`get_change_version` reads remain available. Bounded Change reads return command
+`get_change_version` reads remain available. Bounded Change reads retain policy
+identity, digests, gate requirements and review/check expectations, while omitting
+authored file contents, runtime configuration and workflow definitions.
+`read.policy_details_omitted` discloses this projection; retrieve the full immutable
+policy through `get_change_version`. Policy omission never establishes approval.
+Bounded Change reads return command
 output as UTF-8 excerpts of at most 4 KiB, setting `output_truncated: true` when
 output is shortened and preserving any existing truncation flag. Verdicts,
 criteria, findings, command results and receipt identities remain complete;
@@ -547,9 +552,12 @@ budget remains 256 KiB.
 Native workers use the same projection through the Change HTTP read with
 `view=bounded` and the same section, cursor, version and limit selectors.
 
-Native `work_item`, `work_attempt_receipt` and `get_change` include a bounded
-`validation_audit` projection of recorded local commands and scheduled failure
-occurrences. Scheduled failures retain their existing issue/comment owner;
+Native `work_attempt_receipt` includes a bounded `validation_audit` projection of
+recorded local commands and project scheduled failure occurrences. A `work_item`
+whose body contains scheduled check evidence includes only that item's scheduled
+reports and their candidate comparisons. Ordinary work-item and bounded Change
+reads omit this audit; their own content and command receipts remain available.
+Scheduled failures retain their existing issue/comment owner;
 comparisons name those source records, their authors, and the run, job, attempt, Change and
 version identities. The projection reads the selected project's database only
 and makes no forge requests. `partial` identifies truncated records or candidate

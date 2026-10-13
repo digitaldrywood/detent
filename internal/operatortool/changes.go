@@ -113,9 +113,10 @@ type ChangeResult struct {
 }
 
 type ChangeRead struct {
-	VersionID string                    `json:"version_id"`
-	Complete  bool                      `json:"complete"`
-	Sections  map[string]ChangeReadPage `json:"sections"`
+	VersionID            string                    `json:"version_id"`
+	PolicyDetailsOmitted bool                      `json:"policy_details_omitted"`
+	Complete             bool                      `json:"complete"`
+	Sections             map[string]ChangeReadPage `json:"sections"`
 }
 
 type ChangeReadPage struct {
@@ -215,7 +216,7 @@ func ChangeCatalog() []Definition {
 		definitions = append(definitions, Definition{Name: name, Description: description, InputSchema: schema, Annotations: Annotations{ReadOnly: read, Destructive: material, Idempotent: true, OpenWorld: name != ArtifactLibrary}, Meta: ToolMetadata{Toolset: "changes_artifacts"}})
 	}
 	add(ListChanges, "List Change Requests linked to an owned work item.", "work_item_id", "limit offset", true, false)
-	add(GetChange, "Read the current immutable Change version, summary and bounded review/check/discussion and landing evidence. Command output uses 4 KiB UTF-8 excerpts with output_truncated; verdicts, criteria and receipt identities remain complete. read.sections reports record completeness and next_cursor; follow each cursor with get_change. Use section versions for historical versions or version_id for exact historical evidence. Summary always describes the current head; omitted evidence is not passing evidence.", "work_item_id change_id", "version_id section cursor limit", true, false)
+	add(GetChange, "Read the current immutable Change version, summary and bounded review/check/discussion and landing evidence. Command output uses 4 KiB UTF-8 excerpts with output_truncated; verdicts, criteria and receipt identities remain complete. read.sections reports record completeness and next_cursor; follow each cursor with get_change. Use section versions for historical versions or version_id for exact historical evidence. Summary always describes the current head; omitted evidence is not passing evidence. Policy details are explicitly omitted; get_change_version retains the full immutable policy. Project validation comparisons remain available through work_attempt_receipt and scheduled-report work_item reads.", "work_item_id change_id", "version_id section cursor limit", true, false)
 	add(GetChangeVersion, "Read one immutable version with code/diff, artifact references and the frozen landing contract and criterion evidence for escape classification.", "work_item_id change_id version_id", "", true, false)
 	add(GetChangeReviewPolicy, "Read the project's approved review policy.", "", "", true, false)
 	add(ChangeViewedFiles, "Read this principal's viewed-file digests for a version.", "work_item_id change_id version_id", "limit offset", true, false)

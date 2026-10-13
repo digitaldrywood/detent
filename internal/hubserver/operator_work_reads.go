@@ -92,11 +92,9 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return operatortool.NativeRuntimeResult(name, request, evidence)
 	case operatortool.WorkItem:
 		view := operatortool.NativeItemView(request.ProjectID, item)
-		scheduledItem, localItem := "", request.Reference
 		if strings.Contains(item.Body, "detent-checks") {
-			scheduledItem, localItem = request.Reference, ""
+			view.ValidationAudit, err = readValidationAudit(ctx, s.database.db, scope, request.Reference, "", "", "")
 		}
-		view.ValidationAudit, err = readValidationAudit(ctx, s.database.db, scope, scheduledItem, localItem, "", "")
 		return hubWorkResult(r, request, view, err)
 	case operatortool.WorkExport:
 		return hubWorkResult(r, request, item, nil)
