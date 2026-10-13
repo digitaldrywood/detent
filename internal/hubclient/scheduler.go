@@ -29,6 +29,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	AvailableCapacity     func(context.Context, int) int
 	RefreshProjects       func(context.Context, *Scheduler) error
 	Skills                func(project string) []skills.ProviderSkill
 	PrepareProject        func(context.Context, string) error
@@ -56,6 +57,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	availableCapacity     func(context.Context, int) int
 	hostMetrics           *hostmetrics.Collector
 	hostMetricsMu         sync.Mutex
 	refreshProjects       func(context.Context, *Scheduler) error
@@ -118,6 +120,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		availableCapacity:     config.AvailableCapacity,
 		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
 		runnerSetupDeclared:   config.RunnerSetupDeclared,

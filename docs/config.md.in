@@ -84,7 +84,12 @@ global:
 
 When omitted, `max_bytes` is 10% of the total capacity of the volume holding
 `GOCACHE`, capped at 40 GiB (20 GiB fallback if capacity is unavailable). It is a
-reported size target, not a hard limit. Free space does not change the target.
+size target, not a hard filesystem limit. Native Cloud runners report zero
+capacity for new work when the last completed cache sweep reaches this target.
+Existing jobs keep their leases and recent cache files; capacity recovers after
+a safe age-expiry sweep reports usage below the target. The same capacity owner
+reserves 10% of each cache and workspace volume, capped at 40 GiB, before
+admitting more work. Free space does not change the cache target.
 Doctor reports the fallback, historical size eviction, and a target above 10%
 of total volume capacity.
 
@@ -93,7 +98,9 @@ The effective age is at least 25 hours, preserving Go's last-day cache reuse and
 its one-hour access-time granularity. Recent outputs survive even when the cache
 exceeds `max_bytes`; Go retains ownership of their lifetime. Metadata (`trim.txt`
 and `README`) is never removed. The module cache is reported and shared but is
-not trimmed. Concurrent builds can grow the cache between sweeps.
+not trimmed. Concurrent builds can grow the cache between sweeps and active
+jobs can exceed the admission target. Unrelated host processes are not governed
+by runner capacity. No size-based deletion of recent outputs occurs.
 
 ## GitHub completion CI policy
 
