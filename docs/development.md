@@ -270,6 +270,37 @@ Do not advance the site's pinned upstream release to this layout until that
 companion source update is available. Site publication remains separate from
 Detent's build and scheduled validation.
 
+## Hub analytics rollups
+
+Diagnostics, Reports and `analytics_dashboard` read the persisted
+`analytics_hourly_rollups` model through the WAL reader pool. Ready decisions,
+skip reasons, merge entries and lease capacity have additive hourly values.
+The same model retains scoped timing samples and current issue, attempt and
+usage facts for exact quantiles, distinct populations, historical residence,
+partial-hour boundaries and population cursors. It excludes observation-event
+payload history. Landing and refusal identities remain bounded drill-downs.
+
+The existing native commit path projects changed work items before committing,
+using the board's existing dirty-item list and per-item event sequence positions.
+There is no periodic analytics worker. Unchanged lease snapshots do not rewrite
+capacity buckets. Projection writes use a savepoint: analytics failure does not
+roll back an event, claim or lane transition. A failed project projection is
+unavailable until rebuilt, rather than serving old totals as complete.
+
+`rebuildAnalyticsRollups` rebuilds one organization/project in a caller-owned
+transaction from the raw source views, including the hourly counters and lease
+buckets. Schema migrations backfill all existing projects. Changes to metric
+definitions must update those source views and rebuild the affected projections
+in their migration. Rebuilds preserve tenant scope and replace the project's
+rollups and sequence positions atomically.
+
+Compaction does not delete rollups. Scheduler claim samples retain their exact
+predecessor before raw observation rows can be compacted. A rebuild after
+compaction cannot recreate deleted predecessor evidence: a sequence gap makes
+that capacity-wait interval unavailable. It must not infer adjacency from the
+next surviving earlier event. Current runtime observations and usage remain
+rebuildable from their durable source records.
+
 ## Conversation assets
 
 Conversation source and its npm lockfile are tracked; `static/app/conversation/`

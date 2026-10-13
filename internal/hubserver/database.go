@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -35,6 +36,7 @@ const authConnections = 4
 const claimReaderConnections = 2
 
 type database struct {
+	logger                 *slog.Logger
 	linkedSourceBase       string
 	db                     *sql.DB
 	reader                 *sql.DB
@@ -87,7 +89,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
+	store := &database{db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier, logger: cfg.Logger}
 	if cfg.Hosted != nil {
 		store.linkedSourceBase = cfg.Hosted.PublicURL
 		if cfg.Hosted.SharedEntry != nil {
