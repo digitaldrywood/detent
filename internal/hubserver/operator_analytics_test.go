@@ -2,12 +2,14 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -212,6 +214,75 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.Requests == nil || len(report.Requests.Callers) != 1 || report.Requests.Callers[0].Caller != "runner_report" {
 		t.Fatalf("admin MCP traffic: %s err=%v", response.Body.String(), err)
 	}
+	t.Run("analytics reads beside a held writer", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())
+		request.AddCookie(&http.Cookie{Name: hostedCookie, Value: owner.token})
+		c := f.service.echo.NewContext(request, httptest.NewRecorder())
+		c.SetPath("/mcp")
+		authorityContexts := make(chan context.Context, 1)
+		if err := f.service.operatorAuthority(func(c echo.Context) error {
+			authorityContexts <- c.Request().Context()
+			return nil
+		})(c); err != nil || len(authorityContexts) == 0 {
+			t.Fatalf("operator authority: %v", err)
+		}
+		authorityContext := operatortool.BindConnection(<-authorityContexts, "analytics-held-writer", "analytics-test")
+		credential := apiCredential{Hosted: owner.identity.Hosted}
+		for _, read := range []struct {
+			name string
+			run  func(context.Context) (any, error)
+		}{
+			{"analytics", func(ctx context.Context) (any, error) {
+				return f.service.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(f.project), Limit: 1}, report.Window)
+			}},
+			{"diagnostics", func(ctx context.Context) (any, error) {
+				return f.service.readHostedDiagnostics(ctx, report)
+			}},
+			{"reports", func(ctx context.Context) (any, error) {
+				return f.service.readHostedReports(ctx, report)
+			}},
+		} {
+			t.Run(read.name, func(t *testing.T) {
+				want, err := read.run(authorityContext)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(authorityContext, 5*time.Second)
+				defer cancel()
+				holdWriter := func() error {
+					held, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+					if err == nil {
+						t.Cleanup(func() { _ = held.Rollback() })
+					}
+					return err
+				}
+				connection := operatortool.CurrentConnection(ctx)
+				resolve := connection.Resolve
+				connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
+					authority, err := resolve(ctx)
+					if err != nil {
+						return authority, err
+					}
+					check := authority.Check
+					authority.Check = func(ctx context.Context, requirement operatortool.Requirement) error {
+						if err := check(ctx, requirement); err != nil {
+							return err
+						}
+						return holdWriter()
+					}
+					return authority, nil
+				}
+				ctx = operatortool.WithConnection(ctx, connection)
+				got, err := read.run(ctx)
+				if err != nil {
+					t.Fatalf("read beside held writer: %v", err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("response changed beside held writer:\ngot: %+v\nwant: %+v", got, want)
+				}
+			})
+		}
+	})
 }
 
 func TestNativeAnalyticsUnavailableServices(t *testing.T) {

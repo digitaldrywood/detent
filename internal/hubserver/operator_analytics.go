@@ -166,7 +166,7 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 	if end < len(projects) {
 		report.NextOffset = &end
 	}
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return report, err
 	}
