@@ -17,11 +17,44 @@ import (
 
 func TestNativeWorkSearch(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "ranked-search")
-	target := f.create(t, "Associate runner checkout on a new project")
-	body := strings.Repeat("Checkout transport waits for a repository binding. ", 60) + "Never hard-code a real operator, customer, organization, host or repository name into product copy, design samples or fixtures. Real project names in production must come from the selected project data."
-	targetComment := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "generic-example-guidance"}, Body: "Use generic names such as example-org/example-project or owner/repository in fixtures, designs, instructional copy and issue examples. Product values come from the selected runtime context. Keep real names only as factual historical evidence or actual project screenshots; never reuse them as synthetic mock data."})
-	requireNativeStatus(t, targetComment, http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, labels_json = ?, native_created_at = ?, native_updated_at = ? WHERE native_id = ?", body, `["search-fixture","unique-tag"]`, "2026-10-12T00:00:00Z", "2026-10-13T00:00:00Z", target.WorkItemID); err != nil {
+	target := f.create(t, "fix(setup): Associate runner checkout deadlocks on a new project")
+	body := `## Context
+
+Observed 2026-10-12 onboarding a new native Cloud project (prj_example, repo example-org/example-project, private) with a freshly enrolled, online runner on detent 0.119.0. Setup step 3, "Associate the runner checkout", returns 422 checkout_unavailable: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry."
+
+This can never succeed for a new project:
+- Hub side: bindRunnerCheckoutCommand (internal/hubserver/integration_checkout.go ~line 80) binds only if an active runner reported checkout_repository for this project in the last 5 minutes.
+- Runner side: the runner only reports a checkout for projects in its config (runnerProjects.repository, internal/cli/runner_projects.go:188). For a project with no repository, prepareRunnerCheckout (internal/cli/runner_checkout.go:45) fails with "Project has no bound repository" because the clone URL is empty, and runnerProjectsForIdentity skips the project (continue). So it is never added and never reported.
+- Manually cloning into <workspace_root>/<project_id> does not help: runnerProjectCheckout (runner_projects.go:347) returns "runner checkout ... does not match Cloud repository" when the Cloud repository is empty and the target has a .git.
+
+So the Hub waits for the runner to report a checkout, and the runner won't set the project up until the Hub has a repository. Setup steps 2 and 3 both stay failed.
+
+## Acceptance criteria
+
+- A new native project with no repository can be bound to a private GitHub repository from the setup page in one action, with no manual file operations on the runner host.
+- For example: the runner clones the owner/name entered in setup using its own git credentials and reports the checkout, or it adopts and reports a local checkout whose origin it finds, when the Cloud repository is empty.
+- The page shows progress using the selected runner display name and the repository entered by the user, instead of a 422 error. Use a generic fixture such as "Waiting for Example runner to clone example-org/example-repository" in tests and screenshots. Never hard-code a real operator, customer, organization, host or repository name into product copy, design samples or fixtures. Real project names in production must come from the selected project data.
+
+## Must not break
+
+- Cloud never receives repository credentials. The runner clones with its own access.
+- Existing repository bindings stay immutable. A checkout whose origin mismatches a bound repository is still refused.
+- The GitHub App binding path (bindNativeRepositoryCommand without source) is unchanged.
+
+## How we know it worked
+
+- Table-driven tests covering a new project with an empty repository through to a bound repository and a reported checkout, on both the runner (runnerProjectsForIdentity) and the Hub (bindRunnerCheckoutCommand) sides.
+- make check-land passes.
+- Post-deploy: create a new native project, enroll a runner, enter owner/name, and confirm binding plus checkout complete with no manual steps.
+
+## Invariants touched
+
+INV-17: the runner prepares its workspace from Hub-provided project data and its install configuration; no machine-local state is hand-placed. No mechanism added (INV-3 not applicable).
+
+## Safety regression
+
+No safety-critical path is touched; onboarding repository binding and runner checkout preparation only.`
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, labels_json = ?, native_created_at = ?, native_updated_at = ? WHERE native_id = ?", body, `["search-fixture","unique-xyz"]`, "2026-10-12T00:00:00Z", "2026-10-13T00:00:00Z", target.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
 	for index := range 8 {
@@ -48,17 +81,22 @@ func TestNativeWorkSearch(t *testing.T) {
 		decodeHubResponse(t, response, &page)
 		return page
 	}
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	protocols := map[string]func(string, string, any) hostedContextReply{}
+	for _, transport := range []string{"stdio", "http"} {
+		protocols[transport] = hostedContextProtocol(t, f.service, ctx, transport)
+	}
 	for _, test := range []struct {
 		name, query, matched string
 		want                 tracker.NativeWorkItemID
 		label                string
 	}{
-		{"ranked example", "real organization names in fixtures", "fixture", target.WorkItemID, ""},
+		{"issue 958 ranked example", "real organization names in fixtures", "fixture", target.WorkItemID, ""},
 		{"stem", "fixture", "fixture", target.WorkItemID, "search-fixture"},
 		{"prefix", "prod", "prod", target.WorkItemID, ""},
 		{"OR", "unicorn nonexistentterm", "Unicorns", commentItem.WorkItemID, ""},
 		{"substring recall", "ganiz", "organization", target.WorkItemID, "search-fixture"},
-		{"label recall", "nique-ta", "unique-tag", target.WorkItemID, ""},
+		{"label recall", "nique-xy", "unique-xyz", target.WorkItemID, ""},
 		{"identifier recall", string(f.project.ID) + "#" + strconv.Itoa(target.Number), strconv.Itoa(target.Number), target.WorkItemID, "search-fixture"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -82,11 +120,30 @@ func TestNativeWorkSearch(t *testing.T) {
 					t.Fatal("missing snippet")
 				}
 			}
+			for _, transport := range []string{"stdio", "http"} {
+				t.Run(transport, func(t *testing.T) {
+					args := map[string]any{"project_id": f.project.ID, "query": test.query, "limit": 5}
+					if test.label != "" {
+						args["label"] = test.label
+					}
+					raw := hostedContextData(t, protocols[transport]("tools/call", operatortool.WorkList, args), false)
+					var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+					if err := json.Unmarshal(raw, &result); err != nil {
+						t.Fatal(err)
+					}
+					index := slices.IndexFunc(result.Data.Items, func(item operatortool.NativeItem) bool { return item.WorkItemID == test.want })
+					if index < 0 {
+						t.Fatal("MCP target absent from top five")
+					}
+					if !strings.Contains(strings.ToLower(result.Data.Items[index].Snippet), strings.ToLower(test.matched)) {
+						t.Fatal("MCP snippet omits matching text")
+					}
+				})
+			}
 		})
 	}
-	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	for _, transport := range []string{"stdio", "http"} {
-		protocol := hostedContextProtocol(t, f.service, ctx, transport)
+		protocol := protocols[transport]
 		raw := hostedContextData(t, protocol("tools/call", operatortool.WorkList, map[string]any{"project_id": f.project.ID, "query": "real organization names in fixtures", "created_after": "2026-10-12T00:00:00Z", "created_before": "2026-10-13T00:00:00Z", "updated_after": "2026-10-13T00:00:00Z", "label": "search-fixture", "state": "Todo", "limit": 5}), false)
 		var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
 		if err := json.Unmarshal(raw, &result); err != nil {
