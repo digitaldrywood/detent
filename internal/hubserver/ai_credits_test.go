@@ -251,11 +251,12 @@ func TestPlatformAICreditServiceAuthority(t *testing.T) {
 func TestPlatformAICreditBalanceRead(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, kind, bearer string
-		balance            int64
-		missing, failure   bool
-		want               int
+		name, kind, bearer        string
+		balance                   int64
+		missing, failure, history bool
+		want                      int
 	}{
+		{name: "bounded history and monthly spend", kind: cloudassert.KindService, balance: 10250000, history: true, want: http.StatusOK},
 		{name: "positive balance", kind: cloudassert.KindService, balance: 10250000, want: http.StatusOK},
 		{name: "zero balance", kind: cloudassert.KindService, want: http.StatusOK},
 		{name: "negative balance", kind: cloudassert.KindService, balance: -2500000, want: http.StatusOK},
@@ -271,9 +272,41 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			d := f.service.database
 			d.aiCreditMode = billing.ModeTest
+			d.now = func() time.Time { return time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC) }
 			if !test.missing {
 				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',?),(?,'live',999000000)", d.hostedOrganization, test.balance, d.hostedOrganization); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if test.history {
+				if _, err := d.db.ExecContext(t.Context(), "UPDATE ai_credit_accounts SET auto_enabled=1 WHERE organization_id=? AND mode='test'", d.hostedOrganization); err != nil {
+					t.Fatal(err)
+				}
+				for index, item := range []struct {
+					organization, mode, kind, date string
+					amount                         int64
+				}{
+					{string(d.hostedOrganization), "test", "complimentary", "2026-09-30", 10000000},
+					{string(d.hostedOrganization), "test", "purchase", "2026-10-01", 5000000},
+					{string(d.hostedOrganization), "test", "auto_fund", "2026-10-02", 25000000},
+					{string(d.hostedOrganization), "test", "complimentary", "2026-10-03", -1000000},
+					{string(d.hostedOrganization), "test", "usage", "2026-10-01", -750000},
+					{string(d.hostedOrganization), "test", "usage", "2026-09-30", -9000000},
+					{string(d.hostedOrganization), "test", "usage", "2026-11-01", -9000000},
+					{string(d.hostedOrganization), "live", "usage", "2026-10-02", -9000000},
+				} {
+					at, err := time.Parse("2006-01-02", item.date)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,actor,reason,recorded_at) VALUES(?,?,?,?,?,?,?,?)", item.organization, item.mode, fmt.Sprintf("credit-read-%d", index), item.amount, item.kind, "staff@example.test", "Pilot credits", at.UnixMicro()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for index := range 51 {
+					if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,actor,reason,recorded_at) VALUES(?,'test',?,?,'complimentary','staff@example.test','Earlier grant',?)", d.hostedOrganization, fmt.Sprintf("earlier-grant-%d", index), 2000000+index, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).UnixMicro()); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			if test.failure {
@@ -285,10 +318,28 @@ func TestPlatformAICreditBalanceRead(t *testing.T) {
 			response := f.serve(t, hostedSharedRequest{user: &owner, kind: test.kind, bearer: test.bearer, method: http.MethodPost, target: "/internal/v1/platform/ai-credits/balance", body: `{}`})
 			requireNativeStatus(t, response, test.want)
 			if test.want == http.StatusOK {
-				var result map[string]int64
-				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || len(result) != 1 || result["balance_micros"] != test.balance {
-					t.Fatalf("balance response=%s err=%v", response.Body.String(), err)
+				var result struct {
+					Balance int64                 `json:"balance_micros"`
+					Spent   int64                 `json:"spent_micros"`
+					Month   string                `json:"month"`
+					Auto    bool                  `json:"auto_enabled"`
+					History []aiCreditTransaction `json:"history"`
 				}
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Balance != test.balance || result.Month != "2026-10" || result.History == nil {
+					t.Fatalf("credits response=%s err=%v", response.Body.String(), err)
+				}
+				if test.history {
+					if result.Spent != 750000 || !result.Auto || len(result.History) != 50 || result.History[0].AmountMicros != -1000000 || result.History[1].Kind != "auto_fund" || result.History[2].Kind != "purchase" || result.History[3].Kind != "complimentary" || result.History[4].AmountMicros != 2000050 || result.History[49].AmountMicros != 2000005 || result.History[49].Reason != "Earlier grant" || result.History[0].Actor != "staff@example.test" || result.History[0].Reason != "Pilot credits" || result.History[0].At.Format("2006-01-02") != "2026-10-03" {
+						t.Fatalf("credits=%+v", result)
+					}
+					var liveBalance int64
+					if err := d.db.QueryRowContext(t.Context(), "SELECT balance_micros FROM ai_credit_accounts WHERE organization_id=? AND mode='live'", d.hostedOrganization).Scan(&liveBalance); err != nil || liveBalance != 999000000 {
+						t.Fatalf("live balance=%d err=%v", liveBalance, err)
+					}
+				} else if result.Spent != 0 || result.Auto || len(result.History) != 0 {
+					t.Fatalf("empty credits=%+v", result)
+				}
+
 			}
 		})
 	}

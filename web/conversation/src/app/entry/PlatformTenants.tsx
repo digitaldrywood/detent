@@ -399,7 +399,7 @@ export function TenantTable({
                         <TableCell className="text-right tabular-nums">
                           {creditBalance === null
                             ? "Unavailable"
-                            : formatUsd(creditBalance)}
+                            : formatUsd(creditBalance, 6)}
                         </TableCell>
                         <TableCell>
                           {tenant.member_count === null ? (

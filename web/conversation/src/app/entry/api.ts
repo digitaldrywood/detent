@@ -155,9 +155,25 @@ export const OrganizationEntitlements = Schema.Struct({
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
 
+export const PlatformAICredits = Schema.Struct({
+  balance_micros: Schema.Number,
+  spent_micros: Schema.Number,
+  month: Schema.String,
+  auto_enabled: Schema.Boolean,
+  history: Schema.Array(Schema.Struct({
+    amount_micros: Schema.Number,
+    kind: Schema.String,
+    actor: Schema.optional(Schema.String),
+    reason: Schema.optional(Schema.String),
+    at: Schema.String,
+  })),
+});
+export type PlatformAICredits = typeof PlatformAICredits.Type;
+
 export const PlatformTenantDetail = Schema.Struct({
   organization: PlatformOrganization,
   credit_balance_micros: Schema.NullOr(Schema.Number),
+  ai_credits: Schema.optional(Schema.NullOr(PlatformAICredits)),
   csrf: Schema.String,
   can_grant: Schema.Boolean,
   can_resume: Schema.Boolean,
@@ -374,6 +390,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
     platformTenant: (organization: string) => read(PlatformTenantDetail, `/api/cloud/platform/organizations/${encodeURIComponent(organization)}`),
+    adjustPlatformAICredits: (input: { organization: string; csrf: string; change: { idempotency_key: string; amount_usd: string; reason: string } }) =>
+      post(Schema.Struct({ organization_id: Schema.String, balance_micros: Schema.Number }),
+        `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/ai-credits`, input.csrf, input.change),
     resumePlatformTenant: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/resume`, input.csrf, {}),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
