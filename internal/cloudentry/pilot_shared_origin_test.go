@@ -261,6 +261,10 @@ func (b *pilotBrowser) request(method, path string, body io.Reader, headers map[
 	if err != nil {
 		b.t.Fatal(err)
 	}
+	if method == http.MethodGet || method == http.MethodHead {
+		request.Header.Set("Sec-Fetch-Mode", "navigate")
+		request.Header.Set("Sec-Fetch-Dest", "document")
+	}
 	if method != http.MethodGet {
 		request.Header.Set("Origin", "null")
 		request.Header.Set("Sec-Fetch-Site", "same-origin")

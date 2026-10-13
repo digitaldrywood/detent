@@ -75,14 +75,17 @@ func (s *Service) browserFailure(c echo.Context, organization string, status int
 		}
 		return s.browserUnavailable(c, status)
 	}
-	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.HasPrefix(request.URL.Path, "/api/") && status == http.StatusUnauthorized {
+	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.Contains(request.URL.Path, "/api/") && !wantsJSON(c) &&
+		request.Header.Get("Sec-Fetch-Mode") == "navigate" && request.Header.Get("Sec-Fetch-Dest") == "document" &&
+		request.Header.Get("HX-Request") != "true" && request.Header.Get("X-Requested-With") == "" &&
+		!strings.Contains(request.Header.Get("Accept"), "text/event-stream") && status == http.StatusUnauthorized {
 		query := url.Values{"organization": {organization}}
 		if validReturnPath(request.URL.Path, organization) {
 			query.Set("return", request.URL.Path)
 		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+query.Encode())
 	}
-	if strings.HasPrefix(request.URL.Path, "/api/") || request.Header.Get("Accept") == "application/json" {
+	if strings.HasPrefix(request.URL.Path, "/api/") || wantsJSON(c) {
 		return c.JSON(status, map[string]string{"code": "unauthorized", "message": "Sign in to this organization to continue"})
 	}
 	if status == http.StatusUnauthorized {

@@ -96,6 +96,12 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("revoked API read = %d, want 401", response.StatusCode)
 			}
+			events := alice.do(http.MethodGet, "/organizations/org_alpha/projects/prj_example/events", nil, map[string]string{
+				"Accept": "text/event-stream", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty",
+			})
+			if events.StatusCode != http.StatusUnauthorized || events.Header.Get("Location") != "" || len(events.Header.Values("Set-Cookie")) != 0 {
+				t.Fatalf("revoked event stream = %d %v, want 401 without redirect or cookies", events.StatusCode, events.Header)
+			}
 			response, _ := alice.get("/organizations/org_alpha/organization")
 			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
 				t.Fatalf("revoked page read = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
