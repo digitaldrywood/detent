@@ -5,11 +5,14 @@
 // navigation into that organization's own client.
 import React from "react";
 
-import { Badge } from "../../components/ui/badge.tsx";
+import { Building2Icon, ShieldIcon, TriangleAlertIcon } from "lucide-react";
+
+import { Empty, EmptyHeader, EmptyMedia, EmptyDescription, EmptyContent } from "../../components/ui/empty.tsx";
+import { NavigationList, NavigationListLink, NavigationMonogram } from "../../components/ui/navigation-list.tsx";
+import { Spinner } from "../../components/ui/spinner.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
 import { Input } from "../../components/ui/input.tsx";
-import { Separator } from "../../components/ui/separator.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { DetentCloudLogo, LoginCard, locationError } from "../account/Login.tsx";
 import { AccountError } from "../account/api.ts";
@@ -87,12 +90,12 @@ export function Problem({ message }: { readonly message: string | null }): React
   );
 }
 
-export function SignOut({ csrf }: { readonly csrf: string }): React.ReactElement {
+export function SignOut({ csrf, quiet = false }: { readonly csrf: string; readonly quiet?: boolean }): React.ReactElement {
   return (
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value={csrf} />
-      <Button type="submit" variant="ghost" size="sm">
-        Sign out
+      <Button type="submit" variant={quiet ? "link" : "ghost"} size={quiet ? "touch" : "sm"}>
+        <span className={quiet ? "underline underline-offset-4" : undefined}>Sign out</span>
       </Button>
     </form>
   );
@@ -136,92 +139,113 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
   if (signInAgain(listing.error)) return <EntryCard title="Signing you in…">{null}</EntryCard>;
   if (enter !== null) return <EntryCard title={`Opening ${enter.name}…`}>{null}</EntryCard>;
   const value = listing.value;
+  const pending = value?.pending ?? [];
+  const count = value?.organizations.length ?? 0;
+  const empty = value !== undefined && count === 0 && pending.length === 0;
+  const description = empty
+    ? value.can_create === true
+      ? "Create one to get started, or ask an owner to invite you to theirs."
+      : "Ask an owner to invite you to their organization."
+    : `You belong to ${count} ${count === 1 ? "organization" : "organizations"}.${pending.length > 0 ? ` ${pending.length} ${pending.length === 1 ? "is" : "are"} being set up.` : ""}`;
   return (
-    <EntryCard
-      title="Choose an organization"
-      description={value === undefined ? undefined : `Signed in as ${value.email}.`}
-    >
-      <Problem message={listing.error?.message ?? null} />
-      {listing.loading && value === undefined ? (
-        <p className="text-sm text-muted-foreground">Loading your organizations…</p>
-      ) : null}
-      {value === undefined ? null : (
-        <div className="flex flex-col gap-5">
-          {value.organizations.length === 0 && (value.pending ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Ask an owner to send you an invitation.
-            </p>
+    <div className="flex flex-1 justify-center overflow-y-auto bg-background px-4 py-14 sm:items-center sm:py-10">
+      <section className="w-full max-w-[420px]">
+        <DetentCloudLogo />
+        <h1 className="mt-8 text-2xl font-semibold tracking-tight text-balance">
+          {empty ? "No organizations yet" : "Choose an organization"}
+        </h1>
+        {value === undefined ? null : <p className="mt-2 text-sm text-muted-foreground">{description}</p>}
+        <div className="mt-7">
+          <Problem message={listing.error?.message ?? null} />
+          {listing.loading && value === undefined ? (
+            <p className="text-sm text-muted-foreground">Loading your organizations…</p>
           ) : null}
-          {value.organizations.length === 0 ? null : (
-            <ul className="flex flex-col gap-2" aria-label="Your organizations">
-              {value.organizations.map((organization) => (
-                <li
-                  key={organization.id}
-                  className="flex min-h-14 items-center justify-between gap-3 rounded-[10px] border border-border bg-background px-4 py-3"
-                >
-                  <div className="flex min-w-0 flex-col gap-1">
-                    <span className="truncate text-sm font-medium">{organization.name}</span>
-                    {organization.role === undefined || organization.role === "" ? null : (
-                      <Badge variant="outline" className="self-start">
-                        {ROLE_LABELS[organization.role] ?? organization.role}
-                      </Badge>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    render={<a href={organization.url} aria-label={`Open ${organization.name}`} />}
-                  >
-                    Open
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-          {(value.pending ?? []).length === 0 ? null : (
-            <div>
-              <h2 className="mb-2 text-sm font-semibold">Being set up</h2>
-              <ul className="flex flex-col gap-2" aria-label="Organizations being set up">
-                {(value.pending ?? []).map((organization) => (
-                  <li key={organization.id}>
-                    <button
-                      type="button"
-                      onClick={() => onNavigate(`/organizations/${organization.id}/provisioning`)}
-                      className="flex min-h-11 w-full items-center justify-between gap-3 rounded-[10px] border border-border px-4 text-left text-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <span className="truncate">{organization.name}</span>
-                      <Badge variant="outline">{STATE_LABELS[organization.state ?? ""] ?? organization.state}</Badge>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {value.platform_role ? (
+          {value === undefined ? null : (
             <>
-              <Separator />
-              <div className="flex items-center gap-3">
-                <Badge variant="info">Platform</Badge>
-                <span className="flex-1 text-sm font-medium">Platform console</span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  render={<a href={PLATFORM} aria-label="Open Platform console" />}
-                >
-                  Open
-                </Button>
+              {empty ? (
+                <Empty size="entry" panel="dashed">
+                  <EmptyHeader>
+                    {value.can_create === true ? (
+                      <EmptyMedia>
+                        <Building2Icon aria-hidden="true" className="size-6 text-muted-foreground" />
+                      </EmptyMedia>
+                    ) : null}
+                    <EmptyDescription>
+                      {value.can_create === true
+                        ? "An organization holds your projects, runners and billing. You become its owner."
+                        : "Ask an owner to send you an invitation."}
+                    </EmptyDescription>
+                  </EmptyHeader>
+                  {value.can_create === true ? (
+                    <EmptyContent>
+                      <Button size="touch" onClick={() => onNavigate("/organizations/new")}>
+                        Create organization
+                      </Button>
+                    </EmptyContent>
+                  ) : null}
+                </Empty>
+              ) : (
+                <NavigationList aria-label="Your organizations">
+                  {value.organizations.map((organization) => (
+                    <li key={organization.id}>
+                      <NavigationListLink
+                        href={organization.url}
+                        name={organization.name}
+                        description={ROLE_LABELS[organization.role ?? ""] ?? organization.role}
+                        leading={<NavigationMonogram name={organization.name} identity={organization.id} />}
+                      />
+                    </li>
+                  ))}
+                  {pending.map((organization) => (
+                    <li key={organization.id}>
+                      <NavigationListLink
+                        href={`/organizations/${organization.id}/provisioning`}
+                        name={organization.name}
+                        leading={<NavigationMonogram name={organization.name} />}
+                        description={organization.state === "failed" ? (
+                          <span className="inline-flex items-center gap-1.5 text-warning">
+                            <TriangleAlertIcon aria-hidden="true" className="size-3.5" />
+                            {STATE_LABELS.failed}
+                          </span>
+                        ) : (
+                          <>
+                            <Spinner aria-hidden="true" role={undefined} aria-label={undefined} size="sm" tone="muted" />
+                            {STATE_LABELS[organization.state ?? ""] ?? organization.state}
+                          </>
+                        )}
+                      />
+                    </li>
+                  ))}
+                  {value.can_create === true ? (
+                    <li>
+                      <NavigationListLink
+                        href="/organizations/new"
+                        name="Create organization"
+                        variant="create"
+                        leading={<NavigationMonogram create />}
+                      />
+                    </li>
+                  ) : null}
+                </NavigationList>
+              )}
+              {value.platform_role ? (
+                <NavigationListLink
+                  className="mt-7"
+                  href={PLATFORM}
+                  name="Platform console"
+                  variant="quiet"
+                  leading={<ShieldIcon aria-hidden="true" className="size-4 shrink-0" />}
+                />
+              ) : null}
+              <div className="mt-8 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <p className="min-w-0 break-words text-xs text-muted-foreground">Signed in as {value.email}</p>
+                <SignOut csrf={value.csrf} quiet />
               </div>
             </>
-          ) : null}
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-4">
-            {value.can_create === true ? (
-              <Button onClick={() => onNavigate("/organizations/new")}>Create organization</Button>
-            ) : null}
-            <span className="flex-1" />
-            <SignOut csrf={value.csrf} />
-          </div>
+          )}
         </div>
-      )}
-    </EntryCard>
+      </section>
+    </div>
   );
 }
 

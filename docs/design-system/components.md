@@ -4,18 +4,18 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 141 entries; by kind: 52 primitive, 82 composition, 7 surface; by status: 141 available, 0 proposed, 0 exception.
+Catalog totals: 142 entries; by kind: 53 primitive, 82 composition, 7 surface; by status: 142 available, 0 proposed, 0 exception.
 
 ## Actions
 
 ### Button
 
-Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.
+Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `touch` keeps a 44px target at every breakpoint; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.
 
 - Kind: Primitive; status: available; id: `button`.
 - Import: `import { Button, buttonVariants, InlineButton, SplitButton, ButtonSize, ButtonVariant } from "~/components/ui/button";`
 - Source: [src/components/ui/button.tsx](../../web/conversation/src/components/ui/button.tsx).
-- Variants: `variant`: `default`, `secondary`, `outline`, `ghost`, `ghost-muted`, `ghost-destructive`, `destructive`, `destructive-outline`, `warning-outline`, `glass`, `overlay`, `link`, `media-close`, `media-navigation`; `size`: `micro`, `compact`, `xs`, `sm`, `sm-multiline`, `default`, `lg`, `xl`, `icon-tiny`, `icon-micro`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`, `icon-xl`; `tone`: `default`, `muted`, `destructive`, `picker`.
+- Variants: `variant`: `default`, `secondary`, `outline`, `ghost`, `ghost-muted`, `ghost-destructive`, `destructive`, `destructive-outline`, `warning-outline`, `glass`, `overlay`, `link`, `media-close`, `media-navigation`; `size`: `micro`, `compact`, `xs`, `sm`, `sm-multiline`, `default`, `lg`, `touch`, `xl`, `icon-tiny`, `icon-micro`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`, `icon-xl`; `tone`: `default`, `muted`, `destructive`, `picker`.
 - States: hover, focus-visible, pressed, disabled.
 - Keyboard: Native button: Tab focuses, Enter and Space activate. With `render`, the rendered element must stay focusable and keep button semantics.
 - Avoid: Restyling with arbitrary radius, fill or font classes, or calling `buttonVariants` from app code to dress a non-button. Use Badge for static status and a link for navigation that is not an action.
@@ -446,12 +446,12 @@ A placeholder with the shape of content that is loading, using the shared steppe
 
 ### Empty state
 
-Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
+Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page. `entry` is a compact, left-aligned invitation or creation panel; `panel="dashed"` adds its quiet boundary. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 
 - Kind: Primitive; status: available; id: `empty`.
 - Import: `import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from "~/components/ui/empty";`
 - Source: [src/components/ui/empty.tsx](../../web/conversation/src/components/ui/empty.tsx).
-- Variants: `variant`: `default`, `icon`; `size`: `compact`, `default`, `hero`.
+- Variants: `variant`: `default`, `icon`; `panel`: `none`, `dashed`; `size`: `compact`, `default`, `hero`, `entry`.
 - States: none of its own.
 - Keyboard: Not interactive itself; EmptyContent holds focusable actions.
 - Avoid: Errors and unavailable capabilities that are not simply absence (use Alert).
@@ -643,6 +643,19 @@ A bordered list of icon, title and description rows for discovering integrations
 - Related: [Settings layout](#settings-layout).
 
 ## Entry
+
+### Navigation list
+
+A divided list of destinations with a monogram, name and optional secondary text. NavigationListLink owns the whole-row link; create is a muted add row and quiet is a separate bordered destination. NavigationMonogram derives a stable categorical tint from identity, uses neutral ink without identity, or a dashed plus slot for create.
+
+- Kind: Primitive; status: available; id: `navigation-list`.
+- Import: `import { NavigationList, NavigationListLink, NavigationMonogram } from "~/components/ui/navigation-list";`
+- Source: [src/components/ui/navigation-list.tsx](../../web/conversation/src/components/ui/navigation-list.tsx).
+- Variants: `variant`: `default`, `create`, `quiet`.
+- States: hover, focus-visible.
+- Keyboard: Native links: Tab reaches each row in reading order; Enter navigates. Each row has one focus target and a visible inset ring.
+- Avoid: Actions that submit or mutate data (use Button), workspace navigation (use the existing sidebar), and selectable options (use Select or Combobox).
+- Related: [Button](#button), [Empty state](#empty-state).
 
 ### Standalone page
 
