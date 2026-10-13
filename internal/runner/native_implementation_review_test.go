@@ -222,6 +222,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "wrapped receipt survives transport", ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
 		{name: "changed effective wrapper toolchain requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "toolchain", wantRuns: 1},
 		{name: "changed Go flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "flags", wantRuns: 1},
+		{name: "changed compiler flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "gcc-flags", wantRuns: 1},
+		{name: "changed CGO flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "cgo-flags", wantRuns: 1},
+		{name: "changed compiler prefix map target requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "prefix-target", wantRuns: 1},
 		{name: "replaced tool requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "tool", wantRuns: 1},
 		{name: "replaced landing linter requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "linter", wantRuns: 1},
 		{name: "missing landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "missing-linter", gateFailure: true, wantRuns: 1},
@@ -305,7 +308,17 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 version=${FIXTURE_GO_VERSION:-${GOTOOLCHAIN:-go1.27.1}}
 if [ "$1" = env ]; then
     if [ "$2" = -json ]; then
-        printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s"}\n' "$version"
+        count=0
+        if [ -f .git/env-probes ]; then count=$(cat .git/env-probes); fi
+        count=$((count + 1))
+        echo "$count" > .git/env-probes
+        flags=-fPIC
+        cgo_flags='-O2 -g'
+        target=/tmp/go-build
+        if [ -f .git/compiler-flags ]; then flags=$(cat .git/compiler-flags); fi
+        if [ -f .git/cgo-flags ]; then cgo_flags=$(cat .git/cgo-flags); fi
+        if [ -f .git/prefix-target ]; then target=$(cat .git/prefix-target); fi
+        printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "$cgo_flags" "$flags" "$count" "$count" "$target"
     else
         case "$2" in GOHOSTOS) echo linux;; GOHOSTARCH) echo amd64;; GOVERSION) echo "$version";; esac
     fi
@@ -339,6 +352,17 @@ fi
 					t.Setenv("FIXTURE_GO_VERSION", "go1.26.10")
 				case "flags":
 					t.Setenv("GOFLAGS", "-tags=changed")
+				case "gcc-flags", "cgo-flags", "prefix-target":
+					name, value := "compiler-flags", "-fPIC -fno-common"
+					switch test.changedInput {
+					case "cgo-flags":
+						name, value = "cgo-flags", "-O3 -g"
+					case "prefix-target":
+						name, value = "prefix-target", "/stable/output"
+					}
+					if err := os.WriteFile(filepath.Join(source, ".git", name), []byte(value), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				case "tool":
 					if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool+"\n:\n"), 0o700); err != nil {
 						t.Fatal(err)

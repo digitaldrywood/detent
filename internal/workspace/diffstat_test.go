@@ -248,9 +248,13 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 				t.Fatalf("missing host command environment: %+v", receipt.Evidence)
 			}
 			if !test.wantErr {
-				environment := backend.ReviewCommandEnvironment(t.Context(), info, request, test.command)
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, request, test.command)
+				environment := evidence.Environment
 				if environment.Known() != test.toolchainKnown || (test.toolchainKnown && environment != receipt.Evidence.Environment) {
 					t.Fatalf("command toolchain applicability differs: %+v", environment)
+				}
+				if test.toolchainKnown && (evidence.InputsSHA == "" || evidence.InputsSHA != receipt.Evidence.InputsSHA) {
+					t.Fatal("unchanged host command inputs differ between execution and preflight")
 				}
 			}
 		})

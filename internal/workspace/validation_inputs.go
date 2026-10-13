@@ -20,6 +20,7 @@ import (
 )
 
 var landingValidationRecipe = regexp.MustCompile(`^bash scripts/check-landing\.sh "([^"\r\n]+)" "([1-9][0-9]*)" "([^"\r\n]+)"$`)
+var generatedGoBuildPrefixMap = regexp.MustCompile(`(^|[ \t])-ffile-prefix-map=[^ \t=]+[/\\]go-build[0-9]+=([^ \t]+)([ \t]|$)`)
 
 func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation string) *gate.CommandEvidence {
 	for _, entry := range command.Env {
@@ -143,6 +144,9 @@ func validationInputs(command *exec.Cmd, observed []byte) string {
 		if key == "GOTMPDIR" {
 			delete(goEnvironment, key)
 			continue
+		}
+		if key == "GOGCCFLAGS" {
+			value = generatedGoBuildPrefixMap.ReplaceAllString(value, `${1}-ffile-prefix-map=<go-build>=${2}${3}`)
 		}
 		goEnvironment[key] = strings.ReplaceAll(value, command.Dir, "<workspace>")
 	}
