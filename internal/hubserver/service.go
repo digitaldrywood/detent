@@ -44,6 +44,7 @@ type Service struct {
 	administration          *operatoradmin.Executor
 	billing                 *hostedBillingWorker
 	healthDetector          *healthDetector
+	issueMailer             *issueMailer
 	hostedMutationMu        sync.Mutex
 	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
@@ -217,6 +218,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	service.startHostedBilling()
 	service.startHealthDetector()
+	service.startIssueMailer()
 	return service, nil
 }
 
@@ -429,6 +431,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		reconcileErr := s.stopGitHubReconciliation()
 		s.stopHostedBilling()
 		s.stopHealthDetector()
+		s.stopIssueMailer()
 		if s.outbox != nil {
 			s.outbox.stop()
 		}

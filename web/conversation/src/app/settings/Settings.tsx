@@ -11,6 +11,7 @@ import {
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Switch } from "../../components/ui/switch.tsx";
 import { UsageMeter } from "../../components/ui/usage-meter.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
@@ -113,6 +114,12 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
 export function GeneralSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const api = useAccountApi();
+  const notifications = useResource(() => api.issueNotificationPreference(), [api]);
+  const saveNotifications = useMutation(async (enabled: boolean) => {
+    const value = await api.saveIssueNotificationPreference(enabled);
+    notifications.set(value);
+    return value;
+  });
   const signOut = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
@@ -160,6 +167,18 @@ export function GeneralSettings(): React.ReactElement {
           }
         />
         {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
+        <SettingsRow
+          id="settings-general-issue-notifications"
+          title="Issue email notifications"
+          description="Notify me about issues I filed or commented on."
+          control={<Switch
+            aria-label="Notify me about issues I filed or commented on"
+            checked={notifications.value?.enabled ?? false}
+            disabled={notifications.loading || notifications.error !== null || saveNotifications.pending}
+            onCheckedChange={(enabled) => void saveNotifications.call(enabled)}
+          />}
+        />
+        <ControlError message={(notifications.error ?? saveNotifications.error)?.message ?? null} />
         {bootstrap?.plan == null ? null : (
           <SettingsRow
             id="settings-general-plan"

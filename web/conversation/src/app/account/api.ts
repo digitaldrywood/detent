@@ -172,6 +172,8 @@ export function makeAccountApi(options: AccountApiOptions) {
   const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
   const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
+    saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
     personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
     keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
     createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
