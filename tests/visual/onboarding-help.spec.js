@@ -58,8 +58,8 @@ for (const width of [1280, 390]) {
     const tap = width === 390 ? "tap" : "click";
     await page.goto(new URL("/projects/proj_alpha/setup", origin).href);
     const steps = page.getByRole("list", { name: "Setup steps" });
-    await expect(steps.getByRole("button").nth(0)).toContainText("Execution runner");
-    await steps.getByRole("button").nth(2).click();
+    await expect(steps.getByRole("button").nth(0)).toContainText("Repository");
+    await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     const repositoryLabel = "Which repository should Detent work on?";
     const repository = page.getByRole("textbox", { name: repositoryLabel, exact: true });
     await expect(repository).toHaveValue("");
@@ -72,14 +72,16 @@ for (const width of [1280, 390]) {
     await help(page, "Associate the runner checkout", "This does not write configuration files or approve policy", tap);
     await expect(repository).toHaveValue("owner/repository");
     await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeEnabled();
+    await steps.getByRole("button", { name: /Repository configuration/ }).click();
+    await expect(page.getByRole("heading", { name: "Repository configuration", exact: true })).toBeVisible();
 
-    await steps.getByRole("button").nth(1).click();
+    await steps.getByRole("button", { name: /Local validation/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
     await help(page, "Project checkout and configuration", "execution host", tap);
     await help(page, "detent doctor", "not a browser confirmation", tap);
     await help(page, "Provider sign-in", "Credentials and account details stay local", tap);
 
-    await steps.getByRole("button").nth(0).click();
+    await steps.getByRole("button", { name: /Execution runner/ }).click();
     await help(page, "Runner eligibility", "runner-reported heartbeat and capacity", tap);
     await help(page, "Route here", "does not fix a stale heartbeat", tap);
     const enroll = page.getByRole("button", { name: "Enroll a runner", exact: true });
@@ -129,7 +131,7 @@ for (const width of [1280, 390]) {
     await expect(page.getByRole("button", { name: "Create command" })).toBeDisabled();
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
-    await steps.getByRole("button").nth(3).click();
+    await steps.getByRole("button", { name: /Artifact history/ }).click();
     await help(page, "Your runner (local history)", "Detent stores no artifacts", tap);
     await help(page, "Your bucket and gateway", "you run and pay for", tap);
     await page.getByRole("radio", { name: "Your bucket and gateway", exact: true }).check();

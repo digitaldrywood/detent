@@ -375,7 +375,7 @@ for (const state of [
     const setupIntegration = page.waitForResponse(integrationURL);
     await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
     await (await setupIntegration).finished();
-    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Repository configuration/ }).click();
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     if (state.repository) {
       await expect(page.getByText(`Verified runner checkout: ${state.repository}`, { exact: true })).toBeVisible();
     }
@@ -451,13 +451,13 @@ for (const state of [
   });
 }
 
-test("the first-run wizard reports the hub's four onboarding steps", async ({ page }) => {
+test("the first-run wizard puts repository binding before the four Hub onboarding steps", async ({ page }) => {
   const errors = watchConsole(page);
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
 
   const steps = page.getByRole("list", { name: "Setup steps" }).getByRole("listitem");
-  await expect(steps).toHaveCount(4);
-  await expect(steps.first()).toContainText("Execution runner");
+  await expect(steps).toHaveCount(5);
+  await expect(steps.first()).toContainText("Repository");
   // Exactly one step is the current one, and it is reachable from the keyboard.
   await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
   expect(await tabTo(page, "Skip for now")).toBe(true);
@@ -475,8 +475,8 @@ for (const viewport of [
     await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
 
     const tabs = page.getByRole("list", { name: "Setup steps" }).getByRole("button");
-    await expect(tabs).toHaveCount(4);
-    await tabs.nth(3).click();
+    await expect(tabs).toHaveCount(5);
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Artifact history/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Artifact history" })).toBeVisible();
 
     // Every tab and the whole step fit inside the viewport: nothing is
@@ -502,7 +502,7 @@ for (const viewport of [
     await expect(selectedChoice).toContainText("Your bucket and gateway");
 
     // Every step stays reachable from the tabs.
-    await tabs.nth(0).click();
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Execution runner/ }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Execution runner" })).toBeVisible();
     await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
     expect(errors, "console errors on the wizard").toEqual([]);

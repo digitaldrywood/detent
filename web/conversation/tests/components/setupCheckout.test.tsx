@@ -53,7 +53,7 @@ it.each([
   });
   mount();
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  await user.click(await screen.findByRole("button", { name: /Repository action required/ }));
   const field = await screen.findByLabelText("Which repository should Detent work on?");
   expect(screen.getByText(/GitHub API integration is optional/)).toBeTruthy();
   fireEvent.change(field, { target: { value: "https://github.com/example-org/example-repository" } });
@@ -103,8 +103,9 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   });
   mount();
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  await user.click(await screen.findByRole("button", { name: /^.*Repository (ready|action required)$/ }));
   expect(await screen.findByLabelText("Which repository should Detent work on?")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
   expect(approveRequests).toEqual([]);
   expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
   expect(screen.queryByText(/detent hub policy inspect/)).toBeNull();
@@ -168,6 +169,9 @@ it.each([
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
+    if (ready && String(input).endsWith("/integration") && response.ok) {
+      return Response.json({ ...await response.json(), checkout_repository: "example-org/example-repository", checkout_verified: true });
+    }
     if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
       const onboarding = await response.json();
       onboarding.runners = ready ? onboarding.runners : [];
@@ -204,7 +208,7 @@ it.each([
   expect(forward.classList.contains("bg-primary")).toBe(ready);
   expect(screen.queryByRole("button", { name: ready ? "Skip for now" : "Continue" })).toBeNull();
   if (unrouted) {
-    expect(screen.getByText("Shared build runner")).toBeTruthy();
+    expect(screen.getAllByText("Shared build runner").length).toBeGreaterThan(0);
     expect(screen.getByText("Runner is missing required tag gpu")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Route here" }).hasAttribute("disabled")).toBe(false);
   }
@@ -214,7 +218,7 @@ it.each([
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   await user.click(forward);
   await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Local validation"));
-  expect(screen.getByRole("button", { name: ready ? /Execution runner ready/ : /Execution runner action required/ }).textContent).toContain(ready ? "✓" : "1");
+  expect(screen.getByRole("button", { name: ready ? /Execution runner ready/ : /Execution runner action required/ }).textContent).toContain(ready ? "✓" : "2");
   const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
   expect((await saved.json()).progress.revision).toBe("2");
 
@@ -236,4 +240,71 @@ it.each([
     const progress = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
     expect((await progress.json()).progress.artifacts).toBe("local");
   }
+});
+
+
+it.each([
+  ["online", "online", "Example runner · Online"],
+  ["online", "needs_attention", "Example runner · Online · Needs attention"],
+  ["offline", "needs_attention", "Example runner · Offline · Needs attention"],
+  [undefined, "online", "Example runner · Online"],
+])("uses connection health %s with runner health %s", async (connection_health, health, label) => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
+    const response = await fetch(...args);
+    if (String(args[0]).endsWith("/onboarding") && response.ok) {
+      const onboarding = await response.json();
+      return Response.json({ ...onboarding, runners: onboarding.runners.slice(0, 1).map((row: { runner: object }) => ({ ...row, local_checks: { checkout: "failed", doctor: "pending", provider: "pending", observed_at: "2026-10-12T12:00:00Z" }, runner: { ...row.runner, display_name: "Example runner", connection_health, health } })) });
+    }
+    return response;
+  });
+  mount();
+  await userEvent.setup().click(await screen.findByRole("button", { name: /Local validation/ }));
+  expect(await screen.findByText(label)).toBeTruthy();
+  if (connection_health === "offline") expect(screen.getByText(/Reconnect the host/)).toBeTruthy();
+  else expect(screen.queryByText(/Reconnect the host/)).toBeNull();
+});
+
+
+it("finishes setup by moving forward from repository binding through policy approval", async () => {
+  const onNavigate = vi.fn();
+  const mount = await mountSetup(onNavigate);
+  const fetch = globalThis.fetch;
+  const descriptor = (await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/onboarding`).then((response) => response.json())).policy.policy;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && response.ok && (!init?.method || init.method === "GET")) {
+      const onboarding = await response.json();
+      const integration = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/integration`).then((result) => result.json());
+      const bound = Boolean(integration.checkout_repository);
+      const runners = bound ? onboarding.runners.slice(0, 1).map((row: { runner: object }) => ({ ...row, local_checks: { checkout: "passed", doctor: "passed", provider: "passed", observed_at: new Date().toISOString() } })) : [];
+      const steps = onboarding.steps.map((step: { name: string; state: string }) => ({ ...step, state: step.name === "Execution runner" || step.name === "Local validation" ? bound ? "ready" : "action_required" : step.state }));
+      return Response.json({ ...onboarding, runners, steps, observed_policies: bound && !onboarding.policy ? [{ policy: descriptor, runner_id: "runner_example", observed_at: new Date().toISOString() }] : [], ready: bound && steps.every((step: { state: string }) => step.state === "ready") });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  expect(await screen.findByRole("heading", { level: 1, name: "Repository" })).toBeTruthy();
+  expect(screen.queryByLabelText("Resolved policy descriptor")).toBeNull();
+  expect(screen.queryByRole("group", { name: "Configuration files" })).toBeNull();
+  fireEvent.change(screen.getByLabelText("Which repository should Detent work on?"), { target: { value: "example-org/example-repository" } });
+  await user.click(screen.getByRole("button", { name: "Associate" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "Execution runner" })).toBeTruthy();
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "Local validation" })).toBeTruthy();
+  expect(screen.getAllByText("Passed")).toHaveLength(3);
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "Repository configuration" })).toBeTruthy();
+  await user.click(screen.getByRole("radio", { name: "Use existing configuration files" }));
+  await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
+  await user.click(await screen.findByRole("button", { name: "Approve settings" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  expect(await screen.findByRole("heading", { level: 1, name: "Artifact history" })).toBeTruthy();
+  await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
+  await user.click(screen.getByRole("button", { name: "Save choice" }));
+  await user.click(await screen.findByRole("button", { name: "Finish" }));
+  expect(onNavigate).toHaveBeenCalledWith("/work");
 });

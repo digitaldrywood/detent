@@ -7,21 +7,11 @@
 // save, the runner enrollment and its routing, the artifact binding, the
 // repository bind and the GitHub integration.
 //
-// Two things about that page are kept deliberately:
-//
-//  - The four steps are the hub's, not the wizard's. `onboarding.Evaluate`
-//    decides whether each one is `ready` or `action_required` from the stored
-//    state, so the stepper reports readiness rather than remembering which
-//    button the reader last pressed. Re-opening the wizard on another machine
-//    shows the same truth.
 //  - Idempotency keys live in `sessionStorage`, keyed by request path and body
 //    fingerprint, and are retired only once the hub has answered. A save whose
 //    outcome the browser never learned is retried under the same key, so it
 //    cannot land twice (see `idempotency.ts`).
 //
-// The artifact draws three steps; the hub has four, and the fourth (artifact
-// history) is a real decision with a real endpoint. The stepper follows the
-// hub.
 import React from "react";
 import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
@@ -49,10 +39,9 @@ export function firstUnreadyStep(steps: readonly OnboardingStep[]): number {
   return index === -1 ? Math.max(steps.length - 1, 0) : index;
 }
 
-/** The steps in `Evaluate`'s order, filling in any the hub did not send. */
-export function orderedSteps(onboarding: Onboarding | undefined): readonly OnboardingStep[] {
+export function orderedSteps(onboarding: Onboarding | undefined, integration?: ProjectIntegration): readonly OnboardingStep[] {
   const sent = onboarding?.steps ?? [];
-  return ONBOARDING_STEPS.map(
+  const evaluated = ONBOARDING_STEPS.map(
     (name) =>
       sent.find((step) => step.name === name) ?? {
         name,
@@ -60,6 +49,11 @@ export function orderedSteps(onboarding: Onboarding | undefined): readonly Onboa
         detail: "",
       },
   );
+  return [{
+    name: "Repository",
+    state: integration?.checkout_repository || integration?.repository ? "ready" : "action_required",
+    detail: "Bind the project repository before enrolling a runner. The runner uses its own Git credentials to prepare the checkout.",
+  }, ...evaluated];
 }
 
 export function Stepper({
@@ -348,27 +342,28 @@ export function SetupRoute({
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
   const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
-  const waitingForRepository = Boolean(integration.value?.checkout_repository) && (
-    integration.value?.checkout_verified !== true ||
-    (!onboarding.value?.policy && (onboarding.value?.observed_policies?.length ?? 0) === 0)
-  );
+  const waitingForSetup = (onboarding.value !== undefined && !onboarding.value.ready)
+    || (Boolean(integration.value?.checkout_repository) && (
+      integration.value?.checkout_verified !== true
+      || (!onboarding.value?.policy && (onboarding.value?.observed_policies?.length ?? 0) === 0)
+    ));
   React.useEffect(() => {
-    if (!waitingForRepository) return;
+    if (!waitingForSetup) return;
     const timer = window.setInterval(() => {
       void onboarding.refresh();
       void integration.refresh();
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [waitingForRepository, onboarding.refresh, integration.refresh]);
+  }, [waitingForSetup, onboarding.refresh, integration.refresh]);
 
-  const steps = orderedSteps(onboarding.value);
+  const steps = orderedSteps(onboarding.value, integration.value);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [settled, setSettled] = React.useState(false);
   React.useEffect(() => {
-    if (onboarding.value === undefined || settled) return;
-    setActiveIndex(firstUnreadyStep(orderedSteps(onboarding.value)));
+    if (onboarding.value === undefined || integration.value === undefined || settled) return;
+    setActiveIndex(firstUnreadyStep(orderedSteps(onboarding.value, integration.value)));
     setSettled(true);
-  }, [onboarding.value, settled]);
+  }, [onboarding.value, integration.value, settled]);
 
   // The editable progress, seeded from the hub and written back whole: the
   // endpoint replaces the object, so sending half of it would clear the rest.
@@ -571,12 +566,12 @@ export function SetupRoute({
   const checkoutVerified = integration.value?.checkout_verified === true;
   const configurationChosen = Boolean(progress?.repository) || Boolean(onboarding.value.policy);
   const policyApproved = Boolean(onboarding.value.policy) && policyReports.length === 0;
-  const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && entry.runner.health === "online");
+  const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online");
   const githubApp = integration.value;
   const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
 
   const bodies: Record<string, React.ReactNode> = {
-    "Repository configuration": (
+    "Repository": (
       <>
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
           <div className="flex flex-1 flex-col gap-1.5">
@@ -626,6 +621,10 @@ export function SetupRoute({
             )}
           </div>
         ) : null}
+      </>
+    ),
+    "Repository configuration": (
+      <>
         {checkoutRepository ? (
           <section className="mt-4" aria-labelledby="setup-configuration-heading">
             <h2 id="setup-configuration-heading" className="mb-2 text-sm font-medium">Configuration files</h2>
@@ -705,10 +704,10 @@ export function SetupRoute({
         ) : null}
         {(onboarding.value.runners ?? []).map((entry) => {
           const checks = entry.local_checks;
-          const offline = entry.runner.health !== "online";
+          const offline = (entry.runner.connection_health ?? entry.runner.health) !== "online";
           return (
             <div key={entry.runner.runner_id} className="mb-3">
-              <p className="mb-2 text-sm font-medium">{entry.runner.display_name}{offline ? " · Offline" : ""}</p>
+              <p className="mb-2 text-sm font-medium">{entry.runner.display_name} · {offline ? "Offline" : "Online"}{entry.runner.health === "needs_attention" ? " · Needs attention" : ""}</p>
               {([
                 ["Project checkout and configuration", "The runner checks its project checkout and configuration on the execution host. Prepare the files there, restart the runner, then refresh these observations.", checks?.checkout, "Prepare the checkout with WORKFLOW.md and detent.yaml at the path printed by registration."],
                 ["detent doctor", "The runner runs detent doctor on the execution host and reports a sanitized result. Hub stores this observation, not a browser confirmation. Run doctor locally for details, restart the runner after fixes, then refresh.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on this host for details and fixes."],
@@ -903,7 +902,7 @@ export function SetupRoute({
               Back
             </Button>
           ) : null}
-          {onboarding.value.ready && activeIndex === steps.length - 1 ? (
+          {onboarding.value.ready && steps.every((candidate) => candidate.state === "ready") && activeIndex === steps.length - 1 ? (
             <Button onClick={() => onNavigate?.("/work")}>Finish</Button>
           ) : needsAction ? (
             <>

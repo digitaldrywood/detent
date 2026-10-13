@@ -434,7 +434,7 @@ describe("the wizard stepper", () => {
     expect(firstUnreadyStep(steps.map((step) => ({ ...step, state: "ready" as const })))).toBe(3);
   });
 
-  it("fills in a step the hub did not send, in Evaluate's order", () => {
+  it("puts repository binding before the Hub steps and preserves their readiness", () => {
     const ordered = orderedSteps({
       progress: { revision: "1", repository: "", doctor: false, provider: false, artifacts: "" },
       runners: [],
@@ -443,13 +443,15 @@ describe("the wizard stepper", () => {
       ready: false,
     });
     expect(ordered.map((step) => step.name)).toEqual([
+      "Repository",
       "Execution runner",
       "Local validation",
       "Repository configuration",
       "Artifact history",
     ]);
-    expect(ordered[0]?.state).toBe("ready");
-    expect(ordered[2]?.state).toBe("action_required");
+    expect(ordered[0]?.state).toBe("action_required");
+    expect(ordered[1]?.state).toBe("ready");
+    expect(ordered[3]?.state).toBe("action_required");
   });
 
   it("says ready or action required in words, not only in colour", () => {
