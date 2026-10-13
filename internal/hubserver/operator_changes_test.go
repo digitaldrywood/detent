@@ -279,6 +279,18 @@ func TestOperatorChangeCommands(t *testing.T) {
 	}{
 		{name: "missing local evidence", want: "missing_local_evidence", edit: func(r *tracker.NativeLandingReceipt) { r.Gate = nil }},
 		{name: "nonzero local result", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.ExitCode = 7 }},
+		{name: "long public timeout receipt", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) {
+			r.Gate.ReceiptID = "receipt_timeout"
+			r.Gate.ExitCode = 2
+			r.Gate.Output = strings.Repeat("ok example.org/other/package\n", 300) +
+				"panic: test timed out after 1m0s\nrunning tests:\n\tTestGateReceipt/世界 (1m0s)\n\n" +
+				"github.com/example-org/example-project/internal/worker.TestGateReceipt(0xc000001)\n\t/Users/private/project/worker_test.go:42\n" +
+				"Authorization: Bearer private-bearer\nDEPLOY_TOKEN=private-token\nhttps://private.example/log?secret=private-url\n" +
+				strings.Repeat("goroutine 99 [select]:\n\t/home/private/project/worker.go:12 世界\n", 300) +
+				"FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s\n"
+			public := tracker.PublicGateResult(*r.Gate)
+			r.Gate = &public
+		}},
 		{name: "different checked content", want: "different_content", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.TreeSHA = strings.Repeat("a", 40) }},
 		{name: "scope differs", want: "different_check_scope", edit: func(r *tracker.NativeLandingReceipt) {
 			r.Gate.Evidence.Checks[0].Scope = "unit-short"
@@ -302,6 +314,15 @@ func TestOperatorChangeCommands(t *testing.T) {
 			if err := persistAttemptLanding(t.Context(), tx, nativeAttempt, receipt); err != nil {
 				t.Fatal(err)
 			}
+			if test.name == "long public timeout receipt" {
+				raw, err := json.Marshal(receipt.Gate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.validation', json(?)) WHERE id=?", raw, nativeAttempt); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
@@ -312,13 +333,27 @@ func TestOperatorChangeCommands(t *testing.T) {
 			}
 			if test.name == "same content and check passes locally" {
 				want := *receipt.Gate
-				want.Output, want.OutputTruncated = strings.Repeat("界", 1365), true
+				want.Output, want.OutputTruncated = "[earlier output truncated]\n"+strings.Repeat("界", 1356), true
 				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil || !reflect.DeepEqual(value.Detail.Versions[0].Landing.Gate, &want) {
 					t.Fatal("landing receipt lost identity or explicit output excerpt")
 				}
 				stored, err := readVersionLanding(ctx, f.service.database.db, version.ID)
 				if err != nil || !reflect.DeepEqual(stored.Gate, receipt.Gate) {
 					t.Fatalf("bounded landing read changed canonical output: %v", err)
+				}
+			}
+			if test.name == "long public timeout receipt" {
+				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil {
+					t.Fatal("missing public landing receipt")
+				}
+				got := value.Detail.Versions[0].Landing.Gate
+				if !reflect.DeepEqual(got, receipt.Gate) || !got.OutputTruncated || len(got.Output) > 4096 || !utf8.ValidString(got.Output) || strings.Contains(got.Output, "private") {
+					t.Fatal("Change read lost bounded public failure evidence or receipt identity")
+				}
+				for _, diagnostic := range []string{"panic: test timed out after 1m0s", "TestGateReceipt/世界", "internal/worker.TestGateReceipt", "FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s", "truncated"} {
+					if !strings.Contains(got.Output, diagnostic) {
+						t.Fatalf("Change failure excerpt missing %q", diagnostic)
+					}
 				}
 			}
 			projectAudit, err := readValidationAudit(ctx, f.service.database.db, scope, "", "", f.change.ID, "")
@@ -351,11 +386,18 @@ func TestOperatorChangeCommands(t *testing.T) {
 				result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: read.name, Arguments: raw})
 				var envelope struct {
 					Data struct {
-						Audit *tracker.ValidationAudit `json:"validation_audit"`
+						Audit   *tracker.ValidationAudit `json:"validation_audit"`
+						Attempt *tracker.NativeAttempt   `json:"attempt"`
 					} `json:"data"`
 				}
 				if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.Audit == nil || len(envelope.Data.Audit.Occurrences) != 1 || envelope.Data.Audit.Occurrences[0].Comparisons[0].Outcome != test.want {
 					t.Fatalf("%s projection=%s %v", read.name, result.Content, err)
+				}
+				if test.name == "long public timeout receipt" && read.name == operatortool.WorkAttemptReceipt {
+					attempt := envelope.Data.Attempt
+					if attempt == nil || attempt.AttemptID != nativeAttempt || attempt.Runtime == nil || attempt.Runtime.Landing == nil || !reflect.DeepEqual(attempt.Runtime.Landing.Gate, receipt.Gate) || !reflect.DeepEqual(attempt.Runtime.Validation, receipt.Gate) {
+						t.Fatal("MCP attempt projection lost original public failure evidence or identity")
+					}
 				}
 			}
 			audit, err := readValidationAudit(t.Context(), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
@@ -639,7 +681,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			want.Policy.Configuration, want.Policy.Workflow = nil, nil
 			if want.Validation != nil {
 				command := *want.Validation
-				command.Output, command.OutputTruncated = strings.Repeat("界", 1365), true
+				command.Output, command.OutputTruncated = "[earlier output truncated]\n"+strings.Repeat("界", 1356), true
 				want.Validation = &command
 			}
 			if !reflect.DeepEqual(got, want) {
@@ -768,7 +810,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 							validator.Commands = append([]gate.CommandResult(nil), validator.Commands...)
 							for i := range validator.Commands {
 								if i < 4 {
-									validator.Commands[i].Output = strings.Repeat("界", 1365)
+									validator.Commands[i].Output = "[earlier output truncated]\n" + strings.Repeat("界", 1356)
 									validator.Commands[i].OutputTruncated = true
 								}
 							}

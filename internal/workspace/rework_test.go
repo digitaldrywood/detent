@@ -398,6 +398,17 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				if err != nil || prepared.Status != MergePrepareStatusConflict {
 					t.Fatalf("prepare paused rework: %+v, %v", prepared, err)
 				}
+				checkpointIssue := issue
+				checkpointIssue.CheckpointQuiescent = true
+				checkpoint, changed, err := owner.PushCheckpointRef(t.Context(), info, checkpointIssue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || !changed {
+					t.Fatalf("paused rework checkpoint: changed=%v error=%v", changed, err)
+				}
+				identity := "Native Author <native@example.com>"
+				if test.noIdentity {
+					identity = "Enrolled runner <machine_fixture@runners.detent.invalid>"
+				}
+				assertRunnerCommitPolicy(t, info.Path, checkpoint.CommitSHA, identity, test.signed)
 				writeCheckpointFile(t, info.Path, "README.md", "resolved conflict\n")
 				runGit(t, info.Path, "add", "README.md")
 			}

@@ -36,6 +36,19 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if err != nil || !paused {
 		return false, err
 	}
+	if issue.Checkpoint != nil {
+		checkpoint := *issue.Checkpoint
+		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
+			return false, err
+		}
+		if checkpoint.transaction != nil {
+			current, err := l.RecoveryState(ctx, info, issue)
+			if err != nil {
+				return false, err
+			}
+			return current.HeadSHA == observed.HeadSHA && current.WorkspaceFingerprint == observed.WorkspaceFingerprint && checkpointMatches(ctx, info.Path, &checkpoint), nil
+		}
+	}
 	if sourceHead == "" || sourceDigest != workspaceRecoveryFingerprint(sourceHead, "") {
 		return false, nil
 	}

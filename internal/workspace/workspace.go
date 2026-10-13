@@ -250,6 +250,7 @@ type Issue struct {
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
 	NativeRework            bool
+	CheckpointQuiescent     bool
 	FreshCheckout           bool
 	ProjectID               string
 	ID                      string
@@ -696,6 +697,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		release()
 		if err != nil {
 			return Info{}, err
+		}
+		if checkpoint.transaction != nil && (!issue.NativeRework || checkpoint.transaction.Branch != info.Branch) {
+			return Info{}, fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
 		}
 		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		exists, isDir, err := pathExists(info.Path)
@@ -2395,9 +2399,16 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 }
 
 func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
+	return runGitAtWithInput(ctx, dir, env, fileOutput, "", args...)
+}
+
+func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput bool, input string, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
