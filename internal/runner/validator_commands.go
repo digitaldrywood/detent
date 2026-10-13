@@ -20,27 +20,24 @@ type validatorCommands struct {
 	issue   workspace.Issue
 }
 
-func (v *validatorCommands) reuse(ctx context.Context, tree string, receipts []gate.CommandResult) {
-	provider, ok := v.run.(interface {
-		ReviewCommandEnvironment(context.Context, workspace.Info, workspace.Issue) gate.CheckEnvironment
-	})
-	if !ok || tree == "" {
-		return
-	}
-	environment := provider.ReviewCommandEnvironment(ctx, v.info, v.issue)
-	if !environment.Known() {
+func (v *validatorCommands) reuse(tree string, receipts []gate.CommandResult) {
+	if tree == "" {
 		return
 	}
 	latest := make(map[string]gate.CommandResult)
+	seen := make(map[string]bool)
 	var commands []string
 	for _, receipt := range receipts {
 		if receipt.HeadSHA != v.issue.PullRequestHeadSHA || receipt.TreeSHA != tree {
 			continue
 		}
-		previous, exists := latest[receipt.Command]
-		if exists && receipt.StartedAt.Before(previous.StartedAt) {
-			continue
+		if receipt.ReceiptID != "" {
+			if seen[receipt.ReceiptID] {
+				continue
+			}
+			seen[receipt.ReceiptID] = true
 		}
+		_, exists := latest[receipt.Command]
 		if !exists {
 			commands = append(commands, receipt.Command)
 		}
@@ -48,10 +45,21 @@ func (v *validatorCommands) reuse(ctx context.Context, tree string, receipts []g
 	}
 	for _, command := range commands {
 		receipt := latest[command]
-		if workspace.ValidationCoversHead(&receipt, command, v.issue.PullRequestHeadSHA) && receipt.Evidence != nil && receipt.Evidence.Environment == environment {
+		if workspace.ValidationCoversHead(&receipt, command, v.issue.PullRequestHeadSHA) {
 			v.results = append(v.results, receipt)
 		}
 	}
+}
+
+func (v *validatorCommands) canReuse(ctx context.Context, receipt gate.CommandResult) bool {
+	provider, ok := v.run.(interface {
+		ReviewCommandEnvironment(context.Context, workspace.Info, workspace.Issue, string) gate.CheckEnvironment
+	})
+	if !ok || receipt.ReceiptID == "" || receipt.Evidence == nil {
+		return false
+	}
+	environment := provider.ReviewCommandEnvironment(ctx, v.info, v.issue, receipt.Command)
+	return environment.Known() && receipt.Evidence.Environment == environment
 }
 
 func (v *validatorCommands) execute(ctx context.Context, command string) (receipt gate.CommandResult, resultErr error) {

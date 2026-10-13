@@ -211,7 +211,15 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		name, command, head string
 		exit                int
 		wantErr             bool
+		toolchainKnown      bool
+		probeOnly           bool
 	}{
+		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "package manager toolchain is unverified", command: "pnpm test", probeOnly: true},
+		{name: "make target toolchain is unverified", command: "make check-landing", probeOnly: true},
+		{name: "external Go executor is unverified", command: "go test -exec=custom ./...", probeOnly: true},
+		{name: "alternate Go module is unverified", command: "go test -modfile=other.mod ./...", probeOnly: true},
+		{name: "compound command is unverified", command: "go version; pnpm test", probeOnly: true},
 		{name: "passing observed output", command: "echo verified"},
 		{name: "failed command", command: failedCommand, exit: 7},
 		{name: "wrong immutable head", command: "echo must-not-run", head: strings.Repeat("f", 40), wantErr: true},
@@ -219,6 +227,12 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		{name: "dirty result", command: "echo changed > untracked.txt", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.probeOnly {
+				if backend.ReviewCommandEnvironment(t.Context(), info, issue, test.command).Known() {
+					t.Fatal("Go metadata was accepted for an unverified command toolchain")
+				}
+				return
+			}
 			request := issue
 			if test.head != "" {
 				request.PullRequestHeadSHA = test.head
@@ -230,8 +244,14 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			if !test.wantErr && (receipt.Command != test.command || receipt.HeadSHA != issue.PullRequestHeadSHA || receipt.TreeSHA == "" || receipt.ExitCode != test.exit || receipt.Output == "") {
 				t.Fatalf("missing command evidence: %+v", receipt)
 			}
-			if !test.wantErr && (receipt.Evidence == nil || !receipt.Evidence.Environment.Known() || backend.ReviewCommandEnvironment(t.Context(), info, request) != receipt.Evidence.Environment) {
-				t.Fatalf("reuse environment differs from host command environment: %+v", receipt.Evidence)
+			if !test.wantErr && (receipt.Evidence == nil || !receipt.Evidence.Environment.Known()) {
+				t.Fatalf("missing host command environment: %+v", receipt.Evidence)
+			}
+			if !test.wantErr {
+				environment := backend.ReviewCommandEnvironment(t.Context(), info, request, test.command)
+				if environment.Known() != test.toolchainKnown || (test.toolchainKnown && environment != receipt.Evidence.Environment) {
+					t.Fatalf("command toolchain applicability differs: %+v", environment)
+				}
 			}
 		})
 	}

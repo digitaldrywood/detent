@@ -56,7 +56,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 			if err := execution.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
-			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}}}
+			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), StartedAt: time.Now().UTC().Add(time.Hour), DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}}}
 			if err := execution.(runner.SourceValidationExecution).RecordSourceValidation(ctx, receipt); err != nil {
 				t.Fatal(err)
 			}
@@ -111,12 +111,15 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					}
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictRework
+					failed := receipt
+					failed.ReceiptID, failed.ExitCode, failed.StartedAt = "receipt-clock-behind-failure", 7, receipt.StartedAt.Add(-2*time.Hour)
+					result.Commands = []gate.CommandResult{failed}
 					if err := validator.RecordValidator(ctx, result); err != nil {
 						t.Fatalf("fresh separate acceptance session was refused: %v", err)
 					}
 					retry, err := validator.ValidatorVersion(ctx)
-					if err != nil || retry.Version == nil || !reflect.DeepEqual(retry.Commands, []gate.CommandResult{receipt, receipt}) {
-						t.Fatalf("evidence-only acceptance retry lost structured review receipts: %+v, %v", retry, err)
+					if err != nil || retry.Version == nil || !reflect.DeepEqual(retry.Commands, []gate.CommandResult{receipt, failed}) {
+						t.Fatalf("acceptance retry lost trusted review order under runner clock skew: %+v, %v", retry, err)
 					}
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictPass

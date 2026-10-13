@@ -14,7 +14,21 @@ type ReviewCommandRunner interface {
 	RunReviewCommand(context.Context, Info, Issue, string) (gate.CommandResult, error)
 }
 
-func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issue Issue) gate.CheckEnvironment {
+func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issue Issue, validation string) gate.CheckEnvironment {
+	args := strings.Fields(validation)
+	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\"'`$;&|<>\n\r()%!^") {
+		return gate.CheckEnvironment{}
+	}
+	switch args[1] {
+	case "build", "test", "vet", "version":
+	default:
+		return gate.CheckEnvironment{}
+	}
+	for _, arg := range args[2:] {
+		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") {
+			return gate.CheckEnvironment{}
+		}
+	}
 	command := commandshell.Command(ctx, "", l.hooks.Shell)
 	command.Dir = info.Path
 	command.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)

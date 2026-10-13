@@ -3479,11 +3479,13 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
 		if req.NativeVersion.Validation != nil {
 			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
-			commands.reuse(ctx, req.NativeVersion.Validation.TreeSHA, receipts)
+			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
 		}
 		configured := gate.Effective(workflow.Config.Gate)
 		if configured.Kind == gate.KindCommand {
-			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool { return receipt.Command == configured.Run }) {
+			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
+				return receipt.Command == configured.Run && commands.canReuse(ctx, receipt)
+			}) {
 				if _, err := commands.execute(ctx, configured.Run); err != nil {
 					return gate.ValidatorResult{}, err
 				}

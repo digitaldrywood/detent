@@ -117,13 +117,16 @@ type implementationReviewWorkspace struct {
 	commands []string
 }
 
-func (*implementationReviewWorkspace) ReviewCommandEnvironment(context.Context, workspace.Info, workspace.Issue) gate.CheckEnvironment {
+func (*implementationReviewWorkspace) ReviewCommandEnvironment(_ context.Context, _ workspace.Info, _ workspace.Issue, command string) gate.CheckEnvironment {
+	if command != "go test ./..." {
+		return gate.CheckEnvironment{}
+	}
 	return gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}
 }
 
 func (w *implementationReviewWorkspace) RunReviewCommand(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
 	w.commands = append(w.commands, command)
-	return gate.CommandResult{ReceiptID: "receipt-new", Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now(), Evidence: &gate.CommandEvidence{Environment: w.ReviewCommandEnvironment(ctx, info, issue)}}, nil
+	return gate.CommandResult{ReceiptID: fmt.Sprintf("receipt-new-%d", len(w.commands)), Command: command, HeadSHA: issue.PullRequestHeadSHA, TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now(), Evidence: &gate.CommandEvidence{Environment: w.ReviewCommandEnvironment(ctx, info, issue, "go test ./...")}}, nil
 }
 
 func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
@@ -148,6 +151,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		editReceipt  func(*gate.CommandResult)
 		prior        bool
 		latestFailed bool
+		latestPassed bool
+		replayedPass bool
+		command      string
 		missingTree  bool
 		wantRuns     int
 	}{
@@ -159,6 +165,10 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "record failure stops acceptance validator", validator: true, verdict: "pass", recordError: errors.New("review recording unavailable")},
 		{name: "prior exact-source review receipt reused", validator: true, verdict: "pass", prior: true},
 		{name: "latest failure prevents older passing receipt reuse", validator: true, verdict: "pass", latestFailed: true, wantRuns: 1},
+		{name: "clock-behind failure with replayed pass requires command", validator: true, verdict: "pass", latestFailed: true, replayedPass: true, wantRuns: 1},
+		{name: "clock-behind newer pass supersedes failure", validator: true, verdict: "pass", latestPassed: true},
+		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
+		{name: "pnpm without Node toolchain evidence requires commands", validator: true, verdict: "pass", command: "pnpm test", wantRuns: 2},
 		{name: "missing candidate tree requires both commands", validator: true, verdict: "pass", missingTree: true, wantRuns: 2},
 		{name: "changed head requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.HeadSHA = "old-head" }, wantRuns: 1},
 		{name: "changed tree requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.TreeSHA = "old-tree" }, wantRuns: 1},
@@ -166,19 +176,24 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "failed receipt requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.ExitCode = 1 }, wantRuns: 1},
 		{name: "missing execution requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.DurationNS = 0 }, wantRuns: 1},
 		{name: "unknown environment requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.Evidence = nil }, wantRuns: 1},
+		{name: "legacy receipt without identity requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.ReceiptID = "" }, wantRuns: 1},
 		{name: "changed environment requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.Evidence.Environment.OS = "darwin" }, wantRuns: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			command := test.command
+			if command == "" {
+				command = "go test ./..."
+			}
 			var events []string
 			backend := &implementationReviewBackend{t: t, events: &events, response: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Independent source result","criteria_evidence":[]}`, test.verdict)}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
-			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: worktree.ReviewCommandEnvironment(t.Context(), workspace.Info{}, workspace.Issue{})}}
+			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: &gate.CommandEvidence{Environment: worktree.ReviewCommandEnvironment(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}}
 			if test.editReceipt != nil {
 				test.editReceipt(&receipt)
 			}
 			r, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{Config: config.Config{
-					Gate: gate.Config{Run: "make check-landing", AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: test.validator}},
+					Gate: gate.Config{Run: command, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: test.validator}},
 					Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{
 						{Name: "implementation", Role: RoleCode, Backend: "codex", Model: "review-model"},
 						{Name: "acceptance", Role: RoleValidator, Backend: "codex", Model: "validator-model"},
@@ -197,8 +212,20 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			}
 			if test.latestFailed {
 				failed := receipt
-				failed.ExitCode, failed.StartedAt = 7, time.Now().Add(-time.Second)
+				failed.ReceiptID = "receipt-failed"
+				failed.ExitCode, failed.StartedAt = 7, time.Now().Add(-time.Hour)
 				execution.commands = []gate.CommandResult{failed}
+				if test.replayedPass {
+					execution.commands = append(execution.commands, receipt)
+				}
+			}
+			expectedReceipt := receipt
+			if test.latestPassed {
+				passed := receipt
+				passed.ReceiptID, passed.StartedAt = "receipt-passed", time.Now().Add(-time.Hour)
+				expectedReceipt = passed
+				execution.validation.ExitCode = 7
+				execution.commands = []gate.CommandResult{passed}
 			}
 			if test.missingTree {
 				execution.validation = &gate.CommandResult{}
@@ -220,10 +247,10 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			if len(worktree.commands) != test.wantRuns {
 				t.Fatalf("applicable evidence was rerun or invalid evidence skipped execution: commands=%v want executions=%d", worktree.commands, test.wantRuns)
 			}
-			if test.wantRuns == 0 && !reflect.DeepEqual(execution.reviewResult.Commands, []gate.CommandResult{receipt}) {
+			if test.wantRuns == 0 && !reflect.DeepEqual(execution.reviewResult.Commands, []gate.CommandResult{expectedReceipt}) {
 				t.Fatalf("reuse rewrote the original receipt: %+v", execution.reviewResult.Commands)
 			}
-			if execution.validatorResult.Submitted && !test.missingTree && !reflect.DeepEqual(execution.validatorResult.Commands, execution.reviewResult.Commands) {
+			if execution.validatorResult.Submitted && !test.missingTree && test.command == "" && !reflect.DeepEqual(execution.validatorResult.Commands[len(execution.validatorResult.Commands)-1], execution.reviewResult.Commands[len(execution.reviewResult.Commands)-1]) {
 				t.Fatalf("fresh acceptance review lost applicable source-review evidence: %+v", execution.validatorResult.Commands)
 			}
 		})
