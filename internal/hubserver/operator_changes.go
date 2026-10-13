@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -227,16 +228,34 @@ func hubSafeChangeError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, sql.ErrNoRows) {
 		return operatortool.ErrAccessDenied
 	}
+	var failure *nativeError
+	if errors.As(err, &failure) && (failure.status == http.StatusNotFound || failure.status == http.StatusForbidden || failure.status == http.StatusUnauthorized) {
+		return operatortool.ErrAccessDenied
+	}
 	if errors.Is(err, mutation.ErrConflict) || isNativeConflict(err) {
 		return mutation.ErrConflict
 	}
-	var failure *nativeError
+	if errors.Is(err, mutation.ErrUncertain) {
+		return mutation.ErrUncertain
+	}
 	if errors.As(err, &failure) {
-		if failure.status == 404 || failure.status == 403 || failure.status == 401 {
-			return operatortool.ErrAccessDenied
-		}
 		if failure.Code == "idempotency_conflict" {
 			return mutation.ErrConflict
+		}
+		if failure.Code == "policy_mismatch" {
+			return &operatortool.ConflictError{Code: failure.Code, Message: "Inspect get_project_policy and refresh the approved policy inputs before submitting this operation"}
+		}
+	}
+	var allowance *operatortool.AllowanceError
+	if errors.As(err, &allowance) {
+		return allowance
+	}
+	var limit *hostedLimitError
+	if errors.As(err, &limit) {
+		return &operatortool.AllowanceError{
+			Code: "allowance_exhausted", HTTPStatus: http.StatusTooManyRequests,
+			Message: limit.Error(), Resource: limit.Resource, Allowance: limit.Allowance, Consumption: limit.Consumption,
+			Recovery: "Inspect " + operatortool.HostedPlan + " with owner/admin authority or " + operatortool.BillingExport + " with owner authority. Resolve the affected allowance before submitting another business action; reading and export remain available.",
 		}
 	}
 	if errors.Is(err, operatortool.ErrInvalidArguments) {

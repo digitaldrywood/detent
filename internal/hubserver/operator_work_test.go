@@ -516,8 +516,15 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				}
 				return
 			}
-			if _, failed := call(operatortool.PublishChangeVersion, denied.name, arguments); !failed {
+			refusal, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
+			if !failed {
 				t.Fatal("invalid source publication succeeded")
+			}
+			if denied.name == "source stale policy" {
+				var conflict operatortool.ConflictError
+				if json.Unmarshal(refusal, &conflict) != nil || conflict.Code != "policy_mismatch" || !strings.Contains(conflict.Message, "get_project_policy") {
+					t.Fatalf("stale publication policy refusal=%s", refusal)
+				}
 			}
 		})
 	}

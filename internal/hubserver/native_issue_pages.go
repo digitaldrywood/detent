@@ -61,30 +61,32 @@ func (c *nativeIssuePageCache) load(id, scope string, expires int64, now time.Ti
 }
 
 type nativeIssuePageCursor struct {
-	Snapshot        string `json:"snapshot"`
-	Lane            int    `json:"lane"`
-	State           string `json:"state"`
-	Priority        int    `json:"priority"`
-	ActivityMissing int    `json:"activity_missing"`
-	Activity        string `json:"activity"`
-	Identifier      string `json:"identifier"`
+	Snapshot        string  `json:"snapshot"`
+	Score           float64 `json:"score,omitempty"`
+	Lane            int     `json:"lane"`
+	State           string  `json:"state"`
+	Priority        int     `json:"priority"`
+	ActivityMissing int     `json:"activity_missing"`
+	Activity        string  `json:"activity"`
+	Identifier      string  `json:"identifier"`
 }
 
 type nativeIssuePageItem struct {
 	ID       string
+	Snippet  string
 	Position nativeIssuePageCursor
 }
 
 // readIssuePageItems returns up to limit+1 items after the cursor and the
 // list total. A first page also returns the whole frozen order, which the
 // caller keeps only when it hands out a continuation cursor.
-func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor, sort string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
+func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor, sort, search string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
 	position := cursor.Issues
 	if position == nil {
 		if cursor.After != "" {
 			return nil, nil, 0, nativeInvalid("Work list order changed; restart the query")
 		}
-		projected, err := s.projectIssuePage(ctx, query, args, sort)
+		projected, err := s.projectIssuePage(ctx, query, args, sort, search)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -156,6 +158,7 @@ FROM native_issue_page_items WHERE page_id = ?`
 
 func compareIssuePagePositions(a, b nativeIssuePageCursor) int {
 	return cmp.Or(
+		cmp.Compare(a.Score, b.Score),
 		cmp.Compare(a.Lane, b.Lane),
 		strings.Compare(a.State, b.State),
 		cmp.Compare(a.Priority, b.Priority),
@@ -166,8 +169,8 @@ func compareIssuePagePositions(a, b nativeIssuePageCursor) int {
 }
 
 func issuePageItem(values []any) nativeIssuePageItem {
-	return nativeIssuePageItem{ID: pageString(values[0]), Position: nativeIssuePageCursor{
-		Lane: int(pageInt(values[1])), State: pageString(values[2]), Priority: int(pageInt(values[3])),
+	return nativeIssuePageItem{ID: pageString(values[0]), Snippet: pageString(values[8]), Position: nativeIssuePageCursor{
+		Score: pageFloat(values[7]), Lane: int(pageInt(values[1])), State: pageString(values[2]), Priority: int(pageInt(values[3])),
 		ActivityMissing: int(pageInt(values[4])), Activity: pageString(values[5]), Identifier: pageString(values[6]),
 	}}
 }
@@ -177,6 +180,7 @@ func issuePageItem(values []any) nativeIssuePageItem {
 // activity_at DESC, identifier.
 func compareIssuePageRows(a, b []any) int {
 	return cmp.Or(
+		cmp.Compare(pageFloat(a[7]), pageFloat(b[7])),
 		cmp.Compare(pageInt(a[1]), pageInt(b[1])),
 		strings.Compare(pageString(a[2]), pageString(b[2])),
 		cmp.Compare(pageInt(a[3]), pageInt(b[3])),
@@ -184,6 +188,13 @@ func compareIssuePageRows(a, b []any) int {
 		strings.Compare(pageString(b[5]), pageString(a[5])),
 		strings.Compare(pageString(a[6]), pageString(b[6])),
 	)
+}
+
+func pageFloat(value any) float64 {
+	if v, ok := value.(float64); ok {
+		return v
+	}
+	return 0
 }
 
 func pageInt(value any) int64 {
@@ -223,12 +234,18 @@ const nativeClosedIssuePageProjection = `SELECT i.native_id,
 CASE WHEN ws.terminal = 1 THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%f', ` + nativeTerminalEnteredAt + `), '') ELSE '' END,
 i.project_id || '#' || i.number`
 
-const nativeIssuePageItemColumns = 7
+const nativeIssuePageItemColumns = 9
 
-func (s *Service) projectIssuePage(ctx context.Context, query string, args []any, sort string) (_ [][]any, resultErr error) {
+func (s *Service) projectIssuePage(ctx context.Context, query string, args []any, sort, search string) (_ [][]any, resultErr error) {
 	selected := nativeIssuePageProjection
 	if sort == "closed" {
 		selected = nativeClosedIssuePageProjection
+	}
+	if search != "" {
+		selected += nativeSearchProjection
+		args = append([]any{search}, args...)
+	} else {
+		selected += ", 0, ''"
 	}
 	rows, err := s.database.reader.QueryContext(ctx, strings.Replace(query, "SELECT i.native_id", selected, 1), args...)
 	if err != nil {

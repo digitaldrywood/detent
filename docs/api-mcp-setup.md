@@ -311,6 +311,18 @@ A concise agent handoff is:
 
 ## MCP agent handoff
 
+Hosted allowance refusals are MCP tool results with `isError: true`, rather than
+transport failures. Their JSON content includes `code: "allowance_exhausted"`,
+`http_status: 429`, `resource`, `allowance`, `consumption`, a safe message and
+recovery guidance. Current MCP versions also return this as `structuredContent`.
+Inspect `billing_usage.hosted_plan_page` with owner/admin authority or
+`billing_usage.billing_export` with owner authority and resolve the affected
+allowance before submitting another business action. A refusal does not report a
+successful write. `policy_mismatch` directs callers to `get_project_policy` to
+refresh approved policy inputs; uncertain mutation outcomes still require resource
+inspection before retrying. Unexpected failures remain redacted as
+`service_unavailable` with a correlation ID.
+
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
 and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns

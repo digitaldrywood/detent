@@ -18,7 +18,7 @@ func TestNativeWorkListOrder(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "list-order")
 	for index, test := range testfixture.Comparisons() {
 		t.Run(test.Name, func(t *testing.T) {
-			needle := fmt.Sprintf("order-case-%02d", index)
+			needle := fmt.Sprintf("ordercase%02d", index)
 			left := f.create(t, needle+"-left")
 			right := f.create(t, needle+"-right")
 			state := "Todo"

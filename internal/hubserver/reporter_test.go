@@ -91,7 +91,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{
 				Mutation:            tracker.Mutation{IdempotencyKey: "scheduled-validation"},
-				ScheduledValidation: &gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Conclusion: "success"},
+				ScheduledValidation: &gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Conclusion: "success"},
 			}), http.StatusForbidden)
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "screenshot.png", ContentType: "image/png", Size: 100, Width: 1, Height: 1, SHA256: artifact.Digest([]byte("screenshot"))}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/attachment-metadata/check", map[string]any{"size": record.Size}), http.StatusOK)

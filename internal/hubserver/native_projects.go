@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -250,6 +251,9 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if err != nil {
 		return err
 	}
+	if reflect.DeepEqual(project.States, states) {
+		return nil
+	}
 	var occupied int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id
 WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=w.detent_state)`, scope.project, encoded).Scan(&occupied); err != nil {
@@ -260,7 +264,8 @@ WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_ext
 	}
 	for _, state := range states {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at
+WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
 			return err
 		}
 	}

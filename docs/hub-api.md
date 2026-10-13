@@ -1024,12 +1024,26 @@ forward the lane ledger's reason as readable text through this field.
 Release reasons are `completed`, `cancelled`, `failed`, `released`,
 `work_item_hydration_failed` and `work_item_identity_missing`.
 
+Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for ranked
+full-text search of titles, bodies and comments. Search terms use stemming and
+prefix matching and combine with OR. Documents matching more distinct query
+terms rank first, followed by BM25 relevance and the ordinary
+list order. Legacy substring matches of titles, bodies, labels and identifiers
+remain included. Each search hit includes a short `snippet`; full-text matches are marked
+by brackets. Search composes with the existing exact filters.
+
+`created_after` and `updated_after` are inclusive RFC3339 timestamp bounds;
+`created_before` is exclusive. Combine created bounds to select one day. Offsets
+are supported and compared as instants. These selectors are available on REST
+and native MCP lists; snapshot-backed lists and the board projection reject them.
+
 Native pages use `limit` (1–200, default 50) and an opaque `cursor`. Issue lists
 group items in configured workflow state order. Within nonterminal states,
 priority sorts first, then `last_activity_at` newest first; terminal states use
 activity alone. Missing priorities and activity sort last, and identifiers break
 ties. The first page retains matching item identities and SQL sort keys for the
-cursor's lifetime, so concurrent changes to state, priority, activity or filters
+cursor's lifetime, including relevance scores and matched snippets for searches,
+so concurrent changes to state, priority, activity or filters
 cannot skip or repeat those items. New items appear in a fresh query. Each page
 loads current item details, so this is not a transactional export snapshot;
 a consistent export still requires a quiescent owner backup.
