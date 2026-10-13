@@ -5,6 +5,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -215,11 +216,32 @@ func TestSharedEntryProxyLogsLatencyWithoutIdentity(t *testing.T) {
 	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	f.provider.expireAccess()
 	alice.get("/organizations/org_alpha/organization?tab=x")
-	alice.get("/organizations/org_alpha/organization")
+	_, organizationPage := alice.get("/organizations/org_alpha/organization")
+	path := "/api/v2/organizations/org_alpha/runner-enrollments"
+	request := httptest.NewRequest(http.MethodPost, alice.origin+path, strings.NewReader(`{"scope":"projects","project_ids":["project_unknown"],"operations":["read"],"ttl_seconds":900}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", alice.origin)
+	request.Header.Set("X-CSRF-Token", csrfFrom(t, organizationPage))
+	for _, cookie := range alice.jar.Cookies(request.URL) {
+		request.AddCookie(cookie)
+	}
+	rejected := httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(rejected, request)
+	if rejected.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid enrollment status = %d: %s", rejected.Code, rejected.Body.String())
+	}
+	if !strings.Contains(rejected.Body.String(), "Enrollment projects must be unique and belong to the organization") {
+		t.Fatalf("enrollment reason was lost: %s", rejected.Body.String())
+	}
 	output := logs.String()
 	for _, want := range []string{"shared entry proxied request", "verification=refreshed", "verification=token", "duration_ms=", "auth_ms=", "status=200"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("log lacks %q:\n%s", want, output)
+		}
+	}
+	for _, want := range []string{"path=" + path, "status=422", "error=\"invalid_request: Enrollment projects must be unique and belong to the organization\""} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("failure log lacks %q:\n%s", want, output)
 		}
 	}
 	for _, secret := range []string{"alice@example.test", "access_", "refresh_", "tab=x", "detent_session"} {

@@ -106,7 +106,9 @@ function failure(status: number, body: unknown): AccountError {
   return new AccountError({
     status,
     code: status === 404 ? "not_found" : status === 403 ? "forbidden" : "invalid",
-    message: messageForStatus(status),
+    message: typeof body === "object" && body !== null && "message" in body && typeof body.message === "string" && body.message.length > 0
+      ? body.message
+      : messageForStatus(status),
   });
 }
 
