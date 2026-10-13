@@ -40,8 +40,8 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		{"foreign runner", "owner", "set_runner_tier", isolation.NativeTrusted, false, false, 0},
 		{"foreign read", "member", "get_runners", "", false, false, 0},
 		{"stale preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusConflict},
-		{"role revoked after preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusForbidden},
-		{"project grant revoked", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusForbidden},
+		{"role revoked after preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusNotFound},
+		{"project grant revoked", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t, func(cfg *Config) {
