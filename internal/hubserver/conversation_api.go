@@ -728,6 +728,9 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 			if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
 				return receipt, err
 			}
+			if conversationBetweenTurns(record.Execution) {
+				return receipt, conversationStale("No provider turn is active; send the message after the next turn starts or this attempt finishes")
+			}
 			if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
 				return receipt, err
 			}
