@@ -548,7 +548,7 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expectNoSeriousAxeViolations(page, "/settings/runners as viewer");
 });
 
-test("Providers & runners enrolls a host through setup, a masked command, and live check-in", async ({ page }) => {
+test("Providers & runners enrolls a host through setup, a masked command, and live check-in", async ({ page }, testInfo) => {
   const errors = watchConsole(page);
   let connected = false;
   const fleet = require("../../web/conversation/src/contracts/fixtures/account-fleet.json");
@@ -605,18 +605,32 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await expect(dialog.getByRole("heading", { name: "Enroll a runner" })).toBeVisible();
   await expect(dialog.getByLabel("Runner scope")).toHaveValue("organization");
   await dialog.getByLabel("Runner scope").selectOption("projects");
-  await expect(dialog.getByRole("checkbox").first()).toBeVisible();
-  await dialog.getByLabel("Runner scope").selectOption("organization");
+  const projects = await page.evaluate(async () => (await (await fetch("/app/bootstrap")).json()).projects);
+  expect(projects.length).toBeGreaterThan(0);
+  for (const project of projects) {
+    await dialog.getByRole("checkbox", { name: project.name, exact: true }).setChecked(project.id === hub.fixture.project_id);
+  }
+  await dialog.getByRole("radio", { name: "macOS", exact: true }).check();
+  await dialog.getByRole("checkbox", { name: /Install it as a background service/ }).uncheck();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("1. Set it up");
   // Nothing to copy from the host first: the dialog asks for a name, a
   // capacity and projects, never for runner or machine IDs.
   await expect(dialog.getByLabel("Runner id")).toHaveCount(0);
   await dialog.getByLabel("Name").fill("Build host");
-  await dialog.getByLabel("Concurrency", { exact: true }).fill("2");
+  await dialog.getByLabel("Concurrency", { exact: true }).fill("1");
   await expectNoSeriousAxeViolations(page, "the enrollment dialog");
 
-  await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
+  await dialog.getByRole("radio", { name: "Sandbox", exact: true }).check();
+  const enrollmentResponse = page.waitForResponse((response) => response.url().endsWith("/runner-enrollments") && response.request().method() === "POST");
   await dialog.getByRole("button", { name: "Create command" }).click();
+  const response = await enrollmentResponse;
+  expect(response.status()).toBe(201);
+  expect(response.request().postDataJSON()).toEqual({
+    scope: "projects",
+    project_ids: [hub.fixture.project_id],
+    operations: ["read", "collaborate", "claim", "heartbeat", "events"],
+    ttl_seconds: 900,
+  });
 
   // One command carries everything the host needs.
   const copy = dialog.getByRole("button", { name: "Copy the register command" });
@@ -625,7 +639,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await expect(dialog).toContainText("detent_••••••••");
   await expect(dialog.getByText(/Waiting for Build host to check in/)).toBeVisible();
   await dialog.getByRole("button", { name: "Show token" }).click();
-  const registerCommand = dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --capacity 2 --isolation-tier native-trusted --service$/);
+  const registerCommand = dialog.getByText(/^detent hub runner register --url \S+ (--organization \S+ )?--token \S+ --name 'Build host' --isolation-tier sandbox$/);
   await expect(registerCommand).toBeVisible();
   await expectNoSeriousAxeViolations(page, "the enrollment dialog with its command");
 
@@ -633,6 +647,25 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   const token = command.match(/--token (\S+)/)[1];
   await dialog.getByRole("button", { name: "Hide token" }).click();
   expect(await dialog.innerHTML()).not.toContain(token);
+  for (const colorScheme of ["light", "dark"]) {
+    await page.emulateMedia({ colorScheme });
+    await page.evaluate((theme) => {
+      document.documentElement.classList.toggle("dark", theme === "dark");
+      document.documentElement.dataset.theme = theme;
+    }, colorScheme);
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1100 });
+      const screenshot = require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `selected-project-sandbox-command-${colorScheme}-${width}.png`);
+      await page.screenshot({ path: screenshot });
+      await testInfo.attach(`selected-project-sandbox-command-${colorScheme}-${width}`, { path: screenshot, contentType: "image/png" });
+    }
+  }
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.evaluate(() => {
+    document.documentElement.classList.remove("dark");
+    document.documentElement.dataset.theme = "light";
+  });
+  await page.setViewportSize({ width: 1440, height: 1100 });
   await copy.click();
   expect(await page.evaluate(() => window.copiedEnrollmentCommand)).toBe(command);
   await page.keyboard.press("Escape");
@@ -656,10 +689,14 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   }
   await enroll.click();
   await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
+  await expect(dialog.getByLabel("Runner scope")).toHaveValue("organization");
+  await expect(dialog.getByRole("checkbox", { name: /Install it as a background service/ })).toBeChecked();
   await dialog.getByLabel("Name").fill("Build host");
+  await dialog.getByLabel("Concurrency", { exact: true }).fill("2");
   await dialog.getByRole("radio", { name: "Full access", exact: true }).check();
   await dialog.getByRole("button", { name: "Create command" }).click();
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("2. Run the command");
+  await expect(dialog.getByText(/^detent hub runner register .* --capacity 2 --isolation-tier native-trusted --service$/)).toBeVisible();
   connected = true;
   await expect(dialog.getByText("Build host is connected")).toBeVisible();
   await dialog.getByRole("button", { name: "Next", exact: true }).click();
