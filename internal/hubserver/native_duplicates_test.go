@@ -56,7 +56,11 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body, State: "Todo"}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-			requireNativeStatus(t, response, http.StatusOK)
+			wantStatus := http.StatusOK
+			if test.challenge {
+				wantStatus = http.StatusConflict
+			}
+			requireNativeStatus(t, response, wantStatus)
 			var challenge duplicateChallenge
 			decodeHubResponse(t, response, &challenge)
 			if (challenge.ChallengeToken != "") != test.challenge {
@@ -78,7 +82,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 				t.Fatalf("unexpected matches or issue created: %s, count %d", response.Body.String(), count)
 			}
 			replay := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-			requireNativeStatus(t, replay, http.StatusOK)
+			requireNativeStatus(t, replay, http.StatusConflict)
 			if replay.Body.String() != response.Body.String() {
 				t.Fatal("challenge replay changed")
 			}
@@ -138,7 +142,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	}
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bound"}, Title: first.Title, Body: "Independent description", State: "Todo"}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-	requireNativeStatus(t, response, http.StatusOK)
+	requireNativeStatus(t, response, http.StatusConflict)
 	var challenge duplicateChallenge
 	decodeHubResponse(t, response, &challenge)
 	request.ChallengeToken = challenge.ChallengeToken
@@ -176,7 +180,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	request.IdempotencyKey = "second-challenge"
 	request.ChallengeToken, request.NotDuplicateOf = "", nil
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
-	requireNativeStatus(t, response, http.StatusOK)
+	requireNativeStatus(t, response, http.StatusConflict)
 	var second duplicateChallenge
 	decodeHubResponse(t, response, &second)
 	if second.ChallengeToken == "" || second.ChallengeToken == challenge.ChallengeToken {
@@ -190,6 +194,70 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	}
 	if count != 3 {
 		t.Fatalf("refused confirmations created issues: %d", count)
+	}
+}
+
+func TestNativeDuplicateChallengeLifetime(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		age  time.Duration
+		want int
+	}{
+		{"fresh", 0, http.StatusOK},
+		{"before expiry", time.Hour - time.Second, http.StatusOK},
+		{"expiry boundary", time.Hour, http.StatusUnprocessableEntity},
+		{"expired", time.Hour + time.Second, http.StatusUnprocessableEntity},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+			f := newNativeFixture(t, service, "", "lifetime")
+			first := f.create(t, "Runner checkout deadlocks")
+			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lifetime"}, Title: first.Title, Body: "Independent description", State: "Todo"}
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
+			var challenge duplicateChallenge
+			decodeHubResponse(t, response, &challenge)
+			if challenge.ChallengeToken == "" {
+				t.Fatalf("no challenge: %s", response.Body.String())
+			}
+			request.ChallengeToken, request.NotDuplicateOf = challenge.ChallengeToken, []int{first.Number}
+			now = now.Add(test.age)
+			response = performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
+			requireNativeStatus(t, response, test.want)
+			var count int
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			wantCount := 1
+			if test.want == http.StatusOK {
+				wantCount = 2
+			}
+			if count != wantCount {
+				t.Fatalf("issue count=%d, want %d", count, wantCount)
+			}
+			if test.want == http.StatusOK {
+				if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE token=?", challenge.ChallengeToken).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("consumed challenge retained: %d, %v", count, err)
+				}
+			}
+			if err := service.maintainNativeRetention(t.Context(), now); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_duplicate_challenges WHERE token=?", challenge.ChallengeToken).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("challenge survived cleanup: %d, %v", count, err)
+			}
+			if test.want == http.StatusOK {
+				now = now.Add(2 * time.Hour)
+				replay := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
+				requireNativeStatus(t, replay, http.StatusOK)
+				if replay.Body.String() != response.Body.String() {
+					t.Fatal("confirmation replay changed after challenge deletion and expiry")
+				}
+			}
+		})
 	}
 }
 
