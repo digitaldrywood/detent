@@ -51,6 +51,10 @@ func TestPlacementClaims(t *testing.T) {
 	}{
 		{"blended warm Sprite", "blended", "free", "sprite", 1, http.StatusOK},
 		{"blended local", "blended", "free", "local", 1, http.StatusOK},
+		{"unsigned local remains eligible", "blended", "signing_warning", "local", 1, http.StatusOK},
+		{"unsigned local retains local-first preference", "local_first", "signing_warning", "sprite", 4, http.StatusConflict},
+		{"invalid local settings do not reserve preferred capacity", "local_first", "invalid_settings", "sprite", 4, http.StatusOK},
+		{"signing warning does not hide invalid settings", "local_first", "signing_and_settings", "sprite", 4, http.StatusOK},
 		{"Sprites-only excludes local", "sprites_only", "free", "local", 3, http.StatusConflict},
 		{"Sprites-only ignores free local", "sprites_only", "free", "sprite", 1, http.StatusOK},
 		{"local-first warm Sprite yields to local", "local_first", "free", "sprite", 4, http.StatusConflict},
@@ -78,6 +82,22 @@ func TestPlacementClaims(t *testing.T) {
 				}
 				local = placementFixtureRunner(t, f, "local-runner", "local", false, 1, models...)
 				switch test.local {
+				case "signing_warning", "invalid_settings", "signing_and_settings":
+					problem := runnerauth.NewProblem("settings_invalid")
+					problem.Check = "commit_signing"
+					problems := []runnerauth.Problem{problem}
+					switch test.local {
+					case "invalid_settings":
+						problems[0].Check = "routing"
+					case "signing_and_settings":
+						problems = append(problems, runnerauth.NewProblem("settings_invalid"))
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(local.binding.MachineID)+"/heartbeat", local.redemption.Credential,
+						map[string]any{"backend_isolation": local.redemption.BackendIsolation, "display_name": "Runner", "capacity": 1, "version": "test", "problems": problems}), http.StatusOK)
+					view, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, local.binding.RunnerID, f.service.config.now())
+					if err != nil || len(view.Problems) != len(problems) || view.Health != "needs_attention" {
+						t.Fatalf("reported problems lost: %+v, %v", view, err)
+					}
 				case "full":
 					busy := f.create(t, "already running")
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", local.redemption.Credential, providerClaim(local, busy, "busy")), http.StatusOK)

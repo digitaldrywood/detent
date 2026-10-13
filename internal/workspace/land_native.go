@@ -145,7 +145,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				continue
 			}
 			integrationStarted := time.Now()
-			merged, err := combine(ctx, staging, method, request.Options.HeadSHA, stageHead, request.Options.Message)
+			merged, err := l.combine(ctx, staging, method, request.Options.HeadSHA, stageHead, request.Options.Message)
 			result := LandResult{BaseBefore: stageHead, BaseRef: target, Method: method, Path: "clean_push", Pipeline: out[i].Result.Pipeline, PipelineDropped: out[i].Result.PipelineDropped}
 			if receipt := request.Options.Validation; receipt != nil && request.Options.ValidationCommand != "" {
 				result.Pipeline = append(result.Pipeline, receipt.Reused("landing_validation", time.Now().UTC()).PipelineTiming("landing_validation"))
@@ -168,7 +168,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 					continue
 				}
 				rebaseStarted := time.Now()
-				merged, err = rebaseLanding(ctx, staging, request.Options.HeadSHA, stageHead, request.Options.Message)
+				merged, err = l.rebaseLanding(ctx, staging, request.Options.HeadSHA, stageHead, request.Options.Message)
 				outcome := "clean"
 				if err != nil {
 					outcome = "conflict"
@@ -274,7 +274,7 @@ func ValidationCoversHead(receipt *gate.CommandResult, command, head string) boo
 	return receipt != nil && receipt.Command == command && receipt.HeadSHA == head && receipt.ExitCode == 0 && receipt.DurationNS > 0
 }
 
-func rebaseLanding(ctx context.Context, path, head, base, message string) (string, error) {
+func (l *LocalGit) rebaseLanding(ctx context.Context, path, head, base, message string) (string, error) {
 	fork, err := runGitAt(ctx, path, "merge-base", head, base)
 	if err != nil {
 		return "", err
@@ -282,7 +282,7 @@ func rebaseLanding(ctx context.Context, path, head, base, message string) (strin
 	if _, err := runGitAt(ctx, path, "checkout", "--detach", head); err != nil {
 		return "", err
 	}
-	if _, err := runGitAt(ctx, path, "rebase", "--onto", base, strings.TrimSpace(fork)); err != nil {
+	if _, err := l.runCommit(ctx, path, nil, "rebase", "--onto", base, strings.TrimSpace(fork)); err != nil {
 		return "", abandon(refuse(LandRefusalConflict, "rebasing the reviewed head conflicts: "+commandErrorOutput(err)), gitErr(ctx, path, "rebase", "--abort"))
 	}
 	rebased, err := runGitAt(ctx, path, "rev-parse", "HEAD")
@@ -292,7 +292,7 @@ func rebaseLanding(ctx context.Context, path, head, base, message string) (strin
 	if _, err := runGitAt(ctx, path, "reset", "--hard", base); err != nil {
 		return "", err
 	}
-	return combine(ctx, path, "squash", strings.TrimSpace(rebased), base, message)
+	return l.combine(ctx, path, "squash", strings.TrimSpace(rebased), base, message)
 }
 
 func shortLandingCommand(ctx context.Context, path, base, head, approvedCommand string) (string, []string, error) {

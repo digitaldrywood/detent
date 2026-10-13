@@ -357,7 +357,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	if err != nil {
 		t.Fatal(err)
 	}
-	corrupt, err := checkpointCommit(t.Context(), checkpointRefGit(info.Path), strings.TrimSpace(corruptTree), []string{checkpoint.HeadSHA, original})
+	corrupt, err := source.checkpointCommit(t.Context(), info.Path, strings.TrimSpace(corruptTree), []string{checkpoint.HeadSHA, original})
 	if err != nil {
 		t.Fatal(err)
 	}
