@@ -328,7 +328,14 @@ func (s *Service) proxy(c echo.Context) error {
 		claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
 	}
 	authorized := time.Since(started)
-	defer func() { s.logProxied(c, organization.ID, verification, started, "auth_ms", authorized.Milliseconds()) }()
+	var responseError string
+	defer func() {
+		fields := []any{"auth_ms", authorized.Milliseconds()}
+		if responseError != "" {
+			fields = append(fields, "error", responseError)
+		}
+		s.logProxied(c, organization.ID, verification, started, fields...)
+	}()
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
@@ -357,6 +364,30 @@ func (s *Service) proxy(c echo.Context) error {
 			r.Out.ContentLength = int64(len(body))
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if response.StatusCode >= http.StatusBadRequest {
+				responseError = http.StatusText(response.StatusCode)
+				mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+				if err == nil && mediaType == echo.MIMEApplicationJSON {
+					raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+					if err != nil {
+						return fmt.Errorf("read tenant error response: %w", err)
+					}
+					response.Body = struct {
+						io.Reader
+						io.Closer
+					}{io.MultiReader(bytes.NewReader(raw), response.Body), response.Body}
+					var failure struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					}
+					if json.Unmarshal(raw, &failure) == nil && failure.Message != "" {
+						responseError = failure.Message
+						if failure.Code != "" {
+							responseError = failure.Code + ": " + failure.Message
+						}
+					}
+				}
+			}
 			if request.Method != http.MethodGet && request.Method != http.MethodHead && response.StatusCode < http.StatusBadRequest {
 				if err := s.refreshGitHubRoutes(c.Request().Context(), organization); err != nil {
 					return err
