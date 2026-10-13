@@ -5,7 +5,6 @@ import {
   fireEvent,
   render,
   screen,
-  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -225,6 +224,7 @@ beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW);
   mocks.bootstrap.projects = projects;
   mocks.bootstrap.organization.name = "";
+  mocks.api = { activity: vi.fn(), fleet: vi.fn() };
   vi.clearAllMocks();
 });
 afterEach(() => {
@@ -582,6 +582,7 @@ class ProjectEvents extends EventTarget {
   }
 }
 it("refreshes pickup and finish rows through reused project streams, tracks all connections and releases subscriptions", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   vi.stubGlobal("EventSource", ProjectEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   ProjectEvents.sources = [];
@@ -592,7 +593,8 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   mocks.api.activity.mockImplementation(async () => current);
   mocks.api.fleet.mockResolvedValue({ runners });
   const view = render(<ActivityRoute />);
-  await screen.findByText("Nothing is running for this filter.");
+  await act(async () => {});
+  expect(screen.getByText("Nothing is running for this filter.")).toBeTruthy();
   expect(ProjectEvents.sources).toHaveLength(2);
   act(() =>
     ProjectEvents.sources.forEach((source) =>
@@ -601,13 +603,17 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   );
   expect(screen.getByText("Live")).toBeTruthy();
   current = report({ running: [attempt(10)], finished: [] });
-  act(() =>
-    ProjectEvents.sources[0]!.dispatchEvent(
-      new MessageEvent("activity", { data: "1" }),
-    ),
-  );
-  await screen.findByRole("link", { name: "#10 Job 10" });
+  act(() => {
+    for (let i = 0; i < 100; i++) {
+      ProjectEvents.sources.forEach((source) => source.dispatchEvent(new MessageEvent("activity", { data: String(i) })));
+    }
+  });
+  expect(mocks.api.activity).toHaveBeenCalledOnce();
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(screen.getByRole("link", { name: "#10 Job 10" })).toBeTruthy();
   expect(screen.getByText("1 job")).toBeTruthy();
+  let finishRequest: ((value: ActivityReport) => void) | undefined;
+  mocks.api.activity.mockImplementationOnce(() => new Promise<ActivityReport>((resolve) => { finishRequest = resolve; }));
   current = report({
     running: [],
     finished: [
@@ -623,7 +629,14 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
       new MessageEvent("activity", { data: "2" }),
     ),
   );
-  await screen.findByText("Nothing is running for this filter.");
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(3);
+  act(() => ProjectEvents.sources[0]!.dispatchEvent(new MessageEvent("activity", { data: "3" })));
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(3);
+  await act(async () => { finishRequest!(current); });
+  expect(screen.getByText("Nothing is running for this filter.")).toBeTruthy();
+  expect(mocks.api.activity).toHaveBeenCalledTimes(4);
   expect(
     within(screen.getByRole("region", { name: "Recent finishes" })).getByRole(
       "link",
@@ -634,16 +647,58 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   expect(screen.getByText("Reconnecting")).toBeTruthy();
   act(() => ProjectEvents.sources[1]!.dispatchEvent(new Event("open")));
   expect(screen.getByText("Live")).toBeTruthy();
-  await choose("Project", "detent");
-  await waitFor(() =>
-    expect(mocks.api.activity).toHaveBeenLastCalledWith({
-      project_id: "detent",
-    }),
-  );
+  fireEvent.click(screen.getByRole("combobox", { name: "Project" }));
+  const option = screen.getByRole("option", { name: "detent" });
+  fireEvent.pointerDown(option, { pointerType: "mouse" });
+  fireEvent.click(option);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(mocks.api.activity).toHaveBeenLastCalledWith({ project_id: "detent" });
   expect(ProjectEvents.sources).toHaveLength(2);
   expect(ProjectEvents.sources[1]!.close).toHaveBeenCalledOnce();
   view.unmount();
   expect(ProjectEvents.sources[0]!.close).not.toHaveBeenCalled();
   retained();
   expect(ProjectEvents.sources[0]!.close).toHaveBeenCalledOnce();
+  const calls = mocks.api.activity.mock.calls.length;
+  const revisit = render(<ActivityRoute />);
+  expect(screen.queryByLabelText("Loading activity")).toBeNull();
+  expect(screen.getByText("Nothing is running for this filter.")).toBeTruthy();
+  expect(mocks.api.activity).toHaveBeenCalledTimes(calls);
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(calls + 1);
+  revisit.unmount();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+
+it("waits for a slow Activity read across remount and a failed fleet read, then revalidates when visible", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  vi.stubGlobal("EventSource", ProjectEvents);
+  let visibility: DocumentVisibilityState = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+  ProjectEvents.sources = [];
+  let resolveActivity: ((value: ActivityReport) => void) | undefined;
+  mocks.api.activity.mockImplementationOnce(() => new Promise<ActivityReport>((resolve) => { resolveActivity = resolve; }));
+  mocks.api.activity.mockResolvedValue(report());
+  mocks.api.fleet.mockRejectedValueOnce(new Error("Fleet unavailable"));
+  mocks.api.fleet.mockResolvedValue({ runners });
+  const first = render(<ActivityRoute />);
+  await act(async () => {});
+  first.unmount();
+  const next = render(<ActivityRoute />);
+  act(() => ProjectEvents.sources.forEach((source) => source.dispatchEvent(new Event("open"))));
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(mocks.api.activity).toHaveBeenCalledOnce();
+  await act(async () => { resolveActivity!(report()); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("link", { name: "#1 Job 1" })).toBeTruthy();
+  visibility = "hidden";
+  act(() => ProjectEvents.sources.forEach((source) => source.dispatchEvent(new MessageEvent("activity", { data: "1" }))));
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(2);
+  visibility = "visible";
+  await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(3);
+  next.unmount();
+  expect(vi.getTimerCount()).toBe(0);
 });
