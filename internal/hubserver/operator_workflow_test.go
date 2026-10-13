@@ -173,7 +173,7 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 				{"authored file type", "", "must have type string", descriptor, "files"},
 				{"identity", "", "identity digest", invalid, ""},
 				{"configuration", "", "configuration", invalidConfiguration, ""},
-				{"stale", "policy_stale", "expected_policy_id", descriptor, ""},
+				{"stale", "policy_stale", "get_project_policy", descriptor, ""},
 				{"approve", previous.ID, "", descriptor, ""},
 			} {
 				t.Run(test.name, func(t *testing.T) {
@@ -208,7 +208,10 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var reply struct {
 						Result struct {
-							IsError bool `json:"isError"`
+							IsError           bool `json:"isError"`
+							StructuredContent struct {
+								Code string `json:"code"`
+							} `json:"structuredContent"`
 							Content []struct {
 								Text string `json:"text"`
 							} `json:"content"`
@@ -222,6 +225,15 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 					}
 					if test.field != "" && !strings.Contains(reply.Result.Content[0].Text, "invalid_request") {
 						t.Fatalf("decoder refusal must be structured: %s", response.Body)
+					}
+					if test.name == "stale" {
+						if reply.Result.StructuredContent.Code != "policy_mismatch" {
+							t.Fatalf("stale refusal must be structured: %s", response.Body)
+						}
+						unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						if err != nil || !reflect.DeepEqual(unchanged.Policy, previous) {
+							t.Fatalf("stale refusal changed policy = %+v, %v", unchanged, err)
+						}
 					}
 				})
 			}
@@ -714,7 +726,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 						}{
 							{"identity", "invalid_request", "identity digest", invalidIdentity},
 							{"configuration", "invalid_request", "configuration", invalidConfiguration},
-							{"stale", "policy_mismatch", "expected_policy_id", updated},
+							{"stale", "policy_mismatch", "get_project_policy", updated},
 						} {
 							refused := projectCall(t, test.tool, string(f.project), refusal.name, operatortool.PolicyApprovalInput{ExpectedID: "stale", Policy: refusal.policy, RepositoryPolicy: true})
 							_, err := executor.Execute(ctx, refused)
