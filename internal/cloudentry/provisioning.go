@@ -201,6 +201,10 @@ func (s *Service) dueOrganizations(ctx context.Context) ([]Organization, error) 
 func (s *Service) provision(ctx context.Context, organization Organization) {
 	for organization.State == "requested" || organization.State == "allocating" {
 		step := nextStep(organization.Step)
+		if step == "publish" {
+			s.reloadMu.Lock()
+			defer s.reloadMu.Unlock()
+		}
 		err := s.runStep(ctx, &organization, step)
 		if ctx.Err() != nil {
 			return
@@ -328,6 +332,9 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 		}
 		return nil
 	case "publish":
+		if err := s.publishTenantRuntime(ctx, *organization); err != nil {
+			return err
+		}
 		organization.State = "ready"
 		return nil
 	}

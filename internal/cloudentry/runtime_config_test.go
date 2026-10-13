@@ -15,7 +15,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -65,6 +67,13 @@ func entitlementFixture(t *testing.T, f entryFixture, token string) {
 func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	f := newEntryFixture(t)
 	const token = "runtime-entitlement-admin-0123456789abcdef"
+	for id, tenant := range f.fixtures {
+		tenant.config.Hosted.Billing = &hubserver.HostedBillingConfig{
+			Mode: "test", AccountID: "acct_runtime", CustomerID: "cus_" + id, PortalConfigurationID: "bpc_runtime",
+			WebhookSecret: []byte(testWebhookSecret), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: &fakeBilling{},
+			Prices: []hubserver.HostedBillingPrice{{PriceID: "price_initial", Label: "Initial plan", Plan: tenant.config.Hosted.Plans.Plans[1].PlanReference}},
+		}
+	}
 	entitlementFixture(t, f, token)
 	for _, tenant := range f.fixtures {
 		if err := f.service.linkRuntimePublication(filepath.Dir(tenant.config.DatabasePath)); err != nil {
@@ -125,7 +134,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	plans.Plans = append(plans.Plans, plan)
 	next := f.service.config
 	next.PublicURL = "https://changed.example.test"
-	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans}
+	next.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &plans, Prices: f.fixtures["org_alpha"].config.Hosted.Billing.Prices}
 	readings <- reading{config: next}
 	signals <- syscall.SIGHUP
 	awaitLog("configuration reloaded")
@@ -186,7 +195,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 			candidate.Plans = append(candidate.Plans, stagedPlan)
 			candidate.WindowSeconds = 240
 			attempt := next
-			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate}
+			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
 			attemptCtx, cancelAttempt := context.WithCancel(t.Context())
 			defer cancelAttempt()
 			original := f.service.config.transport
@@ -288,7 +297,7 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 	stagedPlan.Version += 10
 	candidate.Plans = append(candidate.Plans, stagedPlan)
 	candidate.WindowSeconds = 240
-	retry.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate}
+	retry.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: next.Runtime.Prices}
 	readings <- reading{config: retry}
 	if err := f.service.reloadConfiguration(t.Context()); err != nil {
 		t.Fatal(err)
@@ -312,6 +321,148 @@ func TestCloudSIGHUPRetainsInvalidAndAppliesValidRuntime(t *testing.T) {
 		if !found {
 			t.Fatal("successful retry did not expose the prepared plan")
 		}
+	}
+
+	for index, scenario := range []struct {
+		name, step, pause      string
+		refuse, publishFailure bool
+	}{
+		{name: "tenant starting during publication", step: "tenant_files", pause: "/internal/v1/health"},
+		{name: "tenant resuming during publication", step: "tenant_start", pause: "/internal/v1/owner/bootstrap"},
+		{name: "joining tenant preparation refused", step: "tenant_files", pause: "/internal/v1/health", refuse: true},
+		{name: "joining tenant publication refused", step: "tenant_files", pause: "/internal/v1/health", publishFailure: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			before := readRuntime("org_beta")
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state='allocating', step=? WHERE id='org_beta'", scenario.step); err != nil {
+				t.Fatal(err)
+			}
+			organization, err := f.service.registry.Organization(t.Context(), "org_beta")
+			if err != nil {
+				t.Fatal(err)
+			}
+			organization.CreatorSubject, organization.CreatorEmail = "user_alice", "alice@example.test"
+			allocation.Launcher = &silentLauncher{running: map[string]bool{}}
+			original := f.service.config.transport
+			paused, resume, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var pauseOnce, resumeOnce sync.Once
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
+				transport, err := original(org)
+				if err != nil || org.ID != "org_beta" {
+					return transport, err
+				}
+				return runtimeTransport(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Path == scenario.pause {
+						pauseOnce.Do(func() { close(paused) })
+						select {
+						case <-resume:
+						case <-request.Context().Done():
+							return nil, request.Context().Err()
+						}
+					}
+					if request.URL.Path == "/internal/v1/owner/bootstrap" {
+						return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Header: make(http.Header)}, nil
+					}
+					if scenario.refuse && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/entitlements/runtime") {
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: http.NoBody, Header: make(http.Header)}, nil
+					}
+					return transport.RoundTrip(request)
+				}), nil
+			}
+			go func() {
+				defer close(finished)
+				f.service.provision(ctx, organization)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				resumeOnce.Do(func() { close(resume) })
+				<-finished
+				f.service.config.transport = original
+			})
+			select {
+			case <-paused:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			candidate := *retry.Runtime.Plans
+			candidate.Plans = append([]hubserver.HostedPlan(nil), candidate.Plans...)
+			plan := stagedPlan
+			plan.Version += 20 + int64(index)
+			candidate.Plans = append(candidate.Plans, plan)
+			candidate.WindowSeconds = before.Plans.WindowSeconds + 120
+			attempt := next
+			price := hubserver.HostedBillingPrice{PriceID: "price_join_" + strconv.FormatInt(plan.Version, 10), Label: "Published plan", Plan: plan.PlanReference}
+			attempt.Runtime = &hubserver.HostedRuntimeUpdate{Plans: &candidate, Prices: append(append([]hubserver.HostedBillingPrice(nil), next.Runtime.Prices...), price)}
+			readings <- reading{config: attempt}
+			if err := f.service.reloadConfiguration(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			awaitLog("configuration reloaded")
+			if state := readRuntime("org_alpha"); state.Plans.WindowSeconds != candidate.WindowSeconds {
+				t.Fatal("ready tenant did not receive the publication")
+			}
+			if state := readRuntime("org_beta"); state.Plans.WindowSeconds != before.Plans.WindowSeconds || !reflect.DeepEqual(state.Prices, before.Prices) {
+				t.Fatal("starting tenant exposed settings before preparation")
+			}
+			publicationTemp := f.service.runtimePublicationPath() + ".tmp"
+			if scenario.publishFailure {
+				if err := os.Mkdir(publicationTemp, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			resumeOnce.Do(func() { close(resume) })
+			select {
+			case <-finished:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			organization, err = f.service.registry.Organization(t.Context(), "org_beta")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario.refuse || scenario.publishFailure {
+				if organization.State == "ready" || readRuntime("org_beta").Plans.WindowSeconds != before.Plans.WindowSeconds {
+					t.Fatal("failed runtime preparation made the tenant ready or exposed settings")
+				}
+				report, err := f.service.tenantEntitlements(t.Context(), organization)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, prepared := range report.Plans {
+					if prepared.ID == plan.ID && prepared.Version == plan.Version {
+						t.Fatal("failed tenant publication exposed its prepared plan")
+					}
+				}
+				if scenario.publishFailure {
+					if err := os.Remove(publicationTemp); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.service.config.transport = original
+				f.service.provision(t.Context(), organization)
+			}
+			for _, id := range []string{"org_alpha", "org_beta"} {
+				organization, err := f.service.registry.Organization(t.Context(), id)
+				if err != nil || organization.State != "ready" {
+					t.Fatalf("tenant %s readiness=%s: %v", id, organization.State, err)
+				}
+				if state := readRuntime(id); state.Plans.WindowSeconds != candidate.WindowSeconds || !reflect.DeepEqual(state.Prices, attempt.Runtime.Prices) {
+					t.Fatalf("tenant %s missed publication: window=%d want=%d", id, state.Plans.WindowSeconds, candidate.WindowSeconds)
+				}
+				report, err := f.service.tenantEntitlements(t.Context(), organization)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, published := range report.Plans {
+					found = found || published.ID == plan.ID && published.Version == plan.Version
+				}
+				if !found {
+					t.Fatalf("tenant %s missed the new plan", id)
+				}
+			}
+		})
 	}
 
 }
