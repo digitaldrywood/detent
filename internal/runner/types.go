@@ -752,6 +752,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	Evidence             []tracker.NativeEvidence
 	implementationReview bool
 	EvidenceTools        []AgentTool
 	EvidenceHandler      AgentToolHandler
