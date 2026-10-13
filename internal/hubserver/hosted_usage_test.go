@@ -411,7 +411,6 @@ func TestHostedUsageReportAccess(t *testing.T) {
 	})
 	t.Run("diagnostics", func(t *testing.T) {
 		for _, account := range []string{"owner", "viewer"} {
-
 			var report diagnosticsReport
 			usageDecode(t, f.usage(t, account, browserHostedOrganizationBase+"/diagnostics?range=30d", http.StatusOK), &report)
 			if report.Findings != nil || report.Ready != nil || report.DetectorTick != nil || report.Refused != nil {

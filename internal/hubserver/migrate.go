@@ -149,6 +149,7 @@ func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
 		logger = loggers[0]
 	}
 	return []*goose.Migration{
+		goose.NewGoMigration(20261013101000, &goose.GoFunc{RunTx: migrateAnalyticsResidence}, nil),
 		goose.NewGoMigration(40,
 			&goose.GoFunc{RunTx: backfillChangeReviewPolicies},
 			&goose.GoFunc{RunTx: func(context.Context, *sql.Tx) error { return nil }},
