@@ -258,18 +258,31 @@ func TestHostedProjectTools(t *testing.T) {
 			read := func(name string) operatortool.Call {
 				return operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + id + `"}`)}
 			}
-			for _, missing := range []struct{ name, message string }{
-				{"get_cutover_receipt", "No cutover receipt exists for this project"},
-				{operatortool.GetChangeReviewPolicy, "No approved Change review policy exists for this project"},
-			} {
-				if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read(missing.name)); err == nil {
-					t.Fatalf("missing %s succeeded", missing.name)
-				} else {
-					var refusal *operatortool.RequestError
-					if !errors.As(err, &refusal) || refusal.Code != "not_found" || refusal.Message != missing.message {
-						t.Fatalf("missing %s=%v", missing.name, err)
+			for _, transport := range []string{"stdio", "http"} {
+				t.Run("missing reads/"+transport, func(t *testing.T) {
+					call := hostedContextProtocol(t, f.service, ctx, transport)
+					for _, missing := range []struct{ name, code, message string }{
+						{"get_cutover_receipt", "not_found", "No cutover receipt exists for this project"},
+						{operatortool.GetChangeReviewPolicy, "not_found", "No approved Change review policy exists for this project"},
+						{"get_project_policy", "policy_mismatch", "No approved repository policy exists for this project"},
+					} {
+						reply := call("tools/call", missing.name, map[string]any{"project_id": id})
+						var result struct {
+							IsError bool                      `json:"isError"`
+							Failure operatortool.RequestError `json:"structuredContent"`
+							Content []struct {
+								Text string `json:"text"`
+							} `json:"content"`
+						}
+						if err := json.Unmarshal(reply.Result, &result); err != nil {
+							t.Fatal(err)
+						}
+						var content operatortool.RequestError
+						if !result.IsError || result.Failure.Code != missing.code || result.Failure.Message != missing.message || len(result.Content) != 1 || json.Unmarshal([]byte(result.Content[0].Text), &content) != nil || content != result.Failure {
+							t.Fatalf("missing %s=%s", missing.name, reply.Result)
+						}
 					}
-				}
+				})
 			}
 			operatorSQL(t, f, "INSERT INTO github_cutovers(project_id,checkpoint,receipt_json,actor_id,created_at) VALUES (?,?,?,?,?)", id, "stored-cutover", `{"checkpoint":"stored-cutover","applied":true}`, owner.identity.Subject, formatHubTime(f.service.config.now()))
 			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
@@ -575,7 +588,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, read("get_native_project")); !errors.Is(err, operatortool.ErrAccessDenied) {
 				t.Fatalf("revoked direct read=%v", err)
 			}
-			for _, name := range []string{"get_cutover_receipt", operatortool.GetChangeReviewPolicy} {
+			for _, name := range []string{"get_cutover_receipt", operatortool.GetChangeReviewPolicy, "get_project_policy"} {
 				if _, err := (hostedOperatorExecutor{f.service}).Execute(ctx, read(name)); !errors.Is(err, operatortool.ErrAccessDenied) {
 					t.Fatalf("revoked %s=%v", name, err)
 				}
