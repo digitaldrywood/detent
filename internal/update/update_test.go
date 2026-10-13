@@ -42,6 +42,7 @@ func TestCompareVersions(t *testing.T) {
 		{name: "minor greater", a: "1.10.0", b: "1.9.9", want: 1},
 		{name: "release greater than prerelease", a: "1.2.3", b: "1.2.3-rc.1", want: 1},
 		{name: "prerelease identifiers compare numerically", a: "1.2.3-rc.2", b: "1.2.3-rc.1", want: 1},
+		{name: "legacy operator descending hash", a: "0.121.4-op.g7fb07150e1d4", b: "0.121.4-op.gbf69b66512c6", want: -1},
 		{name: "lower major", a: "1.9.9", b: "2.0.0", want: -1},
 	}
 

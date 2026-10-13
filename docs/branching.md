@@ -58,9 +58,14 @@ ruleset requirements. This release path uses that check instead of the scheduled
 full-suite requirement; it does not publish a local-gate status or change the
 scheduled stable-release policy.
 
-The workflow derives `v<next-patch>-op.<sha12>` from the latest published stable
-release and the pinned commit, creates an annotated provenance tag, verifies its
-evidence, and publishes it through the existing GoReleaser signing workflow.
+The workflow derives `v<next-patch>-op.r.<run-number>.g<sha12>` from the latest
+published stable release, the release workflow run number and the pinned commit.
+The `r` identifier sorts above legacy hash-only operator prereleases; the numeric
+run number orders successive releases independently of their source hashes.
+Retries reuse the original tag even if the latest stable release has advanced,
+and reject a tag bound to another source. The workflow creates an annotated
+provenance tag, verifies its evidence, and publishes it through the existing
+GoReleaser signing workflow.
 The prerelease stays out of the stable latest-release installer path and package
 manager feeds. Its signed runner archives and the deployed Hub binary come from
 the same build. Staging deploy and smoke still precede production deploy and
