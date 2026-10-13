@@ -234,9 +234,17 @@ func writeLocalConfigurationRank(ctx context.Context, path string, cfg globalcon
 }
 
 func readRunnerRuntimeConfig(ctx context.Context, path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
+	cfg, err := readRunnerConfiguration(path, opts...)
+	if err != nil {
+		return cfg, err
+	}
+	return resolveRunnerProjects(ctx, cfg)
+}
+
+func readRunnerConfiguration(path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
 	cfg, err := globalconfig.Read(path, opts...)
 	if err == nil {
-		return resolveRunnerProjects(ctx, cfg)
+		return cfg, nil
 	}
 	runnerOpts := append(slices.Clone(opts), globalconfig.WithMissingProjectPaths())
 	runner, runnerErr := globalconfig.Read(path, runnerOpts...)
