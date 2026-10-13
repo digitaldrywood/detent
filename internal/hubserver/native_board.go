@@ -18,6 +18,7 @@ import (
 const nativeBoardReplayLimit = 2048
 
 func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
+	d.refreshAnalyticsRollups(ctx, tx)
 	if err := refreshNativeBoard(ctx, tx, d.now()); err != nil {
 		return err
 	}
