@@ -65,11 +65,13 @@ for (const [state, message] of [
   });
 }
 
-test("account with no organization requests an invitation from an owner", async ({ page }) => {
+test("account with no organization can create one or request an invitation from an owner", async ({ page }) => {
   await page.goto(entry.fixture.origin);
   await page.getByRole("link", { name: "Sign in", exact: true }).click();
   await page.getByRole("link", { name: "dana@example.test (account)", exact: true }).click();
-  await expect(page.getByText("Ask an owner to send you an invitation.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No organizations yet", exact: true })).toBeVisible();
+  await expect(page.getByText("Create one to get started, or ask an owner to invite you to theirs.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create organization", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Join with invitation" })).toHaveCount(0);
   await expect(page.locator('input[name="token"]')).toHaveCount(0);
   const response = await page.request.get(`${entry.fixture.origin}/invitations/join`);

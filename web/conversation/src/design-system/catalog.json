@@ -11,12 +11,12 @@
       "exports": ["Button", "buttonVariants", "InlineButton", "SplitButton", "ButtonSize", "ButtonVariant"],
       "variants": {
         "variant": ["default", "secondary", "outline", "ghost", "ghost-muted", "ghost-destructive", "destructive", "destructive-outline", "warning-outline", "glass", "overlay", "link", "media-close", "media-navigation"],
-        "size": ["micro", "compact", "xs", "sm", "sm-multiline", "default", "lg", "xl", "icon-tiny", "icon-micro", "icon-xs", "icon-sm", "icon", "icon-lg", "icon-xl"],
+        "size": ["micro", "compact", "xs", "sm", "sm-multiline", "default", "lg", "touch", "xl", "icon-tiny", "icon-micro", "icon-xs", "icon-sm", "icon", "icon-lg", "icon-xl"],
         "tone": ["default", "muted", "destructive", "picker"]
       },
       "states": ["hover", "focus-visible", "pressed", "disabled"],
       "keyboard": "Native button: Tab focuses, Enter and Space activate. With `render`, the rendered element must stay focusable and keep button semantics.",
-      "use": "Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size=\"compact\"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.",
+      "use": "Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size=\"compact\"` is the toolbar size family; `touch` keeps a 44px target at every breakpoint; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.",
       "avoid": "Restyling with arbitrary radius, fill or font classes, or calling `buttonVariants` from app code to dress a non-button. Use Badge for static status and a link for navigation that is not an action.",
       "related": ["toggle", "group", "panel-tab-close-button"]
     },
@@ -584,11 +584,12 @@
       "exports": ["Empty", "EmptyHeader", "EmptyTitle", "EmptyDescription", "EmptyContent", "EmptyMedia"],
       "variants": {
         "variant": ["default", "icon"],
-        "size": ["compact", "default", "hero"]
+        "panel": ["none", "dashed"],
+        "size": ["compact", "default", "hero", "entry"]
       },
       "states": [],
       "keyboard": "Not interactive itself; EmptyContent holds focusable actions.",
-      "use": "Explaining why a region has no content and offering the relevant next action. `size=\"compact\"` fits panels and popovers; `hero` is a first-run page. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).",
+      "use": "Explaining why a region has no content and offering the relevant next action. `size=\"compact\"` fits panels and popovers; `hero` is a first-run page. `entry` is a compact, left-aligned invitation or creation panel; `panel=\"dashed\"` adds its quiet boundary. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).",
       "avoid": "Errors and unavailable capabilities that are not simply absence (use Alert).",
       "related": ["alert", "skeleton"]
     },
@@ -781,6 +782,37 @@
       "use": "A bordered list of icon, title and description rows for discovering integrations or options.",
       "avoid": "Settings rows (use SettingsRow).",
       "related": ["settings-layout"]
+    },
+    {
+      "id": "navigation-list",
+      "name": "Navigation list",
+      "kind": "primitive",
+      "group": "Entry",
+      "status": "available",
+      "source": "src/components/ui/navigation-list.tsx",
+      "exports": [
+        "NavigationList",
+        "NavigationListLink",
+        "NavigationMonogram"
+      ],
+      "variants": {
+        "variant": [
+          "default",
+          "create",
+          "quiet"
+        ]
+      },
+      "states": [
+        "hover",
+        "focus-visible"
+      ],
+      "keyboard": "Native links: Tab reaches each row in reading order; Enter navigates. Each row has one focus target and a visible inset ring.",
+      "use": "A divided list of destinations with a monogram, name and optional secondary text. NavigationListLink owns the whole-row link; create is a muted add row and quiet is a separate bordered destination. NavigationMonogram derives a stable categorical tint from identity, uses neutral ink without identity, or a dashed plus slot for create.",
+      "avoid": "Actions that submit or mutate data (use Button), workspace navigation (use the existing sidebar), and selectable options (use Select or Combobox).",
+      "related": [
+        "button",
+        "empty"
+      ]
     },
     {
       "id": "standalone-page",

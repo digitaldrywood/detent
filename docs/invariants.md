@@ -181,7 +181,9 @@ run in the full suite: hourly on pinned `develop` commits, and on every push
 or dispatch to `release/*`. Develop receives one full suite per SHA across
 scheduled and manual runs. Develop preflight skips completed non-cancelled
 runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
-runs it again. Release runs always validate their event SHA, independently of
+runs it again. The finalizer reports skipped scheduled activity without
+publishing green validation or release evidence. Release runs always validate
+their event SHA, independently of
 develop and other release branches. Release evidence is the green full suite
 on the release branch head, never develop evidence reused after cherry-picks.
 Successful develop validation publishes `develop-full-ci`. Release validation
@@ -211,9 +213,12 @@ evidence, refuses superseded evidence, and resumes dispatch only when no release
 run exists for that tag. Operator-landed
 Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
 its successful `make check-land` Actions check is authenticated by the existing
-provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
-prerelease before deploying the same version and binary through staging and
-production. These prereleases do not replace stable installer or package feeds;
+provenance owner, and the workflow publishes a signed next-patch
+`op.r.<run-number>.g<sha12>` prerelease. The workflow run number orders successive
+operator releases independently of source hashes. A retry reuses its original
+tag only while the latest stable release has not superseded it. Staging and
+production deploy the same version and binary. These prereleases do not replace
+stable installer or package feeds;
 enrolled runners follow the Hub through the existing coordinated update owner.
 Every failing scheduled job is reported through the
 selected native owner at least High into Todo under a stable job fingerprint,

@@ -37,6 +37,10 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 	}
 	for _, p := range projects {
 		scope := nativeScope{organization: organization, project: tracker.ProjectID(p.ID), credential: apiCredential{Scope: apiScopeAdmin}}
+		p.Scheduled, err = readHealthScheduled(ctx, q, scope, now)
+		if err != nil {
+			return snapshot, err
+		}
 		candidates, err := readHealthCandidates(ctx, q, scope, now)
 		if err != nil {
 			return snapshot, err

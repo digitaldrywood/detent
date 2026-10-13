@@ -4,11 +4,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
+	githubToken := "ghp_" + strings.Repeat("1234567890", 3)
+	timeout := "panic: test timed out after 1m0s\nrunning tests:\n\tTestGateReceipt/世界 (1m0s)\n\n" +
+		"goroutine 1 [chan receive]:\ngithub.com/example-org/example-project/internal/worker.TestGateReceipt(0xc000001)\n\t/Users/private/project/internal/worker/worker_test.go:42 +0x12\n" +
+		"Authorization: Bearer private-bearer-token\nDEPLOY_TOKEN=private-assignment\nhttps://private.example/log?secret=private-url\n" +
+		strings.Repeat("goroutine 99 [select]:\n\t/home/private/project/worker.go:12 +0x1 世界\n", 300) +
+		"FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s\n"
 	tests := []struct {
 		name          string
 		resultCommand string
@@ -18,24 +25,36 @@ func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
 		wantCommand   string
 		wantOutput    string
 		wantChecks    int
+		wantContains  []string
+		wantTruncated bool
+		wasTruncated  bool
 	}{
 		{name: "Bearer output", output: "Bearer private-bearer-token", wantCommand: "go test internalexample", wantOutput: "Bearer [redacted]", wantChecks: 1},
-		{name: "ghp token in check command", command: "go test ghp_123456789012345678901234567890", wantOutput: "", wantChecks: 0},
-		{name: "ghp token in command", resultCommand: "go test ghp_123456789012345678901234567890", wantCommand: "go test [redacted]", wantOutput: "", wantChecks: 1},
+		{name: "ghp token in check command", command: "go test " + githubToken, wantOutput: "", wantChecks: 0},
+		{name: "ghp token in command", resultCommand: "go test " + githubToken, wantCommand: "go test [redacted]", wantOutput: "", wantChecks: 1},
 		{name: "sk token in check scope", scope: "sk-123456789012345678901234567890", wantOutput: "", wantChecks: 0},
 		{name: "private scope is dropped", scope: "/Users/private/project", wantOutput: "", wantChecks: 0},
 		{name: "sk output", output: "sk-123456789012345678901234567890", wantCommand: "go test internalexample", wantOutput: "[redacted]", wantChecks: 1},
+		{name: "source diagnostic identity", output: "--- FAIL: TestGateReceipt/child (0.01s)\n    internal/worker/worker_test.go:42: failed\nFAIL github.com/example-org/example-project/internal/worker 1s\n", wantChecks: 1, wantContains: []string{"TestGateReceipt/child", "internal/worker/worker_test.go:42", "FAIL github.com/example-org/example-project/internal/worker"}},
+		{name: "private host paths", output: "path=/Users/private/project/file.go C:\\Users\\private\\file.go \\\\private\\share\\file.go ~/private/file.go (/home/private/file.go) file:///private/file.go", wantChecks: 1, wantContains: []string{"[redacted]"}},
+		{name: "long timeout", output: timeout, wantChecks: 1, wantTruncated: true, wantContains: []string{"panic: test timed out after 1m0s", "TestGateReceipt/世界", "github.com/example-org/example-project/internal/worker.TestGateReceipt", "FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s", "[redacted]", "truncated"}},
+		{name: "long timeout after build output", output: strings.Repeat("ok example.org/other/package\n", 300) + timeout, wantChecks: 1, wantTruncated: true, wantContains: []string{"panic: test timed out after 1m0s", "TestGateReceipt/世界", "FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s", "truncated"}},
+		{name: "failure near end", output: strings.Repeat("世界\n", 1000) + "--- FAIL: TestGateReceipt/child (0.01s)\n    worker_test.go:42: connection refused\nFAIL example.org/worker 1s\n", wantChecks: 1, wantTruncated: true, wantContains: []string{"TestGateReceipt/child", "connection refused", "FAIL example.org/worker", "[earlier output truncated]"}},
+		{name: "long ordinary failure", output: "--- FAIL: TestGateReceipt/child (0.01s)\n    worker_test.go:42: connection refused\n" + strings.Repeat("diagnostic 世界\n", 1000) + "FAIL example.org/worker 1s\n", wantChecks: 1, wantTruncated: true, wantContains: []string{"TestGateReceipt/child", "connection refused", "FAIL example.org/worker", "truncated"}},
+		{name: "unavailable original diagnostic", output: "[earlier output truncated]\n" + strings.Repeat("界", 1356), wantOutput: "[earlier output truncated]\n" + strings.Repeat("界", 1356), wantChecks: 1, wasTruncated: true, wantTruncated: true},
+		{name: "invalid UTF-8", output: "failed 世界\xff", wantOutput: "failed 世界�", wantChecks: 1},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			resultCommand := valueOr(test.resultCommand, "go test internalexample")
 			wantCommand := valueOr(test.wantCommand, resultCommand)
 			result := gate.CommandResult{
-				Command:  resultCommand,
-				HeadSHA:  strings.Repeat("a", 40),
-				TreeSHA:  strings.Repeat("b", 40),
-				ExitCode: 1,
-				Output:   test.output,
+				Command:         resultCommand,
+				HeadSHA:         strings.Repeat("a", 40),
+				TreeSHA:         strings.Repeat("b", 40),
+				ExitCode:        1,
+				Output:          test.output,
+				OutputTruncated: test.wasTruncated,
 				Evidence: &gate.CommandEvidence{Checks: []gate.CheckObservation{{
 					Scope:      valueOr(test.scope, "internalexample"),
 					Command:    valueOr(test.command, "go test internalexample"),
@@ -49,8 +68,25 @@ func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
 			if got.Command != wantCommand {
 				t.Fatalf("PublicGateResult command = %q, want %q", got.Command, wantCommand)
 			}
-			if got.Output != test.wantOutput || strings.Contains(got.Output, "private-bearer-token") || strings.Contains(got.Output, "123456789012345678901234567890") {
+			if test.wantContains == nil && got.Output != test.wantOutput {
 				t.Fatalf("PublicGateResult output = %q, want %q", got.Output, test.wantOutput)
+			}
+			for _, want := range test.wantContains {
+				if !strings.Contains(got.Output, want) {
+					t.Fatalf("PublicGateResult output missing %q", want)
+				}
+			}
+			for _, secret := range []string{"private", "123456789012345678901234567890"} {
+				if strings.Contains(got.Output, secret) {
+					t.Fatalf("PublicGateResult output leaked %q", secret)
+				}
+			}
+			if got.OutputTruncated != test.wantTruncated || len(got.Output) > NativeFinalizationTextLimit || !utf8.ValidString(got.Output) || got.ExitCode != 1 || got.HeadSHA != result.HeadSHA || got.TreeSHA != result.TreeSHA {
+				t.Fatal("PublicGateResult lost output bounds or failed receipt identity")
+			}
+			again := PublicGateResult(got)
+			if again.Output != got.Output || again.OutputTruncated != got.OutputTruncated || result.Output != test.output {
+				t.Fatal("public projection changed original output or was not stable")
 			}
 			if got.Evidence == nil || len(got.Evidence.Checks) != test.wantChecks {
 				t.Fatalf("PublicGateResult checks = %+v, want %d", got.Evidence, test.wantChecks)
