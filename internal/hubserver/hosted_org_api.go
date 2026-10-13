@@ -36,11 +36,12 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
+	administration := s.hostedAdministrationSession
 	e.GET(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.projectSecretMetadata), session)
-	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), session)
-	e.DELETE(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.removeProjectSecret), session)
+	e.PUT(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.setProjectSecret), administration)
+	e.DELETE(hostedOrganizationBase+"/secrets/:kind", s.organizationSpritesScope(s.removeProjectSecret), administration)
 	e.GET(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.getSpritePool), session)
-	e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), session)
+	e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), administration)
 
 	for _, path := range []string{hostedOrganizationBase + "/work-view-preference", hostedOrganizationBase + "/projects/:project/work-view-preference"} {
 		e.GET(path, s.workViewPreference, session)
@@ -48,28 +49,39 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 		e.DELETE(path, s.workViewPreference, session)
 	}
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
-	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, session)
-	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, session)
+	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, administration)
+	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
 	e.GET(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
-	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, session)
+	e.PUT(hostedOrganizationBase+"/monthly-budget", s.organizationMonthlyBudgetScope, administration)
 	e.GET(hostedOrganizationBase+"/model-selection", s.getOrganizationModelSelection, session)
-	e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, session)
+	e.PUT(hostedOrganizationBase+"/model-selection", s.updateOrganizationModelSelection, administration)
 	e.GET(hostedOrganizationBase+"/members", s.listHostedMembers, session)
-	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, session)
-	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, session)
-	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, session)
-	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, session)
-	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, session)
-	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, session)
-	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, session)
+	e.POST(hostedOrganizationBase+"/members/invitations", s.inviteHostedMemberJSON, administration)
+	e.PUT(hostedOrganizationBase+"/members/invitations/:invitation", s.editHostedInvitationJSON, administration)
+	e.DELETE(hostedOrganizationBase+"/members/invitations/:invitation", s.revokeHostedInvitationJSON, administration)
+	e.POST(hostedOrganizationBase+"/members/invitations/:invitation/resend", s.resendHostedInvitationJSON, administration)
+	e.DELETE(hostedOrganizationBase+"/members/:member", s.revokeHostedMemberJSON, administration)
+	e.PUT(hostedOrganizationBase+"/members/:member/role", s.changeHostedRoleJSON, administration)
+	e.PUT(hostedOrganizationBase+"/members/:member/grants", s.changeHostedGrantJSON, administration)
 	e.GET(hostedOrganizationBase+"/projects", s.listHostedProjects, session)
 	e.GET(hostedOrganizationBase+"/project-rank", s.hostedProjectRank, session)
-	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, session)
+	e.PUT(hostedOrganizationBase+"/project-rank", s.updateHostedProjectRank, administration)
 	e.GET(hostedOrganizationBase+"/fleet", s.hostedFleet, session)
 	e.GET(hostedOrganizationBase+"/plan", s.hostedPlanJSON, session)
 	e.POST(hostedOrganizationBase+"/switch", s.switchHostedOrganizationJSON, session)
 	e.POST(hostedOrganizationBase+"/invitations/accept", s.acceptHostedInvitationJSON, session)
 	e.POST(hostedOrganizationBase+"/support/start", s.startHostedSupportJSON, session)
+}
+
+func (s *Service) hostedAdministrationSession(next echo.HandlerFunc) echo.HandlerFunc {
+	session := s.hostedSessionOnly(next)
+	return func(c echo.Context) error {
+		credential, _, err := s.authenticateAPIRequest(c)
+		if err == nil && credential.HostedRole == "reporter" {
+			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+		}
+		return session(c)
+	}
 }
 
 // hostedSessionOnly refuses a bearer credential on the session API. These
