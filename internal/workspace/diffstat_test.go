@@ -79,15 +79,21 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name    string
-		advance bool
-		dirty   bool
-		wantErr bool
+		name           string
+		advance        bool
+		dirty          bool
+		missingPullRef bool
+		missingBranch  bool
+		movedBranch    bool
+		wantErr        bool
 	}{
 		{name: "stable head"},
 		{name: "matching head with dirty review workspace", dirty: true, wantErr: true},
 		{name: "head changes before checkout", advance: true},
 		{name: "dirty review workspace", advance: true, dirty: true, wantErr: true},
+		{name: "missing pull ref uses published branch", advance: true, missingPullRef: true},
+		{name: "missing pull ref and branch", missingPullRef: true, missingBranch: true, wantErr: true},
+		{name: "missing pull ref with moved branch", advance: true, missingPullRef: true, movedBranch: true, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -123,9 +129,28 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 				}
 			}
 			issue.PullRequestHeadSHA = wanted
+			if tt.missingPullRef {
+				issue.PullRequestNumber = 119
+				issue.PullRequestBranch = info.Branch
+			}
+			if tt.missingBranch {
+				issue.PullRequestBranch = "missing-review-branch"
+			}
+			if tt.movedBranch {
+				issue.PullRequestHeadSHA = a
+			}
 			err = backend.SeedReviewHead(t.Context(), info, issue)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("SeedReviewHead() error = %v, want error %t", err, tt.wantErr)
+			}
+			if tt.movedBranch {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Fatalf("SeedReviewHead() error = %v, want head_moved refusal", err)
+				}
+			}
+			if tt.missingBranch && (!strings.Contains(err.Error(), "refs/pull/119/head") || !strings.Contains(err.Error(), "refs/heads/missing-review-branch")) {
+				t.Fatalf("SeedReviewHead() error = %v, want both missing remote refs", err)
 			}
 			head, err := backend.Head(t.Context(), info, issue)
 			if err != nil {
