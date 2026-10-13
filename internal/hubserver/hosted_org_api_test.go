@@ -127,7 +127,7 @@ func TestHostedMemberManagement(t *testing.T) {
 				if test.name == "wrong organization" {
 					path = "/api/v2/organizations/org_other/name"
 				}
-				f.api(t, "owner", http.MethodPut, path, map[string]string{"name": test.value}, test.status)
+				f.api(t, "owner", http.MethodPut, path, map[string]string{"name": test.value, "idempotency_key": "rename-" + test.name}, test.status)
 				var after string
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id=?", "org_browser_preview").Scan(&after); err != nil {
 					t.Fatal(err)
@@ -138,6 +138,28 @@ func TestHostedMemberManagement(t *testing.T) {
 				}
 				if after != want {
 					t.Fatalf("organization name = %q, want %q", after, want)
+				}
+				if test.name == "owner" {
+					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Latest team", "idempotency_key": "rename-later"}, http.StatusOK)
+					var replay organizationNameSettings
+					browserHostedDecode(t, f.api(t, "owner", http.MethodPut, path, map[string]string{"name": test.value, "idempotency_key": "rename-owner"}, http.StatusOK), &replay)
+					if replay.Name != "Renamed team" {
+						t.Fatalf("replayed name = %q", replay.Name)
+					}
+					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Conflicting name", "idempotency_key": "rename-owner"}, http.StatusConflict)
+					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Missing key"}, http.StatusUnprocessableEntity)
+					var audits int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM hosted_audit WHERE event='action' AND route=?", "PUT /api/v2/organizations/:organization/name").Scan(&audits); err != nil {
+						t.Fatal(err)
+					}
+					if audits != 2 {
+						t.Fatalf("rename audits = %d, want 2", audits)
+					}
+					var current organizationNameSettings
+					browserHostedDecode(t, f.api(t, "viewer", http.MethodGet, path, nil, http.StatusOK), &current)
+					if current.Name != "Latest team" {
+						t.Fatalf("current name = %q", current.Name)
+					}
 				}
 			})
 		}

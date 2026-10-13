@@ -47,6 +47,7 @@ import { DiffPanelLoadingState, DiffPanelShell } from "../../../components/DiffP
 import { PreviewPanelShell } from "../../../components/preview/PreviewPanelShell.tsx";
 import { useResizableWidth } from "../../../hooks/useResizableWidth.ts";
 import { SettingsSidebarNav } from "../../../components/settings/SettingsSidebarNav.tsx";
+import { OrganizationMembersProvider } from "../../../app/account/OrganizationMembers.tsx";
 import { SettingsHelp } from "../../../app/settings/SettingsHelp.tsx";
 import { ContextHelp } from "../../../app/components/ContextHelp.tsx";
 import { ExpandableText } from "../../../app/settings/ExpandableText.tsx";
@@ -547,11 +548,13 @@ const settings: Record<string, GalleryDoc> = {
         height: 520,
         render: () => (
           <ClientContext.Provider value={OWNER_CLIENT}>
-            <SidebarProvider className="h-full! min-h-0!">
-              <div className="flex h-full w-64 flex-col border-r border-border bg-sidebar" data-app-sidebar="">
-                <SettingsSidebarNav pathname="/settings/general" />
-              </div>
-            </SidebarProvider>
+            <OrganizationMembersProvider>
+              <SidebarProvider className="h-full! min-h-0!">
+                <div className="flex h-full w-64 flex-col border-r border-border bg-sidebar" data-app-sidebar="">
+                  <SettingsSidebarNav pathname="/settings/general" />
+                </div>
+              </SidebarProvider>
+            </OrganizationMembersProvider>
           </ClientContext.Provider>
         ),
       },

@@ -39,8 +39,7 @@ import {
   useSettingsNavItems,
 } from "./useAvailableSettingsSearchItems";
 
-import { useAccountApi } from "../../app/account/context.ts";
-import { useResource } from "../../app/account/useResource.ts";
+import { useOrganizationMembers } from "../../app/account/OrganizationMembers.tsx";
 
 type SectionIcons = Readonly<Record<string, ComponentType<{ className?: string }>>>;
 
@@ -58,8 +57,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const [query, setQuery] = useState("");
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const navItems = useSettingsNavItems();
-  const api = useAccountApi();
-  const members = useResource(() => api.members(), [api]);
+  const members = useOrganizationMembers();
   const memberCount = members.value?.member_count ?? members.value?.members.length;
   const sectionIcons = useMemo<SectionIcons>(
     () => Object.fromEntries(navItems.map((item) => [item.to, item.icon])),

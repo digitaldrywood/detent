@@ -22,14 +22,15 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
-import type { Invitation, Member, MembersResponse, ProjectGrant } from "../../contracts/account.ts";
+import type { Invitation, Member, ProjectGrant } from "../../contracts/account.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
-import { useMutation, useResource } from "./useResource.ts";
 import { behindSharedEntry } from "../entry/shared.ts";
+import { useOrganizationMembers } from "./OrganizationMembers.tsx";
+import { useMutation } from "./useResource.ts";
 import { signInPath } from "../../runtime/basePath.ts";
 
 const ROLES = ["owner", "admin", "member", "reporter", "viewer"] as const;
@@ -421,7 +422,7 @@ export function OrganizationSwitcher({
 export function OrganizationMembersRoute(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
-  const members = useResource<MembersResponse>(() => api.members(), [api]);
+  const members = useOrganizationMembers();
   const [removing, setRemoving] = React.useState<Member | null>(null);
   const [busyMember, setBusyMember] = React.useState<string | null>(null);
   const [memberErrors, setMemberErrors] = React.useState<Record<string, string>>({});
