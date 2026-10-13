@@ -249,6 +249,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const creatable = newIssueProjects(
     (accountBootstrap?.projects ?? []).filter((project) => projectId === null || project.id === projectId),
     null,
+    accountBootstrap?.actor.role,
   );
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
@@ -454,7 +455,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   onCreate={
                     newIssue.canCreate &&
                     !lane.terminal &&
-                    newIssueProjects(creatable, lane.name).length > 0
+                    newIssueProjects(creatable, lane.name, accountBootstrap?.actor.role).length > 0
                       ? () => newIssue.openNewIssue({ projectId, state: lane.name })
                       : null
                   }
