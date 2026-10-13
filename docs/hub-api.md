@@ -1450,6 +1450,23 @@ and progress after completion conflict. Client occurrence times never order even
 Legacy schema 1 events without sequence remain readable and writable for legacy
 attempts, but cannot be mixed into an ordered attempt.
 
+With `native_pre_provider_failure`, a failure before provider startup may begin
+and close an attempt with `run.finished` at sequence 1, without provider
+`identity`. It requires `terminal_failure` and positive local attempt/generation
+attribution in `runtime`; provider activity, usage, checkpoints, finalization,
+disposition and completion responses are excluded. The existing lease, runner,
+project and pinned-policy checks still apply. The terminal diagnostic retains
+its observation time, `stage: pre_provider` and a bounded redacted diagnostic.
+Attribution follows the recorded error class: infrastructure failures belong to
+the instance, while issue configuration and source recovery refusals belong to
+the issue. Timing alone does not establish ownership; unclassified failures leave
+attribution explicitly unavailable. Hook diagnostics contain only the hook name
+and exit status; hook output, commands, environment values and local paths are
+omitted.
+Existing attempt, runtime and MCP reads expose this receipt independently of a
+provider session. Older runners and unsupported Hubs retain explicit unavailable
+history; no attempt or provider metadata is backfilled.
+
 For native Code and Rework turns with a valid final `detent-status`, ordered
 `run.finished` data includes a `disposition` with `status`, `reason_code` when
 reported, blocker and human-action indicators, and `final_summary`. The summary

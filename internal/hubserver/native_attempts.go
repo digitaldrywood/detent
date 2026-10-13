@@ -157,6 +157,14 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		}
 		return nil
 	}
+	if data.Identity == nil && eventType == "run.finished" && data.Sequence == 1 && data.TerminalFailure != nil &&
+		data.Runtime != nil && data.Runtime.LocalAttemptID > 0 && data.Runtime.Generation > 0 &&
+		data.Runtime.Activity == nil && data.Runtime.Validation == nil && data.Runtime.Landing == nil && data.Runtime.Completion == nil && data.SessionID == "" &&
+		len(data.Usage) == 0 && data.Handoff == nil && data.Finalization == nil && data.Disposition == nil && data.CompletionBody == "" {
+		data.TerminalFailure.Stage = "pre_provider"
+		*data.TerminalFailure = data.TerminalFailure.Public()
+		return nil
+	}
 	if data.Sequence < 0 || data.Identity == nil || !validExecutionName(data.Identity.Role) || !validExecutionName(data.Identity.Backend) || !validExecutionName(data.Identity.Model) {
 		return nativeInvalid("Ordered events require a positive sequence and bounded execution identity")
 	}
@@ -254,11 +262,13 @@ AND attempt_id=? AND source='attempt' AND seq=? AND producer_lease_id=? AND prod
 	err = tx.QueryRowContext(ctx, "SELECT data_json, sequence, status FROM native_attempts WHERE id = ?", data.AttemptID).Scan(&previousJSON, &sequence, &status)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		if event.Type != "run.started" || data.Sequence != 1 {
-			return false, false, nativeExecutionConflict("An attempt must begin with run.started at sequence 1")
+		if (event.Type != "run.started" && (event.Type != "run.finished" || data.Identity != nil)) || data.Sequence != 1 {
+			return false, false, nativeExecutionConflict("An attempt must begin at sequence 1 with a provider start or terminal setup failure")
 		}
-		if err := validateProviderAttempt(ctx, tx, scope, data, now); err != nil {
-			return false, false, err
+		if data.Identity != nil {
+			if err := validateProviderAttempt(ctx, tx, scope, data, now); err != nil {
+				return false, false, err
+			}
 		}
 		var conflicts int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts WHERE lease_id = ? OR (run_id = ? AND work_item_id != ?)`, data.LeaseID, data.RunID, item).Scan(&conflicts); err != nil {
@@ -284,8 +294,12 @@ AND attempt_id=? AND source='attempt' AND seq=? AND producer_lease_id=? AND prod
 		if err != nil {
 			return false, false, fmt.Errorf("read attempt dispatch state: %w", err)
 		}
+		status = "running"
+		if data.Identity == nil {
+			status = data.Outcome
+		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at, work_item_revision, dispatch_generation)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, encoded, formatHubTime(now), formatHubTime(now), revision, dispatch.generation)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organization, scope.project, item, data.LeaseID, data.FencingToken, data.RunID, data.Sequence, status, encoded, formatHubTime(now), formatHubTime(now), revision, dispatch.generation)
 		if err != nil {
 			return false, false, err
 		}
@@ -303,7 +317,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`, data.AttemptID, scop
 		}
 		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
-		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection && !reconnecting || data.Sequence != sequence+1 || event.Type == "run.started" {
+		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || data.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection && !reconnecting || data.Sequence != sequence+1 || event.Type == "run.started" {
 			return false, false, nativeExecutionConflict("Attempt identity, lifecycle or next sequence does not match")
 		}
 		if previous.Runtime != nil && !reconnecting {

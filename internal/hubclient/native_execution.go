@@ -511,8 +511,20 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	if preparationErr != nil {
 		outcome = "failed"
 	}
-	if e.data.Identity == nil || e.data.Outcome != "" {
+	if e.data.Outcome != "" {
 		return preparationErr
+	}
+	if e.data.Identity == nil {
+		if e.preparedFailure == nil || outcome == "succeeded" {
+			return preparationErr
+		}
+		supported, err := e.claim.source.client.HubFeature(ctx, tracker.NativePreProviderFailureCapability)
+		if err != nil || !supported {
+			return errors.Join(preparationErr, err)
+		}
+		e.preparedFailure.Stage = "pre_provider"
+		public := e.preparedFailure.Public()
+		e.preparedFailure = &public
 	}
 	e.data.Disposition = e.preparedDisposition
 	e.data.TerminalFailure = e.preparedFailure
@@ -620,7 +632,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		e.usageStartedAt = at
 		e.activityBoundary(at, "")
 	}
-	if kind == "run.finished" {
+	if kind == "run.finished" && e.data.Identity != nil {
 		e.activityBoundary(at, outcome)
 	}
 	data := e.data

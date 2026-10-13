@@ -783,89 +783,157 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if decision == nil || decision.EvidenceID != decisionID || decision.Source != "native_claim" || decision.Outcome != "claimed" || !decision.Historical || explanation.Eligibility.Source != explain.SourceAvailable {
 		t.Fatalf("recorded claim history missing: %#v", explanation.Eligibility)
 	}
-	t.Run("recorded provider terminal failure", func(t *testing.T) {
-		failedIssue := f.create(t, "Provider request rejected")
-		path := f.base + "/work-items/" + string(failedIssue.WorkItemID)
-		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, providerClaim(registered, failedIssue, "provider-terminal-session"))
-		requireNativeStatus(t, response, http.StatusOK)
-		var lease tracker.NativeLease
-		decodeHubResponse(t, response, &lease)
-		started := nativeStartedEvent(lease)
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, started), http.StatusOK)
-		code, maxChars, actualChars := -32602, int64(1048576), int64(2927066)
-		finished := started
-		finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", "provider-finished", 2, "failed"
-		finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "count 116 attempts failed /private/error token=private-secret\nprivate-prompt", ErrorClass: "protocol", ObservedAt: at, Provider: "codex", Operation: "turn/start", RPCCode: &code, ProviderCode: "input_too_large", MaxChars: &maxChars, ActualChars: &actualChars, Source: "/private/source", Summary: "private-prompt token=private-secret", Coverage: "private-rpc-data", Unavailable: []string{"private-prompt"}}
-		for _, test := range []struct {
-			name   string
-			change func(*tracker.NativeRunEvent)
-		}{
-			{"nonterminal failure", func(e *tracker.NativeRunEvent) { e.Type, e.Data.Outcome = "run.checkpointed", "" }},
-			{"successful failure", func(e *tracker.NativeRunEvent) { e.Data.Outcome = "succeeded" }},
-			{"unsequenced failure", func(e *tracker.NativeRunEvent) { e.Data.Sequence = 0 }},
-			{"undated failure", func(e *tracker.NativeRunEvent) { e.Data.TerminalFailure.ObservedAt = time.Time{} }},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				invalid := finished
-				failure := *finished.Data.TerminalFailure
-				invalid.Data.TerminalFailure = &failure
-				invalid.IdempotencyKey = test.name
-				test.change(&invalid)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, invalid), http.StatusUnprocessableEntity)
-			})
-		}
-		for range 2 {
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finished), http.StatusOK)
-		}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-		for _, tool := range []string{operatortool.GetNativeRun, operatortool.WorkAttemptReceipt, operatortool.ExplainItem} {
-			t.Run(tool, func(t *testing.T) {
-				args := map[string]any{"project_id": string(f.project.ID), "reference": string(failedIssue.WorkItemID), "native_attempt_id": started.Data.AttemptID}
-				if tool == operatortool.ExplainItem {
-					delete(args, "native_attempt_id")
+	for _, setupOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recorded terminal failure setup=%t", setupOnly), func(t *testing.T) {
+			failedIssue := f.create(t, fmt.Sprintf("Terminal failure setup=%t", setupOnly))
+			path := f.base + "/work-items/" + string(failedIssue.WorkItemID)
+			if setupOnly {
+				result, err := call(operatortool.BoardSession, map[string]any{"project_id": string(f.project.ID), "reference": string(failedIssue.WorkItemID)})
+				var evidence operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
+				if err != nil || json.Unmarshal(result.Content, &evidence) != nil || evidence.Data.Attempt != nil || !slices.Contains(evidence.Data.Unavailable, "native_attempt") {
+					t.Fatalf("no-attempt case fabricated history: %s err=%v", result.Content, err)
 				}
-				if tool == operatortool.GetNativeRun {
-					args = map[string]any{"project_id": string(f.project.ID), "work_item_id": string(failedIssue.WorkItemID), "attempt_id": started.Data.AttemptID}
-				}
-				result, err := call(tool, args)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var run operatortool.ChangeResult
-				var runtime operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
-				var explanation explain.IssueExplanation
-				var attempt *tracker.NativeAttempt
-				switch tool {
-				case operatortool.GetNativeRun:
-					err = json.Unmarshal(result.Content, &run)
-					attempt = run.Attempt
-				case operatortool.WorkAttemptReceipt:
-					err = json.Unmarshal(result.Content, &runtime)
-					attempt = runtime.Data.Attempt
-				case operatortool.ExplainItem:
-					err = json.Unmarshal(result.Content, &explanation)
-					if explanation.FailureSignature == nil || explanation.FailureSignature.Signature != "count <n> attempts failed [redacted] [redacted]" || explanation.FailureSignature.Count != 1 || explanation.FailureSignature.Partial {
-						t.Fatalf("MCP lost failure signature: %s", result.Content)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, providerClaim(registered, failedIssue, fmt.Sprintf("provider-terminal-session-%t", setupOnly)))
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			started := nativeStartedEvent(lease)
+			if setupOnly {
+				older := started
+				older.IdempotencyKey = "older-provider-start"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, older), http.StatusOK)
+				older.Type, older.IdempotencyKey, older.Data.Sequence, older.Data.Outcome = "run.finished", "older-provider-finish", 2, "succeeded"
+				older.Data.Disposition = &tracker.NativeDisposition{Status: "complete"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, older), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, providerClaim(registered, failedIssue, "setup-terminal-session"))
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &lease)
+				started = nativeStartedEvent(lease)
+			}
+			if !setupOnly {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, started), http.StatusOK)
+			}
+			code, maxChars, actualChars := -32602, int64(1048576), int64(2927066)
+			finished := started
+			finished.Type, finished.IdempotencyKey, finished.Data.Sequence, finished.Data.Outcome = "run.finished", fmt.Sprintf("provider-finished-%t", setupOnly), 2, "failed"
+			finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "count 116 attempts failed /private/error token=private-secret\nprivate-prompt", ErrorClass: "protocol", ObservedAt: at, Provider: "codex", Operation: "turn/start", RPCCode: &code, ProviderCode: "input_too_large", MaxChars: &maxChars, ActualChars: &actualChars, Source: "/private/source", Summary: "private-prompt token=private-secret", Coverage: "private-rpc-data", Unavailable: []string{"private-prompt"}}
+			if setupOnly {
+				finished.Data.Identity, finished.Data.Sequence = nil, 1
+				finished.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 169, Generation: 28, Phase: "completed", HeartbeatAt: at}
+				finished.Data.TerminalFailure = &tracker.NativeTerminalFailure{Error: "after_create exit status 127: script not found /private/error token=private-secret\nprivate-prompt", ErrorClass: "workspace_hook", ObservedAt: at}
+			}
+			for _, test := range []struct {
+				name   string
+				change func(*tracker.NativeRunEvent)
+			}{
+				{"nonterminal failure", func(e *tracker.NativeRunEvent) { e.Type, e.Data.Outcome = "run.checkpointed", "" }},
+				{"successful failure", func(e *tracker.NativeRunEvent) { e.Data.Outcome = "succeeded" }},
+				{"unsequenced failure", func(e *tracker.NativeRunEvent) { e.Data.Sequence = 0 }},
+				{"undated failure", func(e *tracker.NativeRunEvent) { e.Data.TerminalFailure.ObservedAt = time.Time{} }},
+				{"setup claims source", func(e *tracker.NativeRunEvent) {
+					if setupOnly {
+						e.Data.Finalization = &tracker.NativeFinalization{ObservedAt: at, Settled: true}
+					} else {
+						e.Data.Identity = nil
 					}
-					if explanation.NativeRuntime != nil {
-						attempt = explanation.NativeRuntime.Attempt
+				}},
+				{"setup claims provider session", func(e *tracker.NativeRunEvent) {
+					if setupOnly {
+						copy := *e.Data.Runtime
+						copy.Activity = &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 43}
+						e.Data.Runtime = &copy
+					} else {
+						e.Data.Identity = nil
 					}
-				}
-				if err != nil || attempt == nil || attempt.AttemptID != started.Data.AttemptID || attempt.FencingToken != lease.FencingToken || attempt.TerminalFailureAvailability != "available" || attempt.FinalizationAvailability != "unavailable" || attempt.ClaimReleasedAt == nil || attempt.Status != "failed" {
-					t.Fatalf("MCP lost terminal failure identity: %s, %v", result.Content, err)
-				}
-				failure := attempt.TerminalFailure
-				if failure == nil || failure.Provider != "codex" || failure.Operation != "turn/start" || failure.ProviderCode != "input_too_large" || failure.RPCCode == nil || *failure.RPCCode != code || failure.MaxChars == nil || *failure.MaxChars != maxChars || failure.ActualChars == nil || *failure.ActualChars != actualChars || !failure.ObservedAt.Equal(at) || failure.Source != "host_runner_completion" {
-					t.Fatalf("MCP lost recorded provider diagnostics: %s", result.Content)
-				}
-				for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
-					if strings.Contains(string(result.Content), private) {
-						t.Fatalf("MCP exposed %q", private)
+				}},
+				{"setup missing local identity", func(e *tracker.NativeRunEvent) {
+					if setupOnly {
+						copy := *e.Data.Runtime
+						copy.LocalAttemptID = 0
+						e.Data.Runtime = &copy
+					} else {
+						e.Data.Identity = nil
 					}
+				}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					invalid := finished
+					failure := *finished.Data.TerminalFailure
+					invalid.Data.TerminalFailure = &failure
+					invalid.IdempotencyKey = test.name
+					test.change(&invalid)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, invalid), http.StatusUnprocessableEntity)
+				})
+			}
+			for range 2 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, finished), http.StatusOK)
+			}
+			if setupOnly {
+				result, err := call(operatortool.WorkRuns, map[string]any{"project_id": string(f.project.ID), "reference": string(failedIssue.WorkItemID)})
+				var runs operatortool.WorkReadResult[tracker.Page[tracker.NativeAttempt]]
+				if err != nil || json.Unmarshal(result.Content, &runs) != nil || len(runs.Data.Items) != 2 || runs.Data.Items[0].Status != "succeeded" || runs.Data.Items[0].Identity == nil || runs.Data.Items[1].AttemptID != finished.Data.AttemptID || runs.Data.Items[1].TerminalFailure == nil {
+					t.Fatalf("work_runs lost setup or historical provider attempt: %s err=%v", result.Content, err)
 				}
-			})
-		}
-	})
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			wantSignature := "count <n> attempts failed [redacted] [redacted]"
+			if setupOnly {
+				wantSignature = "after_create exit status 127: script not found [redacted] [redacted]"
+			}
+			for _, tool := range []string{operatortool.GetNativeRun, operatortool.WorkAttemptReceipt, operatortool.BoardSession, operatortool.ExplainItem} {
+				t.Run(tool, func(t *testing.T) {
+					args := map[string]any{"project_id": string(f.project.ID), "reference": string(failedIssue.WorkItemID), "native_attempt_id": started.Data.AttemptID}
+					if tool == operatortool.ExplainItem || tool == operatortool.BoardSession {
+						delete(args, "native_attempt_id")
+					}
+					if tool == operatortool.GetNativeRun {
+						args = map[string]any{"project_id": string(f.project.ID), "work_item_id": string(failedIssue.WorkItemID), "attempt_id": started.Data.AttemptID}
+					}
+					result, err := call(tool, args)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var run operatortool.ChangeResult
+					var runtime operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
+					var explanation explain.IssueExplanation
+					var attempt *tracker.NativeAttempt
+					switch tool {
+					case operatortool.GetNativeRun:
+						err = json.Unmarshal(result.Content, &run)
+						attempt = run.Attempt
+					case operatortool.WorkAttemptReceipt, operatortool.BoardSession:
+						err = json.Unmarshal(result.Content, &runtime)
+						attempt = runtime.Data.Attempt
+					case operatortool.ExplainItem:
+						err = json.Unmarshal(result.Content, &explanation)
+						if explanation.FailureSignature == nil || explanation.FailureSignature.Signature != wantSignature || explanation.FailureSignature.Count != 1 || explanation.FailureSignature.Partial {
+							t.Fatalf("MCP lost failure signature: %s", result.Content)
+						}
+						if explanation.NativeRuntime != nil {
+							attempt = explanation.NativeRuntime.Attempt
+						}
+					}
+					if err != nil || attempt == nil || attempt.AttemptID != started.Data.AttemptID || attempt.FencingToken != lease.FencingToken || attempt.TerminalFailureAvailability != "available" || attempt.FinalizationAvailability != "unavailable" || attempt.ClaimReleasedAt == nil || attempt.Status != "failed" {
+						t.Fatalf("MCP lost terminal failure identity: %s, %v", result.Content, err)
+					}
+					failure := attempt.TerminalFailure
+					if !setupOnly && (failure == nil || failure.Provider != "codex" || failure.Operation != "turn/start" || failure.ProviderCode != "input_too_large" || failure.RPCCode == nil || *failure.RPCCode != code || failure.MaxChars == nil || *failure.MaxChars != maxChars || failure.ActualChars == nil || *failure.ActualChars != actualChars || !failure.ObservedAt.Equal(at) || failure.Source != "host_runner_completion") {
+						t.Fatalf("MCP lost recorded provider diagnostics: %s", result.Content)
+					}
+					if setupOnly && (attempt.Identity != nil || attempt.Runtime.LocalAttemptID != 169 || attempt.Runtime.Generation != 28 || failure == nil || failure.Stage != "pre_provider" || failure.Attribution != "instance" || failure.Provider != "" || failure.Error != "after_create exit status 127: script not found [redacted] [redacted]" || !failure.ObservedAt.Equal(at)) {
+						t.Fatalf("MCP lost setup diagnostic or selected older provider history: %s", result.Content)
+					}
+					for _, private := range []string{"/private/source", "/private/error", "private-prompt", "private-secret", "private-rpc-data"} {
+						if strings.Contains(string(result.Content), private) {
+							t.Fatalf("MCP exposed %q", private)
+						}
+					}
+				})
+			}
+		})
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE organization_id=? AND project_id=? AND token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", f.project.OrganizationID, f.project.ID, apikey.HashToken(f.token)); err != nil {
 		t.Fatal(err)
 	}
