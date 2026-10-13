@@ -49,11 +49,13 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 		return errors.Join(refusal, fmt.Errorf("read unresolved review conversations: %w", err))
 	}
 	needsRework := false
-	for i, thread := range threads {
+	for _, thread := range threads {
 		if !thread.Bot || len(thread.Surfaced) == 0 {
 			needsRework = true
 		}
-		if thread.Bot && !surfacedAt(thread, head) {
+	}
+	for i, thread := range threads {
+		if needsRework && thread.Bot && !surfacedAt(thread, head) {
 			if replyErr := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); replyErr != nil {
 				threads[i].Body += "\n(surfacing reply failed)"
 				err = errors.Join(err, fmt.Errorf("mark review conversation as surfaced: %w", replyErr))
