@@ -22,6 +22,7 @@ func TestHealthRules(t *testing.T) {
 		{"scheduler stale", "scheduler_loop_behind", healthSnapshot{Projects: []healthProject{{ID: "project", RefreshAt: now.Add(-5*time.Minute - time.Nanosecond)}}}, healthSnapshot{Projects: []healthProject{{ID: "project", RefreshAt: now}}}},
 		{"scheduler slow", "scheduler_loop_behind", healthSnapshot{Projects: []healthProject{{ID: "project", RefreshAt: now, RefreshDuration: 5*time.Minute + time.Nanosecond}}}, healthSnapshot{Projects: []healthProject{{ID: "project", RefreshAt: now, RefreshDuration: time.Second}}}},
 		{"all refused", "every_candidate_refused", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"policy_mismatch", "policy_mismatch"}}}}, healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"policy_mismatch", "capacity_full"}}}}},
+		{"unavailable runner", "every_candidate_refused", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_heartbeat_stale", "runner_heartbeat_stale"}}}}, healthSnapshot{}},
 		{"human question", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-30*time.Minute - time.Nanosecond), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-time.Hour)}}}},
 		{"permission wait", "unanswered_human_wait", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now.Add(-time.Hour), Active: true}}}, healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Attempt: "attempt", Since: now, Active: true}}}},
 		{"lifetime limit", "lifetime_limit_hit", healthSnapshot{Limits: []healthLimit{{Item: "item", Project: "project", Event: "event", Active: true}}}, healthSnapshot{Limits: []healthLimit{{Item: "item", Project: "project", Event: "recovered"}}}},
@@ -53,6 +54,9 @@ func TestHealthRules(t *testing.T) {
 		{"refresh exact threshold", healthSnapshot{Projects: []healthProject{{ID: "project", RefreshAt: now.Add(-5 * time.Minute), RefreshDuration: 5 * time.Minute}}}},
 		{"claim in cycle", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, Claims: 1, RefusalReasons: []string{"policy_mismatch"}}}}},
 		{"incomplete cycle", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"policy_mismatch"}}}}},
+		{"active work fills every runner", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_capacity_full", "runner_capacity_full"}}}}},
+		{"saturated project runners with organization room", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"runner_capacity_full", "runner_capacity_full"}}, {ID: "other-project", FreeSlots: 1}}}},
+		{"recorded capacity backpressure", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 2, RefusalReasons: []string{"capacity_full", "capacity_full"}}}}},
 		{"missing refusal reason", healthSnapshot{Projects: []healthProject{{ID: "project", Candidates: 1, RefusalReasons: []string{""}}}}},
 		{"wait exact threshold", healthSnapshot{Waits: []healthWait{{Item: "item", Project: "project", Since: now.Add(-30 * time.Minute), Active: true}}}},
 	} {

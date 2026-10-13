@@ -3,7 +3,6 @@ package hubserver
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"maps"
 	"slices"
 	"time"
@@ -169,12 +168,25 @@ func refusalFinding(p healthProject) (healthFinding, bool) {
 	active := p.Candidates > 0 && p.Claims == 0 && len(p.RefusalReasons) == p.Candidates
 	reason := ""
 	for _, value := range p.RefusalReasons {
-		if value == "" || reason != "" && value != reason {
+		if value == "" || value == "runner_capacity_full" || value == "capacity_full" || reason != "" && value != reason {
 			active = false
 		}
 		reason = value
 	}
-	return newHealthFinding("every_candidate_refused", "instance", "project", p.ID, fmt.Sprintf("Every candidate was refused with the same reason: %s.", reason), "The runner operator corrects the reported capacity or policy refusal.", []string{p.ID}, healthEvidence{EventIDs: p.RefusalEvents, Counts: map[string]int{"candidates": p.Candidates, "claims": p.Claims}}), active
+	summary := "Candidates cannot start work because runners refused every claim."
+	action := "The runner operator checks the claim refusal in the runner's logs."
+	switch reason {
+	case "policy_mismatch":
+		summary = "Candidates cannot start work because runner policy differs from its approval."
+		action = "The organization administrator reviews the project's policy in Settings → Integrations."
+	case "runner_heartbeat_stale":
+		summary = "Candidates cannot start work because their runners are offline."
+		action = "The runner operator checks the runner process and its Hub connection."
+	case "runner_inactive":
+		summary = "Candidates cannot start work because their runners are paused or finishing current work."
+		action = "The runner operator reviews routing in Settings → Providers & runners."
+	}
+	return newHealthFinding("every_candidate_refused", "instance", "project", p.ID, summary, action, []string{p.ID}, healthEvidence{EventIDs: p.RefusalEvents, Counts: map[string]int{"candidates": p.Candidates, "claims": p.Claims}, Reason: reason}), active
 }
 
 func humanWaitFinding(now time.Time, w healthWait) (healthFinding, bool) {

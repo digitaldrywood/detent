@@ -19,6 +19,6 @@ export function fleetHosts(runners: readonly FleetRunner[]) {
       return count + Math.max(0, Math.min(entry.capacity_limit, entry.reported_capacity) - entry.leases.length);
     }, 0);
     const free = Math.min(Math.max(0, capacity - used), available);
-    return { runner, leases, used, capacity, free };
+    return { runner, runners: group, leases, used, capacity, free };
   });
 }

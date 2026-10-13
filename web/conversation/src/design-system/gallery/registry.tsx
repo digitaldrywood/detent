@@ -60,6 +60,7 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   "runner-status-dot": feedback.runnerStatusDot,
   "stage-progress": feedback.stageProgress,
   "activity-page": activityPage,
+  "capacity-panel": feedback.capacityPanel,
   // Layout and data display
   "scroll-area": layout.scrollArea,
   separator: layout.separator,

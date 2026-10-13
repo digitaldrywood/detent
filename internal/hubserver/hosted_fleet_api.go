@@ -341,8 +341,15 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
 	}
+	if len(runner.Problems) > 0 && !slices.ContainsFunc(runner.Problems, func(problem runnerauth.Problem) bool { return problem.ProjectID == "" }) {
+		capacityRunner := runner
+		capacityRunner.Health = runner.ConnectionHealth
+		view.CapacityHealth = capacityRunner.Status(now)
+	}
 	if view.Update.Status == "refused" || view.Update.Status == "uncertain" {
-		view.CapacityHealth = view.Health
+		if view.CapacityHealth == "" {
+			view.CapacityHealth = view.Health
+		}
 		view.Health = "needs_attention"
 	}
 	view.Problems = slices.Clone(runner.Problems)

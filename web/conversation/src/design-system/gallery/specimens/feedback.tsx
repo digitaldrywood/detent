@@ -466,3 +466,21 @@ export const usageMeter: GalleryDoc = {
     ),
   }],
 };
+import { CapacityPanel } from "../../../app/fleet/CapacityPanel.tsx";
+import { decodeFleet } from "../../../contracts/account.ts";
+import fleetFixture from "../../../contracts/fixtures/account-fleet.json";
+
+export const capacityPanel: GalleryDoc = {
+  meta: { name: "Capacity panel", kind: "composition", group: "Workspace" },
+  specimens: [{
+    id: "shared-hosts", title: "Live host capacity", note: "Compact host rows with running, free and unavailable slots.",
+    render: () => {
+      const base = decodeFleet(fleetFixture).runners[0]!;
+      return <CapacityPanel runners={[8, 4, 8].map((capacity, index) => ({
+        ...base, id: `runner_${index}`, machine_id: `host_${index}`, display_name: ["Example desktop", "Example laptop", "Example build host"][index]!, hostname: `example-host-${index}`,
+        state: index === 2 ? "draining" : "active", health: "online", connection_health: "online", capacity_health: "online", claim_refusal_reason: "", provider_capacity: [], problems: [],
+        host_capacity: capacity, host_used: 1, capacity_limit: capacity, reported_capacity: capacity,
+      }))} />;
+    },
+  }],
+};
