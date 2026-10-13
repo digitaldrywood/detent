@@ -367,22 +367,27 @@ type preparingCheckpointBackend struct {
 	checkpointBackendStub
 	plan       workspace.CheckpointPlan
 	prepareErr error
+	prepares   int
 }
 
 func (b *preparingCheckpointBackend) PrepareCheckpoint(context.Context, workspace.Info, workspace.Issue) (workspace.CheckpointPlan, error) {
+	b.prepares++
 	return b.plan, b.prepareErr
 }
 
 func TestPrepareWorkerCheckpoint(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"prepared", "unsupported", "routine", "unavailable", "journal unavailable"} {
+	for _, scenario := range []string{"prepared", "unsupported", "routine", "unavailable", "journal unavailable", "native ref owner", "native without ref owner", "github ref owner"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			r, cp, _ := checkpointRunnerFixture(t)
 			base := &preparingCheckpointBackend{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{WorkspaceFingerprint: "state"}}}, plan: cp.plan}
 			var backend workspace.Backend = base
 			req := cp.request
+			trackerKind := config.TrackerGitHub
 			switch scenario {
+			case "native ref owner", "native without ref owner":
+				trackerKind = config.TrackerHubNative
 			case "unsupported":
 				backend = base.fakeWorkspaceBackend
 			case "routine":
@@ -393,8 +398,33 @@ func TestPrepareWorkerCheckpoint(t *testing.T) {
 			if scenario == "journal unavailable" {
 				base.plan.Journal = ""
 			}
-			got := r.prepareWorkerCheckpoint(t.Context(), req, backend, cp.plan.Info, workspace.Issue{})
-			if scenario == "prepared" {
+			if scenario == "native ref owner" || scenario == "github ref owner" {
+				req.Execution = &testExecution{}
+				req.checkpointRefs = newCheckpointRefs(&wipExecutionWorkspace{}, req.Execution, cp.plan.Info, workspace.Issue{}, nil)
+			}
+			got := r.prepareWorkerCheckpoint(t.Context(), req, trackerKind, backend, cp.plan.Info, workspace.Issue{})
+			if scenario == "native ref owner" {
+				if got != nil || base.prepares != 0 {
+					t.Fatalf("native ref owner prepared legacy checkpoint: checkpoint=%v calls=%d", got != nil, base.prepares)
+				}
+				calls := 0
+				result := r.runCheckpointedTurn(t.Context(), t.Context(), got, config.Agent{CheckpointIntervalMS: 1}, checkpointAgentStub{}, AgentTurnRequest{}, req, func(ctx context.Context, turn AgentTurnRequest, _ RunRequest) agentTurnExecution {
+					calls++
+					if turn.ReadOnly {
+						t.Fatal("native ref owner launched a checkpoint handshake")
+					}
+					if _, bounded := ctx.Deadline(); bounded {
+						t.Fatal("native ref owner interrupted work for a periodic checkpoint")
+					}
+					return agentTurnExecution{err: ErrSessionDurationExceeded}
+				})
+				if calls != 1 || !errors.Is(result.err, ErrSessionDurationExceeded) || result.result.Checkpoint != nil || base.calls != 0 {
+					t.Fatalf("native turn changed: calls=%d result=%+v publications=%d", calls, result, base.calls)
+				}
+				if _, err := os.Stat(cp.plan.Journal); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("native ref owner wrote a legacy journal: %v", err)
+				}
+			} else if scenario == "prepared" || scenario == "native without ref owner" || scenario == "github ref owner" {
 				if got == nil {
 					t.Fatal("checkpoint unavailable")
 				}
