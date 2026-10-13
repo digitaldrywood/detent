@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const duplicateChallengeLifetime = time.Hour
+
 type possibleDuplicate struct {
 	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
 	Identifier string                   `json:"identifier"`
@@ -184,11 +186,12 @@ func confirmNativeDuplicateTx(ctx context.Context, tx *sql.Tx, scope nativeScope
 		return nil, err
 	}
 	var encoded string
-	err = tx.QueryRowContext(ctx, `UPDATE native_duplicate_challenges SET consumed_at = ?
+	err = tx.QueryRowContext(ctx, `DELETE FROM native_duplicate_challenges
 WHERE token = ? AND organization_id = ? AND project_id = ? AND principal_id = ? AND request_id = ? AND content_hash = ? AND consumed_at IS NULL
-RETURNING matches_json`, formatHubTime(now), request.ChallengeToken, scope.organization, scope.project, scope.actor().PrincipalID, request.IdempotencyKey, hash).Scan(&encoded)
+AND julianday(created_at) > julianday(?)
+RETURNING matches_json`, request.ChallengeToken, scope.organization, scope.project, scope.actor().PrincipalID, request.IdempotencyKey, hash, formatHubTime(now.Add(-duplicateChallengeLifetime))).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativeInvalid("Duplicate challenge is invalid or already used")
+		return nil, nativeInvalid("Duplicate challenge is invalid, expired or already used")
 	}
 	if err != nil {
 		return nil, err

@@ -69,10 +69,13 @@ func TestHostedHubWorkReads(t *testing.T) {
 		}
 		response := f.request(t, http.MethodPost, f.base+"/work-items", draft)
 		var challenge nativeDuplicateFixture
-		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &challenge) != nil {
+		if json.Unmarshal(response.Body.Bytes(), &challenge) != nil {
 			t.Fatalf("file fixture=%d %s", response.Code, response.Body)
 		}
 		if challenge.ChallengeToken != "" {
+			if response.Code != http.StatusConflict {
+				t.Fatalf("challenge status=%d: %s", response.Code, response.Body)
+			}
 			var numbers []int
 			for _, match := range challenge.PossibleDuplicates {
 				numbers = append(numbers, match.Number)

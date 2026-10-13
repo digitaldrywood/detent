@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -156,8 +157,13 @@ func (c *NativeClient) IssuesPage(ctx context.Context, query url.Values) (tracke
 
 func (c *NativeClient) CreateIssue(ctx context.Context, request tracker.CreateIssue) (tracker.NativeIssue, error) {
 	var result tracker.NativeIssue
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items", request, &result)
-	return result, err
+	if err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items", request, &result); err != nil {
+		return result, err
+	}
+	if _, err := nativeItemPath(result.WorkItemID); err != nil {
+		return tracker.NativeIssue{}, fmt.Errorf("create issue response: %w", err)
+	}
+	return result, nil
 }
 
 func (c *NativeClient) UpdateIssue(ctx context.Context, id tracker.NativeWorkItemID, request tracker.UpdateIssue) (tracker.NativeIssue, error) {
