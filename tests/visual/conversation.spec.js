@@ -101,14 +101,18 @@ function shell(page) {
   return page.locator("[data-slot='sidebar-wrapper']");
 }
 
-for (const selection of ["all projects", "different project", "no remembered project"]) {
+for (const [selection, title, body] of [
+  ["all projects", "Cobalt orchard", "Violet meadow"],
+  ["different project", "Amber harbor", "Copper lantern"],
+  ["no remembered project", "Silver canyon", "Quartz summit"],
+]) {
   test(`opens an issue link with ${selection}`, async ({ page }) => {
     await openChat(page);
     const issueProject = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
     const created = await hubAPI(page, "POST", `/projects/${issueProject}/work-items`, {
       idempotency_key: `issue-link-${selection}`,
-      title: `Issue link with ${selection}`,
-      body: "This issue has no linked conversation and resolves its own project.",
+      title,
+      body,
       state: "Todo",
     });
     expect(created.status).toBe(200);
@@ -126,9 +130,9 @@ for (const selection of ["all projects", "different project", "no remembered pro
       expect(await page.evaluate((key) => localStorage.getItem(key), projectKey)).toBeNull();
     }
     await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
-    await expect(page.getByRole("heading", { name: `Issue link with ${selection}`, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
     await expect(page.getByTestId("issue-properties")).toBeVisible();
-    await expect(page.getByTestId("issue-body")).toContainText("resolves its own project");
+    await expect(page.getByTestId("issue-body")).toContainText(body);
     const lookup = await hubAPI(page, "GET", `/work-items/${item}`);
     expect(lookup.status).toBe(200);
     expect(lookup.payload.project_id).toBe(issueProject);
