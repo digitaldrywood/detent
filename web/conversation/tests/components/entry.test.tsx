@@ -3,6 +3,7 @@
 // The shared entry's chooser, creation and provisioning screens, each against
 // a scripted entry API, plus the entry router.
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -82,13 +83,13 @@ describe("organization chooser", () => {
   it("lists organizations as links, pending ones with their state, and the actions", async () => {
     const navigate = vi.fn();
     renderWith(fakeApi(), <OrganizationChooser onNavigate={navigate} />);
-    const link = await screen.findByRole("link", { name: /Alpha/ });
+    const link = await screen.findByRole("link", { name: "Alpha" });
     expect(link.getAttribute("href")).toBe("/organizations/org_a/organization");
     expect(screen.getByText("Needs attention")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Beta/ }));
-    expect(navigate).toHaveBeenCalledWith("/organizations/org_b/provisioning");
-    fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
-    expect(navigate).toHaveBeenCalledWith("/organizations/new");
+    expect(screen.getByRole("link", { name: "Beta" }).getAttribute("href")).toBe("/organizations/org_b/provisioning");
+    expect(screen.getByRole("link", { name: "Create organization" }).getAttribute("href")).toBe("/organizations/new");
+    expect(screen.getByText("You belong to 1 organization. 1 is being set up.")).toBeTruthy();
+    expect(screen.getByText("Signed in as dana@example.test")).toBeTruthy();
     const signOut = screen.getByRole("button", { name: "Sign out" }).closest("form");
     expect(signOut?.getAttribute("action")).toBe("/logout");
     expect((signOut?.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("csrf-token");
@@ -97,11 +98,10 @@ describe("organization chooser", () => {
   it.each(["admin", "support", "billing", "viewer", "", undefined])("shows the platform entry point only with a platform role (%s)", async (platform_role) => {
     const navigate = vi.fn();
     renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, platform_role })) }), <OrganizationChooser onNavigate={navigate} />);
-    await screen.findByRole("link", { name: "Open Alpha" });
-    const link = screen.queryByRole("link", { name: "Open Platform console" });
+    await screen.findByRole("link", { name: "Alpha" });
+    const link = screen.queryByRole("link", { name: "Platform console" });
     if (platform_role) {
       expect(link?.getAttribute("href")).toBe("/platform/tenants");
-      expect(screen.getByText("Platform")).toBeTruthy();
     } else {
       expect(link).toBeNull();
       expect(screen.queryByText("Platform console")).toBeNull();
@@ -109,15 +109,51 @@ describe("organization chooser", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("directs an account with no organization to request an email invitation", async () => {
-    renderWith(
-      fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [], pending: [], can_create: false })) }),
-      <OrganizationChooser onNavigate={vi.fn()} />,
-    );
-    await screen.findByText("Ask an owner to send you an invitation.");
-    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Join with invitation" })).toBeNull();
-    expect(screen.queryByLabelText("Invitation token")).toBeNull();
+  it.each([false, true, undefined])("gates the create row for an existing organization: %s", async (can_create) => {
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, can_create })) }), <OrganizationChooser onNavigate={vi.fn()} />);
+    await screen.findByRole("link", { name: "Alpha" });
+    expect(screen.queryByRole("link", { name: "Create organization" }) !== null).toBe(can_create === true);
+  });
+
+  it.each([false, true, undefined])("renders the empty state with creation permission: %s", async (can_create) => {
+    const navigate = vi.fn();
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [], pending: [], can_create })) }), <OrganizationChooser onNavigate={navigate} />);
+    await screen.findByRole("heading", { name: "No organizations yet" });
+    if (can_create) {
+      expect(screen.getByText("Create one to get started, or ask an owner to invite you to theirs.")).toBeTruthy();
+      expect(screen.getByText("An organization holds your projects, runners and billing. You become its owner.")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
+      expect(navigate).toHaveBeenCalledWith("/organizations/new");
+    } else {
+      expect(screen.getByText("Ask an owner to invite you to their organization.")).toBeTruthy();
+      expect(screen.queryByText("Create one to get started, or ask an owner to invite you to theirs.")).toBeNull();
+      expect(screen.getByText("Ask an owner to send you an invitation.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    }
+  });
+
+  it("keeps all pending states in the list and tabs through destinations before sign out", async () => {
+    const user = userEvent.setup();
+    const pending = [
+      { id: "org_wait", name: "Waiting organization", url: "", state: "requested" },
+      { id: "org_setup", name: "New organization", url: "", state: "allocating" },
+      ...listing.pending,
+    ];
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, pending, platform_role: "admin" })) }), <OrganizationChooser onNavigate={vi.fn()} />);
+    await screen.findByRole("link", { name: "Alpha" });
+    for (const label of ["Waiting to start", "Setting up", "Needs attention"]) expect(screen.getByText(label)).toBeTruthy();
+    for (const organization of pending) expect(screen.getByRole("link", { name: organization.name }).getAttribute("href")).toBe(`/organizations/${organization.id}/provisioning`);
+    for (const name of ["Alpha", "Waiting organization", "New organization", "Beta", "Create organization", "Platform console", "Sign out"]) {
+      await user.tab();
+      expect(document.activeElement).toBe(screen.getByRole(name === "Sign out" ? "button" : "link", { name }));
+    }
+  });
+
+  it("keeps the loading text and reports listing failures", async () => {
+    const api = fakeApi({ organizations: vi.fn(async () => { throw new AccountError({ status: 503, code: "unavailable", message: "Organizations unavailable" }); }) });
+    renderWith(api, <OrganizationChooser onNavigate={vi.fn()} />);
+    expect(screen.getByText("Loading your organizations…")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toBe("Organizations unavailable");
   });
 
   it("sends an expired session back to sign-in", async () => {
@@ -148,10 +184,10 @@ describe("organization chooser auto-enter", () => {
     renderWith(api, <OrganizationChooser onNavigate={vi.fn()} />);
     if (enters) {
       await waitFor(() => expect(replace).toHaveBeenCalledWith(alpha.url));
-      expect(screen.queryByRole("link", { name: /Alpha/ })).toBeNull();
+      expect(screen.queryByRole("link", { name: "Alpha" })).toBeNull();
       return;
     }
-    const open = await screen.findByRole("link", { name: "Open Alpha" });
+    const open = await screen.findByRole("link", { name: "Alpha" });
     expect(open.getAttribute("href")).toBe(alpha.url);
     expect(screen.getByText("Owner")).toBeTruthy();
     expect(replace).not.toHaveBeenCalled();
