@@ -2368,8 +2368,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 					if prerequisite != "" {
 						commands := result.NativeChange.Validator.Commands
-						if len(commands) != 2 || commands[1].ExitCode == 0 {
+						if len(commands) != 3 || commands[2].Command != provider.validatorCommand || commands[2].ExitCode == 0 {
 							t.Fatalf("validator rework lacks failed prerequisite command: %+v", commands)
+						}
+						if commands[0].TimingStage != "finalization" || commands[0].ExitCode != 0 || commands[0].Command != commands[1].Command || commands[1].ExitCode != 0 {
+							t.Fatalf("validator rework lost successful finalization and validation gates: %+v", commands)
 						}
 						if err := os.WriteFile(prerequisite, []byte("ready"), 0o600); err != nil {
 							t.Fatal(err)
@@ -2840,20 +2843,23 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				if test.dependencyOnly {
 					receipts := detail.Reviews[0].Validator.Commands
-					if len(receipts) != 3 {
+					if len(receipts) != 4 {
 						t.Fatalf("command evidence missing from native review: %+v", receipts)
+					}
+					if receipts[0].TimingStage != "finalization" || receipts[0].Command != receipts[1].Command {
+						t.Fatalf("native review lost the finalization gate evidence: %+v", receipts)
 					}
 					for index, receipt := range receipts {
 						wantExit := 0
-						if test.failedCheck && index == 2 {
+						if test.failedCheck && index == 3 {
 							wantExit = 7
 						}
 						if receipt.HeadSHA != change.HeadSHA || receipt.TreeSHA == "" || receipt.TreeSHA != receipts[0].TreeSHA || receipt.ExitCode != wantExit || receipt.Output == "" {
 							t.Fatalf("unverified native command receipt: %+v", receipt)
 						}
 					}
-					if receipts[0].OutputTruncated != test.largeOutput {
-						t.Fatalf("large output evidence not preserved: truncated=%t", receipts[0].OutputTruncated)
+					if receipts[0].OutputTruncated != test.largeOutput || receipts[1].OutputTruncated != test.largeOutput {
+						t.Fatalf("large output evidence not preserved: finalization=%t validation=%t", receipts[0].OutputTruncated, receipts[1].OutputTruncated)
 					}
 					if change.Reviewed == test.failedCheck {
 						t.Fatalf("review readiness ignored actual validation: %+v", change)
