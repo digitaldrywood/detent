@@ -204,7 +204,12 @@ func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Ti
 func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	var request runnerauth.EnrollmentRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", err)
+		message := "invalid_request: Request body is invalid"
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			message = "payload_too_large: Request body is too large"
+		}
+		s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", message)
 		return invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
@@ -215,7 +220,7 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	if err != nil {
 		var failure *nativeError
 		if errors.As(err, &failure) {
-			s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error_class", failure.Code, "error", failure.Code+": "+failure.Message)
+			s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error_class", failure.Code, "error", failure.Code+": "+failure.Error())
 		}
 		return s.nativeAPIError(c, err)
 	}

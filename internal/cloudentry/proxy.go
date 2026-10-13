@@ -380,10 +380,20 @@ func (s *Service) proxy(c echo.Context) error {
 						Code    string `json:"code"`
 						Message string `json:"message"`
 					}
-					if json.Unmarshal(raw, &failure) == nil && failure.Message != "" {
-						responseError = failure.Message
-						if failure.Code != "" {
-							responseError = failure.Code + ": " + failure.Message
+					if json.Unmarshal(raw, &failure) == nil {
+						switch failure.Code {
+						case "invalid_request":
+							switch failure.Message {
+							case "Enrollment projects must be unique and belong to the organization", "Enrollment requires valid or omitted host IDs, a project or organization scope and operations, and a TTL of 1 to 900 seconds":
+								responseError = failure.Code + ": " + failure.Message
+							default:
+								responseError = failure.Code + ": " + http.StatusText(response.StatusCode)
+								if strings.HasPrefix(failure.Message, "Request body is invalid") {
+									responseError = failure.Code + ": Request body is invalid"
+								}
+							}
+						case "payload_too_large":
+							responseError = failure.Code + ": Request body is too large"
 						}
 					}
 				}

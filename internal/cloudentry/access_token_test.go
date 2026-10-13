@@ -244,7 +244,41 @@ func TestSharedEntryProxyLogsLatencyWithoutIdentity(t *testing.T) {
 			t.Fatalf("failure log lacks %q:\n%s", want, output)
 		}
 	}
-	for _, secret := range []string{"alice@example.test", "access_", "refresh_", "tab=x", "detent_session"} {
+	request = httptest.NewRequest(http.MethodPost, alice.origin+path, strings.NewReader(`{"private_enrollment_secret":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", alice.origin)
+	request.Header.Set("X-CSRF-Token", csrfFrom(t, organizationPage))
+	for _, cookie := range alice.jar.Cookies(request.URL) {
+		request.AddCookie(cookie)
+	}
+	rejected = httptest.NewRecorder()
+	f.service.Handler().ServeHTTP(rejected, request)
+	if rejected.Code != http.StatusUnprocessableEntity || !strings.Contains(rejected.Body.String(), "private_enrollment_secret") {
+		t.Fatalf("decoder response = %d: %s", rejected.Code, rejected.Body.String())
+	}
+	output = logs.String()
+	if !strings.Contains(output, "error=\"invalid_request: Request body is invalid\"") {
+		t.Fatalf("decoder diagnostic missing: %s", output)
+	}
+	for _, payload := range []string{
+		`{"code":"invalid_request","message":"private_enrollment_secret"}`,
+		`{"code":"private_enrollment_secret","message":"Enrollment projects must be unique and belong to the organization"}`,
+	} {
+		f.tenants[testSocketEndpoint("alpha.sock")] = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			if _, err := w.Write([]byte(payload)); err != nil {
+				t.Errorf("write tenant error: %v", err)
+			}
+		})
+		rejected = httptest.NewRecorder()
+		f.service.Handler().ServeHTTP(rejected, request.Clone(t.Context()))
+		if rejected.Code != http.StatusUnprocessableEntity || strings.TrimSpace(rejected.Body.String()) != payload {
+			t.Fatalf("tenant error response changed: %d: %s", rejected.Code, rejected.Body.String())
+		}
+	}
+	output = logs.String()
+	for _, secret := range []string{"alice@example.test", "access_", "refresh_", "tab=x", "detent_session", "private_enrollment_secret"} {
 		if strings.Contains(output, secret) {
 			t.Fatalf("log exposes %q:\n%s", secret, output)
 		}

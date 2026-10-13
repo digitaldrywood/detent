@@ -57,6 +57,17 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 			}
 		})
 	}
+	t.Run("caller-controlled decoder error", func(t *testing.T) {
+		const secret = "private_enrollment_secret"
+		var failure apiErrorResponse
+		browserHostedDecode(t, f.api(t, "owner", http.MethodPost, path, json.RawMessage(`{"private_enrollment_secret":true}`), http.StatusUnprocessableEntity), &failure)
+		if failure.Code != "invalid_request" || !strings.Contains(failure.Message, secret) {
+			t.Fatalf("decoder response = %#v", failure)
+		}
+		if strings.Contains(logs.String(), secret) || !strings.Contains(logs.String(), "invalid_request: Request body is invalid") {
+			t.Fatalf("unsafe decoder diagnostic: %s", logs.String())
+		}
+	})
 }
 
 // TestHostedMemberManagement covers the section 12 membership endpoints: the

@@ -605,7 +605,35 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await expect(dialog.getByRole("heading", { name: "Enroll a runner" })).toBeVisible();
   await expect(dialog.getByLabel("Runner scope")).toHaveValue("organization");
   await dialog.getByLabel("Runner scope").selectOption("projects");
-  await expect(dialog.getByRole("checkbox").first()).toBeVisible();
+  const selectedProject = await page.evaluate(async (id) => (await (await fetch("/app/bootstrap")).json()).projects.find((project) => project.id === id), hub.fixture.project_id);
+  for (const checkbox of await dialog.getByRole("checkbox").all()) await checkbox.uncheck();
+  await dialog.getByRole("checkbox", { name: selectedProject.name, exact: true }).check();
+  await dialog.getByLabel("Name", { exact: true }).fill("Sandbox host");
+  await dialog.getByLabel("Concurrency", { exact: true }).fill("1");
+  await dialog.getByRole("radio", { name: "A machine I run", exact: true }).check();
+  await dialog.getByRole("radio", { name: "Sandbox", exact: true }).check();
+  await dialog.getByRole("checkbox", { name: /Install it as a background service/ }).uncheck();
+  const enrollmentResponse = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith("/runner-enrollments"));
+  await dialog.getByRole("button", { name: "Create command" }).click();
+  const enrolled = await enrollmentResponse;
+  expect(enrolled.status()).toBe(201);
+  expect(enrolled.request().postDataJSON()).toMatchObject({ scope: "projects", project_ids: [selectedProject.id], ttl_seconds: 900 });
+  await expect(dialog.getByRole("button", { name: "Copy the register command" })).toBeVisible();
+  await expect(dialog.getByText(/^detent hub runner register .*--name 'Sandbox host' --isolation-tier sandbox$/)).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: "macOS", exact: true })).toBeChecked();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1100 });
+    for (const colorScheme of ["light", "dark"]) {
+      await page.emulateMedia({ colorScheme });
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `enrollment-selected-sandbox-${width}-${colorScheme}.png`), fullPage: true });
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await enroll.click();
+  await page.getByRole("menuitem", { name: "Manual", exact: true }).click();
   await dialog.getByLabel("Runner scope").selectOption("organization");
   await expect(dialog.locator('[aria-current="step"]')).toHaveText("1. Set it up");
   // Nothing to copy from the host first: the dialog asks for a name, a
