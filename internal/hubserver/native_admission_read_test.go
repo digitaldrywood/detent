@@ -88,6 +88,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
+			if test.extraDependencies >= 100 {
+				now = now.Truncate(time.Second).Add(123456789 * time.Nanosecond)
+			}
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			var other runnerFixture
@@ -362,6 +365,26 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 						}
 						if err := json.Unmarshal(data, &board); err != nil || board.Counts.QueuedInventory != queued || board.Counts.Running != 0 || board.Counts.ClosedInventory != 0 || board.EligibilityTool != operatortool.ExplainItem || !slices.Contains(board.Unavailable, "aggregate_dispatch_readiness") {
 							t.Fatalf("native inventory confused with admission: %s err=%v", data, err)
+						}
+						if test.privateDependency && strings.Contains(string(data), string(blockers[0].WorkItemID)) {
+							t.Fatal("MCP board leaked private dependency")
+						}
+						if test.extraDependencies >= 100 {
+							t.Logf("tool=%s content_bytes=%d", name, len(data))
+							if len(data) > operatortool.MaxResultBytes || len(board.Projects) != 1 || !board.Truncated || board.Projects[0].Board.NextCursor == "" {
+								t.Fatalf("dependency-heavy board lost bounded continuation: %s", data)
+							}
+							page := board.Projects[0].Board
+							raw := hostedContextData(t, call("tools/call", operatortool.WorkList, map[string]any{"project_id": string(f.project.ID), "cursor": page.NextCursor}), false)
+							var continuation operatortool.WorkReadResult[operatortool.NativeWorkPage]
+							if err := json.Unmarshal(raw, &continuation); err != nil || len(continuation.Data.Items) == 0 || continuation.Data.Total != queued {
+								t.Fatalf("board continuation is unreadable: %s err=%v", raw, err)
+							}
+							for _, item := range continuation.Data.Items {
+								if slices.ContainsFunc(page.Items, func(previous operatortool.NativeItem) bool { return previous.WorkItemID == item.WorkItemID }) {
+									t.Fatalf("board continuation repeated %s", item.WorkItemID)
+								}
+							}
 						}
 					}
 				}
