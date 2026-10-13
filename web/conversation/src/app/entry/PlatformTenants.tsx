@@ -450,11 +450,7 @@ export function PlatformTenants(): React.ReactElement {
     const value = await api.platformOrganizations();
     const rows = await Promise.all(
       value.organizations.map(async (organization) => {
-        if (
-          organization.state !== "ready" ||
-          ((organization.runner_count ?? 0) === 0 &&
-            (organization.grants ?? 0) === 0)
-        )
+        if (organization.state !== "ready")
           return tenantRow(organization);
         try {
           return tenantRow(

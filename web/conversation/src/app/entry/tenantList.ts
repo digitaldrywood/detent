@@ -107,7 +107,10 @@ export function tenantRow(
       expiries.every((expiry): expiry is string => expiry !== null)
         ? (expiries.sort().at(-1) ?? null)
         : null,
-    creditBalance: null,
+    creditBalance:
+      detail?.credit_balance_micros == null
+        ? null
+        : detail.credit_balance_micros / 1_000_000,
   };
 }
 

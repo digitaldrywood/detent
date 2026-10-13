@@ -156,6 +156,7 @@ export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
 
 export const PlatformTenantDetail = Schema.Struct({
   organization: PlatformOrganization,
+  credit_balance_micros: Schema.NullOr(Schema.Number),
   csrf: Schema.String,
   can_grant: Schema.Boolean,
   can_resume: Schema.Boolean,

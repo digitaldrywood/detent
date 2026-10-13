@@ -248,6 +248,52 @@ func TestPlatformAICreditServiceAuthority(t *testing.T) {
 	}
 }
 
+func TestPlatformAICreditBalanceRead(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, kind, bearer string
+		balance            int64
+		missing, failure   bool
+		want               int
+	}{
+		{name: "positive balance", kind: cloudassert.KindService, balance: 10250000, want: http.StatusOK},
+		{name: "zero balance", kind: cloudassert.KindService, want: http.StatusOK},
+		{name: "negative balance", kind: cloudassert.KindService, balance: -2500000, want: http.StatusOK},
+		{name: "micro precision", kind: cloudassert.KindService, balance: 1, want: http.StatusOK},
+		{name: "missing account", kind: cloudassert.KindService, missing: true, want: http.StatusInternalServerError},
+		{name: "database failure", kind: cloudassert.KindService, failure: true, want: http.StatusInternalServerError},
+		{name: "owner key", kind: cloudassert.KindMachine, bearer: "org-owner-key", want: http.StatusNotFound},
+		{name: "member key", kind: cloudassert.KindMachine, bearer: "member-key", want: http.StatusNotFound},
+		{name: "browser member", kind: cloudassert.KindBrowser, want: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSharedFixture(t)
+			d := f.service.database
+			d.aiCreditMode = billing.ModeTest
+			if !test.missing {
+				if _, err := d.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'test',?),(?,'live',999000000)", d.hostedOrganization, test.balance, d.hostedOrganization); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.failure {
+				if _, err := d.db.ExecContext(t.Context(), "DROP TABLE ai_credit_accounts"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			owner := f.member(t, "owner", "owner", "")
+			response := f.serve(t, hostedSharedRequest{user: &owner, kind: test.kind, bearer: test.bearer, method: http.MethodPost, target: "/internal/v1/platform/ai-credits/balance", body: `{}`})
+			requireNativeStatus(t, response, test.want)
+			if test.want == http.StatusOK {
+				var result map[string]int64
+				if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || len(result) != 1 || result["balance_micros"] != test.balance {
+					t.Fatalf("balance response=%s err=%v", response.Body.String(), err)
+				}
+			}
+		})
+	}
+}
+
 func TestAICreditAutoFund(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

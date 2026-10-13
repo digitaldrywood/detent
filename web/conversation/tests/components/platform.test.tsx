@@ -107,6 +107,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformTenant: vi.fn(async (id: string) => ({
       organization: organizations.organizations.find((item) => item.id === id)!,
       csrf: "staff-csrf", can_grant: true, can_resume: id === "org_beta", unavailable: [],
+      credit_balance_micros: null,
       members: [{ id: "owner", email: "dana@example.test", role: "owner" }],
       runners: [{ id: "runner_one", name: "Mac Studio", health: "online" }],
       projects: [{ id: "prj_one", name: "Detent" }],
@@ -428,7 +429,7 @@ describe("platform console", () => {
 
   it("retains grant expiry and recognizes connected runners outside working hours", () => {
     const organization = organizations.organizations[0]!;
-    const detail = { organization, entitlements, runners: [], members: [], projects: [], events: [], unavailable: [], csrf: "c", can_grant: false, can_resume: false };
+    const detail = { organization, entitlements, runners: [], members: [], projects: [], events: [], unavailable: [], csrf: "c", can_grant: false, can_resume: false, credit_balance_micros: null };
     expect(tenantRow(organization, detail).grantExpiry).toBe("2026-12-31T23:59:59Z");
     expect(tenantRow(organization, { ...detail, entitlements: { ...entitlements, grants: [{ ...entitlements.grants[0]!, expires_at: null }] } }).grantExpiry).toBeNull();
     const scheduled = tenantRow({ ...organization, runner_count: 2 }, {
@@ -437,6 +438,38 @@ describe("platform console", () => {
     });
     expect(scheduled.onlineRunners).toBe(1);
     expect(tenantNeedsAttention(scheduled)).toBe(false);
+  });
+
+  it.each([
+    [10_250_000, 10.25, false],
+    [1, 0.000001, false],
+    [0, 0, true],
+    [-2_500_000, -2.5, true],
+    [null, null, false],
+  ] as const)("maps credit balance %s micros to dollars", (micros, dollars, attention) => {
+    const organization = { ...organizations.organizations[0]!, runner_count: 0 };
+    const detail = { organization, entitlements: null, runners: [], members: [], projects: [], events: [], unavailable: [], csrf: "c", can_grant: false, can_resume: false, credit_balance_micros: micros };
+    const row = tenantRow(organization, detail);
+    expect(row.creditBalance).toBe(dollars);
+    expect(tenantNeedsAttention(row)).toBe(attention);
+    expect(tenantRow(organization).creditBalance).toBeNull();
+  });
+
+  it("shows dollar balances and filters exhausted credits using the loaded tenant detail", async () => {
+    const api = fakeApi({
+      platformOrganizations: vi.fn(async () => ({ ...organizations, organizations: organizations.organizations.map((organization) => ({ ...organization, state: "ready", runner_count: 0, grants: 0 })) })),
+    });
+    const original = api.platformTenant;
+    api.platformTenant = vi.fn(async (id) => ({ ...await original(id), credit_balance_micros: id === "org_alpha" ? 10_250_000 : 0 }));
+    renderPlatform(api);
+    expect(await screen.findByText("$10.25")).toBeTruthy();
+    const table = await screen.findByRole("table", { name: "Tenants" });
+    expect(within(table).getByText("$10.25")).toBeTruthy();
+    expect(await within(table).findByText("$0.00")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Needs attention/ }));
+    await waitFor(() => expect(within(table).queryByRole("link", { name: "Alpha" })).toBeNull());
+    expect(within(table).getByRole("link", { name: "Beta" })).toBeTruthy();
+    expect(api.platformTenant).toHaveBeenCalledTimes(2);
   });
 
   it("requires support confirmation and submits the reason, note and CSRF token", async () => {
@@ -704,7 +737,6 @@ describe("complimentary plans", () => {
     expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change plan" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Grant model choice" })).toBeNull();
-    expect(api.platformTenant).not.toHaveBeenCalled();
   });
 
   it.each(["admin", "billing"])("shows base, effective plan and active grants of ready organizations to %s", async (role) => {
@@ -756,7 +788,7 @@ describe("complimentary plans", () => {
       reason: "design partner",
     });
     expect(call.change.idempotency_key.length).toBeGreaterThan(0);
-    await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(3));
   });
 
   it("grants model choice without selecting a plan and disables the control after reload", async () => {
@@ -823,7 +855,7 @@ describe("complimentary plans", () => {
       platformOrganizations: vi.fn(async () => administrator),
       platformEntitlements: vi.fn(async (organization: string) => {
         reads += 1;
-        if (reads > 1) throw new AccountError({ status: 503, code: "tenant_unavailable", message: "The organization's Hub is unavailable" });
+        if (reads > 2) throw new AccountError({ status: 503, code: "tenant_unavailable", message: "The organization's Hub is unavailable" });
         return entitlements(organization);
       }),
     });
@@ -850,7 +882,7 @@ describe("complimentary plans", () => {
     fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "design partner" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Grant" }));
     expect((await within(dialog).findByRole("alert")).textContent).toBe(STALE_PLAN_MESSAGE);
-    await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.platformEntitlements).toHaveBeenCalledTimes(3));
   });
 
   it("revokes a grant only with a reason", async () => {

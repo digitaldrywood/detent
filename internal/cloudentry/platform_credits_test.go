@@ -179,6 +179,12 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 						}
 					}
 					if test.want == http.StatusOK && test.user != "" {
+						detailResponse, detailBody := browser.get("/api/cloud/platform/organizations/org_alpha")
+						var detail platformTenantDetail
+						decodeJSON(t, detailBody, &detail)
+						if detailResponse.StatusCode != http.StatusOK || detail.CreditBalanceMicros == nil || *detail.CreditBalanceMicros != balance {
+							t.Fatalf("detail balance=%d %+v want=%d", detailResponse.StatusCode, detail, balance)
+						}
 						if _, err := f.service.registry.store.db.ExecContext(t.Context(), "DELETE FROM platform_members WHERE email=?", f.provider.users[test.user]); err != nil {
 							t.Fatal(err)
 						}
