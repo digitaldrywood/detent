@@ -19,6 +19,7 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 	complete := "## Acceptance criteria\nFix the endpoint.\n## Must not break\nExisting requests.\n## How we know it worked\nRun the endpoint tests."
 	for _, test := range []struct {
 		name      string
+		lane      string
 		body      string
 		exempt    bool
 		confirmed bool
@@ -27,6 +28,9 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 		restart   bool
 	}{
 		{name: "missing", blocked: true},
+		{name: "Triage exempt", lane: "Triage"},
+		{name: "Reporter promoted without engineering sections", body: "## Actual\nSaving fails.", blocked: true},
+		{name: "Reporter promoted with engineering sections", body: "## Actual\nSaving fails.\n" + complete, confirmed: true},
 		{name: "scheduler preview places the hold before claiming", blocked: true, preview: true},
 		{name: "configured failure lane recovers after restart", blocked: true, restart: true},
 		{name: "human owned", body: complete, confirmed: true},
@@ -41,6 +45,9 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 			}
 			issue := connector.NewIssue()
 			issue.ID, issue.Identifier, issue.Title, issue.State = "issue", "prj_contract#1", "Fix endpoint", "Todo"
+			if test.lane != "" {
+				issue.State = test.lane
+			}
 			issue.Description = test.body
 			issue.IssueContract = &issuecontract.State{Exempt: test.exempt}
 			if test.confirmed {
@@ -84,6 +91,9 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 				t.Fatalf("candidates = %v, blocked = %t", candidates, test.blocked)
 			}
 			if !test.blocked {
+				if len(state.Blocked) != 0 {
+					t.Fatalf("unexpected contract hold: %+v", state.Blocked)
+				}
 				return
 			}
 			blocked, found := state.Blocked[issue.ID]

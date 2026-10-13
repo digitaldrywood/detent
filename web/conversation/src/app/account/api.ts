@@ -33,6 +33,7 @@ import {
   SlackIntegrationStatus,
   SpritePool,
   ProjectsResponse,
+  ReporterTemplates,
   OrganizationProjectRank,
   type ProjectGrant,
   RunnerEnrollment,
@@ -394,6 +395,8 @@ export function makeAccountApi(options: AccountApiOptions) {
         },
         idempotency_key: input.key,
       }),
+    reporterTemplates: (projectId: string) =>
+      send(Schema.Struct({ reporter_templates: ReporterTemplates }), "GET", project(projectId)),
     createFirstIssue: (input: {
       projectId: string;
       type?: "bug" | "change_request";

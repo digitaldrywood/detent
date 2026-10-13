@@ -195,6 +195,7 @@ func TestNativeCreatedByIdentity(t *testing.T) {
 
 func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 	f := newHostedSecurityFixture(t)
+	operatorSQL(t, f, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
 	users := []hostedSecurityUser{
 		f.user(t, "filer", "reporter", "filer@example.test", "write", ""),
 		f.user(t, "other_filer", "member", "other@example.test", "write", ""),
@@ -223,7 +224,7 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		raw, err := f.service.createNativeIssueCommand(t.Context(), scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-filer"}, Title: "Filed issue", Body: issueContractTestSections, State: "Todo"})
+		raw, err := f.service.createNativeIssueCommand(t.Context(), scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-filer"}, Title: "Filed issue", Type: "bug", Body: reporterBugSections + issueContractTestSections, State: "Todo"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,7 +247,7 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 			t.Fatal(err)
 		}
 		if kind == "personal" {
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", key.Token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "personal-filer"}, Title: "Personal key issue", Body: issueContractTestSections, State: "Todo"})
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", key.Token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "personal-filer"}, Title: "Personal key issue", Type: "bug", Body: reporterBugSections + issueContractTestSections, State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &personal)
 			if personal.State != "Triage" || personal.Actor.Kind != "human" || personal.Actor.PrincipalID != mine.Actor.PrincipalID || personal.Actor.ViaKey != key.ID {
