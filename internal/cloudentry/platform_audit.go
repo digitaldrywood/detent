@@ -113,8 +113,12 @@ AND (?='' OR event=?) AND (?='' OR at>=?) AND (?='' OR at<=?)
 AND (?='' OR (at,?,id)<(?,?,?)) ORDER BY at DESC,id DESC LIMIT ?`
 	authAuditEvents = `SELECT CAST(id AS TEXT) AS id,recorded_at,organization_id,
 COALESCE((SELECT email FROM sessions WHERE subject=a.subject ORDER BY created_at DESC,token_hash DESC LIMIT 1),subject) AS actor,
-CASE WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,1,instr(event,':')-1) ELSE event END AS event,
-CASE WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,instr(event,':')+1) ELSE '' END AS detail FROM audit a WHERE NOT json_valid(event)`
+CASE WHEN json_valid(event) THEN json_extract(event,'$.kind')
+WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,1,instr(event,':')-1) ELSE event END AS event,
+CASE WHEN json_valid(event) THEN '$' || json_extract(event,'$.amount_usd') || ' · ' || json_extract(event,'$.reason')
+WHEN event LIKE 'support_requested:%' OR event LIKE 'support_started:%' THEN substr(event,instr(event,':')+1) ELSE '' END AS detail FROM audit a
+WHERE CASE WHEN json_valid(event) THEN json_extract(event,'$.kind')='ai_credits_adjusted' ELSE 1 END`
+
 	entitlementAuditEvents = `SELECT CAST(rowid AS TEXT) AS id,recorded_at,organization_id,staff_email AS actor,
 CASE action WHEN 'grant' THEN 'plan_granted' WHEN 'create_plan' THEN 'plan_created' WHEN 'base' THEN 'plan_base_changed' WHEN 'subscription' THEN 'plan_subscription_changed' WHEN 'end_subscription' THEN 'plan_subscription_ended' ELSE 'plan_revoked' END AS event,
 plan_id || ' v' || plan_version || CASE WHEN expires_at='' THEN '' ELSE ' until ' || expires_at END || ' · ' || reason AS detail FROM entitlement_changes`

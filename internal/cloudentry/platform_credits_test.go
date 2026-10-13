@@ -61,7 +61,8 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 			f.tenants[testSocketEndpoint("alpha.sock")] = service.Handler()
 			f.provider.users["user_admin"] = "admin@example.test"
 			f.provider.users["user_billing"] = "billing@example.test"
-			for _, role := range []string{"admin", "billing"} {
+			f.provider.users["user_viewer"] = "viewer@example.test"
+			for _, role := range []string{"admin", "billing", "viewer"} {
 				if _, err := f.service.registry.store.db.ExecContext(t.Context(), "INSERT INTO platform_members VALUES(?,?,'test','time','time')", role+"@example.test", role); err != nil {
 					t.Fatal(err)
 				}
@@ -76,6 +77,7 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 				{"organization owner key", testAdminKey, "", false, http.StatusForbidden},
 				{"anonymous", "", "", false, http.StatusUnauthorized},
 				{"owner session", "", "user_alice", true, http.StatusForbidden},
+				{"viewer session", "", "user_viewer", true, http.StatusForbidden},
 				{"support session", "", "user_support", true, http.StatusForbidden},
 				{"admin without csrf", "", "user_admin", false, http.StatusForbidden},
 				{"administrator session", "", "user_admin", true, http.StatusOK},
@@ -177,6 +179,21 @@ func TestPlatformAICreditsRESTAndMCP(t *testing.T) {
 							if json.Unmarshal(raw, &result) != nil || result.Balance != balance {
 								t.Fatalf("balance response=%s want=%d", raw, balance)
 							}
+						}
+					}
+					if test.want == http.StatusOK {
+						result, err := f.service.readPlatformAudit(t.Context(), platformAuditFilter{Tenant: "org_alpha", Event: "ai_credits_adjusted", Limit: 50})
+						if err != nil {
+							t.Fatal(err)
+						}
+						var matches int
+						for _, row := range result.Rows {
+							if strings.Contains(row.Detail, "$5.25") && strings.Contains(row.Detail, "design partner") {
+								matches++
+							}
+						}
+						if int64(matches)*5250000 != balance {
+							t.Fatalf("audit=%+v balance=%d", result.Rows, balance)
 						}
 					}
 					if test.want == http.StatusOK && test.user != "" {
