@@ -1526,11 +1526,13 @@ func TestConversationReconcileSettlesTerminalTurnAfterLeaseLoss(t *testing.T) {
 	handed := f.queue(t, conversation.MessageText, "text-1", "Handed over", nil)
 	requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "execution_status", "status": "failed", "error": "provider crashed"}), http.StatusAccepted)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at = ? WHERE lease_id = ?", formatHubTime(f.now), f.lease.ID); err != nil {
+		t.Fatal(err)
+	}
 	if record := f.load(t); record.Execution.Status != conversation.ExecutionFailed || record.Execution.Settled {
-		t.Fatalf("execution before lease loss = %#v", record.Execution)
+		t.Fatalf("execution before reconciliation = %#v", record.Execution)
 	}
 
-	f.advance(11 * time.Minute)
 	if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 		t.Fatalf("reconcileExecutions() error = %v", err)
 	}
