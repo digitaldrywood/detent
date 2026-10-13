@@ -47,7 +47,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return hubWorkResult(r, request, page, err)
 	}
 	if name == operatortool.WorkList {
-		page, err := s.readIssues(ctx, scope, request.NativeWorkQuery())
+		params := request.NativeWorkQuery()
+		if _, err := nativeCreatedBy(scope, params); err != nil {
+			return operatortool.Result{}, &operatortool.RequestError{Code: "invalid_request", Message: "created_by=me requires a human identity"}
+		}
+		page, err := s.readIssues(ctx, scope, params)
 		return hubWorkResult(r, request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
