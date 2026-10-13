@@ -484,6 +484,10 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 }
 
 func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "hub.db")
@@ -533,11 +537,20 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 		t.Fatalf("close legacy database: %v", err)
 	}
 
-	service := openTestService(t, Config{
+	store, err := openDatabase(t.Context(), Config{
 		DatabasePath: path,
+		Logger:       discardLogger(),
 		now: func() time.Time {
 			return time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 		},
+	}.normalized())
+	if err != nil {
+		t.Fatalf("openDatabase() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
 	})
 	var eventType string
 	var action string
@@ -545,7 +558,7 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 	var body string
 	var payloadSHA string
 	var lastReceivedAt string
-	if err := service.database.db.QueryRowContext(t.Context(), `
+	if err := store.db.QueryRowContext(t.Context(), `
 		SELECT i.event_type, i.action, i.headers_json, CAST(p.body AS TEXT), i.payload_sha256, i.last_received_at
 		FROM github_webhook_inbox i
 		JOIN github_webhook_payloads p ON p.inbox_id = i.id
