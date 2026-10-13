@@ -8,7 +8,7 @@ test.beforeAll(async () => { html = await platformPreview(); });
 
 const ready = { ...fixture.detail.organization, billing: { available: true, status: "active", customer_id: "cus_preview", plan: "growth", price_label: "Growth monthly" }, plan: "growth", grants: 1, member_count: 1, runner_count: 1 };
 const failed = { ...ready, id: "org_failed", name: "Example Co", state: "failed", error_code: "tenant_start_failed", error_detail: "disk floor", step: "allocate_tenant", creator_email: "", plan: null, grants: null, member_count: null, runner_count: null, billing: { available: false }, created_at: "2026-10-06T12:00:00Z" };
-const free = { ...ready, id: "org_free", name: "Parable", plan: "free", grants: 0, runner_count: 0, created_at: "2026-10-05T14:00:00Z" };
+const free = { ...ready, id: "org_free", name: "Example Studio", plan: "free", grants: 0, runner_count: 0, created_at: "2026-10-05T14:00:00Z" };
 
 async function openTenants(page, { role = "admin", path = "/platform/tenants" } = {}) {
   const account = { ...fixture.account, platform_role: role };
@@ -22,6 +22,8 @@ async function openTenants(page, { role = "admin", path = "/platform/tenants" } 
     if (pathname.endsWith("/audit")) return route.fulfill({ json: { rows: [], events: [], tenants: [], next_cursor: "" } });
     const organization = pathname.endsWith("org_failed") ? failed : pathname.endsWith("org_free") ? free : ready;
     return route.fulfill({ json: { ...fixture.detail, organization: { ...organization, can_support: organization.state === "ready" && ["support", "admin"].includes(role) }, can_grant: ["billing", "admin"].includes(role), can_resume: organization.state === "failed" && role === "admin",
+      credit_balance_micros: organization.state === "failed" ? null : fixture.detail.credit_balance_micros,
+      ai_credits: organization.state === "failed" ? null : fixture.detail.ai_credits,
       members: organization.state === "failed" ? null : fixture.detail.members, runners: organization.state === "failed" ? null : organization.id === "org_free" ? [] : fixture.detail.runners, projects: organization.state === "failed" ? null : fixture.detail.projects,
       entitlements: organization.state === "failed" ? null : { ...fixture.entitlements, grants: organization.grants ? [{ id: "grant", plan: { id: "growth", version: 1 }, scope: null, starts_at: "2026-10-01T00:00:00Z", expires_at: "2026-10-31T00:00:00Z", reason: "Partner", granted_by: "admin@example.test", granted_at: null }] : [] },
     } });
@@ -48,7 +50,9 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
       await expect(table.getByText("Registered externally")).toBeVisible();
       await expect(table).not.toContainText("tenant_start_failed");
       await expect(table).not.toContainText("allocate_tenant");
-      await expect(table.getByText("Unavailable")).toHaveCount(6);
+      await expect(table.getByRole("row", { name: /Model Choice Labs/ }).getByRole("cell", { name: "$100.00", exact: true })).toBeVisible();
+      await expect(table.getByRole("row", { name: /Example Studio/ }).getByRole("cell", { name: "$100.00", exact: true })).toBeVisible();
+      await expect(table.getByRole("row", { name: /Example Co/ })).toContainText("Unavailable");
       expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
       if (viewport.width === 390) {
         const scrolls = await table.evaluate((element) => element.parentElement.scrollWidth > element.parentElement.clientWidth);
@@ -63,7 +67,7 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
       await page.screenshot({ path: process.env.TMPDIR + `/tenants-${theme}-${viewport.width}.png`, fullPage: true });
       await page.getByRole("button", { name: /^Needs attention/ }).click();
       await expect(table.getByRole("link", { name: "Example Co" })).toBeVisible();
-      await expect(table.getByRole("link", { name: "Parable" })).toHaveCount(0);
+      await expect(table.getByRole("link", { name: "Example Studio" })).toHaveCount(0);
       await page.getByRole("button", { name: /^Complimentary/ }).click();
       await page.getByRole("combobox", { name: "Status", exact: true }).click();
       await page.getByRole("option", { name: "Ready", exact: true }).click();

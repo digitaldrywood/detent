@@ -59,6 +59,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     createOrganization: vi.fn(async () => ({ next: "/organizations/org_new/provisioning" })),
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
     platformTenant: vi.fn(async () => { throw new Error("Tenant not requested"); }),
+    adjustPlatformAICredits: vi.fn(async () => ({ organization_id: "org_alpha", balance_micros: 0 })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
     platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),

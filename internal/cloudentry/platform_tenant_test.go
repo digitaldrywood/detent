@@ -110,6 +110,7 @@ func TestPlatformTenantAICreditBalance(t *testing.T) {
 		want        int64
 		unavailable bool
 	}{
+		{"full credit detail", `{"balance_micros":10250000,"spent_micros":750000,"month":"2026-10","auto_enabled":true,"history":[{"amount_micros":25000000,"kind":"complimentary","actor":"staff@example.test","reason":"Pilot credits","at":"2026-10-03T00:00:00Z"}]}`, http.StatusOK, 10250000, false},
 		{"positive", `{"balance_micros":10250000}`, http.StatusOK, 10250000, false},
 		{"zero", `{"balance_micros":0}`, http.StatusOK, 0, false},
 		{"negative", `{"balance_micros":-1}`, http.StatusOK, -1, false},
@@ -136,6 +137,13 @@ func TestPlatformTenantAICreditBalance(t *testing.T) {
 			decodeJSON(t, body, &detail)
 			if response.StatusCode != http.StatusOK || (detail.CreditBalanceMicros == nil) != test.unavailable || slices.Contains(detail.Unavailable, "ai_credits") != test.unavailable {
 				t.Fatalf("detail = %d %+v", response.StatusCode, detail)
+			}
+			if test.name == "full credit detail" {
+				if detail.AICredits == nil || detail.AICredits.SpentMicros != 750000 || detail.AICredits.Month != "2026-10" || !detail.AICredits.AutoEnabled || len(detail.AICredits.History) != 1 || detail.AICredits.History[0].AmountMicros != 25000000 || detail.AICredits.History[0].Actor != "staff@example.test" || detail.AICredits.History[0].Reason != "Pilot credits" {
+					t.Fatalf("credits=%+v", detail.AICredits)
+				}
+			} else if detail.AICredits != nil {
+				t.Fatalf("partial credits=%+v", detail.AICredits)
 			}
 			if !test.unavailable && *detail.CreditBalanceMicros != test.want {
 				t.Fatalf("balance = %d, want %d", *detail.CreditBalanceMicros, test.want)
