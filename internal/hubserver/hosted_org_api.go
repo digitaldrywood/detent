@@ -217,8 +217,10 @@ func (s *Service) listHostedMembers(c echo.Context) error {
 }
 
 func (s *Service) hostedMemberEmails(ctx context.Context) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	emails := map[string]string{}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT user_id, email FROM hosted_members WHERE active = 1")
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT user_id, email FROM hosted_members WHERE active = 1")
 	if err != nil {
 		return nil, fmt.Errorf("read hosted members: %w", err)
 	}
@@ -234,8 +236,10 @@ func (s *Service) hostedMemberEmails(ctx context.Context) (map[string]string, er
 }
 
 func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMemberGrant, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	grants := map[string][]hostedMemberGrant{}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT user_id, project_id, can_write, manage_runner FROM hosted_project_grants WHERE organization_id = ? ORDER BY user_id, project_id", s.config.Hosted.OrganizationID)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT user_id, project_id, can_write, manage_runner FROM hosted_project_grants WHERE organization_id = ? ORDER BY user_id, project_id", s.config.Hosted.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("read hosted project grants: %w", err)
 	}
@@ -252,8 +256,10 @@ func (s *Service) hostedMemberGrants(ctx context.Context) (map[string][]hostedMe
 }
 
 func (s *Service) hostedPendingInvitations(ctx context.Context) ([]hostedInvitationView, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	invitations := []hostedInvitationView{}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at, grants_json
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id, email, role, created_at, expires_at, grants_json
 FROM hosted_invitations
 WHERE organization_id = ? AND accepted_user_id = '' ORDER BY rowid DESC`, s.config.Hosted.OrganizationID)
 	if err != nil {
@@ -423,6 +429,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if count == 1 {
 		return true, nil, nil
 	}
+	// Read back the idempotent command inserted by this request on the writer.
 	var storedHash, raw string
 	if err := s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw); err != nil {
 		return false, nil, err
@@ -576,13 +583,13 @@ func (s *Service) listHostedProjects(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	setups, err := s.projectOnboardingBatch(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), readable)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	projects := make([]hostedProjectView, 0, len(readable))
 	for _, project := range readable {
-		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project.ID), credential: credential}
-		setup, err := s.projectOnboarding(ctx, scope)
-		if err != nil {
-			return s.nativeAPIError(c, err)
-		}
+		setup := setups[tracker.ProjectID(project.ID)]
 		view := hostedProjectView{appBootstrapProject: project}
 		view.Onboarding.Ready, view.Onboarding.Steps = setup.Ready, setup.Steps
 		if view.Onboarding.Steps == nil {
@@ -648,6 +655,7 @@ func (s *Service) createHostedProjectJSON(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusConflict, "The project could not be created; check that its name is unique")
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+	// Read the project just created by this request on the writer.
 	record, err := readNativeProject(c.Request().Context(), s.database.db, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -764,13 +772,15 @@ func (s *Service) commandOrganization(ctx context.Context, command hostedCommand
 // readHostedOperation is the read-only application receipt lookup. It never
 // claims a missing command; action_result must remain a read operation.
 func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	command = command.forContext(ctx)
 	hash, err := command.hash()
 	if err != nil {
 		return nil, false, err
 	}
 	var storedHash, raw string
-	err = s.database.db.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw)
+	err = s.database.reader.QueryRowContext(ctx, `SELECT request_hash,response_json FROM native_commands WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=?`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key).Scan(&storedHash, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}

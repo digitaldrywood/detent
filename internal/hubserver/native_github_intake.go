@@ -106,7 +106,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 	if err != nil {
 		return nil, nativeInvalid(err.Error())
 	}
-	integration, err := readProjectIntegration(ctx, s.database.db, scope)
+	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

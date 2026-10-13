@@ -56,7 +56,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			}
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
-			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.db, credential); err != nil {
+			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.reader, credential); err != nil {
 				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
@@ -72,13 +72,17 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 }
 
 func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCredential) bool {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var missing int
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
 	return err == nil && missing == 0
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
-	return s.requireHostedRunnerAdministration(ctx, s.database.db, credential) == nil
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	return s.requireHostedRunnerAdministration(ctx, s.database.reader, credential) == nil
 }
 
 func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
@@ -137,6 +141,8 @@ ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, 
 }
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	credential, err := s.hostedAdministrator(c)
 	role := c.FormValue("role")
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
@@ -146,10 +152,10 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.validateHostedInvitationGrants(c.Request().Context(), s.database.db, credential, email, nil); err != nil {
+	if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, email, nil); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
-	reserved, err := s.reserveHostedInvitationSeat(c.Request().Context(), email)
+	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -157,7 +163,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	if _, err := s.sendReservedHostedInvitationFor(c.Request().Context(), credential, email, role, reserved, nil); err != nil {
+	if _, err := s.sendReservedHostedInvitationFor(ctx, credential, email, role, reserved, nil); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 

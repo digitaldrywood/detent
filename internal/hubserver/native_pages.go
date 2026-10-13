@@ -47,6 +47,8 @@ func nativeReadQuery(c echo.Context) (url.Values, error) {
 }
 
 func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	limit, err := parsePageLimit(params.Get("limit"))
 	if err != nil {
 		return 0, nativeCursor{}, nil, nativeInvalid("Page limit is invalid")
@@ -188,6 +190,8 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 }
 
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
 		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
 			return tracker.NativeIssuePage{}, nativeInvalid("Date filters require an issue list projection")
@@ -431,6 +435,8 @@ func (s *Service) listNativeComments(c echo.Context) error {
 }
 
 func (s *Service) readComments(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
 
 	if err := validateNativeQuery(params); err != nil {
@@ -485,6 +491,8 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 }
 
 func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/history"
 
 	if err := validateNativeQuery(params, "view"); err != nil {

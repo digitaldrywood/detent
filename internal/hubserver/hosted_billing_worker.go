@@ -64,10 +64,10 @@ func (w *hostedBillingWorker) reconcile(ctx context.Context) error {
 	defer cancel()
 	s := w.service
 	var through int64
-	if err := s.database.db.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM hosted_billing_events").Scan(&through); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT coalesce(max(sequence),0) FROM hosted_billing_events").Scan(&through); err != nil {
 		return err
 	}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT event_id,event_type FROM hosted_billing_events WHERE credit_processed=0 AND sequence<=? ORDER BY sequence", through)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT event_id,event_type FROM hosted_billing_events WHERE credit_processed=0 AND sequence<=? ORDER BY sequence", through)
 	if err != nil {
 		return err
 	}

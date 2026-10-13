@@ -40,15 +40,17 @@ func (s *Service) changeViewedFiles(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 func (s *Service) changeViewedFilesCommand(ctx context.Context, scope nativeScope, item, changeID, versionID string) ([]tracker.ChangeViewedFile, error) {
-	change, err := readChange(ctx, s.database.db, scope, item, changeID)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	change, err := readChange(ctx, s.database.reader, scope, item, changeID)
 	if err != nil {
 		return nil, err
 	}
-	version, err := readChangeVersion(ctx, s.database.db, change.ID, versionID)
+	version, err := readChangeVersion(ctx, s.database.reader, change.ID, versionID)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT manifest_sha256, file_sha256, viewed FROM change_viewed_files WHERE version_id=? AND principal_id=? ORDER BY manifest_sha256, file_sha256 LIMIT 4096", version.ID, scope.credential.ID)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT manifest_sha256, file_sha256, viewed FROM change_viewed_files WHERE version_id=? AND principal_id=? ORDER BY manifest_sha256, file_sha256 LIMIT 4096", version.ID, scope.credential.ID)
 	if err != nil {
 		return nil, err
 	}

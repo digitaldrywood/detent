@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"time"
@@ -39,9 +40,10 @@ func (s *Service) attemptDiffBodyBatch(c echo.Context) error {
 	if !diffBodyService(c) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	ctx := c.Request().Context()
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	batch := diffbody.Batch{Files: []diffbody.File{}}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch
  FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch<>'' ORDER BY f.diff_id,f.position LIMIT 32`)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -78,7 +80,7 @@ WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody+` LIMIT 
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	rows, err = s.database.db.QueryContext(ctx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch_object,f.patch_sha256,f.patch_size
+	rows, err = s.database.reader.QueryContext(ctx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch_object,f.patch_sha256,f.patch_size
 FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch_expired=1 AND f.patch_object<>'' LIMIT 32`)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -97,13 +99,15 @@ FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch_e
 	if err := rows.Close(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.database.db.QueryRowContext(ctx, `SELECT vacuum_pending FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&batch.VacuumPending); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, `SELECT vacuum_pending FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&batch.VacuumPending); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, batch)
 }
 
 func (s *Service) attemptDiffBodyStored(c echo.Context) error {
+	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancelRead()
 	if !diffBodyService(c) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
@@ -116,7 +120,7 @@ func (s *Service) attemptDiffBodyStored(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("Invalid migrated diff body"))
 	}
 	var patch, key string
-	if err := s.database.db.QueryRowContext(c.Request().Context(), `SELECT f.patch,f.patch_object FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT f.patch,f.patch_object FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
  WHERE f.diff_id=? AND f.position=? AND d.organization_id=? AND d.project_id=?`, file.DiffID, file.Position, file.Organization, file.Project).Scan(&patch, &key); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -137,6 +141,7 @@ AND EXISTS (SELECT 1 FROM attempt_diffs d WHERE d.id=diff_id AND d.organization_
 		return s.nativeAPIError(c, err)
 	}
 	if count == 0 {
+		// Read back the diff-body update from this request on the writer.
 		var key string
 		if err := s.database.db.QueryRowContext(c.Request().Context(), `SELECT patch_object FROM attempt_diff_files WHERE diff_id=? AND position=?`, file.DiffID, file.Position).Scan(&key); err != nil || key != file.Body.Key {
 			return s.nativeAPIError(c, nativeNotFound())
@@ -163,6 +168,8 @@ func (s *Service) attemptDiffBodyDeleted(c echo.Context) error {
 }
 
 func (s *Service) attemptDiffBodyExists(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if !diffBodyService(c) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
@@ -173,7 +180,7 @@ func (s *Service) attemptDiffBodyExists(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	var exists bool
-	if err := s.database.db.QueryRowContext(c.Request().Context(), `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=?)`, input.Key).Scan(&exists); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=?)`, input.Key).Scan(&exists); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]bool{"exists": exists})

@@ -107,7 +107,8 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	key := dispatchNotificationKey(scope.organization)
 	s.notifications.dispatchCursor(key)
 	authorize := func() error {
-		ctx := c.Request().Context()
+		ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancel()
 		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return err

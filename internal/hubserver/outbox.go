@@ -732,6 +732,8 @@ func randomJitter() float64 {
 }
 
 func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -779,6 +781,8 @@ func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
 }
 
 func (s *Service) readOutboxStatusCounts(ctx context.Context, health *OutboxHealth) (resultErr error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	rows, err := s.database.reader.QueryContext(ctx, `
 		SELECT status, COUNT(*)
 		FROM github_outbox

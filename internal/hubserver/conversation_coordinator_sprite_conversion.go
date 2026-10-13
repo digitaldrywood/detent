@@ -50,14 +50,14 @@ func (t *coordinatorToolset) promoteSpritesTokenTool(ctx context.Context, record
 	if err != nil {
 		return nil, err
 	}
-	existing, err := readSecretStatus(ctx, s.database.db, scope)
+	existing, err := readSecretStatus(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
 	if existing.Present {
 		return nil, nativeInvalid("An organization Sprites token is already configured")
 	}
-	change, _, _, err := firstProjectSpritesToken(ctx, s.database.db, scope)
+	change, _, _, err := firstProjectSpritesToken(ctx, s.database.reader, scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nativeInvalid("No existing project Sprites token is available")
 	}

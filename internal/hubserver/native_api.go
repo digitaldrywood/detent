@@ -245,13 +245,15 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireAPIScope(roles...)(func(c echo.Context) error {
+			readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+			defer cancelRead()
 			credential, ok := c.Get("hub_api_credential").(apiCredential)
 			if !ok {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 			if c.Path() == nativeOrganizationIssuePath {
-				err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+				err := s.database.auth().QueryRowContext(readCtx, "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
 				if err != nil {
 					return s.nativeAPIError(c, err)
 				}
@@ -282,17 +284,17 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), scope, write); err != nil {
+				if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {
 					return s.nativeAPIError(c, err)
 				}
-				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+				if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
 			c.Set("native_scope", scope)
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
-				if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
+				if err := s.hostedAudit(readCtx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
@@ -522,6 +524,8 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	return json.RawMessage(response), nil
 }
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	var query string
 	path := c.Path()
 	switch {
@@ -535,7 +539,7 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 		return nil
 	}
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), query, c.Param("id")).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, query, c.Param("id")).Scan(&count); err != nil {
 		return fmt.Errorf("check compatibility resource: %w", err)
 	}
 	if count != 0 {

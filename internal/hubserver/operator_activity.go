@@ -68,6 +68,8 @@ func (s *Service) hostedActivity(c echo.Context) error {
 }
 
 func (s *Service) readActivityReport(ctx context.Context, credential apiCredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	out := operatortool.ActivityReport{OrganizationID: s.config.Hosted.OrganizationID, ObservedAt: s.config.now().UTC(), Window: w, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, PopulationLimit: maxAnalyticsPopulation}
 	projects, err := s.usageReadableProjects(ctx, credential)
 	if err != nil {
@@ -83,7 +85,7 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	if r.ProjectID != "" && len(projects) == 0 {
 		return out, operatortool.ErrAccessDenied
 	}
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return out, err
 	}

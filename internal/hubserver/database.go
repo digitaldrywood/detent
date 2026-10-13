@@ -125,6 +125,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, store.Close())
 	}
 	store.schemaVersion = version
+	if err := store.optimize(ctx, "PRAGMA optimize=0x10002"); err != nil {
+		return nil, errors.Join(err, store.Close())
+	}
 	if cfg.CredentialMaintenance {
 		var bound int
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_tenant").Scan(&bound); err != nil || bound != 1 {
@@ -289,6 +292,9 @@ func sqliteReaderDSN(path string, busyTimeout time.Duration) string {
 	query.Add("mode", "ro")
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "query_only(1)")
+	query.Add("_pragma", "cache_size(-32000)")
+	query.Add("_pragma", "mmap_size(268435456)")
+	query.Add("_pragma", "temp_store(MEMORY)")
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
 }
@@ -428,6 +434,8 @@ func (d *database) verifyIdentity(ctx context.Context) error {
 }
 
 func (d *database) health(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if err := d.reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping hub database: %w", err)
 	}
@@ -470,4 +478,13 @@ func busyTimeoutMillis(timeout time.Duration) int64 {
 		return 1
 	}
 	return milliseconds
+}
+
+func (d *database) optimize(ctx context.Context, statement string) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if _, err := d.db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("optimize hub sqlite: %w", err)
+	}
+	return nil
 }

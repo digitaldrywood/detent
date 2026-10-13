@@ -95,11 +95,13 @@ func (s *Service) getGitHubBatch(c echo.Context) error {
 }
 
 func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (githubBatchView, error) {
-	batch, err := readGitHubBatch(ctx, s.database.db, scope)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	batch, err := readGitHubBatch(ctx, s.database.reader, scope)
 	if err != nil {
 		return githubBatchView{}, err
 	}
-	return githubBatchResponse(ctx, s.database.db, scope, batch)
+	return githubBatchResponse(ctx, s.database.reader, scope, batch)
 }
 
 func batchHasPending(batch *tracker.GitHubBatch) bool {

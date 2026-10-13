@@ -99,7 +99,7 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 		return coordinatorToolError(err), nil
 	}
 	if !coordinatorScreenRead(call.Name) {
-		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.db, t.state.conversationID)
+		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
 		if readErr != nil {
 			return coordinatorToolError(readErr), nil
 		}
@@ -143,7 +143,7 @@ func coordinatorToolError(err error) runner.AgentToolResult {
 }
 
 func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolCall) (any, error) {
-	record, err := t.coordinator.readConversation(ctx, t.coordinator.service.store.db, t.state.conversationID)
+	record, err := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if authErr != nil {
 			return nil, authErr
 		}
-		if err := t.coordinator.service.authorizeRead(actorCtx, t.coordinator.service.store.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
+		if err := t.coordinator.service.authorizeRead(actorCtx, t.coordinator.service.store.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
 			return nil, err
 		}
 		record.OwnerPrincipalID = credential.ID
@@ -277,7 +277,9 @@ func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit 
 // The conversation's own project is not assumed: a grant withdrawn after the
 // conversation started is honored on the next tool call.
 func (t *coordinatorToolset) readableProjects(ctx context.Context, record conversationRecord) ([]tracker.ProjectID, error) {
-	db := t.coordinator.service.store.db
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	db := t.coordinator.service.store.reader
 	query := `SELECT g.project_id FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
 WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 	args := []any{record.OwnerSubject, record.OrganizationID}
@@ -369,6 +371,8 @@ type coordinatorAttention struct {
 // order: a pending question, a live lease, no workflow state (unavailable),
 // a non-terminal dependency or blocked state, a review state.
 func (t *coordinatorToolset) listAttention(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, scope string, limit int) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	switch scope {
 	case "", "project":
 		scope = "project"
@@ -396,7 +400,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	if err != nil {
 		return nil, err
 	}
-	db := t.coordinator.service.store.db
+	db := t.coordinator.service.store.reader
 	now, err := t.coordinator.service.server.database.currentTime()
 	if err != nil {
 		return nil, err
@@ -559,7 +563,7 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 		return reference, nil
 	}
 	s := t.coordinator.service.server
-	issue, err := s.resolveOperatorNativeItem(ctx, s.database.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
+	issue, err := s.resolveOperatorNativeItem(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, explain.ErrNotFound) {
 		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
 	}
@@ -582,7 +586,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 	if err != nil {
 		return nil, err
 	}
-	db := t.coordinator.service.store.db
+	db := t.coordinator.service.store.reader
 	issue := coordinatorIssue{Comments: []coordinatorComment{}}
 	err = db.QueryRowContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), i.native_updated_at
 FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id

@@ -90,7 +90,9 @@ FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id WHERE p.organ
 }
 
 func (s *Service) getProjectIntegration(c echo.Context) error {
-	result, err := s.projectIntegration(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	result, err := s.projectIntegration(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

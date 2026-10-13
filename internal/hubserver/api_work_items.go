@@ -156,6 +156,8 @@ func (s *Service) getWorkItem(c echo.Context) error {
 }
 
 func (d *database) workItemBody(ctx context.Context, id tracker.WorkItemID) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var body sql.NullString
 	if err := d.reader.QueryRowContext(ctx, "SELECT body FROM issues WHERE id = ?", id).Scan(&body); err != nil {
 		return "", fmt.Errorf("read work item body: %w", err)
@@ -179,6 +181,8 @@ func (s *Service) allWorkItems(ctx context.Context) ([]tracker.WorkItem, error) 
 }
 
 func (d *database) allWorkItemIDs(ctx context.Context) ([]tracker.WorkItemID, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	rows, err := d.reader.QueryContext(ctx, "SELECT id FROM issues WHERE github_node_id IS NOT NULL ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("query hub work item IDs: %w", err)
@@ -584,6 +588,8 @@ func decodeTimelineCursor(value string) (timelineCursor, error) {
 }
 
 func (d *database) latestWorkpad(ctx context.Context, id tracker.WorkItemID) (workpadProjection, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var desiredJSON string
 	var status string
 	var updatedAt string
@@ -611,6 +617,8 @@ LIMIT 1`, id, MutationWorkpad).Scan(&desiredJSON, &status, &updatedAt)
 }
 
 func (d *database) workItemTimeline(ctx context.Context, id tracker.WorkItemID, afterID int64, limit int) ([]timelineEvent, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	rows, err := d.reader.QueryContext(ctx, `
 SELECT id, fencing_token, machine_id, session_id, run_id, kind, payload_json, occurred_at, recorded_at
 FROM work_events

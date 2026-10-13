@@ -78,8 +78,10 @@ func enqueueSlackResolved(ctx context.Context, tx *sql.Tx, organization tracker.
 }
 
 func (s *Service) readSlackWebhook(ctx context.Context, organization tracker.OrganizationID, actor string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var envelope hubsecrets.Envelope
-	err := s.database.db.QueryRowContext(ctx, `SELECT ciphertext,nonce,wrapped_data_key,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, organization, slackWebhookSecret).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT ciphertext,nonce,wrapped_data_key,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, organization, slackWebhookSecret).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -152,8 +154,10 @@ func (s *Service) recordSlackResult(ctx context.Context, db hostedExecer, organi
 }
 
 func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
+	readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var pending int
-	if err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM health_slack_deliveries WHERE completed_at IS NULL AND attempts<2`).Scan(&pending); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT count(*) FROM health_slack_deliveries WHERE completed_at IS NULL AND attempts<2`).Scan(&pending); err != nil {
 		return false, err
 	}
 	if pending == 0 {
@@ -164,7 +168,7 @@ func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
 	var finding healthFinding
 	var event, subject, opened, queued string
 	var attempts int
-	err := s.database.db.QueryRowContext(ctx, `SELECT f.organization_id,f.id,f.signal,f.subject_json,f.summary,f.next_action,f.opened_at,d.event,d.queued_at,d.attempts
+	err := s.database.reader.QueryRowContext(readCtx, `SELECT f.organization_id,f.id,f.signal,f.subject_json,f.summary,f.next_action,f.opened_at,d.event,d.queued_at,d.attempts
  FROM health_slack_deliveries d JOIN health_findings f ON f.id=d.finding_id
  WHERE d.completed_at IS NULL AND d.attempts<2 AND julianday(d.next_attempt_at)<=julianday(?)
  AND (d.event='opened' OR NOT EXISTS(SELECT 1 FROM health_slack_deliveries o WHERE o.finding_id=d.finding_id AND o.event='opened' AND o.completed_at IS NULL AND o.attempts<2))

@@ -181,6 +181,8 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 }
 
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var credential apiCredential
 	var storedHash, createdAt, operations string
 	var revokedAt, expiresAt, lastUsedAt sql.NullString
