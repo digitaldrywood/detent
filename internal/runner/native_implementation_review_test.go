@@ -203,6 +203,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		changedInput string
 		unsupported  bool
 		shadow       bool
+		gateFailure  bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
 		{name: "source review without acceptance validator", verdict: "pass"},
@@ -222,6 +223,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "changed effective wrapper toolchain requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "toolchain", wantRuns: 1},
 		{name: "changed Go flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "flags", wantRuns: 1},
 		{name: "replaced tool requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "tool", wantRuns: 1},
+		{name: "replaced landing linter requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "linter", wantRuns: 1},
+		{name: "missing landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "missing-linter", gateFailure: true, wantRuns: 1},
+		{name: "unexecutable landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "unexecutable-linter", gateFailure: true, wantRuns: 1},
 		{name: "moved landing base requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "base", wantRuns: 1},
 		{name: "changed wrapped tree requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.TreeSHA = strings.Repeat("f", 40) }, wantRuns: 1},
 		{name: "failed wrapped receipt requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, editReceipt: func(r *gate.CommandResult) { r.ExitCode = 7 }, wantRuns: 1},
@@ -276,9 +280,26 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
+				for name, content := range map[string]string{
+					".gitignore":        "tmp/\n",
+					".golangci-version": "v2.14.0\n",
+					"main.go":           "package main\nfunc main() {}\n",
+				} {
+					if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				runRunnerGit(t, source, "add", ".")
 				runRunnerGit(t, source, "commit", "-m", "landing fixture")
-				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD")
+				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
+				linter := filepath.Join(source, "tmp", "tools", "golangci-lint", "v2.14.0", "go1.26.9", "golangci-lint")
+				if err := os.MkdirAll(filepath.Dir(linter), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				linterTool := "#!/bin/sh\necho original >> .git/linter-invocations\n"
+				if err := os.WriteFile(linter, []byte(linterTool), 0o700); err != nil {
+					t.Fatal(err)
+				}
 				bin := t.TempDir()
 				goTool := `#!/bin/sh
 version=${FIXTURE_GO_VERSION:-${GOTOOLCHAIN:-go1.27.1}}
@@ -290,6 +311,8 @@ if [ "$1" = env ]; then
     fi
 elif [ "$1" = build ]; then
     echo build >> .git/invocations
+elif [ "$1" = list ]; then
+    printf '{"Dir":"%s","ImportPath":"example.test/project"}\n' "$PWD"
 fi
 `
 				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
@@ -320,8 +343,20 @@ fi
 					if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool+"\n:\n"), 0o700); err != nil {
 						t.Fatal(err)
 					}
+				case "linter":
+					if err := os.WriteFile(linter, []byte("#!/bin/sh\necho replacement >> .git/linter-invocations\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "missing-linter":
+					if err := os.Remove(linter); err != nil {
+						t.Fatal(err)
+					}
+				case "unexecutable-linter":
+					if err := os.Chmod(linter, 0o600); err != nil {
+						t.Fatal(err)
+					}
 				case "base":
-					runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
+					runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD")
 				}
 			}
 			candidateTree := receipt.TreeSHA
@@ -389,14 +424,21 @@ fi
 				t.Fatalf("source verdict became a run failure or recording failure was ignored: %v", err)
 			}
 			want := []string{"review version", "review-model", "record review"}
-			if test.verdict == "pass" && test.validator && test.recordError == nil {
+			if test.verdict == "pass" && test.validator && test.recordError == nil && !test.gateFailure {
 				want = append(want, "validator version", "validator-model", "record validator")
 			}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("native completion omitted or reordered independent review: got %v, want %v", events, want)
 			}
-			if execution.reviewResult.Verdict != test.verdict {
-				t.Fatalf("source review verdict was rewritten: got %q, want %q", execution.reviewResult.Verdict, test.verdict)
+			wantVerdict := test.verdict
+			if test.gateFailure {
+				wantVerdict = gate.ValidatorVerdictWait
+				if len(execution.reviewResult.Commands) == 0 || execution.reviewResult.Commands[len(execution.reviewResult.Commands)-1].ExitCode == 0 {
+					t.Fatal("failed linter validation did not retain its failed receipt")
+				}
+			}
+			if execution.reviewResult.Verdict != wantVerdict {
+				t.Fatalf("source review verdict = %q, want %q", execution.reviewResult.Verdict, wantVerdict)
 			}
 			if len(worktree.commands) != test.wantRuns {
 				t.Fatalf("applicable evidence was rerun or invalid evidence skipped execution: commands=%v want executions=%d", worktree.commands, test.wantRuns)
@@ -408,6 +450,16 @@ fi
 				}
 				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
 					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
+				}
+				if test.changedInput == "linter" || test.wantRuns == 0 {
+					invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "linter-invocations"))
+					want := "original\n"
+					if test.changedInput == "linter" {
+						want += "replacement\n"
+					}
+					if err != nil || string(invocations) != want {
+						t.Fatalf("linter validation invocations = %q, want %q: %v", invocations, want, err)
+					}
 				}
 			}
 			if test.wantRuns == 0 && !reflect.DeepEqual(execution.reviewResult.Commands, []gate.CommandResult{expectedReceipt}) {
