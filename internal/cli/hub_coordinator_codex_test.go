@@ -235,7 +235,7 @@ func TestCoordinatorCodexCommandDisablesBuiltInTools(t *testing.T) {
 	script := strings.Join(coordinatorCodexCommand(t.Context(), launch, "").Args, " ")
 	for _, flag := range []string{
 		"-c features.shell_tool=false", "-c features.unified_exec=false", "-c features.view_image=false",
-		"-c features.code_mode_host=false", "-c features.apps=false", "-c features.plugins=false",
+		"-c features.code_mode=false", "-c features.apps=false", "-c features.plugins=false",
 		"-c features.browser_use=false", "-c features.computer_use=false", "-c features.multi_agent=false",
 		"-c features.image_generation=false", "-c web_search=disabled",
 	} {
@@ -245,6 +245,9 @@ func TestCoordinatorCodexCommandDisablesBuiltInTools(t *testing.T) {
 	}
 	if !strings.HasPrefix(launch.Command, "codex app-server -c ") {
 		t.Fatalf("command = %q, want the flags after the app-server subcommand", launch.Command)
+	}
+	if strings.Contains(script, "features.code_mode_host=false") {
+		t.Fatal("coordinator disabled the tool host required for scoped Hub calls")
 	}
 }
 
