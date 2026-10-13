@@ -194,9 +194,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	}
 	if unavailable == "known waits" {
 		for i := range 12 {
-			if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("waiting-%d", i)}, Title: "Known waiting work", State: "Rework"}); err != nil {
-				t.Fatal(err)
-			}
+			createIndependentNativeIssue(t, native, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("waiting-%d", i)}, Title: "Known waiting work", State: "Rework"})
 		}
 	}
 	titles := []string{"unsupported model", "compatible model"}
@@ -216,9 +214,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			state = "Rework"
 		}
 		body := "```detent-agent\nschema: 1\nmodel: " + model + "\n```" + issueContractTestSections
-		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: state}); err != nil {
-			t.Fatal(err)
-		}
+		createIndependentNativeIssue(t, native, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: title}, Title: title, Body: body, State: state})
 	}
 	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "work", SharedAccountAlias: "team", Models: []string{"sol"}, MaxConcurrent: 1, Availability: "available", ObservedAt: time.Now()}
 	if batch {

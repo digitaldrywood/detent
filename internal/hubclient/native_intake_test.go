@@ -111,8 +111,8 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	for range 22 {
-		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Earlier work", State: "Backlog"}); err != nil {
+	for index := range 22 {
+		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "backlogfixture" + strconv.Itoa(index) + "x", State: "Backlog"}); err != nil {
 			t.Fatal(err)
 		}
 	}
