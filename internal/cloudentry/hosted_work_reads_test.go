@@ -10,6 +10,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type nativeDuplicateFixture struct {
+	ChallengeToken     string `json:"challenge_token"`
+	PossibleDuplicates []struct {
+		Number int `json:"number"`
+	} `json:"possible_duplicates"`
+}
+
 type hostedHubReadFixture struct {
 	browser *browser
 	base    string
@@ -56,10 +63,23 @@ func TestHostedHubWorkReads(t *testing.T) {
 		if state == "Done" {
 			initialState = "Todo"
 		}
-		response := f.request(t, http.MethodPost, f.base+"/work-items", map[string]any{
+		draft := map[string]any{
 			"idempotency_key": "seed-" + state, "title": state + " hosted issue", "state": initialState,
 			"body": "## Acceptance criteria\nRead through the shared entry.\n## Must not break\nTenant isolation.\n## How we know it worked\nRun the HTTP regression.",
-		})
+		}
+		response := f.request(t, http.MethodPost, f.base+"/work-items", draft)
+		var challenge nativeDuplicateFixture
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &challenge) != nil {
+			t.Fatalf("file fixture=%d %s", response.Code, response.Body)
+		}
+		if challenge.ChallengeToken != "" {
+			var numbers []int
+			for _, match := range challenge.PossibleDuplicates {
+				numbers = append(numbers, match.Number)
+			}
+			draft["challenge_token"], draft["not_duplicate_of"] = challenge.ChallengeToken, numbers
+			response = f.request(t, http.MethodPost, f.base+"/work-items", draft)
+		}
 		var issue tracker.NativeIssue
 		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &issue) != nil || issue.WorkItemID == "" {
 			t.Fatalf("create %s status = %d: %s", state, response.Code, response.Body)

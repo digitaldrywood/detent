@@ -226,7 +226,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			priority = &level
 		}
-		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
+		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, ChallengeToken: create.ChallengeToken, NotDuplicateOf: create.NotDuplicateOf, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
 	} else if operatortool.IsWorkTool(call.Name) {
 		metadata.ResourceID = request.Identifier
 		if definition.Annotations.ReadOnly {

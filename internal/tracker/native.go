@@ -214,6 +214,8 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
+	ChallengeToken      string                          `json:"challenge_token,omitempty"`
+	NotDuplicateOf      []int                           `json:"not_duplicate_of,omitempty"`
 	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
 	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
 	Title               string                          `json:"title"`
@@ -344,6 +346,7 @@ type Transition struct {
 
 type DependencyMutation struct {
 	Mutation
+	RelationshipType  string           `json:"relationship_type,omitempty"`
 	ExpectedRevision  Revision         `json:"expected_revision,string"`
 	RelatedWorkItemID NativeWorkItemID `json:"related_work_item_id"`
 	Operation         string           `json:"operation"`

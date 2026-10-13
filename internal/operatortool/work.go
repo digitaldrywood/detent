@@ -30,6 +30,7 @@ const (
 // WorkArguments are application inputs only. Connection authority, actor,
 // approval and native worker fencing cannot be supplied by a tool caller.
 type WorkArguments struct {
+	RelationshipType    string    `json:"relationship_type,omitempty"`
 	DestinationRunnerID string    `json:"destination_runner_id,omitempty"`
 	VersionID           string    `json:"version_id,omitempty"`
 	ProjectID           string    `json:"project_id"`
@@ -69,7 +70,7 @@ func WorkCatalog() []Definition {
 		commandDefinition(AddComment, "Add an issue or supported pull-request comment through the dashboard application command. Embed upload_attachment reference in body to attach a file.", selector+body+`,"target":{"type":"string","enum":["issue","pr"]},"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1}`, `"identifier","body"`, false),
 		commandDefinition(EditComment, "Edit a permitted comment; native comments require their expected revision.", selector+revision+body+comment, `"identifier","comment_id","body"`, false),
 		commandDefinition(DeleteComment, "Delete a permitted local comment using current write authority. Native comment deletion is unavailable.", selector+comment, `"identifier","comment_id"`, true),
-		commandDefinition(SetDependency, "Add or remove a dashboard-supported dependency. Native requests require the issue's expected revision.", selector+revision+`,"related":{"type":"string","minLength":1,"maxLength":256},"operation":{"type":"string","enum":["add","remove"]}`, `"identifier","related","operation"`, false),
+		commandDefinition(SetDependency, "Add or remove a dependency, or a symmetric nonblocking related link on native issues with relationship_type=related. Omitted relationship_type keeps dependency behavior. Native requests require the issue's expected revision.", selector+revision+`,"relationship_type":{"type":"string","enum":["dependency","related"]},"related":{"type":"string","minLength":1,"maxLength":256},"operation":{"type":"string","enum":["add","remove"]}`, `"identifier","related","operation"`, false),
 		commandDefinition(ArchiveItem, "Archive native work using current authority. Active work must be finished or stopped.", selector+revision, `"identifier","expected_revision"`, true),
 		commandDefinition(RestoreItem, "Restore archived native work with an expected revision.", selector+revision, `"identifier","expected_revision"`, false),
 		commandDefinition(RemoveItem, "Remove board membership through the orchestrator using current authority; tracker capability restrictions remain.", selector, `"identifier"`, true),
