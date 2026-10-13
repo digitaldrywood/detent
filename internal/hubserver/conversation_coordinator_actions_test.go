@@ -150,7 +150,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				if outcome == "number resolution" {
 					seedArchiveIssues(t, f.service, nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}, 18, "Todo")
 				}
-				response := request(t, u, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "luna-issue", "title": "Original issue", "body": nativeContractTestBody, "state": "Todo", "labels": []string{"original"}})
+				response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "luna-issue"}, Title: "Original issue", Body: nativeContractTestBody, State: "Todo", Labels: []string{"original"}}, func(draft tracker.CreateIssue) *httptest.ResponseRecorder {
+					return request(t, u, http.MethodPost, f.base+"/work-items", draft)
+				})
 				requireNativeStatus(t, response, http.StatusOK)
 				if coordinatorSpriteMutation(tool) {
 					f.service.spriteWakeWork.Wait()

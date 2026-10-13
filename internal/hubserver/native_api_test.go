@@ -63,6 +63,37 @@ func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, want
 
 const issueContractTestSections = "\n## Acceptance criteria\nComplete the requested work.\n## Must not break\nExisting behavior.\n## How we know it worked\nRun the project checks."
 
+func createIndependentNativeIssue(t *testing.T, request tracker.CreateIssue, send func(tracker.CreateIssue) *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	response := send(request)
+	if response.Code == http.StatusConflict {
+		var failure apiErrorResponse
+		decodeHubResponse(t, response, &failure)
+		var challenge duplicateChallenge
+		decodeHubResponse(t, response, &challenge)
+		if failure.Code != "possible_duplicates" || challenge.ChallengeToken == "" || len(challenge.PossibleDuplicates) == 0 {
+			t.Fatalf("independent fixture challenge: %s", response.Body.String())
+		}
+		request.ChallengeToken = challenge.ChallengeToken
+		for _, match := range challenge.PossibleDuplicates {
+			request.NotDuplicateOf = append(request.NotDuplicateOf, match.Number)
+		}
+		response = send(request)
+	}
+	requireNativeStatus(t, response, http.StatusOK)
+	return response
+}
+
+func (f nativeFixture) createIndependent(t *testing.T, name string) tracker.NativeIssue {
+	t.Helper()
+	response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + name}, Title: name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"}, func(request tracker.CreateIssue) *httptest.ResponseRecorder {
+		return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+	})
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, response, &issue)
+	return issue
+}
+
 func (f nativeFixture) create(t *testing.T, name string) tracker.NativeIssue {
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-" + name}, Title: name, Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo"})

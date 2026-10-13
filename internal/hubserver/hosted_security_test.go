@@ -662,7 +662,7 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	reader := f.user(t, "reader", "viewer", "reader@example.test", "read", "")
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
-	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "cached-private-sentinel", State: "Todo"}
+	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "Receipt reconnect", State: "Todo"}
 	created := f.request(t, writer, http.MethodPost, f.base+"/work-items", command)
 	requireNativeStatus(t, created, http.StatusOK)
 	// Simulate a pre-upgrade receipt: its session suffix must not let a
@@ -699,7 +699,9 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	changed.Title = "changed"
 	requireNativeStatus(t, f.request(t, secondSession, http.MethodPost, f.base+"/work-items", changed), http.StatusConflict)
 	other := f.user(t, "other-writer", "member", "other-writer@example.test", "write", "")
-	distinct := f.request(t, other, http.MethodPost, f.base+"/work-items", command)
+	distinct := createIndependentNativeIssue(t, command, func(request tracker.CreateIssue) *httptest.ResponseRecorder {
+		return f.request(t, other, http.MethodPost, f.base+"/work-items", request)
+	})
 	requireNativeStatus(t, distinct, http.StatusOK)
 	var first, second tracker.NativeIssue
 	decodeHubResponse(t, created, &first)

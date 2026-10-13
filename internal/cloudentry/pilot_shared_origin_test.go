@@ -743,6 +743,25 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 					issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("tab-%s-%d", tab.self.id, i)}, Title: fmt.Sprintf("%s tab issue %d", tab.self.projectName, i), State: "Todo"}
 					created := fay.json(http.MethodPost, tab.self.projectAPI()+"/work-items", fayCSRF[tab.self.id], issue)
 					requests.Add(1)
+					if created.status == http.StatusConflict {
+						var challenge struct {
+							Code    string `json:"code"`
+							Token   string `json:"challenge_token"`
+							Matches []struct {
+								Number int `json:"number"`
+							} `json:"possible_duplicates"`
+						}
+						if err := json.Unmarshal([]byte(created.body), &challenge); err != nil || challenge.Code != "possible_duplicates" || challenge.Token == "" || len(challenge.Matches) == 0 {
+							errs <- fmt.Errorf("tab %s challenge %s: %v", tab.self.id, created.body, err)
+							return
+						}
+						issue.ChallengeToken = challenge.Token
+						for _, match := range challenge.Matches {
+							issue.NotDuplicateOf = append(issue.NotDuplicateOf, match.Number)
+						}
+						created = fay.json(http.MethodPost, tab.self.projectAPI()+"/work-items", fayCSRF[tab.self.id], issue)
+						requests.Add(1)
+					}
 					if created.status != http.StatusOK {
 						errs <- fmt.Errorf("tab %s create %d: %.200s", tab.self.id, created.status, created.body)
 						return

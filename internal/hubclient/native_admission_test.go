@@ -83,9 +83,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true}}, true)
 			h.scheduler.machine.Capacity = 6
 			for i := range 8 {
-				if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"}); err != nil {
-					t.Fatal(err)
-				}
+				createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"})
 			}
 			evaluations := 0
 			var readyIDs []string
@@ -618,9 +616,7 @@ func TestNativeAdmissionCompetingRunners(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 8 {
-		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"}); err != nil {
-			t.Fatal(err)
-		}
+		createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"})
 	}
 	ready := make(chan struct{})
 	var previews atomic.Int32
