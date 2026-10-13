@@ -2,9 +2,8 @@
 // origin every organization lives under `/organizations/ORG`, and only the
 // entry knows the account's other organizations, so the switcher reads the
 // entry's list and switching is a navigation, not an API call.
-import React from "react";
-
 import { basePath } from "../../runtime/basePath.ts";
+import { useResource } from "../account/useResource.ts";
 import { makeEntryApi } from "./api.ts";
 
 export interface SharedOrganization {
@@ -23,32 +22,16 @@ export function currentSharedOrganization(prefix: string = basePath()): string {
   return behindSharedEntry(prefix) ? decodeURIComponent(prefix.slice("/organizations/".length)) : "";
 }
 
-/** The account's organizations from the entry, or null outside the shared entry. */
-export function useSharedOrganizations(): readonly SharedOrganization[] | null {
-  const [value, setValue] = React.useState<readonly SharedOrganization[] | null>(null);
-  React.useEffect(() => {
-    if (!behindSharedEntry()) return;
-    let live = true;
+export function useSharedOrganizations() {
+  return useResource<readonly SharedOrganization[] | null>(async () => {
+    if (!behindSharedEntry()) return null;
     const current = currentSharedOrganization();
-    makeEntryApi()
-      .organizations()
-      .then((listing) => {
-        if (!live) return;
-        setValue(
-          listing.organizations.map((organization) => ({
-            ...organization,
-            current: organization.id === current,
-          })),
-        );
-      })
-      .catch(() => {
-        if (live) setValue([]);
-      });
-    return () => {
-      live = false;
-    };
+    const listing = await makeEntryApi().organizations();
+    return listing.organizations.map((organization) => ({
+      ...organization,
+      current: organization.id === current,
+    }));
   }, []);
-  return value;
 }
 
 export { CHOOSE_ORGANIZATION as ENTRY_ORGANIZATIONS } from "./api.ts";

@@ -754,6 +754,7 @@ const (
 
 type ValidatorRequest struct {
 	Evidence             []tracker.NativeEvidence
+	Commands             []gate.CommandResult
 	implementationReview bool
 	EvidenceTools        []AgentTool
 	EvidenceHandler      AgentToolHandler

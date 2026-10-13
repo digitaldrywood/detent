@@ -3477,12 +3477,18 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
 		}
 		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
+		if req.NativeVersion.Validation != nil {
+			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
+			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
+		}
 		configured := gate.Effective(workflow.Config.Gate)
 		if configured.Kind == gate.KindCommand {
-			if req.implementationReview && workspace.ValidationCoversHead(req.NativeVersion.Validation, configured.Run, req.NativeVersion.HeadSHA) {
-				commands.results = append(commands.results, *req.NativeVersion.Validation)
-			} else if _, err := commands.execute(ctx, configured.Run); err != nil {
-				return gate.ValidatorResult{}, err
+			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
+				return receipt.Command == configured.Run && commands.canReuse(ctx, receipt)
+			}) {
+				if _, err := commands.execute(ctx, configured.Run); err != nil {
+					return gate.ValidatorResult{}, err
+				}
 			}
 		}
 		validationTools, validationHandler = commands.tools()

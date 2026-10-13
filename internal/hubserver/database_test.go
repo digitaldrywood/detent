@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -24,6 +26,8 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -169,6 +173,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		"runner_identities",
 		"runner_identity_events",
 		"runner_project_skills",
+		"scheduled_validation_reports",
 		"sync_checkpoints",
 		"work_events",
 		"workflow_states",
@@ -1309,6 +1314,37 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				t.Fatal("reader pool accepted a write")
 			}
 			if !test.write {
+				window := operatortool.AnalyticsWindow{From: time.Now().UTC().Add(-time.Hour), To: time.Now().UTC().Add(time.Hour), Bucket: time.Hour}
+				read := func() int {
+					t.Helper()
+					analytics, err := readNativeAnalytics(t.Context(), held, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return analytics.LaneResidence.IssuesObserved
+				}
+				if got := read(); got != 2 {
+					t.Fatalf("initial analytics population = %d, want 2", got)
+				}
+				body, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-third"}, Title: "third", Body: issueContractTestSections, State: "Todo"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				request := httptest.NewRequest(http.MethodPost, f.base+"/work-items", strings.NewReader(string(body))).WithContext(ctx)
+				request.Header.Set("Authorization", "Bearer "+f.token)
+				request.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				if got := read(); got != 2 {
+					t.Fatalf("held analytics snapshot after write = %d, want 2", got)
+				}
+				page, err := f.service.readIssues(ctx, scope, url.Values{})
+				if err != nil || page.Total != 3 {
+					t.Fatalf("committed population = %d, want 3: %v", page.Total, err)
+				}
 				return
 			}
 			blocked, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)

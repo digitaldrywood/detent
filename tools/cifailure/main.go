@@ -151,6 +151,15 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 	}
 
 	var failures []error
+	conclusion := scheduledConclusion(jobs)
+	if cloud, ok := destination.(*cloudDestination); ok && len(jobs) > 0 {
+		if err := cloud.recordValidation(ctx, getenv, conclusion); err != nil {
+			failures = append(failures, fmt.Errorf("record scheduled validation: %w", err))
+		}
+		if conclusion == "skipped" {
+			return errors.Join(failures...)
+		}
+	}
 	runURL := fmt.Sprintf("%s/%s/actions/runs/%s/attempts/%s", getenv("GITHUB_SERVER_URL"), repository, getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"))
 	for i, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
@@ -194,7 +203,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			disposition := "Let the next scheduled full validation confirm the repair; a green run closes scheduled repair issues."
 			if _, native := destination.(*cloudDestination); native {
 				disposition = "Let the next scheduled full validation confirm the repair. Scheduled evidence does not authorize review approval or native completion."
-				disposition += " Under the human-approved Detent scheduled reporting policy, every failing job enters Todo at High priority, including unclassified and infrastructure failures. Reuse open work for the same job, promote matching Backlog intake through the native workflow owner, and preserve Urgent, human questions and operator holds. Verify this reported failure on the worker's current base using focused diagnostics; do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current head still fails."
+				disposition += " Under the human-approved Detent scheduled reporting policy, every failing job enters Todo at High priority, including unclassified and infrastructure failures. Reuse open work for the same job, promote matching Backlog intake through the native workflow owner, and preserve Urgent, human questions and operator holds. Reproduce this failure on the actual implementation-start base before edits, recording the original SHA, command and observed failure. Stop without speculative source changes if it cannot be reproduced. Preserve that diagnosis across unrelated rebases; reassess relevant intervening source or fixture changes and validate the integrated candidate under the selected workflow. Reuse applicable genuine exact-source command receipts; rerun for changed inputs, missing evidence or a concrete risk. Do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current candidate still fails."
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. %s\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence, disposition)
 			if !sourceFailure {
@@ -231,8 +240,8 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			}
 		}
 	}
-	if allGreen(jobs) {
-		return destination.success(ctx, getenv)
+	if conclusion == "success" {
+		return errors.Join(errors.Join(failures...), destination.success(ctx, getenv))
 	}
 	return errors.Join(failures...)
 }

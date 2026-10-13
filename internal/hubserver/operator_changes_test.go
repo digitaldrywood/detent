@@ -220,6 +220,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		{"foreign item", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ItemID = "wi_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign change", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ChangeID = "change_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign version", operatortool.GetChangeVersion, func(a *operatortool.ChangeArguments) { a.VersionID = "version_foreign" }, operatortool.ErrAccessDenied},
+		{"foreign selected version", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.VersionID = "version_foreign"; a.Section = "discussion" }, operatortool.ErrAccessDenied},
 		{"missing publication identity", operatortool.PublishChangeVersion, nil, operatortool.ErrInvalidArguments},
 		{"worker landing", "land_change", nil, operatortool.ErrUnknownTool},
 		{"worker CI", "submit_change_check", nil, operatortool.ErrUnknownTool},
@@ -255,6 +256,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", stamp, report.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	report.Body = stamp
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	registered := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	registered.enroll(t)
@@ -326,8 +328,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 			}
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, base))
 			var value operatortool.ChangeResult
-			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit == nil || len(value.ValidationAudit.Occurrences) != 1 {
-				t.Fatalf("audit=%s %v", result.Content, err)
+			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit != nil {
+				t.Fatalf("Change read repeated project audit: %v", err)
 			}
 			if test.name == "same content and check passes locally" {
 				want := *receipt.Gate
@@ -354,7 +356,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 					}
 				}
 			}
-			occurrence := value.ValidationAudit.Occurrences[0]
+			projectAudit, err := readValidationAudit(ctx, f.service.database.db, scope, "", "", f.change.ID, "")
+			if err != nil || len(projectAudit.Occurrences) != 1 {
+				t.Fatalf("audit=%+v %v", projectAudit, err)
+			}
+			occurrence := projectAudit.Occurrences[0]
 			if occurrence.Source.WorkItemID != report.WorkItemID || occurrence.Source.Actor.PrincipalID == "" || len(occurrence.Comparisons) != 1 {
 				t.Fatalf("source/candidates=%+v", occurrence)
 			}
@@ -623,6 +629,37 @@ func TestOperatorChangeCommands(t *testing.T) {
 		if err != nil || len(policyBytes) < 48000 || len(policyBytes) > 60000 {
 			t.Fatalf("unrealistic policy bytes=%d: %v", len(policyBytes), err)
 		}
+		for i := range 3 {
+			unrelated := f.create(t, "unrelated scheduled failure")
+			record := scheduled
+			record.OccurrenceKey = policy.Digest([]byte(strconv.Itoa(i)))
+			record.RunID = strconv.Itoa(200 + i)
+			record.RunURL = "https://github.com/example-org/example-project/actions/runs/" + record.RunID
+			body := issueorigin.Stamp("Scheduled job failed"+record.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: record.RunURL, Fingerprint: record.OccurrenceKey})
+			if _, err := f.service.database.db.ExecContext(ctx, "UPDATE issues SET body=? WHERE native_id=?", body, unrelated.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, item := range []tracker.NativeIssue{f.issue, report} {
+			raw, err := json.Marshal(map[string]string{"project_id": string(f.project.ID), "reference": string(item.WorkItemID)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: operatortool.WorkItem, Arguments: raw})
+			var envelope struct {
+				Data operatortool.NativeItem `json:"data"`
+			}
+			if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.WorkItemID != item.WorkItemID || envelope.Data.Body != item.Body {
+				t.Fatalf("selected work item lost content: %v", err)
+			}
+			if item.WorkItemID == f.issue.WorkItemID {
+				if envelope.Data.ValidationAudit != nil {
+					t.Fatal("ordinary work item repeats project validation audit")
+				}
+			} else if audit := envelope.Data.ValidationAudit; audit == nil || len(audit.Occurrences) != 1 || audit.Occurrences[0].Source.WorkItemID != report.WorkItemID || !strings.Contains(audit.Occurrences[0].Comparisons[0].Attribution, "unverified") {
+				t.Fatal("scheduled work item lost its own evidence or included unrelated reports")
+			}
+		}
 		insert := func(ctx context.Context, kind, versionID string, record any) {
 			t.Helper()
 			raw, err := json.Marshal(record)
@@ -636,13 +673,19 @@ func TestOperatorChangeCommands(t *testing.T) {
 		assertVersion := func(got tracker.ChangeVersion) {
 			t.Helper()
 			want := versions[got.ID]
+			if want.Policy.Authored != nil {
+				authored := *want.Policy.Authored
+				authored.Files = nil
+				want.Policy.Authored = &authored
+			}
+			want.Policy.Configuration, want.Policy.Workflow = nil, nil
 			if want.Validation != nil {
 				command := *want.Validation
 				command.Output, command.OutputTruncated = "[earlier output truncated]\n"+strings.Repeat("界", 1356), true
 				want.Validation = &command
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatal("version identity or validation receipt changed beyond explicit output excerpt")
+				t.Fatal("version identity, gate requirements or validation receipt changed beyond disclosed policy details and output excerpt")
 			}
 		}
 		actor := current.Actor
@@ -690,7 +733,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			t.Helper()
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args))
 			var value operatortool.ChangeResult
-			if err != nil || len(result.Content) > operatortool.MaxResultBytes || !utf8.Valid(result.Content) || json.Unmarshal(result.Content, &value) != nil || value.Read == nil || !reflect.DeepEqual(value.Detail.Summary, full.Summary) {
+			if err != nil || len(result.Content) > operatortool.MaxResultBytes || !utf8.Valid(result.Content) || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit != nil || value.Read == nil || !value.Read.PolicyDetailsOmitted || !reflect.DeepEqual(value.Detail.Summary, full.Summary) {
 				t.Fatalf("bounded read bytes=%d error=%v", len(result.Content), err)
 			}
 			params := url.Values{"view": {"bounded"}, "section": {args.Section}, "cursor": {args.Cursor}, "version_id": {args.VersionID}}
@@ -707,6 +750,25 @@ func TestOperatorChangeCommands(t *testing.T) {
 			return value
 		}
 		one := base
+		one.Section, one.Limit = "discussion", 1
+		focused := read(one)
+		focusedBytes, err := json.Marshal(focused)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("discussion_limit_1_bytes=%d", len(focusedBytes))
+		if focused.ValidationAudit != nil || focused.Detail.Versions[0].Policy.Configuration != nil || focused.Detail.Versions[0].Policy.Workflow != nil || focused.Detail.Versions[0].Policy.Authored != nil && len(focused.Detail.Versions[0].Policy.Authored.Files) != 0 {
+			t.Fatal("selected discussion repeats policy details or unrelated scheduled comparisons")
+		}
+		if len(focusedBytes) > 16<<10 || len(focused.Detail.Discussion) != 1 || !reflect.DeepEqual(focused.Detail.Discussion[0], full.Discussion[0]) || focused.Read.Sections["discussion"].Complete || focused.Read.Sections["discussion"].NextCursor == "" {
+			t.Fatal("focused discussion lost evidence or continuation")
+		}
+		one.Cursor = focused.Read.Sections["discussion"].NextCursor
+		continued := read(one)
+		if len(continued.Detail.Discussion) != 1 || !reflect.DeepEqual(continued.Detail.Discussion[0], full.Discussion[1]) {
+			t.Fatal("focused discussion continuation lost evidence")
+		}
+		one.Cursor = ""
 		one.Section, one.Limit = "reviews", 1
 		selected := read(one)
 		if len(selected.Detail.Reviews) != 1 || selected.Detail.Reviews[0].ID != "review_0" {
@@ -855,8 +917,13 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 		args = base
 		args.VersionID = version.ID
-		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChangeVersion, args)); err != nil {
-			t.Fatalf("exact historical version blocked by oversized current evidence: %v", err)
+		for _, id := range []string{version.ID, current.ID} {
+			args.VersionID = id
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChangeVersion, args))
+			var exact operatortool.ChangeResult
+			if err != nil || json.Unmarshal(result.Content, &exact) != nil || exact.Version == nil || !reflect.DeepEqual(*exact.Version, versions[id]) {
+				t.Fatalf("exact version lost full policy or receipt: %v", err)
+			}
 		}
 		input := current.ChangeVersionInput
 		input.HeadSHA, input.Source, input.Validation = strings.Repeat("7", 40), nil, nil

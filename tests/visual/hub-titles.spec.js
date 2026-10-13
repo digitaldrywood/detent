@@ -64,11 +64,12 @@ test("conversation detail supplies the title when the first list page omits it",
     async (route) => {
       const response = await route.fetch();
       const body = await response.json();
-      omittedFromList = body.conversations.some((conversation) => conversation.id === conversationId);
+      const includesCreated = body.conversations.some((conversation) => conversation.id === conversationId);
       await route.fulfill({ response, json: {
         ...body,
         conversations: body.conversations.filter((conversation) => conversation.id !== conversationId),
       } });
+      omittedFromList ||= includesCreated;
     },
   );
 
@@ -76,5 +77,6 @@ test("conversation detail supplies the title when the first list page omits it",
     waitUntil: "domcontentloaded",
   });
   await expect(page).toHaveTitle("Chat: Beyond the first page · Browser collaboration · Detent");
-  expect(omittedFromList).toBe(true);
+  await expect.poll(() => omittedFromList).toBe(true);
+  await expect(page).toHaveTitle("Chat: Beyond the first page · Browser collaboration · Detent");
 });

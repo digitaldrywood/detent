@@ -135,7 +135,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
 	historyWindow := w
 	historyWindow.From = w.From.Add(-w.To.Sub(w.From))
-	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, s.database.db, scope, historyWindow)
+	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, s.database.reader, scope, historyWindow)
 	if err != nil {
 		return out, err
 	}
@@ -157,7 +157,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 			}
 		}
 	}
-	rows, err := readUsageRows(ctx, s.database.db, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
+	rows, err := readUsageRows(ctx, s.database.reader, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
 	if err != nil {
 		return out, err
 	}
@@ -174,7 +174,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Cost += row.Cost
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
-	policy, err := diagnosticsPolicyValues(ctx, s.database.db, scope)
+	policy, err := diagnosticsPolicyValues(ctx, s.database.reader, scope)
 	if err != nil {
 		return out, err
 	}
@@ -228,7 +228,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	if err != nil {
 		return out, err
 	}
-	titleRows, err := s.database.db.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
+	titleRows, err := s.database.reader.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
 	if err != nil {
 		return out, err
 	}
@@ -434,7 +434,7 @@ func (s *Service) reportsFirstTry(ctx context.Context, scope nativeScope, p nati
 }
 
 func (s *Service) reportsLandingAttemptCount(ctx context.Context, scope nativeScope, landing nativeAnalyticsLanding) (int, bool, error) {
-	rows, err := s.database.db.QueryContext(ctx, `SELECT coalesce(json_extract(data_json,'$.runtime.landing'),'null') FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND julianday(started_at)<=julianday(?) AND (json_extract(data_json,'$.runtime.identity.role')='merge' OR json_extract(data_json,'$.runtime.landing') IS NOT NULL) ORDER BY started_at,id LIMIT ?`, scope.organization, scope.project, landing.WorkItemID, formatHubTime(landing.Landing.LandedAt), maxAnalyticsPopulation+1)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT coalesce(json_extract(data_json,'$.runtime.landing'),'null') FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND julianday(started_at)<=julianday(?) AND (json_extract(data_json,'$.runtime.identity.role')='merge' OR json_extract(data_json,'$.runtime.landing') IS NOT NULL) ORDER BY started_at,id LIMIT ?`, scope.organization, scope.project, landing.WorkItemID, formatHubTime(landing.Landing.LandedAt), maxAnalyticsPopulation+1)
 	if err != nil {
 		return 0, false, err
 	}

@@ -35,6 +35,7 @@ type Execution interface {
 
 type NativeValidation struct {
 	Evidence []tracker.NativeEvidence
+	Commands []gate.CommandResult
 	Version  *tracker.ChangeVersion
 	Diff     *connector.ValidationDiff
 }
@@ -896,7 +897,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
@@ -934,7 +935,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, 
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{implementationReview: true, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{implementationReview: true, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}

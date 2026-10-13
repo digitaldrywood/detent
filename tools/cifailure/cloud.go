@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -414,21 +415,53 @@ func (c *cloudDestination) comment(ctx context.Context, issue *cloudIssue, body,
 	return nil
 }
 
-func allGreen(jobs []job) bool {
+func scheduledConclusion(jobs []job) string {
 	count := 0
+	preflight, skipped, validated := false, false, false
 	for _, j := range jobs {
-		if j.Name == "Finalize scheduled validation" {
+		switch j.Name {
+		case "Finalize scheduled validation":
 			if j.Conclusion == "failure" {
-				return false
+				return "failure"
 			}
 			continue
-		}
-		if j.Conclusion != "success" {
-			return false
+		case "preflight":
+			if j.Conclusion != "success" {
+				return "failure"
+			}
+			preflight = true
+		default:
+			switch j.Conclusion {
+			case "success":
+				validated = true
+			case "skipped":
+				skipped = true
+			default:
+				return "failure"
+			}
 		}
 		count++
 	}
-	return count > 0
+	if skipped {
+		if preflight && !validated {
+			return "skipped"
+		}
+		return "failure"
+	}
+	if count > 0 {
+		return "success"
+	}
+	return "failure"
+}
+
+func (c *cloudDestination) recordValidation(ctx context.Context, getenv func(string) string, conclusion string) error {
+	report := gate.ScheduledValidationReport{Repository: getenv("GITHUB_REPOSITORY"), RunID: getenv("GITHUB_RUN_ID"), RunAttempt: getenv("GITHUB_RUN_ATTEMPT"), HeadSHA: getenv("CI_DEVELOP_SHA"), Conclusion: conclusion}
+	report.RunURL = "https://github.com/" + report.Repository + "/actions/runs/" + report.RunID + "/attempts/" + report.RunAttempt
+	if !report.Valid() {
+		return errors.New("scheduled validation report has no valid run identity")
+	}
+	var result json.RawMessage
+	return c.publish(ctx, "record_scheduled_validation", map[string]any{"project_id": c.project, "request_id": "scheduled-validation-" + occurrenceKey(getenv, job{Name: "scheduled-validation"}, report.Repository), "scheduled_validation": report}, &result)
 }
 
 func (c *cloudDestination) success(ctx context.Context, getenv func(string) string) error {

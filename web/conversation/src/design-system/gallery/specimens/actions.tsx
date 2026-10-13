@@ -67,6 +67,7 @@ const BUTTON_TEXT_SIZES = keysOf<Exclude<ButtonSize, `icon${string}`>>({
   "sm-multiline": true,
   default: true,
   lg: true,
+  touch: true,
   xl: true,
 });
 

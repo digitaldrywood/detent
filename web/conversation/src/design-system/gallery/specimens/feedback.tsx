@@ -93,6 +93,7 @@ const EMPTY_SIZES = keysOf<NonNullable<React.ComponentProps<typeof Empty>["size"
   compact: true,
   default: true,
   hero: true,
+  entry: true,
 });
 
 const BADGE_SIZES = keysOf<BadgeSize>({ sm: true, default: true, lg: true, control: true });
@@ -394,7 +395,7 @@ export const empty: GalleryDoc = {
       id: "icon",
       title: "Icon media with action",
       render: () => (
-        <Empty className="border border-dashed">
+        <Empty panel="dashed">
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <InboxIcon />
@@ -433,7 +434,7 @@ export const empty: GalleryDoc = {
             ? "Fills a whole route; the title reads larger."
             : "The default room and title size.",
       render: () => (
-        <Empty size={size} className="border border-dashed">
+        <Empty size={size} panel="dashed">
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <InboxIcon />

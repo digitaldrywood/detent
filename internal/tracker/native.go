@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -210,14 +211,15 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
-	GitHubIssueURL string      `json:"github_issue_url,omitempty"`
-	Title          string      `json:"title"`
-	Body           string      `json:"body"`
-	State          string      `json:"state"`
-	Priority       *int        `json:"priority,omitempty"`
-	Labels         []string    `json:"labels"`
-	Assignees      []string    `json:"assignees"`
-	Provenance     *Provenance `json:"provenance,omitempty"`
+	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
+	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
+	Title               string                          `json:"title"`
+	Body                string                          `json:"body"`
+	State               string                          `json:"state"`
+	Priority            *int                            `json:"priority,omitempty"`
+	Labels              []string                        `json:"labels"`
+	Assignees           []string                        `json:"assignees"`
+	Provenance          *Provenance                     `json:"provenance,omitempty"`
 }
 
 // PriorityPatch is the priority member of UpdateIssue.

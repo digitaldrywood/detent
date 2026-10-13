@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -102,7 +103,14 @@ func TestReportsFirstTryHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, available, err := f.service.reportsFirstTry(t.Context(), scope, report)
+			held, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Rollback()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			got, available, err := f.service.reportsFirstTry(ctx, scope, report)
 			if err != nil {
 				t.Fatal(err)
 			}
