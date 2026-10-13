@@ -31,6 +31,7 @@ const (
 )
 
 type Service struct {
+	activityDurations       activityDurationCache
 	issuePages              nativeIssuePageCache
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64

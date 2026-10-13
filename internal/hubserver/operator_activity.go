@@ -83,19 +83,19 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 	if r.ProjectID != "" && len(projects) == 0 {
 		return out, operatortool.ErrAccessDenied
 	}
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return out, err
 	}
 	defer tx.Rollback()
 	for _, id := range projects {
-		scope := nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: tracker.ProjectID(id), credential: credential}
-		population, err := loadNativeAnalyticsAttempts(ctx, tx, scope, w, r.RunnerID)
+		scope := nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: tracker.ProjectID(id)}
+		typical, partial, err := s.readActivityTypicalDurations(ctx, tx, scope, w, r.RunnerID)
 		if err != nil {
 			return out, err
 		}
-		out.Partial = out.Partial || population.Partial
-		out.TypicalDurations = append(out.TypicalDurations, activityTypicalDurations(id, population.Items, population.Partial)...)
+		out.Partial = out.Partial || partial
+		out.TypicalDurations = append(out.TypicalDurations, typical...)
 	}
 	out.Running, err = readActivityAttempts(ctx, tx, out.OrganizationID, projects, r, w, out.ObservedAt, true)
 	if err != nil {
@@ -121,14 +121,14 @@ func closedAttemptSeconds(phases []tracker.NativePhase) float64 {
 	return seconds
 }
 
-func activityTypicalDurations(project string, attempts []nativeAnalyticsAttempt, partial bool) []operatortool.ActivityTypicalDuration {
+func activityTypicalDurations(project string, attempts []activityDurationSample, partial bool) []operatortool.ActivityTypicalDuration {
 	values := map[string][]float64{}
 	for _, a := range attempts {
-		if a.Identity.Role == "" || a.Status != "succeeded" && a.Status != "failed" {
+		if a.Role == "" || a.Status != "succeeded" && a.Status != "failed" {
 			continue
 		}
-		if seconds := closedAttemptSeconds(a.Phases); seconds > 0 {
-			values[a.Identity.Role] = append(values[a.Identity.Role], seconds)
+		if a.Seconds > 0 {
+			values[a.Role] = append(values[a.Role], a.Seconds)
 		}
 	}
 	out := []operatortool.ActivityTypicalDuration{}
@@ -161,41 +161,11 @@ func activityStageTiming(a *operatortool.ActivityAttempt, phases []tracker.Nativ
 }
 
 func readActivityAttempts(ctx context.Context, q nativeQueryer, organization string, projects []string, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow, now time.Time, running bool) ([]operatortool.ActivityAttempt, error) {
-	encoded, err := json.Marshal(projects)
+	statement, args, err := activityAttemptsQuery(organization, projects, r, w, now, running)
 	if err != nil {
 		return nil, err
 	}
-	predicate := "live=1"
-	tail := " ORDER BY julianday(a.started_at),a.id"
-	args := []any{formatHubTime(now), formatHubTime(now), organization, string(encoded), r.RunnerID, r.RunnerID}
-	if !running {
-		predicate = "live=0 AND julianday(finished_at)>=julianday(?) AND julianday(finished_at)<julianday(?)"
-		tail = " ORDER BY julianday(a.finished_at) DESC,a.id DESC LIMIT ?"
-		args = append(args, formatHubTime(w.From), formatHubTime(w.To), r.Limit)
-	}
-	rows, err := q.QueryContext(ctx, `WITH population AS (
- SELECT a.id,a.organization_id,a.project_id,a.work_item_id,a.status,a.started_at,a.updated_at,
- coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'') AS runner_id,
- coalesce(nullif(json_extract(a.data_json,'$.runtime.identity.role'),''),json_extract(a.data_json,'$.identity.role'),'') AS stage,
- coalesce(json_extract(a.data_json,'$.runtime.phase'),'') AS phase,
- coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]') AS phases,
- coalesce(json_extract(a.data_json,'$.runtime.phases_dropped'),0) AS dropped,
- coalesce(json_extract(a.data_json,'$.session_id'),l.session_id,'') AS session_id,
- coalesce(json_extract(a.data_json,'$.finalization.change_id'),json_extract(a.checkpoint_json,'$.change.change_id'),
- (SELECT c.id FROM change_requests c WHERE c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id ORDER BY julianday(json_extract(c.record_json,'$.created_at')) DESC,c.id DESC LIMIT 1),'') AS change_id,
- coalesce(json_extract(a.data_json,'$.finalization.publication.external.url'),'') AS publication_url,
- CASE WHEN a.status='running' AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?) THEN 1 ELSE 0 END AS live,
- CASE WHEN a.status!='running' THEN a.updated_at WHEN l.released_at IS NOT NULL AND julianday(l.released_at)<julianday(l.expires_at) THEN l.released_at ELSE l.expires_at END AS finished_at
- FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id
- WHERE a.organization_id=? AND a.project_id IN (SELECT value FROM json_each(?))
- AND (?='' OR coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'')=?)
-)
-SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.runner_id,a.stage,a.phase,a.phases,a.dropped,a.started_at,a.session_id,a.change_id,
- coalesce(nullif(a.publication_url,''),(SELECT json_extract(v.record_json,'$.external.url') FROM change_requests c JOIN change_versions v ON v.id=json_extract(c.record_json,'$.current_version_id') AND v.change_id=c.id WHERE c.id=a.change_id AND c.organization_id=a.organization_id AND c.project_id=a.project_id),''),
- CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END,a.finished_at,
- (SELECT json_group_array(ws.id) FROM workspace_sessions ws WHERE ws.organization_id=a.organization_id AND ws.project_id=a.project_id AND ws.subject_work_item_id=a.work_item_id AND ws.attempt_id=a.id AND ws.state IN ('requested','starting','ready','idle'))
-FROM population a JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
-JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id WHERE `+predicate+tail, args...)
+	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -233,4 +203,48 @@ JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id WHE
 		out = append(out, a)
 	}
 	return out, errors.Join(rows.Err(), rows.Close())
+}
+
+func activityAttemptsQuery(organization string, projects []string, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow, now time.Time, running bool) (string, []any, error) {
+	encoded, err := json.Marshal(projects)
+	if err != nil {
+		return "", nil, err
+	}
+	args := []any{sql.Named("org", organization), sql.Named("projects", string(encoded)), sql.Named("runner", r.RunnerID), sql.Named("now", formatHubTime(now)), sql.Named("from", formatHubTime(w.From)), sql.Named("to", formatHubTime(w.To)), sql.Named("limit", r.Limit)}
+	scope := `n.organization_id=:org AND n.project_id IN (SELECT value FROM json_each(:projects))`
+	runner := `(:runner='' OR coalesce(lr.runner_id,json_extract(n.data_json,'$.runner_id'),'')=:runner)`
+	leases := ` JOIN leases l ON l.lease_id=n.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=n.lease_id `
+	live := `l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(:now) AND julianday(l.expires_at)>julianday(:now)`
+	finish := `CASE WHEN l.released_at IS NOT NULL AND julianday(l.released_at)<julianday(l.expires_at) THEN l.released_at ELSE l.expires_at END`
+	candidates := `SELECT n.id,n.activity_started_at AS sort_at,n.started_at AS finished_at FROM native_attempts n` + leases + `WHERE ` + scope + ` AND n.status='running' AND ` + live + ` AND ` + runner
+	order := ` ORDER BY sort_at,id`
+	if !running {
+		candidates = `SELECT n.id,n.activity_updated_at AS sort_at,n.finished_at FROM native_attempts n LEFT JOIN lease_runners lr ON lr.lease_id=n.lease_id WHERE ` + scope + ` AND n.status!='running' AND n.activity_updated_at>=julianday(:from) AND (n.activity_updated_at,n.id)<(julianday(:to),'') AND ` + runner + `
+UNION ALL SELECT n.id,julianday(` + finish + `) AS sort_at,` + finish + ` AS finished_at FROM native_attempts n` + leases + `WHERE ` + scope + ` AND n.status='running' AND NOT (` + live + `) AND julianday(` + finish + `)>=julianday(:from) AND julianday(` + finish + `)<julianday(:to) AND ` + runner
+		order = ` ORDER BY sort_at DESC,id DESC LIMIT :limit`
+	}
+	statement := `WITH selected AS MATERIALIZED (` + candidates + order + `),
+linked AS MATERIALIZED (
+ SELECT a.*,selected.finished_at AS effective_finished_at,selected.sort_at,
+ coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'') AS runner_id,
+ coalesce(json_extract(a.data_json,'$.finalization.change_id'),json_extract(a.checkpoint_json,'$.change.change_id'),
+ (SELECT c.id FROM change_requests c WHERE c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id ORDER BY julianday(json_extract(c.record_json,'$.created_at')) DESC,c.id DESC LIMIT 1),'') AS change_id
+ FROM selected JOIN native_attempts a ON a.id=selected.id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id
+)
+SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.runner_id,
+ coalesce(nullif(a.role,''),json_extract(a.data_json,'$.identity.role'),''),
+ coalesce(json_extract(a.data_json,'$.runtime.phase'),''),coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]'),coalesce(json_extract(a.data_json,'$.runtime.phases_dropped'),0),a.started_at,
+ coalesce(json_extract(a.data_json,'$.session_id'),l.session_id,''),a.change_id,
+ coalesce(nullif(json_extract(a.data_json,'$.finalization.publication.external.url'),''),(SELECT json_extract(v.record_json,'$.external.url') FROM change_requests c JOIN change_versions v ON v.id=json_extract(c.record_json,'$.current_version_id') AND v.change_id=c.id WHERE c.id=a.change_id AND c.organization_id=a.organization_id AND c.project_id=a.project_id),''),
+ CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END,a.effective_finished_at,
+ (SELECT json_group_array(ws.id) FROM workspace_sessions ws WHERE ws.organization_id=a.organization_id AND ws.project_id=a.project_id AND ws.subject_work_item_id=a.work_item_id AND ws.attempt_id=a.id AND ws.state IN ('requested','starting','ready','idle'))
+FROM linked a JOIN leases l ON l.lease_id=a.lease_id
+JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
+JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id`
+	if running {
+		statement += ` ORDER BY a.sort_at,a.id`
+	} else {
+		statement += ` ORDER BY a.sort_at DESC,a.id DESC`
+	}
+	return statement, args, nil
 }

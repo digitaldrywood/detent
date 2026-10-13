@@ -124,6 +124,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     method: string,
     path: string,
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
@@ -134,6 +135,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         method,
         credentials: "same-origin",
         headers,
+        signal,
         ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
       });
     } catch (cause) {
@@ -506,14 +508,14 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Fleet, plan and billing --------------------------------------------
-    activity: (filters: ActivityFilters = {}) => {
+    activity: (filters: ActivityFilters = {}, signal?: AbortSignal) => {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(filters)) {
         if (value !== undefined) params.set(key, String(value));
       }
-      return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`);
+      return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`, undefined, signal);
     },
-    fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
+    fleet: (signal?: AbortSignal) => send(FleetResponse, "GET", `${base}/fleet`, undefined, signal),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),
     healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
