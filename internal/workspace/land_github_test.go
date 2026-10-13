@@ -305,7 +305,17 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		publicationPrior    bool
 		unknownPrior        bool
 		lostPushReceipt     bool
+		review              string
 	}{
+		{name: "external unresolved review refuses before validation", method: "squash", external: true, review: "known", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
+		{name: "external unresolved review precedes concurrent base advance", method: "squash", external: true, review: "base", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
+		{name: "external review read failure refuses before validation", method: "squash", external: true, review: "failure"},
+		{name: "external cancelled review read refuses before validation", method: "squash", external: true, review: "cancelled"},
+		{name: "external incomplete review read refuses before validation", method: "squash", external: true, review: "incomplete"},
+		{name: "external clean review validates and merges", method: "squash", external: true, review: "clean"},
+		{name: "external new review after preflight retains final refusal", method: "squash", external: true, review: "late", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
+		{name: "external base advance after preflight refuses merge", method: "squash", external: true, baseMovesDuringGate: true},
+		{name: "external head advance after preflight refuses merge", method: "squash", external: true, moved: true, wantRefusal: LandRefusalHeadMoved},
 		{name: "prepare resumes a retained PR after a lost push receipt", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, lostPushReceipt: true, method: "squash"},
 		{name: "prepare preserves the retained PR after a push refusal", prepareOnly: true, external: true, publicationBranch: "manual/recovery", publicationPrior: true, pushRefused: true, method: "squash", wantRefusal: LandRefusalProtected},
 		{name: "prepare reuses the external PR on a retained branch", prepareOnly: true, external: true, publicationBranch: "manual/recovery", method: "squash"},
@@ -502,6 +512,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			var createCalls int
 			createResponseLost := false
 			mergeCalls := 0
+			reviewReads := 0
+			surfaceCalls := 0
 			createdPull := false
 			reset := time.Now().Add(time.Hour).Truncate(time.Second)
 			newClient := func(healthy bool) *github.Client {
@@ -509,6 +521,55 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					TokenSource:                github.StaticTokenSource(test.name + strconv.FormatInt(time.Now().UnixNano(), 10)),
 					DisableConditionalRequests: true,
 					HTTPClient: landingHTTPClient(func(req *http.Request) (*http.Response, error) {
+						if req.URL.Path == "/graphql" && test.pullState != "merged" {
+							var request struct {
+								Query     string         `json:"query"`
+								Variables map[string]any `json:"variables"`
+							}
+							if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
+								t.Fatal(err)
+							}
+							response := `{"data":{}}`
+							switch request.Query {
+							case landingReviewThreadsQuery:
+								reviewReads++
+								if request.Variables["owner"] != "example" || request.Variables["name"] != "repo" || request.Variables["number"] != float64(7) {
+									t.Fatalf("review read escaped external identity: %#v", request.Variables)
+								}
+								if test.review == "failure" {
+									return nil, errors.New("review read unavailable")
+								}
+								if test.review == "cancelled" {
+									return nil, context.Canceled
+								}
+								page := reviewThreadsPage("")
+								if test.review == "clean" {
+									page = reviewThreadsPage("", reviewThreadNode("T0", true, "example-bot", "Bot", "Corrected finding"))
+								}
+								if test.review == "incomplete" {
+									page = strings.Replace(page, `"hasNextPage":false`, `"hasNextPage":true`, 1)
+								}
+								if test.review == "known" || test.review == "base" || test.review == "late" && mergeCalls > 0 {
+									switch request.Variables["after"] {
+									case nil:
+										page = reviewThreadsPage("c1", reviewThreadNode("T0", true, "example-bot", "Bot", "Corrected finding"))
+									case "c1":
+										page = reviewThreadsPage("", reviewThreadNode("T1", false, "example-bot", "Bot", "P2 preserve tracked deletion"))
+									default:
+										t.Fatalf("unexpected review cursor: %#v", request.Variables)
+									}
+								}
+								response = `{"data":` + page + `}`
+							case landingReviewThreadReply:
+								surfaceCalls++
+								if request.Variables["thread"] != "T1" || !strings.Contains(request.Variables["body"].(string), "<!-- detent:surfaced "+fixture.head+" -->") {
+									t.Fatalf("review surfacing lost head or thread: %#v", request.Variables)
+								}
+							default:
+								t.Fatalf("unexpected review mutation: %s", request.Query)
+							}
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+						}
 						if req.URL.Path == "/graphql" && test.pullState == "merged" {
 							response := fmt.Sprintf(`{"data":{"repository":{"nameWithOwner":"example/repo","pullRequest":{"number":7,"merged":true,"headRefOid":%q,"headRefName":%q,"baseRefName":"main","headRepository":{"nameWithOwner":"example/repo"},"mergeCommit":{"oid":%q}}}}}`, fixture.head, fixture.info.Branch, fixture.head)
 							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
@@ -560,6 +621,9 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 							pull = fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}},"base":{"sha":"%s","ref":"%s","repo":{"full_name":"%s"}}}`, pullHead, headRef, headRepo, base, baseRef, baseRepo)
 						}
 						pull = strings.Replace(pull, `"number":7,`, fmt.Sprintf(`"number":7,"body":%q,`, test.existingBody), 1)
+						if test.review == "base" && req.Method == http.MethodGet && mergeCalls == 0 {
+							fixture.advanceMain(t, "parallel.txt", "parallel landing\n")
+						}
 						switch test.wrongPull {
 						case "head":
 							pull = strings.ReplaceAll(pull, fixture.head, originalBase)
@@ -752,6 +816,10 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			if test.sourceIssues {
 				source := tracker.GitHubIssueSourceReference("I_original", "https://github.com/digitaldrywood/detent/issues/3410")
 				opts.SourceIssues = []tracker.ExternalReference{source, source}
+			}
+			gateTrace := filepath.Join(t.TempDir(), "gate-trace")
+			if test.review != "" {
+				opts.ValidationCommand = "printf 'gate\\n' >> " + shellQuote(gateTrace) + " && " + opts.ValidationCommand
 			}
 			if test.external {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
@@ -954,6 +1022,52 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				opts.GitHubClient = newClient(false)
 			}
 			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			if test.pullError != "" && reviewReads != 0 {
+				t.Fatal("review read preceded external source identity validation")
+			}
+			if test.review != "" {
+				trace, traceErr := os.ReadFile(gateTrace)
+				wantGates, wantMerges, wantReads, wantSurfaces := 0, 0, 2, 1
+				switch test.review {
+				case "clean":
+					wantGates, wantMerges, wantReads, wantSurfaces = 1, 1, 1, 0
+				case "late":
+					wantGates, wantMerges, wantReads = 1, 1, 3
+				case "failure", "cancelled", "incomplete":
+					wantReads, wantSurfaces = 1, 0
+				}
+				if wantGates == 0 && !errors.Is(traceErr, os.ErrNotExist) || wantGates > 0 && traceErr != nil || len(strings.Fields(string(trace))) != wantGates || mergeCalls != wantMerges || reviewReads != wantReads || surfaceCalls != wantSurfaces {
+					t.Fatalf("review ordering: gates=%q merges=%d reads=%d surfaces=%d result=%#v err=%v", trace, mergeCalls, reviewReads, surfaceCalls, result, err)
+				}
+				if test.review == "failure" {
+					if err == nil || !strings.Contains(err.Error(), "review read unavailable") {
+						t.Fatalf("unavailable review read approved landing: %v", err)
+					}
+					return
+				}
+				if test.review == "cancelled" {
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("review cancellation lost: %v", err)
+					}
+					return
+				}
+				if test.review == "incomplete" {
+					if err == nil || !strings.Contains(err.Error(), "did not advance its pagination cursor") {
+						t.Fatalf("partial review read approved landing: %v", err)
+					}
+					return
+				}
+				if test.review != "clean" {
+					var refusal *LandRefusal
+					if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected || !ReviewConversationsRefusal(refusal.Reason) || !strings.Contains(refusal.Reason, "P2 preserve tracked deletion") || result.MergeSHA != "" {
+						t.Fatalf("unresolved finding lost actionable refusal: result=%#v err=%v", result, err)
+					}
+					if test.review == "base" && fixture.remoteMain(t) == base || test.review != "base" && fixture.remoteMain(t) != base {
+						t.Fatal("review refusal changed the base or missed concurrent advancement")
+					}
+					return
+				}
+			}
 			verifyPreparation()
 			if test.preparationFailure != "" {
 				var hook *HookError
@@ -1120,7 +1234,11 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				}
 				if test.external {
 					published := strings.TrimSpace(runGit(t, fixture.remote, "rev-parse", "refs/heads/"+fixture.info.Branch))
-					if published != externalHead {
+					wantHead := externalHead
+					if test.moved {
+						wantHead = previous
+					}
+					if published != wantHead {
 						t.Fatalf("external branch was rewritten: %s", published)
 					}
 				}
