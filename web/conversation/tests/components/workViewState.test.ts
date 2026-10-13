@@ -29,7 +29,9 @@ describe("the board's view state", () => {
   });
 
   it("links archived lists and preserves their filter on reload", () => {
-    const state = parseViewState("view=list&archived=true&state=Done");
+    const state = parseViewState("view=list&archived=true&state=Done&created_by=me");
+    expect(state.createdBy).toBe("me");
+    expect(activeFilterCount(state)).toBe(2);
     expect(state.archived).toBe(true);
     expect(state.view).toBe("list");
     expect(state.state).toEqual(["Done"]);
