@@ -1048,6 +1048,13 @@ by brackets. Search composes with the existing exact filters.
 are supported and compared as instants. These selectors are available on REST
 and native MCP lists; snapshot-backed lists and the board projection reject them.
 
+Native issue lists accept `created_by` with a principal ID or `me`, alongside
+state, label, query and archived filters. `me` resolves to the authenticated
+human principal, including the owner of a personal key; service keys and worker
+credentials receive `invalid_request`. The filter uses the native filing actor,
+including for imported issues, and preserves project access checks. Issue reads
+include the filer's available display identity in `actor.display_name`.
+
 Native pages use `limit` (1–200, default 50) and an opaque `cursor`. Issue lists
 group items in configured workflow state order. Within nonterminal states,
 priority sorts first, then `last_activity_at` newest first; terminal states use

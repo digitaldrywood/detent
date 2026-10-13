@@ -507,6 +507,13 @@ and self-hosted daemon instructions remain expandable on the same settings page.
 
 ## Native work-item list results
 
+Native `work_list` accepts `created_by` as a principal ID or `me`. `me` selects
+issues filed by the calling human, including through that human's personal key;
+service keys and worker credentials cannot use `me`. The selector combines with
+state, label, query and archived filters within the caller's authorized project.
+`work_item` and `work_list` expose the available filer's display identity in
+`actor.display_name` beside the stable principal ID.
+
 Native `work_list` accepts item limits through 200 and returns summaries in
 `data.items` with an opaque `data.next_cursor` when more matching items remain.
 The requested limit is a maximum: the existing issue page owner may return fewer

@@ -119,6 +119,21 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 	return nil
 }
 
+func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
+	value := strings.TrimSpace(params.Get("created_by"))
+	if len(value) > 256 {
+		return "", nativeInvalid("created_by is invalid")
+	}
+	if value != "me" {
+		return value, nil
+	}
+	actor := scope.actor()
+	if actor.Kind != "human" || actor.PrincipalID == "" {
+		return "", nativeInvalid("created_by=me requires a human identity")
+	}
+	return actor.PrincipalID, nil
+}
+
 func validateNativeIssueQuery(params url.Values) error {
 	single := url.Values{}
 	for key, values := range params {
@@ -131,7 +146,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort", "created_after", "created_before", "updated_after")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort", "created_after", "created_before", "updated_after", "created_by")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -230,6 +245,14 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	query += dateClauses.String()
+	createdBy, err := nativeCreatedBy(scope, params)
+	if err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
+	if createdBy != "" {
+		query += " AND json_extract(i.actor_json, '$.principal_id') = ?"
+		args = append(args, createdBy)
+	}
 	switch params.Get("archived") {
 	case "", "false":
 		query += " AND i.archived = 0"

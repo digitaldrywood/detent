@@ -60,6 +60,12 @@ func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeSc
 	return s.nativeIssueJSON(result)
 }
 
+func nativeActorDisplayName(principal, organization string) string {
+	return `COALESCE((SELECT COALESCE(
+ (SELECT m.email FROM hosted_members m JOIN hosted_tenant h ON h.organization_id = ` + organization + ` WHERE m.principal_id = t.id), t.name)
+ FROM api_tokens t WHERE t.id = ` + principal + `), '')`
+}
+
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	return readNativeIssueProjection(ctx, query, scope, id, false)
 }
@@ -67,7 +73,7 @@ func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
-	var labels, assignees, actor, created, updated, activity, externalID, contractJSON string
+	var labels, assignees, actor, displayName, created, updated, activity, externalID, contractJSON string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var repositoryOwner, repositoryName, importedURL string
 	var sourceNumber int
@@ -79,7 +85,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	}
 	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
- i.actor_json, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
+ i.actor_json, `+nativeActorDisplayName("json_extract(i.actor_json, '$.principal_id')", "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
@@ -102,7 +108,7 @@ LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
 		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
-		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
+		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
 		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
 	if err != nil {
@@ -130,6 +136,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err := json.Unmarshal([]byte(actor), &issue.Actor); err != nil {
 		return issue, 0, err
 	}
+	issue.Actor.DisplayName = displayName
 	if provenance.Valid {
 		if err := json.Unmarshal([]byte(provenance.String), &issue.Provenance); err != nil {
 			return issue, 0, err

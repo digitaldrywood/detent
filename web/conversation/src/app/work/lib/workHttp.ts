@@ -152,6 +152,7 @@ export interface ListWorkItemsInput {
   readonly completedWindow?: string;
   readonly sort?: "closed";
   readonly archived?: boolean | "all";
+  readonly createdBy?: string | undefined;
 }
 
 export interface WorkHttp {
@@ -561,7 +562,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     eventsUrl: (projectId, workspaceId, workItemId, board) =>
       url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId,
         board: board === undefined ? undefined : "true", since: board?.since,
-        q: board?.filters.q || undefined, label: board?.filters.label, assignee: board?.filters.assignee,
+        created_by: board?.filters.createdBy, q: board?.filters.q || undefined, label: board?.filters.label, assignee: board?.filters.assignee,
         priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
@@ -571,6 +572,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         WorkItemPage,
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
+          created_by: input.createdBy,
           q: input.q?.trim() || undefined,
           state: input.state,
           open: input.open === undefined ? undefined : String(input.open),
