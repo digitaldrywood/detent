@@ -21,13 +21,13 @@ func TestExtractReferences(t *testing.T) {
 		},
 		{
 			name: "project number",
-			text: "See parable#3363 for the lock renewal.",
-			want: []Reference{{Kind: ReferenceIssue, Project: "parable", Number: 3363, Text: "parable#3363"}},
+			text: "See example-project#3363 for the lock renewal.",
+			want: []Reference{{Kind: ReferenceIssue, Project: "example-project", Number: 3363, Text: "example-project#3363"}},
 		},
 		{
 			name: "organization project number",
-			text: "threefold/parable#12 is the parent.",
-			want: []Reference{{Kind: ReferenceIssue, Organization: "threefold", Project: "parable", Number: 12, Text: "threefold/parable#12"}},
+			text: "example/example-project#12 is the parent.",
+			want: []Reference{{Kind: ReferenceIssue, Organization: "example", Project: "example-project", Number: 12, Text: "example/example-project#12"}},
 		},
 		{
 			name: "conversation id",
@@ -36,10 +36,10 @@ func TestExtractReferences(t *testing.T) {
 		},
 		{
 			name: "several in order without duplicates",
-			text: "#7 and parable#7 and #7 again",
+			text: "#7 and example-project#7 and #7 again",
 			want: []Reference{
 				{Kind: ReferenceIssue, Number: 7, Text: "#7"},
-				{Kind: ReferenceIssue, Project: "parable", Number: 7, Text: "parable#7"},
+				{Kind: ReferenceIssue, Project: "example-project", Number: 7, Text: "example-project#7"},
 			},
 		},
 		{name: "hex colour is not a reference", text: "The accent is #ff00aa."},

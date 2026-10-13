@@ -111,19 +111,19 @@ func TestSharedBillingJourney(t *testing.T) {
 		}
 		f.billing = &BillingConfig{Mode: "test", AccountID: "acct_fixture", WebhookSecret: []byte(testWebhookSecret), Provider: stripe}
 	})
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
-	id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
+	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	f.waitState(t, id, "ready")
 	if stripe.creates != 0 {
 		t.Fatal("free signup created a Stripe customer")
 	}
-	dana.login("/organizations/"+id+"/organization", "user_dana:porg_"+id)
-	response, page := dana.get("/organizations/" + id + "/organization/billing")
+	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	response, page := member.get("/organizations/" + id + "/organization/billing")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("billing page = %d %s", response.StatusCode, page)
 	}
-	if portal := dana.do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
+	if portal := member.do(http.MethodPost, "/organizations/"+id+"/organization/billing/portal", url.Values{"csrf": {csrfFrom(t, page)}}, nil); portal.StatusCode != http.StatusConflict {
 		t.Fatalf("portal before a customer = %d", portal.StatusCode)
 	}
 	// Catches losing the original billing authority/CSRF binding through the
@@ -139,7 +139,7 @@ func TestSharedBillingJourney(t *testing.T) {
 			request.Header.Set("Mcp-Protocol-Version", "2025-11-25")
 		}
 		base, _ := url.Parse(testPublicURL)
-		for _, cookie := range dana.jar.Cookies(base) {
+		for _, cookie := range member.jar.Cookies(base) {
 			request.AddCookie(cookie)
 		}
 		response := httptest.NewRecorder()
@@ -170,7 +170,7 @@ func TestSharedBillingJourney(t *testing.T) {
 		t.Fatalf("shared replay=%s", replayed.Body.String())
 	}
 	for range 2 {
-		checkout := dana.do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+		checkout := member.do(http.MethodPost, "/organizations/"+id+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
 		if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
 			t.Fatalf("checkout = %d %q %s", checkout.StatusCode, checkout.Header.Get("Location"), checkout.Body)
 		}
@@ -223,13 +223,13 @@ func TestSharedBillingJourney(t *testing.T) {
 	if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT organization_id FROM billing_customers WHERE customer_id = ?", customer).Scan(&mapped); err != nil || mapped != id {
 		t.Fatalf("customer mapping = %q %v", mapped, err)
 	}
-	response, page = dana.get("/organizations/new")
+	response, page = member.get("/organizations/new")
 	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Your Free organization slot is used") || !strings.Contains(page, "price_team") {
 		t.Fatalf("paid creation form = %d %s", response.StatusCode, page)
 	}
 	_, rest, _ := strings.Cut(page, `name="creation_key" value="`)
 	creationKey, _, _ := strings.Cut(rest, `"`)
-	created := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	created := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Second paid organization"}, "creation_key": {creationKey}, "price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
 	if created.StatusCode != http.StatusSeeOther {
 		t.Fatalf("paid creation = %d %s", created.StatusCode, created.Body)
 	}
@@ -239,22 +239,22 @@ func TestSharedBillingJourney(t *testing.T) {
 	if err != nil || binding.FreeOrganization {
 		t.Fatalf("paid creation consumed Free allowance: %+v %v", binding, err)
 	}
-	destination := dana.login("/organizations/"+secondID+"/organization/billing", "user_dana:porg_"+secondID)
+	destination := member.login("/organizations/"+secondID+"/organization/billing", "user_member:porg_"+secondID)
 	if destination != "/organizations/"+secondID+"/organization/billing?checkout_price=price_team" {
 		t.Fatalf("paid creation login destination = %q", destination)
 	}
-	response, page = dana.get(destination)
+	response, page = member.get(destination)
 	if response.StatusCode != http.StatusOK || !strings.Contains(page, "Complete checkout to activate") || strings.Contains(page, "Complimentary access") || !strings.Contains(page, `value="price_team" selected`) {
 		t.Fatalf("paid creation billing = %d %s", response.StatusCode, page)
 	}
-	view := dana.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
+	view := member.do(http.MethodGet, "/api/v2/organizations/"+secondID+"/billing", nil, map[string]string{"Accept": "application/json"})
 	var report struct {
 		Entitlement hubserver.HostedEntitlement `json:"entitlement"`
 	}
 	if view.StatusCode != http.StatusOK || json.Unmarshal([]byte(view.Body), &report) != nil || report.Entitlement.Base.ID != "payment_pending" || report.Entitlement.Allowances["projects"] != 0 || report.Entitlement.Allowances["unarchived_issues"] != 0 || slices.Contains(report.Entitlement.Features, "native_execution") {
 		t.Fatalf("unpaid creation allowances = %d %s", view.StatusCode, view.Body)
 	}
-	checkout := dana.do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
+	checkout := member.do(http.MethodPost, "/organizations/"+secondID+"/organization/billing/checkout", url.Values{"price": {"price_team"}, "csrf": {csrfFrom(t, page)}}, nil)
 	if checkout.StatusCode != http.StatusSeeOther || !strings.HasPrefix(checkout.Header.Get("Location"), "https://checkout.stripe.com/") {
 		t.Fatalf("paid creation checkout = %d %s", checkout.StatusCode, checkout.Body)
 	}

@@ -47,7 +47,7 @@ for (const mode of authModes) {
       const sheet = page.locator("[data-detail-sheet]");
       await expect(sheet).toBeVisible();
       await expect(sheet.getByText("Kanban demo backlog intake")).toBeVisible();
-      await expect(sheet.getByText("digitaldrywood/detent#9511")).toBeVisible();
+      await expect(sheet.getByText("example-org/example-project#9511")).toBeVisible();
       await expect(sheet.getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", /9511/);
 
       await sheet.getByRole("button", { name: /^Move$/ }).click();
@@ -149,7 +149,7 @@ test("wildcard dashboard denies non-local API access without token", async () =>
     const dashboardURL = nonLoopbackDashboardURL(runtime.url);
     const dashboardURLHost = new URL(dashboardURL).host;
     const deniedRawCard = await rawHTTPStatus(runtime.url, {
-      path: "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239511&actions=board&scope=project",
+      path: "/api/v1/board/card?project=demo-project&issue=example-org%2Fexample-project%239511&actions=board&scope=project",
       headers: {
         Host: dashboardURLHost,
       },
@@ -157,7 +157,7 @@ test("wildcard dashboard denies non-local API access without token", async () =>
     expect(deniedRawCard).toBe(403);
 
     const deniedMissingHTMXTarget = await rawHTTPStatus(runtime.url, {
-      path: "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239511&actions=board&scope=project",
+      path: "/api/v1/board/card?project=demo-project&issue=example-org%2Fexample-project%239511&actions=board&scope=project",
       headers: {
         Host: dashboardURLHost,
         "HX-Request": "true",
@@ -167,7 +167,7 @@ test("wildcard dashboard denies non-local API access without token", async () =>
     expect(deniedMissingHTMXTarget).toBe(403);
 
     const deniedSpoofedSource = await rawHTTPStatus(runtime.url, {
-      path: "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239511&actions=board&scope=project",
+      path: "/api/v1/board/card?project=demo-project&issue=example-org%2Fexample-project%239511&actions=board&scope=project",
       headers: {
         Host: dashboardURLHost,
         "HX-Request": "true",

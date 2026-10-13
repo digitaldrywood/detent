@@ -2,16 +2,19 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -24,6 +27,7 @@ type implementationReviewExecution struct {
 	recordError       error
 	commands          []gate.CommandResult
 	validation        *gate.CommandResult
+	discussion        NativeReviewDiscussion
 }
 
 func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeValidation, error) {
@@ -32,6 +36,7 @@ func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeVa
 	input.Version.Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
 	input.Version.Policy.Gates.Validator = !e.validatorDisabled
 	input.Commands = e.commands
+	input.Discussion = e.discussion
 	if e.validation != nil {
 		input.Version.Validation = e.validation
 	}
@@ -68,6 +73,8 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 	t.Parallel()
 	var events []string
 	execution := &implementationReviewExecution{events: &events, commands: []gate.CommandResult{{ReceiptID: "receipt-original", Command: "make check", HeadSHA: "head", TreeSHA: "tree", DurationNS: 123}}}
+	human := tracker.Actor{Kind: "human", PrincipalID: "operator"}
+	execution.discussion = NativeReviewDiscussion{Issue: []tracker.NativeComment{{ID: "issue_feedback", Body: "Human edited source feedback", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, EditedBy: &human, CreatedAt: time.Unix(100, 0).UTC(), UpdatedAt: time.Unix(200, 0).UTC(), Provenance: &tracker.Provenance{Provider: "github", ExternalID: "feedback-original", AuthorID: "author"}}}, Change: []tracker.ChangeDiscussion{{ID: "change_feedback", VersionID: "version_example", Body: "Current source discussion", Actor: human, CreatedAt: time.Unix(200, 0).UTC()}}}
 	left, right := net.Pipe()
 	central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil))
 	remote := NewSSHPeer(t.Context(), right, right, nil)
@@ -84,6 +91,9 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(input.Commands, execution.commands) {
 		t.Fatalf("SSH lost original command evidence: %+v", input.Commands)
+	}
+	if !reflect.DeepEqual(input.Discussion, execution.discussion) {
+		t.Fatalf("SSH lost typed discussion actor/editor/version/provenance: %+v", input.Discussion)
 	}
 	review := gate.ValidatorResult{VersionID: input.Version.ID, HeadSHA: input.Version.HeadSHA, Verdict: gate.ValidatorVerdictWait, SessionID: 123, Submitted: true}
 	if err := transport.RecordReview(t.Context(), review); err != nil {
@@ -107,9 +117,10 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 
 type implementationReviewBackend struct {
 	fakeCodexClient
-	t        *testing.T
-	events   *[]string
-	response string
+	t          *testing.T
+	events     *[]string
+	response   string
+	discussion *NativeReviewDiscussion
 }
 
 type implementationReviewWorkspace struct {
@@ -134,6 +145,12 @@ func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTu
 		b.t.Fatal("native review received a writable turn")
 	}
 	*b.events = append(*b.events, request.Model)
+	if request.Model == "review-model" && b.discussion != nil {
+		raw, err := json.Marshal(*b.discussion)
+		if err != nil || !strings.Contains(request.Prompt, string(raw)) || !strings.Contains(request.Prompt, "untrusted") {
+			b.t.Fatal("independent source review did not consume typed untrusted discussion")
+		}
+	}
 	response := b.response
 	if request.Model == "validator-model" || response == "" {
 		response = `{"verdict":"pass","score":1,"summary":"Current immutable source has no defects","criteria_evidence":[]}`
@@ -145,6 +162,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name         string
+		ssh          bool
 		validator    bool
 		verdict      string
 		recordError  error
@@ -162,6 +180,8 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "source rework without acceptance validator", verdict: "rework"},
 		{name: "source rework stops acceptance validator", validator: true, verdict: "rework"},
 		{name: "source wait stops acceptance validator", validator: true, verdict: "wait"},
+		{name: "SSH source feedback reaches independent review before acceptance", ssh: true, validator: true, verdict: "pass"},
+		{name: "SSH source feedback rework stops acceptance", ssh: true, validator: true, verdict: "rework"},
 		{name: "record failure stops acceptance validator", validator: true, verdict: "pass", recordError: errors.New("review recording unavailable")},
 		{name: "prior exact-source review receipt reused", validator: true, verdict: "pass", prior: true},
 		{name: "latest failure prevents older passing receipt reuse", validator: true, verdict: "pass", latestFailed: true, wantRuns: 1},
@@ -188,6 +208,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			backend := &implementationReviewBackend{t: t, events: &events, response: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Independent source result","criteria_evidence":[]}`, test.verdict)}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
 			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: &gate.CommandEvidence{Environment: worktree.ReviewCommandEnvironment(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}}
+			if test.ssh {
+				receipt.StartedAt = receipt.StartedAt.UTC()
+			}
 			if test.editReceipt != nil {
 				test.editReceipt(&receipt)
 			}
@@ -206,6 +229,17 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, recordError: test.recordError, validation: &receipt}
+			var reviewExecution Execution = execution
+			if test.ssh {
+				human := tracker.Actor{Kind: "human", PrincipalID: "operator"}
+				execution.discussion = NativeReviewDiscussion{Issue: []tracker.NativeComment{{ID: "issue_feedback", Body: "Updated issue feedback", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, EditedBy: &human, CreatedAt: time.Unix(100, 0), UpdatedAt: time.Unix(200, 0)}}, Change: []tracker.ChangeDiscussion{{ID: "change_feedback", VersionID: "version_example", Body: "Current version feedback", Actor: human, CreatedAt: time.Unix(200, 0), Provenance: &tracker.Provenance{Provider: "github", ExternalID: "feedback-original", AuthorID: "author"}}}}
+				backend.discussion = &execution.discussion
+				left, right := net.Pipe()
+				central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(RunRequest{Execution: execution}, nil, nil, nil))
+				remote := NewSSHPeer(t.Context(), right, right, nil)
+				t.Cleanup(func() { central.Close(); remote.Close(); left.Close(); right.Close() })
+				reviewExecution = &sshNativeExecution{sshExecution: &sshExecution{peer: remote}}
+			}
 			if test.prior || test.editReceipt != nil {
 				execution.validation = &gate.CommandResult{TreeSHA: "tree"}
 				execution.commands = []gate.CommandResult{receipt}
@@ -230,7 +264,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			if test.missingTree {
 				execution.validation = &gate.CommandResult{}
 			}
-			err = r.validateNativeChange(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- Preserve existing behavior"}})
+			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- Preserve existing behavior"}})
 			if (err != nil) != (test.recordError != nil) {
 				t.Fatalf("source verdict became a run failure or recording failure was ignored: %v", err)
 			}

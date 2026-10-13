@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+var errNoApprovedRepositoryPolicy = policyMismatch("No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor")
+
 func policyMismatch(message string) error {
 	return &nativeError{Code: "policy_mismatch", Message: message, status: http.StatusConflict}
 }
@@ -311,7 +313,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", scope, change.Policy.ID, string(raw), actor, formatHubTime(now)); err != nil {
 		return result, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id", scope, change.Policy.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id WHERE project_policies.policy_id IS NOT excluded.policy_id", scope, change.Policy.ID); err != nil {
 		return result, err
 	}
 	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
@@ -423,7 +425,7 @@ func readProjectPolicy(ctx context.Context, db policyQuerier, scope string) (pol
 	err := db.QueryRowContext(ctx, `SELECT r.metadata_json, r.approved_by, r.approved_at
 FROM project_policies p JOIN policy_revisions r ON r.scope = p.scope AND r.policy_id = p.policy_id WHERE p.scope = ?`, scope).Scan(&raw, &result.ApprovedBy, &result.ApprovedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return result, policyMismatch("No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor")
+		return result, errNoApprovedRepositoryPolicy
 	}
 	if err != nil {
 		return result, err

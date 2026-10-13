@@ -7,7 +7,7 @@
   "text": "This looks like work for a tracked issue.",
   "data": {
     "proposal": {
-      "project_id": "proj_parable",
+      "project_id": "proj_example_project",
       "title": "Checkout lock renewal waits on a healthy handoff",
       "objective": "The renewal returns before the handoff completes, so the lease can lapse under load. Move the renewal behind the handoff acknowledgement and cover it with a race test."
     }

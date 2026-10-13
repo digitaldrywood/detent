@@ -138,6 +138,9 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 		if review.ImplementationReview != nil {
 			if review.VersionID == current.ID {
 				implementationReviewed = review.Decision == "approved" && review.ImplementationReview.Verdict == "pass"
+				if current.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired {
+					validatorPassed = !current.Policy.Gates.Validator
+				}
 			}
 			continue
 		}

@@ -18,6 +18,14 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 	var where strings.Builder
 	where.WriteString("b.organization_id=? AND b.project_id=?")
 	args := []any{scope.organization, scope.project}
+	createdBy, err := nativeCreatedBy(scope, params)
+	if err != nil {
+		return "", nil, err
+	}
+	if createdBy != "" {
+		where.WriteString(" AND json_extract(b.record_json, '$.issue.actor.principal_id') = ?")
+		args = append(args, createdBy)
+	}
 	switch params.Get("archived") {
 	case "", "false":
 		where.WriteString(" AND b.archived=0")
@@ -39,6 +47,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		}
 	}
 	for _, filter := range []struct{ name, clause string }{
+		{"type", "json_extract(b.record_json,'$.issue.type')=?"},
 		{"state", "b.state=?"},
 		{"label", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.labels') WHERE value=?)"},
 		{"assignee", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.assignees') WHERE value=?)"},
@@ -75,7 +84,7 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 		return nil, err
 	}
 	summary := &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: now}
-	filtered := strings.TrimSpace(params.Get("q")) != "" || len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
+	filtered := strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
 	statement := "SELECT b.state,count(*),sum(b.running) FROM native_board_items b WHERE " + where + " GROUP BY b.state"
 	if !filtered {
 		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"
@@ -216,7 +225,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		}
 	}
 	args = append(args, limit+1)
-	statement := strings.Join([]string{"SELECT b.record_json,b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at FROM native_board_items b WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
+	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName("json_extract(b.record_json, '$.issue.actor.principal_id')", "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at FROM native_board_items b WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
 	rows, err := tx.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return page, err
@@ -230,9 +239,9 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 			}
 			break
 		}
-		var raw, closed string
+		var raw, closed, displayName string
 		position := &nativeIssuePageCursor{}
-		if err := rows.Scan(&raw, &position.Lane, &position.State, &position.Priority, &position.ActivityMissing, &position.Activity, &position.Identifier, &closed); err != nil {
+		if err := rows.Scan(&raw, &displayName, &position.Lane, &position.State, &position.Priority, &position.ActivityMissing, &position.Activity, &position.Identifier, &closed); err != nil {
 			return page, err
 		}
 		if params.Get("sort") == "closed" {
@@ -242,6 +251,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		if err := json.Unmarshal([]byte(raw), &card); err != nil {
 			return page, err
 		}
+		card.Issue.Actor.DisplayName = displayName
 		redactNativeBoardCard(&card, grants)
 		card.Issue = s.nativeIssueResponse(card.Issue)
 		page.Cards = append(page.Cards, card)

@@ -213,8 +213,8 @@ test("zero, one, and twenty faults keep one indicator slot and fixed lanes", asy
   const overlay = page.locator("body > #board-alerts-overlay");
   const faults = overlay.locator('[data-board-alert="staleness-warning"]');
   await expect(faults).toHaveCount(20);
-  await expect(faults.first()).toContainText("digitaldrywood/detent#1573");
-  await expect(faults.last()).toContainText("digitaldrywood/detent#1554");
+  await expect(faults.first()).toContainText("example-org/example-project#1573");
+  await expect(faults.last()).toContainText("example-org/example-project#1554");
   await expect(overlay.getByRole("link", { name: "Open" })).toHaveCount(20);
 });
 

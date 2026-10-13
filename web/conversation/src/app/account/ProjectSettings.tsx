@@ -27,6 +27,7 @@ import { useMutation, useResource } from "./useResource.ts";
 
 /** The editable half of the integration: what a save sends. */
 export interface IntegrationDraft {
+  readonly duplicateChallenge: boolean;
   readonly importAllowed: boolean;
   readonly projection: string;
   readonly repositoryEnabled: boolean;
@@ -36,6 +37,7 @@ export interface IntegrationDraft {
 
 export function draftOf(integration: ProjectIntegration): IntegrationDraft {
   return {
+    duplicateChallenge: integration.duplicate_challenge ?? true,
     importAllowed: integration.manual_import_enabled ?? integration.intake === "manual",
     projection: integration.projection,
     repositoryEnabled: integration.repository_enabled,
@@ -50,6 +52,7 @@ function hasAutomaticIntake(integration: ProjectIntegration): boolean {
 
 export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean {
   return (
+    a.duplicateChallenge !== b.duplicateChallenge ||
     a.importAllowed !== b.importAllowed ||
     a.projection !== b.projection ||
     a.repositoryEnabled !== b.repositoryEnabled ||
@@ -534,6 +537,19 @@ export function ProjectSettingsView({
         </SettingsUnavailableGroup>
       </SettingsSection>
 
+      {integration.profile === "native" ? <SettingsSection title="Issue filing">
+        <SettingsRow
+          title="Check for duplicate issues"
+          description="Ask filers to review likely matches before creating a new issue."
+          control={<ToggleControl
+            label="Check for duplicate issues"
+            checked={draft.duplicateChallenge}
+            disabled={!canManage || saving}
+            onCheckedChange={(checked) => onDraftChange({ ...draft, duplicateChallenge: checked })}
+          />}
+        />
+      </SettingsSection> : null}
+
       {integration.profile === "native" ? <SettingsSection title="Archiving">
         <SettingsRow
           title="Archive completed issues"
@@ -644,6 +660,7 @@ export function ProjectSettingsRoute({
         intake: next.importAllowed ? "manual" : "disabled",
         projection: next.projection,
         repositoryEnabled: next.repositoryEnabled,
+        duplicateChallenge: next.duplicateChallenge,
         archiveCompletedAfterDays: next.archiveCompletedAfterDays,
         archiveCancelledAfterDays: next.archiveCancelledAfterDays,
       });

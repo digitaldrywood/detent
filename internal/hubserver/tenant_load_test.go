@@ -3,12 +3,15 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,8 +120,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 // TestTenantRunnerWritesStayFlatWithHistory drives the routine runner writes
 // (lease renewal, lease validation, comments) under hosted plan accounting and
 // requires how long a trivial write waits for the writer to stay flat as the
-// tenant's history grows tenfold; route latencies are logged. Each session
-// renews once a second, about thirty times a production runner's cadence.
+// tenant's history grows tenfold; route latencies are logged.
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("tenant write load")
@@ -130,6 +132,7 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 		leases  []tracker.NativeLease
 		items   []tracker.NativeIssue
 		history int
+		writer  *tenantLoadWriter
 	}
 	prepare := func(t *testing.T, sessions, history int) load {
 		f := newNativeFixture(t, nil, "", "tenant-writes")
@@ -158,12 +161,41 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 			t.Fatal(err)
 		}
 		warmReaderPools(t, f.service.database)
-		return load{fixture: f, worker: worker, leases: leases, items: items, history: history}
+		connection, err := f.service.database.db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var writer *tenantLoadWriter
+		err = connection.Raw(func(raw any) error {
+			timed, ok := raw.(*timedConn)
+			if !ok {
+				return fmt.Errorf("unexpected writer connection %T", raw)
+			}
+			base, ok := timed.Conn.(tenantLoadConnection)
+			if !ok {
+				return fmt.Errorf("unexpected SQLite connection %T", timed.Conn)
+			}
+			writer = &tenantLoadWriter{tenantLoadConnection: base}
+			timed.Conn = writer
+			return nil
+		})
+		if closeErr := connection.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return load{fixture: f, worker: worker, leases: leases, items: items, history: history, writer: writer}
 	}
 	run := func(t *testing.T, sessions, sample int, loads [2]load) [2]result {
 		t.Logf("sessions=%d sample=%d paired load starting", sessions, sample)
-		ctx, stop := context.WithTimeout(t.Context(), 8*time.Second)
-		defer stop()
+		const rounds = 8
+		request := func(f nativeFixture, path, token string, payload any) *httptest.ResponseRecorder {
+			r := newHubAPIRequest(t, http.MethodPost, f.base+path, token, payload).WithContext(t.Context())
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, r)
+			return response
+		}
 		var mu sync.Mutex
 		latency := [2]map[string][]time.Duration{{}, {}}
 		var failures []string
@@ -175,46 +207,60 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 				failures = append(failures, fmt.Sprintf("history=%d %s %d", loads[history].history, kind, code))
 			}
 		}
-		var work sync.WaitGroup
-		for index := range sessions {
-			work.Go(func() {
-				for round := 0; ctx.Err() == nil; round++ {
-					for offset := range loads {
-						history := (index + round + sample + offset) % len(loads)
-						load := loads[history]
+		for round := range rounds {
+			for offset := range loads {
+				history := (round + sample + offset) % len(loads)
+				load := loads[history]
+				start := make(chan struct{})
+				release := make(chan struct{})
+				entered := make(chan struct{})
+				load.writer.round.Store(&tenantLoadRound{entered: entered, release: release})
+				var work sync.WaitGroup
+				for index := range sessions {
+					work.Go(func() {
+						<-start
 						f, lease := load.fixture, load.leases[index]
 						started := time.Now()
-						response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", load.worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90})
+						response := request(f, "/leases/"+string(lease.ID)+"/renew", load.worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90})
 						record(history, "renew", time.Since(started), response.Code, http.StatusOK)
 						started = time.Now()
-						response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/validate", load.worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken})
+						response = request(f, "/leases/"+string(lease.ID)+"/validate", load.worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken})
 						record(history, "validate", time.Since(started), response.Code, http.StatusOK)
 						if round%4 == 0 {
 							started = time.Now()
-							response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(load.items[index].WorkItemID)+"/comments", f.token,
+							response = request(f, "/work-items/"+string(load.items[index].WorkItemID)+"/comments", f.token,
 								tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("load-%d-%d-%d", sample, index, round)}, Body: "progress"})
 							record(history, "comment", time.Since(started), response.Code, http.StatusOK)
 						}
-					}
-					time.Sleep(time.Second)
+					})
 				}
-			})
-		}
-		work.Go(func() {
-			for pair := 0; ctx.Err() == nil; pair++ {
-				for offset := range loads {
-					history := (pair + sample + offset) % len(loads)
-					started := time.Now()
-					tx, err := loads[history].fixture.service.database.db.BeginTx(context.Background(), nil)
-					if err == nil {
-						err = tx.Commit()
-					}
-					record(history, "probe", time.Since(started), map[bool]int{true: 0, false: 1}[err == nil], 0)
+				var probesReady sync.WaitGroup
+				probesReady.Add(sessions)
+				for range sessions {
+					work.Go(func() {
+						select {
+						case <-entered:
+						case <-t.Context().Done():
+						}
+						started := time.Now()
+						probesReady.Done()
+						select {
+						case <-release:
+						case <-t.Context().Done():
+						}
+						tx, err := load.fixture.service.database.db.BeginTx(t.Context(), nil)
+						if err == nil {
+							err = tx.Commit()
+						}
+						record(history, "probe", time.Since(started), map[bool]int{true: 0, false: 1}[err == nil], 0)
+					})
 				}
-				time.Sleep(20 * time.Millisecond)
+				close(start)
+				probesReady.Wait()
+				close(release)
+				work.Wait()
 			}
-		})
-		work.Wait()
+		}
 		if len(failures) != 0 {
 			t.Fatalf("requests failed: %v", failures[:min(len(failures), 5)])
 		}
@@ -271,6 +317,42 @@ BEGIN SELECT sum(length(data_json)) FROM collaboration_events; END`); err != nil
 			}
 		})
 	}
+}
+
+type tenantLoadConnection interface {
+	driver.Conn
+	driver.ConnBeginTx
+	driver.ConnPrepareContext
+	driver.ExecerContext
+	driver.QueryerContext
+	driver.Pinger
+	driver.SessionResetter
+	driver.Validator
+	onlineBackuper
+}
+
+type tenantLoadRound struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+type tenantLoadWriter struct {
+	tenantLoadConnection
+	round atomic.Pointer[tenantLoadRound]
+}
+
+func (c *tenantLoadWriter) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if strings.HasPrefix(strings.TrimSpace(query), "UPDATE leases\nSET expires_at") {
+		if round := c.round.Swap(nil); round != nil {
+			close(round.entered)
+			select {
+			case <-round.release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return c.tenantLoadConnection.ExecContext(ctx, query, args)
 }
 
 func tenantWriterWaitComparison(small, large [3]time.Duration) (time.Duration, time.Duration, bool) {

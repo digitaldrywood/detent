@@ -2,11 +2,13 @@ package hubserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -91,22 +93,50 @@ func TestReporterNativeCommands(t *testing.T) {
 			}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{
 				Mutation:            tracker.Mutation{IdempotencyKey: "scheduled-validation"},
-				ScheduledValidation: &gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Conclusion: "success"},
+				ScheduledValidation: &gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Conclusion: "success"},
 			}), http.StatusForbidden)
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "screenshot.png", ContentType: "image/png", Size: 100, Width: 1, Height: 1, SHA256: artifact.Digest([]byte("screenshot"))}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/attachment-metadata/check", map[string]any{"size": record.Size}), http.StatusOK)
 			attachmentResponse := request(u, http.MethodPost, f.base+"/attachment-metadata", record)
 			requireNativeStatus(t, attachmentResponse, http.StatusCreated)
 			decodeHubResponse(t, attachmentResponse, &record)
+			for _, issueType := range []string{"", "question"} {
+				refused := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-type-" + issueType}, Title: "Tester report", Type: issueType})
+				requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
+				var failure apiErrorResponse
+				decodeHubResponse(t, refused, &failure)
+				if failure.Code != "invalid_request" || !strings.Contains(failure.Message, "bug") || !strings.Contains(failure.Message, "change_request") {
+					t.Fatalf("failure=%#v", failure)
+				}
+			}
 			var own tracker.NativeIssue
 			for i, state := range []string{"", "Todo", "Backlog", "Cancelled", "Triage", "Missing"} {
-				r := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Title: "Tester report", Body: "![Screenshot](attachment:" + record.ID + ")", State: state})
-				requireNativeStatus(t, r, http.StatusOK)
+				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Type: []string{"bug", "change_request"}[i%2], Title: "Tester report", Body: "![Screenshot](attachment:" + record.ID + ")", State: state}
+				r := request(u, http.MethodPost, f.base+"/work-items", draft)
+				wantStatus := http.StatusOK
+				if i > 0 {
+					wantStatus = http.StatusConflict
+				}
+				requireNativeStatus(t, r, wantStatus)
+				if i > 0 {
+					var challenge duplicateChallenge
+					decodeHubResponse(t, r, &challenge)
+					if challenge.ChallengeToken == "" || len(challenge.PossibleDuplicates) == 0 {
+						t.Fatalf("Reporter was not challenged: %s", r.Body.String())
+					}
+					draft.ChallengeToken = challenge.ChallengeToken
+					for _, match := range challenge.PossibleDuplicates {
+						draft.NotDuplicateOf = append(draft.NotDuplicateOf, match.Number)
+					}
+					r = request(u, http.MethodPost, f.base+"/work-items", draft)
+					requireNativeStatus(t, r, http.StatusOK)
+				}
 				decodeHubResponse(t, r, &own)
-				if own.State != "Triage" {
+				if own.State != "Triage" || own.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("requested %q: state=%s", state, own.State)
 				}
 			}
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
 			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil)
 			requireNativeStatus(t, attachmentResponse, http.StatusOK)
 			var fetched attachment.Metadata
@@ -118,7 +148,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			requireNativeStatus(t, request(u, http.MethodDelete, f.base+"/attachment-metadata/"+record.ID, nil), http.StatusForbidden)
 			for _, target := range []string{"Backlog", "Todo", "Cancelled"} {
 				var report tracker.NativeIssue
-				r := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "promote-" + target}, Title: "Intake report"})
+				r := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "promote-" + target}, Type: "bug", Title: "Intake report"})
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &report)
 				r = request(member, http.MethodPost, f.base+"/work-items/"+string(report.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "promotion-" + target}, ExpectedRevision: report.Revision, State: target, Reason: "user_requested"})
@@ -135,6 +165,12 @@ func TestReporterNativeCommands(t *testing.T) {
 			if other.State != "Todo" {
 				t.Fatalf("member default=%s", other.State)
 			}
+			r = request(member, http.MethodPatch, f.base+"/work-items/"+string(other.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "member-type-edit"}, ExpectedRevision: other.Revision, Type: new("change_request")})
+			requireNativeStatus(t, r, http.StatusOK)
+			decodeHubResponse(t, r, &other)
+			if other.Type != "change_request" {
+				t.Fatalf("member edit type=%q", other.Type)
+			}
 			for _, test := range []struct {
 				item   tracker.NativeIssue
 				state  string
@@ -148,6 +184,7 @@ func TestReporterNativeCommands(t *testing.T) {
 				r := request(u, http.MethodPost, target, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + string(test.item.WorkItemID) + test.state}, ExpectedRevision: test.item.Revision, State: test.state, Reason: "user_requested"})
 				requireNativeStatus(t, r, test.status)
 			}
+			requireNativeStatus(t, request(u, http.MethodPatch, f.base+"/work-items/"+string(other.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-type-edit"}, ExpectedRevision: other.Revision, Type: new("change_request")}), http.StatusForbidden)
 			var comment tracker.NativeComment
 			commentPath := f.base + "/work-items/" + string(other.WorkItemID) + "/comments"
 			r = request(u, http.MethodPost, commentPath, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Tester observation"})
@@ -213,8 +250,18 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				}
 			}
 
+			raw, err := json.Marshal(map[string]any{"project_id": f.project, "request_id": "missing-type", "title": "Tester report"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "bug") || !strings.Contains(refusal.Message, "change_request") {
+				t.Fatalf("missing type error=%v", err)
+			}
 			for i, state := range []string{"", "Todo", "Cancelled", "Triage", "Missing"} {
-				raw, err := json.Marshal(map[string]any{"project_id": f.project, "request_id": fmt.Sprintf("file-%d", i), "title": "Tester report", "state": state})
+				args := map[string]any{"project_id": f.project, "request_id": fmt.Sprintf("file-%d", i), "title": "Tester report", "type": []string{"bug", "change_request"}[i%2], "state": state}
+				raw, err := json.Marshal(args)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -222,13 +269,33 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if i > 0 {
+					var challenged struct {
+						Data duplicateChallenge `json:"data"`
+					}
+					if err := json.Unmarshal(result.Content, &challenged); err != nil || challenged.Data.ChallengeToken == "" || len(challenged.Data.PossibleDuplicates) == 0 {
+						t.Fatalf("Reporter was not challenged: %s", result.Content)
+					}
+					args["challenge_token"] = challenged.Data.ChallengeToken
+					numbers := make([]int, 0, len(challenged.Data.PossibleDuplicates))
+					for _, match := range challenged.Data.PossibleDuplicates {
+						numbers = append(numbers, match.Number)
+					}
+					args["not_duplicate_of"] = numbers
+					if raw, err = json.Marshal(args); err != nil {
+						t.Fatal(err)
+					}
+					if result, err = executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				var content struct {
 					Data tracker.NativeIssue `json:"data"`
 				}
 				if err := json.Unmarshal(result.Content, &content); err != nil {
 					t.Fatal(err)
 				}
-				if content.Data.State != "Triage" {
+				if content.Data.State != "Triage" || content.Data.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("result=%s", result.Content)
 				}
 			}
@@ -422,7 +489,21 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 					f.grantContext(ctx, t, member, true, false)
 					base := "/api/v2/organizations/org_security/projects/" + string(project.ID)
 					for i, state := range []string{"", "Todo", "Planned", "Cancelled", "Triage", "Unknown"} {
-						response := f.request(t, reporter, http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%s-%d", entry, i)}, Title: "Custom workflow report", State: state})
+						draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%s-%d", entry, i)}, Type: "bug", Title: "Custom workflow report", State: state}
+						response := f.request(t, reporter, http.MethodPost, base+"/work-items", draft)
+						if i > 0 {
+							requireNativeStatus(t, response, http.StatusConflict)
+							var challenge duplicateChallenge
+							decodeHubResponse(t, response, &challenge)
+							if challenge.ChallengeToken == "" || len(challenge.PossibleDuplicates) == 0 {
+								t.Fatalf("Reporter was not challenged: %s", response.Body.String())
+							}
+							draft.ChallengeToken = challenge.ChallengeToken
+							for _, match := range challenge.PossibleDuplicates {
+								draft.NotDuplicateOf = append(draft.NotDuplicateOf, match.Number)
+							}
+							response = f.request(t, reporter, http.MethodPost, base+"/work-items", draft)
+						}
 						requireNativeStatus(t, response, http.StatusOK)
 						var issue tracker.NativeIssue
 						decodeHubResponse(t, response, &issue)

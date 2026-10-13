@@ -44,12 +44,13 @@ type SpriteUsageInput struct {
 	Observations []usagecost.Observation `json:"observations"`
 }
 type IntegrationInput struct {
-	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
-	States            *[]tracker.NativeState `json:"states,omitempty"`
-	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
-	Intake            string                 `json:"intake,omitempty"`
-	Projection        string                 `json:"projection"`
-	RepositoryEnabled bool                   `json:"repository_enabled"`
+	DuplicateChallenge *bool                  `json:"duplicate_challenge,omitempty"`
+	WorkflowMarkdown   *string                `json:"workflow_markdown,omitempty"`
+	States             *[]tracker.NativeState `json:"states,omitempty"`
+	ExpectedRevision   tracker.Revision       `json:"expected_revision,string"`
+	Intake             string                 `json:"intake,omitempty"`
+	Projection         string                 `json:"projection"`
+	RepositoryEnabled  bool                   `json:"repository_enabled"`
 }
 type RepositoryInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`

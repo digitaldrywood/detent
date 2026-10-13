@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -33,6 +34,7 @@ type commitPolicy struct {
 	program     string
 	format      string
 	environment []string
+	unavailable *atomic.Bool
 }
 
 func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdentity) (_ commitPolicy, err error) {
@@ -58,7 +60,7 @@ func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdenti
 	if len(identity.Name)+len(identity.Email) > 500 || strings.ContainsAny(identity.Name+identity.Email, "\r\n\x00<>") {
 		return commitPolicy{}, errors.New("runner commit identity is invalid")
 	}
-	p := commitPolicy{report: CommitReport{Identity: identity, Signing: "unsigned"}, format: read("gpg.format")}
+	p := commitPolicy{report: CommitReport{Identity: identity, Signing: "unsigned"}, format: read("gpg.format"), unavailable: new(atomic.Bool)}
 	if p.format == "" {
 		p.format = "openpgp"
 	}
@@ -91,27 +93,37 @@ func probeCommitPolicy(ctx context.Context, source string, fallback CommitIdenti
 	if err != nil || strings.TrimSpace(enabled) != "true" {
 		return p, nil
 	}
-	scratch, err := changeSourceScratch()
-	if err != nil {
-		return p, fmt.Errorf("prepare signing probe: %w", err)
-	}
-	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
-	if _, err := runGitAt(ctx, scratch, "init", "--quiet"); err != nil {
-		return p, fmt.Errorf("initialize signing probe: %w", err)
-	}
-	file := filepath.Join(scratch, "empty")
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
-		return p, err
-	}
-	tree, err := runGitAt(ctx, scratch, "hash-object", "-w", "-t", "tree", "--", file)
-	if err != nil {
-		return p, err
-	}
 	p.report.Signing = p.format
-	if _, err := p.run(ctx, scratch, nil, "commit-tree", strings.TrimSpace(tree), "-m", "Detent signing probe"); err != nil {
+	if attempted, err := p.verifySigning(ctx); err != nil {
+		if !attempted {
+			return p, err
+		}
 		p.report.Signing = "unsigned"
 	}
 	return p, nil
+}
+
+func (p commitPolicy) verifySigning(ctx context.Context) (_ bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, signingProbeTimeout)
+	defer cancel()
+	scratch, err := changeSourceScratch()
+	if err != nil {
+		return false, fmt.Errorf("prepare signing probe: %w", err)
+	}
+	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
+	if _, err := runGitAt(ctx, scratch, "init", "--quiet"); err != nil {
+		return false, fmt.Errorf("initialize signing probe: %w", err)
+	}
+	file := filepath.Join(scratch, "empty")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		return false, err
+	}
+	tree, err := runGitAt(ctx, scratch, "hash-object", "-w", "-t", "tree", "--", file)
+	if err != nil {
+		return false, err
+	}
+	_, err = p.run(ctx, scratch, nil, "commit-tree", strings.TrimSpace(tree), "-m", "Detent signing probe")
+	return true, err
 }
 
 func ProbeCommitReport(ctx context.Context, source string, fallback CommitIdentity) (_ CommitReport, err error) {
@@ -129,11 +141,15 @@ func ProbeCommitReport(ctx context.Context, source string, fallback CommitIdenti
 }
 
 func (l *LocalGit) CommitReport() CommitReport {
-	return l.commits.report
+	report := l.commits.report
+	if l.commits.unavailable != nil && l.commits.unavailable.Load() {
+		report.Signing = "unsigned"
+	}
+	return report
 }
 
 func (l *LocalGit) Problems() []runnerauth.Problem {
-	return l.commits.report.Problems()
+	return l.CommitReport().Problems()
 }
 
 func (r CommitReport) Problems() []runnerauth.Problem {
@@ -143,12 +159,44 @@ func (r CommitReport) Problems() []runnerauth.Problem {
 	p := runnerauth.NewProblem("settings_invalid")
 	p.Check = "commit_signing"
 	p.Message = "Commit signing unavailable; runner commits are unsigned."
-	p.FixHint = "Configure a signing key usable without pinentry, then restart the runner."
+	p.FixHint = "Restore a signing key usable without pinentry; startup-unavailable signing requires a runner restart."
 	return []runnerauth.Problem{p}
 }
 
 func (l *LocalGit) runCommit(ctx context.Context, path string, env []string, args ...string) (string, error) {
-	return l.commits.run(ctx, path, env, args...)
+	policy := l.commits
+	if policy.report.Signing != "unsigned" {
+		if attempted, err := policy.verifySigning(ctx); err != nil {
+			if !attempted || ctx.Err() != nil || !signerUnavailable(err) {
+				return "", err
+			}
+			policy.report.Signing = "unsigned"
+			if policy.unavailable != nil {
+				policy.unavailable.Store(true)
+			}
+			l.logger.Warn("commit signing unavailable", "signing", "unsigned", "error", commandErrorOutput(err))
+		} else if policy.unavailable != nil {
+			policy.unavailable.Store(false)
+		}
+	}
+	return policy.run(ctx, path, env, args...)
+}
+
+func signerUnavailable(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var command *CommandError
+	if !errors.As(err, &command) || command.ExitCode <= 0 {
+		return false
+	}
+	for _, line := range strings.Split(command.Output, "\n") {
+		switch strings.TrimSpace(line) {
+		case "gpg: signing failed: No pinentry", "gpg: signing failed: No secret key", "gpg: signing failed: Bad passphrase", "gpg: signing failed: Inappropriate ioctl for device", "gpg: signing failed: No agent running":
+			return true
+		}
+	}
+	return false
 }
 
 func (p commitPolicy) run(ctx context.Context, path string, env []string, args ...string) (_ string, err error) {

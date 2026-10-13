@@ -243,6 +243,9 @@ func safeWorkspaceError(err error) error {
 			return safe
 		}
 	}
+	if safe := hubSafeChangeError(err); !errors.Is(safe, operatortool.ErrServiceUnavailable) {
+		return safe
+	}
 	return errWorkspaceOperationUnavailable
 }
 func (e workspaceOperatorExecutor) ExecuteAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {

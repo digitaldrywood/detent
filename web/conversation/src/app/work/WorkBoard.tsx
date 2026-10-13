@@ -52,6 +52,8 @@ function applyFilters(
     if (view.view === "board" && view.state.length > 0 && !view.state.includes(item.state)) return false;
     if (view.priority.length > 0 && (item.priority === null || !view.priority.includes(item.priority)))
       return false;
+    if (view.view === "list" && view.type.length > 0 && (item.type === undefined || !view.type.includes(item.type)))
+      return false;
     if (view.label.length > 0 && !view.label.some((label) => item.labels.includes(label)))
       return false;
     if (
@@ -76,6 +78,7 @@ function narrowed(view: WorkViewState): boolean {
     view.q.trim().length > 0 ||
     view.state.length > 0 ||
     view.priority.length > 0 ||
+    (view.view === "list" && view.type.length > 0) ||
     view.label.length > 0 ||
     view.assignee.length > 0
   );
@@ -246,6 +249,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const creatable = newIssueProjects(
     (accountBootstrap?.projects ?? []).filter((project) => projectId === null || project.id === projectId),
     null,
+    accountBootstrap?.actor.role,
   );
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
@@ -451,7 +455,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   onCreate={
                     newIssue.canCreate &&
                     !lane.terminal &&
-                    newIssueProjects(creatable, lane.name).length > 0
+                    newIssueProjects(creatable, lane.name, accountBootstrap?.actor.role).length > 0
                       ? () => newIssue.openNewIssue({ projectId, state: lane.name })
                       : null
                   }

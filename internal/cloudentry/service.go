@@ -346,6 +346,7 @@ func (s *Service) routes() {
 	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
 	e.Any("/*", s.readableProxy)
 	e.Any("/organizations/:organization", s.proxy)
+	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }

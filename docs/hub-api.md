@@ -64,6 +64,30 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Issue email notifications
+
+Hosted sessions expose `GET` and `PUT` at
+`/api/v2/organizations/{organization}/issue-notification-preference`.
+The response and `PUT` body are `{ "enabled": true }`. Each user controls
+their own preference, which defaults to enabled; mutations require the
+bootstrap CSRF token. Bearer keys and support impersonation cannot change it.
+Disabling the preference also discards that user's pending batches.
+
+Native issue filers and commenters with human actor identities receive
+transactional email for lane transitions, new comments, and added related
+links. Recipients must retain active membership and project read access.
+The actor's own action is excluded. Changes within one minute of the first
+event form one batch per issue and participant, persisted in the Hub database.
+Emails contain the issue number, title, transition or commenter, and links;
+they exclude issue bodies and comment text. Delivery runs after issue writes
+commit, and a send failure is logged without rolling back or retrying the write.
+
+Each email links to `/issue-notifications/unsubscribe?token=...` on a dedicated
+Hub, or `/organizations/{organization}/issue-notifications/unsubscribe?token=...`
+through Cloud's shared entry. The opaque link opts out of that issue without
+requiring a session and is safe to repeat. The shared entry forwards the token
+through the signed service boundary; it does not read or change issue content.
+
 ## Project deletion
 
 Cloud owners and admins with a write grant on the selected project can call
@@ -943,6 +967,8 @@ clients negotiate major 2 and schema 1. A native claim supplies `protocol_major:
 and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
 negotiation fails without switching tracker or scheduler.
 
+Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type; Reporters cannot edit issue fields. Type edits appear in issue history, and labels remain independent of the type.
+
 The following paths are relative to
 `/api/v2/organizations/{organization_id}/projects/{project_id}`. Worker and
 operator tokens can read and author collaboration; claims, machines and run
@@ -951,11 +977,11 @@ events require worker scope. Instance administrators can perform these operation
 | Method and path | Input or result |
 | --- | --- |
 | `GET /` | Project profile, states, transitions and readiness policy |
-| `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `priority`, `labels`, `assignees`, import `provenance` |
+| `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `type` (`bug` or `change_request`), `priority`, `labels`, `assignees`, import `provenance` |
 | `POST /work-items` (scheduled reporter evidence) | `idempotency_key`, `scheduled_validation` with `repository`, `run_id`, `run_attempt`, canonical `run_url`, pinned `head_sha`, and `conclusion: success`, `failure`, or `skipped`; no issue fields |
-| `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
+| `GET /work-items` | Paged issues; optional exact `type` (`bug` or `change_request`); repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
 | `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
-| `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `title`, `body`, `priority`, `labels` or `assignees` |
+| `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `type`, `title`, `body`, `priority`, `labels` or `assignees` |
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
 | `POST /work-items/{id}/dependencies` | `idempotency_key`, `expected_revision`, `related_work_item_id`, `operation: add` or `remove` |
 | `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |
@@ -969,6 +995,17 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
+
+With project `duplicate_challenge` enabled (the default), native filing may
+return HTTP 409 with `code: possible_duplicates`, up to five
+`possible_duplicates`, and a `challenge_token`, creating no issue. MCP
+`file_issue` returns those challenge fields as a structured result. To confirm
+new work, repeat the unchanged content and request identity with the token and
+`not_duplicate_of` issue numbers; the new issue links those matches as related.
+For an existing problem, comment on the returned `work_item_id` instead.
+Tokens expire after one hour; expired filings need a new request identity.
+Confirmation deletes the token, while request replay retains its original
+result. Machine reports and linked GitHub intake are never challenged.
 
 Scheduled reporter evidence requires operator or administrator authority and
 the project's selected checkout repository. This report-only variant returns
@@ -1029,12 +1066,33 @@ forward the lane ledger's reason as readable text through this field.
 Release reasons are `completed`, `cancelled`, `failed`, `released`,
 `work_item_hydration_failed` and `work_item_identity_missing`.
 
+Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for ranked
+full-text search of titles, bodies and comments. Search terms use stemming and
+prefix matching and combine with OR. Documents matching more distinct query
+terms rank first, followed by BM25 relevance and the ordinary
+list order. Legacy substring matches of titles, bodies, labels and identifiers
+remain included. Each search hit includes a short `snippet`; full-text matches are marked
+by brackets. Search composes with the existing exact filters.
+
+`created_after` and `updated_after` are inclusive RFC3339 timestamp bounds;
+`created_before` is exclusive. Combine created bounds to select one day. Offsets
+are supported and compared as instants. These selectors are available on REST
+and native MCP lists; snapshot-backed lists and the board projection reject them.
+
+Native issue lists accept `created_by` with a principal ID or `me`, alongside
+state, label, query and archived filters. `me` resolves to the authenticated
+human principal, including the owner of a personal key; service keys and worker
+credentials receive `invalid_request`. The filter uses the native filing actor,
+including for imported issues, and preserves project access checks. Issue reads
+include the filer's available display identity in `actor.display_name`.
+
 Native pages use `limit` (1–200, default 50) and an opaque `cursor`. Issue lists
 group items in configured workflow state order. Within nonterminal states,
 priority sorts first, then `last_activity_at` newest first; terminal states use
 activity alone. Missing priorities and activity sort last, and identifiers break
 ties. The first page retains matching item identities and SQL sort keys for the
-cursor's lifetime, so concurrent changes to state, priority, activity or filters
+cursor's lifetime, including relevance scores and matched snippets for searches,
+so concurrent changes to state, priority, activity or filters
 cannot skip or repeat those items. New items appear in a fresh query. Each page
 loads current item details, so this is not a transactional export snapshot;
 a consistent export still requires a quiescent owner backup.

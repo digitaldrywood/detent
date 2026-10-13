@@ -714,7 +714,7 @@ export const tooltip: GalleryDoc = {
               </TooltipTrigger>
               <TooltipPopup side="right" variant={variant}>
                 {variant === "code"
-                  ? "/Users/michael/Development/detent-worktrees/detent/design-system/internal/lock/lease.go"
+                  ? "/Users/example/Development/detent-worktrees/detent/design-system/internal/lock/lease.go"
                   : `A ${variant} tooltip`}
               </TooltipPopup>
             </Tooltip>

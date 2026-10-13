@@ -5,6 +5,7 @@ import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import React from "react";
 import { useNavigate, useParams, useRouteContext, useSearch } from "@tanstack/react-router";
 
+import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import {
   Collapsible,
@@ -1075,9 +1076,14 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             <p className="font-mono text-muted-foreground text-xs" data-testid="issue-identifier">
               {item.projectName} {issueNumber(item.identifier, item.number)}{item.archived ? " · Archived" : ""}
             </p>
-            <h1 className="mt-1.5 text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
-              {item.title}
-            </h1>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <h1 className="text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
+                {item.title}
+              </h1>
+              {item.type === undefined ? null : (
+                <Badge variant="secondary" size="sm">{item.type === "bug" ? "Bug" : "Change request"}</Badge>
+              )}
+            </div>
             {props.canWrite && data.project.profile === "native" ? (
               <Button size="sm" variant="outline" className="mt-3" data-testid="issue-archive"
                 disabled={props.saving || data.attempts.some((attempt) => attempt.status === "running")}

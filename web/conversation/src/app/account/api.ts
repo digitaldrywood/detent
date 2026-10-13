@@ -172,6 +172,8 @@ export function makeAccountApi(options: AccountApiOptions) {
   const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
   const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
+    saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
     personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
     keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
     createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
@@ -328,6 +330,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       intake?: string;
       projection: string;
       repositoryEnabled: boolean;
+      duplicateChallenge?: boolean;
       archiveCompletedAfterDays?: number | null;
       archiveCancelledAfterDays?: number | null;
       states?: readonly WorkflowState[];
@@ -338,6 +341,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         ...(input.intake !== undefined ? { intake: input.intake } : {}),
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.duplicateChallenge !== undefined ? { duplicate_challenge: input.duplicateChallenge } : {}),
         ...(input.archiveCompletedAfterDays !== undefined ? { archive_completed_after_days: input.archiveCompletedAfterDays } : {}),
         ...(input.archiveCancelledAfterDays !== undefined ? { archive_cancelled_after_days: input.archiveCancelledAfterDays } : {}),
         ...(input.states !== undefined ? { states: input.states } : {}),
@@ -394,6 +398,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
     createFirstIssue: (input: {
       projectId: string;
+      type?: "bug" | "change_request";
 	  githubIssueUrl?: string;
       title: string;
       body: string;
@@ -402,6 +407,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
 	    github_issue_url: input.githubIssueUrl,
+        type: input.type,
         title: input.title,
         body: input.body,
         state: input.state,
@@ -519,9 +525,10 @@ export function makeAccountApi(options: AccountApiOptions) {
         let lastTick: string | null = null;
         do {
           const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? "open"}${options.since ? `&since=${encodeURIComponent(options.since)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-          items.push(...page.items.map((finding) => finding.subject.kind === "work_item"
-            ? { ...finding, subject: { ...finding.subject, project_id: project } }
-            : finding));
+          items.push(...page.items.map((finding) => ({
+            ...finding,
+            subject: { ...finding.subject, project_id: finding.subject.project_id ?? project },
+          })));
           lastTick = page.last_tick_at;
           cursor = page.next_cursor ?? "";
         } while (cursor);

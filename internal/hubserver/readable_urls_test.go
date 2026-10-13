@@ -148,6 +148,16 @@ func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
 	if current.WebURL != "http://127.0.0.1:7777/example-organization/example-project/issues/1" {
 		t.Fatalf("current URL=%q", current.WebURL)
 	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project); err != nil {
+		t.Fatal(err)
+	}
+	response = f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable-duplicate"}, Title: "Readable", State: "Todo"})
+	requireNativeStatus(t, response, http.StatusConflict)
+	var challenge duplicateChallenge
+	decodeHubResponse(t, response, &challenge)
+	if len(challenge.PossibleDuplicates) != 1 || challenge.PossibleDuplicates[0].WebURL != "http://127.0.0.1:7777/example-organization/example-project/issues/1" {
+		t.Fatalf("duplicate links do not use current slugs: %s", response.Body.String())
+	}
 	contexts := make(chan context.Context, 1)
 	f.service.echo.POST("/readable-reference-fixture", func(c echo.Context) error {
 		contexts <- operatortool.BindConnection(c.Request().Context(), "readable-reference", "test")

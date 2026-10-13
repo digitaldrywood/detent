@@ -8,7 +8,7 @@ func TestLibrarySafeURLValue(t *testing.T) {
 		in   string
 		want string
 	}{
-		{name: "https", in: "https://github.com/digitaldrywood/detent/pull/1", want: "https://github.com/digitaldrywood/detent/pull/1"},
+		{name: "https", in: "https://github.com/example-org/example-project/pull/1", want: "https://github.com/example-org/example-project/pull/1"},
 		{name: "http", in: "http://127.0.0.1:8080/review/ad-1", want: "http://127.0.0.1:8080/review/ad-1"},
 		{name: "root relative", in: "/review/ad-1", want: "/review/ad-1"},
 		{name: "javascript", in: "javascript:alert(1)", want: ""},

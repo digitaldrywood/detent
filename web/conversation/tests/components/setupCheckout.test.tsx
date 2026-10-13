@@ -33,6 +33,80 @@ async function mountSetup(onNavigate?: (to: string) => void) {
   );
 }
 
+it("preserves unsaved setup choices and fields through refresh, then saves and switches projects", async () => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  let finishRefresh: (() => void) | undefined;
+  let deferRefresh = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/integration") && response.ok) {
+      return Response.json({ ...await response.json(), checkout_repository: "example-org/example-project", checkout_verified: true });
+    }
+    if (deferRefresh && String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      deferRefresh = false;
+      await new Promise<void>((resolve) => { finishRefresh = resolve; });
+    }
+    return response;
+  });
+  let poll: (() => void) | undefined;
+  const setInterval = window.setInterval;
+  vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
+    const timer = setInterval(callback, delay, ...args);
+    if (delay === 5_000 && typeof callback === "function") {
+      poll = callback as () => void;
+      window.clearInterval(timer);
+    }
+    return timer as unknown as ReturnType<typeof window.setInterval>;
+  });
+  const view = mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  deferRefresh = true;
+  expect(poll).toBeDefined();
+  act(() => poll!());
+  await waitFor(() => expect(finishRefresh).toBeDefined());
+  await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
+  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
+  await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+  const fields = [
+    ["Service id", "service_example"],
+    ["Gateway origin", "https://artifacts.example.com"],
+    ["Publisher token id", "token_example"],
+  ] as const;
+  for (const [label, value] of fields) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
+  await act(async () => finishRefresh!());
+  expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(true);
+  for (const [label, value] of fields) expect((screen.getByRole("textbox", { name: label }) as HTMLInputElement).value).toBe(value);
+  expect(screen.getByRole("button", { name: "Help for Publisher token id" })).toBeTruthy();
+  await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
+  await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
+  expect((screen.getByRole("radio", { name: "Create configuration files" }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
+  expect(await screen.findByRole("button", { name: "Approve settings" })).toBeTruthy();
+  const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json());
+  expect(saved.progress).toMatchObject({ repository: "generate", artifacts: "local", revision: "2" });
+  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
+  expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+  const alpha = `${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/onboarding`;
+  const alphaProgress = await fetch(alpha).then((response) => response.json());
+  const seed = await fetch(alpha, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idempotency_key: "setup-project-switch", progress: { ...alphaProgress.progress, repository: "generate", artifacts: "local" } }),
+  });
+  expect(seed.ok).toBe(true);
+  view.rerender(
+    <ClientContext.Provider value={client!}>
+      <SetupRoute projectId="proj_alpha" />
+    </ClientContext.Provider>,
+  );
+  await waitFor(() => expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true));
+  expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByRole("textbox", { name: "Publisher token id" })).toBeNull();
+});
+
 it.each([
   ["reported checkout", "mockorg/private", "Verified runner checkout:"],
   ["new checkout", "example-org/example-repository", "Waiting for Example runner to clone or verify checkout:"],

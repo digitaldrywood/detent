@@ -647,7 +647,7 @@ func TestHostedPlatformUsers(t *testing.T) {
 	}{
 		{"MATCH@example.test", 200, 1, 1},
 		{"match", 200, 2, 2},
-		{"match@example.test.extra", 200, 0, 0},
+		{"match@example.test.example.org", 200, 0, 0},
 		{"cap", 200, 0, 50},
 		{"missing", 200, 0, 0},
 		{"ab", 400, 0, 0},

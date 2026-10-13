@@ -60,18 +60,18 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	}
 	defer release()
 	git := checkpointRefGit(info.Path)
-	if paused, pauseErr := rebaseInProgress(ctx, info.Path); pauseErr != nil {
-		return previous, false, pauseErr
-	} else if paused && issue.NativeRework && issue.CheckpointQuiescent {
-		return l.pushReworkCheckpoint(ctx, info, issue, previous, validate)
-	}
-	if _, err := git(ctx, "symbolic-ref", "-q", "HEAD"); err != nil {
-		return previous, false, fmt.Errorf("%w: worktree is not on its branch (rebase or detached HEAD in progress)", ErrCheckpointUnsafe)
-	}
 	for _, pending := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"} {
 		if _, err := git(ctx, "rev-parse", "-q", "--verify", pending); err == nil {
 			return previous, false, fmt.Errorf("%w: %s operation in progress", ErrCheckpointUnsafe, pending)
 		}
+	}
+	if paused, pauseErr := rebaseInProgress(ctx, info.Path); pauseErr != nil {
+		return previous, false, pauseErr
+	} else if paused && issue.NativeRework {
+		return l.pushReworkCheckpoint(ctx, info, issue, previous, validate)
+	}
+	if _, err := git(ctx, "symbolic-ref", "-q", "HEAD"); err != nil {
+		return previous, false, fmt.Errorf("%w: worktree is not on its branch (rebase or detached HEAD in progress)", ErrCheckpointUnsafe)
 	}
 	scratch, err := changeSourceScratch()
 	if err != nil {

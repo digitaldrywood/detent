@@ -2,7 +2,7 @@
   "conversation": {
     "id": "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
     "organization_id": "org_4d1f",
-    "project_id": "proj_parable",
+    "project_id": "proj_example_project",
     "title": "Flaky checkout lock renewal",
     "visibility": "shared",
     "origin": "user",
@@ -12,7 +12,7 @@
     "linked_at": "2026-09-09T09:41:12Z",
     "work_item": {
       "id": "wi_3363",
-      "identifier": "parable#3363",
+      "identifier": "example-project#3363",
       "title": "Checkout lock renewal waits on a healthy handoff",
       "lane": "Todo",
       "runner_bound": true
@@ -24,7 +24,7 @@
     },
     "owner": {
       "principal_id": "tok_7b21",
-      "subject": "usr_michael"
+      "subject": "usr_owner"
     },
     "execution": {
       "status": "running",

@@ -128,6 +128,9 @@ func TestLinkedIssueCreation(t *testing.T) {
 	if first.LinkedSource == nil || first.LinkedSource.Status != "complete" || first.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
 		t.Fatalf("linked issue = %#v", first)
 	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	for i := range 5 {
 		wg.Go(func() {

@@ -249,14 +249,17 @@ test.describe("a board that already has issues", () => {
   test("a lane's add button creates into that lane", async ({ page }) => {
     const errors = watchConsole(page);
     await openStudioBoard(page);
-    const lane = page.locator('[data-testid="board-lane"]:not([data-terminal])').first();
+    const lanes = page.getByTestId("board-lane");
+    await expect(lanes.filter({ has: page.getByRole("button", { name: "New issue in Triage", exact: true }) })).toHaveCount(0);
+    const lane = lanes.filter({ has: page.getByRole("button", { name: /^New issue in / }) }).first();
     const laneName = await lane.getAttribute("data-lane");
     await lane.getByRole("button", { name: `New issue in ${laneName}` }).click();
     const dialog = page.getByRole("dialog", { name: "New issue" });
     await expect(dialog.getByLabel("Lane")).toHaveValue(laneName);
+    await expect(dialog.getByLabel("Lane").getByRole("option", { name: "Triage", exact: true })).toHaveCount(0);
     await createFrom(page, "Created from a lane");
     await expect(
-      page.locator(`[data-testid="board-lane"][data-lane="${laneName}"]`).getByText("Created from a lane"),
+      lane.getByText("Created from a lane"),
     ).toBeVisible();
     expect(errors).toEqual([]);
   });

@@ -23,50 +23,66 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree", Behavior: "Application and browser checks exercise the requested behavior"}
 		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
 	}
+	type stageCase struct {
+		mode               string
+		sourceVerdicts     []string
+		retainedAcceptance bool
+		freshAcceptance    bool
+	}
 	for _, test := range []struct {
 		name   string
 		edit   func(*tracker.ReviewChange)
 		want   int
 		status string
+		stages *stageCase
 	}{
-		{"source review from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
-		{"same machine source session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence"},
-		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence"},
-		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence"},
+		{"required acceptance before source", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
+		{"required acceptance after source pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"pass"}}},
+		{"required acceptance after source rework", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"rework"}}},
+		{"required acceptance after source wait", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"wait"}}},
+		{"required acceptance after newer source wait", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"pass", "wait"}}},
+		{"required acceptance after recovered source", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"wait", "rework", "pass"}}},
+		{"implementation review retains old acceptance pending", implementationReview, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, retainedAcceptance: true}},
+		{"implementation review then fresh acceptance replaces retained approval", implementationReview, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, retainedAcceptance: true, freshAcceptance: true}},
+		{"optional source permits acceptance", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewOptional}},
+		{"source review from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"same machine source session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review same session", func(r *tracker.ReviewChange) {
 			implementationReview(r)
 			r.ImplementationReview.SessionID = 41
-		}, http.StatusUnprocessableEntity, "needs_evidence"},
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"implementation review mixed result", func(r *tracker.ReviewChange) {
 			r.ImplementationReview = r.Validator
-		}, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed"},
-		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed"},
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
 		{"failed selected receipt cannot pass", func(r *tracker.ReviewChange) {
 			multipleReceipts(r)
 			r.Validator.Commands[1].ExitCode = 1
-		}, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence"},
-		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"missing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"another head", func(r *tracker.ReviewChange) { r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"another version", func(r *tracker.ReviewChange) { r.Validator.VersionID = "version_other" }, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"human approval from worker", func(r *tracker.ReviewChange) { r.Validator = nil }, http.StatusForbidden, "needs_evidence"},
-		{"verdict mismatch", func(r *tracker.ReviewChange) { r.Validator.Verdict = "rework" }, http.StatusUnprocessableEntity, "needs_evidence"},
-		{"separate session rework", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "changes_requested", "rework" }, http.StatusOK, "needs_evidence"},
-		{"separate session wait", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "commented", "wait" }, http.StatusOK, "needs_evidence"},
-		{"missing evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusUnprocessableEntity, "needs_evidence"},
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", nil},
+		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"missing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"another head", func(r *tracker.ReviewChange) { r.Validator.HeadSHA = r.Validator.BaseSHA }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"another version", func(r *tracker.ReviewChange) { r.Validator.VersionID = "version_other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"human approval from worker", func(r *tracker.ReviewChange) { r.Validator = nil }, http.StatusForbidden, "needs_evidence", nil},
+		{"verdict mismatch", func(r *tracker.ReviewChange) { r.Validator.Verdict = "rework" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"separate session rework", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "changes_requested", "rework" }, http.StatusOK, "needs_evidence", nil},
+		{"separate session wait", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "commented", "wait" }, http.StatusOK, "needs_evidence", nil},
+		{"missing evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"missing evidence rework", func(r *tracker.ReviewChange) {
 			r.Validator.CriteriaEvidence = nil
 			r.Decision, r.Validator.Verdict = "changes_requested", "rework"
-		}, http.StatusOK, "needs_evidence"},
-		{"disclosed missing evidence", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusOK, "reviewed"},
-		{"restated evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence[0].RestatesImplementation = true }, http.StatusUnprocessableEntity, "needs_evidence"},
+		}, http.StatusOK, "needs_evidence", nil},
+		{"disclosed missing evidence", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusOK, "reviewed", nil},
+		{"restated evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence[0].RestatesImplementation = true }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"mismatched receipt cannot pass", func(r *tracker.ReviewChange) {
 			r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check", HeadSHA: r.Validator.HeadSHA, TreeSHA: "other", Behavior: "The configured check proves the requested behavior"}
 			r.Validator.Commands = []gate.CommandResult{{Command: "make check", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
-		}, http.StatusUnprocessableEntity, "needs_evidence"},
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -89,6 +105,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			counterCollision := test.name == "source review from another machine does not collide" || test.name == "same machine source session cannot validate acceptance"
 			if implementation || counterCollision {
 				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
+			}
+			if test.stages != nil {
+				descriptor.Gates.AutomatedReview = test.stages.mode
 			}
 			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval" || test.name == "implementation review does not leave stale human approval"
 			if humanReview {
@@ -120,7 +139,37 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			mutation.IdempotencyKey = "validator"
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
+			acceptanceRequest := request
 			test.edit(&request)
+			stageReviews := 0
+			if test.stages != nil {
+				if test.stages.retainedAcceptance {
+					retained := *acceptanceRequest.Validator
+					retained.SessionID = 44
+					raw, err := marshalNative(tracker.ChangeReview{ID: "review_retained_acceptance", VersionID: version.ID, Decision: "approved", Validator: &retained, SessionMachineID: lease.MachineID, Actor: tracker.Actor{Kind: "runner", PrincipalID: "previous-worker"}, CreatedAt: f.service.config.now()})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", change.ID, version.ID, raw); err != nil {
+						t.Fatal(err)
+					}
+					stageReviews++
+				}
+				for i, verdict := range test.stages.sourceVerdicts {
+					source := *acceptanceRequest.Validator
+					source.SessionID, source.Verdict = int64(50+i), verdict
+					sourceRequest := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, ImplementationReview: &source, Decision: "approved"}
+					sourceRequest.IdempotencyKey = "source-" + verdict
+					switch verdict {
+					case "wait":
+						sourceRequest.Decision = "commented"
+					case "rework":
+						sourceRequest.Decision = "changes_requested"
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, sourceRequest), http.StatusOK)
+					stageReviews++
+				}
+			}
 			if counterCollision {
 				machine := tracker.MachineID("machine")
 				if test.name == "source review from another machine does not collide" {
@@ -147,12 +196,28 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if detail.Summary.Status != test.status || detail.Summary.NativeReview != review {
 				t.Fatalf("validator summary = %+v, want %s", detail.Summary, test.status)
 			}
+			wantSession := int64(42)
+			if test.stages != nil && test.stages.freshAcceptance {
+				fresh := *acceptanceRequest.Validator
+				fresh.SessionID = 43
+				acceptanceRequest.Validator = &fresh
+				acceptanceRequest.IdempotencyKey = "fresh-acceptance"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, acceptanceRequest), http.StatusOK)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &detail)
+				if detail.Summary.Status != "reviewed" {
+					t.Fatalf("fresh acceptance did not complete ordered reviews: %+v", detail.Summary)
+				}
+				stageReviews++
+				wantSession = 43
+			}
 			current, err := readCurrentChangeDetail(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, detail.Change, f.service.config.now())
 			if err != nil || current.Summary.Status != detail.Summary.Status {
 				t.Fatalf("current summary differs: %+v, %v", current.Summary, err)
 			}
 			if test.want == http.StatusOK {
-				wantReviews := 1
+				wantReviews := 1 + stageReviews
 				if counterCollision {
 					wantReviews++
 				}
@@ -161,13 +226,13 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				storedReview := detail.Reviews[len(detail.Reviews)-1]
 				stored := storedReview.Validator
-				if implementation {
+				if implementation && wantSession == 42 {
 					stored = storedReview.ImplementationReview
 					if storedReview.Validator != nil {
 						t.Fatal("implementation review was stored as acceptance")
 					}
 				}
-				if stored == nil || stored.SessionID != 42 || storedReview.SessionMachineID != lease.MachineID {
+				if stored == nil || stored.SessionID != wantSession || storedReview.SessionMachineID != lease.MachineID {
 					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
 				}
 			}

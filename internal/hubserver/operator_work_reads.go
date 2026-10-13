@@ -47,7 +47,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		return hubWorkResult(r, request, page, err)
 	}
 	if name == operatortool.WorkList {
-		page, err := s.readIssues(ctx, scope, request.NativeWorkQuery())
+		params := request.NativeWorkQuery()
+		if _, err := nativeCreatedBy(scope, params); err != nil {
+			return operatortool.Result{}, &operatortool.RequestError{Code: "invalid_request", Message: "created_by=me requires a human identity"}
+		}
+		page, err := s.readIssues(ctx, scope, params)
 		return hubWorkResult(r, request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
@@ -99,11 +103,16 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	case operatortool.WorkExport:
 		return hubWorkResult(r, request, item, nil)
 	case operatortool.WorkRelationships:
+		related, err := readNativeRelated(ctx, s.database.db, scope, item.WorkItemID)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
 		return hubWorkResult(r, request, struct {
 			Dependencies []tracker.NativeWorkItemID  `json:"dependencies"`
 			Blockers     []tracker.NativeDependency  `json:"blockers"`
 			References   []tracker.ExternalReference `json:"references"`
-		}{item.Dependencies, item.Blockers, item.ExternalReferences}, nil)
+			Related      []tracker.NativeDependency  `json:"related"`
+		}{item.Dependencies, item.Blockers, item.ExternalReferences, related}, nil)
 	case operatortool.WorkComments:
 		page, err := s.readComments(ctx, scope, request.Reference, params)
 		return hubWorkResult(r, request, page, err)

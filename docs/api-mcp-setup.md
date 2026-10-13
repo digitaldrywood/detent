@@ -311,6 +311,20 @@ A concise agent handoff is:
 
 ## MCP agent handoff
 
+Hosted allowance refusals are MCP tool results with `isError: true`, rather than
+transport failures. Their JSON content includes `code: "allowance_exhausted"`,
+`http_status: 429`, `resource`, `allowance`, `consumption`, a safe message and
+recovery guidance. Current MCP versions also return this as `structuredContent`.
+Inspect `billing_usage.hosted_plan_page` with owner/admin authority or
+`billing_usage.billing_export` with owner authority and resolve the affected
+allowance before submitting another business action. A refusal does not report a
+successful write. `policy_mismatch` directs callers to `get_project_policy` to
+refresh approved policy inputs; uncertain mutation outcomes still require resource
+inspection before retrying. Unexpected failures remain redacted as
+`service_unavailable` with a correlation ID.
+
+Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
+
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
 and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
@@ -494,6 +508,13 @@ hidden 404, check current membership, role, key scope and project grants. Local
 and self-hosted daemon instructions remain expandable on the same settings page.
 
 ## Native work-item list results
+
+Native `work_list` accepts `created_by` as a principal ID or `me`. `me` selects
+issues filed by the calling human, including through that human's personal key;
+service keys and worker credentials cannot use `me`. The selector combines with
+state, label, query and archived filters within the caller's authorized project.
+`work_item` and `work_list` expose the available filer's display identity in
+`actor.display_name` beside the stable principal ID.
 
 Native `work_list` accepts item limits through 200 and returns summaries in
 `data.items` with an opaque `data.next_cursor` when more matching items remain.

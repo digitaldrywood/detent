@@ -19,7 +19,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/displayorder"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -158,11 +157,11 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &expected[0])
 	detailItem := expected[60]
-	slices.SortFunc(expected, func(left, right tracker.NativeIssue) int {
-		return displayorder.Compare(false,
-			displayorder.Item{Priority: left.Priority, LastActivityAt: left.LastActivityAt, Identifier: string(left.ProjectID) + "#" + strconv.Itoa(left.Number)},
-			displayorder.Item{Priority: right.Priority, LastActivityAt: right.LastActivityAt, Identifier: string(right.ProjectID) + "#" + strconv.Itoa(right.Number)})
-	})
+	expectedByID := map[tracker.NativeWorkItemID]tracker.NativeIssue{}
+	for _, item := range expected {
+		expectedByID[item.WorkItemID] = item
+	}
+
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	var firstCursor string
 	var baseline []byte
@@ -173,6 +172,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 				t.Run(strconv.Itoa(limit), func(t *testing.T) {
 					args := map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "limit": limit}
 					seen, pages := 0, 0
+					seenIDs := map[tracker.NativeWorkItemID]bool{}
 					for {
 						reply := call("tools/call", operatortool.WorkList, args)
 						if len(reply.Result) > mcp.MaxHTTPResponseBytes || strings.Contains(string(reply.Result), f.token) || strings.Contains(string(reply.Result), string(hidden.WorkItemID)) || strings.Contains(string(reply.Result), string(unmatched.WorkItemID)) {
@@ -210,7 +210,14 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 							if seen >= len(expected) {
 								t.Fatal("duplicate or extra item")
 							}
-							want := expected[seen]
+							want, exists := expectedByID[item.WorkItemID]
+							if !exists || seenIDs[item.WorkItemID] {
+								t.Fatal("duplicate or unexpected search hit")
+							}
+							seenIDs[item.WorkItemID] = true
+							if item.Snippet == "" || len([]rune(item.Snippet)) > 240 {
+								t.Fatal("missing or unbounded snippet")
+							}
 							if item.WorkItemID != want.WorkItemID || item.Revision != want.Revision || item.Title != want.Title || item.Identifier == "" || item.URL == "" || !reflect.DeepEqual(item.Dependencies, want.Dependencies) || !reflect.DeepEqual(item.Blockers, want.Blockers) || item.Body != "" || !slices.Contains(item.OmittedFields, "body") || item.LinkedSource != nil {
 								t.Fatalf("lost summary metadata or omission at item %d", seen)
 							}
@@ -239,7 +246,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 				}
 			}
 			for _, changes := range []map[string]any{
-				{"state": "Done"}, {"label": "other"}, {"query": "other"},
+				{"state": "Done"}, {"label": "other"}, {"query": "other"}, {"created_by": "other"},
 				{"project_id": string(foreign.project.ID)}, {"cursor": firstCursor + "invalid"},
 			} {
 				args := map[string]any{"project_id": string(f.project.ID), "query": needle, "state": "Todo", "label": "bounded", "limit": 200, "cursor": firstCursor}
@@ -270,7 +277,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var original tracker.Page[tracker.NativeIssue]
 	decodeHubResponse(t, response, &original)
-	if original.Items[0].Body != expected[0].Body || len(original.Items[0].OmittedFields) != 0 {
+	if original.Items[0].Body != expectedByID[original.Items[0].WorkItemID].Body || len(original.Items[0].OmittedFields) != 0 {
 		t.Fatal("original list resource lost its complete body")
 	}
 	executor := hostedOperatorExecutor{service: f.service}
@@ -283,8 +290,12 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	restContinuation := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+args.NativeWorkQuery().Encode(), f.token, nil)
+	requireNativeStatus(t, restContinuation, http.StatusOK)
+	var restPage tracker.NativeIssuePage
+	decodeHubResponse(t, restContinuation, &restPage)
 	var compatible operatortool.WorkReadResult[tracker.Page[operatortool.NativeItem]]
-	if err := json.Unmarshal(result.Content, &compatible); err != nil || len(compatible.Data.Items) != 1 || compatible.Data.Items[0].WorkItemID != expected[1].WorkItemID {
+	if err := json.Unmarshal(result.Content, &compatible); err != nil || len(compatible.Data.Items) != 1 || compatible.Data.Items[0].WorkItemID != restPage.Items[0].WorkItemID {
 		t.Fatal("original list cursor is incompatible with summary projection")
 	}
 	credential := operatortool.ConnectionIdentity(ctx).PrincipalID

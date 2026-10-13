@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -211,7 +212,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	// even if the browser gives up on this request.
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken)
+	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken, current.Identity.OrganizationID)
 	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 		if rotated.RefreshToken != "" {
 			if err := s.auth.storeTokens(detached, authorized.Binding, rotated); err != nil {
@@ -271,10 +272,7 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
-	limit := int64(cloudassert.MaxBodyBytes)
-	if diffUploadRequest(request) {
-		limit = 6*tracker.MaxDiffBytes + (1 << 20)
-	}
+	limit := hubserver.SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 	body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Request body could not be read"})

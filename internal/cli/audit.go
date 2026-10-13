@@ -52,7 +52,7 @@ func newAuditCommand(configPath *string, host *string, port *int, opts options) 
 	cmd := &cobra.Command{
 		Use:     "audit",
 		Short:   "Inspect and disposition trusted security audits",
-		Example: "detent audit evidence --project detent --repository digitaldrywood/detent --pull-request 2006",
+		Example: "detent audit evidence --project example-project --repository example-org/example-project --pull-request 2006",
 	}
 	cmd.AddCommand(
 		newAuditEvidenceCommand(configPath, opts),
@@ -73,7 +73,7 @@ func newAuditDispositionCommand(configPath *string, host *string, port *int, opt
 	cmd := &cobra.Command{
 		Use:     "disposition",
 		Short:   "Record an evidenced false-positive disposition through the trusted Detent service",
-		Example: "detent audit disposition --project detent --repository digitaldrywood/detent --pull-request 2006 --base-sha abc --head-sha def --finding auth-1 --evidence 'Endpoint requires an authenticated administrator before this path is reachable.' --yes",
+		Example: "detent audit disposition --project example-project --repository example-org/example-project --pull-request 2006 --base-sha abc --head-sha def --finding auth-1 --evidence 'Endpoint requires an authenticated administrator before this path is reachable.' --yes",
 		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !confirmed {
@@ -180,7 +180,7 @@ func newAuditEvidenceCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "evidence",
 		Short:   "Show immutable audit evidence for a pull request",
-		Example: "detent audit evidence --project detent --repository digitaldrywood/detent --pull-request 2006",
+		Example: "detent audit evidence --project example-project --repository example-org/example-project --pull-request 2006",
 		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if (strings.TrimSpace(baseSHA) == "") != (strings.TrimSpace(headSHA) == "") {

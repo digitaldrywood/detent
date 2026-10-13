@@ -1,7 +1,7 @@
 [
   {
-    "id": "proj_parable",
-    "name": "parable",
+    "id": "proj_example_project",
+    "name": "example-project",
     "slug": "example-project",
     "profile": "native",
     "can_write": true,
@@ -47,7 +47,7 @@
   },
   {
     "id": "proj_marketing",
-    "name": "threefold-marketing",
+    "name": "example-marketing",
     "slug": "example-marketing",
     "profile": "github_compatible",
     "can_write": false,

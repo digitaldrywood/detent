@@ -54,7 +54,7 @@ func TestNativeRefreshRereadsItemEvidenceOnlyWhenItChanges(t *testing.T) {
 			result = []tracker.ChangeRequest{}
 		case strings.HasSuffix(r.URL.Path, "/comments"):
 			got.comments++
-			result = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "comment_1", Body: "held", Actor: tracker.Actor{Kind: "human", PrincipalID: "cory"}}}}
+			result = tracker.Page[tracker.NativeComment]{Items: []tracker.NativeComment{{ID: "comment_1", Body: "held", Actor: tracker.Actor{Kind: "human", PrincipalID: "example-owner"}}}}
 		case strings.HasSuffix(r.URL.Path, "/work-items"):
 			result = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{native}}
 		default:

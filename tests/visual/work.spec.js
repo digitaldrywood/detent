@@ -153,14 +153,14 @@ test.describe("the work board", () => {
     test(`keeps one toolbar and the completed counter in the ${scope} header at desktop and phone widths`, async ({ page }) => {
       const scopeTitle = scope === "project"
         ? "Browser collaboration"
-        : "All Parable and Drywood Creek Collaborative Research Organization With a Very Long Name projects";
+        : "All Example Organization and Secondary Example Organization Collaborative Research Organization With a Very Long Name projects";
       if (scope === "organization") {
         await page.route(/\/(?:app|chat)\/bootstrap$/, async (route) => {
           const response = await route.fetch();
           const bootstrap = await response.json();
           await route.fulfill({ response, json: { ...bootstrap, organization: {
             ...bootstrap.organization,
-            name: "Parable and Drywood Creek Collaborative Research Organization With a Very Long Name",
+            name: "Example Organization and Secondary Example Organization Collaborative Research Organization With a Very Long Name",
           } } });
         });
       }

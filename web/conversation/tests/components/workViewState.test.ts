@@ -29,7 +29,9 @@ describe("the board's view state", () => {
   });
 
   it("links archived lists and preserves their filter on reload", () => {
-    const state = parseViewState("view=list&archived=true&state=Done");
+    const state = parseViewState("view=list&archived=true&state=Done&created_by=me");
+    expect(state.createdBy).toBe("me");
+    expect(activeFilterCount(state)).toBe(2);
     expect(state.archived).toBe(true);
     expect(state.view).toBe("list");
     expect(state.state).toEqual(["Done"]);
@@ -57,13 +59,14 @@ describe("the board's view state", () => {
 
   it("reads every control out of the query string", () => {
     const state = parseViewState(
-      "view=list&q=lease&state=Todo,Review&label=bug&assignee=michael&priority=High&sort=updated&lanes=Todo,Done",
+      "view=list&q=lease&state=Todo,Review&type=change_request&label=bug&assignee=example-owner&priority=High&sort=updated&lanes=Todo,Done",
     );
     expect(state.view).toBe("list");
     expect(state.q).toBe("lease");
     expect(state.state).toEqual(["Review", "Todo"]);
+    expect(state.type).toEqual(["change_request"]);
     expect(state.label).toEqual(["bug"]);
-    expect(state.assignee).toEqual(["michael"]);
+    expect(state.assignee).toEqual(["example-owner"]);
     expect(state.priority).toEqual(["High"]);
     expect(state.sort).toBe("updated");
     expect(state.lanes).toEqual(["Done", "Todo"]);
@@ -90,7 +93,7 @@ describe("the board's view state", () => {
 
   it("round-trips", () => {
     const query =
-      "view=list&q=lease&state=Review%2CTodo&label=bug&assignee=michael&priority=High&sort=updated&lanes=Done%2CTodo";
+      "view=list&q=lease&state=Review%2CTodo&label=bug&assignee=example-owner&priority=High&sort=updated&lanes=Done%2CTodo";
     expect(serializeViewState(parseViewState(query))).toBe(query);
     expect(serializeViewState(parseViewState(`${query}&pages=legacy-cursor`))).toBe(query);
   });

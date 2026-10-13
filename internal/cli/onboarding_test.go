@@ -83,7 +83,7 @@ func TestOnboardingValidateAnswersCommandAcceptsIdentityPhase(t *testing.T) {
 	if got.TargetSourceRoot == "" || got.DetentOnboardingMode != "add-project" {
 		t.Fatalf("identity fields = %#v, want source root and onboarding mode", got)
 	}
-	if len(got.ReferenceRepositories) != 2 || got.ReferenceRepositories[0] != "digitaldrywood/detent-orchestration" || got.ReferenceRepositories[1] != "corylanou/website-template" {
+	if len(got.ReferenceRepositories) != 2 || got.ReferenceRepositories[0] != "example-org/reference-project" || got.ReferenceRepositories[1] != "example-org/website-template" {
 		t.Fatalf("reference repositories = %#v, want explicit references", got.ReferenceRepositories)
 	}
 }
@@ -1851,7 +1851,7 @@ func validIdentityOnboardingAnswers(t *testing.T) string {
 		"DETENT_PROJECT_ID=detent",
 		"TARGET_REPOSITORY=digitaldrywood/detent",
 		"TARGET_SOURCE_ROOT=" + sourceRoot,
-		"REFERENCE_REPOSITORIES=digitaldrywood/detent-orchestration,corylanou/website-template",
+		"REFERENCE_REPOSITORIES=example-org/reference-project,example-org/website-template",
 		"DETENT_ONBOARDING_MODE=add-project",
 		"IDENTITY_CONFIRMED=true",
 		"ADMISSION_ALIGNMENT_CRITERIA=Repairs customer-visible defects and advances documented product goals.",

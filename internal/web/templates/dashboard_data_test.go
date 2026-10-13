@@ -323,15 +323,15 @@ func TestWorkflowDiagnosticPromptIncludesRequiredLaneSections(t *testing.T) {
 			Direction:    "slower",
 		},
 		Representatives: []telemetry.WorkflowRepresentativeRun{
-			{RunID: 42, SessionID: 84, Identifier: "digitaldrywood/detent#759", IssueURL: "https://github.com/digitaldrywood/detent/issues/759", FinishedAt: now.Add(-time.Hour)},
+			{RunID: 42, SessionID: 84, Identifier: "example-org/example-project#759", IssueURL: "https://github.com/example-org/example-project/issues/759", FinishedAt: now.Add(-time.Hour)},
 			{RunID: 43, SessionID: 85, IssueID: "issue-760", FinishedAt: now.Add(-2 * time.Hour)},
 		},
 	}
 	report := telemetry.WorkflowMetrics{
 		Windows: []telemetry.WorkflowMetricsWindow{window},
 		OldestCards: []telemetry.WorkflowLaneAge{
-			{ProjectID: "detent", IssueID: "issue-759", Identifier: "digitaldrywood/detent#759", URL: "https://github.com/digitaldrywood/detent/issues/759", State: "Merging", AgeSeconds: 7200},
-			{ProjectID: "detent", IssueID: "issue-760", Identifier: "digitaldrywood/detent#760", URL: "https://github.com/digitaldrywood/detent/issues/760", State: "In Progress", AgeSeconds: 5400},
+			{ProjectID: "detent", IssueID: "issue-759", Identifier: "example-org/example-project#759", URL: "https://github.com/example-org/example-project/issues/759", State: "Merging", AgeSeconds: 7200},
+			{ProjectID: "detent", IssueID: "issue-760", Identifier: "example-org/example-project#760", URL: "https://github.com/example-org/example-project/issues/760", State: "In Progress", AgeSeconds: 5400},
 		},
 	}
 
@@ -356,9 +356,9 @@ func TestWorkflowDiagnosticPromptIncludesRequiredLaneSections(t *testing.T) {
 		"GitHub backoff: 1 events, 1m 30s total, 1m 30s avg",
 		"Merge-queue wait: 2 events, 5m 0s total, 2m 30s avg",
 		"Oldest/currently stuck cards in Merging",
-		"digitaldrywood/detent#759 / 2h 0m old / https://github.com/digitaldrywood/detent/issues/759",
+		"example-org/example-project#759 / 2h 0m old / https://github.com/example-org/example-project/issues/759",
 		"Representative run identifiers",
-		"run_id=42 / session_id=84 / identifier=digitaldrywood/detent#759 / url=https://github.com/digitaldrywood/detent/issues/759 / finished_at=2026-06-28T11:00:00Z",
+		"run_id=42 / session_id=84 / identifier=example-org/example-project#759 / url=https://github.com/example-org/example-project/issues/759 / finished_at=2026-06-28T11:00:00Z",
 		"run_id=43 / session_id=85 / issue_id=issue-760 / finished_at=2026-06-28T10:00:00Z",
 		"Diagnose why this lane is slow.",
 		"Propose concrete prioritized fixes",
@@ -367,7 +367,7 @@ func TestWorkflowDiagnosticPromptIncludesRequiredLaneSections(t *testing.T) {
 			t.Fatalf("workflow diagnostic prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if strings.Contains(prompt, "digitaldrywood/detent#760 / 1h 30m old") {
+	if strings.Contains(prompt, "example-org/example-project#760 / 1h 30m old") {
 		t.Fatalf("workflow diagnostic prompt included oldest card from another lane:\n%s", prompt)
 	}
 }
@@ -1010,8 +1010,8 @@ func TestCycleTimeSummaryLabels(t *testing.T) {
 		Available:      true,
 		AverageSeconds: int64(90 * time.Minute / time.Second),
 		Issues: []telemetry.CycleTimeIssue{
-			{Key: "digitaldrywood/detent#215"},
-			{Key: "digitaldrywood/detent#216"},
+			{Key: "example-org/example-project#215"},
+			{Key: "example-org/example-project#216"},
 		},
 	}
 
@@ -1048,7 +1048,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 				{
 					ID:                        "busy",
 					Name:                      "Busy",
-					URL:                       "https://github.com/digitaldrywood/detent",
+					URL:                       "https://github.com/example-org/example-project",
 					Color:                     "#a63f7a",
 					Running:                   2,
 					QueueCount:                3,
@@ -1075,7 +1075,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 				ID:              "busy",
 				Name:            "Busy",
 				Href:            "/projects/busy/kanban",
-				ExternalURL:     "https://github.com/digitaldrywood/detent",
+				ExternalURL:     "https://github.com/example-org/example-project",
 				ProjectColor:    "#a63f7a",
 				ActivityLabel:   "2 running / 3 queued / 1 blocked",
 				ThroughputLabel: "7.3 tps",
@@ -1243,8 +1243,8 @@ func TestProjectKanbanCardsUseProjectColors(t *testing.T) {
 		Kanban: KanbanData{States: []string{"Todo"}},
 		Snapshot: telemetry.Snapshot{
 			BoardIssues: []telemetry.Issue{
-				{ID: "detent-issue", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Detent work", State: "Todo"},
-				{ID: "docs-issue", Identifier: "digitaldrywood/docs-site#2", ProjectID: "docs-site", Title: "Docs work", State: "Todo"},
+				{ID: "detent-issue", Identifier: "example-org/example-project#1", ProjectID: "detent", Title: "Detent work", State: "Todo"},
+				{ID: "docs-issue", Identifier: "example-org/secondary-project#2", ProjectID: "docs-site", Title: "Docs work", State: "Todo"},
 			},
 		},
 	})
@@ -1590,7 +1590,7 @@ func TestRunningActivityIDUsesSessionID(t *testing.T) {
 		SessionID: "thread/running activity #1",
 		Issue: telemetry.Issue{
 			ID:         "issue-running-activity",
-			Identifier: "digitaldrywood/detent#795",
+			Identifier: "example-org/example-project#795",
 		},
 	}
 
@@ -1699,43 +1699,43 @@ func TestIssueIdentityKeepsRepositoryIssueAndPullRequest(t *testing.T) {
 		{
 			name: "repository issue and pull request",
 			issue: telemetry.Issue{
-				Identifier: "digitaldrywood/creswoodcorners-phone#66",
+				Identifier: "example-org/creswoodcorners-phone#66",
 				PullRequest: &telemetry.PullRequest{
 					Number: 75,
-					URL:    "https://github.com/digitaldrywood/creswoodcorners-phone/pull/75",
+					URL:    "https://github.com/example-org/creswoodcorners-phone/pull/75",
 				},
 			},
 			want: issueIdentityView{
-				Repository:        "digitaldrywood/creswoodcorners-phone",
+				Repository:        "example-org/creswoodcorners-phone",
 				IssueNumber:       "#66",
 				PullRequestNumber: 75,
 				PullRequestLabel:  "PR #75",
-				PullRequestURL:    "https://github.com/digitaldrywood/creswoodcorners-phone/pull/75",
-				Label:             "digitaldrywood/creswoodcorners-phone #66 · PR #75",
+				PullRequestURL:    "https://github.com/example-org/creswoodcorners-phone/pull/75",
+				Label:             "example-org/creswoodcorners-phone #66 · PR #75",
 			},
 		},
 		{
 			name: "repository issue without pull request",
 			issue: telemetry.Issue{
-				Identifier: "digitaldrywood/detent#728",
+				Identifier: "example-org/example-project#728",
 			},
 			want: issueIdentityView{
-				Repository:  "digitaldrywood/detent",
+				Repository:  "example-org/example-project",
 				IssueNumber: "#728",
-				Label:       "digitaldrywood/detent #728",
+				Label:       "example-org/example-project #728",
 			},
 		},
 		{
 			name: "repository from issue URL",
 			issue: telemetry.Issue{
 				Identifier: "ISSUE-728",
-				URL:        "https://github.com/digitaldrywood/detent/issues/728",
+				URL:        "https://github.com/example-org/example-project/issues/728",
 			},
 			want: issueIdentityView{
-				Repository:  "digitaldrywood/detent",
+				Repository:  "example-org/example-project",
 				IssueNumber: "ISSUE-728",
-				IssueURL:    "https://github.com/digitaldrywood/detent/issues/728",
-				Label:       "digitaldrywood/detent ISSUE-728",
+				IssueURL:    "https://github.com/example-org/example-project/issues/728",
+				Label:       "example-org/example-project ISSUE-728",
 			},
 		},
 	}
@@ -1774,7 +1774,7 @@ func TestIssueReferenceUsesLocalNumberWithGitHubPrecedence(t *testing.T) {
 		{
 			name: "github identifier",
 			issue: telemetry.Issue{
-				Identifier: "digitaldrywood/detent#779",
+				Identifier: "example-org/example-project#779",
 				Number:     7,
 				Metadata:   map[string]string{githubIssueNumberMetadataKey: "881"},
 			},
@@ -1847,7 +1847,7 @@ func TestAgentTimelineRows(t *testing.T) {
 					State:      "Merging",
 					PullRequest: &telemetry.PullRequest{
 						Number: 22,
-						URL:    "https://github.com/digitaldrywood/detent/pull/22",
+						URL:    "https://github.com/example-org/example-project/pull/22",
 					},
 				},
 				StartedAt: now.Add(-4 * time.Minute),
@@ -1856,7 +1856,7 @@ func TestAgentTimelineRows(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-1",
 					Identifier: "DD-1",
-					URL:        "https://github.com/digitaldrywood/detent/issues/1",
+					URL:        "https://github.com/example-org/example-project/issues/1",
 					Title:      "First running issue",
 					State:      "In Progress",
 				},
@@ -1868,7 +1868,7 @@ func TestAgentTimelineRows(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-3",
 					Identifier: "DD-3",
-					URL:        "https://github.com/digitaldrywood/detent/issues/3",
+					URL:        "https://github.com/example-org/example-project/issues/3",
 					Title:      "Completed issue",
 					PullRequest: &telemetry.PullRequest{
 						Number: 3,
@@ -1905,19 +1905,19 @@ func TestAgentTimelineRows(t *testing.T) {
 	if rows[1].Title != "Completed issue" || rows[1].State != "completed" {
 		t.Fatalf("completed open PR timeline row = %#v", rows[1])
 	}
-	if rows[1].IssueURL != "https://github.com/digitaldrywood/detent/issues/3" {
+	if rows[1].IssueURL != "https://github.com/example-org/example-project/issues/3" {
 		t.Fatalf("completed issue URL = %q, want issue URL", rows[1].IssueURL)
 	}
-	if rows[1].PullRequestURL != "https://github.com/digitaldrywood/detent/pull/3" || rows[1].PullRequestNumber != 3 {
+	if rows[1].PullRequestURL != "https://github.com/example-org/example-project/pull/3" || rows[1].PullRequestNumber != 3 {
 		t.Fatalf("completed PR metadata = %q/%d, want derived PR #3 URL", rows[1].PullRequestURL, rows[1].PullRequestNumber)
 	}
-	if rows[2].IssueURL != "https://github.com/digitaldrywood/detent/issues/1" || rows[2].PullRequestURL != "" {
+	if rows[2].IssueURL != "https://github.com/example-org/example-project/issues/1" || rows[2].PullRequestURL != "" {
 		t.Fatalf("issue-only timeline row links = %q/%q", rows[2].IssueURL, rows[2].PullRequestURL)
 	}
-	if rows[3].IssueURL != "" || rows[3].PullRequestURL != "https://github.com/digitaldrywood/detent/pull/22" || rows[3].PullRequestNumber != 22 {
+	if rows[3].IssueURL != "" || rows[3].PullRequestURL != "https://github.com/example-org/example-project/pull/22" || rows[3].PullRequestNumber != 22 {
 		t.Fatalf("PR-only timeline row links = %q/%q/%d", rows[3].IssueURL, rows[3].PullRequestURL, rows[3].PullRequestNumber)
 	}
-	if rows[3].Identity.Label != "digitaldrywood/detent DD-2 · PR #22" {
+	if rows[3].Identity.Label != "example-org/example-project DD-2 · PR #22" {
 		t.Fatalf("running timeline identity = %q, want full issue and PR identity", rows[3].Identity.Label)
 	}
 
@@ -2006,7 +2006,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 			BoardIssues: []telemetry.Issue{
 				{
 					ID:             "backlog",
-					Identifier:     "digitaldrywood/detent#10",
+					Identifier:     "example-org/example-project#10",
 					ProjectID:      "detent",
 					Title:          "Backlog issue",
 					State:          "Backlog",
@@ -2014,7 +2014,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 				},
 				{
 					ID:         "todo",
-					Identifier: "digitaldrywood/detent#11",
+					Identifier: "example-org/example-project#11",
 					ProjectID:  "detent",
 					Title:      "Stale board issue",
 					State:      "Backlog",
@@ -2023,26 +2023,26 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 			Pipeline: []telemetry.Issue{
 				{
 					ID:             "review",
-					Identifier:     "digitaldrywood/detent#12",
-					URL:            "https://github.com/digitaldrywood/detent/issues/12",
+					Identifier:     "example-org/example-project#12",
+					URL:            "https://github.com/example-org/example-project/issues/12",
 					ProjectID:      "detent",
 					Title:          "Review lane PR",
 					State:          "Human Review",
 					Labels:         []string{"enhancement", "stage:s6"},
 					Assignees:      []string{"alice"},
-					BlockedBy:      []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#10", State: "Done"}},
+					BlockedBy:      []telemetry.BlockedRef{{Identifier: "example-org/example-project#10", State: "Done"}},
 					StageUpdatedAt: &reviewAt,
 					PullRequest: &telemetry.PullRequest{
 						Number:           142,
-						URL:              "https://github.com/digitaldrywood/detent/pull/142",
+						URL:              "https://github.com/example-org/example-project/pull/142",
 						CIStatus:         "success",
 						CodexReviewState: "clean",
 					},
 				},
 				{
 					ID:             "done",
-					Identifier:     "digitaldrywood/detent#15",
-					URL:            "https://github.com/digitaldrywood/detent/issues/15",
+					Identifier:     "example-org/example-project#15",
+					URL:            "https://github.com/example-org/example-project/issues/15",
 					ProjectID:      "detent",
 					Title:          "Done lane PR",
 					State:          "Done",
@@ -2057,7 +2057,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "running",
-						Identifier: "digitaldrywood/detent#13",
+						Identifier: "example-org/example-project#13",
 						ProjectID:  "detent",
 						Title:      "Running issue",
 						State:      "In Progress",
@@ -2071,7 +2071,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:             "todo",
-						Identifier:     "digitaldrywood/detent#11",
+						Identifier:     "example-org/example-project#11",
 						ProjectID:      "detent",
 						Title:          "Todo issue",
 						StageUpdatedAt: &todoAt,
@@ -2083,11 +2083,11 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "blocked",
-						Identifier: "digitaldrywood/detent#14",
+						Identifier: "example-org/example-project#14",
 						ProjectID:  "detent",
 						Title:      "Blocked issue",
 						State:      "Blocked",
-						BlockedBy:  []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#401", State: "In Progress"}},
+						BlockedBy:  []telemetry.BlockedRef{{Identifier: "example-org/example-project#401", State: "In Progress"}},
 					},
 					BlockedAt: &blockedAt,
 				},
@@ -2107,9 +2107,9 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		{Lane: "Backlog", IssueNumber: "#10", Title: "Backlog issue", TimeInStage: "7m 0s", Metadata: "No linked PR"},
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
 		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
-		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 (In Progress)", Metadata: "No linked PR"},
-		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", WaitDetail: "waiting for auto-promote", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "digitaldrywood/detent#10 (Done)", Metadata: "PR #142"},
-		{Lane: "Done", IssueNumber: "#15", Title: "Done lane PR", URL: "https://github.com/digitaldrywood/detent/issues/15", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
+		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "example-org/example-project#401 (In Progress)", Metadata: "No linked PR"},
+		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/example-org/example-project/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", WaitDetail: "waiting for auto-promote", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "example-org/example-project#10 (Done)", Metadata: "PR #142"},
+		{Lane: "Done", IssueNumber: "#15", Title: "Done lane PR", URL: "https://github.com/example-org/example-project/issues/15", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
@@ -2152,7 +2152,7 @@ func TestProjectKanbanIssuesAgreeWithReportedLaneCounts(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:        "waiting",
 					State:     "Todo",
-					BlockedBy: []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#512", State: "In Progress"}},
+					BlockedBy: []telemetry.BlockedRef{{Identifier: "example-org/example-project#512", State: "In Progress"}},
 				},
 			},
 		},
@@ -2219,7 +2219,7 @@ func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *te
 			BoardIssues: []telemetry.Issue{
 				{
 					ID:             "issue-987",
-					Identifier:     "digitaldrywood/detent#987",
+					Identifier:     "example-org/example-project#987",
 					ProjectID:      "detent",
 					Title:          "Recover workspace reaping when cached files return permission denied",
 					State:          "Human Review",
@@ -2230,7 +2230,7 @@ func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *te
 			Pipeline: []telemetry.Issue{
 				{
 					ID:         "issue-987",
-					Identifier: "digitaldrywood/detent#987",
+					Identifier: "example-org/example-project#987",
 					ProjectID:  "detent",
 					Title:      "Recover workspace reaping when cached files return permission denied",
 					State:      "Open",
@@ -2240,7 +2240,7 @@ func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *te
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-987",
-						Identifier: "digitaldrywood/detent#987",
+						Identifier: "example-org/example-project#987",
 						ProjectID:  "detent",
 						Title:      "Recover workspace reaping when cached files return permission denied",
 						State:      "OPEN",
@@ -2252,7 +2252,7 @@ func TestProjectKanbanBoardPrefersConfiguredStateOverRawGitHubRuntimeState(t *te
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-987",
-						Identifier: "digitaldrywood/detent#987",
+						Identifier: "example-org/example-project#987",
 						ProjectID:  "detent",
 						Title:      "Recover workspace reaping when cached files return permission denied",
 						State:      "OPEN",
@@ -2294,7 +2294,7 @@ func TestProjectKanbanBoardMapsRawClosedBoardIssueToConfiguredDoneLane(t *testin
 			BoardIssues: []telemetry.Issue{
 				{
 					ID:             "issue-991",
-					Identifier:     "digitaldrywood/detent#991",
+					Identifier:     "example-org/example-project#991",
 					ProjectID:      "detent",
 					Title:          "Closed board issue",
 					State:          "CLOSED",
@@ -2337,24 +2337,24 @@ func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 			Pipeline: []telemetry.Issue{
 				{
 					ID:             "active",
-					Identifier:     "digitaldrywood/detent#143",
+					Identifier:     "example-org/example-project#143",
 					Title:          "Active merge",
 					State:          "Merging",
 					StageUpdatedAt: &activeAt,
 					PullRequest: &telemetry.PullRequest{
 						Number: 143,
-						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+						URL:    "https://github.com/example-org/example-project/pull/143",
 					},
 				},
 				{
 					ID:             "queued",
-					Identifier:     "digitaldrywood/detent#144",
+					Identifier:     "example-org/example-project#144",
 					Title:          "Queued merge",
 					State:          "Merging",
 					StageUpdatedAt: &queuedAt,
 					PullRequest: &telemetry.PullRequest{
 						Number: 144,
-						URL:    "https://github.com/digitaldrywood/detent/pull/144",
+						URL:    "https://github.com/example-org/example-project/pull/144",
 					},
 				},
 			},
@@ -2362,12 +2362,12 @@ func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "active",
-						Identifier: "digitaldrywood/detent#143",
+						Identifier: "example-org/example-project#143",
 						Title:      "Active merge",
 						State:      "Merging",
 						PullRequest: &telemetry.PullRequest{
 							Number: 143,
-							URL:    "https://github.com/digitaldrywood/detent/pull/143",
+							URL:    "https://github.com/example-org/example-project/pull/143",
 						},
 					},
 					StartedAt: activeAt,
@@ -2378,13 +2378,13 @@ func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:             "queued",
-						Identifier:     "digitaldrywood/detent#144",
+						Identifier:     "example-org/example-project#144",
 						Title:          "Queued merge",
 						State:          "Merging",
 						StageUpdatedAt: &queuedAt,
 						PullRequest: &telemetry.PullRequest{
 							Number: 144,
-							URL:    "https://github.com/digitaldrywood/detent/pull/144",
+							URL:    "https://github.com/example-org/example-project/pull/144",
 						},
 					},
 					Attempt: 1,
@@ -2396,7 +2396,7 @@ func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 
 	got := collectKanbanCards(board.AllLanes)
 	want := []kanbanCardSnapshot{
-		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #144", MergeLaneStatus: "Queued #2", MergeLaneDetail: "Waiting: project_state_capacity_full; 2nd in merge queue; waiting for repo merge lane behind digitaldrywood/detent#143 / PR #143; phase running checks"},
+		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #144", MergeLaneStatus: "Queued #2", MergeLaneDetail: "Waiting: project_state_capacity_full; 2nd in merge queue; waiting for repo merge lane behind example-org/example-project#143 / PR #143; phase running checks"},
 		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "3m 0s", Metadata: "PR #143", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; running checks"},
 	}
 	if len(got) != len(want) {
@@ -2425,26 +2425,26 @@ func TestProjectKanbanBoardScopesMergeLaneStatusByProject(t *testing.T) {
 			Pipeline: []telemetry.Issue{
 				{
 					ID:             "local-1",
-					Identifier:     "digitaldrywood/detent#143",
+					Identifier:     "example-org/example-project#143",
 					ProjectID:      "detent",
 					Title:          "Active merge",
 					State:          "Merging",
 					StageUpdatedAt: &activeAt,
 					PullRequest: &telemetry.PullRequest{
 						Number: 143,
-						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+						URL:    "https://github.com/example-org/example-project/pull/143",
 					},
 				},
 				{
 					ID:             "local-1",
-					Identifier:     "digitaldrywood/docs-site#27",
+					Identifier:     "example-org/docs-site#27",
 					ProjectID:      "docs-site",
 					Title:          "Queued docs merge",
 					State:          "Merging",
 					StageUpdatedAt: &queuedAt,
 					PullRequest: &telemetry.PullRequest{
 						Number: 27,
-						URL:    "https://github.com/digitaldrywood/docs-site/pull/27",
+						URL:    "https://github.com/example-org/docs-site/pull/27",
 					},
 				},
 			},
@@ -2452,13 +2452,13 @@ func TestProjectKanbanBoardScopesMergeLaneStatusByProject(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "local-1",
-						Identifier: "digitaldrywood/detent#143",
+						Identifier: "example-org/example-project#143",
 						ProjectID:  "detent",
 						Title:      "Active merge",
 						State:      "Merging",
 						PullRequest: &telemetry.PullRequest{
 							Number: 143,
-							URL:    "https://github.com/digitaldrywood/detent/pull/143",
+							URL:    "https://github.com/example-org/example-project/pull/143",
 						},
 					},
 					StartedAt: activeAt,
@@ -2489,12 +2489,12 @@ func TestProjectKanbanCardForIssueShowsPullRequestConflictReason(t *testing.T) {
 	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
 	issue := telemetry.Issue{
 		ID:         "conflicting-pr",
-		Identifier: "digitaldrywood/creswoodcorners-phone#32",
+		Identifier: "example-org/creswoodcorners-phone#32",
 		Title:      "Resolve PR conflicts",
 		State:      "Rework",
 		PullRequest: &telemetry.PullRequest{
 			Number:         38,
-			URL:            "https://github.com/digitaldrywood/creswoodcorners-phone/pull/38",
+			URL:            "https://github.com/example-org/creswoodcorners-phone/pull/38",
 			State:          "OPEN",
 			MergeableState: "DIRTY",
 			CIStatus:       "success",
@@ -2517,7 +2517,7 @@ func TestProjectKanbanCardForIssueCopiesDescriptionPreview(t *testing.T) {
 	now := time.Date(2026, 6, 16, 14, 0, 0, 0, time.UTC)
 	issue := telemetry.Issue{
 		ID:          "readable-card",
-		Identifier:  "digitaldrywood/detent#525",
+		Identifier:  "example-org/example-project#525",
 		Title:       "Make compact kanban cards readable",
 		Description: "  Titles need their own line.\nHover should show enough issue context for triage.  ",
 		State:       "Todo",
@@ -2541,23 +2541,23 @@ func TestProjectKanbanCardForIssueMarksOnlyHumanOwnedReviewWaits(t *testing.T) {
 		labels  []string
 		want    bool
 	}{
-		{name: "manual review policy", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true}, want: true},
-		{name: "automatic promotion policy", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true}},
-		{name: "issue opt-out", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteOptoutLabel: "requires-human-review"}, labels: []string{" Requires-Human-Review "}, want: true},
-		{name: "allowed-label miss", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteAllowedLabels: []string{"release"}}, labels: []string{"docs"}, want: true},
-		{name: "allowed-label match", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteAllowedLabels: []string{"release"}}, labels: []string{" Release "}},
-		{name: "human review gate", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteGateKind: "human_review", AutoPromoteApprovalLabel: "release-approved"}, want: true},
-		{name: "satisfied human review gate", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteGateKind: "human_review", AutoPromoteApprovalLabel: "release-approved"}, labels: []string{" Release-Approved "}},
-		{name: "custom review source", state: "Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteSourceState: "Review"}, want: true},
-		{name: "custom review source mismatch", state: "Human Review", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true, AutoPromoteSourceState: "Review"}},
-		{name: "manual policy outside review", state: "In Progress", project: ProjectSmallMultiple{ID: "parable", ReviewPolicyConfigured: true}},
-		{name: "unconfigured project policy", state: "Human Review", project: ProjectSmallMultiple{ID: "parable"}},
-		{name: "explicit human gate", state: "In Progress", project: ProjectSmallMultiple{ID: "parable"}, gate: &telemetry.RequiredGate{HumanAction: "Choose a target."}, want: true},
+		{name: "manual review policy", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true}, want: true},
+		{name: "automatic promotion policy", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteEnabled: true}},
+		{name: "issue opt-out", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteOptoutLabel: "requires-human-review"}, labels: []string{" Requires-Human-Review "}, want: true},
+		{name: "allowed-label miss", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteAllowedLabels: []string{"release"}}, labels: []string{"docs"}, want: true},
+		{name: "allowed-label match", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteAllowedLabels: []string{"release"}}, labels: []string{" Release "}},
+		{name: "human review gate", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteGateKind: "human_review", AutoPromoteApprovalLabel: "release-approved"}, want: true},
+		{name: "satisfied human review gate", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteEnabled: true, AutoPromoteGateKind: "human_review", AutoPromoteApprovalLabel: "release-approved"}, labels: []string{" Release-Approved "}},
+		{name: "custom review source", state: "Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteSourceState: "Review"}, want: true},
+		{name: "custom review source mismatch", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true, AutoPromoteSourceState: "Review"}},
+		{name: "manual policy outside review", state: "In Progress", project: ProjectSmallMultiple{ID: "example-project", ReviewPolicyConfigured: true}},
+		{name: "unconfigured project policy", state: "Human Review", project: ProjectSmallMultiple{ID: "example-project"}},
+		{name: "explicit human gate", state: "In Progress", project: ProjectSmallMultiple{ID: "example-project"}, gate: &telemetry.RequiredGate{HumanAction: "Choose a target."}, want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			card := projectKanbanCardForIssue(DashboardData{Projects: []ProjectSmallMultiple{tt.project}}, telemetry.Issue{
-				ID: "review", ProjectID: "parable", Identifier: "getparable/parable#3502", State: tt.state, RequiredGate: tt.gate, Labels: tt.labels,
+				ID: "review", ProjectID: "example-project", Identifier: "example-org/example-project#3502", State: tt.state, RequiredGate: tt.gate, Labels: tt.labels,
 			}, tt.state, now.Add(-time.Minute), now)
 			if card.HumanActionRequired != tt.want {
 				t.Fatalf("HumanActionRequired = %t, want %t", card.HumanActionRequired, tt.want)
@@ -2626,31 +2626,31 @@ func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
 			name:  "terminal dependency is cleared",
 			state: "Merging",
 			blockedBy: []telemetry.BlockedRef{
-				{Identifier: "digitaldrywood/detent#429", State: "Done"},
+				{Identifier: "example-org/example-project#429", State: "Done"},
 			},
-			wantCleared: []string{"digitaldrywood/detent#429 (Done)"},
+			wantCleared: []string{"example-org/example-project#429 (Done)"},
 		},
 		{
 			name:  "non-terminal dependency stays active",
 			state: "Todo",
 			blockedBy: []telemetry.BlockedRef{
-				{Identifier: "digitaldrywood/detent#430", State: "In Progress"},
+				{Identifier: "example-org/example-project#430", State: "In Progress"},
 			},
-			wantBlockers: []string{"digitaldrywood/detent#430 (In Progress)"},
+			wantBlockers: []string{"example-org/example-project#430 (In Progress)"},
 		},
 		{
 			name:  "unresolved dependency stays active",
 			state: "Blocked",
 			blockedBy: []telemetry.BlockedRef{
-				{Identifier: "digitaldrywood/detent#431"},
+				{Identifier: "example-org/example-project#431"},
 			},
-			wantBlockers: []string{"digitaldrywood/detent#431"},
+			wantBlockers: []string{"example-org/example-project#431"},
 		},
 		{
 			name:  "unresolved dependency is not elevated outside blocked lane",
 			state: "Merging",
 			blockedBy: []telemetry.BlockedRef{
-				{Identifier: "digitaldrywood/detent#432"},
+				{Identifier: "example-org/example-project#432"},
 			},
 		},
 	}
@@ -2659,7 +2659,7 @@ func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := telemetry.Issue{
 				ID:         "issue",
-				Identifier: "digitaldrywood/detent#594",
+				Identifier: "example-org/example-project#594",
 				Title:      "Fix blocker rendering",
 				State:      tt.state,
 				BlockedBy:  tt.blockedBy,
@@ -2700,19 +2700,19 @@ func TestProjectKanbanCardForIssueUsesProjectTerminalStates(t *testing.T) {
 
 	card := projectKanbanCardForIssue(data, telemetry.Issue{
 		ID:         "issue",
-		Identifier: "digitaldrywood/custom#594",
+		Identifier: "example-org/custom#594",
 		ProjectID:  "custom",
 		Title:      "Custom terminal dependency",
 		State:      "Merging",
 		BlockedBy: []telemetry.BlockedRef{
-			{Identifier: "digitaldrywood/custom#429", State: "Released"},
+			{Identifier: "example-org/custom#429", State: "Released"},
 		},
 	}, "Merging", now.Add(-time.Minute), now)
 
 	if len(card.Blockers) != 0 {
 		t.Fatalf("Blockers = %#v, want none for project terminal state", card.Blockers)
 	}
-	if got, want := strings.Join(card.ClearedBlockers, ", "), "digitaldrywood/custom#429 (Released)"; got != want {
+	if got, want := strings.Join(card.ClearedBlockers, ", "), "example-org/custom#429 (Released)"; got != want {
 		t.Fatalf("ClearedBlockers = %q, want %q", got, want)
 	}
 }
@@ -2977,7 +2977,7 @@ func TestProjectKanbanBoardShowsRecentTerminalCompletion(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-396",
-						Identifier: "digitaldrywood/detent#396",
+						Identifier: "example-org/example-project#396",
 						Title:      "Completed session only",
 						State:      "Done",
 					},
@@ -2987,7 +2987,7 @@ func TestProjectKanbanBoardShowsRecentTerminalCompletion(t *testing.T) {
 			},
 			WorkAttempts: []telemetry.WorkAttempt{{
 				IssueID:       "issue-396",
-				Identifier:    "digitaldrywood/detent#396",
+				Identifier:    "example-org/example-project#396",
 				Status:        "terminal",
 				CompletedAt:   &now,
 				TerminalState: "success",
@@ -3020,7 +3020,7 @@ func TestProjectKanbanBoardRestoresRecentCompletions(t *testing.T) {
 	completedAt := now.Add(-25 * time.Hour)
 	legacy := telemetry.WorkAttempt{
 		AttemptID: 1385, ProjectID: "detent", IssueID: "issue-1385",
-		Identifier: "digitaldrywood/detent#1385", IssueURL: "https://github.com/digitaldrywood/detent/issues/1385",
+		Identifier: "example-org/example-project#1385", IssueURL: "https://github.com/example-org/example-project/issues/1385",
 		Status: "terminal", CompletedAt: &completedAt, TerminalState: "success",
 		Phase: "completed", StatusMessage: "worker reached terminal state",
 	}
@@ -3093,12 +3093,12 @@ func TestProjectKanbanBoardDoesNotProjectCompletedOpenPRSession(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-550",
-						Identifier: "digitaldrywood/detent#550",
-						URL:        "https://github.com/digitaldrywood/detent/issues/550",
+						Identifier: "example-org/example-project#550",
+						URL:        "https://github.com/example-org/example-project/issues/550",
 						Title:      "Keep completed implementation visible",
 						PullRequest: &telemetry.PullRequest{
 							Number:           552,
-							URL:              "https://github.com/digitaldrywood/detent/pull/552",
+							URL:              "https://github.com/example-org/example-project/pull/552",
 							State:            "OPEN",
 							CIStatus:         "success",
 							CodexReviewState: "clean",
@@ -3134,7 +3134,7 @@ func TestProjectKanbanBoardLeavesConfiguredHandoffLaneEmptyForCompletedSession(t
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-550",
-						Identifier: "digitaldrywood/detent#550",
+						Identifier: "example-org/example-project#550",
 						Title:      "Keep completed implementation visible",
 						PullRequest: &telemetry.PullRequest{
 							Number: 552,
@@ -3171,7 +3171,7 @@ func TestProjectKanbanBoardUsesTrackerStateWhenCompletedSessionAlsoExists(t *tes
 			Pipeline: []telemetry.Issue{
 				{
 					ID:             "issue-550",
-					Identifier:     "digitaldrywood/detent#550",
+					Identifier:     "example-org/example-project#550",
 					Title:          "Keep completed implementation visible",
 					State:          "Human Review",
 					StageUpdatedAt: &stageAt,
@@ -3187,7 +3187,7 @@ func TestProjectKanbanBoardUsesTrackerStateWhenCompletedSessionAlsoExists(t *tes
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-550",
-						Identifier: "digitaldrywood/detent#550",
+						Identifier: "example-org/example-project#550",
 						Title:      "Keep completed implementation visible",
 						PullRequest: &telemetry.PullRequest{
 							Number:           552,
@@ -3225,7 +3225,7 @@ func TestCompletedOpenPRSessionDoesNotCreateWorkflowCards(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-550",
-					Identifier: "digitaldrywood/detent#550",
+					Identifier: "example-org/example-project#550",
 					Title:      "Keep completed implementation visible",
 					PullRequest: &telemetry.PullRequest{
 						Number:   552,
@@ -3259,25 +3259,25 @@ func TestProjectKanbanBoardHidesTerminalLanesByDefault(t *testing.T) {
 			BoardIssues: []telemetry.Issue{
 				{
 					ID:         "todo",
-					Identifier: "digitaldrywood/detent#496",
+					Identifier: "example-org/example-project#496",
 					Title:      "Fix empty-lane toggle",
 					State:      "Todo",
 				},
 				{
 					ID:         "done",
-					Identifier: "digitaldrywood/detent#497",
+					Identifier: "example-org/example-project#497",
 					Title:      "Completed work",
 					State:      "Done",
 				},
 				{
 					ID:         "cancelled",
-					Identifier: "digitaldrywood/detent#498",
+					Identifier: "example-org/example-project#498",
 					Title:      "Cancelled work",
 					State:      "Cancelled",
 				},
 				{
 					ID:         "archived",
-					Identifier: "digitaldrywood/detent#499",
+					Identifier: "example-org/example-project#499",
 					Title:      "Archived work",
 					State:      "Archived",
 				},
@@ -3319,7 +3319,7 @@ func TestProjectKanbanBoardAccountsForHiddenPopulatedLanes(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		issues = append(issues, telemetry.Issue{
 			ID:         "backlog-" + strconv.Itoa(i),
-			Identifier: "digitaldrywood/detent#" + strconv.Itoa(520+i),
+			Identifier: "example-org/example-project#" + strconv.Itoa(520+i),
 			Title:      "Backlog work " + strconv.Itoa(i),
 			State:      "Backlog",
 		})
@@ -3327,7 +3327,7 @@ func TestProjectKanbanBoardAccountsForHiddenPopulatedLanes(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		issues = append(issues, telemetry.Issue{
 			ID:         "done-" + strconv.Itoa(i),
-			Identifier: "digitaldrywood/detent#" + strconv.Itoa(780+i),
+			Identifier: "example-org/example-project#" + strconv.Itoa(780+i),
 			Title:      "Done work " + strconv.Itoa(i),
 			State:      "Done",
 		})
@@ -3371,13 +3371,13 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				Pipeline: []telemetry.Issue{
 					{
 						ID:         "review",
-						Identifier: "digitaldrywood/detent#12",
+						Identifier: "example-org/example-project#12",
 						Title:      "Review lane PR",
 						State:      "Human Review",
 						UpdatedAt:  &reviewAt,
 						PullRequest: &telemetry.PullRequest{
 							Number:                  142,
-							URL:                     "https://github.com/digitaldrywood/detent/pull/142",
+							URL:                     "https://github.com/example-org/example-project/pull/142",
 							CIStatus:                "success",
 							CodexReviewState:        "clean",
 							HydrationDegradedReason: "stale_cached_pull_request",
@@ -3386,7 +3386,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 					},
 					{
 						ID:         "merge",
-						Identifier: "digitaldrywood/detent#13",
+						Identifier: "example-org/example-project#13",
 						Title:      "Merge lane PR",
 						State:      "Merging",
 						UpdatedAt:  &mergeAt,
@@ -3408,7 +3408,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 					},
 					{
 						ID:         "done",
-						Identifier: "digitaldrywood/detent#14",
+						Identifier: "example-org/example-project#14",
 						Title:      "Done lane PR",
 						State:      "Done",
 						UpdatedAt:  &doneAt,
@@ -3420,7 +3420,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 					},
 					{
 						ID:         "done-unverified",
-						Identifier: "digitaldrywood/detent#16",
+						Identifier: "example-org/example-project#16",
 						Title:      "Done lane unverified PR",
 						State:      "Done",
 						UpdatedAt:  &doneAt,
@@ -3430,14 +3430,14 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 					},
 					{
 						ID:         "old-done",
-						Identifier: "digitaldrywood/detent#15",
+						Identifier: "example-org/example-project#15",
 						Title:      "Old done PR",
 						State:      "Done",
 						UpdatedAt:  &oldDoneAt,
 					},
 					{
 						ID:             "cancelled-today",
-						Identifier:     "digitaldrywood/detent#17",
+						Identifier:     "example-org/example-project#17",
 						Title:          "Cancelled today PR",
 						State:          "Cancelled",
 						UpdatedAt:      &oldDoneAt,
@@ -3466,7 +3466,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 					{
 						Issue: telemetry.Issue{
 							ID:         "merge-session",
-							Identifier: "digitaldrywood/detent#21",
+							Identifier: "example-org/example-project#21",
 							Title:      "Merge session",
 							State:      "Merging",
 						},
@@ -3825,16 +3825,16 @@ func TestPRPipelineCardIncludesIssueAndPullRequestIdentity(t *testing.T) {
 	now := time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC)
 	card := prPipelineCardForIssue(telemetry.Issue{
 		ID:         "review",
-		Identifier: "digitaldrywood/detent#12",
+		Identifier: "example-org/example-project#12",
 		Title:      "Review lane PR",
 		State:      "Human Review",
 		PullRequest: &telemetry.PullRequest{
 			Number: 142,
-			URL:    "https://github.com/digitaldrywood/detent/pull/142",
+			URL:    "https://github.com/example-org/example-project/pull/142",
 		},
 	}, "Human Review", "human-review", now.Add(-2*time.Minute), now)
 
-	if card.Identity.Label != "digitaldrywood/detent #12 · PR #142" {
+	if card.Identity.Label != "example-org/example-project #12 · PR #142" {
 		t.Fatalf("card.Identity.Label = %q, want issue and PR identity", card.Identity.Label)
 	}
 	if card.IssueNumber != "#142" {
@@ -3853,24 +3853,24 @@ func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
 		Pipeline: []telemetry.Issue{
 			{
 				ID:             "active",
-				Identifier:     "digitaldrywood/detent#143",
+				Identifier:     "example-org/example-project#143",
 				Title:          "Active merge",
 				State:          "Merging",
 				StageUpdatedAt: &activeAt,
 				PullRequest: &telemetry.PullRequest{
 					Number: 143,
-					URL:    "https://github.com/digitaldrywood/detent/pull/143",
+					URL:    "https://github.com/example-org/example-project/pull/143",
 				},
 			},
 			{
 				ID:             "queued",
-				Identifier:     "digitaldrywood/detent#144",
+				Identifier:     "example-org/example-project#144",
 				Title:          "Queued merge",
 				State:          "Merging",
 				StageUpdatedAt: &queuedAt,
 				PullRequest: &telemetry.PullRequest{
 					Number: 144,
-					URL:    "https://github.com/digitaldrywood/detent/pull/144",
+					URL:    "https://github.com/example-org/example-project/pull/144",
 				},
 			},
 		},
@@ -3878,12 +3878,12 @@ func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "active",
-					Identifier: "digitaldrywood/detent#143",
+					Identifier: "example-org/example-project#143",
 					Title:      "Active merge",
 					State:      "Merging",
 					PullRequest: &telemetry.PullRequest{
 						Number: 143,
-						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+						URL:    "https://github.com/example-org/example-project/pull/143",
 					},
 				},
 				StartedAt: activeAt,
@@ -3894,7 +3894,7 @@ func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
 
 	got := collectPipelineCards(prPipelineLanes(snapshot))
 	want := []pipelineCardSnapshot{
-		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", MergeLaneStatus: "Queued #2", MergeLaneDetail: "2nd in merge queue; waiting for repo merge lane behind digitaldrywood/detent#143 / PR #143; phase squash merging"},
+		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", MergeLaneStatus: "Queued #2", MergeLaneDetail: "2nd in merge queue; waiting for repo merge lane behind example-org/example-project#143 / PR #143; phase squash merging"},
 		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "4m 0s", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; squash merging"},
 	}
 	if len(got) != len(want) {
@@ -3916,27 +3916,27 @@ func TestMergeLaneStatusesDescribeCapacityQueueProgress(t *testing.T) {
 	prNumber := int64(113)
 	activeIssue := telemetry.Issue{
 		ID:         "holder",
-		Identifier: "digitaldrywood/video-studio#106",
+		Identifier: "example-org/video-studio#106",
 		ProjectID:  "video-studio",
 		Title:      "Active merge",
 		State:      "Merging",
-		URL:        "https://github.com/digitaldrywood/video-studio/issues/106",
+		URL:        "https://github.com/example-org/video-studio/issues/106",
 		PullRequest: &telemetry.PullRequest{
 			Number: 113,
-			URL:    "https://github.com/digitaldrywood/video-studio/pull/113",
+			URL:    "https://github.com/example-org/video-studio/pull/113",
 		},
 	}
 	queuedIssue := func(id string, number int, enteredAt time.Time) telemetry.Issue {
 		return telemetry.Issue{
 			ID:             id,
-			Identifier:     "digitaldrywood/video-studio#" + strconv.Itoa(number),
+			Identifier:     "example-org/video-studio#" + strconv.Itoa(number),
 			ProjectID:      "video-studio",
 			Title:          "Queued merge",
 			State:          "Merging",
 			StageUpdatedAt: &enteredAt,
 			PullRequest: &telemetry.PullRequest{
 				Number: number + 1,
-				URL:    "https://github.com/digitaldrywood/video-studio/pull/" + strconv.Itoa(number+1),
+				URL:    "https://github.com/example-org/video-studio/pull/" + strconv.Itoa(number+1),
 			},
 		}
 	}
@@ -3964,7 +3964,7 @@ func TestMergeLaneStatusesDescribeCapacityQueueProgress(t *testing.T) {
 			},
 			wantLabels: map[string]string{"queued-1": "Draining #2", "queued-2": "Draining #3"},
 			wantKind:   primitives.KindOK,
-			wantDetail: "lane draining behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+			wantDetail: "lane draining behind example-org/video-studio#106 / PR #113; phase watching current-head CI",
 		},
 		{
 			name: "stale holder remains queued without inventing a stall",
@@ -3982,7 +3982,7 @@ func TestMergeLaneStatusesDescribeCapacityQueueProgress(t *testing.T) {
 			},
 			wantLabels: map[string]string{"queued-1": "Queued #2", "queued-2": "Queued #3"},
 			wantKind:   primitives.KindWarn,
-			wantDetail: "waiting for repo merge lane behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+			wantDetail: "waiting for repo merge lane behind example-org/video-studio#106 / PR #113; phase watching current-head CI",
 		},
 		{
 			name: "merge liveness warning is authoritative for not draining",
@@ -4000,7 +4000,7 @@ func TestMergeLaneStatusesDescribeCapacityQueueProgress(t *testing.T) {
 			warnings:   []telemetry.StalenessWarning{{Kind: "merge_liveness", ProjectID: "video-studio", Lane: "Merging"}},
 			wantLabels: map[string]string{"queued-1": "Not draining #2", "queued-2": "Not draining #3"},
 			wantKind:   primitives.KindErr,
-			wantDetail: "merge queue is not advancing behind digitaldrywood/video-studio#106 / PR #113; phase watching current-head CI",
+			wantDetail: "merge queue is not advancing behind example-org/video-studio#106 / PR #113; phase watching current-head CI",
 		},
 	}
 
@@ -4041,20 +4041,20 @@ func TestPRPipelineLanesShowNativeMergeQueueDepthAndETA(t *testing.T) {
 		GeneratedAt: now,
 		Pipeline: []telemetry.Issue{{
 			ID:             "native-queued",
-			Identifier:     "digitaldrywood/detent#144",
+			Identifier:     "example-org/example-project#144",
 			Title:          "Native queued merge",
 			State:          "Merging",
 			StageUpdatedAt: &queuedAt,
 			PullRequest: &telemetry.PullRequest{
 				Number: 144,
-				URL:    "https://github.com/digitaldrywood/detent/pull/144",
+				URL:    "https://github.com/example-org/example-project/pull/144",
 				MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
 					ID:                          "MQE_144",
 					State:                       "AWAITING_CHECKS",
 					Position:                    2,
 					Depth:                       6,
 					EstimatedTimeToMergeSeconds: 720,
-					URL:                         "https://github.com/digitaldrywood/detent/queue/main",
+					URL:                         "https://github.com/example-org/example-project/queue/main",
 				},
 			},
 		}},
@@ -4095,7 +4095,7 @@ func TestPRPipelineLanesPreserveTrackerRefreshRows(t *testing.T) {
 				Pipeline: []telemetry.Issue{
 					{
 						ID:             "issue-550",
-						Identifier:     "digitaldrywood/detent#550",
+						Identifier:     "example-org/example-project#550",
 						Title:          "Keep tracker row visible",
 						State:          tt.state,
 						StageUpdatedAt: &stageAt,
@@ -4131,7 +4131,7 @@ func TestPRPipelineLanesDoNotTreatCompletedSessionAsCurrentDone(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-396",
-					Identifier: "digitaldrywood/detent#396",
+					Identifier: "example-org/example-project#396",
 					Title:      "Blocked after completed session",
 					State:      "Blocked",
 				},
@@ -4141,7 +4141,7 @@ func TestPRPipelineLanesDoNotTreatCompletedSessionAsCurrentDone(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-396",
-					Identifier: "digitaldrywood/detent#396",
+					Identifier: "example-org/example-project#396",
 					Title:      "Blocked after completed session",
 				},
 				CompletedAt: now.Add(-5 * time.Minute),
@@ -4166,11 +4166,11 @@ func TestPRPipelineLanesDoNotProjectCompletedOpenPRSession(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-550",
-					Identifier: "digitaldrywood/detent#550",
+					Identifier: "example-org/example-project#550",
 					Title:      "Keep completed implementation visible",
 					PullRequest: &telemetry.PullRequest{
 						Number:           552,
-						URL:              "https://github.com/digitaldrywood/detent/pull/552",
+						URL:              "https://github.com/example-org/example-project/pull/552",
 						State:            "OPEN",
 						CIStatus:         "success",
 						CodexReviewState: "clean",
@@ -4198,7 +4198,7 @@ func TestPRPipelineLanesUseTrackerStateWhenCompletedSessionAlsoExists(t *testing
 		Pipeline: []telemetry.Issue{
 			{
 				ID:             "issue-550",
-				Identifier:     "digitaldrywood/detent#550",
+				Identifier:     "example-org/example-project#550",
 				Title:          "Keep completed implementation visible",
 				State:          "Merging",
 				StageUpdatedAt: &stageAt,
@@ -4214,7 +4214,7 @@ func TestPRPipelineLanesUseTrackerStateWhenCompletedSessionAlsoExists(t *testing
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-550",
-					Identifier: "digitaldrywood/detent#550",
+					Identifier: "example-org/example-project#550",
 					Title:      "Keep completed implementation visible",
 					PullRequest: &telemetry.PullRequest{
 						Number:           552,
@@ -4250,7 +4250,7 @@ func TestPRPipelineLanesCapDoneTodayToRecentCards(t *testing.T) {
 		updatedAt := now.Add(-time.Duration(11-i) * time.Minute)
 		issues = append(issues, telemetry.Issue{
 			ID:         "done-" + strconv.Itoa(i),
-			Identifier: "digitaldrywood/detent#" + strconv.Itoa(200+i),
+			Identifier: "example-org/example-project#" + strconv.Itoa(200+i),
 			Title:      "Done PR " + strconv.Itoa(i),
 			State:      "Done",
 			UpdatedAt:  &updatedAt,
@@ -4315,7 +4315,7 @@ func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
 		Pipeline: []telemetry.Issue{
 			{
 				ID:         "active",
-				Identifier: "digitaldrywood/detent#721",
+				Identifier: "example-org/example-project#721",
 				State:      "Merging",
 				MergeTiming: &telemetry.MergeTiming{
 					EnteredMergingAt:          &activeEnteredAt,
@@ -4325,7 +4325,7 @@ func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
 			},
 			{
 				ID:         "queued",
-				Identifier: "digitaldrywood/detent#722",
+				Identifier: "example-org/example-project#722",
 				State:      "Merging",
 				MergeTiming: &telemetry.MergeTiming{
 					EnteredMergingAt: &queuedEnteredAt,
@@ -4336,7 +4336,7 @@ func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "recent-fast",
-					Identifier: "digitaldrywood/detent#723",
+					Identifier: "example-org/example-project#723",
 					MergeTiming: &telemetry.MergeTiming{
 						ActiveMergeDurationSeconds: int64((4 * time.Minute).Seconds()),
 						TotalMergingSeconds:        int64((7 * time.Minute).Seconds()),
@@ -4347,7 +4347,7 @@ func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "recent-slow",
-					Identifier: "digitaldrywood/detent#724",
+					Identifier: "example-org/example-project#724",
 					MergeTiming: &telemetry.MergeTiming{
 						ActiveMergeDurationSeconds: int64((6 * time.Minute).Seconds()),
 						TotalMergingSeconds:        int64((9 * time.Minute).Seconds()),
@@ -4358,7 +4358,7 @@ func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "old",
-					Identifier: "digitaldrywood/detent#725",
+					Identifier: "example-org/example-project#725",
 					MergeTiming: &telemetry.MergeTiming{
 						ActiveMergeDurationSeconds: int64((20 * time.Minute).Seconds()),
 						TotalMergingSeconds:        int64((30 * time.Minute).Seconds()),
@@ -4394,7 +4394,7 @@ func TestPRPipelineMergeSummaryPrefersNativeQueueETA(t *testing.T) {
 		Pipeline: []telemetry.Issue{
 			{
 				ID:         "native-1",
-				Identifier: "digitaldrywood/detent#501",
+				Identifier: "example-org/example-project#501",
 				State:      "Merging",
 				PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
 					ID:                          "MQE_501",
@@ -4403,7 +4403,7 @@ func TestPRPipelineMergeSummaryPrefersNativeQueueETA(t *testing.T) {
 			},
 			{
 				ID:         "native-2",
-				Identifier: "digitaldrywood/detent#502",
+				Identifier: "example-org/example-project#502",
 				State:      "Merging",
 				PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
 					ID:                          "MQE_502",
@@ -4438,7 +4438,7 @@ func TestPRPipelineMergeSummaryUsesDistinctNativeQueueDepths(t *testing.T) {
 func nativeQueueSummaryIssue(id string, queueURL string, depth int) telemetry.Issue {
 	return telemetry.Issue{
 		ID:         id,
-		Identifier: "digitaldrywood/detent#" + id,
+		Identifier: "example-org/example-project#" + id,
 		State:      "Merging",
 		PullRequest: &telemetry.PullRequest{MergeQueueEntry: &telemetry.PullRequestMergeQueueEntry{
 			ID:    "MQE_" + id,

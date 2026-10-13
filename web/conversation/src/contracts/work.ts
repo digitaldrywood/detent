@@ -51,6 +51,7 @@ export const NativeActorKind = Schema.Literals(["human", "runner", "integration"
 export const NativeActor = Schema.Struct({
   kind: NativeActorKind,
   principal_id: Schema.String,
+  display_name: Schema.optional(Schema.String),
 });
 export type NativeActor = typeof NativeActor.Type;
 
@@ -127,6 +128,7 @@ export const NativeDependency = Schema.Struct({
 export type NativeDependency = typeof NativeDependency.Type;
 
 export const NativeIssue = Schema.Struct({
+  type: Schema.optional(Schema.Literals(["bug", "change_request"])),
 	linked_source: Schema.optional(Schema.Struct({
 		url: Schema.String,
 		status: Schema.String,

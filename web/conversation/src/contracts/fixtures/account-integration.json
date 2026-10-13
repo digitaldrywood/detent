@@ -4,7 +4,7 @@
   "intake": "manual",
   "projection": "summary",
   "repository_enabled": true,
-  "repository": "getparable/parable",
+  "repository": "example-org/example-project",
   "authority": {
     "title": "detent",
     "body": "detent",

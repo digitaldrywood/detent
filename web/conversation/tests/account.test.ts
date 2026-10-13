@@ -298,6 +298,7 @@ describe("the project settings save", () => {
     const after = await api.saveIntegration({
       projectId: project.id,
       key: "integration-1",
+      duplicateChallenge: false,
       archiveCompletedAfterDays: 14,
       archiveCancelledAfterDays: null,
       revision: before.revision,
@@ -306,9 +307,11 @@ describe("the project settings save", () => {
       repositoryEnabled: before.repository_enabled,
     });
     expect(after.revision).not.toBe(before.revision);
+    expect(after.duplicate_challenge).toBe(false);
     expect(after.archive_completed_after_days).toBe(14);
     expect(after.archive_cancelled_after_days).toBeNull();
     const reloaded = await api.integration(project.id);
+    expect(reloaded.duplicate_challenge).toBe(false);
     expect(reloaded.archive_completed_after_days).toBe(14);
     expect(reloaded.archive_cancelled_after_days).toBeNull();
   });

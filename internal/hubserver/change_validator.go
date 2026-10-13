@@ -91,7 +91,11 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if err != nil {
 		return "", err
 	}
+	implementationReviewed := version.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired
 	for _, review := range reviews {
+		if version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired && review.ImplementationReview != nil {
+			implementationReviewed = review.Decision == "approved" && review.ImplementationReview.Verdict == gate.ValidatorVerdictPass
+		}
 		other := review.ImplementationReview
 		if implementationReview {
 			other = review.Validator
@@ -99,6 +103,9 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		if other != nil && review.SessionMachineID == current.MachineID && other.SessionID == result.SessionID {
 			return "", nativeInvalid("implementation review and acceptance validation require separate sessions")
 		}
+	}
+	if !implementationReview && !implementationReviewed {
+		return "", nativeInvalid("acceptance validation requires a passing implementation review before acceptance")
 	}
 	return current.MachineID, nil
 }

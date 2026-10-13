@@ -36,14 +36,14 @@ afterEach(() => {
 });
 
 const organizations = {
-  email: "admin@detent.build",
+  email: "admin@example.com",
   csrf: "staff-csrf",
   can_support: true,
   unavailable: ["plan", "grants", "member_count", "runner_count"],
   organizations: [
     {
       id: "org_alpha", name: "Alpha", state: "ready", step: "publish", attempts: 0, error_code: "", managed: true,
-      creator_email: "dana@example.test", created_at: "2026-09-20T10:00:00Z", updated_at: "2026-09-20T10:05:00Z",
+      creator_email: "member@example.test", created_at: "2026-09-20T10:00:00Z", updated_at: "2026-09-20T10:05:00Z",
       billing: { available: true, status: "active" }, can_support: true, plan: null, grants: null, member_count: null, runner_count: null,
     },
     {
@@ -57,7 +57,7 @@ const organizations = {
 const allowlist = {
   self_service: true,
   open: false,
-  allowed_emails: ["dana@example.test"],
+  allowed_emails: ["member@example.test"],
   allowed_domains: ["example.org"],
   source: { file: "/etc/detent/cloud.yaml", keys: ["allocation.allowed_emails", "allocation.allowed_domains"] },
 };
@@ -86,7 +86,7 @@ const entitlements = {
     {
       id: "comp_existing", plan: { id: "comp_team", version: 1 }, scope: ["hosted_artifacts", "projects"],
       starts_at: "2026-09-20T10:00:00Z", expires_at: "2026-12-31T23:59:59Z", reason: "design partner",
-      granted_by: "plans@detent.build", granted_at: "2026-09-20T10:00:00Z",
+      granted_by: "plans@example.com", granted_at: "2026-09-20T10:00:00Z",
     },
   ],
   plans: [
@@ -99,8 +99,8 @@ const administrator = { ...organizations, can_grant: true };
 
 function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
   const api: EntryApi = {
-    organizations: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", organizations: [], pending: [], can_create: false, platform_role: "admin" })),
-    session: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", can_create: false, platform_role: "admin" })),
+    organizations: vi.fn(async () => ({ email: "admin@example.com", csrf: "staff-csrf", organizations: [], pending: [], can_create: false, platform_role: "admin" })),
+    session: vi.fn(async () => ({ email: "admin@example.com", csrf: "staff-csrf", can_create: false, platform_role: "admin" })),
     provisioning: vi.fn(async () => ({ id: "", name: "", state: "", step: "", error: "", can_resume: false })),
     createOrganization: vi.fn(async () => ({ next: "/" })),
     resume: vi.fn(async () => ({ next: "/" })),
@@ -108,7 +108,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
       organization: organizations.organizations.find((item) => item.id === id)!,
       csrf: "staff-csrf", can_grant: true, can_resume: id === "org_beta", unavailable: [],
       credit_balance_micros: null,
-      members: [{ id: "owner", email: "dana@example.test", role: "owner" }],
+      members: [{ id: "owner", email: "member@example.test", role: "owner" }],
       runners: [{ id: "runner_one", name: "Mac Studio", health: "online" }],
       projects: [{ id: "prj_one", name: "Detent" }],
       events: [{ event: "requested", generation: 1, recorded_at: "2026-09-20T10:00:00Z" }],
@@ -118,7 +118,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
-    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
+    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@example.com", role: "admin" } })),
     changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
     platformAudit: vi.fn(async () => ({ rows: [], events: [], tenants: [], next_cursor: "" })),
     platformHealth: vi.fn(async () => health),
@@ -305,7 +305,7 @@ describe("platform console", () => {
 
   it("opens the account's organizations and preserves the header when navigating", async () => {
     const api = fakeApi({ organizations: vi.fn(async () => ({
-      email: "admin@detent.build", csrf: "c", platform_role: "admin",
+      email: "admin@example.com", csrf: "c", platform_role: "admin",
       organizations: [
         { id: "org_alpha", name: "My Alpha", url: "/organizations/org_alpha/organization" },
         { id: "org_beta", name: "My Beta", url: "/organizations/org_beta/work" },
@@ -344,7 +344,7 @@ describe("platform console", () => {
     expect(within(rows[1]!).getByText("Beta")).toBeTruthy();
     expect(within(rows[1]!).getByText("Failed")).toBeTruthy();
     expect(within(rows[1]!).getByText("Tenant files")).toBeTruthy();
-    expect(within(rows[2]!).getByText("dana@example.test")).toBeTruthy();
+    expect(within(rows[2]!).getByText("member@example.test")).toBeTruthy();
     expect(within(rows[2]!).getByText("Ready")).toBeTruthy();
     expect(within(rows[2]!).getByText("2026-09-20")).toBeTruthy();
     expect(within(table).getAllByText("Unavailable").length).toBeGreaterThan(0);
@@ -358,10 +358,10 @@ describe("platform console", () => {
     const user = userEvent.setup();
     const data = { ...organizations, unavailable: [], organizations: organizations.organizations.map((tenant) => ({ ...tenant, plan: "starter", grants: 1 })) };
     const api = fakeApi({ platformOrganizations: vi.fn(async () => data) });
-    const router = await renderPlatform(api, "/platform/tenants?q=dana&segment=complimentary&plan=starter&status=Ready&sort=name&direction=desc");
+    const router = await renderPlatform(api, "/platform/tenants?q=member&segment=complimentary&plan=starter&status=Ready&sort=name&direction=desc");
     const table = await screen.findByRole("table", { name: "Tenants" });
     const link = await within(table).findByRole("link", { name: "Alpha" });
-    expect((screen.getByRole("textbox", { name: "Search tenants" }) as HTMLInputElement).value).toBe("dana");
+    expect((screen.getByRole("textbox", { name: "Search tenants" }) as HTMLInputElement).value).toBe("member");
     expect(screen.getByRole("combobox", { name: "Plan" }).textContent).toContain("Starter");
     expect(screen.getByRole("combobox", { name: "Status" }).textContent).toContain("Ready");
     expect(within(table).getByText("Until 2026-12-31")).toBeTruthy();
@@ -370,10 +370,10 @@ describe("platform console", () => {
     fireEvent.click(link);
     await screen.findByRole("heading", { name: "Alpha" });
     expect(router.state.location.pathname).toBe("/platform/tenants/org_alpha");
-    expect(router.state.location.search).toMatchObject({ q: "dana", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc" });
+    expect(router.state.location.search).toMatchObject({ q: "member", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc" });
     fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
     await screen.findByRole("region", { name: "Members" });
-    expect(router.state.location.search).toMatchObject({ q: "dana", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc", section: "members" });
+    expect(router.state.location.search).toMatchObject({ q: "member", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc", section: "members" });
     fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: /^Tenants$/ }));
     await within(await screen.findByRole("table", { name: "Tenants" })).findByRole("link", { name: "Alpha" });
     await user.click(screen.getByRole("combobox", { name: "Plan" }));
@@ -521,8 +521,8 @@ describe("platform console", () => {
 
   it("shows restricted access with individual rows and filters both allowlists live", async () => {
     const api = fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist,
-      allowed_domains: ["example.org", "detent.build"],
-      allowed_emails: ["dana@example.test", "cory@detent.build", "operator@example.test"],
+      allowed_domains: ["example.org", "example.com"],
+      allowed_emails: ["member@example.test", "staff@example.com", "operator@example.test"],
     })) });
     await renderPlatform(api, "/platform/allowlist");
     const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
@@ -536,12 +536,12 @@ describe("platform console", () => {
     const emails = within(panel).getByRole("region", { name: "Individual emails" });
     expect(within(domains).getByText("2")).toBeTruthy();
     expect(within(emails).getByText("3")).toBeTruthy();
-    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.org", "detent.build"]);
-    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["dana@example.test", "cory@detent.build", "operator@example.test"]);
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.org", "example.com"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["member@example.test", "staff@example.com", "operator@example.test"]);
     const filter = within(panel).getByRole("searchbox", { name: "Filter domains and emails" });
-    fireEvent.change(filter, { target: { value: " DETENT " } });
-    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["detent.build"]);
-    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["cory@detent.build"]);
+    fireEvent.change(filter, { target: { value: " COM " } });
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.com"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["staff@example.com"]);
     expect(within(domains).getByText("1")).toBeTruthy();
     expect(within(emails).getByText("1")).toBeTruthy();
     fireEvent.change(filter, { target: { value: "no-match" } });
@@ -687,7 +687,7 @@ describe("platform console", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
   });
 
-  it.each(["alp", "org_alpha", "dana@"])('finds a tenant by "%s" and opens its addressable detail', async (query) => {
+  it.each(["alp", "org_alpha", "member@"])('finds a tenant by "%s" and opens its addressable detail', async (query) => {
     const user = userEvent.setup();
     const router = await renderPlatform(fakeApi());
     await screen.findByRole("table", { name: "Tenants" });
@@ -863,7 +863,7 @@ describe("complimentary plans", () => {
 
   it.each(["admin", "billing"])("shows base, effective plan and active grants of ready organizations to %s", async (role) => {
     const api = fakeApi({
-      session: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", platform_role: role })),
+      session: vi.fn(async () => ({ email: "admin@example.com", csrf: "staff-csrf", platform_role: role })),
       platformOrganizations: vi.fn(async () => administrator),
     });
     await renderPlatform(api);
@@ -875,7 +875,7 @@ describe("complimentary plans", () => {
     const billing = await screen.findByRole("region", { name: "Plan for Alpha" });
     const grants = await within(billing).findByRole("table", { name: "Grant history for Alpha" });
     expect(within(grants).getByText("design partner")).toBeTruthy();
-    expect(within(grants).getByText("plans@detent.build")).toBeTruthy();
+    expect(within(grants).getByText("plans@example.com")).toBeTruthy();
     expect(within(grants).getByText(/31st December 2026/)).toBeTruthy();
     expect(within(grants).getByText("Hosted artifacts, Projects")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Plan for Beta" })).toBeNull();
@@ -1057,7 +1057,7 @@ describe("tenant discovery and detail", () => {
       expect(within(table).getByRole("columnheader", { name: header }).getAttribute("aria-sort")).toBe(header === "Created" ? "ascending" : "descending");
     }
     const search = screen.getByRole("textbox", { name: "Search tenants" });
-    for (const query of ["DANA", "org_alpha", "alpha"]) {
+    for (const query of ["MEMBER", "org_alpha", "alpha"]) {
       fireEvent.change(search, { target: { value: query } });
       await waitFor(() => expect(names()).toEqual(["Alpha"]));
     }
@@ -1091,14 +1091,14 @@ describe("tenant discovery and detail", () => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
     await renderPlatform(api, "/platform/tenants/org_alpha");
     const organization = await screen.findByRole("region", { name: "Organization" });
-    expect(within(organization).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
+    expect(within(organization).getByRole("link", { name: "member@example.test" }).getAttribute("href")).toBe("/platform/users/member%40example.test");
     expect(screen.queryByRole("dialog", { name: "Alpha" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Support access" }) !== null).toBe(role === "support" || role === "admin");
     for (const name of ["Change plan", "Grant model choice", "Revoke grant"]) expect(screen.queryByRole("button", { name }) !== null).toBe(role === "billing" || role === "admin");
     expect(screen.queryByRole("button", { name: "Resume provisioning" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
     const members = await screen.findByRole("region", { name: "Members" });
-    expect(within(members).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
+    expect(within(members).getByRole("link", { name: "member@example.test" }).getAttribute("href")).toBe("/platform/users/member%40example.test");
     expect(within(members).getByText("Owner")).toBeTruthy();
   });
 
@@ -1372,7 +1372,7 @@ const audit: PlatformAudit = {
       id: "1",
       source: "audit",
       at: "2026-10-01T12:00:00Z",
-      actor: "admin@detent.build",
+      actor: "admin@example.com",
       event: "support_started",
       organization_id: "org_alpha",
       organization_name: "Alpha",
@@ -1680,8 +1680,8 @@ describe("platform audit", () => {
     await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
     const csv = await exported.text();
     expect(csv).toBe('"When (UTC)","Action","Tenant","By","Details","Reason"\r\n' +
-      '"2026-10-01T12:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1) until Dec 31, 2026","customer, ""pilot"""\r\n' +
-      '"2026-09-30T10:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1)","\'=customer reason"\r\n');
+      '"2026-10-01T12:00:00Z","Plan granted","Alpha","admin@example.com","Growth (version 1) until Dec 31, 2026","customer, ""pilot"""\r\n' +
+      '"2026-09-30T10:00:00Z","Plan granted","Alpha","admin@example.com","Growth (version 1)","\'=customer reason"\r\n');
     expect(api.platformAudit).toHaveBeenNthCalledWith(2, "tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200", expect.any(AbortSignal));
     expect(api.platformAudit).toHaveBeenLastCalledWith("tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200&cursor=older-cursor", expect.any(AbortSignal));
     expect((click.mock.instances[0] as unknown as HTMLAnchorElement).download).toBe("audit-log.csv");

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -218,9 +219,17 @@ func (p *runnerProjects) syncRuntimeLocked() bool {
 	return changed
 }
 
-func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
+func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previous ...globalconfig.Config) (globalconfig.Config, error) {
 	if cfg.Client.IdentityFile == "" || cfg.WorkspaceRoot == "" {
 		return cfg, nil
+	}
+	if len(previous) > 0 {
+		current := previous[0]
+		if cfg.Client.IdentityFile == current.Client.IdentityFile && cfg.Client.URL == current.Client.URL &&
+			cfg.Client.OrganizationID == current.Client.OrganizationID && cfg.WorkspaceRoot == current.WorkspaceRoot {
+			cfg.Projects = slices.Clone(current.Projects)
+			cfg.Client.NativeProjects = maps.Clone(current.Client.NativeProjects)
+		}
 	}
 	settings := cfg.Client.Normalized()
 	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})

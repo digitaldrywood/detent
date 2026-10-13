@@ -34,10 +34,13 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 
 	t.Parallel()
-	states := append(hubserver.HostedProjectStates(), tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo", "Blocked", "Done"}})
+	states := hubserver.HostedProjectStates()
 	for i := range states {
-		if states[i].Name == "Blocked" {
+		if states[i].Name == "Blocked" || states[i].Name == "Backlog" {
 			states[i].OperatorOnly = true
+		}
+		if states[i].Name == "Backlog" {
+			states[i].Transitions = []string{"Todo", "Blocked", "Done"}
 		}
 	}
 	h := newNativeChangeHubWithStates(t, "Human Review", states)

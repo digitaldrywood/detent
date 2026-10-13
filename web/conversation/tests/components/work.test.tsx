@@ -31,11 +31,12 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
+import { IssuePage } from "../../src/app/work/IssuePage.tsx";
 import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
 import { Input } from "../../src/components/ui/input.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
-import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
+import { clearBoardCache, confirmWorkItem } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
@@ -78,7 +79,7 @@ const ATTEMPT_DIFF = attemptDiffFixture as unknown as AttemptDiff;
 
 function item(overrides: Partial<WorkItemView> = {}): WorkItemView {
   return {
-    ...toWorkItemView(itemFixture as unknown as NativeIssue, "parable"),
+    ...toWorkItemView(itemFixture as unknown as NativeIssue, "example-project"),
     ...overrides,
   };
 }
@@ -125,7 +126,7 @@ describe("the board card", () => {
     expect(metadata.textContent).toBe(expectedMetadata);
     expect(metadata.children).toHaveLength(attemptNumber === 4 ? 2 : 1);
     expect(within(metadata).getByTestId("issue-age")).not.toBeNull();
-    expect(screen.getByTestId("issue-card").textContent).toBe(`parable#3363${value.title}${expectedStatus}${expectedMetadata}`);
+    expect(screen.getByTestId("issue-card").textContent).toBe(`example-project#3363${value.title}${expectedStatus}${expectedMetadata}`);
     expect(screen.queryByTestId("worker-strip")).toBeNull();
   });
 
@@ -134,7 +135,7 @@ describe("the board card", () => {
       <IssueCard item={item()} showProject now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />,
     );
     expect(screen.getByTestId("project-dot")).not.toBeNull();
-    expect(screen.getByText("parable")).not.toBeNull();
+    expect(screen.getByText("example-project")).not.toBeNull();
     unmount();
 
     render(
@@ -191,7 +192,7 @@ describe("the board card", () => {
   }) => {
     const issue = toWorkItemView(
       { ...itemFixture as unknown as NativeIssue, state, terminal: true },
-      "parable",
+      "example-project",
       { attempts: [{ ...ATTEMPTS[0]!, status: attemptStatus }] },
     );
     const closed = { ...issue, priority };
@@ -222,10 +223,10 @@ describe("the board card", () => {
     expect(isBlocked(closed)).toBe(false);
     if (showProject) {
       expect(screen.getByTestId("project-dot").getAttribute("style")).toBeNull();
-      expect(screen.getByText("parable")).not.toBeNull();
+      expect(screen.getByText("example-project")).not.toBeNull();
     } else {
       expect(card.querySelector(".grayscale")).not.toBeNull();
-      expect(screen.getByText("parable").className).toBe("sr-only");
+      expect(screen.getByText("example-project").className).toBe("sr-only");
     }
     const open = screen.getByTestId("issue-card-open");
     expect(open.className).toContain("focus-visible:ring-2");
@@ -269,7 +270,7 @@ describe("the board card", () => {
       updated_at: "2026-09-09T10:00:00Z",
       provenance: { provider: "github", external_id: "91", author_id: "source_author", observed_at: "2026-09-09T08:00:00Z", ...sourceDates },
     };
-    const imported = toWorkItemView(native, "parable");
+    const imported = toWorkItemView(native, "example-project");
     expect(imported.createdAt).toBe(native.created_at);
     expect(imported.updatedAt).toBe(native.updated_at);
     expect(imported.source).toEqual({ externalId: "91", createdAt: sourceDates.created_at ?? null, updatedAt: sourceDates.updated_at ?? null, observedAt: native.provenance.observed_at });
@@ -328,10 +329,10 @@ describe("the board card", () => {
     const { rerender } = render(surface(item()));
     expect(screen.queryByTestId("pr-chip")).toBeNull();
     const linked = toWorkItemView({ ...itemFixture as unknown as NativeIssue,
-      pull_request: { number: 3372, url: "https://github.com/digitaldrywood/detent/pull/3372" } }, "parable");
+      pull_request: { number: 3372, url: "https://github.com/example-org/example-project/pull/3372" } }, "example-project");
     rerender(surface(linked));
     const link = screen.getByRole("link", { name: "PR #3372" });
-    expect(link.getAttribute("href")).toBe("https://github.com/digitaldrywood/detent/pull/3372");
+    expect(link.getAttribute("href")).toBe("https://github.com/example-org/example-project/pull/3372");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     fireEvent.click(link);
@@ -735,7 +736,7 @@ describe("the Diff surface", () => {
     );
     expect(screen.queryByTestId("diff-attempt")).toBeNull();
     // What it does have is shown instead of nothing.
-    expect(screen.getByText("digitaldrywood/detent")).not.toBeNull();
+    expect(screen.getByText("example-org/example-project")).not.toBeNull();
     expect(screen.getByTestId("diff-pr-link").textContent).toContain("3372");
   });
 
@@ -877,7 +878,17 @@ describe("the Diff surface's source order", () => {
 });
 
 vi.mock("../../src/app/App.tsx", () => ({
-  useShell: () => ({ connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+  useShell: () => ({ conversations: [], connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+}));
+
+vi.mock("../../src/app/components/ChatWorkspace.tsx", () => ({
+  ChatWorkspace: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useWorkspacePanel: () => ({ open: false, active: null, activate: vi.fn(), close: vi.fn() }),
+}));
+
+vi.mock("../../src/app/work/IssueAsk.tsx", () => ({
+  useIssueAsk: () => ({ threads: [], selected: null, loading: false, pending: false, error: null }),
+  IssueAskPanel: () => null,
 }));
 
 afterEach(() => { vi.unstubAllGlobals(); globalThis.localStorage.clear(); resetRunnerNamesForTests(); });
@@ -888,12 +899,13 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
   vi.stubGlobal("fetch", wrapFetch?.(fixture.fetch) ?? fixture.fetch);
   const root = createRootRoute({ component: () => <SidebarProvider><SidebarSearchProvider work><aside className="dc-side"><Input nativeInput type="search" aria-label="Search threads" /></aside><Outlet /></SidebarSearchProvider></SidebarProvider> });
   const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
+  const issue = createRoute({ getParentRoute: () => root, path: "/work/i/$workItemId", component: IssuePage });
   const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
     const { projectId } = project.useParams();
     return <WorkBoard projectId={projectId} />;
   } });
   const history = createMemoryHistory({ initialEntries: [path] });
-  const router = createRouter({ routeTree: root.addChildren([all, project]), history, ...plainSearchOptions });
+  const router = createRouter({ routeTree: root.addChildren([all, project, issue]), history, ...plainSearchOptions });
   const mounted = render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
   const setOrganization = (name?: string) => {
     const organization = { ...fixture.client.bootstrap.organization, name: name ?? "" };
@@ -1235,14 +1247,53 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it.each(["/work", "/work/p/proj_alpha"])("selects Change request from the visible list filter in %s", async (path) => {
+    const fixture = await pagedWork(`${path}?view=list&tab=all&completed_window=all`);
+    await settledWork();
+    expect(screen.getAllByText("Queue item 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Queue item 2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Queue item 3").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Change request" }));
+    await waitFor(() => expect(parseViewState(fixture.router.state.location.searchStr).type).toEqual(["change_request"]));
+    await settledWork();
+    await waitFor(() => expect(screen.queryByText("Queue item 1")).toBeNull());
+    expect(screen.getAllByText("Queue item 2").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Queue item 3")).toBeNull();
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("type"))
+      .toEqual(["change_request"]);
+    expect(screen.getByRole("menuitemcheckbox", { name: "Change request" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it.each([
+    { title: "Queue item 1", badge: "Bug" },
+    { title: "Queue item 2", badge: "Change request" },
+    { title: "Queue item 3", badge: null },
+  ])("renders the issue type beside $title only when classified", async ({ title, badge }) => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all");
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    const issue = page.items.find((item) => item.title === title)!;
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: issue.work_item_id } }));
+    const heading = await screen.findByRole("heading", { level: 1, name: title });
+    const header = within(heading.closest("header")!);
+    if (badge === null) {
+      expect(header.queryByText("Bug")).toBeNull();
+      expect(header.queryByText("Change request")).toBeNull();
+    } else {
+      expect(header.getByText(badge)).not.toBeNull();
+    }
+  });
+
   it("names the organization, follows organization changes and preserves project scope", async () => {
     const fixture = await pagedWork();
     await settledWork();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Fixture projects");
-    fixture.setOrganization("Parable");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Parable projects");
-    fixture.setOrganization("Drywood Creek");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Drywood Creek projects");
+    fixture.setOrganization("Secondary Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Secondary Example Organization projects");
+    fixture.setOrganization("Tertiary Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Tertiary Example Organization projects");
     fixture.setOrganization("");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All projects");
     fixture.setOrganization();
@@ -1250,7 +1301,7 @@ describe("the filter-first Work surface", () => {
     await act(() => fixture.router.navigate({ to: "/work/p/$projectId", params: { projectId: "proj_alpha" } }));
     await settledWork();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
-    fixture.setOrganization("Parable");
+    fixture.setOrganization("Secondary Example Organization");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
     expect(fixture.router.state.location.pathname).toBe("/work/p/proj_alpha");
   });
@@ -1258,8 +1309,8 @@ describe("the filter-first Work surface", () => {
   it("reveals the full scope title on keyboard focus", async () => {
     const fixture = await pagedWork();
     await settledWork();
-    const title = "All Parable and Drywood Creek Collaborative Research Organization projects";
-    fixture.setOrganization("Parable and Drywood Creek Collaborative Research Organization");
+    const title = "All Example Collaborative Collaborative Research Organization projects";
+    fixture.setOrganization("Example Collaborative Collaborative Research Organization");
     const heading = screen.getByRole("heading", { level: 1, name: title });
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
@@ -1296,7 +1347,7 @@ describe("the filter-first Work surface", () => {
     fireEvent.change(search, { target: { value: "42" } });
     await settledWork();
     expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({
-      archived: true, view: "list", tab: "all", q: "42", state: ["42"], label: ["true"],
+      archived: true, view: "list", tab: "all", q: "42", type: [], state: ["42"], label: ["true"],
       assignee: ["null"], priority: ["4"], sort: "title", lanes: ["false"], collapsed: ["0"], completedWindow: "7d",
     });
   });
@@ -1409,6 +1460,31 @@ describe("the filter-first Work surface", () => {
     await screen.findByTestId("work-board");
     expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({ ...view, view: "board" });
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).length).toBeGreaterThan(reads.length);
+  });
+
+  it("filters by the caller and retains that filter through URLs, cache reads and updates", async () => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&q=Older+title+needle");
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Filed by me" }));
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.queryByText("Older title needle b")).toBeNull();
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+    expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBe("me");
+    const request = fixture.requests.findLast(({ url }) => url.pathname.endsWith("/work-items"))!;
+    expect(request.url.searchParams.get("created_by")).toBe("me");
+    expect(request.url.searchParams.get("q")).toBe("Older title needle");
+    const response = await fixture.fetch(`${fixture.client.http.apiBase}/projects/proj_alpha/work-items?q=Older+title+needle`);
+    const other = (await response.json()).items.find((issue: NativeIssue) => issue.title === "Older title needle b");
+    act(() => confirmWorkItem({ ...other, revision: "900" }));
+    expect(screen.queryByText("Older title needle b")).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Filed by me" }));
+    await settledWork();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBeUndefined();
   });
 
   it("keeps a second filter choice available after the first narrows results", async () => {

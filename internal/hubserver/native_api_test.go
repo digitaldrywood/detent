@@ -42,6 +42,9 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 	requireNativeStatus(t, response, http.StatusOK)
 	var project tracker.NativeProject
 	decodeHubResponse(t, response, &project)
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project.ID); err != nil {
+		t.Fatal(err)
+	}
 	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, map[string]any{"name": "operator-" + name, "scope": "operator"})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var token tokenResponse

@@ -8,7 +8,7 @@ import (
 func TestAttributionFromSource(t *testing.T) {
 	t.Parallel()
 
-	operator := Actor{Login: "corylanou", Kind: "User"}
+	operator := Actor{Login: "example-user", Kind: "User"}
 	tests := []struct {
 		name          string
 		source        Source
@@ -97,7 +97,7 @@ func TestApplyPreservesMetadataAndRecordsAdmission(t *testing.T) {
 func TestParsePreservesLegacyAttribution(t *testing.T) {
 	t.Parallel()
 
-	metadata, ok := Parse(`{"provenance":{"origin":"human","actor":{"login":"corylanou","kind":"User"}}}`)
+	metadata, ok := Parse(`{"provenance":{"origin":"human","actor":{"login":"example-user","kind":"User"}}}`)
 	if !ok {
 		t.Fatal("Parse() = false")
 	}

@@ -1075,7 +1075,7 @@ func completeIssueWebhookPayload(t *testing.T, title string, updatedAt string) s
 			"state":      "open",
 			"user":       map[string]any{"login": "octocat"},
 			"labels":     []any{map[string]any{"name": "feature"}, map[string]any{"name": "detent:todo"}},
-			"assignees":  []any{map[string]any{"login": "corylanou"}},
+			"assignees":  []any{map[string]any{"login": "example-user"}},
 			"created_at": "2026-09-01T12:00:00Z",
 			"updated_at": updatedAt,
 		},

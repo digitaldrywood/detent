@@ -235,18 +235,18 @@ afterEach(() => {
 });
 
 it("keeps the Activity scope and project picker consistent across organization changes", async () => {
-  mocks.bootstrap.organization.name = "Parable";
+  mocks.bootstrap.organization.name = "Secondary Example Organization";
   const mounted = render(<View />);
   const scope = () => screen.getByRole("navigation", { name: "Activity breadcrumb" });
-  expect(scope().textContent).toContain("All Parable projects");
-  mocks.bootstrap.organization.name = "Drywood Creek";
+  expect(scope().textContent).toContain("All Secondary Example Organization projects");
+  mocks.bootstrap.organization.name = "Tertiary Example Organization";
   mounted.rerender(<View />);
-  expect(scope().textContent).toContain("All Drywood Creek projects");
+  expect(scope().textContent).toContain("All Tertiary Example Organization projects");
   await choose("Project", "detent");
   expect(scope().textContent).toContain("detent");
-  expect(scope().textContent).not.toContain("All Drywood Creek projects");
-  await choose("Project", "All Drywood Creek projects");
-  expect(scope().textContent).toContain("All Drywood Creek projects");
+  expect(scope().textContent).not.toContain("All Tertiary Example Organization projects");
+  await choose("Project", "All Tertiary Example Organization projects");
+  expect(scope().textContent).toContain("All Tertiary Example Organization projects");
   mocks.bootstrap.organization.name = "";
   mounted.rerender(<View />);
   expect(scope().textContent).toContain("All projects");

@@ -35,9 +35,11 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 		reenterControl    bool
 		overlapControl    bool
 		precedingDispatch bool
+		storagePressure   bool
 	}{
 		{name: "older Hub"},
 		{name: "capacity owner Hub", supported: true},
+		{name: "storage pressure preserves configuration and recovers", supported: true, storagePressure: true},
 		{name: "dispatch heartbeat", supported: true, dispatch: true},
 		{name: "denied heartbeat", supported: true, denied: true},
 		{name: "heartbeat upgrade stops claims", supported: true, dispatch: true, draining: true},
@@ -85,6 +87,8 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			}
 			calls, observations, applications, appliedLimit := 0, 0, 0, 2
 			dispatching := test.dispatch
+			storageHeld := test.storagePressure
+			var reportedCapacities []int
 			var observedProject *runnerauth.ProjectConfiguration
 			var responseMu sync.Mutex
 			candidateEntered := make(chan struct{})
@@ -121,7 +125,19 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						w.WriteHeader(http.StatusBadRequest)
 						return
 					}
-					if test.supported && !test.overlapControl && (report.Configuration == nil || report.Configuration.RuntimeLimit != appliedLimit || report.Capacity != report.Configuration.RuntimeLimit) {
+					if test.storagePressure {
+						reportedCapacities = append(reportedCapacities, report.Capacity)
+					}
+					expectedCapacity := appliedLimit
+					if storageHeld {
+						expectedCapacity = 0
+					}
+					if report.Configuration != nil {
+						if err := report.Configuration.Validate(); err != nil {
+							t.Errorf("invalid configuration evidence: %v", err)
+						}
+					}
+					if test.supported && !test.overlapControl && (report.Configuration == nil || report.Configuration.RuntimeLimit != appliedLimit || report.Capacity != expectedCapacity) {
 						t.Errorf("report=%+v", report)
 					}
 					if !test.supported && report.Configuration != nil {
@@ -223,6 +239,12 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 					}
 					copy := *updateReport
 					return &copy
+				},
+				AvailableCapacity: func(_ context.Context, capacity int) int {
+					if storageHeld {
+						return 0
+					}
+					return capacity
 				},
 				CapacityConfiguration: func(_ context.Context, desired *runnerauth.CapacityRequest) *runnerauth.CapacityConfig {
 					calls++
@@ -375,7 +397,13 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 						t.Fatalf("heartbeat %d update applications=%d, want %d", heartbeatIndex, updateApplications, wantApplications)
 					}
 				}
+				if test.storagePressure {
+					storageHeld = false
+				}
 				now = now.Add(heartbeatInterval)
+			}
+			if test.storagePressure && (len(reportedCapacities) < 2 || reportedCapacities[0] != 0 || reportedCapacities[len(reportedCapacities)-1] != 6) {
+				t.Fatalf("storage capacity did not pause and recover: %v", reportedCapacities)
 			}
 			if test.precedingDispatch {
 				if projectCalls != 3 || projectApplications != 1 {

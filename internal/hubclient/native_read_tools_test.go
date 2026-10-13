@@ -200,14 +200,14 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if diagnosticErr != nil || !diagnosticResult.Success || json.Unmarshal([]byte(diagnosticResult.Content), &diagnosticPage) != nil || diagnosticPage.ProjectID != string(h.project) || diagnosticPage.RunnerID != file.Identity.RunnerID || writes != 0 {
 		t.Fatalf("worker diagnostic=%s error=%v writes=%d", diagnosticResult.Content, diagnosticErr, writes)
 	}
-	listArgs, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "limit": 1})
+	listArgs, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "label": "search-fixture", "limit": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	seen := make(map[tracker.NativeWorkItemID]bool)
 	var cursor string
 	for range 2 {
-		args, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "limit": 1, "cursor": cursor})
+		args, err := json.Marshal(map[string]any{"project_id": h.project, "query": "native-search-existing", "label": "search-fixture", "limit": 1, "cursor": cursor})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -365,13 +365,13 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		extra map[string]any
 		want  string
 	}{
-		{operatortool.WorkList, map[string]any{"fingerprint": "native-search-existing-one", "open": true, "limit": 1}, "Search fixture 0"},
+		{operatortool.WorkList, map[string]any{"fingerprint": "native-search-existing-one", "query": "fixture", "state": "Todo", "label": "search-fixture", "priority": 0, "open": true, "limit": 1}, "Search fixture 0"},
 		{operatortool.WorkList, map[string]any{"fingerprint": "native-search-existing", "open": true, "limit": 1}, `"items":[]`},
-		{operatortool.WorkList, map[string]any{"query": "native-search-existing", "open": false, "limit": 1}, `"items":[]`},
+		{operatortool.WorkList, map[string]any{"query": "native-search-existing", "label": "search-fixture", "open": false, "limit": 1}, `"items":[]`},
 		{operatortool.WorkList, map[string]any{"query": "native-search-existing", "state": "Todo", "label": "search-fixture", "assignee": "operator", "priority": 0, "limit": 1}, "Search fixture"},
 		{operatortool.WorkList, map[string]any{"query": "Search fixture", "states": []string{"In Review", "Todo"}, "labels": []string{"search-fixture", "absent"}, "assignees": []string{"operator", "absent"}, "priorities": []int{0, 3}, "archived": "all", "include": []string{"work", "workspace"}, "limit": 1}, `"lanes"`},
 		{operatortool.WorkList, map[string]any{"archived": "true", "limit": 1}, selected.Title},
-		{operatortool.WorkList, map[string]any{"query": "no-matching-work-item", "limit": 1}, `"items":[]`},
+		{operatortool.WorkList, map[string]any{"query": "zzzzunfindable", "limit": 1}, `"items":[]`},
 		{operatortool.WorkItem, map[string]any{"reference": issue.ID}, issue.Title},
 		{operatortool.WorkComments, map[string]any{"reference": issue.ID, "limit": 1}, "Genuine native discussion"},
 		{operatortool.WorkHistory, map[string]any{"reference": issue.ID, "limit": 1}, "next_cursor"},

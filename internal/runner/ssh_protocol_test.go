@@ -63,6 +63,10 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			return ok && e.CredentialIdentity == "isolated" && e.Operation == "probe"
 		}},
 		{"configuration", &IssueConfigurationError{Field: "effort", Reason: "invalid"}, nil, func(err error) bool { var e *IssueConfigurationError; return errors.As(err, &e) && e.Field == "effort" }},
+		{"source review parse failure", &NativeImplementationReviewError{Err: errors.New("malformed source review")}, nil, func(err error) bool {
+			var status interface{ BackendErrorStatus() string }
+			return errors.As(err, &status) && status.BackendErrorStatus() == "interrupted" && errors.Unwrap(err) != nil && err.Error() == "malformed source review"
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

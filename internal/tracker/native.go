@@ -71,6 +71,7 @@ type Actor struct {
 	Kind        string `json:"kind"`
 	PrincipalID string `json:"principal_id"`
 	ViaKey      string `json:"via_key,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type Provenance struct {
@@ -91,8 +92,10 @@ type NativeIssue struct {
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
+	Type               string              `json:"type,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
+	Snippet            string              `json:"snippet,omitempty"`
 	State              string              `json:"state"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
@@ -213,8 +216,11 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
+	ChallengeToken      string                          `json:"challenge_token,omitempty"`
+	NotDuplicateOf      []int                           `json:"not_duplicate_of,omitempty"`
 	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
 	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
+	Type                string                          `json:"type,omitempty"`
 	Title               string                          `json:"title"`
 	Body                string                          `json:"body"`
 	State               string                          `json:"state"`
@@ -312,6 +318,7 @@ func (p PriorityPatch) MarshalJSON() ([]byte, error) {
 type UpdateIssue struct {
 	Mutation
 	ExpectedRevision Revision      `json:"expected_revision,string"`
+	Type             *string       `json:"type,omitempty"`
 	Title            *string       `json:"title,omitempty"`
 	Body             *string       `json:"body,omitempty"`
 	Priority         PriorityPatch `json:"priority,omitzero"`
@@ -343,6 +350,7 @@ type Transition struct {
 
 type DependencyMutation struct {
 	Mutation
+	RelationshipType  string           `json:"relationship_type,omitempty"`
 	ExpectedRevision  Revision         `json:"expected_revision,string"`
 	RelatedWorkItemID NativeWorkItemID `json:"related_work_item_id"`
 	Operation         string           `json:"operation"`
