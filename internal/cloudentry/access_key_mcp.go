@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -234,7 +235,35 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 		Arguments    json.RawMessage `json:"arguments"`
 		ConnectionID string          `json:"connection_id"`
 	}{call.Name, arguments, key.ID + ":" + connection.ID})
-	return operatortool.Result{Content: raw}, err
+	if err != nil {
+		return operatortool.Result{}, err
+	}
+	if call.Name == operatortool.UploadAttachment {
+		var authorized struct {
+			EntryUpload bool              `json:"entry_upload"`
+			Mutation    mutation.Metadata `json:"mutation"`
+		}
+		if json.Unmarshal(raw, &authorized) != nil || !authorized.EntryUpload {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.service.config.PublicURL+"/mcp", nil)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		upload, err := e.service.uploadAttachmentMCP(ctx, request, org.ID, arguments, authorized.Mutation)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		if upload.status != http.StatusCreated && upload.status != http.StatusOK {
+			var refusal apikey.Refusal
+			if json.Unmarshal(upload.body.Bytes(), &refusal) != nil || refusal.Code == "" {
+				return operatortool.Result{}, operatortool.ErrAccessDenied
+			}
+			return operatortool.Result{}, &refusal
+		}
+		raw = upload.body.Bytes()
+	}
+	return operatortool.Result{Content: raw}, nil
 }
 
 func (s *Service) keyOrganizationsJSON(c echo.Context) error {
@@ -253,7 +282,6 @@ func (s *Service) keyAPI(c echo.Context) error {
 	request := c.Request()
 	request.URL.Path = "/api/v2/organizations/" + organization + strings.TrimPrefix(request.URL.Path, "/api/v2")
 	request.URL.RawPath = ""
-	c.SetParamNames("organization")
-	c.SetParamValues(organization)
-	return s.proxy(c)
+	s.echo.ServeHTTP(c.Response(), request)
+	return nil
 }
