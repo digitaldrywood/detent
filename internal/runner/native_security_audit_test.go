@@ -34,10 +34,15 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name                       string
+		kind, authentication       string
 		disabled, blocking, failed bool
 		landing                    bool
 	}{
-		{name: "default native pass"},
+		{name: "default native Codex subscription pass", kind: config.AgentBackendCodex, authentication: "chatgpt_subscription"},
+		{name: "default native Codex metered pass", kind: config.AgentBackendCodex, authentication: "api_key"},
+		{name: "default native Claude metered pass", kind: config.AgentBackendClaudeCode, authentication: "api_key"},
+		{name: "default native Claude subscription pass", kind: config.AgentBackendClaudeCode, authentication: "subscription"},
+		{name: "default landing Claude metered pass", kind: config.AgentBackendClaudeCode, authentication: "api_key", landing: true},
 		{name: "blocking finding", blocking: true},
 		{name: "explicit false", disabled: true},
 		{name: "backend failure", failed: true},
@@ -47,20 +52,32 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now().UTC()
+			kind, authentication := test.kind, test.authentication
+			if kind == "" {
+				kind = config.AgentBackendCodex
+			}
+			if authentication == "" {
+				authentication = "api_key"
+			}
 			output := `{"verdict":"pass","summary":"No findings","findings":[]}`
 			if test.blocking {
 				output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","body":"Missing authorization"}]}`
 			}
 			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: now.Add(time.Second)}}, {Type: AgentUpdateMessageDelta, Delta: output}}}
+			backend.result.AuthenticationMode = authentication
 			if test.failed {
 				backend.err = errors.New("backend unavailable")
 			}
 			cfg := config.Default()
 			cfg.Tracker.Kind = config.TrackerHubNative
-			cfg.Gate.SecurityAudit.Enabled = !test.disabled
+			if test.disabled {
+				cfg.Gate.SecurityAudit.Enabled = false
+			}
 			cfg.Gate.AutomatedReview = gate.AutomatedReviewOff
 			cfg.Agents.ModelSelection.Enabled = new(false)
-			runner, err := NewRunner(Dependencies{ProjectID: "prj_example", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
+			cfg.Agents.Backends = []config.AgentBackend{{ID: "audit", Kind: kind, Protocol: "app-server", Command: "test-audit"}}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", Model: "audit-model", Default: true}}
+			runner, err := NewRunner(Dependencies{ProjectID: "prj_example", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": backend}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +112,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				}
 				return
 			}
-			if backend.calls != 1 || execution.audit == nil || execution.audit.Run.BaseSHA != "base" || execution.audit.Run.HeadSHA != "head" || execution.audit.Run.ReviewerDigest == "" || execution.audit.SessionID != 73 || execution.audit.Identity.Role != RoleSecurityAudit || execution.audit.Identity.BackendKind != config.AgentBackendCodex {
+			if backend.calls != 1 || execution.audit == nil || execution.audit.Run.BaseSHA != "base" || execution.audit.Run.HeadSHA != "head" || execution.audit.Run.ReviewerDigest == "" || execution.audit.SessionID != 73 || execution.audit.Identity.Role != RoleSecurityAudit || execution.audit.Identity.BackendKind != kind || execution.audit.Identity.BackendID != "audit" || execution.audit.Run.AuthenticationMode != authentication || backend.request.Model != "audit-model" {
 				t.Fatalf("audit evidence = %+v; turns=%d", execution.audit, backend.calls)
 			}
 		})
