@@ -77,13 +77,14 @@ func newCheckpointRefs(backend workspace.Backend, execution Execution, info work
 		return nil
 	}
 	c := &checkpointRefs{backend: backend, publisher: publisher, execution: execution, info: info, issue: issue, nudge: make(chan struct{}, 1), stop: func() {}}
-	if previous := execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint != nil && previous.Checkpoint.GitRef() {
-		saved := *previous.Checkpoint
-		c.saved = &saved
-		c.last = workspace.CheckpointRef{Ref: saved.Ref, CommitSHA: saved.CommitSHA, HeadSHA: saved.HeadSHA, BaseSHA: saved.BaseSHA, TreeSHA: saved.TreeSHA}
-	}
 	if issue.Checkpoint != nil {
 		c.last = *issue.Checkpoint
+		if previous := execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint.GitRef() {
+			saved := *previous.Checkpoint
+			if saved.Ref == c.last.Ref && saved.CommitSHA == c.last.CommitSHA && saved.BaseSHA == c.last.BaseSHA && saved.TreeSHA == c.last.TreeSHA {
+				c.saved = &saved
+			}
+		}
 		if state != nil {
 			c.last.HeadSHA = state.HeadSHA
 		}

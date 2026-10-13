@@ -75,17 +75,47 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 
 func TestCheckpointRefsRetainAcknowledgedSource(t *testing.T) {
 	t.Parallel()
-	for _, failure := range []string{"capture", "acknowledgement"} {
-		t.Run(failure, func(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		failure   string
+		selection string
+		wantSaved bool
+	}{
+		{name: "selected checkpoint capture failure", failure: "capture", selection: "checkpoint", wantSaved: true},
+		{name: "selected checkpoint acknowledgement failure", failure: "acknowledgement", selection: "checkpoint", wantSaved: true},
+		{name: "newer Change capture failure", failure: "capture", selection: "change"},
+		{name: "fresh checkout capture failure", failure: "capture", selection: "fresh"},
+		{name: "newer retained workspace capture failure", failure: "capture", selection: "retained"},
+		{name: "newer Change acknowledgement failure", failure: "acknowledgement", selection: "change"},
+		{name: "different selected checkpoint capture failure", failure: "capture", selection: "different checkpoint"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			previous := tracker.NativeCheckpoint{HeadSHA: strings.Repeat("b", 40), WorkspaceDigest: "acknowledged", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
 			remoteCheckpoint(&previous)
 			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}}}}}}
 			execution := &testExecution{recovery: tracker.NativeRecovery{SourceAttemptID: "prior", Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "prior"}, Checkpoint: &previous}}}}
-			refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{NativeRework: true}, nil)
+			issue := workspace.Issue{NativeRework: true}
+			switch test.selection {
+			case "checkpoint", "different checkpoint":
+				issue.Checkpoint = &workspace.CheckpointRef{Ref: previous.Ref, CommitSHA: previous.CommitSHA, BaseSHA: previous.BaseSHA, TreeSHA: previous.TreeSHA}
+				if test.selection == "different checkpoint" {
+					issue.Checkpoint.CommitSHA = strings.Repeat("d", 40)
+				}
+			case "change":
+				issue.Source = &workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), AttemptID: "newer"}}}
+			case "fresh":
+				issue.FreshCheckout = true
+			}
+			refs := newCheckpointRefs(backend, execution, workspace.Info{}, issue, nil)
+			initial := executionCheckpoint(&workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}})
+			refs.apply(&initial)
+			if issue.Checkpoint == nil && initial.GitRef() {
+				t.Fatalf("unselected checkpoint attached to current source: %#v", initial)
+			}
 			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			errUnavailable := errors.New("unavailable")
-			if failure == "capture" {
+			if test.failure == "capture" {
 				backend.publishErr = errUnavailable
 			} else {
 				execution.checkpointErr = errUnavailable
@@ -93,18 +123,30 @@ func TestCheckpointRefsRetainAcknowledgedSource(t *testing.T) {
 			r.pushCheckpointRef(t.Context(), refs, RunRequest{}, "stage_finished")
 			candidate := executionCheckpoint(&workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}})
 			refs.apply(&candidate)
-			if failure == "acknowledgement" {
+			if test.failure == "acknowledgement" {
 				if err := recordCheckpointRef(context.Background(), refs, execution, candidate); !errors.Is(err, errUnavailable) {
 					t.Fatalf("acknowledgement = %v", err)
 				}
 			}
 			retained := executionCheckpoint(&workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}})
 			refs.apply(&retained)
-			if retained.CommitSHA != previous.CommitSHA || retained.HeadSHA != previous.HeadSHA || retained.WorkspaceDigest != previous.WorkspaceDigest {
-				t.Fatalf("invented saved-work receipt: %#v", retained)
-			}
-			if refs.saved == nil || refs.saved.CommitSHA != previous.CommitSHA || refs.saved.WorkspaceDigest != previous.WorkspaceDigest {
-				t.Fatalf("acknowledged source changed: %#v", refs.saved)
+			if test.wantSaved {
+				if retained.CommitSHA != previous.CommitSHA || retained.HeadSHA != previous.HeadSHA || retained.WorkspaceDigest != previous.WorkspaceDigest {
+					t.Fatalf("invented saved-work receipt: %#v", retained)
+				}
+				if refs.saved == nil || refs.saved.CommitSHA != previous.CommitSHA || refs.saved.WorkspaceDigest != previous.WorkspaceDigest {
+					t.Fatalf("acknowledged source changed: %#v", refs.saved)
+				}
+			} else {
+				if refs.saved != nil || retained.WorkspaceDigest != "new edits" || retained.HeadSHA != strings.Repeat("a", 40) {
+					t.Fatalf("unselected source retained: saved=%#v checkpoint=%#v", refs.saved, retained)
+				}
+				if test.failure == "capture" && issue.Checkpoint == nil && retained.GitRef() {
+					t.Fatalf("failed capture published unselected source: %#v", retained)
+				}
+				if issue.Checkpoint != nil && retained.CommitSHA != issue.Checkpoint.CommitSHA {
+					t.Fatalf("failed capture replaced selected checkpoint: %#v", retained)
+				}
 			}
 		})
 	}
