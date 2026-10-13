@@ -65,11 +65,7 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 		}
 	}
 	result.Detail = &detail
-	result.ValidationAudit, err = readValidationAudit(ctx, query, scope, "", "", change.ID, "")
-	if err != nil {
-		return result, err
-	}
-	result.Read = &operatortool.ChangeRead{VersionID: selection.Version, Complete: true, Sections: map[string]operatortool.ChangeReadPage{}}
+	result.Read = &operatortool.ChangeRead{VersionID: selection.Version, PolicyDetailsOmitted: true, Complete: true, Sections: map[string]operatortool.ChangeReadPage{}}
 	sections := []string{selection.Section}
 	if selection.Section == "current" {
 		sections = []string{"versions", "reviews", "checks", "discussion"}
@@ -268,6 +264,13 @@ func boundedChangeLanding(landing *tracker.NativeLandingReceipt) *tracker.Native
 }
 
 func boundedChangeVersion(version tracker.ChangeVersion) tracker.ChangeVersion {
+	if version.Policy.Authored != nil {
+		authored := *version.Policy.Authored
+		authored.Files = nil
+		version.Policy.Authored = &authored
+	}
+	version.Policy.Configuration = nil
+	version.Policy.Workflow = nil
 	version.Validation = boundedChangeCommand(version.Validation)
 	version.Landing = boundedChangeLanding(version.Landing)
 	return version
