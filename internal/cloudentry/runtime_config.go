@@ -130,6 +130,42 @@ func (s *Service) runtimePublicationPath() string {
 	return filepath.Join(s.config.StateDir, hubserver.HostedRuntimeFilename)
 }
 
+func (s *Service) publishTenantRuntime(ctx context.Context, organization Organization) error {
+	raw, err := os.ReadFile(s.runtimePublicationPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	publication := hubserver.HostedRuntimePublication{Tenants: make(map[string]hubserver.HostedRuntimeUpdate)}
+	if err := json.Unmarshal(raw, &publication); err != nil {
+		return fmt.Errorf("read runtime publication: %w", err)
+	}
+	if err := s.linkRuntimePublication(s.tenantSpec(organization).Directory); err != nil {
+		return err
+	}
+	update := publication.Update
+	update.Reason = "tenant provisioning adopts published cloud runtime"
+	update.StageID = uuid.NewString()
+	if err := s.changeTenantRuntime(ctx, organization, &update); err != nil {
+		return err
+	}
+	publication.Tenants[organization.ID] = update
+	publication.Published = append(slices.Clone(publication.Published), update.StageID)
+	raw, err = json.Marshal(publication)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := writePrivateFile(s.runtimePublicationPath(), raw); err != nil {
+		return fmt.Errorf("publish tenant runtime settings: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) linkRuntimePublication(directory string) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
