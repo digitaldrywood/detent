@@ -150,15 +150,33 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 		}
 		out.Partial = out.Partial || projectReady > maxAnalyticsPopulation
 		ready += min(projectReady, maxAnalyticsPopulation)
-		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, w)
-		if err != nil {
-			return out, err
-		}
-		out.Partial = out.Partial || clipped
-		for _, issue := range issues {
-			for _, event := range issue.events {
-				if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
-					transitions++
+		if _, projected := q.(analyticsRollupReader); projected {
+			observed, partial, err := readDiagnosticsResidenceRollups(ctx, q, scope, &out)
+			if err != nil {
+				return out, err
+			}
+			transitions += observed
+			out.Partial = out.Partial || partial
+		} else {
+			states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, w)
+			if err != nil {
+				return out, err
+			}
+			out.Partial = out.Partial || clipped
+			for _, issue := range issues {
+				for _, event := range issue.events {
+					if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
+						transitions++
+					}
+				}
+			}
+			for i := range out.Capacity {
+				at := minTime(out.Capacity[i].Hour.Add(time.Hour), w.To)
+				depth := diagnosticsTodoDepth(issues, states, clipped, at)
+				if depth == nil {
+					out.Capacity[i].Todo = nil
+				} else if out.Capacity[i].Todo != nil {
+					*out.Capacity[i].Todo += *depth
 				}
 			}
 		}
@@ -179,15 +197,6 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 				values[name] = map[string]bool{}
 			}
 			values[name][value] = true
-		}
-		for i := range out.Capacity {
-			at := minTime(out.Capacity[i].Hour.Add(time.Hour), w.To)
-			depth := diagnosticsTodoDepth(issues, states, clipped, at)
-			if depth == nil {
-				out.Capacity[i].Todo = nil
-			} else if out.Capacity[i].Todo != nil {
-				*out.Capacity[i].Todo += *depth
-			}
 		}
 		if err := diagnosticsLeaseCapacity(ctx, q, scope, &out); err != nil {
 			return out, err
@@ -284,10 +293,14 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at)
+	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at)
 FROM json_each(?) l JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id')
 AND e.type='workflow.transitioned' AND json_extract(e.data_json,'$.to_state')='Merging'
-AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) GROUP BY l.key ORDER BY l.key`, encoded, scope.organization, scope.project)
+AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) GROUP BY l.key ORDER BY l.key`
+	if _, projected := q.(analyticsRollupReader); projected {
+		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT json_extract(e.data_json,'$.At') FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND json_extract(e.data_json,'$.ID')=json_extract(l.value,'$.work_item_id') AND julianday(json_extract(e.data_json,'$.At'))<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY json_extract(e.data_json,'$.AtNS') DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered FROM waits WHERE entered IS NOT NULL ORDER BY key`
+	}
+	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}

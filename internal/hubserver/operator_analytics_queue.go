@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -21,6 +20,9 @@ type nativeAnalyticsCapacityWait struct {
 }
 
 func projectNativeAnalyticsCapacityWait(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+	if _, projected := q.(analyticsRollupReader); projected {
+		return projectAnalyticsCapacityRollups(ctx, q, scope, out)
+	}
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
 	statement := `SELECT c.data_json,c.recorded_at,
 coalesce((SELECT p.data_json FROM collaboration_events p
@@ -36,9 +38,7 @@ FROM collaboration_events c WHERE c.organization_id=? AND c.project_id=? AND c.t
 AND json_extract(c.data_json,'$.decision.source')='native_claim' AND json_extract(c.data_json,'$.decision.outcome')='claimed'
 AND julianday(c.recorded_at)>=julianday(?) AND julianday(c.recorded_at)<julianday(?)
 ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
-	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
-		statement = `SELECT c.data_json,c.recorded_at,c.prior_data,c.prior_type,c.prior_at ` + statement[strings.Index(statement, "FROM collaboration_events c WHERE"):]
-	}
+
 	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", statement, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
 	if err != nil {
 		return err

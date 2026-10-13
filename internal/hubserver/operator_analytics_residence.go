@@ -42,6 +42,13 @@ type analyticsResidenceTimeline struct {
 }
 
 func projectNativeAnalyticsResidence(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
+	if _, projected := q.(analyticsRollupReader); projected && analyticsPopulationOffset(ctx, "residence_events") == 0 {
+		return projectAnalyticsResidenceRollups(ctx, q, scope, r, out)
+	}
+	return projectNativeAnalyticsResidenceHistory(ctx, q, scope, r, out)
+}
+
+func projectNativeAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
 	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, out.Window)
 	if err != nil {
 		return err

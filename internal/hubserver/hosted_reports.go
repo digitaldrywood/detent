@@ -139,25 +139,31 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
 	historyWindow := w
 	historyWindow.From = w.From.Add(-w.To.Sub(w.From))
-	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, historyWindow)
-	if err != nil {
-		return out, err
-	}
-	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
-	for _, issue := range issues {
-		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
-	}
-	out.Completion = reportsCompletions(timelines, states, w.From, w.To)
-	out.Previous = reportsCompletions(timelines, states, historyWindow.From, w.From)
-	out.Completion.Partial = out.Completion.Partial || clipped
-	out.Previous.Partial = out.Previous.Partial || clipped
-	for _, timeline := range timelines {
-		for _, done := range timeline.done {
-			if !done.Before(w.From) && done.Before(w.To) {
-				if i := nativeAnalyticsBucketIndex(done, w); i >= 0 {
-					out.Throughput[i].Done++
+	if _, projected := q.(analyticsRollupReader); projected {
+		if err := readReportsCompletionRollups(ctx, q, scope, historyWindow, &out); err != nil {
+			return out, err
+		}
+	} else {
+		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, historyWindow)
+		if err != nil {
+			return out, err
+		}
+		timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+		for _, issue := range issues {
+			timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+		}
+		out.Completion = reportsCompletions(timelines, states, w.From, w.To)
+		out.Previous = reportsCompletions(timelines, states, historyWindow.From, w.From)
+		out.Completion.Partial = out.Completion.Partial || clipped
+		out.Previous.Partial = out.Previous.Partial || clipped
+		for _, timeline := range timelines {
+			for _, done := range timeline.done {
+				if !done.Before(w.From) && done.Before(w.To) {
+					if i := nativeAnalyticsBucketIndex(done, w); i >= 0 {
+						out.Throughput[i].Done++
+					}
+					break
 				}
-				break
 			}
 		}
 	}
