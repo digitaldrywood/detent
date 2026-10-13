@@ -778,9 +778,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				response = f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
-				changed := outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "runner grant revoked" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
+				changed := outcome == "sandbox access" || outcome == "full access" || outcome == "preserve access" || outcome == "execute" || outcome == "execute with manual import" || outcome == "validation then valid" || outcome == "wrong role" || outcome == "no runner grant" || outcome == "grantless project" || outcome == "stale" && tool == operatortool.AddComment
 				if changed {
 					requireNativeStatus(t, response, http.StatusOK)
+				} else if outcome == "runner grant revoked" {
+					requireNativeStatus(t, response, http.StatusNotFound)
 				} else if response.Code < 400 {
 					t.Fatalf("refused call=%d %s", response.Code, response.Body.String())
 				}

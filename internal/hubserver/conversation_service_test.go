@@ -91,7 +91,7 @@ func TestConversationAuthorizeRead(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := service.authorizeRead(test.scope, test.record)
+			err := service.authorizeRead(t.Context(), nil, test.scope, test.record)
 			if test.wantErr {
 				var failure *nativeError
 				if !errors.As(err, &failure) || failure.status != http.StatusNotFound {

@@ -587,6 +587,47 @@ listing needs read access to the issue *and* to the conversation: entries from
 private chats the reader does not own are left out, so a shared issue never
 leaks a private chat's words.
 
+**Screen reads and stored answers.** Project chat reads application DTOs through
+its originating human session, rechecking role, project grants and entitlement
+on each tool call. It exposes the same safe projections as Work, Activity,
+Diagnostics, Reports, setup/settings, fleet, usage, billing and Members.
+Runner management details, member management and billing retain their existing
+application permission predicates; denied reads name the missing permission.
+The fleet summary and member roster retain the screen's lower-role projection.
+Runner results are restricted to attached runners and this project's routing,
+leases and usage. Shared capacity ceilings are not a claim of free capacity.
+
+The built-in [`configuration-map` skill](configuration-map.md) maps settings to Cloud routes,
+permissions and existing application owners. Capacity questions inspect all
+serving runners, with self-hosted runners first; ambiguous changes on a mixed
+fleet ask which kind. Runner capacity and routing, project model selection,
+repository binding, policy, onboarding, integration and Sprites changes use the
+existing client confirmation cards. Preview and submission each recheck the
+human's current authority. Capacity proposals retain runner and configuration
+revisions, and confirmation reads back desired, applied and effective evidence.
+Accepted capacity intent can still be waiting for heartbeat and reload.
+Shared-runner routing requires access to all involved assignments and preserves
+other projects' assignments and ranks. Secret changes never accept secret
+values in chat; token replacement uses the secure connector.
+
+Before a hosted coordinator turn sends history to the model, and before a tool
+result can be stored, the conversation records an immutable read audience.
+Hosted readers must have the same current organization role, credential/key
+scope, support identity and complete project grant set (read, write and runner
+management) as that audience. Non-hosted screen reads restrict the audience to
+the originating principal and credential scope. This equal-access rule applies
+to private and shared chats, including lists, references, attachments, event
+streams and subsequent turns. Private chats still require ownership. The existing lease-fenced worker
+binding and control endpoints remain authorized by the linked issue's exact
+execution lease, but protected chat history is never passed to workers as a
+resume transcript. Workers start from the approved issue and explicit queued
+controls; their generic conversation reads still obey the audience rule. A role or
+grant change can make earlier answers inaccessible even to their author; start
+a new conversation under the current permissions. The server does not try to
+redact privileged facts from previously generated prose. Conversations without
+a recorded screen-read audience retain their existing visibility rule until a
+hosted coordinator turn or authenticated tool read records one.
+
 **Handoff next step.** `POST …/conversations/:conversation/link` accepts
 `next: {state, priority, dispatch}`, all optional. `state` must be one of the
 project's workflow states. `priority` is the numeric rank 0 to 3, and is absent

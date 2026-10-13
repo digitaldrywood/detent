@@ -36,11 +36,7 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 	return request, nil
 }
 
-func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, projects ...tracker.ProjectID) ([]tracker.NativeIssue, error) {
-	var project tracker.ProjectID
-	if len(projects) > 0 {
-		project = projects[0]
-	}
+func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time) ([]tracker.NativeIssue, error) {
 	type occurrence struct {
 		finding          healthFinding
 		project          tracker.ProjectID
@@ -55,11 +51,11 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
  FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.deleted_at IS NULL AND p.profile='native'
  AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
  LEFT JOIN health_finding_issues l ON l.finding_id=f.id AND l.project_id=p.id
- WHERE f.organization_id=? AND f.class='instance' AND (?='' OR p.id=?) AND (?='' OR f.resolved_at IS NOT NULL)
+ WHERE f.organization_id=? AND f.class='instance'
  AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND (l.reported_resolved_at IS NOT f.resolved_at
  OR (f.class='instance' AND EXISTS(SELECT 1 FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id
  WHERE i.organization_id=f.organization_id AND i.project_id=p.id AND i.native_id=l.work_item_id AND i.archived=0 AND ws.detent_state='Todo')))))
- ORDER BY f.rowid,p.id LIMIT ?`, organization, project, project, project, healthReadLimit+1)
+ ORDER BY f.rowid,p.id LIMIT ?`, organization, healthReadLimit+1)
 	if err != nil {
 		return nil, err
 	}

@@ -484,9 +484,15 @@ func translateConversationError(err error) error {
 // authorizeRead applies the audience rules from the decisions document:
 // the record must belong to the request scope, private conversations are
 // visible only to their owner, and every denial is an opaque not_found.
-func (c *conversationService) authorizeRead(scope nativeScope, record conversationRecord) error {
+func (c *conversationService) authorizeRead(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
 	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
 		return nativeNotFound()
+	}
+	if record.ReadAudience != "" {
+		audience, err := conversationReadAudience(ctx, query, scope.organization, scope.credential)
+		if err != nil || audience != record.ReadAudience {
+			return nativeNotFound()
+		}
 	}
 	if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
 		return nativeNotFound()
@@ -497,7 +503,7 @@ func (c *conversationService) authorizeRead(scope nativeScope, record conversati
 // authorizeWrite requires read access, an active conversation and project
 // write capability. Viewers and read-only grants cannot send commands.
 func (c *conversationService) authorizeWrite(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
-	if err := c.authorizeRead(scope, record); err != nil {
+	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
 		return err
 	}
 	if scope.credential.Hosted != nil {
@@ -824,7 +830,7 @@ func (c *conversationService) loadConversation(ctx context.Context, query native
 	if err != nil {
 		return conversationRecord{}, translateConversationError(err)
 	}
-	if err := c.authorizeRead(scope, record); err != nil {
+	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
 		return conversationRecord{}, err
 	}
 	return record, nil
