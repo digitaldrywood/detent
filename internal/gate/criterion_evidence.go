@@ -123,9 +123,6 @@ func (entry *CriterionEvidence) normalizeReceipts(commands []CommandResult, head
 			return entry.Reference == command.Command && command.Command != "" && command.ExitCode == 0 && command.HeadSHA == head && command.TreeSHA == entry.TreeSHA
 		})
 	}
-	if tree == "" {
-		return false
-	}
 	seen := make(map[string]bool, len(entry.ReceiptIDs))
 	var selected CommandResult
 	for _, id := range entry.ReceiptIDs {
@@ -138,9 +135,10 @@ func (entry *CriterionEvidence) normalizeReceipts(commands []CommandResult, head
 			if command.ReceiptID != id {
 				continue
 			}
-			if found || command.Command == "" || command.ExitCode != 0 || command.HeadSHA != head || command.TreeSHA != tree {
+			if found || command.Command == "" || command.ExitCode != 0 || command.HeadSHA != head || command.TreeSHA == "" || tree != "" && command.TreeSHA != tree {
 				return false
 			}
+			tree = command.TreeSHA
 			found = true
 			selected = command
 		}
