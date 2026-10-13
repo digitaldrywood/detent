@@ -2587,7 +2587,6 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", autoPromoteMergingState}, TerminalStates: []string{"Done", "Cancelled"}, MergeFastPathEnabled: true, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff}}})
 			if tt.audit != "" {
 				cfg.Project.ID = "detent"
-				cfg.ServiceIdentity = "detent:detent"
 				cfg.AutoPromote.Gate.SecurityAudit = gate.SecurityAuditConfig{Enabled: true, MaxAttempts: 1}
 			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}

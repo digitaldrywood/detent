@@ -375,3 +375,13 @@ func (e *sshNativeExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
 		slog.Warn("SSH pipeline timing unavailable", "error", err)
 	}
 }
+
+func (e *sshNativeExecution) SecurityAuditVersion(ctx context.Context) (NativeValidation, error) {
+	var input NativeValidation
+	err := e.peer.Call(ctx, "execution.SecurityAuditVersion", &input)
+	return input, err
+}
+
+func (e *sshNativeExecution) RecordSecurityAudit(ctx context.Context, result tracker.SecurityAuditReview) error {
+	return e.peer.Call(ctx, "execution.RecordSecurityAudit", nil, result)
+}

@@ -6615,6 +6615,7 @@ func validDoctorGlobalWithProjects(configPath string, ids ...string) globalconfi
 
 func validDoctorAutoPromoteWorkflow() workflowconfig.Config {
 	cfg := validDoctorWorkflow("/repo")
+	cfg.Gate.SecurityAudit.Enabled = false
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.APIKey = "token"
 	cfg.Tracker.ProjectSlug = "PVT_1"
