@@ -266,6 +266,7 @@ describe("firstIssueState", () => {
       can_write: true,
       can_manage_runners: true,
       states: [
+        { name: "Triage", terminal: false, dispatchable: false },
         { name: "Backlog", terminal: false, dispatchable: false },
         { name: "Todo", terminal: false, dispatchable: true },
         { name: "Done", terminal: true, dispatchable: false },
