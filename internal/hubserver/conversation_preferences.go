@@ -366,8 +366,15 @@ func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return nil, err
 	}
+	audience, err := conversationReadAudience(ctx, s.database.db, scope.organization, scope.credential)
+	if err != nil {
+		return nil, err
+	}
 	page := conversationWorkItemReferencePage{References: make([]conversationWorkItemReference, 0, len(stored))}
 	for _, reference := range stored {
+		if reference.ReadAudience != "" && reference.ReadAudience != audience {
+			continue
+		}
 		if reference.Visibility == conversation.VisibilityPrivate && reference.OwnerPrincipalID != scope.credential.ID {
 			continue
 		}

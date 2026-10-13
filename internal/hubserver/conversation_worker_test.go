@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -282,7 +283,8 @@ type workerBindResponse struct {
 	ConversationID string `json:"conversation_id"`
 	Continuation   bool   `json:"continuation"`
 	Resume         struct {
-		ThreadID string `json:"thread_id"`
+		ThreadID   string            `json:"thread_id"`
+		Transcript []json.RawMessage `json:"transcript"`
 	} `json:"resume"`
 	Pending []workerControlEnvelope `json:"pending"`
 	Cursor  int64                   `json:"cursor"`
@@ -1167,53 +1169,73 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 // messages the transcript carried (decisions section 10.4).
 func TestConversationBindReportsResume(t *testing.T) {
 	t.Parallel()
-	f := newConversationWorkerFixture(t)
-	body := f.bindBody()
-	body["thread_id"] = "thread-1"
-	requireNativeStatus(t, f.bind(t, body), http.StatusOK)
-	if record := f.load(t); record.Execution.Resume != conversation.ResumeThread {
-		t.Fatalf("resume = %q, want thread", record.Execution.Resume)
-	}
-	for _, message := range f.messages(t) {
-		if message.Kind == conversation.MessageStatus {
-			t.Fatalf("a resumable thread must not append a transcript notice: %#v", message)
-		}
-	}
-	requireNativeStatus(t, f.turnEvents(t,
-		map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"},
-		map[string]any{"type": "delta", "provider_item_id": "item-1", "text": "the renewal returns early"},
-		map[string]any{"type": "turn_completed", "turn_id": "turn-1", "status": "completed"},
-	), http.StatusAccepted)
-	requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
-	history := len(f.messages(t))
+	for _, protected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("protected=%t", protected), func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			body := f.bindBody()
+			body["thread_id"] = "thread-1"
+			requireNativeStatus(t, f.bind(t, body), http.StatusOK)
+			if record := f.load(t); record.Execution.Resume != conversation.ResumeThread {
+				t.Fatalf("resume = %q, want thread", record.Execution.Resume)
+			}
+			for _, message := range f.messages(t) {
+				if message.Kind == conversation.MessageStatus {
+					t.Fatalf("a resumable thread must not append a transcript notice: %#v", message)
+				}
+			}
+			requireNativeStatus(t, f.turnEvents(t,
+				map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"},
+				map[string]any{"type": "delta", "provider_item_id": "item-1", "text": "the renewal returns early"},
+				map[string]any{"type": "turn_completed", "turn_id": "turn-1", "status": "completed"},
+			), http.StatusAccepted)
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			history := len(f.messages(t))
 
-	// The hub forgets which runner produced the thread, which is what a
-	// hub-side coordinator turn looks like to the next runner.
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET provider_thread_runner_id = 'rnr_elsewhere' WHERE id = ?", f.record.ID); err != nil {
-		t.Fatal(err)
-	}
-	f.release(t)
-	f.claim(t)
-	response := f.bind(t, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var bound workerBindResponse
-	decodeHubResponse(t, response, &bound)
-	if bound.Resume.ThreadID != "" {
-		t.Fatalf("resume.thread_id = %q, want empty for a runner that cannot reach the thread", bound.Resume.ThreadID)
-	}
-	record := f.load(t)
-	if record.Execution.Resume != conversation.ResumeTranscript {
-		t.Fatalf("resume = %q, want transcript", record.Execution.Resume)
-	}
-	requireConversationTranscriptNotice(t, f)
-	var notice string
-	for _, message := range f.messages(t) {
-		if message.Kind == conversation.MessageStatus && message.Role == conversation.RoleSystem {
-			notice = message.Text
-		}
-	}
-	if want := conversationTranscriptNotice(history); notice != want {
-		t.Fatalf("notice = %q, want %q", notice, want)
+			// The hub forgets which runner produced the thread, which is what a
+			// hub-side coordinator turn looks like to the next runner.
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET provider_thread_runner_id = 'rnr_elsewhere' WHERE id = ?", f.record.ID); err != nil {
+				t.Fatal(err)
+			}
+			if protected {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET read_audience='protected-screen-audience' WHERE id=?", f.record.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.release(t)
+			f.claim(t)
+			response := f.bind(t, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var bound workerBindResponse
+			decodeHubResponse(t, response, &bound)
+			if bound.Resume.ThreadID != "" {
+				t.Fatalf("resume.thread_id = %q, want empty for a runner that cannot reach the thread", bound.Resume.ThreadID)
+			}
+			record := f.load(t)
+			if protected {
+				if record.Execution.Resume != "" || len(bound.Resume.Transcript) != 0 {
+					t.Fatalf("worker received protected history: %+v", bound.Resume)
+				}
+				requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages", f.worker, nil)
+				requireNativeStatus(t, response, http.StatusForbidden)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages", f.token, nil)
+				requireNativeStatus(t, response, http.StatusNotFound)
+				return
+			}
+			if record.Execution.Resume != conversation.ResumeTranscript {
+				t.Fatalf("resume = %q, want transcript", record.Execution.Resume)
+			}
+			requireConversationTranscriptNotice(t, f)
+			var notice string
+			for _, message := range f.messages(t) {
+				if message.Kind == conversation.MessageStatus && message.Role == conversation.RoleSystem {
+					notice = message.Text
+				}
+			}
+			if want := conversationTranscriptNotice(history); notice != want {
+				t.Fatalf("notice = %q, want %q", notice, want)
+			}
+		})
 	}
 }
 

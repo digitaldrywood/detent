@@ -86,6 +86,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		}
 		exclusions := runner.Exclusions(scope.project, approval.Policy.Requirements, false)
 		runner.ProjectIDs = []tracker.ProjectID{scope.project}
+		runner.ProjectRanks = map[tracker.ProjectID]int{scope.project: runner.ProjectRanks[scope.project]}
 		runner.Leases = nil
 		runner.ProviderCapacity = nil
 		var checksJSON string

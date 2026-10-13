@@ -359,6 +359,17 @@ func requireConversationRecordOwner(record conversationRecord, identity conversa
 // readLinkedConversation resolves the canonical conversation of a work item
 // in the request scope.
 func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (conversationRecord, error) {
+	record, err := readLinkedConversationRecord(ctx, tx, scope, item)
+	if err != nil {
+		return record, err
+	}
+	if err := c.authorizeRead(ctx, tx, scope, record); err != nil {
+		return record, err
+	}
+	return record, nil
+}
+
+func readLinkedConversationRecord(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (conversationRecord, error) {
 	record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()
@@ -366,14 +377,22 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sq
 	if err != nil {
 		return record, fmt.Errorf("read linked conversation: %w", err)
 	}
-	if err := c.authorizeRead(scope, record); err != nil {
-		return record, err
-	}
 	return record, nil
 }
 
 func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, now time.Time) (conversationRecord, error) {
-	record, err := c.readLinkedConversation(ctx, tx, scope, item)
+	var record conversationRecord
+	var err error
+	if scope.credential.Scope == apiScopeWorker {
+		record, err = readLinkedConversationRecord(ctx, tx, scope, item)
+		if err == nil {
+			readable := record
+			readable.ReadAudience = ""
+			err = c.authorizeRead(ctx, tx, scope, readable)
+		}
+	} else {
+		record, err = c.readLinkedConversation(ctx, tx, scope, item)
+	}
 	if err == nil {
 		return record, nil
 	}
