@@ -181,7 +181,9 @@ run in the full suite: hourly on pinned `develop` commits, and on every push
 or dispatch to `release/*`. Develop receives one full suite per SHA across
 scheduled and manual runs. Develop preflight skips completed non-cancelled
 runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
-runs it again. Release runs always validate their event SHA, independently of
+runs it again. The finalizer reports skipped scheduled activity without
+publishing green validation or release evidence. Release runs always validate
+their event SHA, independently of
 develop and other release branches. Release evidence is the green full suite
 on the release branch head, never develop evidence reused after cherry-picks.
 Successful develop validation publishes `develop-full-ci`. Release validation

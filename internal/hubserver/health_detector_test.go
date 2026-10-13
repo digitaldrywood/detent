@@ -148,6 +148,11 @@ func TestHealthFindingsReads(t *testing.T) {
 	}
 	findings[0].Projects = append(findings[0].Projects, string(other.project.ID))
 	findings[0].Evidence = healthEvidence{Counts: map[string]int{"queue_depth": 8}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 3}, string(other.project.ID): {QueueDepth: 5}}}
+	scheduled, active := deadManFinding(now, healthProject{ID: string(f.project.ID), Scheduled: healthScheduledValidation{LastReport: now.Add(-6 * time.Hour), LastRunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1"}})
+	if !active {
+		t.Fatal("scheduled validation finding was not active")
+	}
+	findings[1] = scheduled
 	applyTestHealth(t, f, now, findings)
 	for _, test := range []struct {
 		name, path string
@@ -207,7 +212,7 @@ func TestHealthFindingsReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(result.Content), "last_tick_at") {
+	if !strings.Contains(string(result.Content), "last_tick_at") || !strings.Contains(string(result.Content), "scheduled_silent") || !strings.Contains(string(result.Content), "actions/runs/1/attempts/1") {
 		t.Fatalf("MCP result=%+v", result)
 	}
 	applyTestHealth(t, f, now.Add(time.Minute), nil)
