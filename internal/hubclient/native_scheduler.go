@@ -329,11 +329,22 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 	report, problems := s.isolationReport(probeCtx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if probeCtx.Err() != nil && s.lastIsolation != nil {
-		return s.lastIsolation, problems
-	}
-	if probeCtx.Err() == nil {
+	if err := probeCtx.Err(); err != nil {
+		problem := runnerauth.NewProblem("backend_probe_failed")
+		problem.Subject = "backend_isolation"
+		problem.Check = "runner isolation probe"
+		problem.ErrorOutput = err.Error()
+		problem.ReportedAt = s.now().UTC()
+		if s.lastIsolation != nil {
+			problem.Message += " Reported capabilities are cached from the last completed runner isolation probe at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
+			report = s.lastIsolation
+		} else {
+			problem.Message += " No completed runner isolation probe is cached; reported capabilities contain only completed backend checks."
+		}
+		problems = append(problems, problem)
+	} else {
 		s.lastIsolation = report
+		s.lastIsolationAt = s.now().UTC()
 	}
 	return report, problems
 }

@@ -12,15 +12,22 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
-func isolationProblems(report isolation.Report, tier string) []runnerauth.Problem {
+func isolationProblems(report isolation.Report, tier string, observed []runnerauth.Problem) []runnerauth.Problem {
 	problems := []runnerauth.Problem{}
-	if len(report) == 0 {
+	incomplete := func(backend string) bool {
+		return slices.ContainsFunc(observed, func(p runnerauth.Problem) bool {
+			return p.Code == "backend_probe_failed" && (backend == "" || p.Subject == "backend_isolation" || strings.TrimSuffix(p.Subject, "/sandbox") == backend)
+		})
+	}
+	if len(report) == 0 && !incomplete("") {
 		problems = append(problems, runnerauth.NewProblem("backend_missing"))
 	}
 	for backend, tiers := range report {
 		if len(tiers) == 0 && strings.HasSuffix(backend, "/workflow") {
 			problems = append(problems, runnerauth.NewProblem("settings_invalid"))
-		} else if len(tiers) == 0 {
+		} else if len(tiers) == 0 && !incomplete(backend) && !slices.ContainsFunc(observed, func(p runnerauth.Problem) bool {
+			return strings.TrimSuffix(p.Subject, "/sandbox") == backend
+		}) {
 			p := runnerauth.NewProblem("backend_missing")
 			p.Subject = backend
 			problems = append(problems, p)
@@ -45,11 +52,14 @@ func isolationProblems(report isolation.Report, tier string) []runnerauth.Proble
 			problem.Message = strings.ToValidUTF8(problem.Message[:997], "") + "..."
 		}
 		problem.FixHint = "Repair the listed backend or its sandbox support, then let the runner refresh."
+		if incomplete("") {
+			problem.FixHint = "Check the runner's probe execution; isolation support has not been confirmed."
+		}
 		other, label := isolation.NativeTrusted, "Full access"
 		if tier == isolation.NativeTrusted {
 			other, label = isolation.Sandbox, "Sandbox"
 		}
-		if report.Supports(other) {
+		if report.Supports(other) && !incomplete("") {
 			problem.FixHint += " Or switch Agent access to " + label + " in the runner sheet."
 		}
 		problems = append(problems, problem)
@@ -91,7 +101,7 @@ func (r *runnerCredentialSource) heartbeatProblems(ctx context.Context, machine 
 		problems = append(problems, runnerauth.NewProblem("settings_invalid"))
 		routing.IsolationTier = isolation.Sandbox
 	}
-	for _, generic := range isolationProblems(machine.BackendIsolation, routing.IsolationTier) {
+	for _, generic := range isolationProblems(machine.BackendIsolation, routing.IsolationTier, problems) {
 		matched := false
 		for i := range problems {
 			if problems[i].Code == generic.Code && (problems[i].Subject == generic.Subject || generic.Subject == routing.IsolationTier) {
@@ -106,7 +116,9 @@ func (r *runnerCredentialSource) heartbeatProblems(ctx context.Context, machine 
 		}
 	}
 	for i := range problems {
-		problems[i].ReportedAt = time.Now()
+		if problems[i].ReportedAt.IsZero() {
+			problems[i].ReportedAt = time.Now()
+		}
 	}
 	if !runnerHostServicesReachable(ctx, routing.HostServices) {
 		problems = append(problems, runnerauth.NewProblem("host_service_unreachable"))
