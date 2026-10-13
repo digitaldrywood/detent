@@ -1142,7 +1142,18 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						if !errors.Is(err, test.validationErr) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 							t.Fatalf("operation interruption revoked deferred authority: %v", err)
 						}
-						if guarded.Err() != nil || string(native.CompletionState()) != string(saved) || h.scheduler.RunExecution(issue.ID) != execution {
+						var before, after nativeCompletionState
+						if err := json.Unmarshal(saved, &before); err != nil {
+							t.Fatal(err)
+						}
+						if err := json.Unmarshal(native.CompletionState(), &after); err != nil {
+							t.Fatal(err)
+						}
+						if before.PreparedFinalization == nil || after.PreparedFinalization == nil || before.PreparedFinalization.ObservedAt.IsZero() || after.PreparedFinalization.ObservedAt.IsZero() {
+							t.Fatal("deferred completion lost its prepared finalization observation")
+						}
+						after.PreparedFinalization.ObservedAt = before.PreparedFinalization.ObservedAt
+						if guarded.Err() != nil || !reflect.DeepEqual(before, after) || h.scheduler.RunExecution(issue.ID) != execution {
 							t.Fatal("interrupted validation replaced authority or lost deferred completion")
 						}
 						if _, err := h.native.ValidateLease(t.Context(), native.claim.lease); err != nil {
