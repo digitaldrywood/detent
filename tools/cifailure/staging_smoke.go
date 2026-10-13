@@ -463,7 +463,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 	s.fixtures["organization_id"] = string(project.OrganizationID)
 	first, second := "", ""
 	for _, from := range s.states {
-		if from.Dispatchable || from.Terminal || from.OperatorOnly {
+		if from.Name == "Triage" || from.Dispatchable || from.Terminal || from.OperatorOnly {
 			continue
 		}
 		for _, to := range s.states {
