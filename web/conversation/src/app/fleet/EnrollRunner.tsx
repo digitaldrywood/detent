@@ -21,6 +21,7 @@ import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { NativeSelect } from "../account/controls.tsx";
 import { ControlError } from "../account/controls.tsx";
+import { AccountError } from "../account/api.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
@@ -31,6 +32,11 @@ const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "eve
 
 /** The hub refuses anything over 900 (`runnerauth.MaxEnrollmentTTL`). */
 const ENROLLMENT_TTL_SECONDS = 900;
+
+function enrollmentError(error: unknown): string | null {
+  if (error instanceof AccountError) return `${error.code}: ${error.message}`;
+  return error instanceof Error ? error.message : null;
+}
 
 export interface PendingEnrollment {
   readonly id: string;
@@ -242,9 +248,9 @@ export function EnrollRunnerDialog({
       try {
         const secret = await api.spritesSecret(id);
         const present = secret.present || (id !== "" && (await api.spritesSecret("")).present);
-        return { id, present };
-      } catch {
-        return { id, present: null };
+        return { id, present, error: null };
+      } catch (error) {
+        return { id, present: null, error: enrollmentError(error) };
       }
     }));
   }, [api, open, location, selectedKey, scope]);
@@ -425,6 +431,7 @@ export function EnrollRunnerDialog({
                     </label>
                   ))}
                 </RadioGroup>
+                {isolationTier === null ? <p className="text-xs text-muted-foreground">Choose Sandbox or Full access to create a command.</p> : null}
               </fieldset>
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend className="pb-1 font-medium">Where will it run?</legend>
@@ -446,6 +453,7 @@ export function EnrollRunnerDialog({
                 {sprites.loading ? <p className="text-xs text-muted-foreground">Checking Sprites tokens…</p> : sprites.value?.filter((entry) => entry.present !== true).map((entry) => (
                   <p key={entry.id} className="text-xs text-warning">
                     {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {entry.id === "" ? "the organization" : projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite.{entry.id === "" ? "" : " You can uncheck the project to continue without it."}{" "}
+                    {entry.error === null ? null : <>{entry.error}{" "}</>}
                     <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations${entry.id === "" ? "" : `?project=${encodeURIComponent(entry.id)}`}#sprites`}>Set a Sprites token</a>
                   </p>
                 ))}
@@ -627,7 +635,7 @@ export function EnrollRunnerDialog({
           {baselinePending && fleet.error === null ? (
             <p role="status" className="text-xs text-muted-foreground">Reading runners before creating a command…</p>
           ) : null}
-          <ControlError message={create.error?.message ?? (baselinePending ? fleet.error?.message : null) ?? null} />
+          <ControlError message={enrollmentError(create.error ?? fleet.error)} />
           {baselinePending && fleet.error !== null ? (
             <Button variant="outline" disabled={fleet.loading} onClick={() => void fleet.refresh()}>Retry runner read</Button>
           ) : null}
