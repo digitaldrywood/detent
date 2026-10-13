@@ -77,6 +77,12 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 // CSRF check for bearer callers, so a mixed credential is never accepted.
 func (s *Service) hostedSessionOnly(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		if !hostedReadRequest(c) {
+			credential, _, err := s.authenticateAPIRequest(c)
+			if err == nil && credential.HostedRole == "reporter" {
+				return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+			}
+		}
 		if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
 			if c.Path() == hostedOrganizationBase+"/projects" && c.Request().Method == http.MethodGet {
 				return s.entryKeyProjects(c)
