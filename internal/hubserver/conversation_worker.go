@@ -262,7 +262,7 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 // conversationWorkerError maps tracker fencing failures onto the
 // conversation vocabulary: a lease that is not current is stale_execution.
 func conversationWorkerError(err error) error {
-	if errors.Is(err, tracker.ErrStaleFencingToken) {
+	if errors.Is(err, tracker.ErrStaleFencingToken) || errors.Is(err, tracker.ErrLeaseConflict) {
 		return conversationStale("The lease is no longer current")
 	}
 	return err

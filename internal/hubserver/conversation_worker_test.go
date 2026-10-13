@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1020,6 +1021,51 @@ func TestConversationWorkerUnbind(t *testing.T) {
 
 func TestConversationReconcileLeaseLoss(t *testing.T) {
 	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		organization bool
+		expired      bool
+		mode         budget.ExhaustionMode
+	}{
+		{name: "expired organization hard stop", organization: true, expired: true, mode: budget.HardStop},
+		{name: "expired project hard stop", expired: true, mode: budget.HardStop},
+		{name: "current project hard stop", mode: budget.HardStop},
+		{name: "expired project drain", expired: true, mode: budget.DrainIssue},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-budget", "turn_id": "turn-budget"}), http.StatusAccepted)
+			before := f.load(t)
+			setMonthlyBudgetFixture(t, f.nativeFixture, test.organization, budget.MonthlyPolicy{Enabled: true, Mode: test.mode, RunnerMicros: new(int64)})
+			if test.expired {
+				f.advance(11 * time.Minute)
+			}
+			renewalStatus, controlStatus, eventStatus := http.StatusOK, http.StatusOK, http.StatusAccepted
+			if test.mode == budget.HardStop {
+				renewalStatus, controlStatus, eventStatus = http.StatusConflict, http.StatusConflict, http.StatusConflict
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90}), renewalStatus)
+			requireNativeStatus(t, f.controls(t, 0, 0), controlStatus)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-budget", "text": "continued"}), eventStatus)
+			if test.mode == budget.HardStop {
+				if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
+					t.Fatalf("refused requests changed the execution: %+v", after.Execution)
+				}
+			}
+			if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			after := f.load(t)
+			if test.mode == budget.HardStop {
+				if after.Execution.Status != conversation.ExecutionInterrupted || after.Execution.Error != conversationLeaseLostError {
+					t.Fatalf("hard stop retained execution: %+v", after.Execution)
+				}
+			} else if after.Execution != before.Execution {
+				t.Fatalf("drain interrupted admitted execution: %+v", after.Execution)
+			}
+		})
+	}
 	t.Run("same authority renews after reconciliation", func(t *testing.T) {
 		f := newConversationWorkerFixture(t)
 		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)

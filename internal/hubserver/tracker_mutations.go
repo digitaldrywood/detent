@@ -223,9 +223,6 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 		return tracker.Lease{}, err
 	}
 
-	if err := checkMonthlyLease(ctx, tx, record, now); err != nil {
-		return tracker.Lease{}, err
-	}
 	expiresAt := now.Add(request.TTL)
 	if err := renewLeaseRow(ctx, tx, request.LeaseID, request.FencingToken, expiresAt, now); err != nil {
 		return tracker.Lease{}, err
@@ -666,7 +663,7 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 		}
 	}
 
-	return nil
+	return checkMonthlyLease(ctx, tx, record, now)
 }
 
 func requireCurrentLease(record leaseRecord, token tracker.FencingToken, now time.Time) error {
