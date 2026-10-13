@@ -327,7 +327,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 						for _, section := range []string{"work_item", "work_runs"} {
 							raw := json.RawMessage(fmt.Sprintf(`{"work_item_id":%q,"section":%q}`, id, section))
 							result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: "read_issue_history", Arguments: raw})
-							if err != nil || result.Success != (outcome == "shared entry no write grant") {
+							if err != nil || result.Success {
 								t.Fatalf("changed MCP authority %s=%+v error=%v", section, result, err)
 							}
 						}
