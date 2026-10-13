@@ -22,6 +22,7 @@ import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
 import { effectiveSort, laneVisible, tabMatches, toggleCollapsed, WORK_TABS, type WorkTab, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
+import { ImportIssuesDialog } from "./ImportIssues.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
 import {
   ISSUE_CREATION_NEEDS_WRITE,
@@ -251,8 +252,9 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     noProjects ||
     (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
       !board.hasMore && !board.backlogHasMore && (board.totals?.total ?? 0) === 0);
+  const [importProject, setImportProject] = React.useState<string | null>(null);
   const firstRunPanel = firstRun ? (
-    <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
+    <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} onImport={setImportProject} />
   ) : null;
 
   const ask = () => {
@@ -459,7 +461,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           </div>
         ))}
       </div>
-
+      {importProject === null ? null : <ImportIssuesDialog key={importProject} projectId={importProject} onClose={() => { setImportProject(null); board.reload(); }} />}
     </>
   );
 }

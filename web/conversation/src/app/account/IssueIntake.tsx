@@ -21,6 +21,7 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
   const [selection, setSelection] = React.useState<readonly number[]>([]);
   const [numbers, setNumbers] = React.useState("");
   const [destination, setDestination] = React.useState("");
+  const [closeSource, setCloseSource] = React.useState(false);
   const [dispatch, setDispatch] = React.useState(false);
   const batch = resource.value?.batch;
   const lanes = resource.value?.lanes ?? [];
@@ -32,17 +33,21 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
     const result = await api.commandIssueIntake(projectId, body, key.key);
     retireKey(key.storageKey);
     resource.set(result);
-    if (input.action === "discover") { setSelection([]); setNumbers(""); }
+    if (input.action === "discover") { setSelection([]); setNumbers(""); setCloseSource(false); }
+    if (input.action === "close_source") setCloseSource(false);
     return result;
   });
   const busy = command.pending;
   const working = batch?.status === "discovering" || batch?.status === "importing";
   const completed = batch?.items.filter(item => item.status === "completed").length ?? 0;
   const skipped = batch?.items.filter(item => item.status === "skipped").length ?? 0;
+  const closeable = batch?.items.filter(item => item.status === "completed" && !item.source_close_requested && batch.page.issues.some(issue => issue.number === item.number && !issue.closed)).length ?? 0;
+  const closeRequested = batch?.items.filter(item => item.source_close_requested).length ?? 0;
   const failed = batch?.items.filter(item => item.status === "failed").length ?? 0;
   return <section aria-label="Import GitHub issues" className="mb-3 flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-muted p-4">
     <h3 className="text-sm font-medium">Import existing GitHub issues</h3>
-    <p className="text-sm text-muted-foreground">Read selected issues from {repository} using your runner. Discussion and workflow continue in Hub after import. GitHub stays a historical link; this does not close issues or keep syncing.</p>
+    <p className="text-sm text-muted-foreground">Read selected issues from {repository} using your runner. Discussion and workflow continue in Hub after import. GitHub stays a historical link; source issues stay open unless you explicitly close them after import.</p>
+    {runners.length === 0 ? <p className="text-sm text-muted-foreground">Connect a runner to this repository in project setup before previewing issues.</p> : null}
     <label className="text-sm">Runner
       <NativeSelect aria-label="Import runner" value={runner || batch?.runner_id || runners[0]?.id || ""} onValueChange={setRunner} options={runners.map(item => ({ value: item.id, label: item.name }))} />
     </label>
@@ -86,6 +91,11 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
       {batch.items.filter(item => item.error).map(item => <p key={item.number} className="text-sm text-destructive">#{item.number}: {item.error}{item.retry_at ? ` · Retry after ${item.retry_at}` : ""}</p>)}
     </> : null}
     {(failed > 0 || batch?.status === "discovery_failed") && !working ? <Button variant="outline" disabled={busy} onClick={() => void command.call({ action: "retry", runner_id: runner || batch?.runner_id })}>Retry incomplete intake</Button> : null}
+    {batch?.status === "finished" && closeable > 0 ? <div className="flex flex-col gap-2">
+      <label className="flex items-start gap-2 text-sm"><Checkbox aria-label="Close imported GitHub source issues" checked={closeSource} onCheckedChange={value => setCloseSource(value === true)} disabled={busy} />Close the {closeable} successfully imported GitHub issues with a “Tracked in Detent” link. Skipped and failed issues stay open.</label>
+      <Button variant="outline" disabled={busy || !closeSource} onClick={() => void command.call({ action: "close_source" })}>Close source issues</Button>
+    </div> : null}
+    {closeRequested > 0 ? <p role="status" className="text-sm">Link and close requested for {closeRequested} GitHub issues. GitHub delivery continues in the background.</p> : null}
     <ControlError message={command.error?.message ?? resource.error?.message ?? null} />
   </section>;
 }

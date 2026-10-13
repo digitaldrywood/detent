@@ -29,11 +29,12 @@ type GitHubDiscoveryPage struct {
 }
 
 type GitHubBatchItem struct {
-	Number     int              `json:"number"`
-	WorkItemID NativeWorkItemID `json:"work_item_id,omitempty"`
-	Status     string           `json:"status"`
-	Error      string           `json:"error,omitempty"`
-	RetryAt    string           `json:"retry_at,omitempty"`
+	Number               int              `json:"number"`
+	WorkItemID           NativeWorkItemID `json:"work_item_id,omitempty"`
+	Status               string           `json:"status"`
+	Error                string           `json:"error,omitempty"`
+	RetryAt              string           `json:"retry_at,omitempty"`
+	SourceCloseRequested bool             `json:"source_close_requested,omitempty"`
 }
 
 // GitHubBatch persists intake intent and checkpoints, without execution state.

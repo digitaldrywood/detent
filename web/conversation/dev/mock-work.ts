@@ -1134,6 +1134,7 @@ export function createWorkMock(options: {
         revoked = false;
         expired = false;
         build();
+        if ((await readBody()).empty === true) issues = [];
         conflictOn = null;
         reviews.clear();
         discussion.clear();

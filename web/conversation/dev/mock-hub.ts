@@ -1,3 +1,4 @@
+import type { IssueIntake, IntakeCommand } from "../src/contracts/githubIntake.ts";
 // In-memory mock of the conversation hub.
 //
 // Implements the endpoints and the event stream in
@@ -2134,6 +2135,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   const organizationMode: OrganizationMode =
     options.organization ?? readOrganizationMode(process.env.MOCK_ORGANIZATION) ?? "seeded";
   let account = initialAccountState(organizationMode);
+  const intakeBatches = new Map<string, IssueIntake>();
+  const importedSources = new Map<string, string>();
   // Kept outside `account` on purpose: it is test cover for what was sent, not
   // hub state, so `POST /__mock/reset` leaves it alone.
   let lastEnrollment: MockEnrollmentRequest | null = null;
@@ -2865,6 +2868,46 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     rest: string[],
   ): Promise<boolean> {
     const tail = rest.join("/");
+
+    if (tail === "onboarding/issue-intake") {
+      const lanes = WORKFLOW_STATES.map(state => ({ name: state.name, dispatchable: state.dispatchable ?? false, terminal: state.terminal ?? false }));
+      const current = intakeBatches.get(projectId) ?? { batch: null, lanes };
+      if (method === "GET") { json(response, 200, current); return true; }
+      if (method === "POST") {
+        const body = await readBody(request);
+        runMutation(response, method, path, body, () => {
+          const input = body as unknown as IntakeCommand;
+          if (input.revision !== (current.batch?.revision ?? 0)) return { status: 409, payload: { code: "revision_conflict", message: "Refresh import progress." } };
+          let batch = current.batch;
+          if (input.action === "discover") {
+            const integration = account.integrations.get(projectId);
+            const repository = integration?.checkout_repository || integration?.repository || "";
+            batch = { id: `intake_${projectId}`, revision: current.batch?.revision ?? 0, runner_id: input.runner_id ?? "", status: "preview", destination: "", discovery: { repository, include_closed: input.include_closed ?? false, labels: input.labels ?? [], cursor: "" }, page: { total: 2, next_cursor: "", issues: [12, 13].map(number => ({ number, id: `I_${number}`, url: `https://github.com/${repository}/issues/${number}`, title: `Imported task ${number}`, body: "Existing repository work", closed: false, labels: ["detent:backlog"] })) }, items: [] };
+          } else if (input.action === "apply" && batch?.status === "preview") {
+            const lane = lanes.find(lane => lane.name === input.destination);
+            if (!lane || lane.dispatchable && !input.allow_dispatch) return { status: 422, payload: { code: "invalid_request", message: "Confirm the dispatchable destination." } };
+            const items = [...new Set(input.numbers ?? [])].map(number => {
+              const preview = batch!.page.issues.find(issue => issue.number === number)!;
+              const source = `${projectId}:${preview.id}`;
+              const existing = importedSources.get(source);
+              const id = existing ?? `wi_import_${projectId}_${number}`;
+              if (!existing) {
+                importedSources.set(source, id);
+                work.addIssue({ work_item_id: id, project_id: projectId, number, title: preview.title, body: preview.body, state: lane.name, labels: [] });
+              }
+              return { number, work_item_id: id, status: existing ? "skipped" : "completed" };
+            });
+            batch = { ...batch, status: "finished", destination: lane.name, items };
+          } else if (input.action === "close_source" && batch?.status === "finished") {
+            batch = { ...batch, items: batch.items.map(item => item.status === "completed" ? { ...item, source_close_requested: true } : item) };
+          } else return { status: 422, payload: { code: "invalid_request", message: "No matching intake action." } };
+          const result = { batch: { ...batch, revision: batch.revision + 1 }, lanes };
+          intakeBatches.set(projectId, result);
+          return { status: 200, payload: result };
+        });
+        return true;
+      }
+    }
 
     if (tail === "integration" && method === "GET") {
       const integration = account.integrations.get(projectId);

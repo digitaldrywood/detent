@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -250,6 +251,27 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 			batch.Status = "importing"
 			if !batchHasPending(batch) {
 				batch.Status = "finished"
+			}
+		case "close_source":
+			if batch == nil || batch.Status != "finished" {
+				return nil, nativeInvalid("Finish importing before closing source issues")
+			}
+			if s.config.OutboxBackend == nil || s.database.linkedSourceBase == "" {
+				return nil, nativeInvalid("Closing source issues requires configured GitHub transport and a public Cloud URL")
+			}
+			for index, item := range batch.Items {
+				if item.Status != "completed" || item.SourceCloseRequested {
+					continue
+				}
+				previewIndex := slices.IndexFunc(batch.Page.Issues, func(preview tracker.GitHubIssuePreview) bool { return preview.Number == item.Number })
+				if previewIndex < 0 || batch.Page.Issues[previewIndex].Closed {
+					continue
+				}
+				target := s.database.linkedSourceBase + "/work/i/" + url.PathEscape(string(item.WorkItemID))
+				if err := enqueueNativeSummary(ctx, tx, scope, string(item.WorkItemID), "intake-close:"+batch.ID, "Tracked in Detent: "+target, true, now); err != nil {
+					return nil, err
+				}
+				batch.Items[index].SourceCloseRequested = true
 			}
 		case "retry":
 			if batch == nil || !batch.HubOwned && batchHasPending(batch) && (request.RunnerID == "" || request.RunnerID == batch.RunnerID) {
