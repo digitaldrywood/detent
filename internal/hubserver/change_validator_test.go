@@ -20,11 +20,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		r.ImplementationReview, r.Validator = r.Validator, nil
 	}
 	multipleReceipts := func(r *tracker.ReviewChange) {
-		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree", Behavior: "Application and browser checks exercise the requested behavior"}
-		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: "tree"}}
+		r.Validator.CriteriaEvidence[0] = gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "make check-app; npx playwright test", ReceiptIDs: []string{"timing_app", "timing_browser"}, Behavior: "Application and browser checks exercise the requested behavior"}
+		r.Validator.Commands = []gate.CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)}}
 	}
 	type stageCase struct {
 		mode               string
+		gateKind           string
 		sourceVerdicts     []string
 		retainedAcceptance bool
 		freshAcceptance    bool
@@ -59,6 +60,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
+		{"artifact gate receipt without finalization", multipleReceipts, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewOff, gateKind: gate.KindArtifact}},
+		{"human gate receipt without finalization", multipleReceipts, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewOff, gateKind: gate.KindHumanReview}},
 		{"failed selected receipt cannot pass", func(r *tracker.ReviewChange) {
 			multipleReceipts(r)
 			r.Validator.Commands[1].ExitCode = 1
@@ -88,6 +91,21 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "validator")
 			descriptor := hubTestPolicy()
+			if test.stages != nil && test.stages.gateKind != "" {
+				cfg := config.Default()
+				cfg.Tracker.Kind = config.TrackerHubNative
+				cfg.Gate.Kind = test.stages.gateKind
+				cfg.Gate.Validator.Enabled = true
+				cfg.Review.Human = test.stages.gateKind == gate.KindHumanReview
+				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
+				if err != nil {
+					t.Fatal(err)
+				}
+				descriptor = resolved
+				if gate.Effective(cfg.Gate).Run != "" {
+					t.Fatal("non-command gate must omit source finalization validation")
+				}
+			}
 			if test.name == "disclosed missing evidence" {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
@@ -106,10 +124,10 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if implementation || counterCollision {
 				descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
 			}
-			if test.stages != nil {
+			if test.stages != nil && test.stages.gateKind == "" {
 				descriptor.Gates.AutomatedReview = test.stages.mode
 			}
-			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval" || test.name == "implementation review does not leave stale human approval"
+			humanReview := test.name == "separate session pass with human review" || test.name == "implementation review is not human approval" || test.name == "implementation review does not leave stale human approval" || test.stages != nil && test.stages.gateKind == gate.KindHumanReview
 			if humanReview {
 				descriptor.Gates.HumanReview = true
 			}
@@ -131,11 +149,17 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			path += "/" + change.ID
 			input := changeTestInput()
 			input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, event.Data.RunID, event.Data.AttemptID
+			if test.name == "separate session pass with multiple receipts" || test.name == "failed selected receipt cannot pass" {
+				input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
+			}
 			mutation.IdempotencyKey = "publish"
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", worker, tracker.PublishChangeVersion{Mutation: mutation, ChangeVersionInput: input})
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
+			if test.stages != nil && test.stages.gateKind != "" && version.Validation != nil {
+				t.Fatal("non-command fixture unexpectedly has a finalization receipt")
+			}
 			mutation.IdempotencyKey = "validator"
 			request := tracker.ReviewChange{Mutation: mutation, ExpectedVersionID: version.ID, Decision: "approved", Validator: &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Submitted: true, Verdict: "pass", Score: .95, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, DiffDigest: policy.Digest([]byte("diff"))}}
 			request.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: "test", Reference: "change_validator_test.go:TestChangeValidatorSessionAuthority", Behavior: "A separate validator session reviews the immutable version"}}
@@ -236,9 +260,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatalf("review session was not persisted: %+v", detail.Reviews)
 				}
 			}
-			if test.name == "separate session pass with multiple receipts" {
+			if test.name == "separate session pass with multiple receipts" || test.stages != nil && test.stages.gateKind != "" {
 				stored := detail.Reviews[0].Validator
-				if len(stored.CriteriaEvidence) != 1 || stored.CriteriaEvidence[0].Kind != "receipt" || !slices.Equal(stored.CriteriaEvidence[0].ReceiptIDs, []string{"timing_app", "timing_browser"}) || len(stored.NotVerified) != 0 {
+				if len(stored.CriteriaEvidence) != 1 || stored.CriteriaEvidence[0].Kind != "receipt" || !slices.Equal(stored.CriteriaEvidence[0].ReceiptIDs, []string{"timing_app", "timing_browser"}) || stored.CriteriaEvidence[0].HeadSHA != version.HeadSHA || stored.CriteriaEvidence[0].TreeSHA != strings.Repeat("d", 40) || len(stored.NotVerified) != 0 {
 					t.Fatalf("receipt selection did not survive native review: %+v", stored)
 				}
 			}
@@ -250,6 +274,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if strings.HasPrefix(test.name, "separate session pass") || test.name == "implementation review does not leave stale human approval" {
 				input.HeadSHA = strings.Repeat("c", 40)
+				if input.Validation != nil {
+					input.Validation.HeadSHA = input.HeadSHA
+				}
 				mutation.IdempotencyKey = "publish-next"
 				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", worker, tracker.PublishChangeVersion{Mutation: mutation, ExpectedVersionID: version.ID, ChangeVersionInput: input})
 				requireNativeStatus(t, response, http.StatusOK)
