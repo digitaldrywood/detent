@@ -1105,6 +1105,7 @@ export function createWorkMock(options: {
             older.labels = ["older-label", `choice-${choice}`];
             older.assignees = [`operator-${choice}`];
             older.priority = choice === "a" ? 0 : 1;
+            older.actor = { kind: "human", principal_id: choice === "a" ? "fixture-principal" : "other-principal" };
           }
           const active = issues.find((issue) => issue.title === "Observed later-page worker");
           if (active !== undefined) active.updated_at = new Date(now).toISOString();
@@ -1341,7 +1342,7 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort"], ["state", "label", "assignee", "priority"]);
+        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort", "created_by"], ["state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
@@ -1356,10 +1357,12 @@ export function createWorkMock(options: {
         const label = url.searchParams.getAll("label");
         const assignee = url.searchParams.getAll("assignee");
         const priority = url.searchParams.getAll("priority");
+        const createdBy = url.searchParams.get("created_by");
+        const filer = createdBy === "me" ? (pagination ? "fixture-principal" : "tok_mock") : createdBy;
         const boardIncluded = url.searchParams.get("include") === "board";
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), boardIncluded ? 2000 : 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
-        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
+        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, createdBy, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -1373,6 +1376,7 @@ export function createWorkMock(options: {
         }
         const baseFiltered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
+          .filter((issue) => filer === null || issue.actor.principal_id === filer)
           .filter((issue) => label.length === 0 || label.some((value) => issue.labels.includes(value)))
           .filter((issue) => assignee.length === 0 || assignee.some((value) => issue.assignees.includes(value)))
           .filter((issue) => priority.length === 0 || priority.includes(String(issue.priority ?? "")))

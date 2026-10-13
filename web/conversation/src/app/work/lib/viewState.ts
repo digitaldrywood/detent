@@ -26,6 +26,7 @@ export interface WorkViewState {
   readonly view: WorkViewMode;
   readonly tab: WorkTab;
   readonly archived?: boolean;
+  readonly createdBy?: "me";
   readonly q: string;
   readonly state: readonly string[];
   readonly label: readonly string[];
@@ -86,6 +87,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     tab: WORK_TABS.find((tab) => tab === params.get("tab")) ?? "active",
     ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
+    ...(params.get("created_by") === "me" ? { createdBy: "me" as const } : {}),
     state: readList(params.get("state")),
     label: readList(params.get("label")),
     assignee: readList(params.get("assignee")),
@@ -104,6 +106,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
 export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
   if (state.archived === true) params.set("archived", "true");
+  if (state.createdBy === "me") params.set("created_by", "me");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
   if (state.tab !== DEFAULT_VIEW_STATE.tab) params.set("tab", state.tab);
   if (state.q.trim().length > 0) params.set("q", state.q.trim());
@@ -125,7 +128,7 @@ export function isDefaultViewState(state: WorkViewState): boolean {
 
 /** How many filter values are active, for the Filters button's count badge. */
 export function activeFilterCount(state: WorkViewState): number {
-  return FILTER_KEYS.reduce((total, key) => total + state[key].length, 0);
+  return FILTER_KEYS.reduce((total, key) => total + state[key].length, state.createdBy === "me" ? 1 : 0);
 }
 
 /** Adds or removes one value from one multi-valued filter. */
