@@ -90,11 +90,6 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
 		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
 		if scope.credential.HostedRole != "reporter" && request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
-			if origin.Kind == "worker" {
-				if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
-					return nil, err
-				}
-			}
 			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport && string(scope.project) == issueorigin.DetentCloudProjectID)
 		}
 		var related []possibleDuplicate
@@ -172,10 +167,18 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 }
 
 func reportNativeMachineIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	if _, err := validateNativeIssueDraft(ctx, tx, scope, request); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	return reportNativeMachineOccurrenceTx(ctx, tx, scope, request, now, false)
 }
 
 func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, terminalRepair bool) (tracker.NativeIssue, error) {
+	if scope.credential.Scope == apiScopeWorker {
+		if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
+			return tracker.NativeIssue{}, err
+		}
+	}
 	matches, err := resolveNativeDuplicatesTx(ctx, tx, scope, request, now, true)
 	if err != nil {
 		return tracker.NativeIssue{}, err

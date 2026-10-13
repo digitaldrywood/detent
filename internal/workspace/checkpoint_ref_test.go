@@ -243,7 +243,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	runGit(t, first, "add", ".")
 	runGit(t, first, "commit", "-m", "conflicting target")
 	runGit(t, first, "push", "origin", "main")
-	prepared, err := source.PrepareRework(t.Context(), info, issue, MergePrepareOptions{})
+	prepared, err := source.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 	if err != nil || prepared.Status != MergePrepareStatusConflict {
 		t.Fatalf("prepare = %#v, %v", prepared, err)
 	}
@@ -439,6 +439,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	writeCheckpointFile(t, first, "advance.txt", "advanced target\n")
 	runGit(t, first, "add", "advance.txt")
 	runGit(t, first, "commit", "-m", "advance target")
+	target := strings.TrimSpace(runGit(t, first, "rev-parse", "HEAD"))
 	runGit(t, first, "push", "origin", "main")
 	if err := os.RemoveAll(info.Path); err != nil {
 		t.Fatal(err)
@@ -484,7 +485,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	if err != nil || !verified {
 		t.Fatalf("portable custody verification = %v, %v", verified, err)
 	}
-	continued, err := restorer.PrepareRework(t.Context(), restored, issue, MergePrepareOptions{})
+	continued, err := restorer.PrepareRework(t.Context(), restored, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 	if err != nil || continued.BaseSHA != prepared.BaseSHA || !test.resolved && len(continued.ConflictPaths) < 3 || test.resolved && len(continued.ConflictPaths) != 0 {
 		t.Fatalf("restored conflict = %#v, %v", continued, err)
 	}
@@ -492,8 +493,12 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	writeCheckpointFile(t, restored.Path, "binary.dat", "resolved\x00binary")
 	runGit(t, restored.Path, "add", "-A")
 	base, err := restorer.FinalizeNativeWork(t.Context(), restored, issue, func(ctx context.Context) error { return ctx.Err() })
-	if err != nil || base != prepared.BaseSHA {
-		t.Fatalf("finish = %s, %v", base, err)
+	if err != nil || base != target {
+		t.Fatalf("finish = %s, want selected target %s, %v", base, target, err)
+	}
+	runGit(t, restored.Path, "merge-base", "--is-ancestor", target, "HEAD")
+	if got := readFile(t, filepath.Join(restored.Path, "advance.txt")); got != "advanced target\n" {
+		t.Fatalf("selected target work lost: %q", got)
 	}
 	if got := readFile(t, filepath.Join(restored.Path, "README.md")); got != "first resolution\n" {
 		t.Fatalf("first resolution lost: %q", got)

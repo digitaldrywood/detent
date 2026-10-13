@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,7 +80,11 @@ func TestActivityTypicalDurations(t *testing.T) {
 		{name: "partial sample", attempts: population[:1], partial: true, want: []operatortool.ActivityTypicalDuration{{ProjectID: "project", Stage: "code", AnalyticsDuration: operatortool.AnalyticsDuration{Count: 1, Seconds: 60, P50Seconds: 60, P90Seconds: 60}, Partial: true}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := activityTypicalDurations("project", tt.attempts, tt.partial)
+			samples := make([]activityDurationSample, len(tt.attempts))
+			for i, a := range tt.attempts {
+				samples[i] = activityDurationSample{Role: a.Identity.Role, Status: a.Status, Seconds: a.Phases[0].FinishedAt.Sub(a.Phases[0].StartedAt).Seconds()}
+			}
+			got := activityTypicalDurations("project", samples, tt.partial)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("typical=%+v want=%+v", got, tt.want)
 			}
@@ -106,6 +113,7 @@ func TestActivityTypicalDurations(t *testing.T) {
 
 func TestHostedActivityReads(t *testing.T) {
 	f := newUsageHostedFixture(t)
+	historyProject := f.createProject(t, "Historical project")
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	f.service.config.now = func() time.Time { return now }
 	db := f.service.database.db
@@ -124,6 +132,16 @@ func TestHostedActivityReads(t *testing.T) {
 	}
 	defer tx.Rollback()
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	historyScope := scope
+	historyScope.project = tracker.ProjectID(historyProject)
+	historyIssue, err := createNativeIssueTx(t.Context(), tx, historyScope, tracker.CreateIssue{Title: "Historical issue", State: "Todo"}, now.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
+SELECT 'activity_seed_history',i.id,l.machine_id,'activity_seed_history_session',l.expires_at,l.acquired_at,l.renewed_at,l.released_at,l.created_at,l.updated_at FROM leases l JOIN issues i ON i.native_id=? WHERE l.lease_id='lease_browser_usage_0_0'`, historyIssue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	for _, suffix := range []string{"1_0", "2_0"} {
 		issueScope := scope
 		if suffix == "1_0" {
@@ -182,6 +200,37 @@ func TestHostedActivityReads(t *testing.T) {
 	for _, entry := range []struct{ id, state string }{{"workspace_activity", "ready"}, {"workspace_closed", "closed"}} {
 		if _, err := db.ExecContext(t.Context(), "INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,attempt_id,ref,state,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) VALUES (?,?,?,?,'attempt_browser_usage_0_0','develop',?,300,?,?,?,?,?)", entry.id, scope.organization, scope.project, linkedItem, entry.state, formatHubTime(now.Add(time.Hour)), formatHubTime(now.Add(time.Hour)), "user_browser_owner", formatHubTime(now), formatHubTime(now)); err != nil {
 			t.Fatal(err)
+		}
+	}
+
+	beforeHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
+	browserHostedStatus(t, beforeHistory, http.StatusOK)
+	historyAt := formatHubTime(now.Add(-30 * 24 * time.Hour))
+	if _, err := db.ExecContext(t.Context(), `WITH RECURSIVE samples(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM samples WHERE n<10001)
+INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
+SELECT printf('activity_history_%05d',n),l.issue_id,l.machine_id,printf('activity_history_session_%05d',n),?,?,?,?,?,? FROM samples JOIN leases l ON l.lease_id=CASE n%3 WHEN 0 THEN 'lease_browser_usage_0_0' WHEN 1 THEN 'lease_browser_usage_1_0' ELSE 'activity_seed_history' END`, historyAt, historyAt, historyAt, historyAt, historyAt, historyAt); err != nil {
+		t.Fatal(err)
+	}
+	historyData, err := json.Marshal(tracker.NativeRunData{Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Phase: "implement", Identity: runtime.Identity, Phases: []tracker.NativePhase{{Name: "implement", StartedAt: now.Add(-30*24*time.Hour - time.Minute), FinishedAt: now.Add(-30 * 24 * time.Hour)}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at)
+SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencing_token,l.lease_id,1,'succeeded',?,?,? FROM leases l JOIN issues i ON i.id=l.issue_id WHERE l.lease_id LIKE 'activity_history_%'`, string(historyData), historyAt, historyAt); err != nil {
+		t.Fatal(err)
+	}
+	afterHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
+	browserHostedStatus(t, afterHistory, http.StatusOK)
+	if !jsonEqualActivity(beforeHistory.Body.Bytes(), afterHistory.Body.Bytes()) {
+		t.Fatalf("historical attempts changed activity: before=%s after=%s", beforeHistory.Body.String(), afterHistory.Body.String())
+	}
+	for _, runner := range []string{"", "runner_browser_preview"} {
+		for _, running := range []bool{true, false} {
+			statement, args, err := activityAttemptsQuery(string(scope.organization), []string{f.project, f.privateProject, historyProject}, operatortool.ActivityRequest{Limit: 50, RunnerID: runner}, operatortool.AnalyticsWindow{From: now.Add(-7 * 24 * time.Hour), To: now}, now, running)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertActivityQueryPlan(t, f.service.database.reader, statement, args, "SEARCH n USING INDEX native_attempts_activity_")
 		}
 	}
 	for _, tt := range []struct {
@@ -269,6 +318,20 @@ func TestHostedActivityReads(t *testing.T) {
 		t.Fatalf("recent outcome order=%v", outcomes)
 	}
 
+	for _, query := range []string{"", "?project_id=" + f.project} {
+		measurements := []time.Duration{}
+		for range 40 {
+			started := time.Now()
+			response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity"+query)
+			if response.Code != http.StatusOK {
+				t.Fatalf("HTTP %d: %s", response.Code, response.Body.String())
+			}
+			measurements = append(measurements, time.Since(started))
+		}
+		slices.Sort(measurements)
+		t.Logf("10002 historical attempts across 3 projects with running and recent attempts, 40 HTTP samples, scope %q: p50=%s p95=%s", query, measurements[19], measurements[37])
+	}
+
 	for _, id := range []string{"attempt_browser_usage_0_0", "attempt_browser_usage_1_0"} {
 		var item, project string
 		if err := db.QueryRowContext(t.Context(), "SELECT work_item_id,project_id FROM native_attempts WHERE id=?", id).Scan(&item, &project); err != nil {
@@ -297,6 +360,54 @@ func TestHostedActivityReads(t *testing.T) {
 	if !found {
 		t.Fatal("activity absent from MCP catalog")
 	}
+	for _, tt := range []struct {
+		name    string
+		status  string
+		role    string
+		phases  any
+		dropped int
+		seconds float64
+		partial bool
+	}{
+		{name: "fractional duration", status: "succeeded", role: "code", phases: []tracker.NativePhase{{StartedAt: now.Add(-time.Minute), FinishedAt: now.Add(250001 * time.Microsecond)}}, seconds: 60.250001},
+		{name: "updated role and outcome", status: "failed", role: "plan", phases: []tracker.NativePhase{{StartedAt: now.Add(-time.Minute), FinishedAt: now}}, seconds: 60},
+		{name: "dropped intervals", status: "failed", role: "plan", phases: []tracker.NativePhase{{StartedAt: now.Add(-time.Minute), FinishedAt: now}}, dropped: 1, seconds: 60, partial: true},
+		{name: "malformed phases", status: "succeeded", role: "code", phases: "malformed", partial: true},
+		{name: "malformed interval", status: "succeeded", role: "code", phases: []map[string]string{{"started_at": "invalid", "finished_at": formatHubTime(now)}}, partial: true},
+		{name: "cancelled excluded", status: "cancelled", role: "code", phases: []tracker.NativePhase{{StartedAt: now.Add(-time.Minute), FinishedAt: now}}},
+		{name: "running excluded", status: "running", role: "code", phases: []tracker.NativePhase{{StartedAt: now.Add(-time.Minute), FinishedAt: now}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			phases, err := json.Marshal(tt.phases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, project := range []string{f.project, f.privateProject} {
+				id := fmt.Sprintf("attempt_browser_usage_%d_0", i)
+				if _, err := db.ExecContext(t.Context(), `UPDATE native_attempts SET status=?,started_at=?,updated_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.phases',json(?),'$.runtime.phases_dropped',?) WHERE id=?`, tt.status, formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-time.Second)), tt.role, string(phases), tt.dropped, id); err != nil {
+					t.Fatal(err)
+				}
+				itemScope := nativeScope{organization: scope.organization, project: tracker.ProjectID(project)}
+				typical, partial, err := f.service.readActivityTypicalDurations(t.Context(), f.service.database.reader, itemScope, operatortool.AnalyticsWindow{From: now.Add(-2 * time.Second), To: now}, "runner_browser_preview")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if partial != tt.partial {
+					t.Fatalf("partial=%t want=%t", partial, tt.partial)
+				}
+				if tt.seconds == 0 {
+					if len(typical) != 0 {
+						t.Fatalf("excluded duration=%+v", typical)
+					}
+					continue
+				}
+				if len(typical) != 1 || typical[0].ProjectID != project || typical[0].Stage != tt.role || typical[0].Count != 1 || typical[0].Partial != tt.partial || math.Abs(typical[0].P50Seconds-tt.seconds) > 1e-9 || math.Abs(typical[0].P90Seconds-tt.seconds) > 1e-9 {
+					t.Fatalf("project duration=%+v want=%+v", typical, tt)
+				}
+			}
+		})
+	}
+
 }
 
 func jsonEqualActivity(a, b []byte) bool {
@@ -326,9 +437,14 @@ func TestActivityPopulationCap(t *testing.T) {
 	if _, err := tx.ExecContext(t.Context(), "INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id) VALUES ('population','population',1,'test',?,?,?,'org_security')", formatHubTime(now), formatHubTime(now), formatHubTime(now)); err != nil {
 		t.Fatal(err)
 	}
-	for i := range maxAnalyticsPopulation + 1 {
+	for i := range 11002 {
 		id := fmt.Sprintf("population_%04d", i)
 		stamp := formatHubTime(now.Add(-time.Minute))
+		start := formatHubTime(now.Add(-2 * time.Minute))
+		if i > maxAnalyticsPopulation {
+			stamp = formatHubTime(now.Add(-30 * 24 * time.Hour))
+			start = formatHubTime(now.Add(-31 * 24 * time.Hour))
+		}
 		lease, err := tx.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) VALUES (?,?,'population',?,?,?,?,?,?,?)", id, issueRow, id, stamp, stamp, stamp, stamp, stamp, stamp)
 		if err != nil {
 			t.Fatal(err)
@@ -341,20 +457,19 @@ func TestActivityPopulationCap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES (?,?,?,?,?,?,?,1,'succeeded',?,?,?)", id, scope.organization, scope.project, issue.WorkItemID, id, fence, id, string(raw), formatHubTime(now.Add(-2*time.Minute)), stamp); err != nil {
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES (?,?,?,?,?,?,?,1,'succeeded',?,?,?)", id, scope.organization, scope.project, issue.WorkItemID, id, fence, id, string(raw), start, stamp); err != nil {
 			t.Fatal(err)
 		}
 	}
 	started := time.Now()
-	population, err := loadNativeAnalyticsAttempts(t.Context(), tx, scope, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now}, "")
+	typical, partial, err := f.service.readActivityTypicalDurations(t.Context(), tx, scope, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	typical := activityTypicalDurations(string(f.project), population.Items, population.Partial)
-	if !population.Partial || !population.Clipped || len(population.Items) != maxAnalyticsPopulation || len(typical) != 1 || !typical[0].Partial || typical[0].Count != maxAnalyticsPopulation || typical[0].P50Seconds != 60 {
-		t.Fatalf("population=%d partial=%t clipped=%t typical=%+v", len(population.Items), population.Partial, population.Clipped, typical)
+	if !partial || len(typical) != 1 || !typical[0].Partial || typical[0].Count != maxAnalyticsPopulation || typical[0].P50Seconds != 60 {
+		t.Fatalf("partial=%t typical=%+v", partial, typical)
 	}
-	t.Logf("1001-attempt capped duration read: %s", time.Since(started))
+	t.Logf("11002-attempt capped duration read: %s", time.Since(started))
 	last := fmt.Sprintf("population_%04d", maxAnalyticsPopulation)
 	if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=NULL,renewed_at=?,expires_at=? WHERE lease_id=?", formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(time.Hour)), last); err != nil {
 		t.Fatal(err)
@@ -365,6 +480,16 @@ func TestActivityPopulationCap(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	for _, runner := range []string{"", "population"} {
+		for _, running := range []bool{true, false} {
+			statement, args, err := activityAttemptsQuery("org_security", []string{string(f.project)}, operatortool.ActivityRequest{Limit: 50, RunnerID: runner}, operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now}, now, running)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertActivityQueryPlan(t, f.service.database.reader, statement, args, "SEARCH n USING INDEX native_attempts_activity_")
+		}
+	}
+	assertActivityQueryPlan(t, f.service.database.reader, activityDurationQuery, []any{scope.organization, scope.project, formatHubTime(now.Add(-time.Hour)), formatHubTime(now), "", "", maxAnalyticsPopulation + 1}, "SEARCH d USING INDEX activity_attempt_durations_window")
 	request := httptest.NewRequest(http.MethodGet, "/api/v2/organizations/org_security/activity?limit=1", nil)
 	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
 	response := httptest.NewRecorder()
@@ -378,6 +503,61 @@ func TestActivityPopulationCap(t *testing.T) {
 	if !report.Partial || len(report.TypicalDurations) != 1 || !report.TypicalDurations[0].Partial || report.TypicalDurations[0].Count != maxAnalyticsPopulation || len(report.Running) != 1 || report.Running[0].AttemptID != last || len(report.Finished) != 1 {
 		t.Fatalf("capped activity=%+v", report)
 	}
-	t.Logf("1001-attempt complete activity HTTP read: %s", time.Since(started))
+	t.Logf("11002-attempt complete activity HTTP read: %s", time.Since(started))
 
+	c := f.service.echo.NewContext(request, httptest.NewRecorder())
+	c.SetPath("/mcp")
+	authorityContexts := make(chan context.Context, 1)
+	if err := f.service.operatorAuthority(func(c echo.Context) error { authorityContexts <- c.Request().Context(); return nil })(c); err != nil {
+		t.Fatal(err)
+	}
+	if len(authorityContexts) == 0 {
+		t.Fatal("missing activity authority")
+	}
+	authority := <-authorityContexts
+	writer, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	ctx, cancel := context.WithTimeout(authority, 2*time.Second)
+	defer cancel()
+	result, err := f.service.executeActivityRead(ctx, operatortool.Call{Arguments: []byte(`{"limit":1}`)})
+	if err != nil {
+		t.Fatalf("activity read used the held writer: %v", err)
+	}
+	if !jsonEqualActivity(result.Content, response.Body.Bytes()) {
+		t.Fatalf("reader report changed: %s", result.Content)
+	}
+
+}
+
+func assertActivityQueryPlan(t *testing.T, q nativeQueryer, statement string, args []any, search string) {
+	t.Helper()
+	rows, err := q.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+statement, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+		if strings.HasPrefix(detail, "SCAN n") || strings.HasPrefix(detail, "SCAN c") || strings.Contains(detail, "SCAN native_attempts") || strings.Contains(detail, "SCAN change_requests") {
+			t.Fatalf("unbounded activity query: %s", detail)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(statement, "FROM change_requests") && !strings.Contains(strings.Join(plan, "\n"), "SEARCH c USING INDEX change_requests_activity_latest") && !strings.Contains(strings.Join(plan, "\n"), "SEARCH c USING COVERING INDEX change_requests_activity_latest") {
+		t.Fatalf("latest Change lookup lacks its index: %v", plan)
+	}
+	if !strings.Contains(strings.Join(plan, "\n"), search) {
+		t.Fatalf("missing %q in plan %v", search, plan)
+	}
 }

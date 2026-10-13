@@ -29,11 +29,17 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 		infrastructure bool
 		clean          bool
 		advanceTarget  bool
+		authorityLost  bool
+		unstaged       bool
+		untracked      bool
 	}{
 		{name: "runner prepares unsigned conflict"},
 		{name: "inherited signed pause", inheritedPause: true},
-		{name: "paused rebase retains integration base after target advances", advanceTarget: true},
+		{name: "resolved paused replay integrates selected target", advanceTarget: true},
 		{name: "unresolved conflict", unresolved: true},
+		{name: "authority lost before continuation", authorityLost: true},
+		{name: "unstaged paused resolution retained", unstaged: true},
+		{name: "untracked paused source retained", untracked: true},
 		{name: "wrong branch", alter: "head-name"},
 		{name: "branch advanced", alter: "branch"},
 		{name: "additional refs", alter: "update-refs"},
@@ -100,7 +106,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					t.Fatalf("signer choice was not recorded: %q", got)
 				}
 			}
-			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{})
+			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 			wantStatus := MergePrepareStatusConflict
 			if test.clean {
 				wantStatus = MergePrepareStatusClean
@@ -179,6 +185,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			selectedBase := base
 			if test.advanceTarget {
 				if err := os.WriteFile(filepath.Join(source, "UPSTREAM.md"), []byte("later target work\n"), 0o600); err != nil {
 					t.Fatal(err)
@@ -187,6 +194,40 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				runGit(t, source, "-c", "commit.gpgsign=false", "commit", "-m", "later target work")
 				runGit(t, source, "push", "origin", "main")
 				runGit(t, source, "fetch", "origin")
+				selectedBase = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			}
+			if test.unstaged {
+				writeCheckpointFile(t, info.Path, "README.md", "unstaged resolution\n")
+			}
+			if test.untracked {
+				writeCheckpointFile(t, info.Path, "untracked.txt", "retained source\n")
+			}
+			if test.alter != "" || test.authorityLost || test.unstaged || test.untracked {
+				before, err := owner.RecoveryState(t.Context(), info, issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				indexPath := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "index"))
+				index := readFile(t, indexPath)
+				authorityErr := errors.New("execution lease lost")
+				checks := 0
+				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error {
+					checks++
+					if test.authorityLost && checks > 1 {
+						return authorityErr
+					}
+					return ctx.Err()
+				})
+				if test.alter != "" && !errors.Is(err, ErrMergeResolutionInvalid) || test.authorityLost && !errors.Is(err, authorityErr) || (test.unstaged || test.untracked) && (err != nil || prepared.Status != MergePrepareStatusDirty) {
+					t.Fatalf("unsafe preparation: %+v, %v", prepared, err)
+				}
+				after, err := owner.RecoveryState(t.Context(), info, issue)
+				if err != nil || before.HeadSHA != after.HeadSHA || before.WorkspaceFingerprint != after.WorkspaceFingerprint || index != readFile(t, indexPath) {
+					t.Fatalf("refused preparation changed source custody: before=%+v after=%+v error=%v", before, after, err)
+				}
+				if test.authorityLost || test.unstaged || test.untracked {
+					return
+				}
 			}
 			finalBase, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() })
 			invalid := test.unresolved || test.alter != ""
@@ -202,11 +243,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if finalBase != base {
-					t.Fatalf("final baseline = %s, want prepared integration base %s", finalBase, base)
+				if finalBase != selectedBase {
+					t.Fatalf("final baseline = %s, want selected integration base %s", finalBase, selectedBase)
 				}
 				diff, err := GitFileDiffs(t.Context(), info.Path, finalBase, 1<<20)
-				if err != nil || diff.BaseSHA != base || len(diff.Files) != 1 || diff.Files[0].Path != "README.md" {
+				if err != nil || diff.BaseSHA != selectedBase || len(diff.Files) != 1 || diff.Files[0].Path != "README.md" {
 					t.Fatalf("final baseline lost the owned resolution: %+v, %v", diff, err)
 				}
 				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
@@ -416,7 +457,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				runGit(t, source, "add", "README.md")
 				runGit(t, source, "-c", "user.name=Upstream", "-c", "user.email=upstream@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "advance upstream")
 				runGit(t, source, "push", "origin", "main")
-				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"})
+				prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(ctx context.Context) error { return ctx.Err() })
 				if err != nil || prepared.Status != MergePrepareStatusConflict {
 					t.Fatalf("prepare paused rework: %+v, %v", prepared, err)
 				}

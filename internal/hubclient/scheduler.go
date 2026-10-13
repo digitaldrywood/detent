@@ -97,6 +97,7 @@ type Scheduler struct {
 	leaseHold             func(context.Context) (func(), error)
 	leaseHoldRelease      func()
 	leaseHoldPending      bool
+	githubBatchRunning    bool
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -150,7 +151,8 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 			return nil, err
 		}
 		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
-			return scheduler.processGitHubBatch(ctx, native, task)
+			scheduler.startGitHubBatch(ctx, native, task)
+			return nil
 		}
 		scheduler.nativeProjects[project] = &NativeConnector{client: native}
 	}
@@ -659,7 +661,8 @@ func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, proje
 			return err
 		}
 		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
-			return s.processGitHubBatch(ctx, native, task)
+			s.startGitHubBatch(ctx, native, task)
+			return nil
 		}
 		s.nativeProjects[name] = &NativeConnector{client: native}
 	}

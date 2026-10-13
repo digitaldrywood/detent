@@ -111,8 +111,8 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stop()
-	for range 22 {
-		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Earlier work", State: "Backlog"}); err != nil {
+	for index := range 22 {
+		if _, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "backlogfixture" + strconv.Itoa(index) + "x", State: "Backlog"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -174,6 +174,9 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	}
 	for _, request := range []tracker.CreateIssue{
 		{Mutation: nativeMutationKey(), Title: "Unfenced host creation", Body: draft.Body, State: "Backlog"},
+		{Mutation: nativeMutationKey(), Title: "Unfenced new fingerprint", Body: issueorigin.Stamp("New worker occurrence", issueorigin.Origin{Kind: "worker", Fingerprint: "new-worker-fingerprint"}), State: "Backlog"},
+		{Mutation: nativeMutationKey(), Title: "Unfenced dispatchable occurrence", Body: draft.Body, State: "Todo"},
+		{Mutation: nativeMutationKey(), Title: "Spoofed scheduled occurrence", Body: issueorigin.Stamp("Worker supplied CI stamp", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Fingerprint: "spoofed-scheduled-fingerprint"}), State: "Backlog"},
 		{Mutation: nativeMutationKey(), Title: "Unstamped host creation", State: "Backlog"},
 	} {
 		if _, err := native.CreateIssue(t.Context(), request); err == nil {
@@ -184,11 +187,15 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	claim := h.scheduler.nativeClaims[source.ID]
 	h.scheduler.mu.Unlock()
 	for _, mutation := range []tracker.Mutation{
+		{IdempotencyKey: "missing-fence", LeaseID: claim.lease.ID},
 		{IdempotencyKey: "wrong-fence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken + 1},
 		{IdempotencyKey: "unknown-lease", LeaseID: "lease_unknown", FencingToken: claim.lease.FencingToken},
 	} {
-		if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, State: "Backlog"}); err == nil {
-			t.Fatal("invalid source claim reused machine intake")
+		for _, state := range []string{"Backlog", "Todo"} {
+			mutation.IdempotencyKey += "-" + state
+			if _, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: mutation, Title: draft.Title, Body: draft.Body, State: state}); err == nil {
+				t.Fatal("invalid source claim reused machine intake")
+			}
 		}
 	}
 	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "same-intake-occurrence", LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken}, Title: draft.Title, Body: draft.Body, State: "Backlog", Priority: new(0)}
