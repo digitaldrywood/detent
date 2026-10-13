@@ -547,8 +547,25 @@ func TestPlatformEntitlementsRESTAndMCPWithoutRestart(t *testing.T) {
 			if err != nil || after.Revision != before.Revision+2 || len(after.Grants) != 1 || after.Grants[0].Plan != plan.PlatformPlanReference {
 				t.Fatalf("runtime entitlement=%+v %v", after, err)
 			}
+			until := time.Now().Add(time.Hour)
+			for index, assignment := range []struct {
+				action string
+				plan   planReference
+				want   planReference
+				source string
+			}{
+				{"base", plan.PlatformPlanReference, plan.PlatformPlanReference, "base"},
+				{"subscription", before.Base, before.Base, "subscription"},
+				{"end_subscription", before.Base, plan.PlatformPlanReference, "base"},
+			} {
+				apply(entitlementChange{Action: assignment.action, IdempotencyKey: assignment.action + "-runtime", ExpectedRevision: before.Revision + int64(index) + 2, Plan: assignment.plan, ExpiresAt: &until, Reason: "capacity adjustment"})
+				after, err = f.service.tenantEntitlements(t.Context(), organization)
+				if err != nil || after.Revision != before.Revision+int64(index)+3 || after.Base != plan.PlatformPlanReference || after.EffectiveBase != assignment.want || after.Source != assignment.source || len(after.Grants) != 1 || after.Grants[0].Plan != plan.PlatformPlanReference {
+					t.Fatalf("%s entitlement=%+v %v", assignment.action, after, err)
+				}
+			}
 			var audits int
-			if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM entitlement_changes WHERE reason='capacity adjustment' AND staff_email='entitlement-administrator'").Scan(&audits); err != nil || audits != 2 {
+			if err := f.service.registry.store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM entitlement_changes WHERE reason='capacity adjustment' AND staff_email='entitlement-administrator'").Scan(&audits); err != nil || audits != 5 {
 				t.Fatalf("entry audit=%d %v", audits, err)
 			}
 		})

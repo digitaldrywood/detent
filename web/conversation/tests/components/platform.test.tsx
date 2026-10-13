@@ -744,12 +744,22 @@ describe("platform console", () => {
 });
 
 describe("complimentary plans", () => {
-  it.each(["create", "base"])(
+  it.each(["create", "base", "subscription", "end_subscription"])(
     "submits an audited %s plan change from the tenant console",
     async (operation) => {
       const api = fakeApi({
         platformOrganizations: vi.fn(async () => administrator),
       });
+      if (operation === "subscription" || operation === "end_subscription") {
+        const detail = api.platformTenant;
+        api.platformTenant = vi.fn(async (id) => {
+          const value = await detail(id);
+          return {
+            ...value,
+            organization: { ...value.organization, billing: { available: false } },
+          };
+        });
+      }
       renderPlatform(api);
       fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
       const plan = await screen.findByRole("region", {
@@ -789,9 +799,23 @@ describe("complimentary plans", () => {
         fireEvent.change(within(dialog).getByLabelText("Plan"), {
           target: { value: "comp_team@1" },
         });
-        expect(
-          within(dialog).queryByRole("option", { name: "Subscription" }),
-        ).toBeNull();
+        if (operation === "base") {
+          expect(
+            within(dialog).queryByRole("option", { name: "Subscription" }),
+          ).toBeNull();
+          expect(
+            within(dialog).queryByRole("option", { name: "End subscription" }),
+          ).toBeNull();
+        } else {
+          fireEvent.change(within(dialog).getByLabelText("Apply as"), {
+            target: { value: operation },
+          });
+          if (operation === "subscription") {
+            fireEvent.change(within(dialog).getByLabelText("Expires"), {
+              target: { value: "2027-01-31" },
+            });
+          }
+        }
       }
       fireEvent.change(within(dialog).getByLabelText("Reason"), {
         target: { value: "Capacity adjustment" },
@@ -807,7 +831,7 @@ describe("complimentary plans", () => {
       const call = vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0];
       expect(call.organization).toBe("org_alpha");
       expect(call.change).toMatchObject({
-        action: operation === "create" ? "create_plan" : "base",
+        action: operation === "create" ? "create_plan" : operation,
         expected_revision: 3,
         reason: "Capacity adjustment",
         plan:
@@ -817,7 +841,10 @@ describe("complimentary plans", () => {
       });
       if (call.change.action === "create_plan")
         expect(call.change.definition.allowances).toEqual({ projects: 50 });
+      if (call.change.action === "subscription")
+        expect(call.change.expires_at).toBe("2027-01-31T23:59:59Z");
       expect(call.change.idempotency_key).not.toBe("");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     },
   );
 
