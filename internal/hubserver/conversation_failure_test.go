@@ -689,7 +689,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 			name  string
 			query string
 		}{
-			{name: "expired lease", query: "UPDATE leases SET expires_at = acquired_at WHERE lease_id = ?"},
+			{name: "revoked policy", query: "DELETE FROM project_policies WHERE scope = (SELECT scope FROM lease_policies WHERE lease_id = ?)"},
 			{name: "released lease", query: "UPDATE leases SET released_at = acquired_at WHERE lease_id = ?"},
 			{name: "terminal attempt", query: "UPDATE native_attempts SET status = 'succeeded' WHERE lease_id = ?"},
 			{name: "foreign attempt", query: "UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'foreign-attempt') WHERE json_extract(execution_json, '$.lease_id') = ?"},
