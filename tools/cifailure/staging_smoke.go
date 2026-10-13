@@ -186,7 +186,9 @@ func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (
 		return nil, fmt.Errorf("%s schema: %w", name, err)
 	}
 	if _, accepts := schema.Properties["request_id"]; accepts {
-		args["request_id"] = fmt.Sprintf("%s-%d", s.prefix, s.sequence)
+		if _, supplied := args["request_id"]; !supplied {
+			args["request_id"] = fmt.Sprintf("%s-%d", s.prefix, s.sequence)
+		}
 	}
 	var payload any
 	err := s.mcp.call(ctx, name, args, &payload)
@@ -423,6 +425,43 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	result, err := s.call(ctx, name, args)
 	if err != nil {
 		return nil, previous, err
+	}
+	if name == operatortool.FileIssue {
+		if data, ok := result["data"].(map[string]any); ok && data["possible_duplicates"] != nil {
+			var challenge struct {
+				Token   string `json:"challenge_token"`
+				Matches []struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					State  string `json:"state"`
+				} `json:"possible_duplicates"`
+			}
+			raw, encodeErr := json.Marshal(data)
+			if encodeErr != nil {
+				return nil, previous, fmt.Errorf("file_issue: duplicate challenge: %w", encodeErr)
+			}
+			if err := json.Unmarshal(raw, &challenge); err != nil || challenge.Token == "" || len(challenge.Matches) == 0 {
+				return nil, previous, errors.New("file_issue: invalid duplicate challenge")
+			}
+			numbers := make([]int, 0, len(challenge.Matches))
+			for _, match := range challenge.Matches {
+				synthetic := strings.HasPrefix(match.Title, "MCP staging smoke ")
+				if args["title"] == "MCP smoke dependency" {
+					synthetic = match.Title == "MCP smoke dependency" && slices.ContainsFunc(s.states, func(state tracker.NativeState) bool {
+						return state.Name == match.State && state.Terminal
+					})
+				}
+				if match.Number <= 0 || !synthetic {
+					return nil, previous, errors.New("file_issue: duplicate challenge is not limited to disposable smoke fixtures")
+				}
+				numbers = append(numbers, match.Number)
+			}
+			args["challenge_token"], args["not_duplicate_of"] = challenge.Token, numbers
+			result, err = s.call(ctx, name, args)
+			if err != nil {
+				return nil, previous, err
+			}
+		}
 	}
 	if _, refused := result["expected_refusal"]; refused {
 		return result, previous, nil
