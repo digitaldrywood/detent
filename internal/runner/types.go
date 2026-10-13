@@ -660,6 +660,7 @@ type RunRequest struct {
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
 	finalizeNativeWork        bool
+	reviewOnly                bool
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	validationEvidenceSource  AttemptDiffSource
@@ -753,6 +754,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	Discussion           NativeReviewDiscussion
 	Evidence             []tracker.NativeEvidence
 	Commands             []gate.CommandResult
 	implementationReview bool
@@ -878,13 +880,18 @@ type NativeLanding struct {
 	Refusal         string
 }
 
+func (l NativeLanding) RequiresRework() bool {
+	return !l.Landed && (l.CI != nil && l.CI.State == "failure" || l.GateFailed || l.RefusalKind == workspace.LandRefusalConflict || l.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(l.Refusal))
+}
+
 // NativeChange describes a successful hub-native work run's change. A hub
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
-	ImplementationReview *gate.ValidatorResult
-	Landing              *NativeLanding
-	Validator            *gate.ValidatorResult
+	ImplementationReview      *gate.ValidatorResult
+	ImplementationReviewError string
+	Landing                   *NativeLanding
+	Validator                 *gate.ValidatorResult
 	// Changed reports that the run's final attempt diff has commits ahead of
 	// its base. A run that committed nothing has nothing to review.
 	Changed bool

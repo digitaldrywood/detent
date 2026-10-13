@@ -86,7 +86,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if autoPromoteOptoutLabel(issue, cfg) {
 			destination = cfg.SourceState
 		}
-		rework := landing.CI != nil && landing.CI.State == "failure" || landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(landing.Refusal)
+		rework := landing.RequiresRework()
 		if rework {
 			destination = cfg.ReworkState
 		}
