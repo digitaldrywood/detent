@@ -6848,41 +6848,81 @@ func TestParseValidatorCriterionEvidence(t *testing.T) {
 
 func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	t.Parallel()
-
-	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-41", Branch: "detent/issue-41"},
-	}
-	codexClient := &fakeCodexClient{}
-	runner, err := NewRunner(Dependencies{
-		Workflow: config.Workflow{
-			Config: config.Config{},
-			Prompt: "initial {{ issue.identifier }}",
-		},
-		Workspace:    workspaceBackend,
-		AgentBackend: codexClient,
-	})
-	if err != nil {
-		t.Fatalf("NewRunner() error = %v", err)
-	}
-
-	runner.UpdateWorkflow(config.Workflow{
-		Config: config.Config{},
-		Prompt: "reloaded {{ issue.identifier }}",
-	})
-
-	_, err = runner.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{
-			ID:         "issue-41",
-			Identifier: "digitaldrywood/detent#41",
-			Title:      "Reload workflow",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-
-	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/detent#41") {
-		t.Fatalf("codex prompt = %q, want reloaded workflow prompt", codexClient.request.Prompt)
+	for _, scenario := range []string{"prompt", "workspace", "workspace failure", "in flight"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			initial := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-41", Branch: "detent/issue-41"}}
+			replacement := &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "issue-42", Branch: "detent/issue-42"}}
+			codexClient := &fakeCodexClient{}
+			workflow := config.Workflow{Config: config.Config{Hooks: config.Hooks{AfterCreate: "hook A"}}, Prompt: "initial {{ issue.identifier }}"}
+			deps := Dependencies{Workflow: workflow, Workspace: initial, AgentBackend: codexClient}
+			factoryErr := errors.New("workspace reload failed")
+			if scenario != "prompt" {
+				deps.WorkspaceFactory = func(cfg config.Config, current workspace.Backend) (workspace.Backend, error) {
+					if cfg.Hooks.AfterCreate != "hook B" || current != initial {
+						t.Fatalf("workspace factory inputs = %q, %v", cfg.Hooks.AfterCreate, current)
+					}
+					if scenario == "workspace failure" {
+						return nil, factoryErr
+					}
+					return replacement, nil
+				}
+			}
+			runner, err := NewRunner(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow.Prompt = "reloaded {{ issue.identifier }}"
+			workflow.Config.Hooks.AfterCreate = "hook B"
+			request := RunRequest{Issue: connector.Issue{ID: "issue-41", Identifier: "owner/repository#41", Title: "Reload workflow"}}
+			if scenario == "in flight" {
+				codexClient.updates = []AgentUpdate{{Type: AgentUpdateTurnStarted}}
+				reloaded := false
+				request.OnUsageUpdate = func(UsageUpdate) error {
+					if !reloaded {
+						reloaded = true
+						return runner.UpdateWorkflowChecked(workflow)
+					}
+					return nil
+				}
+				if _, err := runner.Run(t.Context(), request); err != nil {
+					t.Fatal(err)
+				}
+				if !reloaded || !initial.afterRun || replacement.afterRun || replacement.created {
+					t.Fatal("reload did not preserve the active run's backend")
+				}
+				request.OnUsageUpdate = nil
+			} else {
+				apply, err := runner.PrepareWorkflowUpdate(workflow)
+				if scenario == "workspace failure" {
+					wantErr := factoryErr
+					if !errors.Is(err, wantErr) || apply != nil {
+						t.Fatalf("prepare = %v, want %v and no apply", err, wantErr)
+					}
+				} else {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if runner.workspaceSnapshot() != initial {
+						t.Fatal("workspace changed before applying the prepared update")
+					}
+					apply()
+				}
+			}
+			if _, err := runner.Run(t.Context(), request); err != nil {
+				t.Fatal(err)
+			}
+			wantBackend, wantPrompt := replacement, "reloaded owner/repository#41"
+			switch scenario {
+			case "prompt":
+				wantBackend = initial
+			case "workspace failure":
+				wantBackend, wantPrompt = initial, "initial owner/repository#41"
+			}
+			if codexClient.request.Workspace != wantBackend.info.Path || !wantBackend.afterRun || !strings.Contains(codexClient.request.Prompt, wantPrompt) {
+				t.Fatalf("future run = workspace %q, prompt %q", codexClient.request.Workspace, codexClient.request.Prompt)
+			}
+		})
 	}
 }
 

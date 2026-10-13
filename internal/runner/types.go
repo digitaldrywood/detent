@@ -613,7 +613,8 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	LandingBatch *workspace.LandingBatchTicket `json:"-"`
+	workspaceBackend workspace.Backend
+	LandingBatch     *workspace.LandingBatchTicket `json:"-"`
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
 	DeferExecutionFinish bool

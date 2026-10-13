@@ -482,7 +482,7 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 				beforeRead := time.Now()
 				checkedAt := progress.diffStatsCheckedAt
 				if i == 0 || i >= 3 {
-					r.liveDiffStats(t.Context(), info, issue, progress, refreshAt)
+					r.liveDiffStats(t.Context(), r.workspaceSnapshot(), info, issue, progress, refreshAt)
 				}
 				if i == 0 || i == 3 || i == 5 {
 					checkedAt = refreshAt

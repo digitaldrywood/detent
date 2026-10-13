@@ -10,7 +10,7 @@ import (
 )
 
 func (r *Runner) InspectWorkspaceBranchHold(ctx context.Context, issue connector.Issue) (WorkspaceBranchHold, error) {
-	provider, ok := r.workspace.(workspace.BranchHoldProvider)
+	provider, ok := r.workspaceSnapshot().(workspace.BranchHoldProvider)
 	if !ok {
 		return WorkspaceBranchHold{}, nil
 	}
