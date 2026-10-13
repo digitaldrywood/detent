@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -57,9 +59,35 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 
 	t.Parallel()
 	h := newNativeChangeHub(t, true)
+	next := h.descriptor
+	next.Gates.Validator = true
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
 	issue := h.createInProgress(t, "Remote evidence")
 	h.claim(t, issue.ID)
 	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	ctx, stop, err := e.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	e.SetDiffSource(nativeChangeDiff(strings.Repeat("c", 40), "README.md"))
+	e.SetRepository(nativeChangeRepository)
+	if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: strings.Repeat("c", 40), ExternalEffect: "none", EffectState: "none"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.PrepareFinish(ctx, "succeeded", "Finished source", nil); err != nil {
+		t.Fatal(err)
+	}
+	if e.change == nil || e.change.VersionID == "" {
+		t.Fatalf("validator fixture has no published version: %+v", e.change)
+	}
 	remote, closePeers := nativeSSHExecution(t, t.Context(), e, t.TempDir())
 	defer closePeers()
 	remote.(runner.EvidenceSourceExecution).SetEvidenceSource(func(_ context.Context, path string) (runner.ValidationEvidence, error) {
@@ -74,6 +102,50 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 	}
 	if _, err := e.evidenceSource(t.Context(), "../private.png"); err == nil {
 		t.Fatal("remote source refusal was lost")
+	}
+	original := h.native.client.httpClient.Transport
+	for _, mismatch := range []string{"", "project", "item", "attempt", "lease", "fence"} {
+		t.Run(mismatch, func(t *testing.T) {
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				response, err := original.RoundTrip(request)
+				if err != nil || !strings.HasSuffix(request.URL.Path, "/runtime") {
+					return response, err
+				}
+				defer response.Body.Close()
+				var evidence tracker.NativeRuntimeEvidence
+				if err := json.NewDecoder(response.Body).Decode(&evidence); err != nil {
+					return nil, err
+				}
+				evidence.Attempt.Evidence = []tracker.NativeEvidence{{AttachmentID: "att_0123456789abcdef0123456789abcdef", Caption: "Reproduced before editing"}}
+				switch mismatch {
+				case "project":
+					evidence.Issue.ProjectID = "prj_other"
+				case "item":
+					evidence.Issue.WorkItemID = "wi_other"
+				case "attempt":
+					evidence.Attempt.AttemptID = "attempt_other"
+				case "lease":
+					evidence.Attempt.LeaseID = "lease_other"
+				case "fence":
+					evidence.Attempt.FencingToken++
+				}
+				encoded, err := json.Marshal(evidence)
+				if err != nil {
+					return nil, err
+				}
+				response.Body = io.NopCloser(strings.NewReader(string(encoded)))
+				return response, nil
+			})
+			defer func() { h.native.client.httpClient.Transport = original }()
+			input, err := remote.(runner.NativeValidatorExecution).ValidatorVersion(ctx)
+			if mismatch != "" {
+				if err == nil {
+					t.Fatal("mismatched evidence accepted")
+				}
+			} else if err != nil || len(input.Evidence) != 1 || input.Evidence[0].AttachmentID != "att_0123456789abcdef0123456789abcdef" {
+				t.Fatalf("current attempt evidence unavailable through SSH: %+v, %v", input.Evidence, err)
+			}
+		})
 	}
 }
 

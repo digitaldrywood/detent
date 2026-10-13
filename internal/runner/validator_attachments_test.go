@@ -108,6 +108,9 @@ type attachmentValidatorBackend struct {
 
 func (b *attachmentValidatorBackend) RunTurnWithTools(ctx context.Context, req AgentTurnRequest, tools []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
 	b.t.Helper()
+	if !strings.Contains(req.Prompt, "att_current_attempt") || !strings.Contains(req.Prompt, "Uploaded before completion") {
+		b.t.Fatal("current attempt evidence missing before its completion comment")
+	}
 	if !req.ReadOnly || !strings.Contains(req.Prompt, "project_id=prj_example reference=wi_example") || !strings.Contains(req.Prompt, "ordinary comments") {
 		b.t.Fatalf("validator cannot discover native evidence: readonly=%v", req.ReadOnly)
 	}
@@ -135,8 +138,9 @@ type attachmentValidatorExecution struct {
 
 func (*attachmentValidatorExecution) ValidatorVersion(context.Context) (NativeValidation, error) {
 	return NativeValidation{
-		Version: &tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "example-org/example-project", HeadSHA: "head", BaseSHA: "base", Validation: &gate.CommandResult{TreeSHA: "tree"}}, Policy: policy.Descriptor{Gates: policy.Gates{Validator: true}}},
-		Diff:    &connector.ValidationDiff{Repository: "example-org/example-project", HeadSHA: "head", BaseSHA: "base", Digest: "digest", Patch: "diff --git a/page.go b/page.go\n+page\n"},
+		Evidence: []tracker.NativeEvidence{{AttachmentID: "att_current_attempt", Caption: "Uploaded before completion"}},
+		Version:  &tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "example-org/example-project", HeadSHA: "head", BaseSHA: "base", Validation: &gate.CommandResult{TreeSHA: "tree"}}, Policy: policy.Descriptor{Gates: policy.Gates{Validator: true}}},
+		Diff:     &connector.ValidationDiff{Repository: "example-org/example-project", HeadSHA: "head", BaseSHA: "base", Digest: "digest", Patch: "diff --git a/page.go b/page.go\n+page\n"},
 	}, nil
 }
 
