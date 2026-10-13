@@ -203,13 +203,16 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		{"multiple dimensions", "&state=Todo&state=Done&label=selected&label=alternate&assignee=operator&assignee=reviewer&priority=0&priority=1", 3, 0, 2},
 		{"older title", "&q=Historical%20needle", 2, 0, 1},
 		{"older label", "&q=historical%20LABEL", 2, 0, 1},
-		{"older identifier", "&q=" + url.QueryEscape(f.project.Name+"#"+strconv.Itoa(history[120].Number)), 1, 0, 0},
-		{"native identifier", "&q=" + url.QueryEscape(string(f.project.ID)+"#"+strconv.Itoa(history[120].Number)), 1, 0, 0},
-		{"body is not operational search", "&q=Preserved%20body", 0, 0, 0},
+		{"older identifier", "&q=" + url.QueryEscape(f.project.Name+"#"+strconv.Itoa(history[120].Number)), 2, 0, 0},
+		{"native identifier", "&q=" + url.QueryEscape(string(f.project.ID)+"#"+strconv.Itoa(history[120].Number)), 2, 0, 0},
+		{"absent body search", "&q=Preserved%20body", 0, 0, 0},
 		{"AND dimensions", "&state=In%20Progress&label=selected&label=alternate", 0, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			page := read(test.query)
+			if strings.HasSuffix(test.name, "identifier") && !slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool { return item.WorkItemID == history[120].WorkItemID }) {
+				t.Fatal("identifier search lost legacy match")
+			}
 			if page.Total != test.total || page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
 				t.Fatalf("page lost bounds or open selection: %+v", page.Work)
 			}
@@ -303,7 +306,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		t.Fatal("large open inventory displaced live work or exceeded the bound")
 	}
 	q := &runtimeReadQuery{nativeQueryer: f.service.database.db}
-	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now(), "all")
+	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now(), "all", "")
 	if err != nil {
 		t.Fatal(err)
 	}

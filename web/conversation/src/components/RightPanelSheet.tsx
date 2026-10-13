@@ -24,7 +24,7 @@ export function RightPanelSheet(props: {
     >
       <SheetPopup
         ref={popup}
-        initialFocus={() => props.focusAsk ? (popup.current?.querySelector<HTMLElement>("[data-testid=issue-ask-panel] [role=textbox]") ?? true) : true}
+        initialFocus={() => props.focusAsk ? (popup.current?.querySelector<HTMLElement>("[data-ask-panel] [role=textbox]") ?? true) : true}
         aria-label={props.label ?? "Right panel"}
         transitionDurationMs={props.animationDurationMs}
         side="right"

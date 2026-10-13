@@ -22,16 +22,17 @@ import (
 
 // Bounds for coordinator tool arguments and results.
 const (
-	coordinatorToolArgumentBytes  = 16 << 10
-	coordinatorToolResultBytes    = 64 << 10
-	coordinatorAttentionDefault   = 20
-	coordinatorAttentionMax       = 50
-	coordinatorAttentionScan      = 500
-	coordinatorIssueBodyRunes     = 4000
-	coordinatorCommentRunes       = 1000
-	coordinatorCommentCount       = 5
-	coordinatorProposalTitleBytes = 500
-	coordinatorProposalBodyRunes  = 4000
+	coordinatorToolArgumentBytes     = 16 << 10
+	coordinatorWorkflowArgumentBytes = 6*(128<<10) + coordinatorToolArgumentBytes
+	coordinatorToolResultBytes       = 64 << 10
+	coordinatorAttentionDefault      = 20
+	coordinatorAttentionMax          = 50
+	coordinatorAttentionScan         = 500
+	coordinatorIssueBodyRunes        = 4000
+	coordinatorCommentRunes          = 1000
+	coordinatorCommentCount          = 5
+	coordinatorProposalTitleBytes    = 500
+	coordinatorProposalBodyRunes     = 4000
 )
 
 const (
@@ -77,7 +78,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, append(append(append(append(append(coordinatorActionTools(), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...)...)
+	}, append(append(append(append(append(append(coordinatorActionTools(), coordinatorWorkflowTools()...), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -86,10 +87,10 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	t.state.endTextSegment(ctx)
 	result, err := t.execute(ctx, call)
 	if err != nil {
-		if call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+		if coordinatorWorkflowTool(call.Name) || call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
 			err = coordinatorActionError(err)
 		}
-		if call.Name == "set_runner_tier" || coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+		if coordinatorWorkflowMutation(call.Name) || call.Name == "set_runner_tier" || coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
 			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
 				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
 			}
@@ -118,8 +119,12 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	if err != nil {
 		return coordinatorToolError(fmt.Errorf("encode %s result: %w", call.Name, err)), nil
 	}
-	if len(encoded) > coordinatorToolResultBytes {
-		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, coordinatorToolResultBytes)), nil
+	limit := coordinatorToolResultBytes
+	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
+		limit = coordinatorWorkflowArgumentBytes
+	}
+	if len(encoded) > limit {
+		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, limit)), nil
 	}
 	return runner.AgentToolResult{Content: string(encoded), Success: true}, nil
 }
@@ -170,6 +175,9 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 	}
 	if coordinatorSettingsTool(call.Name) {
 		return t.settingsTool(ctx, record, call)
+	}
+	if coordinatorWorkflowTool(call.Name) {
+		return t.workflowTool(ctx, record, call)
 	}
 	switch call.Name {
 	case "read_skill":
@@ -240,11 +248,15 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 }
 
 func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
+	return decodeCoordinatorArgumentsWithLimit(raw, target, coordinatorToolArgumentBytes)
+}
+
+func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit int) error {
 	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
 		raw = json.RawMessage(`{}`)
 	}
-	if len(raw) > coordinatorToolArgumentBytes {
-		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, coordinatorToolArgumentBytes)
+	if len(raw) > limit {
+		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, limit)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

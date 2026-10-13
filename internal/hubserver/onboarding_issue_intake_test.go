@@ -231,7 +231,7 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				return
 			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}, Destination: "Todo"}, http.StatusUnprocessableEntity)
-			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}}, http.StatusOK)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 12, 13, 14}, Destination: "Backlog"}, http.StatusOK)
 			if len(f.batch.Items) != 3 || f.batch.Destination != "Backlog" {
 				t.Fatalf("selection = %#v", f.batch)
 			}

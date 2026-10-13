@@ -31,6 +31,9 @@ func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
 func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, _, err := s.authenticateAPIRequest(c)
+		if err == nil && credential.HostedRole == "reporter" && !hostedReadRequest(c) {
+			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+		}
 		if err != nil || credential.Hosted == nil || c.Param("organization") != s.config.Hosted.OrganizationID {
 			return s.nativeAPIError(c, nativeNotFound())
 		}

@@ -93,6 +93,7 @@ type NativeIssue struct {
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
+	Snippet            string              `json:"snippet,omitempty"`
 	State              string              `json:"state"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`

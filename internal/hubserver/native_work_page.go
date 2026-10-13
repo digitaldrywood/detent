@@ -14,7 +14,7 @@ JOIN workflow_states origin ON origin.project_id = e.project_id AND origin.deten
 WHERE e.organization_id = i.organization_id AND e.project_id = i.project_id AND e.work_item_id = i.native_id AND e.type = 'workflow.transitioned'
 ORDER BY e.sequence DESC LIMIT 1)`
 
-func readNativeWorkSummary(ctx context.Context, db nativeQueryer, scope nativeScope, query string, args []any, limit int, now time.Time, completedWindow string) (*tracker.NativeWorkSummary, error) {
+func readNativeWorkSummary(ctx context.Context, db nativeQueryer, scope nativeScope, query string, args []any, limit int, now time.Time, completedWindow, search string) (*tracker.NativeWorkSummary, error) {
 	live := `EXISTS (SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
 AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <= julianday(?) AND julianday(l.expires_at) > julianday(?))`
@@ -53,21 +53,45 @@ AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	statement = query + " AND COALESCE(ws.terminal, 0) = 0 ORDER BY " + live + " DESC, COALESCE(ws.dispatchable, 0) DESC, i.number DESC LIMIT ?"
-	itemArgs := append(append([]any{}, args...), formatHubTime(now), formatHubTime(now), limit+1)
-	ids, err := nativePageIDs(ctx, db, statement, itemArgs...)
+	selected, relevance := "SELECT i.native_id, 0, ''", ""
+	itemArgs := append([]any{}, args...)
+	if search != "" {
+		selected = "SELECT i.native_id" + nativeSearchProjection
+		relevance = "COALESCE(search.score, 0), "
+		itemArgs = append([]any{search}, itemArgs...)
+	}
+	statement = strings.Replace(query, "SELECT i.native_id", selected, 1) + " AND COALESCE(ws.terminal, 0) = 0 ORDER BY " + relevance + live + " DESC, COALESCE(ws.dispatchable, 0) DESC, i.number DESC LIMIT ?"
+	itemArgs = append(itemArgs, formatHubTime(now), formatHubTime(now), limit+1)
+	rows, err = db.QueryContext(ctx, statement, itemArgs...)
 	if err != nil {
 		return nil, err
 	}
-	work.Truncated = len(ids) > limit
-	if work.Truncated {
-		ids = ids[:limit]
+	defer rows.Close()
+	items := []nativeIssuePageItem{}
+	for rows.Next() {
+		var item nativeIssuePageItem
+		if err := rows.Scan(&item.ID, &item.Position.Score, &item.Snippet); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
 	}
-	for _, id := range ids {
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	work.Truncated = len(items) > limit
+	if work.Truncated {
+		items = items[:limit]
+	}
+	for _, item := range items {
+		id := item.ID
 		issue, _, err := readNativeIssueProjection(ctx, db, scope, id, true)
 		if err != nil {
 			return nil, err
 		}
+		issue.Snippet = item.Snippet
 		work.Items = append(work.Items, issue)
 	}
 	return work, nil

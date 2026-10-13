@@ -18,7 +18,7 @@ import (
 )
 
 func coordinatorScreenReadNames() []string {
-	return []string{"get_native_project", "get_onboarding", "project_setup", "get_project_policy", operatortool.GetProjectModelSelection, operatortool.GetOrganizationModelSelection, operatortool.BoardActivity, "project_secret_metadata", "repository_freshness", "monthly_usage_costs", operatortool.WorkList, operatortool.HealthFindings, operatortool.BoardState, operatortool.AnalyticsDashboard, operatortool.Reports, "get_project_usage", "get_organization_plan", "get_billing_status", "get_billing_usage", "get_project_members", operatortool.MembershipList, operatortool.GetRunnerCapacity, operatortool.GetRunnerUpdate}
+	return []string{"get_native_project", "get_onboarding", "project_setup", "get_project_policy", operatortool.GetProjectModelSelection, operatortool.GetOrganizationModelSelection, operatortool.BoardActivity, "project_secret_metadata", "repository_freshness", "monthly_usage_costs", operatortool.WorkList, operatortool.HealthFindings, operatortool.BoardState, operatortool.TimeSeries, operatortool.AnalyticsDashboard, operatortool.Reports, "get_project_usage", "get_organization_plan", "get_billing_status", "get_billing_usage", "get_project_members", operatortool.MembershipList, operatortool.GetRunnerCapacity, operatortool.GetRunnerUpdate}
 }
 
 func coordinatorScreenTools() []runner.AgentTool {
@@ -173,6 +173,9 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 			var result operatortool.Result
 			result, err = (hostedOperatorExecutor{service: s}).Execute(ctx, operatortool.Call{Name: target, Arguments: raw})
 			value = result.Content
+			if err == nil && target == "get_project_policy" {
+				value, err = coordinatorPolicyEvidence(result.Content)
+			}
 			if err == nil && target == operatortool.MembershipList {
 				value, err = coordinatorProjectMembers(result.Content, record.ProjectID)
 			}

@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -103,7 +105,7 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 			if !reflect.DeepEqual(actual, recount) {
 				t.Fatalf("counts=%v recount=%v", actual, recount)
 			}
-			full, err := readNativeWorkSummary(t.Context(), tx, scope, "SELECT i.native_id FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.archived=0", []any{scope.organization, scope.project}, 50, f.service.config.now(), "48h")
+			full, err := readNativeWorkSummary(t.Context(), tx, scope, "SELECT i.native_id FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.archived=0", []any{scope.organization, scope.project}, 50, f.service.config.now(), "48h", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,6 +132,46 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	if err != nil || !gap.Gap {
 		t.Fatalf("gap=%#v err=%v", gap, err)
 	}
+	history := f.create(t, "Historical workflow card")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(history.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "historical-done"}, ExpectedRevision: history.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(other.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "historical-blocker"}, ExpectedRevision: 1, RelatedWorkItemID: history.WorkItemID, Operation: "add"}), http.StatusOK)
+	descriptor := hubTestPolicy()
+	for _, test := range []struct {
+		name     string
+		states   []tracker.NativeState
+		terminal bool
+		wantRank int
+	}{
+		{"reordered workflow", []tracker.NativeState{nativeFixtureStates()[2], nativeFixtureStates()[0], nativeFixtureStates()[1]}, true, 0},
+		{"historical terminal flag changes", []tracker.NativeState{{Name: "Done", Transitions: []string{"Todo"}}, nativeFixtureStates()[0], nativeFixtureStates()[1], {Name: "Closed", Terminal: true}}, false, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := descriptor
+			changed.Workflow = &policy.Workflow{Source: "detent.yaml", States: test.states}
+			changed = changed.WithID()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
+			descriptor = changed
+			for _, id := range []tracker.NativeWorkItemID{history.WorkItemID, other.WorkItemID} {
+				var raw string
+				var rank int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json,lane_rank FROM native_board_items WHERE work_item_id=?", id).Scan(&raw, &rank); err != nil {
+					t.Fatal(err)
+				}
+				var card tracker.NativeBoardCard
+				if err := json.Unmarshal([]byte(raw), &card); err != nil {
+					t.Fatal(err)
+				}
+				if id == history.WorkItemID {
+					if card.Issue.Terminal != test.terminal || rank != test.wantRank {
+						t.Fatalf("historical card terminal=%v rank=%d", card.Issue.Terminal, rank)
+					}
+				} else if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].Terminal != test.terminal {
+					t.Fatalf("dependent card blockers=%+v", card.Issue.Blockers)
+				}
+			}
+		})
+	}
+
 }
 
 func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
@@ -223,6 +265,70 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			assertDelta(t, test.status, test.count)
 		})
 	}
+	unaffected := f.create(t, "Historical card without Change")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(unaffected.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "unaffected-done"}, ExpectedRevision: unaffected.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+	historical := f.create(t, "Historical Change card")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(historical.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "change-done"}, ExpectedRevision: historical.Revision, State: "Done", Reason: "user_requested"}), http.StatusOK)
+	path := f.base + "/work-items/" + string(historical.WorkItemID) + "/changes"
+	response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "historical-change"}, Title: "Historical Change"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var historicalChange tracker.ChangeRequest
+	decodeHubResponse(t, response, &historicalChange)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+historicalChange.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "historical-version"}, ChangeVersionInput: changeTestInput()}), http.StatusOK)
+	for _, statement := range []string{
+		"CREATE TABLE policy_dirty_cards(work_item_id TEXT PRIMARY KEY)",
+		"CREATE TRIGGER count_change_policy_cards AFTER INSERT ON native_board_dirty BEGIN INSERT OR IGNORE INTO policy_dirty_cards VALUES(NEW.work_item_id); END",
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed := hubTestPolicy()
+	changed.Gates.AutoPromote = true
+	changed = changed.WithID()
+	for _, test := range []struct {
+		name   string
+		method string
+		body   any
+	}{
+		{"changed policy", http.MethodPut, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: changed}},
+		{"revoked policy", http.MethodDelete, map[string]string{"expected_policy_id": changed.ID}},
+		{"restored policy", http.MethodPut, policy.Change{Policy: hubTestPolicy()}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_dirty_cards"); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, test.method, f.base+"/policy", testHubAdminToken, test.body), map[string]int{http.MethodPut: http.StatusOK, http.MethodDelete: http.StatusNoContent}[test.method])
+			ids, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM policy_dirty_cards ORDER BY work_item_id")
+			want := []string{string(f.issue.WorkItemID), string(historical.WorkItemID)}
+			slices.Sort(want)
+			if err != nil || !slices.Equal(ids, want) {
+				t.Fatalf("policy dirty cards=%v want=%v err=%v", ids, want, err)
+			}
+			for _, id := range want {
+				var raw string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var card tracker.NativeBoardCard
+				if err := json.Unmarshal([]byte(raw), &card); err != nil {
+					t.Fatal(err)
+				}
+				wantStatus := "stale_policy"
+				if test.name == "restored policy" {
+					wantStatus = "needs_evidence"
+					if id == string(f.issue.WorkItemID) {
+						wantStatus = "reviewed"
+					}
+				}
+				if card.Change == nil || card.Change.Status != wantStatus {
+					t.Fatalf("card %s Change=%+v, want %s", id, card.Change, wantStatus)
+				}
+			}
+		})
+	}
+
 }
 
 func TestHostedBoardStreamReplay(t *testing.T) {

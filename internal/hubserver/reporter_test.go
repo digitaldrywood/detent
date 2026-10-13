@@ -91,7 +91,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{
 				Mutation:            tracker.Mutation{IdempotencyKey: "scheduled-validation"},
-				ScheduledValidation: &gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Conclusion: "success"},
+				ScheduledValidation: &gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Conclusion: "success"},
 			}), http.StatusForbidden)
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "screenshot.png", ContentType: "image/png", Size: 100, Width: 1, Height: 1, SHA256: artifact.Digest([]byte("screenshot"))}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/attachment-metadata/check", map[string]any{"size": record.Size}), http.StatusOK)
@@ -281,26 +281,58 @@ func TestReporterPersonalKeyIntersection(t *testing.T) {
 func TestReporterRoleAssignment(t *testing.T) {
 	for _, deployment := range []string{"shared", "dedicated"} {
 		t.Run(deployment, func(t *testing.T) {
-			f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
-			catalog, err := operatorCatalog(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
+			f, _ := newHostedKeyMCPFixture(t, deployment, "owner")
 			member := f.hostedSecurityFixture.user(t, "tester", "member", "tester@example.test", "write", "")
 			var membership string
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT membership_id FROM hosted_members WHERE user_id=?", member.identity.Subject).Scan(&membership); err != nil {
 				t.Fatal(err)
 			}
-			changed, err := f.service.changeHostedRoleFor(ctx, catalog.credential, membership, "reporter")
-			if err != nil || changed.Role != "reporter" {
-				t.Fatalf("changed role=%s err=%v", changed.Role, err)
-			}
-			for _, name := range []string{"first", "second"} {
-				invitation, err := f.service.inviteHostedMemberFor(ctx, catalog.credential, name+"@example.test", "reporter", "invite-"+name, []hostedMemberGrant{{ProjectID: string(f.project), Write: true}})
-				if err != nil || invitation.Role != "reporter" {
-					t.Fatalf("invitation role=%s err=%v", invitation.Role, err)
+			call := func(name string, arguments map[string]any, target any) {
+				t.Helper()
+				raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]string{"name": "Reporter assignment", "version": "1"}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := reporterEntryRequest(t, f, deployment, "", "web-session", http.MethodPost, "/api/v2/organizations/org_security/mcp", raw, map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": name})
+				requireNativeStatus(t, response, http.StatusOK)
+				var frame struct {
+					Result struct {
+						IsError    bool `json:"isError"`
+						Structured struct {
+							Action chatpkg.Action  `json:"action"`
+							Output json.RawMessage `json:"output"`
+						} `json:"structuredContent"`
+					} `json:"result"`
+				}
+				decodeHubResponse(t, response, &frame)
+				if frame.Result.IsError || frame.Result.Structured.Action.Status != chatpkg.ActionSucceeded {
+					t.Fatalf("%s failed: %s", name, response.Body.String())
+				}
+				if err := json.Unmarshal(frame.Result.Structured.Output, target); err != nil {
+					t.Fatal(err)
 				}
 			}
+			var changed struct {
+				Data hostedMemberView `json:"data"`
+			}
+			call(operatortool.MemberRole, map[string]any{"request_id": "assign-reporter", "member_id": membership, "role": "reporter"}, &changed)
+			if changed.Data.Role != "reporter" {
+				t.Fatalf("changed role=%s", changed.Data.Role)
+			}
+			for _, name := range []string{"first", "second"} {
+				var invitation struct {
+					Data hostedInvitationView `json:"data"`
+				}
+				call(operatortool.InvitationSend, map[string]any{"request_id": "invite-" + name, "email": name + "@example.test", "role": "reporter", "grants": []hostedMemberGrant{{ProjectID: string(f.project), Write: true}}}, &invitation)
+				if invitation.Data.Role != "reporter" {
+					t.Fatalf("invitation role=%s", invitation.Data.Role)
+				}
+			}
+			var role string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT role FROM hosted_members WHERE membership_id=?", membership).Scan(&role); err != nil || role != "reporter" {
+				t.Fatalf("persisted role=%s err=%v", role, err)
+			}
+
 		})
 	}
 }
