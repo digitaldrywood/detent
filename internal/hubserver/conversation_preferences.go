@@ -88,7 +88,7 @@ func (s *Service) hasLunaCoordinator() bool {
 }
 
 func (s *Service) conversationModelChoiceGranted(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (bool, error) {
-	if s.database.hostedPlans == nil || s.database.hostedOrganization != organization {
+	if s.database.plans() == nil || s.database.hostedOrganization != organization {
 		return false, nil
 	}
 	entitlement, err := s.database.hostedEntitlement(ctx, query, now)

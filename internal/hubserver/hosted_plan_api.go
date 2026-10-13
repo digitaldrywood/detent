@@ -23,6 +23,7 @@ type hostedPlanCommand struct {
 	Action           string        `json:"action"`
 	ExpectedRevision int64         `json:"expected_revision"`
 	Plan             PlanReference `json:"plan"`
+	Definition       *HostedPlan   `json:"definition,omitempty"`
 	GrantID          string        `json:"grant_id"`
 	Scope            []string      `json:"scope"`
 	StartsAt         time.Time     `json:"starts_at"`
@@ -57,7 +58,7 @@ type hostedEntitlementReport struct {
 }
 
 func (s *Service) hostedPlanReport(c echo.Context) error {
-	if !s.entitlementAdministrator(c) {
+	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
 		return c.NoContent(http.StatusForbidden)
 	}
 	report, err := s.database.hostedEntitlementReport(c.Request().Context())
@@ -69,7 +70,7 @@ func (s *Service) hostedPlanReport(c echo.Context) error {
 
 func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitlementReport, error) {
 	var report hostedEntitlementReport
-	if d.hostedPlans == nil {
+	if d.plans() == nil {
 		return report, nativeNotFound()
 	}
 	now, err := d.currentTime()
@@ -81,12 +82,9 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 		return report, err
 	}
 	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, GrantHistory: []hostedGrantRecord{}, Plans: []HostedPlan{}}
-	for _, configured := range d.hostedPlans.Plans {
-		plan, err := readHostedPlan(ctx, d.db, configured.PlanReference)
-		if err != nil {
-			return report, err
-		}
-		report.Plans = append(report.Plans, plan)
+	report.Plans, err = d.readHostedPlans(ctx, d.db)
+	if err != nil {
+		return report, err
 	}
 	granted := make(map[string]hostedGrantRecord)
 	audits, err := d.db.QueryContext(ctx, "SELECT actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant'")
@@ -124,7 +122,7 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 }
 
 func (s *Service) updateHostedPlan(c echo.Context) error {
-	if !s.entitlementAdministrator(c) {
+	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
 		return c.NoContent(http.StatusForbidden)
 	}
 
@@ -142,7 +140,7 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 	if d.hostedBilling && (command.Action == "subscription" || command.Action == "end_subscription") {
 		return nativeInvalid("Stripe reconciliation owns subscription access; use separate complimentary grants for operator access")
 	}
-	if d.hostedPlans == nil || !hostedSafeID(command.ID) || strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 500 || command.ExpectedRevision < 1 || !slices.Contains([]string{"base", "subscription", "end_subscription", "grant", "revoke"}, command.Action) {
+	if d.plans() == nil || !hostedSafeID(command.ID) || strings.TrimSpace(command.Reason) == "" || len(command.Reason) > 500 || command.ExpectedRevision < 1 || !slices.Contains([]string{"base", "subscription", "end_subscription", "grant", "revoke", "create_plan"}, command.Action) {
 		return nativeInvalid("A command ID, revision, action and bounded audit reason are required")
 	}
 	raw, err := json.Marshal(command)
@@ -179,11 +177,27 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 		return nativeConflict(tracker.Revision(revision))
 	}
 	if slices.Contains([]string{"base", "subscription", "grant"}, command.Action) {
-		if _, err := readHostedPlan(ctx, tx, command.Plan); err != nil {
+		if _, err := d.readHostedPlan(ctx, tx, command.Plan); err != nil {
 			return nativeInvalid("The plan version must exist")
 		}
 	}
 	switch command.Action {
+	case "create_plan":
+		if command.Definition == nil || command.Plan != command.Definition.PlanReference || validateHostedPlan(*command.Definition) != nil {
+			return nativeInvalid("A valid new plan definition matching the plan reference is required")
+		}
+		var exists bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_plans WHERE id=? AND version=?)", command.Plan.ID, command.Plan.Version).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return nativeConflict(tracker.Revision(revision))
+		}
+		encoded, encodeErr := json.Marshal(normalizeHostedPlan(*command.Definition))
+		if encodeErr != nil {
+			return encodeErr
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", command.Plan.ID, command.Plan.Version, string(encoded))
 	case "base":
 		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET base_id = ?,base_version = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, d.hostedOrganization)
 	case "subscription":
@@ -220,10 +234,20 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 	if _, err := tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET revision = revision + 1 WHERE organization_id = ?", d.hostedOrganization); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plan_audit(command_id,request_hash,actor_id,reason,action,recorded_at,record_json) VALUES(?,?,?,?,?,?,?)", command.ID, hash, actor, command.Reason, command.Action, formatHubTime(now), string(raw)); err != nil {
+	if err := d.auditHostedPlanCommand(ctx, tx, actor, command, now); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (d *database) auditHostedPlanCommand(ctx context.Context, tx *sql.Tx, actor string, command hostedPlanCommand, now time.Time) error {
+	raw, err := json.Marshal(command)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(raw)
+	_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plan_audit(command_id,request_hash,actor_id,reason,action,recorded_at,record_json) VALUES(?,?,?,?,?,?,?)", command.ID, hex.EncodeToString(digest[:]), actor, command.Reason, command.Action, formatHubTime(now), string(raw))
+	return err
 }
 
 func insertHostedComplimentaryGrant(ctx context.Context, tx *sql.Tx, command hostedPlanCommand, now time.Time) error {

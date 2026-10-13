@@ -371,7 +371,7 @@ func usageBusySeconds(started, updated string, window usageWindow) int64 {
 // the report's Limits tab has the same numbers as the plan screen.
 func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error) {
 	limits := map[string]usageLimit{}
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return limits, nil
 	}
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now())

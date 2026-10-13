@@ -471,7 +471,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	completion := options.Completion
 	event, runEvent := input.(tracker.NativeRunEvent)
-	consolidateRunEvent := runEvent && !completion && s.database.hostedPlans != nil
+	consolidateRunEvent := runEvent && !completion && s.database.plans() != nil
 	var runEventState hostedRunEventState
 	if consolidateRunEvent {
 		runEventState, err = readHostedRunEventState(ctx, tx, event)

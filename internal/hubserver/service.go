@@ -45,6 +45,7 @@ type Service struct {
 	billing                 *hostedBillingWorker
 	healthDetector          *healthDetector
 	hostedMutationMu        sync.Mutex
+	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
 	hostedSessions          *auth.Service
 	echo                    *echo.Echo
@@ -101,6 +102,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	database.configureRuntimePublication(cfg)
 	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
 		return nil, errors.Join(err, database.Close())
 	}

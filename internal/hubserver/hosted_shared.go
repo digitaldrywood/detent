@@ -246,7 +246,7 @@ type hostedSharedBillingQuery struct {
 }
 
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
 	entitlement, err := s.database.hostedEntitlement(c.Request().Context(), s.database.db, s.config.now())
 	if err != nil {
@@ -305,7 +305,7 @@ type hostedSharedBillingEventRequest struct {
 }
 
 func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
 	var request hostedSharedBillingEventRequest
 	if err := decodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
 		return invalidAPIRequest(c, errors.New("invalid billing event"))

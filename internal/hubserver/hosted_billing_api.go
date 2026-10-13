@@ -169,7 +169,10 @@ func (s *Service) recordBillingAction(ctx context.Context, actor, action string)
 }
 
 func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billing.Binding, error) {
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
+	if cfg == nil {
+		return billing.Binding{}, errHostedBillingUnbound
+	}
 	binding, err := s.database.hostedBillingBinding(ctx, cfg)
 	if !errors.Is(err, errHostedBillingUnbound) {
 		return binding, err

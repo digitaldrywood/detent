@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/google/uuid"
 )
 
 type PlanReference struct {
@@ -29,12 +31,12 @@ type HostedPlan struct {
 }
 
 type HostedPlansConfig struct {
-	Plans             []HostedPlan  `yaml:"plans"`
-	Base              PlanReference `yaml:"base"`
-	WindowSeconds     int64         `yaml:"window_seconds"`
-	RetentionWindows  int64         `yaml:"retention_windows"`
-	ConnectedSeconds  int64         `yaml:"connected_seconds"`
-	InvitationSeconds int64         `yaml:"invitation_seconds"`
+	Plans             []HostedPlan  `yaml:"plans" json:"plans"`
+	Base              PlanReference `yaml:"base" json:"base"`
+	WindowSeconds     int64         `yaml:"window_seconds" json:"window_seconds"`
+	RetentionWindows  int64         `yaml:"retention_windows" json:"retention_windows"`
+	ConnectedSeconds  int64         `yaml:"connected_seconds" json:"connected_seconds"`
+	InvitationSeconds int64         `yaml:"invitation_seconds" json:"invitation_seconds"`
 
 	// written records that the YAML section named at least one key, so an
 	// explicitly empty plan list is an error rather than the defaults.
@@ -265,37 +267,8 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 		return err
 	}
 	defer tx.Rollback()
-	for _, plan := range config.Plans {
-		plan.Allowances = maps.Clone(plan.Allowances)
-		if plan.Allowances == nil {
-			plan.Allowances = make(map[string]int64)
-		}
-		for _, name := range hostedAllowanceNames() {
-			if name == "unarchived_issues" || hostedCapacityPlan(plan.PlanReference) && slices.Contains([]string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"}, name) {
-				continue
-			}
-			if _, exists := plan.Allowances[name]; !exists {
-				plan.Allowances[name] = 0
-			}
-		}
-		plan.Features = slices.Clone(plan.Features)
-		slices.Sort(plan.Features)
-		plan.Features = slices.Compact(plan.Features)
-		encoded, err := json.Marshal(plan)
-		if err != nil {
-			return err
-		}
-		var existing string
-		err = tx.QueryRowContext(ctx, "SELECT record_json FROM hosted_plans WHERE id = ? AND version = ?", plan.ID, plan.Version).Scan(&existing)
-		if err == nil && existing != string(encoded) {
-			return errors.New("hosted plan versions are immutable; configure a new version")
-		}
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?) ON CONFLICT DO NOTHING", plan.ID, plan.Version, string(encoded)); err != nil {
-			return err
-		}
+	if err := d.seedHostedPlans(ctx, tx, config, "configuration", "startup seed", ""); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_plan_assignments(organization_id,base_id,base_version) VALUES(?,?,?) ON CONFLICT DO NOTHING`, d.hostedOrganization, config.Base.ID, config.Base.Version); err != nil {
 		return err
@@ -303,15 +276,108 @@ func (d *database) configureHostedPlans(ctx context.Context, cfg *HostedConfig) 
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	d.hostedPlans = &config
+	d.hostedRuntime.Store(&hostedRuntimeConfig{Plans: config})
 	return nil
 }
 
-func readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference) (HostedPlan, error) {
-	var raw string
+func normalizeHostedPlan(plan HostedPlan) HostedPlan {
+	plan.Allowances = maps.Clone(plan.Allowances)
+	if plan.Allowances == nil {
+		plan.Allowances = make(map[string]int64)
+	}
+	for _, name := range hostedAllowanceNames() {
+		if name == "unarchived_issues" || hostedCapacityPlan(plan.PlanReference) && slices.Contains([]string{"members", "repositories", "registered_runners", "connected_runners", "concurrent_work"}, name) {
+			continue
+		}
+		if _, exists := plan.Allowances[name]; !exists {
+			plan.Allowances[name] = 0
+		}
+	}
+	plan.Features = slices.Clone(plan.Features)
+	slices.Sort(plan.Features)
+	plan.Features = slices.Compact(plan.Features)
+	return plan
+}
+
+func validateHostedPlan(plan HostedPlan) error {
+	config := pilotHostedPlans()
+	config.Plans, config.Base = []HostedPlan{plan}, plan.PlanReference
+	return config.validate()
+}
+
+func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config HostedPlansConfig, actor, reason, runtimeID string) error {
+	for _, plan := range config.Plans {
+		plan = normalizeHostedPlan(plan)
+		encoded, err := json.Marshal(plan)
+		if err != nil {
+			return err
+		}
+		var existing, staged string
+		err = tx.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", plan.ID, plan.Version).Scan(&existing, &staged)
+		if err == nil {
+			if existing != string(encoded) {
+				d.logger.WarnContext(ctx, "hosted plan seed differs from immutable stored version; keeping stored version", "plan", plan.ID, "version", plan.Version, "actor", actor, "reason", reason)
+			}
+			if !d.runtimeVisible(staged) {
+				if _, err := tx.ExecContext(ctx, "UPDATE hosted_plans SET runtime_id=? WHERE id=? AND version=?", runtimeID, plan.ID, plan.Version); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id) VALUES(?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID); err != nil {
+			return err
+		}
+		command := hostedPlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason}
+		if err := d.auditHostedPlanCommand(ctx, tx, actor, command, d.now()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *database) readHostedPlans(ctx context.Context, query nativeQueryer) ([]HostedPlan, error) {
+	rows, err := query.QueryContext(ctx, "SELECT id,version,runtime_id FROM hosted_plans ORDER BY id, version")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var references []PlanReference
+	for rows.Next() {
+		var ref PlanReference
+		var runtimeID string
+		if err := rows.Scan(&ref.ID, &ref.Version, &runtimeID); err != nil {
+			return nil, err
+		}
+		if d.runtimeVisible(runtimeID) {
+			references = append(references, ref)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	plans := make([]HostedPlan, 0, len(references))
+	for _, ref := range references {
+		plan, err := d.readHostedPlan(ctx, query, ref)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, plan)
+	}
+	return plans, nil
+}
+
+func (d *database) readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference) (HostedPlan, error) {
+	var raw, runtimeID string
 	var plan HostedPlan
-	if err := query.QueryRowContext(ctx, "SELECT record_json FROM hosted_plans WHERE id = ? AND version = ?", ref.ID, ref.Version).Scan(&raw); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT record_json,runtime_id FROM hosted_plans WHERE id = ? AND version = ?", ref.ID, ref.Version).Scan(&raw, &runtimeID); err != nil {
 		return plan, err
+	}
+	if !d.runtimeVisible(runtimeID) {
+		return plan, sql.ErrNoRows
 	}
 	err := json.Unmarshal([]byte(raw), &plan)
 	if err == nil {
@@ -322,11 +388,12 @@ func readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference)
 			plan.Allowances["unarchived_issues"] = 200
 		}
 		if ref.Version == 1 && slices.Contains([]string{"pilot_free", "comp_team"}, ref.ID) {
-			var capacityCatalog bool
-			if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosted_plans WHERE id='starter' AND version=1)").Scan(&capacityCatalog); err != nil {
+			var capacityRuntime string
+			err := query.QueryRowContext(ctx, "SELECT runtime_id FROM hosted_plans WHERE id='starter' AND version=1").Scan(&capacityRuntime)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return plan, err
 			}
-			if capacityCatalog {
+			if err == nil && d.runtimeVisible(capacityRuntime) {
 				plan.Allowances["projects"] = max(plan.Allowances["projects"], 5)
 				plan.Allowances["unarchived_issues"] = max(plan.Allowances["unarchived_issues"], 2000)
 				plan.Allowances["collaboration_bytes"] = max(plan.Allowances["collaboration_bytes"], 1<<30)
@@ -347,8 +414,9 @@ func readHostedPlan(ctx context.Context, query nativeQueryer, ref PlanReference)
 }
 
 func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, now time.Time) (HostedEntitlement, error) {
+	runtimePlans := d.plans()
 	result := HostedEntitlement{OrganizationID: string(d.hostedOrganization), Source: "base", Grants: []HostedGrant{}}
-	if d.hostedPlans == nil {
+	if runtimePlans == nil {
 		return result, errors.New("hosted entitlements are disabled")
 	}
 	var subscription, expiry sql.NullString
@@ -367,7 +435,7 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 			result.Source = "subscription"
 		}
 	}
-	base, err := readHostedPlan(ctx, query, result.EffectiveBase)
+	base, err := d.readHostedPlan(ctx, query, result.EffectiveBase)
 	if err != nil {
 		return result, err
 	}
@@ -399,7 +467,7 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 		if grant.RevokedAt != nil || grant.StartsAt.After(now) || grant.ExpiresAt != nil && !grant.ExpiresAt.After(now) {
 			continue
 		}
-		plan, err := readHostedPlan(ctx, query, grant.Plan)
+		plan, err := d.readHostedPlan(ctx, query, grant.Plan)
 		if err != nil {
 			return result, err
 		}
@@ -416,7 +484,7 @@ func (d *database) hostedEntitlement(ctx context.Context, query nativeQueryer, n
 	delete(result.Allowances, "members")
 	delete(result.Allowances, "concurrent_work")
 	slices.Sort(result.Features)
-	result.WindowEndsAt = time.Unix((now.Unix()/d.hostedPlans.WindowSeconds+1)*d.hostedPlans.WindowSeconds, 0).UTC()
+	result.WindowEndsAt = time.Unix((now.Unix()/runtimePlans.WindowSeconds+1)*runtimePlans.WindowSeconds, 0).UTC()
 	return result, nil
 }
 
@@ -434,7 +502,7 @@ func (e *hostedLimitError) Error() string {
 }
 
 func (d *database) requireHostedFeature(ctx context.Context, query nativeQueryer, feature string, now time.Time) error {
-	if d.hostedPlans == nil {
+	if d.plans() == nil {
 		return nil
 	}
 	entitlement, err := d.hostedEntitlement(ctx, query, now)

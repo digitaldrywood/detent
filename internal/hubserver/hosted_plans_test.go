@@ -266,7 +266,7 @@ func TestHostedPlanCommandsAndPermissions(t *testing.T) {
 	command.Scope = []string{"concurrent_work"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, testHostedPlanAdminToken, command), http.StatusConflict)
 	var audits int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit").Scan(&audits); err != nil {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_plan_audit WHERE action='grant'").Scan(&audits); err != nil {
 		t.Fatal(err)
 	}
 	if audits != 1 {
@@ -325,7 +325,7 @@ func TestHostedPlanReportRequiresEntitlementAdministrator(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || len(report.Plans) != 2 || len(report.Grants) != 1 {
+	if report.Revision != 2 || report.Base != config.Base || report.EffectiveBase != config.Base || !slices.ContainsFunc(report.Plans, func(plan HostedPlan) bool { return plan.PlanReference == config.Plans[1].PlanReference }) || len(report.Grants) != 1 {
 		t.Fatalf("report = %+v", report)
 	}
 	recorded := report.Grants[0]
@@ -525,8 +525,12 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 	config.Plans[0].Allowances["projects"]++
 	cfg := *f.service.config.Hosted
 	cfg.Plans = &config
-	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err == nil {
-		t.Fatal("mutated existing plan version")
+	if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
+		t.Fatalf("changed seed stopped startup: %v", err)
+	}
+	stored, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, config.Base)
+	if err != nil || stored.Allowances["projects"] == config.Plans[0].Allowances["projects"] {
+		t.Fatalf("changed seed overwrote stored plan: %+v %v", stored, err)
 	}
 	now := time.Now().UTC()
 	for i := range 30 {
@@ -553,7 +557,7 @@ func TestHostedPlanConfigurationAndTelemetry(t *testing.T) {
 func TestHostedPlansDisabledWithoutNetwork(t *testing.T) {
 	t.Parallel()
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "local.db")})
-	if service.database.hostedPlans != nil {
+	if service.database.plans() != nil {
 		t.Fatal("self-hosted plan restrictions enabled")
 	}
 	tx, err := service.database.db.BeginTx(t.Context(), nil)
@@ -899,7 +903,7 @@ func TestCapacityCatalog(t *testing.T) {
 		{"free", 1, 200, false}, {"starter", 5, 2000, true}, {"growth", 25, 10000, true}, {"scale", 100, 50000, true},
 	} {
 		t.Run(test.id, func(t *testing.T) {
-			plan, err := readHostedPlan(t.Context(), f.service.database.db, PlanReference{ID: test.id, Version: 1})
+			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, PlanReference{ID: test.id, Version: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1148,7 +1152,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 	var runEvent tracker.NativeRunEvent
 	var runItem tracker.NativeWorkItemID
 	for _, retained := range []int{1, 32} {
-		d.hostedPlans = nil
+		d.hostedRuntime.Store(nil)
 		for i := previous; i < retained; i++ {
 			issue := f.create(t, fmt.Sprintf("retained-%d", i))
 			body := strings.Repeat("x", 32768) + issueContractTestSections

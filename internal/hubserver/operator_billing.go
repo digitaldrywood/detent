@@ -125,10 +125,10 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		if (definition.Name == operatortool.CreditCheckout || definition.Name == operatortool.CreditAutoFund) && !e.service.creditAvailable() {
 			continue
 		}
-		if definition.Name == operatortool.CreditCheckout && e.service.config.Hosted.Billing.CheckoutDisabled {
+		if cfg := e.service.hostedBillingConfig(); definition.Name == operatortool.CreditCheckout && cfg != nil && cfg.CheckoutDisabled {
 			continue
 		}
-		if !definition.Annotations.ReadOnly && e.service.config.Hosted.Billing == nil {
+		if !definition.Annotations.ReadOnly && e.service.hostedBillingConfig() == nil {
 			continue
 		}
 		definitions = append(definitions, definition)
@@ -392,6 +392,7 @@ func decodeBillingAction(name string, raw json.RawMessage) (billingActionRequest
 
 func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.service
+	cfg := s.hostedBillingConfig()
 	request, err := decodeBillingAction(call.Name, call.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -400,7 +401,7 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	if s.config.Hosted.Billing == nil || s.billing == nil {
+	if cfg == nil || s.billing == nil {
 		return operatortool.Result{}, errBillingUnavailable
 	}
 	arguments, err := json.Marshal(request)
@@ -425,18 +426,18 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 	}
 	if call.Name == operatortool.BillingCheckout {
 		approved := false
-		for _, price := range s.config.Hosted.Billing.Prices {
+		for _, price := range cfg.Prices {
 			approved = approved || price.PriceID == request.Price
 		}
 		if !approved {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
-		if s.config.Hosted.Billing.CheckoutDisabled {
+		if cfg.CheckoutDisabled {
 			return operatortool.Result{}, errBillingUnavailable
 		}
 	}
 	if call.Name == operatortool.CreditCheckout || call.Name == operatortool.CreditAutoFund {
-		if !s.creditAvailable() || call.Name == operatortool.CreditCheckout && s.config.Hosted.Billing.CheckoutDisabled {
+		if !s.creditAvailable() || call.Name == operatortool.CreditCheckout && cfg.CheckoutDisabled {
 			return operatortool.Result{}, errBillingUnavailable
 		}
 		if call.Name == operatortool.CreditCheckout || *request.Enabled {
@@ -470,7 +471,7 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 
 // Bind the preview to the configured purchase, not just a mutable price label.
 func (s *Service) billingActionBinding(price string) string {
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
 	if cfg == nil {
 		return ""
 	}
@@ -487,10 +488,10 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
 		return s.billingActionBinding(request.Price), "", nil
 	}
-	if !s.creditAvailable() {
+	cfg := s.hostedBillingConfig()
+	if cfg == nil || !s.creditAvailable() {
 		return "", "", errBillingUnavailable
 	}
-	cfg := s.config.Hosted.Billing
 	pack, _ := s.creditPack(request.Price)
 	material := struct {
 		Organization string           `json:"organization_id"`

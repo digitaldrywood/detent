@@ -135,8 +135,36 @@ remain in the owning organization database and never enter routine analytics.
 ```
 
 `GET` on the same path with the same credential returns the organization's base
-and effective plan, current revision, configured plans, and every grant with its
+and effective plan, current revision, persisted plan versions, and every grant with its
 recorded reason and administrator identity. No other credential can read it.
+
+A `create_plan` command creates a new immutable version in the catalog without
+changing an organization's assignments. It requires a `definition` matching
+`plan`, with `features`, `allowances`, and optional display name and monthly USD
+cents. Creation advances the entitlement revision and uses the same audit and
+idempotency rules as assignments and grants. For example:
+
+```json
+{
+  "idempotency_key": "create-capacity-example",
+  "expected_revision": 1,
+  "action": "create_plan",
+  "plan": {"id": "capacity_example", "version": 1},
+  "definition": {
+    "id": "capacity_example",
+    "version": 1,
+    "name": "Extended capacity",
+    "features": ["collaboration"],
+    "allowances": {"collaboration_bytes": 17179869184}
+  },
+  "reason": "Approved capacity increase"
+}
+```
+
+Read the new revision, then assign or grant the created version. Creating an
+existing version under a different command key conflicts; it never overwrites
+the stored definition. File plans are startup seeds: matching definitions do
+nothing, and differing existing versions warn and retain the stored version.
 
 Grant `starts_at` defaults to transaction time; optional `expires_at` uses an
 RFC3339 timestamp after the start. A `revoke` command names `grant_id` and a
@@ -150,7 +178,8 @@ are rejected. Complimentary grants remain independent of payment records.
 ### Granting from the platform console
 
 On the shared entry, registry platform members with `admin` or `billing` roles
-may grant and revoke complimentary plans. Configure
+may create plan versions, set the base plan, and grant or revoke complimentary
+plans. Subscription commands remain unavailable when Stripe owns access. Configure
 `allocation.entitlement_admin_token_env` so the entry can reach tenant entitlements.
 `platform.bootstrap_admin_email` restores the operator as an admin at startup.
 The deprecated `entitlement_administrators`, `support_actors`, and `staff_emails`
@@ -158,7 +187,8 @@ seed an empty platform membership registry; they do not gate access after seedin
 See the [shared entry example](examples/hub/README.md#shared-entry).
 
 Authorized members can read the base plan, effective plan and active grants, and
-submit grant or revoke requests with a required reason. `support` and `viewer`
+copy an existing plan into a new immutable version, edit its features and
+allowances, and apply base or grant changes with a required reason. `support` and `viewer`
 roles, support impersonation sessions, and non-members cannot change plans.
 Customer organization ownership does not grant platform billing access.
 
@@ -170,6 +200,41 @@ allowance), and records each applied change in the registry's append-only
 `entitlement_changes` table with the staff email, organization, plan, expiry and
 reason. A stale revision is shown as "someone changed this organization's plan;
 reload and try again".
+
+The platform API at
+`/api/cloud/platform/organizations/{organization}/entitlements` accepts the same
+plan actions, with session CSRF protection or the dedicated entitlement bearer
+credential. The platform MCP endpoint `/api/cloud/platform/mcp` exposes
+`platform_entitlements` and `platform_change_entitlement` under the same current
+administrator authority. Customer API keys do not acquire this authority.
+
+### Reloading Cloud configuration
+
+On Unix, SIGHUP reloads the existing `cloud.yaml` file. The full document,
+including restart-only fields, must parse and validate. The reloadable fields
+are `allocation.entitlements` and `allocation.billing.prices`. Existing plan
+versions and Stripe price mappings remain immutable; use a new version or price
+rather than changing one already stored. The entitlement policy, including
+usage-window settings, and the active billing price list publish as one
+immutable snapshot in each tenant after the database transaction succeeds.
+New plans, reloads, and their reasons are recorded in `hosted_plan_audit`.
+
+The entry validates every ready managed tenant, then prepares immutable plan
+records without exposing the new catalog, policy, or active prices. One atomic
+publication file selects the prepared settings for all managed tenants and
+future launches. Tenant Hubs read this shared publication through an entry-owned
+link beside their database; publication requires no tenant activation request.
+A rejected preparation, a lost reply after preparation commits, or a persistent
+transport outage leaves the previous publication active. Unpublished plan records
+cannot be read or assigned through the entitlement API. Preparation and reload
+logs retain actor and reason. This replaces tenant-by-tenant application and
+compensating restoration. Startup never replaces persisted assignments or grants.
+
+Listeners, origins, database/state paths, signing and provider credentials,
+platform membership seeds, attachments, allocation paths, capacity and allowlists,
+entitlement credentials, and billing settings other than prices require a
+restart. Reload logs list these fields and retain the running values, including
+for future tenant launches. SIGHUP does not restart the entry or tenant Hubs.
 
 Resolution at the allocation transaction's clock sample is:
 

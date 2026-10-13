@@ -46,7 +46,9 @@ func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
 		return nil, err
 	}
 	view.CanAutoFund = method != ""
-	view.Packs = append(view.Packs, s.config.Hosted.Billing.CreditPacks...)
+	if cfg := s.hostedBillingConfig(); cfg != nil {
+		view.Packs = append(view.Packs, cfg.CreditPacks...)
+	}
 	rows, err := d.db.QueryContext(ctx, "SELECT amount_micros,kind,actor,reason,recorded_at FROM ai_credit_transactions WHERE organization_id=? AND mode=? ORDER BY id DESC LIMIT 50", d.hostedOrganization, d.aiCreditMode)
 	if err != nil {
 		return nil, err
@@ -65,8 +67,8 @@ func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
 }
 
 func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
-	if s.config.Hosted != nil && s.config.Hosted.Billing != nil && !s.config.Hosted.Billing.CheckoutDisabled {
-		for _, pack := range s.config.Hosted.Billing.CreditPacks {
+	if cfg := s.hostedBillingConfig(); cfg != nil && !cfg.CheckoutDisabled {
+		for _, pack := range cfg.CreditPacks {
 			if pack.PriceID == id {
 				return pack, true
 			}
@@ -195,17 +197,18 @@ func (d *database) failCreditAutoFund(ctx context.Context, tx *sql.Tx, key strin
 
 func (w *hostedBillingWorker) creditEvent(ctx context.Context, id, kind string) error {
 	s := w.service
-	if s.database.aiCreditMode == "" || (kind != "checkout.session.completed" && kind != "checkout.session.async_payment_succeeded" && kind != "payment_intent.succeeded" && kind != "payment_intent.payment_failed" && kind != "payment_intent.canceled") {
+	cfg := s.hostedBillingConfig()
+	if cfg == nil || s.database.aiCreditMode == "" || (kind != "checkout.session.completed" && kind != "checkout.session.async_payment_succeeded" && kind != "payment_intent.succeeded" && kind != "payment_intent.payment_failed" && kind != "payment_intent.canceled") {
 		return nil
 	}
-	binding, err := s.database.hostedBillingBinding(ctx, s.config.Hosted.Billing)
+	binding, err := s.database.hostedBillingBinding(ctx, cfg)
 	if errors.Is(err, errHostedBillingUnbound) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	provider, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
+	provider, ok := cfg.Provider.(billing.CreditProvider)
 	if !ok {
 		return errors.New("AI credit purchases are unavailable")
 	}
@@ -237,7 +240,8 @@ func (w *hostedBillingWorker) creditEvent(ctx context.Context, id, kind string) 
 func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
 	s := w.service
 	d := s.database
-	if d.aiCreditMode == "" {
+	cfg := s.hostedBillingConfig()
+	if cfg == nil || d.aiCreditMode == "" {
 		return nil
 	}
 	var key, price, method string
@@ -276,11 +280,11 @@ func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
 	if s.config.now().Sub(time.UnixMicro(at)) >= 23*time.Hour {
 		return errors.New("automatic credit payment needs billing review")
 	}
-	binding, err := d.hostedBillingBinding(ctx, s.config.Hosted.Billing)
+	binding, err := d.hostedBillingBinding(ctx, cfg)
 	if err != nil {
 		return err
 	}
-	provider, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
+	provider, ok := cfg.Provider.(billing.CreditProvider)
 	if !ok {
 		return errors.New("AI credit purchases are unavailable")
 	}

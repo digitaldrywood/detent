@@ -166,7 +166,7 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 
 func (s *Service) runnerCapacityView(ctx context.Context, query nativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 	view := r.CapacityView(backend, now)
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return view, nil
 	}
 	entitlement, err := s.database.hostedEntitlement(ctx, query, now)

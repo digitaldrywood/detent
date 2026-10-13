@@ -31,6 +31,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.UpdateRunnerCapacity:             &runnerCapacityChange{},
 		operatortool.UpdateOrganizationModelSelection: &operatortool.ModelSelectionInput{},
 		operatortool.UpdateProjectModelSelection:      &operatortool.ModelSelectionInput{},
+		operatortool.PlatformChangeEntitlement:        &operatortool.PlatformEntitlementArguments{},
 		"update_project_integration":                  &operatortool.IntegrationInput{},
 		"bind_native_repository":                      &operatortool.RepositoryInput{},
 		"start_git_hub_import":                        &operatortool.ImportStartInput{},

@@ -22,7 +22,7 @@ type platformTenantUsage struct {
 
 func (s *Service) platformTenantUsage(c echo.Context) error {
 	usage := platformTenantUsage{Allowances: map[string]platformTenantAllowance{}}
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return c.JSON(http.StatusOK, usage)
 	}
 	entitlement, err := s.database.hostedPlanUsage(c.Request().Context(), s.config.now())
