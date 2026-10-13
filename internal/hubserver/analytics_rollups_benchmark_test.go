@@ -20,14 +20,26 @@ func BenchmarkAnalyticsRollupReads(b *testing.B) {
 			name string
 			q    nativeQueryer
 		}{{"raw", f.service.database.reader}, {"rollups", analyticsRollupReader{f.service.database.reader}}} {
-			b.Run(fmt.Sprintf("%s/%dh", source.name, int(span.Hours())), func(b *testing.B) {
-				b.ReportAllocs()
-				for b.Loop() {
-					if _, err := readNativeAnalytics(b.Context(), source.q, scope, operatortool.AnalyticsRequest{Limit: 1000}, w); err != nil {
-						b.Fatal(err)
+			for _, endpoint := range []string{"diagnostics", "reports"} {
+				b.Run(fmt.Sprintf("%s/%s/%dh", source.name, endpoint, int(span.Hours())), func(b *testing.B) {
+					b.ReportAllocs()
+					for b.Loop() {
+						project, err := readNativeAnalytics(b.Context(), source.q, scope, operatortool.AnalyticsRequest{Limit: 1000}, w)
+						if err != nil {
+							b.Fatal(err)
+						}
+						report := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
+						if endpoint == "diagnostics" {
+							_, err = f.service.readHostedDiagnosticsFrom(b.Context(), report, source.q)
+						} else {
+							_, err = f.service.readHostedReportsFrom(b.Context(), report, source.q)
+						}
+						if err != nil {
+							b.Fatal(err)
+						}
 					}
-				}
-			})
+				})
+			}
 		}
 	}
 }
@@ -93,14 +105,16 @@ func benchmarkAnalyticsFixture(b *testing.B, events int) nativeFixture {
 	if err := applyNativeProjectStates(b.Context(), tx, scope, nativeFixtureStates(), now); err != nil {
 		b.Fatal(err)
 	}
-	issue, err := createNativeIssueTx(b.Context(), tx, scope, tracker.CreateIssue{Title: "benchmark", State: "Todo"}, now.Add(-48*time.Hour))
+	issue, err := createNativeIssueTx(b.Context(), tx, scope, tracker.CreateIssue{Title: "benchmark", State: "Todo"}, now.Add(-8*24*time.Hour))
 	if err != nil {
 		b.Fatal(err)
 	}
 	if events > 0 {
 		if _, err := tx.ExecContext(b.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
 INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
-SELECT 'benchmark-event-'||x,?,?,?,x+1,'run.observed',1,'{}','{}',? FROM n`, events, scope.organization, scope.project, issue.WorkItemID, formatHubTime(now.Add(-time.Hour))); err != nil {
+SELECT 'benchmark-event-'||x,?,?,?,x+1,CASE WHEN x%100=0 THEN 'workflow.transitioned' ELSE 'scheduler.decision' END,1,'{}',
+CASE WHEN x%100=0 THEN json_object('from_state',CASE WHEN (x/100)%2=1 THEN 'Todo' ELSE 'In Progress' END,'to_state',CASE WHEN (x/100)%2=1 THEN 'In Progress' ELSE 'Todo' END) ELSE json_object('decision',json_object('source','native_provider_capacity','outcome','skipped','reason','capacity')) END,
+strftime('%Y-%m-%dT%H:%M:%SZ',?,'+'||(x*12)||' seconds') FROM n`, events, scope.organization, scope.project, issue.WorkItemID, formatHubTime(now.Add(-7*24*time.Hour))); err != nil {
 			b.Fatal(err)
 		}
 		if _, err := tx.ExecContext(b.Context(), "UPDATE issues SET event_sequence=event_sequence+? WHERE native_id=?", events, issue.WorkItemID); err != nil {

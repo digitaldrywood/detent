@@ -1,11 +1,8 @@
 package hubserver
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +61,30 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 		}
 		if project.DecisionsObserved != 2 || !project.SourceAt.Equal(now.Add(25*time.Nanosecond)) {
 			t.Fatalf("skips lost exact source time: count=%d at=%s", project.DecisionsObserved, project.SourceAt)
+		}
+		for index, event := range []struct{ from, to string }{{"Todo", "In Progress"}, {"In Progress", "Rework"}, {"Rework", "Merging"}, {"Merging", "Done"}} {
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := now.Add(time.Duration(index+1) * time.Hour)
+			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: event.from, ToState: event.to}, at); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.commit(t.Context(), tx); err != nil {
+				t.Fatal(err)
+			}
+			w := operatortool.AnalyticsWindow{From: now.Truncate(time.Hour), To: at.Add(time.Minute), Bucket: time.Hour}
+			var oracle, projected nativeAnalyticsProject
+			oracle, err = readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projected, err = readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, oracle, projected)
 		}
 		rows := readTestRollupRows(t, f.service.database.reader, scope)
 		rebuildTestAnalyticsRollups(t, f.service, scope)
@@ -163,7 +184,7 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", 20261013083000); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id IN (?,?)", 20261013083000, 20261013101000); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
@@ -302,7 +323,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				out *nativeAnalyticsReport
 			}{
 				{f.service.database.reader, &raw},
-				{analyticsRollupReader{analyticsNoRawEvents{f.service.database.reader, t}}, &rolled},
+				{analyticsRollupReader{f.service.database.reader}, &rolled},
 			} {
 				project, err := readNativeAnalytics(t.Context(), input.q, scope, test.request, w)
 				if err != nil {
@@ -315,43 +336,45 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			gotDiagnostics, err := f.service.readHostedDiagnosticsFrom(t.Context(), rolled, analyticsRollupReader{analyticsNoRawEvents{f.service.database.reader, t}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertAnalyticsJSONEqual(t, wantDiagnostics, gotDiagnostics)
 			wantReports, err := f.service.readHostedReportsFrom(t.Context(), raw, f.service.database.reader)
 			if err != nil {
 				t.Fatal(err)
 			}
-			gotReports, err := f.service.readHostedReportsFrom(t.Context(), rolled, analyticsRollupReader{analyticsNoRawEvents{f.service.database.reader, t}})
+			projectedTx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer projectedTx.Rollback()
+			if _, err := projectedTx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (json_extract(data_json,'$.type')='scheduler.decision' AND coalesce(json_extract(json_extract(data_json,'$.data_json'),'$.decision.outcome'),'')='ready')`); err != nil {
+				t.Fatal(err)
+			}
+			q := analyticsRollupReader{projectedTx}
+			gotDiagnostics, err := f.service.readHostedDiagnosticsFrom(t.Context(), rolled, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, wantDiagnostics, gotDiagnostics)
+			gotReports, err := f.service.readHostedReportsFrom(t.Context(), rolled, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			residence := nativeAnalyticsProject{Window: w, Digest: append([]nativeAnalyticsBucket{}, rolled.Projects[0].Digest...), allAttempts: rolled.Projects[0].allAttempts}
+			if err := projectNativeAnalyticsResidence(t.Context(), q, scope, test.request, &residence); err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, raw.Projects[0].LaneResidence, residence.LaneResidence)
+			assertAnalyticsJSONEqual(t, raw.Projects[0].QueueTime, residence.QueueTime)
+			capacity := nativeAnalyticsProject{Window: w, Digest: append([]nativeAnalyticsBucket{}, rolled.Projects[0].Digest...)}
+			if err := projectNativeAnalyticsCapacityWait(t.Context(), q, scope, &capacity); err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, raw.Projects[0].ProviderCapacityWait, capacity.ProviderCapacityWait)
+			for i := range capacity.Digest {
+				assertAnalyticsJSONEqual(t, raw.Projects[0].Digest[i].ProviderCapacityWaitSeconds, capacity.Digest[i].ProviderCapacityWaitSeconds)
+			}
+
 			assertAnalyticsJSONEqual(t, wantReports, gotReports)
 		})
-	}
-}
-
-type analyticsNoRawEvents struct {
-	nativeQueryer
-	t *testing.T
-}
-
-func (q analyticsNoRawEvents) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
-	q.assertProjected(statement)
-	return q.nativeQueryer.QueryContext(ctx, statement, args...)
-}
-
-func (q analyticsNoRawEvents) QueryRowContext(ctx context.Context, statement string, args ...any) *sql.Row {
-	q.assertProjected(statement)
-	return q.nativeQueryer.QueryRowContext(ctx, statement, args...)
-}
-
-func (q analyticsNoRawEvents) assertProjected(statement string) {
-	q.t.Helper()
-	if regexp.MustCompile(`\bcollaboration_events\b`).MatchString(statement) {
-		q.t.Fatal("request queried raw collaboration events")
 	}
 }
 

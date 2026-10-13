@@ -275,21 +275,28 @@ Detent's build and scheduled validation.
 Diagnostics, Reports and `analytics_dashboard` read the persisted
 `analytics_hourly_rollups` model through the WAL reader pool. Ready decisions,
 skip reasons, merge entries and lease capacity have additive hourly values.
-The same model retains scoped timing samples and current issue, attempt and
-usage facts for exact quantiles, distinct populations, historical residence,
-partial-hour boundaries and population cursors. It excludes observation-event
+Residence reads subtract accumulated per-issue lane and queue durations from
+hourly snapshots. Indexed state-boundary samples supply exact partial-hour
+edges, Todo depths and population clipping. Open spans contribute elapsed time
+from their recorded start without a timer or event replay. Completion samples
+retain the accumulated durations at Done for completion quantiles and throughput.
+Claim waits have additive hourly durations; indexed claim and skip samples retain
+bounded population cursors. The same model retains current issue, attempt and
+usage facts for exact quantiles and distinct populations. It excludes observation-event
 payload history. Landing and refusal identities remain bounded drill-downs.
 
 The existing native commit path projects changed work items before committing,
 using the board's existing dirty-item list and per-item event sequence positions.
-There is no periodic analytics worker. Unchanged lease snapshots do not rewrite
+Residence maintenance resumes from the last stored per-issue sequence and
+processes only new transitions and claims. There is no periodic analytics worker.
+Unchanged lease snapshots do not rewrite
 capacity buckets. Projection writes use a savepoint: analytics failure does not
 roll back an event, claim or lane transition. A failed project projection is
 unavailable until rebuilt, rather than serving old totals as complete.
 
 `rebuildAnalyticsRollups` rebuilds one organization/project in a caller-owned
-transaction from the raw source views, including the hourly counters and lease
-buckets. Schema migrations backfill all existing projects. Changes to metric
+transaction from the raw source views, including the hourly counters, residence snapshots, completion and decision
+samples, and lease buckets. Schema migrations backfill all existing projects. Changes to metric
 definitions must update those source views and rebuild the affected projections
 in their migration. Rebuilds preserve tenant scope and replace the project's
 rollups and sequence positions atomically.

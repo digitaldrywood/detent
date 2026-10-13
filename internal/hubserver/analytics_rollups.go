@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type analyticsRollupReader struct {
@@ -102,6 +104,21 @@ func refreshAnalyticsIssue(ctx context.Context, tx *sql.Tx, id string) error {
 			return fmt.Errorf("refresh analytics %s: %w", source.name, err)
 		}
 	}
+	if err := refreshAnalyticsSkipSamples(ctx, tx, nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, id, through); err != nil {
+		return err
+	}
+	if err := refreshAnalyticsClaims(ctx, tx, nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, id, through); err != nil {
+		return err
+	}
+	var residenceChanged bool
+	if err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=?) OR EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed')))`, organization, project, id, organization, project, id, through).Scan(&residenceChanged); err != nil {
+		return err
+	}
+	if residenceChanged {
+		if err := refreshAnalyticsResidence(ctx, tx, nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, id, through); err != nil {
+			return err
+		}
+	}
 	if err := refreshAnalyticsLeaseSnapshots(ctx, tx, organization, project, id); err != nil {
 		return err
 	}
@@ -133,7 +150,22 @@ func rebuildAnalyticsRollups(ctx context.Context, tx *sql.Tx, scope nativeScope)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_rollup_positions SELECT organization_id,project_id,native_id,event_sequence FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET sequence=excluded.sequence`, scope.organization, scope.project); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO analytics_rollup_status VALUES(?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET available=1`, scope.organization, scope.project)
+	ids, err := nativePageIDs(ctx, tx, "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL", scope.organization, scope.project)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := refreshAnalyticsSkipSamples(ctx, tx, scope, id, 0); err != nil {
+			return err
+		}
+		if err := refreshAnalyticsClaims(ctx, tx, scope, id, 0); err != nil {
+			return err
+		}
+		if err := refreshAnalyticsResidence(ctx, tx, scope, id, 0); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO analytics_rollup_status VALUES(?,?,1) ON CONFLICT(organization_id,project_id) DO UPDATE SET available=1`, scope.organization, scope.project)
 	return err
 }
 
@@ -155,8 +187,14 @@ func readAnalyticsCounter(ctx context.Context, q nativeQueryer, scope nativeScop
 			continue
 		}
 		var observed int
-		if err := q.QueryRowContext(ctx, `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND `+filter+` AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(edge[0]), formatHubTime(edge[1])).Scan(&observed); err != nil {
-			return 0, err
+		if metric == "merge_entered" {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='merge_entry' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<?`, scope.organization, scope.project, edge[0].UnixNano(), edge[1].UnixNano()).Scan(&observed); err != nil {
+				return 0, err
+			}
+		} else {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND `+filter+` AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(edge[0]), formatHubTime(edge[1])).Scan(&observed); err != nil {
+				return 0, err
+			}
 		}
 		count += observed
 	}
@@ -170,10 +208,10 @@ func readAnalyticsSkipRollups(ctx context.Context, q nativeQueryer, scope native
 		fullFrom = fullFrom.Add(time.Hour)
 	}
 	rows, err := q.QueryContext(ctx, `WITH samples AS (
-SELECT json_extract(data_json,'$.source') AS source,json_extract(data_json,'$.reason') AS reason,value,json_extract(data_json,'$.last_at') AS last_at,json_extract(data_json,'$.last_ns') AS last_ns FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='skipped' AND hour>=? AND hour<?
-UNION ALL SELECT coalesce(json_extract(data_json,'$.decision.source'),''),coalesce(json_extract(data_json,'$.decision.reason'),''),1,recorded_at,(unixepoch(recorded_at)*1000000000+CASE WHEN substr(recorded_at,20,1)='.' THEN CAST(substr(rtrim(substr(recorded_at,21),'Z')||'000000000',1,9) AS INTEGER) ELSE 0 END) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
-UNION ALL SELECT coalesce(json_extract(data_json,'$.decision.source'),''),coalesce(json_extract(data_json,'$.decision.reason'),''),1,recorded_at,(unixepoch(recorded_at)*1000000000+CASE WHEN substr(recorded_at,20,1)='.' THEN CAST(substr(rtrim(substr(recorded_at,21),'Z')||'000000000',1,9) AS INTEGER) ELSE 0 END) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?))
-SELECT source,reason,sum(value),last_at,max(last_ns) FROM samples GROUP BY source,reason ORDER BY source,reason`, scope.organization, scope.project, fullFrom.Unix(), fullTo.Unix(), scope.organization, scope.project, formatHubTime(w.From), formatHubTime(minTime(fullFrom, w.To)), scope.organization, scope.project, formatHubTime(maxTime(fullFrom, fullTo)), formatHubTime(w.To))
+ SELECT json_extract(data_json,'$.source') AS source,json_extract(data_json,'$.reason') AS reason,value,json_extract(data_json,'$.last_at') AS last_at,json_extract(data_json,'$.last_ns') AS last_ns FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='skipped' AND hour>=? AND hour<?
+ UNION ALL SELECT json_extract(data_json,'$.Source'),json_extract(data_json,'$.Reason'),1,json_extract(data_json,'$.At'),json_extract(data_json,'$.AtNS') FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<?
+ UNION ALL SELECT json_extract(data_json,'$.Source'),json_extract(data_json,'$.Reason'),1,json_extract(data_json,'$.At'),json_extract(data_json,'$.AtNS') FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<?)
+ SELECT source,reason,sum(value),last_at,max(last_ns) FROM samples GROUP BY source,reason ORDER BY source,reason`, scope.organization, scope.project, fullFrom.Unix(), fullTo.Unix(), scope.organization, scope.project, w.From.UnixNano(), minTime(fullFrom, w.To).UnixNano(), scope.organization, scope.project, maxTime(fullFrom, fullTo).UnixNano(), w.To.UnixNano())
 	if err != nil {
 		return false, err
 	}
