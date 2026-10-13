@@ -242,7 +242,7 @@ func validateCheckpointTransaction(ctx context.Context, git checkpointGitRunner,
 	}
 	seen := make(map[string]map[int]bool)
 	for _, entry := range t.Index {
-		if !checkpointPathAllowed(entry.Path) || strings.HasPrefix(entry.Path, ".detent/") || entry.Stage < 0 || entry.Stage > 3 || entry.Mode != "100644" && entry.Mode != "100755" || !validLandingHead(entry.Blob) {
+		if entry.Stage < 0 || entry.Stage > 3 || entry.Mode != "100644" && entry.Mode != "100755" || !validLandingHead(entry.Blob) {
 			return fmt.Errorf("%w: unsafe index alternative", ErrCheckpointUnsafe)
 		}
 		stages := seen[entry.Path]
@@ -255,6 +255,9 @@ func validateCheckpointTransaction(ctx context.Context, git checkpointGitRunner,
 		}
 		stages[entry.Stage] = true
 		if entry.Stage != 0 || unchanged[entry.Path] != entry.Mode+" "+entry.Blob {
+			if !checkpointPathAllowed(entry.Path) || strings.HasPrefix(entry.Path, ".detent/") {
+				return fmt.Errorf("%w: unsafe index alternative", ErrCheckpointUnsafe)
+			}
 			if err := checkpointAlternative(ctx, git, entry.Blob); err != nil {
 				return err
 			}
@@ -264,19 +267,29 @@ func validateCheckpointTransaction(ctx context.Context, git checkpointGitRunner,
 	if err != nil {
 		return err
 	}
+	worktree := make(map[string]string)
 	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
 		if entry == "" {
 			continue
 		}
 		header, path, ok := strings.Cut(entry, "\t")
 		fields := strings.Fields(header)
-		if !ok || len(fields) != 3 || !checkpointPathAllowed(path) || strings.HasPrefix(path, ".detent/") || fields[0] != "100644" && fields[0] != "100755" || fields[1] != "blob" {
+		if !ok || len(fields) != 3 || fields[0] != "100644" && fields[0] != "100755" || fields[1] != "blob" {
 			return ErrCheckpointUnsafe
 		}
+		worktree[path] = fields[0] + " " + fields[2]
 		if unchanged[path] != fields[0]+" "+fields[2] {
+			if !checkpointPathAllowed(path) || strings.HasPrefix(path, ".detent/") {
+				return ErrCheckpointUnsafe
+			}
 			if err := checkpointAlternative(ctx, git, fields[2]); err != nil {
 				return err
 			}
+		}
+	}
+	for path, baseline := range unchanged {
+		if (!checkpointPathAllowed(path) || strings.HasPrefix(path, ".detent/")) && (!seen[path][0] || worktree[path] != baseline) {
+			return fmt.Errorf("%w: excluded baseline path changed", ErrCheckpointUnsafe)
 		}
 	}
 	return nil

@@ -250,7 +250,6 @@ type Issue struct {
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
 	NativeRework            bool
-	CheckpointQuiescent     bool
 	FreshCheckout           bool
 	ProjectID               string
 	ID                      string
