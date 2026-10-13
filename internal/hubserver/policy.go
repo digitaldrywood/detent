@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+var errNoApprovedRepositoryPolicy = policyMismatch("No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor")
+
 func policyMismatch(message string) error {
 	return &nativeError{Code: "policy_mismatch", Message: message, status: http.StatusConflict}
 }
@@ -423,7 +425,7 @@ func readProjectPolicy(ctx context.Context, db policyQuerier, scope string) (pol
 	err := db.QueryRowContext(ctx, `SELECT r.metadata_json, r.approved_by, r.approved_at
 FROM project_policies p JOIN policy_revisions r ON r.scope = p.scope AND r.policy_id = p.policy_id WHERE p.scope = ?`, scope).Scan(&raw, &result.ApprovedBy, &result.ApprovedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return result, policyMismatch("No approved repository policy; resolve the customer definition and ask an administrator to approve its descriptor")
+		return result, errNoApprovedRepositoryPolicy
 	}
 	if err != nil {
 		return result, err
