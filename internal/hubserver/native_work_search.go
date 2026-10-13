@@ -5,7 +5,7 @@ import (
 	"unicode"
 )
 
-func nativeSearchExpression(query string) string {
+func nativeSearchExpressions(query string) []string {
 	terms := strings.FieldsFunc(query, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
 	seen := map[string]bool{}
 	var expressions []string
@@ -17,9 +17,9 @@ func nativeSearchExpression(query string) string {
 		}
 	}
 	if len(expressions) == 0 {
-		return `""`
+		return []string{`""`}
 	}
-	return strings.Join(expressions, " OR ")
+	return expressions
 }
 
 const nativeSearchJoin = ` LEFT JOIN (
@@ -29,9 +29,16 @@ WITH hits AS MATERIALIZED (
  FROM native_work_fts JOIN native_work_documents d ON d.id = native_work_fts.rowid
  JOIN issues scoped ON scoped.id = d.issue_id
  WHERE native_work_fts MATCH ? AND scoped.organization_id = ? AND scoped.project_id = ?
+), coverage AS MATERIALIZED (
+ SELECT native_work_fts.rowid AS id, count(*) AS terms
+ FROM json_each(?) term CROSS JOIN native_work_fts
+ WHERE native_work_fts MATCH term.value AND EXISTS (SELECT 1 FROM hits WHERE hits.id = native_work_fts.rowid)
+ GROUP BY native_work_fts.rowid
 )
 SELECT issue_id, score, substr(snippet, max(1, instr(snippet, '[') - 60), 240) AS snippet FROM (
- SELECT *, row_number() OVER (PARTITION BY issue_id ORDER BY score, id) AS hit FROM hits
+ SELECT hits.issue_id, hits.snippet, -coverage.terms + hits.score / (1 - hits.score) AS score,
+ row_number() OVER (PARTITION BY hits.issue_id ORDER BY coverage.terms DESC, hits.score, hits.id) AS hit
+ FROM hits JOIN coverage ON coverage.id = hits.id
 ) WHERE hit = 1
 ) search ON search.issue_id = i.id `
 

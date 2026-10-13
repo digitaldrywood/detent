@@ -18,14 +18,19 @@ import (
 func TestNativeWorkSearch(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "ranked-search")
 	target := f.create(t, "Associate runner checkout on a new project")
-	body := "Never hard-code a real operator, customer, organization, host or repository name into product copy, design samples or fixtures. Real project names in production must come from the selected project data."
+	body := strings.Repeat("Checkout transport waits for a repository binding. ", 60) + "Never hard-code a real operator, customer, organization, host or repository name into product copy, design samples or fixtures. Real project names in production must come from the selected project data."
 	targetComment := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "generic-example-guidance"}, Body: "Use generic names such as example-org/example-project or owner/repository in fixtures, designs, instructional copy and issue examples. Product values come from the selected runtime context. Keep real names only as factual historical evidence or actual project screenshots; never reuse them as synthetic mock data."})
 	requireNativeStatus(t, targetComment, http.StatusOK)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, labels_json = ?, native_created_at = ?, native_updated_at = ? WHERE native_id = ?", body, `["search-fixture","unique-tag"]`, "2026-10-12T00:00:00Z", "2026-10-13T00:00:00Z", target.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
 	for index := range 8 {
-		f.create(t, fmt.Sprintf("Organization background %d", index))
+		f.create(t, fmt.Sprintf("Organization names background %d", index))
+		f.create(t, fmt.Sprintf("Names catalog %d", index))
+		partial := f.create(t, fmt.Sprintf("Partial term match %d", index))
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ? WHERE native_id = ?", strings.Repeat("Real organizations in fixtures. ", 12), partial.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	commentItem := f.create(t, "Discussion-only match")
 	path := f.base + "/work-items/" + string(commentItem.WorkItemID) + "/comments"

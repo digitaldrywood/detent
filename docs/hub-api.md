@@ -1026,7 +1026,8 @@ Release reasons are `completed`, `cancelled`, `failed`, `released`,
 
 Ordinary native work-item lists accept `q` (`query` on MCP `work_list`) for ranked
 full-text search of titles, bodies and comments. Search terms use stemming and
-prefix matching, combine with OR, and sort by relevance before the ordinary
+prefix matching and combine with OR. Documents matching more distinct query
+terms rank first, followed by BM25 relevance and the ordinary
 list order. Legacy substring matches of titles, bodies, labels and identifiers
 remain included. Each search hit includes a short `snippet`; full-text matches are marked
 by brackets. Search composes with the existing exact filters.
