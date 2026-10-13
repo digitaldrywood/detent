@@ -407,6 +407,11 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if pull.Head.Ref != githubLandingBranch(normalized, opts) {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the external pull request branch differs from the landing workspace")
 		}
+		if !pull.Merged && pull.MergedAt == "" {
+			if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, pull.Number, head, nil); err != nil {
+				return LandResult{}, err
+			}
+		}
 	}
 	if strings.TrimSpace(opts.ValidationCommand) != "" {
 		_, validation, err = l.prepareGitHubLanding(ctx, normalized, issue, opts, baseBefore)
