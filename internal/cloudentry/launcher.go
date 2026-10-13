@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 )
 
 type TenantSpec struct {
@@ -22,6 +23,7 @@ type TenantSpec struct {
 	Issuer       string
 	PublicKey    string
 	Check        func(context.Context) error
+	ResolveKey   entryauthority.Resolver
 }
 
 type Launcher interface {
@@ -150,7 +152,21 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 		cmd.WaitDelay = 15 * time.Second
-		err := l.runTenant(attempt, spec, cmd, cancel)
+		var authority *entryauthority.Parent
+		var err error
+		if spec.ResolveKey != nil {
+			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, platformCallTimeout, spec.ResolveKey)
+			if err == nil {
+				cmd.ExtraFiles = authority.Files
+				cmd.Env = append(cmd.Env, entryauthority.BootstrapEnvironment+"="+entryauthority.BootstrapVersion)
+			}
+		}
+		if err == nil {
+			err = l.runTenant(attempt, spec, cmd, cancel)
+		}
+		if authority != nil {
+			err = errors.Join(err, authority.Close())
+		}
 		cancel()
 		if ctx.Err() != nil {
 			return
@@ -174,7 +190,13 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 }
 
 func (l *ExecLauncher) runTenant(ctx context.Context, spec TenantSpec, cmd *exec.Cmd, cancel context.CancelFunc) error {
-	if err := cmd.Start(); err != nil {
+	err := cmd.Start()
+	for _, file := range cmd.ExtraFiles {
+		if closeErr := file.Close(); closeErr != nil {
+			l.logger().Warn("close inherited authority descriptor", "error", closeErr)
+		}
+	}
+	if err != nil {
 		return err
 	}
 	l.mu.Lock()

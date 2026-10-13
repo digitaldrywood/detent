@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/instancelock"
 )
 
@@ -232,7 +235,12 @@ func TestExecLauncherJoinsTenantShutdown(t *testing.T) {
 				if err := os.Mkdir(filepath.Join(tenantDirectory, "hub.db.lock.coverage"), 0700); err != nil {
 					t.Fatal(err)
 				}
-				spec := TenantSpec{Organization: Organization{ID: id}, Directory: tenantDirectory}
+				spec := TenantSpec{Organization: Organization{ID: id, Generation: 1}, Issuer: "entry", Directory: tenantDirectory, ResolveKey: func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+					if origin.KeyID != "key_fixture" || origin.Issuer != "entry" || origin.Generation != 1 {
+						return cloudassert.Claims{}, cloudassert.ErrInvalid
+					}
+					return cloudassert.Claims{Subject: "verified_subject", Audience: id}, nil
+				}}
 				if test.name == "unreachable child" {
 					var served atomic.Bool
 					spec.Check = func(context.Context) error {
@@ -326,6 +334,22 @@ func TestTenantShutdownHelperProcess(t *testing.T) {
 	address := os.Getenv("DETENT_TEST_ADDRESS")
 	if address == "" {
 		return
+	}
+	organization := filepath.Base(filepath.Dir(os.Getenv("DETENT_TEST_LOCK")))
+	authority, err := entryauthority.Open(t.Context(), os.Getenv(entryauthority.BootstrapEnvironment), entryauthority.Binding{Issuer: "entry", Organization: organization, Generation: 1}, platformCallTimeout)
+	if err != nil || authority == nil {
+		t.Fatalf("managed channel bootstrap: %v", err)
+	}
+	defer authority.Close()
+	if err := os.Unsetenv(entryauthority.BootstrapEnvironment); err != nil {
+		t.Fatal(err)
+	}
+	claims, err := authority.Resolve(t.Context(), entryauthority.Origin{KeyID: "key_fixture", Issuer: "entry", Generation: 1})
+	if err != nil || claims.Subject != "verified_subject" || claims.Audience != organization {
+		t.Fatalf("inherited authority lookup: %+v %v", claims, err)
+	}
+	if err := exec.CommandContext(t.Context(), "/bin/sh", "-c", "test ! -e /dev/fd/3 && test ! -e /dev/fd/4").Run(); err != nil {
+		t.Fatalf("authority descriptors inherited by child: %v", err)
 	}
 	interrupts := make(chan os.Signal, 1)
 	signal.Notify(interrupts, os.Interrupt)

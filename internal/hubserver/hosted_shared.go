@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 )
 
 const hostedSharedClaimsKey = "hosted_shared_claims"
@@ -25,6 +26,7 @@ type HostedSharedEntry struct {
 	Issuer     string
 	PublicKeys []ed25519.PublicKey
 	Generation int64
+	ResolveKey entryauthority.Resolver
 
 	verifier *cloudassert.Verifier
 }

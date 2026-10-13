@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -155,6 +156,9 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 		Organization: organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
+		ResolveKey: func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+			return s.resolveTenantKey(ctx, organization, origin)
+		},
 		Check: func(ctx context.Context) error {
 			return s.checkTenant(ctx, organization)
 		},
