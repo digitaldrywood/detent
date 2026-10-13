@@ -16,7 +16,6 @@ const ReviewConversationsRefusalText = "GitHub requires these review conversatio
 const (
 	landingReviewThreadsQuery = `query NativeLandingReviewThreads($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved path line originalLine comments(first:50){nodes{body author{__typename login}}}}}}}}`
 	landingReviewThreadReply  = `mutation NativeLandingReviewThreadReply($thread:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread,body:$body}){comment{id}}}`
-	landingReviewThreadClose  = `mutation NativeLandingReviewThreadResolve($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{isResolved}}}`
 	landingReviewThreadPages  = 10
 	landingReviewThreadLimit  = 20
 	landingReviewThreadChars  = 600
@@ -40,13 +39,6 @@ type landingReviewThread struct {
 	Surfaced []string
 }
 
-// resolveLandingReviewThreads answers a merge refused for unresolved review
-// conversations. A bot conversation is resolved only when its own thread
-// records that Detent surfaced it to Rework at an earlier head and a newer head
-// has since been published. Every other unresolved conversation is returned as
-// an actionable refusal, and each bot conversation is marked as surfaced at the
-// current head so the next landing can prove it was handed to Rework. A nil
-// result means the merge may be retried.
 func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repository string, number int, head string, refusal error) error {
 	var landing *LandRefusal
 	if !errors.As(refusal, &landing) || landing.Kind != LandRefusalProtected || !ReviewConversationsRefusal(landing.Reason) {
@@ -56,46 +48,29 @@ func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, r
 	if err != nil {
 		return errors.Join(refusal, fmt.Errorf("read unresolved review conversations: %w", err))
 	}
-	resolved := 0
-	var remaining []landingReviewThread
+	needsRework := false
 	for _, thread := range threads {
-		if thread.Bot && surfacedBefore(thread, head) {
-			if err := replyLandingReviewThread(ctx, client, thread.ID, "Addressed by the Detent Rework that published "+shortLandingHead(head)+"; resolving."); err == nil {
-				if err := client.GraphQL(ctx, landingReviewThreadClose, map[string]any{"thread": thread.ID}, &struct{}{}); err == nil {
-					resolved++
-					continue
-				}
-			}
+		if !thread.Bot || len(thread.Surfaced) == 0 {
+			needsRework = true
 		}
-		if thread.Bot && !surfacedAt(thread, head) {
+	}
+	for i, thread := range threads {
+		if needsRework && thread.Bot && !surfacedAt(thread, head) {
 			if replyErr := replyLandingReviewThread(ctx, client, thread.ID, "Detent surfaced this conversation to Rework at "+shortLandingHead(head)+".\n\n<!-- detent:surfaced "+head+" -->"); replyErr != nil {
-				thread.Body += "\n(surfacing reply failed; this thread will not be auto-resolved until a later surfacing reply succeeds)"
+				threads[i].Body += "\n(surfacing reply failed)"
 				err = errors.Join(err, fmt.Errorf("mark review conversation as surfaced: %w", replyErr))
 			}
 		}
-		remaining = append(remaining, thread)
 	}
-	if len(remaining) == 0 {
-		if resolved == 0 {
-			return refusal
-		}
-		return nil
+	if len(threads) == 0 {
+		return refusal
 	}
-	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(remaining, resolved)), err)
+	return errors.Join(refuse(LandRefusalProtected, landingReviewThreadsReason(threads, needsRework)), err)
 }
 
 func surfacedAt(thread landingReviewThread, head string) bool {
 	for _, surfaced := range thread.Surfaced {
 		if surfaced == head {
-			return true
-		}
-	}
-	return false
-}
-
-func surfacedBefore(thread landingReviewThread, head string) bool {
-	for _, surfaced := range thread.Surfaced {
-		if surfaced != head {
 			return true
 		}
 	}
@@ -177,12 +152,13 @@ func replyLandingReviewThread(ctx context.Context, client GitHubRESTClient, thre
 	return client.GraphQL(ctx, landingReviewThreadReply, map[string]any{"thread": thread, "body": body}, &struct{}{})
 }
 
-func landingReviewThreadsReason(threads []landingReviewThread, resolved int) string {
+func landingReviewThreadsReason(threads []landingReviewThread, needsRework bool) string {
 	var b strings.Builder
-	b.WriteString(ReviewConversationsRefusalText)
-	b.WriteString(" Address each finding in Rework. Detent resolves a bot conversation after a newer head is published, and human conversations need their author or a maintainer.")
-	if resolved > 0 {
-		fmt.Fprintf(&b, " %d bot conversation(s) surfaced to an earlier Rework were resolved.", resolved)
+	if needsRework {
+		b.WriteString(ReviewConversationsRefusalText)
+		b.WriteString(" Address each finding in Rework, then resolve its conversation with evidence of the fix or dismissal.")
+	} else {
+		b.WriteString("GitHub review conversations already surfaced to Rework require operator disposition. Resolve each conversation with evidence of the fix or dismissal, then explicitly resume the Change Request.")
 	}
 	for i, thread := range threads {
 		if i == landingReviewThreadLimit {
