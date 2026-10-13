@@ -41,17 +41,31 @@ func TestSlackFindingDelivery(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		watch, unset     bool
+		issue            bool
 		failure          int
 		timeout, recover bool
 	}{
-		{name: "open and resolve once"}, {name: "watch never posts", watch: true}, {name: "unset never calls HTTP", unset: true},
+		{name: "open and resolve once"}, {name: "work item uses current slugs", issue: true}, {name: "watch never posts", watch: true}, {name: "unset never calls HTTP", unset: true},
 		{name: "4xx retries once", failure: 403}, {name: "5xx retries once", failure: 503}, {name: "redirect is not followed", failure: 302}, {name: "timeout retries once", timeout: true}, {name: "retry recovers", failure: 503, recover: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "slack")
+			kind, subject := "runner", "runner_test"
+			if test.issue {
+				kind, subject = "work_item", string(f.create(t, "Affected issue").WorkItemID)
+			}
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 			configureTestSlack(t, f, &now, !test.unset)
-			finding := newHealthFinding("runner_heartbeat_gap", "instance", "runner", "runner_test", "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, healthEvidence{})
+			finding := newHealthFinding("runner_heartbeat_gap", "instance", kind, subject, "Runner heartbeat is behind.", "Check the runner connection.", []string{string(f.project.ID)}, healthEvidence{})
+			setSlugs := func(organization, project string) {
+				t.Helper()
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organizations SET slug=? WHERE id=?", organization, f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET slug=? WHERE id=?", project, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.watch {
 				finding.Severity = "watch"
 			}
@@ -96,6 +110,9 @@ func TestSlackFindingDelivery(t *testing.T) {
 			if len(calls) != 0 {
 				t.Fatal("detector called HTTP inline")
 			}
+			if test.issue {
+				setSlugs("example-org", "example-project")
+			}
 			process()
 			enabled := !test.watch && !test.unset
 			want := 0
@@ -104,6 +121,9 @@ func TestSlackFindingDelivery(t *testing.T) {
 			}
 			if len(calls) != want {
 				t.Fatalf("open calls=%d want %d", len(calls), want)
+			}
+			if test.issue && !strings.Contains(calls[0], "<https://cloud.detent.test/example-org/example-project/issues/1?tab=diagnostics|") {
+				t.Fatalf("opened notification uses the wrong issue URL: %s", calls[0])
 			}
 			applyTestHealth(t, f, now, []healthFinding{finding})
 			if process() {
@@ -152,12 +172,18 @@ func TestSlackFindingDelivery(t *testing.T) {
 			}
 			now = now.Add(2 * time.Minute)
 			applyTestHealth(t, f, now, nil)
+			if test.issue {
+				setSlugs("renamed-org", "renamed-project")
+			}
 			process()
 			if enabled {
 				want++
 			}
 			if len(calls) != want {
 				t.Fatalf("resolve calls=%d want %d", len(calls), want)
+			}
+			if test.issue && !strings.Contains(calls[1], "<https://cloud.detent.test/renamed-org/renamed-project/issues/1?tab=diagnostics|") {
+				t.Fatalf("resolved notification uses stale issue slugs: %s", calls[1])
 			}
 			applyTestHealth(t, f, now, nil)
 			if process() {
@@ -192,11 +218,16 @@ func TestSlackMessagePrivacyAndLinks(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	for _, test := range []struct{ kind, id, path string }{
-		{"work_item", "wi_test", "/work/i/wi_test?tab=diagnostics"}, {"runner", "runner_test", "/fleet"}, {"project", "prj_test", "/diagnostics"},
+		{"work_item", "wi_test", "/example-org/example-project/issues/1?tab=diagnostics"}, {"runner", "runner_test", "/fleet"}, {"project", "prj_test", "/diagnostics"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
 			finding := healthFinding{Signal: "runner_heartbeat_gap", Subject: healthSubject{test.kind, test.id}, OpenedAt: now.Add(-time.Minute), Summary: "Failed with xoxb-123-SECRET sk-proj-SECRET ghp_SECRET github_pat_SECRET glpat-SECRET AIzaSECRET AKIA1234567890ABCDEF eyJabc.def.ghi " + slackTestWebhook, NextAction: "token=SECRET Bearer SECRET\n<@here> checks `raw log`."}
-			message, err := renderSlackFinding("https://cloud.detent.test", "/organizations/org_test", finding, "opened", now)
+			message, err := renderSlackFinding("https://cloud.detent.test", "/example-org", finding, "opened", now, func() string {
+				if test.kind == "work_item" {
+					return "/example-org/example-project/issues/1"
+				}
+				return ""
+			}())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -205,7 +236,12 @@ func TestSlackMessagePrivacyAndLinks(t *testing.T) {
 					t.Fatalf("message leaked %s: %s", secret, message)
 				}
 			}
-			for _, part := range []string{"*runner_heartbeat_gap*", "https://cloud.detent.test/organizations/org_test" + test.path, "Next action:", "Age: 1m0s"} {
+			for _, part := range []string{"*runner_heartbeat_gap*", "https://cloud.detent.test" + func() string {
+				if test.kind == "work_item" {
+					return test.path
+				}
+				return "/example-org" + test.path
+			}(), "Next action:", "Age: 1m0s"} {
 				if !strings.Contains(message, part) {
 					t.Fatalf("missing %s: %s", part, message)
 				}

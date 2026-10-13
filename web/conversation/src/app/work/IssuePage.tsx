@@ -3,7 +3,7 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import React from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useParams, useRouteContext, useSearch } from "@tanstack/react-router";
 
 import { Button } from "../../components/ui/button.tsx";
 import {
@@ -313,7 +313,9 @@ interface ConversationBridge {
 }
 
 export function IssuePage(): React.ReactElement {
-  const { workItemId } = useParams({ from: "/work/i/$workItemId" });
+  const params = useParams({ strict: false }) as { workItemId?: string };
+ const context = useRouteContext({ strict: false }) as { resolvedWorkItemId?: string };
+ const workItemId = context.resolvedWorkItemId ?? params.workItemId ?? "";
   const shell = useShell();
   const http = useWorkHttp();
   const search = useSearch({ strict: false }) as { change?: string };

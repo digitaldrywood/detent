@@ -2,6 +2,7 @@
   {
     "id": "proj_parable",
     "name": "parable",
+    "slug": "example-project",
     "profile": "native",
     "can_write": true,
     "can_manage_runners": true,
@@ -47,6 +48,7 @@
   {
     "id": "proj_marketing",
     "name": "threefold-marketing",
+    "slug": "example-marketing",
     "profile": "github_compatible",
     "can_write": false,
     "can_manage_runners": false,

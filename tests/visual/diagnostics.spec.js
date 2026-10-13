@@ -105,7 +105,7 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
   await expect(capacity).toContainText("3 of 20 slots running work");
   await expect(capacity.getByRole("link", { name: "Example desktop" })).toBeVisible();
   await rows.first().getByRole("link").click();
-  await expect(page).toHaveURL(/\/work\/i\/wi_[^?]+\?tab=diagnostics$/);
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2\?tab=diagnostics$/);
   await expect(page.getByRole("tab", { name: "Diagnostics", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.goBack();
   const request = page.waitForRequest((request) =>

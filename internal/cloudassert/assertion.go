@@ -36,6 +36,7 @@ type Claims struct {
 	Key                  *apikey.KeyAuthority `json:"key,omitempty"`
 	Issuer               string               `json:"iss"`
 	Audience             string               `json:"aud"`
+	OrganizationSlug     string               `json:"organization_slug,omitempty"`
 	Generation           int64                `json:"gen"`
 	Kind                 string               `json:"kind"`
 	Subject              string               `json:"sub,omitempty"`

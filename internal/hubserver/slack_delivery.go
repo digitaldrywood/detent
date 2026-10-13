@@ -32,7 +32,7 @@ func slackText(value string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "|", "¦", "*", "", "`", "").Replace(value)
 }
 
-func renderSlackFinding(publicURL string, basePath string, finding healthFinding, event string, at time.Time) (string, error) {
+func renderSlackFinding(publicURL string, basePath string, finding healthFinding, event string, at time.Time, issuePath string) (string, error) {
 	base, err := url.Parse(publicURL)
 	if err != nil || base.Scheme != "https" && base.Scheme != "http" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return "", errors.New("slack app link is unavailable")
@@ -42,7 +42,10 @@ func renderSlackFinding(publicURL string, basePath string, finding healthFinding
 	switch finding.Subject.Kind {
 	case "work_item":
 		if safeSubject {
-			path = "/work/i/" + url.PathEscape(finding.Subject.ID) + "?tab=diagnostics"
+			if issuePath != "" {
+				path = issuePath + "?tab=diagnostics"
+				basePath = ""
+			}
 		}
 	case "runner", "machine":
 		path = "/fleet"
@@ -199,7 +202,25 @@ func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
 	if s.config.Hosted != nil {
 		publicURL = s.config.Hosted.PublicURL
 	}
-	text, err := renderSlackFinding(publicURL, s.hostedBase(), finding, event, at)
+	issuePath := ""
+	basePath := s.hostedBase()
+	if s.config.Hosted != nil {
+		var slug string
+		if err := s.database.db.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", organization).Scan(&slug); err != nil {
+			return false, err
+		}
+		basePath = "/" + slug
+	}
+	if finding.Subject.Kind == "work_item" {
+		path, pathErr := readIssueBrowserPath(ctx, s.database.db, finding.Subject.ID)
+		if pathErr == nil {
+			issuePath = path
+			basePath = ""
+		} else if !errors.Is(pathErr, sql.ErrNoRows) {
+			return false, pathErr
+		}
+	}
+	text, err := renderSlackFinding(publicURL, basePath, finding, event, at, issuePath)
 	if err != nil {
 		return false, err
 	}

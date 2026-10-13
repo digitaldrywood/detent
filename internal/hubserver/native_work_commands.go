@@ -34,7 +34,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			return s.nativeIssueJSON(replay)
+			return s.nativeIssueJSON(ctx, replay)
 		}
 		canonical, repository, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
 		if err != nil {

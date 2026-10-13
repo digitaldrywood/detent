@@ -76,8 +76,8 @@ func TestNativeIssueWebURL(t *testing.T) {
 		prefix string
 	}{
 		{"local", ""},
-		{"hosted", "http://127.0.0.1:7777/work/i/"},
-		{"shared", "https://hub.example.test/organizations/org_security/work/i/"},
+		{"hosted", "http://127.0.0.1:7777/local-organization/private-project-sentinel/issues/"},
+		{"shared", "https://hub.example.test/local-organization/private-project-sentinel/issues/"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -130,7 +130,7 @@ func TestNativeIssueWebURL(t *testing.T) {
 				}
 				want := ""
 				if test.prefix != "" {
-					want = test.prefix + string(issue.WorkItemID)
+					want = test.prefix + strconv.Itoa(issue.Number)
 				}
 				if issue.WebURL != want {
 					t.Fatalf("web_url = %q, want %q", issue.WebURL, want)

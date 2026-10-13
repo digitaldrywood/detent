@@ -43,6 +43,10 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	e.GET(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.getSpritePool), session)
 	e.PUT(hostedOrganizationBase+"/sprite-pool", s.organizationSpritesScope(s.setSpritePool), administration)
 
+	for _, path := range []string{hostedOrganizationBase + "/slug", hostedOrganizationBase + "/projects/:project/slug"} {
+		e.GET(path, s.slugSettings, session)
+		e.PUT(path, s.slugSettings, session)
+	}
 	for _, path := range []string{hostedOrganizationBase + "/work-view-preference", hostedOrganizationBase + "/projects/:project/work-view-preference"} {
 		e.GET(path, s.workViewPreference, session)
 		e.PUT(path, s.workViewPreference, session)

@@ -186,22 +186,30 @@ func TestHealthFindingEmails(t *testing.T) {
 
 func TestHealthEmailTemplate(t *testing.T) {
 	t.Parallel()
-	s := &Service{config: Config{Hosted: &HostedConfig{OrganizationID: "org_email", PublicURL: "https://cloud.example.test", SharedEntry: &HostedSharedEntry{}}}}
+	f := newDefaultNativeFixture(t, Config{})
+	issue := f.create(t, "email subject")
+	s := f.service
+	s.config.Hosted = &HostedConfig{OrganizationID: string(f.project.OrganizationID), PublicURL: "https://cloud.example.test", SharedEntry: &HostedSharedEntry{}}
 	for _, test := range []struct{ kind, path string }{
-		{"work_item", "/work/i/wi_subject"},
+		{"work_item", "/local-organization/native/issues/1"},
 		{"runner", "/fleet"},
 		{"project", "/fleet"},
 		{"org", "/fleet"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
 			opened := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-			f := newHealthFinding("signal", "instance", test.kind, "wi_subject", "Summary.\nprivate raw log sentinel", "The owner acts.", nil, healthEvidence{EventIDs: []string{"private-event"}, AttemptIDs: []string{"private-attempt"}, Counts: map[string]int{"leases": 3}})
+			f := newHealthFinding("signal", "instance", test.kind, string(issue.WorkItemID), "Summary.\nprivate raw log sentinel", "The owner acts.", nil, healthEvidence{EventIDs: []string{"private-event"}, AttemptIDs: []string{"private-attempt"}, Counts: map[string]int{"leases": 3}})
 			f.OpenedAt = opened
-			message, err := s.renderHealthEmail(f)
+			message, err := s.renderHealthEmail(t.Context(), f)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"Summary.", "The owner acts.", "Opened: 2026-10-06T18:00:00Z", "Events: 1", "Attempts: 1", "leases: 3", "https://cloud.example.test/organizations/org_email" + test.path} {
+			for _, want := range []string{"Summary.", "The owner acts.", "Opened: 2026-10-06T18:00:00Z", "Events: 1", "Attempts: 1", "leases: 3", "https://cloud.example.test" + func() string {
+				if test.kind == "work_item" {
+					return test.path
+				}
+				return "/local-organization" + test.path
+			}()} {
 				if !strings.Contains(message.Body, want) {
 					t.Fatalf("missing %q in %s", want, message.Body)
 				}
@@ -216,7 +224,7 @@ func TestHealthEmailTemplate(t *testing.T) {
 			} {
 				f.Summary, f.NextAction, f.Signal = credential, credential, credential
 				f.Evidence.Counts = map[string]int{credential: 1}
-				message, err := s.renderHealthEmail(f)
+				message, err := s.renderHealthEmail(t.Context(), f)
 				if err != nil {
 					t.Fatal(err)
 				}

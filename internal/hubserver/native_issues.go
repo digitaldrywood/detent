@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,18 +23,25 @@ import (
 )
 
 func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
-	issue.WebURL = ""
-	if s.config.Hosted != nil {
-		issue.WebURL = s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(string(issue.WorkItemID)))
+	if s.config.Hosted != nil && strings.HasPrefix(issue.WebURL, "/") {
+		issue.WebURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + issue.WebURL
+	}
+	if s.config.Hosted == nil {
+		issue.WebURL = ""
 	}
 	return issue
 }
 
-func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+func (s *Service) nativeIssueJSON(ctx context.Context, body json.RawMessage) (json.RawMessage, error) {
 	var issue tracker.NativeIssue
 	if err := json.Unmarshal(body, &issue); err != nil {
 		return nil, err
 	}
+	path, err := readIssueBrowserPath(ctx, s.database.db, string(issue.WorkItemID))
+	if err != nil {
+		return nil, err
+	}
+	issue.WebURL = path
 	return json.Marshal(s.nativeIssueResponse(issue))
 }
 
@@ -44,7 +50,7 @@ func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	return s.nativeIssueJSON(result)
+	return s.nativeIssueJSON(ctx, result)
 }
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
@@ -56,7 +62,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var internalID tracker.WorkItemID
 	var labels, assignees, actor, created, updated, activity, externalID, contractJSON string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
-	var repositoryOwner, repositoryName, importedURL string
+	var repositoryOwner, repositoryName, importedURL, organizationSlug, projectSlug string
 	var sourceNumber int
 	var provenance, closedAt, listChange, pullRequest sql.NullString
 	var priority sql.NullInt64
@@ -64,7 +70,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	if compact {
 		bodyColumn = "''"
 	}
-	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
+	err := query.QueryRowContext(ctx, `SELECT o.slug, p.slug, i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
  i.actor_json, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
@@ -83,18 +89,19 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  AND json_extract(v.record_json, '$.external.provider') = 'github'
  AND COALESCE(json_extract(v.record_json, '$.external.url'), '') <> ''
  ORDER BY c.rowid DESC, v.number DESC LIMIT 1)
-FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
-		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
+		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
 		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
 	if err != nil {
 		return issue, 0, err
 	}
+	issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, issue.Number)
 	issue.IssueContract = &issuecontract.State{}
 	if err := json.Unmarshal([]byte(contractJSON), issue.IssueContract); err != nil {
 		return issue, 0, err

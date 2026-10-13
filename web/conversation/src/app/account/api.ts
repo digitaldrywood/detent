@@ -185,6 +185,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     saveKeyPolicy: (policy: PersonalKeyPolicy) => send(KeyPolicy, "PUT", `${cloudOrganization}/key-policy`, { personal_keys: policy }),
     blockMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/block`, {}),
     approveMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/approve`, {}),
+    slug: (projectId?: string, shared = false) => send(Schema.Struct({ slug: Schema.String }), "GET", projectId === undefined ? (shared ? `/api/cloud/organizations/${encodeURIComponent(base.split("/").at(-1) ?? "")}/slug` : `${base}/slug`) : `${project(projectId)}/slug`),
+    saveSlug: (slug: string, expectedSlug: string, projectId?: string, shared = false) => send(Schema.Struct({ slug: Schema.String }), "PUT", projectId === undefined ? (shared ? `/api/cloud/organizations/${encodeURIComponent(base.split("/").at(-1) ?? "")}/slug` : `${base}/slug`) : `${project(projectId)}/slug`, { slug, expected_slug: expectedSlug }),
     apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
     createAPIKey: (input: { name: string; scope: string; expires_days: number; never_expires?: boolean; project_access?: "all" | "selected"; project_ids?: readonly string[] }) =>
       send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),
