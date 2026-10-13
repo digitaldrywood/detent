@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 
-import { decodeAccountBootstrap, type Member, type OnboardingStep } from "../../src/contracts/account.ts";
+import { decodeAccountBootstrap, type AccountBootstrap, type Member, type OnboardingStep } from "../../src/contracts/account.ts";
 import { SidebarWorkspacePicker, WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
 import { ClientContext } from "../../src/app/client.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
@@ -35,6 +35,7 @@ import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "
 import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
+import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 import { noApprovedPolicy, saveMessage, WorkflowSettings, ProjectDeletionSettings } from "../../src/app/account/ProjectSettings.tsx";
 import { allowanceRows, allowanceLabel } from "../../src/app/settings/Settings.tsx";
 import approval from "../../src/contracts/fixtures/account-policy.json";
@@ -43,14 +44,15 @@ import { WorkflowRevisions } from "../../src/app/account/WorkflowRevisions.tsx";
 afterEach(cleanup);
 
 describe("the footer workspace picker", () => {
-  const current = { id: "org_a", name: "Threefold Solutions" };
+  const current = { id: "org_a", name: "Example workspace" };
   const other = { id: "org_b", name: "Another workspace with a long name" };
 
-  it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform console only to platform staff (%s)", async (platform_role) => {
-    const account = decodeAccountBootstrap({
-      ...accountFixture,
-      actor: { ...accountFixture.actor, role: "member", can_manage: false, platform_role },
-    });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    resetHubPaths();
+  });
+
+  function mountAccount(account: AccountBootstrap) {
     const root = createRootRoute({
       component: () => <SidebarProvider><ul><SidebarWorkspacePicker /></ul></SidebarProvider>,
     });
@@ -66,7 +68,15 @@ describe("the footer workspace picker", () => {
         <RouterProvider router={router as never} />
       </ClientContext.Provider>,
     );
-    const user = userEvent.setup();
+    return userEvent.setup();
+  }
+
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("offers the platform console only to platform staff (%s)", async (platform_role) => {
+    const account = decodeAccountBootstrap({
+      ...accountFixture,
+      actor: { ...accountFixture.actor, role: "member", can_manage: false, platform_role },
+    });
+    const user = mountAccount(account);
     await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
     await screen.findByRole("menu");
     expect(screen.queryByRole("menuitem", { name: "Manage current workspace" })).toBeNull();
@@ -81,6 +91,68 @@ describe("the footer workspace picker", () => {
     } else {
       expect(entry).toBeNull();
       expect(screen.getByRole("menuitem", { name: "Add a workspace" })).toBeTruthy();
+    }
+  });
+
+  it.each(["unauthorized", "unavailable", "network", "decode", "success"] as const)("shows the shared organization read's %s state without a partial bootstrap list", async (outcome) => {
+    applyHubPaths({ base_path: "/organizations/org_a" });
+    const account = decodeAccountBootstrap({
+      ...accountFixture,
+      organization: { ...accountFixture.organization, ...current },
+      organizations: [current, other].map((org) => ({ ...org, public_url: `https://${org.id}.example.test`, current: org.id === current.id })),
+      actor: { ...accountFixture.actor, platform_role: "admin" },
+    });
+    let resolve!: (response: Response) => void;
+    let reject!: (cause: Error) => void;
+    const response = new Promise<Response>((yes, no) => { resolve = yes; reject = no; });
+    const fetch = vi.fn(() => response);
+    const assign = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("location", { assign });
+    const user = mountAccount(account);
+    try {
+      await user.click(await screen.findByRole("button", { name: /Switch workspace/ }));
+      expect((await screen.findByRole("status")).textContent).toBe("Loading workspaces…");
+      expect(screen.getByRole("menuitem", { name: current.name })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: other.name })).toBeNull();
+      expect(fetch).toHaveBeenCalledExactlyOnceWith("/api/cloud/organizations", expect.objectContaining({ credentials: "same-origin" }));
+      await act(async () => {
+        if (outcome === "network") reject(new TypeError("Failed to fetch"));
+        else if (outcome === "decode") resolve(Response.json({ organizations: [other] }));
+        else if (outcome === "success") resolve(Response.json({
+          email: "member@example.test", csrf: "entry-csrf",
+          organizations: [current, other].map((org) => ({ ...org, url: `/organizations/${org.id}`, state: "ready" })),
+          pending: [{ id: "org_pending", name: "Pending workspace", url: "/organizations/org_pending", state: "allocating" }],
+        }));
+        else resolve(Response.json({ code: outcome === "unauthorized" ? "unauthorized" : "membership_unavailable" }, { status: outcome === "unauthorized" ? 401 : 503 }));
+      });
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(screen.getByRole("menuitem", { name: current.name }).getAttribute("aria-current")).toBe("true");
+      expect(screen.getByRole("menuitem", { name: "Add a workspace" }).getAttribute("href")).toBe("/organizations/new");
+      expect(screen.getByRole("menuitem", { name: "Platform console" }).getAttribute("href")).toBe("/platform/tenants");
+      if (outcome === "success") {
+        expect(screen.queryByRole("alert")).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Pending workspace" })).toBeNull();
+        await user.click(screen.getByRole("menuitem", { name: other.name }));
+        expect(assign).toHaveBeenCalledExactlyOnceWith("/organizations/org_b");
+        expect(fetch).toHaveBeenCalledOnce();
+      } else {
+        expect(screen.getByRole("alert").textContent).toBe(outcome === "unauthorized"
+          ? "Your Cloud session has ended."
+          : "Could not load workspaces. Try again shortly.");
+        expect(screen.queryByRole("menuitem", { name: other.name })).toBeNull();
+        const signIn = screen.queryByRole("menuitem", { name: "Sign in again" });
+        if (outcome === "unauthorized") {
+          expect(signIn?.getAttribute("href")).toBe("/auth/oidc/start?return=%2Forganizations");
+          const activate = vi.fn((event: MouseEvent) => event.preventDefault());
+          signIn!.addEventListener("click", activate);
+          await user.click(signIn!);
+          expect(activate).toHaveBeenCalledOnce();
+        } else expect(signIn).toBeNull();
+      }
+    } finally {
+      cleanup();
+      resolve(Response.json({ email: "member@example.test", csrf: "", organizations: [] }));
     }
   });
 
