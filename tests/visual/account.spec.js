@@ -136,11 +136,12 @@ test("the organization page lists the members and gates the controls by role", a
   page,
 }) => {
   const errors = watchConsole(page);
-  // The hub still renders `/organization` itself, so the client's
-  // Organization section is opened by its own path.
   await openAs(page, "owner", "/settings/organization");
+  await expect(page.getByRole("button", { name: "Overview", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Your organizations", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Members/ }).click();
 
-  await expect(page).toHaveURL(/\/settings\/organization$/);
+  await expect(page).toHaveURL(/\/settings\/organization\/members$/);
   await expectOneHeadingOne(page, "Settings");
   const table = page.getByRole("table");
   await expect(table).toBeVisible();
@@ -162,7 +163,7 @@ test("the organization page lists the members and gates the controls by role", a
   await expect(unsigned).toHaveCount(0);
 
   // A viewer sees the same data and none of the controls (decisions.md §10.11).
-  await openAs(page, "viewer", "/settings/organization");
+  await openAs(page, "viewer", "/settings/organization/members");
   await expect(page.getByRole("table")).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0);
@@ -170,7 +171,7 @@ test("the organization page lists the members and gates the controls by role", a
 });
 
 test("sending invitations resets the form and shows the newest invitation with its enforced expiry", async ({ page }) => {
-  await openAs(page, "owner", "/settings/organization");
+  await openAs(page, "owner", "/settings/organization/members");
   const invitations = page.locator("section").filter({ has: page.getByRole("heading", { name: "Invitations", exact: true }) });
   for (const email of ["older-invite@example.test", "newest-invite@example.test"]) {
     await page.getByLabel("Email", { exact: true }).fill(email);
@@ -197,7 +198,7 @@ test("sending invitations resets the form and shows the newest invitation with i
 });
 
 test("removing the last owner is refused by the hub and said in the page", async ({ page }) => {
-  await openAs(page, "owner", "/settings/organization");
+  await openAs(page, "owner", "/settings/organization/members");
 
   // The owner's row by the owner's address, with no fallback. This used to
   // read `hub.fixture.accounts.owner_email ?? "@"`, and `accounts` maps an
@@ -295,7 +296,7 @@ test("project settings show the integration and refuse to edit it for a viewer",
 
 test("pending invitations can be resent and revoked from their row", async ({ page }) => {
   const email = "withdraw@example.test";
-  await openAs(page, "owner", "/settings/organization");
+  await openAs(page, "owner", "/settings/organization/members");
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByRole("button", { name: "Send invitation", exact: true }).click();
   const row = page.locator('[data-slot="settings-row"]').filter({
@@ -334,7 +335,7 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
   await expect(dialog).toHaveCount(0);
   await expect(row).toHaveCount(0);
   expect((await providerInvitations())[0].state).toBe("revoked");
-  await openAs(page, "viewer", "/settings/organization");
+  await openAs(page, "viewer", "/settings/organization/members");
   await expect(page.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Resend", exact: true })).toHaveCount(0);
 });
@@ -567,7 +568,7 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   // fixture's owner starts without it. Granting it here is setup, not the
   // thing under test: without it the control is correctly absent and there
   // would be nothing to drive.
-  await openAs(page, "owner", "/settings/organization");
+  await openAs(page, "owner", "/settings/organization/members");
   const granted = await page.evaluate(async () => {
     const bootstrap = await (await fetch("/app/bootstrap")).json();
     const base = bootstrap.api_base;

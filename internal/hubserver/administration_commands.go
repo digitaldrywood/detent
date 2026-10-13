@@ -35,7 +35,7 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 	defer cancelRead()
 	response := hostedMembersResponse{Members: []hostedMemberView{}, Invitations: []hostedInvitationView{}}
 	for _, member := range memberships {
-		if member.OrganizationID != credential.Hosted.OrganizationID || member.Status != "active" || !manage && member.UserID != credential.Hosted.Subject {
+		if member.OrganizationID != credential.Hosted.OrganizationID || member.Status != "active" {
 			continue
 		}
 		// Local removal/downgrade is authoritative even before provider propagation.
@@ -50,6 +50,10 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 		}
 		if err == nil {
 			member.Role.Slug = lesserHostedRole(member.Role.Slug, role)
+		}
+		response.MemberCount++
+		if !manage && member.UserID != credential.Hosted.Subject {
+			continue
 		}
 		view, err := s.hostedMemberIdentity(ctx, member, emails)
 		if err != nil {
