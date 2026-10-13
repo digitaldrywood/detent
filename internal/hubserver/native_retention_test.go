@@ -80,6 +80,56 @@ func TestNativeRetention(t *testing.T) {
 			}
 		}
 	})
+	t.Run("duplicate challenges", func(t *testing.T) {
+		now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-challenges")
+		for _, project := range []tracker.NativeProject{f.project, other.project} {
+			for _, test := range []struct {
+				name     string
+				age      time.Duration
+				consumed *string
+			}{
+				{"expired", time.Hour + time.Second, nil},
+				{"boundary", time.Hour, nil},
+				{"live", time.Hour - time.Second, nil},
+				{"consumed", 0, new(formatHubTime(now))},
+			} {
+				token := string(project.ID) + "-" + test.name
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_duplicate_challenges
+(token,organization_id,project_id,principal_id,request_id,content_hash,matches_json,consumed_at,created_at)
+VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "principal", token, "hash", "[]", test.consumed, formatHubTime(now.Add(-test.age))); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		for _, project := range []tracker.NativeProject{f.project, other.project} {
+			var token string
+			rows, err := f.service.database.db.QueryContext(t.Context(), "SELECT token FROM native_duplicate_challenges WHERE project_id=?", project.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tokens []string
+			for rows.Next() {
+				if err := rows.Scan(&token); err != nil {
+					t.Fatal(err)
+				}
+				tokens = append(tokens, token)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if len(tokens) != 1 || tokens[0] != string(project.ID)+"-live" {
+				t.Fatalf("retained challenges=%v", tokens)
+			}
+		}
+	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})

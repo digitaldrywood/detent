@@ -316,6 +316,16 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	var challenge duplicateChallenge
+	if err := json.Unmarshal(result, &challenge); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if challenge.ChallengeToken != "" {
+		return c.JSON(http.StatusConflict, struct {
+			apiErrorResponse
+			duplicateChallenge
+		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
+	}
 	return c.JSONBlob(http.StatusOK, result)
 }
 
