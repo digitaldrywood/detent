@@ -101,20 +101,31 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	}
 	digest := sha256.New()
 	_, _ = digest.Write([]byte(evidence.InputsSHA + "\n" + strings.ReplaceAll(string(output), command.Dir, "<workspace>") + "\n" + strings.TrimSpace(base)))
+	linter := args[3]
+	if !filepath.IsAbs(linter) {
+		linter = filepath.Join(command.Dir, linter)
+	}
+	paths := []string{linter}
 	for _, name := range []string{"go", "make", "bash", "node", "npm", "python3"} {
 		path, err := exec.LookPath(name)
 		if err != nil {
 			return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 		}
+		paths = append(paths, path)
+	}
+	for _, path := range paths {
 		file, err := os.Open(path)
 		if err != nil {
 			return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 		}
-		_, copyErr := io.Copy(digest, file)
+		info, statErr := file.Stat()
+		identity := sha256.New()
+		_, copyErr := io.Copy(identity, file)
 		closeErr := file.Close()
-		if copyErr != nil || closeErr != nil {
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || copyErr != nil || closeErr != nil {
 			return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 		}
+		_, _ = digest.Write(identity.Sum(nil))
 	}
 	evidence.InputsSHA = hex.EncodeToString(digest.Sum(nil))
 	return evidence
