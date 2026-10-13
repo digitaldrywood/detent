@@ -662,7 +662,7 @@ func performHubAPIRequest(t *testing.T, service *Service, method string, path st
 			t.Fatalf("marshal request: %v", err)
 		}
 	}
-	request := httptest.NewRequest(method, path, bytes.NewReader(body))
+	request := httptest.NewRequestWithContext(t.Context(), method, path, bytes.NewReader(body))
 	if payload != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

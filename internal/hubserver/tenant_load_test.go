@@ -117,8 +117,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 // TestTenantRunnerWritesStayFlatWithHistory drives the routine runner writes
 // (lease renewal, lease validation, comments) under hosted plan accounting and
 // requires how long a trivial write waits for the writer to stay flat as the
-// tenant's history grows tenfold; route latencies are logged. Each session
-// renews once a second, about thirty times a production runner's cadence.
+// tenant's history grows tenfold; route latencies are logged.
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("tenant write load")
@@ -162,8 +161,7 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 	}
 	run := func(t *testing.T, sessions, sample int, loads [2]load) [2]result {
 		t.Logf("sessions=%d sample=%d paired load starting", sessions, sample)
-		ctx, stop := context.WithTimeout(t.Context(), 8*time.Second)
-		defer stop()
+		const rounds = 8
 		var mu sync.Mutex
 		latency := [2]map[string][]time.Duration{{}, {}}
 		var failures []string
@@ -175,10 +173,12 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 				failures = append(failures, fmt.Sprintf("history=%d %s %d", loads[history].history, kind, code))
 			}
 		}
-		var work sync.WaitGroup
-		for index := range sessions {
-			work.Go(func() {
-				for round := 0; ctx.Err() == nil; round++ {
+		for round := range rounds {
+			start := make(chan struct{})
+			var work sync.WaitGroup
+			for index := range sessions {
+				work.Go(func() {
+					<-start
 					for offset := range loads {
 						history := (index + round + sample + offset) % len(loads)
 						load := loads[history]
@@ -196,25 +196,25 @@ SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"sy
 							record(history, "comment", time.Since(started), response.Code, http.StatusOK)
 						}
 					}
-					time.Sleep(time.Second)
+				})
+			}
+			work.Go(func() {
+				<-start
+				for pair := range sessions {
+					for offset := range loads {
+						history := (pair + sample + offset) % len(loads)
+						started := time.Now()
+						tx, err := loads[history].fixture.service.database.db.BeginTx(t.Context(), nil)
+						if err == nil {
+							err = tx.Commit()
+						}
+						record(history, "probe", time.Since(started), map[bool]int{true: 0, false: 1}[err == nil], 0)
+					}
 				}
 			})
+			close(start)
+			work.Wait()
 		}
-		work.Go(func() {
-			for pair := 0; ctx.Err() == nil; pair++ {
-				for offset := range loads {
-					history := (pair + sample + offset) % len(loads)
-					started := time.Now()
-					tx, err := loads[history].fixture.service.database.db.BeginTx(context.Background(), nil)
-					if err == nil {
-						err = tx.Commit()
-					}
-					record(history, "probe", time.Since(started), map[bool]int{true: 0, false: 1}[err == nil], 0)
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-		})
-		work.Wait()
 		if len(failures) != 0 {
 			t.Fatalf("requests failed: %v", failures[:min(len(failures), 5)])
 		}
