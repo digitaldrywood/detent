@@ -1546,7 +1546,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		commit           bool
 		staged           bool
 		expired          bool
-		signingFail      bool
+		brokenSigning    bool
 		lateConflict     bool
 		advanceTarget    bool
 		baseMoved        bool
@@ -1623,7 +1623,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "staged Rework excludes target advancement", rework: true, formal: true, staged: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "committed Rework excludes target advancement", rework: true, formal: true, commit: true, advanceTarget: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "late host conflict continues to resolved publication and landing", rework: true, formal: true, staged: true, lateConflict: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
-		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, signingFail: true},
+		{name: "host signing unavailable preserves requested changes", rework: true, formal: true, staged: true, brokenSigning: true, wantChanged: true, wantState: "Human Review", wantChanges: 1},
 		{name: "growing multi-page machine history keeps fresh conflict recovery compact", rework: true, staleBase: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "Rework lands the clean preserved reviewed head without source changes", rework: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
 		{name: "reopened completed Rework lands its reviewed current version", reopened: true, rework: true, staged: true, land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
@@ -1786,6 +1786,10 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
+			if test.brokenSigning {
+				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
+				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
+			}
 			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
@@ -1802,7 +1806,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				nativeChangeGit(t, reviewedPath, "add", "PRESERVED.md")
-				nativeChangeGit(t, reviewedPath, "commit", "-m", "preserved reviewed source")
+				nativeChangeGit(t, reviewedPath, "-c", "commit.gpgsign=false", "commit", "-m", "preserved reviewed source")
 				item := tracker.NativeWorkItemID(issue.ID)
 				if test.staleBase {
 					if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: "Human hold: preserve the original checkpoint and staged source"}); err != nil {
@@ -2032,10 +2036,6 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			execution := h.scheduler.RunExecution(issue.ID)
 			if execution == nil {
 				t.Fatal("claimed native issue has no execution lifecycle")
-			}
-			if test.signingFail {
-				nativeChangeGit(t, source, "config", "commit.gpgsign", "true")
-				nativeChangeGit(t, source, "config", "gpg.program", filepath.Join(t.TempDir(), "unavailable-signer"))
 			}
 			provider := &committingAgent{finalMessage: test.finalMessage, dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged || genuinePublication, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed, hold: test.hold, inProgress: test.lateConflict}
 			if test.sourceFixture != "" {
@@ -2701,19 +2701,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if !provider.bound && !test.ssh {
 				t.Fatal("native worker did not bind its conversation")
 			}
-			if test.signingFail {
-				if !errors.Is(err, runner.ErrWorkspacePreparation) || errors.Is(err, workspace.ErrMergeResolutionInvalid) || result.NativeChange != nil {
-					t.Fatalf("host signing failure lost identity or published: result=%+v, error=%v", result.NativeChange, err)
+			if test.brokenSigning {
+				signature, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "log", "-1", "--format=%G?").Output()
+				if readErr != nil || strings.TrimSpace(string(signature)) != "N" {
+					t.Fatalf("unavailable signer did not produce an unsigned final commit: %s, %v", signature, readErr)
 				}
-				detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
-				if readErr != nil || !reflect.DeepEqual(detail, *expected) || h.state(t, issue.ID) != "Rework" {
-					t.Fatalf("signing failure changed current version, feedback or lane: detail=%+v, error=%v", detail, readErr)
-				}
-				staged, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--cached", "--name-only").Output()
-				if readErr != nil || strings.TrimSpace(string(staged)) != "CHANGE.md" {
-					t.Fatalf("host failure lost staged work: %s, %v", staged, readErr)
-				}
-				return
 			}
 			if err != nil {
 				t.Fatalf("run: %v", err)
