@@ -59,15 +59,30 @@ export function observeActivity(
     stale = false;
     shared.startedAt = performance.now();
     shared.inFlight = (async () => {
+      const controller = new AbortController();
+      let expiry: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        expiry = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Activity read timed out"));
+        }, 30_000);
+      });
       try {
-        const [report, fleet] = await Promise.allSettled([
-          api.activity(project ? { project_id: project } : {}), api.fleet(),
+        const [report, fleet] = await Promise.race([
+          Promise.allSettled([
+            api.activity(project ? { project_id: project } : {}, controller.signal),
+            api.fleet(controller.signal),
+          ]),
+          deadline,
         ]);
         if (report.status === "rejected" || fleet.status === "rejected") throw new Error("Activity read failed");
         state = { report: report.value, runners: fleet.value.runners, pending: false, error: null };
         shared.reports.set(key, state);
       } catch {
+        controller.abort();
         state = { ...state, pending: false, error: "Activity is temporarily unavailable." };
+      } finally {
+        if (expiry !== undefined) clearTimeout(expiry);
       }
       if (current) update(state);
     })().then(() => {

@@ -652,7 +652,7 @@ it("refreshes pickup and finish rows through reused project streams, tracks all 
   fireEvent.pointerDown(option, { pointerType: "mouse" });
   fireEvent.click(option);
   await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-  expect(mocks.api.activity).toHaveBeenLastCalledWith({ project_id: "detent" });
+  expect(mocks.api.activity).toHaveBeenLastCalledWith({ project_id: "detent" }, expect.any(AbortSignal));
   expect(ProjectEvents.sources).toHaveLength(2);
   expect(ProjectEvents.sources[1]!.close).toHaveBeenCalledOnce();
   view.unmount();
@@ -699,6 +699,36 @@ it("waits for a slow Activity read across remount and a failed fleet read, then 
   visibility = "visible";
   await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
   expect(mocks.api.activity).toHaveBeenCalledTimes(3);
+  next.unmount();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each(["activity", "fleet"] as const)("recovers a stalled %s read across remount without publishing its late response", async (stalled) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  vi.stubGlobal("EventSource", ProjectEvents);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  ProjectEvents.sources = [];
+  mocks.api.activity.mockResolvedValue(report({ running: [attempt(20)] }));
+  mocks.api.fleet.mockResolvedValue({ runners });
+  let finishStalled: (() => void) | undefined;
+  mocks.api[stalled].mockImplementationOnce(() => new Promise((resolve) => {
+    finishStalled = () => resolve(stalled === "activity" ? report({ running: [attempt(10)] }) : { runners });
+  }));
+  const first = render(<ActivityRoute />);
+  await act(async () => {});
+  first.unmount();
+  const next = render(<ActivityRoute />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
+  expect(mocks.api.activity).toHaveBeenCalledOnce();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(mocks.api.activity).toHaveBeenCalledTimes(2);
+  expect(mocks.api.activity.mock.calls[0]![1].aborted).toBe(true);
+  expect(mocks.api.fleet.mock.calls[0]![0].aborted).toBe(true);
+  expect(screen.getByRole("link", { name: "#20 Job 20" })).toBeTruthy();
+  await act(async () => { finishStalled!(); });
+  expect(screen.queryByRole("link", { name: "#10 Job 10" })).toBeNull();
+  expect(screen.getByRole("link", { name: "#20 Job 20" })).toBeTruthy();
+  expect(mocks.api.activity).toHaveBeenCalledTimes(2);
   next.unmount();
   expect(vi.getTimerCount()).toBe(0);
 });

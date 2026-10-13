@@ -5,6 +5,7 @@ import { makeAccountApi } from "../src/app/account/api.ts";
 import { ActivityReport } from "../src/contracts/activity.ts";
 import { NativeAttempt } from "../src/contracts/work.ts";
 import attempts from "../src/contracts/fixtures/work-attempt-list.json";
+import fleet from "../src/contracts/fixtures/account-fleet.json";
 
 const report = {
   organization_id: "org_fixture",
@@ -30,13 +31,19 @@ const report = {
 describe("activity read", () => {
   it("decodes stage timing, outcomes and typical durations through the API client", async () => {
     const requests: string[] = [];
-    const api = makeAccountApi({ origin: "", apiBase: "/api/v2/organizations/org_fixture", csrfToken: "", fetch: async (url) => {
+    const controller = new AbortController();
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const api = makeAccountApi({ origin: "", apiBase: "/api/v2/organizations/org_fixture", csrfToken: "", fetch: async (url, init) => {
       requests.push(url);
-      return Response.json(report);
+      signals.push(init?.signal);
+      return Response.json(url.endsWith("/fleet") ? fleet : report);
     } });
-    const got = await api.activity({ project_id: "prj_fixture", runner_id: "runner/fixture", limit: 2 });
+    const got = await api.activity({ project_id: "prj_fixture", runner_id: "runner/fixture", limit: 2 }, controller.signal);
     expect(got).toEqual(report);
     expect(requests).toEqual(["/api/v2/organizations/org_fixture/activity?project_id=prj_fixture&runner_id=runner%2Ffixture&limit=2"]);
+    expect(signals).toEqual([controller.signal]);
+    await api.fleet(controller.signal);
+    expect(signals).toEqual([controller.signal, controller.signal]);
     expect(Schema.decodeUnknownSync(ActivityReport)({ ...report, typical_durations: [] }).typical_durations).toEqual([]);
   });
 
