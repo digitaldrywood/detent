@@ -315,6 +315,10 @@ func (b *browser) do(method, target string, form url.Values, headers map[string]
 		body = strings.NewReader(form.Encode())
 	}
 	request := httptest.NewRequest(method, b.origin+target, body)
+	if method == http.MethodGet || method == http.MethodHead {
+		request.Header.Set("Sec-Fetch-Mode", "navigate")
+		request.Header.Set("Sec-Fetch-Dest", "document")
+	}
 	if form != nil {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
