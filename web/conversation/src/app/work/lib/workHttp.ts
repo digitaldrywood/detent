@@ -138,6 +138,7 @@ export interface ListWorkItemsInput {
   readonly signal?: AbortSignal;
   readonly projectId: string;
   readonly state?: string | readonly string[] | undefined;
+  readonly type?: string | readonly string[] | undefined;
   readonly label?: string | readonly string[] | undefined;
   readonly assignee?: string | readonly string[] | undefined;
   readonly priority?: string | readonly string[] | undefined;
@@ -562,7 +563,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     eventsUrl: (projectId, workspaceId, workItemId, board) =>
       url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId,
         board: board === undefined ? undefined : "true", since: board?.since,
-        created_by: board?.filters.createdBy, q: board?.filters.q || undefined, label: board?.filters.label, assignee: board?.filters.assignee,
+        created_by: board?.filters.createdBy, q: board?.filters.q || undefined, type: board?.filters.type, label: board?.filters.label, assignee: board?.filters.assignee,
         priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
@@ -578,6 +579,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           open: input.open === undefined ? undefined : String(input.open),
           sort: input.sort,
           archived: input.archived === "all" ? "all" : input.archived === true ? "true" : undefined,
+          type: input.type,
           label: input.label,
           assignee: input.assignee,
           priority: input.priority,

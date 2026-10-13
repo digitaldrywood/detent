@@ -59,11 +59,12 @@ describe("the board's view state", () => {
 
   it("reads every control out of the query string", () => {
     const state = parseViewState(
-      "view=list&q=lease&state=Todo,Review&label=bug&assignee=example-owner&priority=High&sort=updated&lanes=Todo,Done",
+      "view=list&q=lease&state=Todo,Review&type=change_request&label=bug&assignee=example-owner&priority=High&sort=updated&lanes=Todo,Done",
     );
     expect(state.view).toBe("list");
     expect(state.q).toBe("lease");
     expect(state.state).toEqual(["Review", "Todo"]);
+    expect(state.type).toEqual(["change_request"]);
     expect(state.label).toEqual(["bug"]);
     expect(state.assignee).toEqual(["example-owner"]);
     expect(state.priority).toEqual(["High"]);

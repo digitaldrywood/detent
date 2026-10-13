@@ -58,11 +58,11 @@ export function WorkToolbar({
   facets,
   totals,
 }: WorkToolbarProps): React.ReactElement {
-  const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : view);
+  const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : { ...view, type: [] });
   const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
   const visibleLanes = boardLanes.filter((lane) => laneVisible(view, lane)).length;
 
-  const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
+  const values = (key: FilterKey): readonly string[] => [...new Set([...(key === "type" ? ["bug", "change_request"] : facets[key]), ...view[key]])].toSorted();
 
   return (
     <div data-testid="work-toolbar" className="flex shrink-0 items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-3 sm:px-5">
@@ -93,7 +93,7 @@ export function WorkToolbar({
           <MenuSeparator />
           {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
               reads its group's context and throws without one. */}
-          {FILTER_KEYS.filter((key) => view.view === "board" || key !== "state").map((key) => (
+          {FILTER_KEYS.filter((key) => view.view === "board" ? key !== "type" : key !== "state").map((key) => (
             <React.Fragment key={key}>
               <MenuGroup>
                 <MenuGroupLabel>{FILTER_LABELS[key]}</MenuGroupLabel>
@@ -109,7 +109,7 @@ export function WorkToolbar({
                       data-testid={`filter-${key}-${value}`}
                       onCheckedChange={() => onChange(toggleFilter(view, key, value))}
                     >
-                      {value}
+                      {key === "type" ? value === "bug" ? "Bug" : "Change request" : value}
                     </MenuCheckboxItem>
                   ))
                 )}

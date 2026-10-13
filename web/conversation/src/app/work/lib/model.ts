@@ -54,6 +54,7 @@ export interface ChangeView {
 export type Observation = "known" | "unchecked" | "unavailable" | "partial";
 
 export interface WorkItemView {
+  readonly type?: "bug" | "change_request";
   readonly pullRequest?: { readonly number: number; readonly url: string } | null;
   readonly closedAt?: string | null;
   readonly listChange?: { readonly branch: string; readonly headSha: string } | null;
