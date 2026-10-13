@@ -614,6 +614,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			} else {
 				h = newNativeChangeHub(t, true)
 			}
+			if test.validationErr != nil {
+				clock := time.Now().UTC()
+				h.scheduler.now = func() time.Time { return clock }
+			}
 			issue := h.createInProgress(t, "Native change")
 			item := tracker.NativeWorkItemID(issue.ID)
 			base, head := base, head
