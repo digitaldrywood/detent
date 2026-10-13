@@ -83,8 +83,8 @@ func checkWorkflow(data []byte) error {
 				return errors.New("INV-5 preflight must always run")
 			}
 		case "finalize":
-			if condition != "always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')" {
-				return errors.New("INV-5 finalizer must inspect every attempted full run")
+			if condition != "always() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')" {
+				return errors.New("INV-5 finalizer must report attempted and skipped scheduled runs")
 			}
 		default:
 			if condition != "needs.preflight.outputs.should_run == 'true'" {
@@ -351,7 +351,7 @@ func TestWorkflowViolations(t *testing.T) {
 	}
 	for _, tt := range []struct{ name, old, replacement string }{
 		{"actions read permission dropped", "  actions: read\n", ""},
-		{"finalizer treats a preflight skip as a run", "if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')", "if: always()"},
+		{"finalizer drops skipped reporting", "if: always() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')", "if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')"},
 		{"develop push trigger", "branches: ['release/*']", "branches: [develop]"},
 		{"pull request trigger", "  workflow_dispatch:\n", "  pull_request:\n  workflow_dispatch:\n"},
 		{"schedule dropped", "  schedule:\n    - cron: '17 * * * *'\n", ""},

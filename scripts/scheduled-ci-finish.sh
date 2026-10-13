@@ -19,13 +19,21 @@ if [ "${WORKFLOW_CANCELLED:-false}" = true ] && jq -e 'any(.[]; .conclusion == "
   exit 0
 fi
 
-report_failure() {
+report_validation() {
   go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
 }
 
+if [ "${CI_SHOULD_RUN:-true}" = false ]; then
+  if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
+    report_validation
+  fi
+  echo "Scheduled validation was already attempted for this commit; recorded skipped execution without publishing validation or release evidence."
+  exit 0
+fi
+
 failures="$(jq -r '.[] | select(.name != "Finalize scheduled validation" and .conclusion != "success") | .name' "$jobs_file")"
 if [ -n "$failures" ]; then
-  report_failure
+  report_validation
   exit 1
 fi
 

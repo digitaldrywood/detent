@@ -23,7 +23,7 @@ type ScheduledValidationReport struct {
 func (r ScheduledValidationReport) Valid() bool {
 	return repositoryIdentity.MatchString(r.Repository) && decimalIdentity(r.RunID) && decimalIdentity(r.RunAttempt) && evidenceSHA.MatchString(r.HeadSHA) &&
 		r.RunURL == "https://github.com/"+r.Repository+"/actions/runs/"+r.RunID+"/attempts/"+r.RunAttempt &&
-		(r.Conclusion == "success" || r.Conclusion == "failure")
+		(r.Conclusion == "success" || r.Conclusion == "failure" || r.Conclusion == "skipped")
 }
 
 type CheckEnvironment struct {

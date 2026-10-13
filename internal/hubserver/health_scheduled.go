@@ -33,7 +33,11 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 			return out, err
 		}
 	}
-	rows, err := q.QueryContext(ctx, `SELECT record_json, recorded_at FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?) ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 21`, scope.organization, scope.project, formatHubTime(now))
+	rows, err := q.QueryContext(ctx, `WITH observed AS (
+ SELECT record_json,recorded_at,run_id,run_attempt FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?)
+ ), latest AS (SELECT record_json,recorded_at FROM observed ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 21),
+ failures AS (SELECT record_json,recorded_at FROM observed WHERE json_extract(record_json,'$.conclusion')='failure' ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 2)
+ SELECT record_json,recorded_at FROM latest UNION ALL SELECT record_json,recorded_at FROM failures`, scope.organization, scope.project, formatHubTime(now))
 	if err != nil {
 		return out, err
 	}
@@ -137,7 +141,7 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 	intervals := []time.Duration{}
 	for i, report := range ordered {
 		if i == 0 {
-			out.LastReport, out.LastRunURL, out.LastFailed = report.RecordedAt, report.RunURL, report.Conclusion == "failure"
+			out.LastReport, out.LastRunURL = report.RecordedAt, report.RunURL
 		}
 		if report.Conclusion == "failure" && report.RecordedAt.After(out.LastGreen) {
 			out.Failures++
@@ -152,5 +156,6 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 		slices.Sort(intervals)
 		out.Cadence = intervals[len(intervals)/2]
 	}
+	out.LastFailed = out.Failures > 0
 	return out, nil
 }

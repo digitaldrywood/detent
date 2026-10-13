@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -27,13 +28,15 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 		}
 	}
 	report := gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1", RunAttempt: "1", HeadSHA: strings.Repeat("a", 40), Conclusion: "success"}
-	for _, step := range []struct {
+	type healthStep struct {
 		name       string
 		hours      int
 		run        string
 		conclusion string
 		signal     string
-	}{
+		greenHour  int
+	}
+	steps := []healthStep{
 		{name: "never reported"},
 		{name: "first green", run: "1", conclusion: "success"},
 		{name: "observed hourly cadence", hours: 1, run: "2", conclusion: "success"},
@@ -46,7 +49,19 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 		{name: "before red threshold", hours: 39, run: "6", conclusion: "failure"},
 		{name: "red for twenty-four hours", hours: 40, run: "7", conclusion: "failure", signal: "scheduled_red"},
 		{name: "green clears red", hours: 41, run: "8", conclusion: "success"},
-	} {
+	}
+	for hour := 42; hour <= 87; hour++ {
+		conclusion, signal := "skipped", ""
+		if hour == 64 || hour == 65 {
+			conclusion = "failure"
+		}
+		if hour >= 65 {
+			signal = "scheduled_red"
+		}
+		steps = append(steps, healthStep{fmt.Sprintf("unchanged commit hour %d", hour), hour, strconv.Itoa(hour), conclusion, signal, 41})
+	}
+	steps = append(steps, healthStep{"green clears red after skipped reports", 88, "88", "success", "", 88})
+	for _, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
 			now = base.Add(time.Duration(step.hours) * time.Hour)
 			if step.run != "" {
@@ -67,6 +82,15 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 					if !record.RecordedAt.Equal(now) {
 						t.Fatalf("replay changed report time: %+v", record)
 					}
+				}
+			}
+			if step.conclusion == "skipped" {
+				scheduled, err := readHealthScheduled(t.Context(), service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !scheduled.LastReport.Equal(now) || !scheduled.LastGreen.Equal(base.Add(41*time.Hour)) {
+					t.Fatalf("skipped report changed validation evidence: %+v", scheduled)
 				}
 			}
 			if step.name == "before silent window" {
@@ -103,7 +127,11 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 				if step.signal == "scheduled_silent" && (!evidence.LastReportAt.Equal(base.Add(2*time.Hour)) || !strings.Contains(page.Items[0].Summary, "2026-10-01T02:00:00Z")) {
 					t.Fatalf("silent evidence = %+v", page.Items[0])
 				}
-				if step.signal == "scheduled_red" && (!evidence.LastGreenAt.Equal(base.Add(16*time.Hour)) || !strings.Contains(page.Items[0].Summary, "2026-10-01T16:00:00Z")) {
+				greenHour := step.greenHour
+				if greenHour == 0 {
+					greenHour = 16
+				}
+				if step.signal == "scheduled_red" && (!evidence.LastGreenAt.Equal(base.Add(time.Duration(greenHour)*time.Hour)) || !strings.Contains(page.Items[0].Summary, base.Add(time.Duration(greenHour)*time.Hour).Format(time.RFC3339))) {
 					t.Fatalf("red evidence = %+v", page.Items[0])
 				}
 			}
@@ -113,7 +141,7 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM issues), (SELECT count(*) FROM native_comments), (SELECT count(*) FROM scheduled_validation_reports)").Scan(&issues, &comments, &records); err != nil {
 		t.Fatal(err)
 	}
-	if issues != 0 || comments != 0 || records != 16 {
+	if issues != 0 || comments != 0 || records != 110 {
 		t.Fatalf("issues=%d comments=%d reports=%d", issues, comments, records)
 	}
 	for _, test := range []struct {
@@ -139,7 +167,7 @@ func TestScheduledValidationDeliveryHealth(t *testing.T) {
 	response := performHubAPIRequest(t, service, http.MethodGet, f.base+"/health/findings?state=resolved", f.token, nil)
 	var page healthFindingsPage
 	decodeHubResponse(t, response, &page)
-	if len(page.Items) != 2 || !slices.ContainsFunc(page.Items, func(f healthFinding) bool { return f.ResolvedAt != nil && f.ResolvedAt.Equal(now) }) {
+	if len(page.Items) != 3 || !slices.ContainsFunc(page.Items, func(f healthFinding) bool { return f.ResolvedAt != nil && f.ResolvedAt.Equal(now) }) {
 		t.Fatalf("resolved findings = %+v", page.Items)
 	}
 }

@@ -478,7 +478,7 @@ jobs:
     name: Finalize scheduled validation
     timeout-minutes: 5
     needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot]
-    if: always() && (needs.preflight.outputs.should_run == 'true' || needs.preflight.result == 'failure')
+    if: always() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -501,6 +501,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
           CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
+          CI_SHOULD_RUN: ${{ needs.preflight.outputs.should_run }}
           TMPDIR: ${{ runner.temp }}
           DETENT_MCP_URL: https://cloud.detent.build/organizations/org_9e0e65eec07a6639979a/mcp
           DETENT_PROJECT_ID: prj_6d4919bebd73446798e6cd807feda10e

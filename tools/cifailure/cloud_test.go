@@ -291,12 +291,14 @@ func TestCloudReport(t *testing.T) {
 	evidenceLog := lintDiagnostic + "\n2026-10-06T12:00:01Z " + gate.CheckEvidencePrefix + string(encodedCheck)
 	for _, tt := range []struct {
 		name, log, laterLog, lost, fail string
+		input                           string
 		imported, green, foreign        bool
 		legacyReplay                    bool
 		unlabelled, equalFingerprint    bool
 		worker                          bool
 		markerReplay                    bool
 		finalizerFailed                 bool
+		skipped                         bool
 		priority                        *int
 		holdState                       string
 		missingRevision                 bool
@@ -343,6 +345,10 @@ func TestCloudReport(t *testing.T) {
 		{name: "backend startup remains intake", log: "backend startup failed: protocol handshake error", wantItems: 2, wantWrites: 4},
 		{name: "green imported evidence replay", imported: true, green: true, wantItems: 2, wantWrites: 1},
 		{name: "green without prior failure issues", green: true},
+		{name: "skipped run retains prior failure issues", imported: true, skipped: true, wantItems: 2},
+		{name: "skipped reporting unavailable", skipped: true, fail: "record_scheduled_validation", wantErrors: 5},
+		{name: "failed preflight is not skipped", input: `[{"id":1,"name":"preflight","conclusion":"failure","html_url":"preflight-job"},{"id":2,"name":"Coverage","conclusion":"skipped","html_url":"coverage-job"}]`, log: diagnostic, wantItems: 2, wantWrites: 4},
+		{name: "partially skipped validation is not green", input: `[{"id":1,"name":"Coverage","conclusion":"success","html_url":"coverage-job"},{"id":2,"name":"Race","conclusion":"skipped","html_url":"race-job"}]`, log: diagnostic, wantItems: 1, wantWrites: 2},
 		{name: "failed finalizer cannot publish green evidence", imported: true, finalizerFailed: true, wantItems: 3, wantWrites: 2},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -396,11 +402,17 @@ func TestCloudReport(t *testing.T) {
 			gh := &fakeGH{logs: map[int64]string{1: tt.log, 2: tt.log}}
 			var evidence bytes.Buffer
 			input := jobs
+			if tt.input != "" {
+				input = tt.input
+			}
 			if tt.green {
 				input = `[{"id":1,"name":"Coverage","conclusion":"success"}]`
 			}
 			if tt.finalizerFailed {
 				input = `[{"id":1,"name":"Coverage","conclusion":"success"},{"id":0,"name":"Finalize scheduled validation","conclusion":"failure","html_url":"publisher-job"}]`
+			}
+			if tt.skipped {
+				input = `[{"id":1,"name":"preflight","conclusion":"success"},{"id":2,"name":"Coverage","conclusion":"skipped"},{"id":3,"name":"Finalize scheduled validation","conclusion":null}]`
 			}
 			errorCount := 0
 			for _, run := range []string{"1", "1", "1", "2", "2"} {
@@ -433,6 +445,12 @@ func TestCloudReport(t *testing.T) {
 			}
 			if tt.green && (len(f.reports) != 1 || f.reports[0].Conclusion != "success" || !f.reports[0].Valid()) {
 				t.Fatalf("green run was not retained: %+v", f.reports)
+			}
+			if tt.skipped && tt.fail == "" && (len(f.reports) != 2 || f.reports[0].Conclusion != "skipped" || f.reports[1].Conclusion != "skipped" || !f.reports[0].Valid()) {
+				t.Fatalf("skipped activity was not retained: %+v", f.reports)
+			}
+			if tt.input != "" && (len(f.reports) != 2 || f.reports[0].Conclusion != "failure" || f.reports[1].Conclusion != "failure") {
+				t.Fatalf("incomplete validation was not retained as failure: %+v", f.reports)
 			}
 			if len(gh.created) != 0 || len(gh.comments) != 0 {
 				t.Fatal("native report wrote to GitHub")
