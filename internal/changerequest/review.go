@@ -131,6 +131,7 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !current.ReviewPolicy.RequireReview {
 		summary.NativeReview = "not_required"
 	}
+	landingAuditBlocked := false
 	auditPassed := !current.Policy.Gates.SecurityAudit
 	validatorPassed := !current.Policy.Gates.Validator
 	implementationReviewed := current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired
@@ -138,6 +139,12 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	staleApproval := priorApproval
 	for _, review := range detail.Reviews {
 		if review.SecurityAudit != nil {
+			if review.SecurityAudit.Landing {
+				if review.VersionID == current.ID && review.Decision == "changes_requested" {
+					landingAuditBlocked = true
+				}
+				continue
+			}
 			if review.VersionID == current.ID {
 				run := review.SecurityAudit.Run
 				evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(detail.Change.ProjectID), Repository: current.Repository, PRNumber: run.PRNumber, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA}, "", []string{"none"})
@@ -207,7 +214,7 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 	if !checksSatisfied {
 		summary.Messages = append(summary.Messages, "Current version checks are "+summary.Checks+". Missing or stale evidence does not pass review.")
 	}
-	if auditPassed && validatorPassed && implementationReviewed && checksSatisfied && slices.Contains([]string{"approved", "not_required"}, summary.NativeReview) {
+	if !landingAuditBlocked && auditPassed && validatorPassed && implementationReviewed && checksSatisfied && slices.Contains([]string{"approved", "not_required"}, summary.NativeReview) {
 		summary.Status = "reviewed"
 	}
 	if policyID != current.PolicyID || reviewPolicyID != current.ReviewPolicy.ID {

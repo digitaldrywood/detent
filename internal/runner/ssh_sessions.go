@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -21,6 +22,7 @@ type SSHCallbacks struct {
 	publicationEffect    func(uint64, string, workspace.GitHubPublication, string, string, workspace.GitHubPublication) error
 	landingBatch         *workspace.LandingBatchTicket
 	batchLander          *sshBatchLander
+	batchAudits          []func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
 	batchValidations     []func(context.Context) error
 	handle               func(context.Context, string, []json.RawMessage) (any, error)
 	store                SessionStore
@@ -57,7 +59,7 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 			result, err = invokeSSHMethod(ctx, c.publicationEffect, "", args)
 		}
 		c.mu.Unlock()
-	case "landing.submit", "landing.finish", "landing.validate":
+	case "landing.submit", "landing.finish", "landing.validate", "landing.audit":
 		result, err = c.handleLandingBatch(ctx, method, args)
 	default:
 		result, err = c.handle(ctx, method, args)
