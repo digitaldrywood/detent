@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -40,7 +41,9 @@ func pilotReviewVersions(t *testing.T, f *browserHostedFixture) []pilotReviewVer
 		human := project == f.project
 		rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: human, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted pilot CI")), Source: "independent", MaxAgeSeconds: 3600}}}
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/change-review-policy", tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "pilot-review-policy"}, Policy: rules}), http.StatusOK)
-		response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-policy-job"}, Title: "Pilot repository review journey", Body: issueContractTestSections, State: "Todo", Labels: []string{"pilot-review"}})
+		response = createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "pilot-policy-job"}, Title: "Pilot repository review journey", Body: issueContractTestSections, State: "Todo", Labels: []string{"pilot-review"}}, func(request tracker.CreateIssue) *httptest.ResponseRecorder {
+			return f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", request)
+		})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)

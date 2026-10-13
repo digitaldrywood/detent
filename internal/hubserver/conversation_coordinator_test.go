@@ -795,16 +795,16 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "attention")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-	blocker := f.create(t, "blocker")
-	blocked := f.create(t, "blocked")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(blocked.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
-	review := f.create(t, "review")
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(review.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "review"}, ExpectedRevision: 1, State: "In Review", Reason: "user_requested"}), http.StatusOK)
-	running := f.create(t, "running")
+	blocker := f.createIndependent(t, "blocker")
+	blocked := f.createIndependent(t, "blocked")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(blocked.WorkItemID)+"/dependencies", f.token, tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "block"}, ExpectedRevision: blocked.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}), http.StatusOK)
+	review := f.createIndependent(t, "review")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(review.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "review"}, ExpectedRevision: review.Revision, State: "In Review", Reason: "user_requested"}), http.StatusOK)
+	running := f.createIndependent(t, "running")
 	worker := f.worker(t, "worker")
 	lease := claimNativeAttempt(t, f.nativeFixture, worker, "machine", "session", running.WorkItemID)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(running.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
-	waiting := f.create(t, "waiting")
+	waiting := f.createIndependent(t, "waiting")
 	linkedAt := time.Now().UTC()
 	linkedConversation := f.seed(t, "waiting chat", func(record *conversationRecord) {
 		record.WorkItemID = string(waiting.WorkItemID)
@@ -817,7 +817,7 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 			Prompts: []conversation.Prompt{{ID: "p1", Question: "Which branch?", FreeText: true}}, CreatedAt: linkedAt, UpdatedAt: linkedAt,
 		}})
 	})
-	f.create(t, "plain todo")
+	f.createIndependent(t, "plain todo")
 
 	f.backend.setRun(callTool("list_attention", `{"scope":"project"}`))
 	record := f.seed(t, "attention", nil)
@@ -865,15 +865,15 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 func TestConversationCoordinatorToolArgumentsAndScope(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "scope")
-	own := f.create(t, "own issue")
-	done := f.create(t, "done issue")
+	own := f.createIndependent(t, "own issue")
+	done := f.createIndependent(t, "done issue")
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", f.project.ID, done.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
 	other := newNativeFixture(t, f.service, "", "other-project")
-	other.create(t, "foreign first")
-	other.create(t, "foreign second")
-	foreign := other.create(t, "foreign issue")
+	other.createIndependent(t, "foreign first")
+	other.createIndependent(t, "foreign second")
+	foreign := other.createIndependent(t, "foreign issue")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(own.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "first comment"}), http.StatusOK)
 
 	tests := []struct {
@@ -1459,7 +1459,7 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 			name: "a blocker in the owner's project is named",
 			tool: "list_attention", args: func(tracker.NativeWorkItemID) string { return `{"scope":"project"}` },
 			setup: func(t *testing.T, f *coordinatorFixture) (tracker.NativeWorkItemID, tracker.NativeWorkItemID) {
-				return f.create(t, "dependent").WorkItemID, f.create(t, "blocker").WorkItemID
+				return f.createIndependent(t, "dependent").WorkItemID, f.createIndependent(t, "blocker").WorkItemID
 			},
 			success: true,
 		},
@@ -1468,7 +1468,7 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 			tool: "list_attention", args: func(tracker.NativeWorkItemID) string { return `{"scope":"all_projects"}` },
 			setup: func(t *testing.T, f *coordinatorFixture) (tracker.NativeWorkItemID, tracker.NativeWorkItemID) {
 				other := newNativeFixture(t, f.service, f.organization, "unreadable")
-				return f.create(t, "dependent").WorkItemID, other.create(t, "secret blocker").WorkItemID
+				return f.createIndependent(t, "dependent").WorkItemID, other.createIndependent(t, "secret blocker").WorkItemID
 			},
 			success: true, absent: true,
 		},
@@ -1496,7 +1496,7 @@ func TestConversationCoordinatorToolsHonourReadAccess(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newCoordinatorFixture(t, "access")
-			own := f.create(t, "own")
+			own := f.createIndependent(t, "own")
 			var dependent, blocker tracker.NativeWorkItemID
 			if test.setup != nil {
 				dependent, blocker = test.setup(t, f)

@@ -139,7 +139,11 @@ func TestPilotHostedWorkloads(t *testing.T) {
 				requireNativeStatus(t, f.page(t, "owner", "/organization/plan"), http.StatusOK)
 			}
 			for index := range test.jobs {
-				response := f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("pilot-job-%d", index)}, Title: fmt.Sprintf("Pilot work %d", index), Body: strings.Repeat("synthetic context ", 64) + issueContractTestSections, State: "Todo"})
+				var context strings.Builder
+				for segment := range 32 {
+					fmt.Fprintf(&context, "workload%03dsegment%02dx ", index, segment)
+				}
+				response := f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("pilot-job-%d", index)}, Title: fmt.Sprintf("Pilot workload%03dx", index), Body: strings.Repeat(context.String(), 2) + issueContractTestSections, State: "Todo"})
 				requireNativeStatus(t, response, http.StatusOK)
 				var issue tracker.NativeIssue
 				decodeHubResponse(t, response, &issue)
