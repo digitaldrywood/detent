@@ -104,6 +104,11 @@ func goflags(inherited string, width string, wrapper string) string {
 	if !hasFlag(flags, "p") {
 		flags = append(flags, "-p="+width)
 	}
+	// Workspaces live at unique paths; without -trimpath every workspace
+	// writes its own copy of each package into the shared build cache.
+	if !hasFlag(flags, "trimpath") {
+		flags = append(flags, "-trimpath")
+	}
 	if !hasFlag(flags, "toolexec") && !strings.ContainsAny(wrapper, " \t\r\n'\"") {
 		flags = append(flags, "-toolexec="+wrapper)
 	}
