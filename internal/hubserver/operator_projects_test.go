@@ -225,22 +225,25 @@ func TestHostedProjectTools(t *testing.T) {
 		t.Run(deployment, func(t *testing.T) {
 			var f hostedSecurityFixture
 			var shared hostedSharedFixture
+			configure := func(cfg *Config) { cfg.Workspace = &WorkspaceConfig{Enabled: true} }
 			if deployment == "shared" {
-				shared = newHostedSharedFixture(t)
+				shared = newHostedSharedFixture(t, configure)
 				f = shared.hostedSecurityFixture
 			} else {
-				f = newHostedSecurityFixture(t)
+				f = newHostedSecurityFixture(t, configure)
 			}
 			owner := f.user(t, "owner-tools", "owner", "owner-tools@example.test", "write", "")
+			f.grant(t, owner, true, true)
+			viewer := f.user(t, "quota-viewer", "member", "quota-viewer@example.test", "read", "")
 			captureds := make(chan context.Context, 1)
 			f.service.echo.GET("/operator-project-test", func(c echo.Context) error { captureds <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
-			connect := func(id string) context.Context {
+			connectAs := func(user hostedSecurityUser, id string) context.Context {
 				t.Helper()
 				if deployment == "shared" {
-					r := shared.serve(t, hostedSharedRequest{user: &owner, method: http.MethodGet, target: "/organizations/org_security/operator-project-test"})
+					r := shared.serve(t, hostedSharedRequest{user: &user, method: http.MethodGet, target: "/organizations/org_security/operator-project-test"})
 					requireNativeStatus(t, r, http.StatusOK)
 				} else {
-					requireNativeStatus(t, f.request(t, owner, http.MethodGet, "/operator-project-test", nil), http.StatusOK)
+					requireNativeStatus(t, f.request(t, user, http.MethodGet, "/operator-project-test", nil), http.StatusOK)
 				}
 				ctx := operatortool.BindConnection(<-captureds, id, "project fixture")
 				if err := (hubProjectExecutor{f.service}).OpenConnection(ctx); err != nil {
@@ -248,6 +251,7 @@ func TestHostedProjectTools(t *testing.T) {
 				}
 				return ctx
 			}
+			connect := func(id string) context.Context { return connectAs(owner, id) }
 			ctx := connect("project-tools")
 			e := hubProjectExecutor{f.service}
 			id := string(f.project)
@@ -336,6 +340,105 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatalf("observed candidate = %+v", setup)
 			}
 			approve := projectCall(t, "approve_project_policy", id, "approve", operatortool.PolicyApprovalInput{ExpectedID: setup.Policy.Policy.ID, ObservedPolicyID: setup.ObservedPolicies[0].Policy.ID})
+			t.Run("hosted allowance refusal", func(t *testing.T) {
+				viewerContext := connectAs(viewer, "quota-viewer")
+				credential, err := (hubAdministration{f.service}).credential(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				created, err := f.service.createNativeIssueCommand(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "quota-issue"}, Title: "Allowance fixture", State: "Todo", Body: "## Acceptance criteria\nPreserve allowance refusal.\n## Must not break\nKeep writes denied.\n## How we know it worked\nAssert no comment is stored."})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var issue tracker.NativeIssue
+				if err := json.Unmarshal(created, &issue); err != nil || issue.WorkItemID == "" {
+					t.Fatalf("issue=%s err=%v", created, err)
+				}
+				usage, err := f.service.database.hostedPlanUsage(t.Context(), f.service.config.now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				comment := map[string]any{"project_id": id, "request_id": "quota-comment", "identifier": issue.WorkItemID, "body": "Refused comment"}
+				var approvalArguments map[string]any
+				if err := json.Unmarshal(approve.Arguments, &approvalArguments); err != nil {
+					t.Fatal(err)
+				}
+				for _, transport := range []string{"stdio", "http"} {
+					t.Run(transport, func(t *testing.T) {
+						approvalArguments["request_id"] = "quota-approve-" + transport
+						call := hostedContextProtocol(t, f.service, ctx, transport)
+						deniedCall := hostedContextProtocol(t, f.service, viewerContext, transport)
+						for _, test := range []struct {
+							name, resource string
+							arguments      map[string]any
+						}{
+							{operatortool.AddComment, "collaboration_bytes", comment},
+							{"approve_project_policy", "api_mutations", approvalArguments},
+							{"create_workspace", "api_mutations", map[string]any{"project_id": id, "request_id": "quota-workspace-" + transport, "input": map[string]any{"work_item_id": issue.WorkItemID}}},
+							{"create_project_action", "api_mutations", map[string]any{"project_id": id, "request_id": "quota-action-" + transport, "input": map[string]any{"name": "Refused action", "command": "true"}}},
+						} {
+							t.Run(test.name, func(t *testing.T) {
+								consumption := usage.Allowances[test.resource] + 1
+								query := "UPDATE hosted_usage_counters SET value=? WHERE name=?"
+								if test.resource == "api_mutations" {
+									query = "UPDATE hosted_usage_windows SET amount=? WHERE metric=?"
+								}
+								if _, err := f.service.database.db.ExecContext(t.Context(), query, consumption, test.resource); err != nil {
+									t.Fatal(err)
+								}
+								t.Cleanup(func() {
+									if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), query, usage.Usage[test.resource], test.resource); err != nil {
+										t.Error(err)
+									}
+								})
+								reply := call("tools/call", test.name, test.arguments)
+								var result struct {
+									IsError bool `json:"isError"`
+									Failure struct {
+										Code        string `json:"code"`
+										HTTPStatus  int    `json:"http_status"`
+										Resource    string `json:"resource"`
+										Allowance   int64  `json:"allowance"`
+										Consumption int64  `json:"consumption"`
+										Recovery    string `json:"recovery"`
+									} `json:"structuredContent"`
+								}
+								if err := json.Unmarshal(reply.Result, &result); err != nil {
+									t.Fatal(err)
+								}
+								if !result.IsError || result.Failure.Code != "allowance_exhausted" || result.Failure.HTTPStatus != http.StatusTooManyRequests || result.Failure.Resource != test.resource || result.Failure.Allowance != usage.Allowances[test.resource] || result.Failure.Consumption != consumption || !strings.Contains(result.Failure.Recovery, operatortool.HostedPlan) || !strings.Contains(result.Failure.Recovery, operatortool.BillingExport) {
+									t.Fatalf("quota refusal=%s", reply.Result)
+								}
+								denied := deniedCall("tools/call", test.name, test.arguments)
+								var denial struct {
+									IsError bool `json:"isError"`
+								}
+								if json.Unmarshal(denied.Result, &denial) != nil || !denial.IsError || !strings.Contains(string(denied.Result), "access") || strings.Contains(string(denied.Result), "allowance") || strings.Contains(string(denied.Result), "consumption") {
+									t.Fatalf("unauthorized caller received usage or succeeded: %s", denied.Result)
+								}
+							})
+						}
+					})
+				}
+				var comments int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", issue.WorkItemID).Scan(&comments); err != nil || comments != 0 {
+					t.Fatalf("refused comment effects=%d err=%v", comments, err)
+				}
+				for _, table := range []string{"workspace_sessions", "project_actions"} {
+					var effects int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table+" WHERE project_id=?", f.project).Scan(&effects); err != nil || effects != 0 {
+						t.Fatalf("refused %s effects=%d err=%v", table, effects, err)
+					}
+				}
+				var receipts int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key IN ('quota-comment','quota-approve-stdio','quota-approve-http')").Scan(&receipts); err != nil || receipts != 0 {
+					t.Fatalf("refused writes persisted receipts=%d err=%v", receipts, err)
+				}
+				unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				if err != nil || !reflect.DeepEqual(unchanged.Policy, previous.Policy) {
+					t.Fatalf("refused approval changed policy=%+v err=%v", unchanged, err)
+				}
+			})
 			a = projectAction(t, e, ctx, approve)
 			if a.Status != chatpkg.ActionSucceeded {
 				t.Fatalf("policy=%+v", a)
