@@ -28,6 +28,7 @@ import { usePageTitle } from "../pageTitle.ts";
 import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import { CapacityChart } from "./CapacityChart.tsx";
+import { FindingAskWorkspace } from "./FindingAsk.tsx";
 
 const WINDOWS = [
   { value: "24h", label: "Past 24h" },
@@ -61,6 +62,8 @@ export function DiagnosticsRoute(): React.ReactElement {
   const http = useWorkHttp();
   const [range, setRange] = useState<Window>("24h");
   const [revision, setRevision] = useState(0);
+  const [askedFinding, setAskedFinding] = useState<DiagnosticFinding | null>(null);
+  const [askFocusRequest, setAskFocusRequest] = useState(0);
   const [state, setState] = useState<{
     report: DiagnosticsReport | null;
     runners: readonly FleetRunner[] | null;
@@ -175,7 +178,10 @@ export function DiagnosticsRoute(): React.ReactElement {
       document.removeEventListener("visibilitychange", refreshLive);
     };
   }, [api, http, bootstrap?.projects, range, revision]);
-  return (
+  const projectFor = (finding: DiagnosticFinding) =>
+    bootstrap?.projects.find((project) => project.id === finding.subject.project_id);
+  const askedProject = askedFinding === null ? undefined : projectFor(askedFinding);
+  const view = (controls?: React.ReactNode) => (
     <DiagnosticsView
       {...state}
       scope={bootstrap?.organization.name ?? "This organization"}
@@ -184,7 +190,18 @@ export function DiagnosticsRoute(): React.ReactElement {
       range={range}
       onRangeChange={setRange}
       onRefresh={() => setRevision((value) => value + 1)}
+      onAsk={(finding) => {
+        setAskedFinding(finding);
+        setAskFocusRequest((request) => request + 1);
+      }}
+      canAsk={(finding) => projectFor(finding)?.can_write !== false && projectFor(finding) !== undefined}
+      panelControls={controls}
     />
+  );
+  return askedFinding === null || askedProject === undefined ? view() : (
+    <FindingAskWorkspace key={`${askedProject.id}:${askedFinding.id}`} finding={askedFinding} project={askedProject} focusRequest={askFocusRequest}>
+      {(controls) => view(controls)}
+    </FindingAskWorkspace>
   );
 }
 
@@ -249,6 +266,9 @@ export function DiagnosticsView({
   projects = [],
   canManage = false,
   findingsError = null,
+  onAsk,
+  canAsk,
+  panelControls,
 }: {
   readonly projects?: readonly AccountProject[];
   readonly canManage?: boolean;
@@ -263,6 +283,9 @@ export function DiagnosticsView({
   readonly range: Window;
   readonly onRangeChange: (range: Window) => void;
   readonly onRefresh: () => void;
+  readonly onAsk?: (finding: DiagnosticFinding) => void;
+  readonly canAsk?: (finding: DiagnosticFinding) => boolean;
+  readonly panelControls?: React.ReactNode;
 }): React.ReactElement {
   const findings = findingRows === null ? null : orderedFindings(findingRows);
   const problems = runnerFindings(runners ?? [], projects, canManage);
@@ -296,6 +319,7 @@ export function DiagnosticsView({
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
         <div className="ms-auto flex items-center gap-2">
+          {panelControls}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -381,6 +405,16 @@ export function DiagnosticsView({
                             </p>
                           </div>
                           <div className="flex items-start gap-1.5">
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              disabled={canAsk?.(finding) === false}
+                              title={canAsk?.(finding) === false ? "Project chat requires write access to the finding's project" : undefined}
+                              aria-label={`Ask about ${finding.summary}`}
+                              onClick={() => onAsk?.(finding)}
+                            >
+                              Ask
+                            </Button>
                             <Badge
                               variant={
                                 finding.resolved_at
