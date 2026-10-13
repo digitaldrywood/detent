@@ -64,6 +64,30 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Issue email notifications
+
+Hosted sessions expose `GET` and `PUT` at
+`/api/v2/organizations/{organization}/issue-notification-preference`.
+The response and `PUT` body are `{ "enabled": true }`. Each user controls
+their own preference, which defaults to enabled; mutations require the
+bootstrap CSRF token. Bearer keys and support impersonation cannot change it.
+Disabling the preference also discards that user's pending batches.
+
+Native issue filers and commenters with human actor identities receive
+transactional email for lane transitions, new comments, and added related
+links. Recipients must retain active membership and project read access.
+The actor's own action is excluded. Changes within one minute of the first
+event form one batch per issue and participant, persisted in the Hub database.
+Emails contain the issue number, title, transition or commenter, and links;
+they exclude issue bodies and comment text. Delivery runs after issue writes
+commit, and a send failure is logged without rolling back or retrying the write.
+
+Each email links to `/issue-notifications/unsubscribe?token=...` on a dedicated
+Hub, or `/organizations/{organization}/issue-notifications/unsubscribe?token=...`
+through Cloud's shared entry. The opaque link opts out of that issue without
+requiring a session and is safe to repeat. The shared entry forwards the token
+through the signed service boundary; it does not read or change issue content.
+
 ## Project deletion
 
 Cloud owners and admins with a write grant on the selected project can call
