@@ -88,6 +88,41 @@ existing operator tag or publish signed artifacts from a workstation.
 is the next minor after the highest stable tag or existing release series, or
 `v0.1` when neither exists. An existing branch is never overwritten.
 
+Before selecting source and again immediately before branch creation, the cut
+owner checks durable Actions history. Automatic cuts (scheduled runs and manual
+dispatches without an explicit SHA) succeed as a no-op when another cut, a
+release-branch full suite, or the release workflow is queued, requested, pending,
+running or waiting for approval. The release workflow covers signed builds and
+both deployments. The current cut run and ordinary develop CI are excluded.
+The existing `release-cut` concurrency group serializes cut decisions; the
+`validated-release` group continues to serialize deployment without cancellation.
+Each no-op prints its reason and the existing run URL, source/tag and SHA. An
+Actions API read failure fails the cut instead of reporting a no-op.
+
+A successful production deployment, origin smoke and MCP smoke also satisfy an
+automatic release opportunity for one release cadence, even when newer develop
+commits have arrived. Admission reads the production job of the successful
+`release.yml` run's current attempt, rather than treating a branch, tag, cut or
+artifact upload as production success. Failed or cancelled attempts do not start
+the window; retrying an existing release retains its immutable evidence rules.
+An inactive leftover branch only covers its own source and does not block newer
+uncovered develop work.
+
+The rolling UTC window is `(decision time - cadence, decision time]`: completion
+at the lower boundary is expired, and completion at the decision time counts.
+Cadence comes from the single numeric five-field cron in `release-cut.yml`, as
+the elapsed time between its two latest scheduled occurrences at or before the
+decision time. The current weekly cron therefore supplies seven days, rather
+than an independent hourly setting. The window and cron appear in Actions output;
+an invalid or unsupported cadence fails admission.
+
+For a needed newer fix during this window, manually dispatch the cut with an
+explicit develop SHA. That request bypasses automatic admission while retaining
+source coverage, immutable branches and full release-head validation. To recover
+a failed existing series, retry its failed CI or release jobs instead of cutting
+the covered source again. Scheduled no-ops do not suppress the hourly develop
+suite for a newly untested SHA, and never hold develop landings.
+
 The default source is the newest develop ancestor not already contained in an
 existing release series or stable version tag, with successful full-suite CI
 and matching `develop-full-ci` evidence from that run. Legacy

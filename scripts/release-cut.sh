@@ -4,6 +4,20 @@ set -euo pipefail
 version="${1:-}"
 source_sha="${2:-}"
 repository="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+automatic=false
+if [ -z "$source_sha" ] || [ "${GITHUB_EVENT_NAME:-}" = schedule ]; then automatic=true; fi
+admit_release() {
+  local result
+  if python3 "$script_dir/release-cut-admission.py" "$repository" "${GITHUB_RUN_ID:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
+    return
+  else
+    result=$?
+    if [ "$result" -eq 10 ]; then exit 0; fi
+    exit "$result"
+  fi
+}
+if [ "$automatic" = true ]; then admit_release; fi
 git fetch origin develop '+refs/heads/release/*:refs/remotes/origin/release/*' --tags
 
 if [ -z "$version" ]; then
@@ -31,7 +45,7 @@ if [ -z "$source_sha" ]; then
   done < <(git for-each-ref --format='%(refname)' refs/remotes/origin/release/ refs/tags/)
   develop_history="$(git rev-list origin/develop --not "${coverage_refs[@]}")"
   if [ -z "$develop_history" ]; then
-    echo 'No unreleased develop commits; existing release series or stable tags already cover develop.'
+    echo "No unreleased develop commits; existing release series or stable tags already cover develop: ${coverage_refs[*]}"
     exit 0
   fi
   runs="$(gh api --paginate --slurp "repos/$repository/actions/workflows/ci.yml/runs?status=completed&branch=develop&per_page=100" | jq -c '[.[].workflow_runs[] | select(.head_branch == "develop" and (.event == "schedule" or .event == "workflow_dispatch")) | {head_sha, html_url, conclusion}]')"
@@ -78,6 +92,7 @@ while IFS= read -r existing; do
     exit 1
   fi
 done <<< "$covered_tags"
+if [ "$automatic" = true ]; then admit_release; fi
 gh api -X POST "repos/$repository/git/refs" -f ref="refs/heads/$branch" -f sha="$source_sha"
 gh workflow run ci.yml --repo "$repository" --ref "$branch" -f force=true
 printf 'Created %s at %s and dispatched the full suite.\n' "$branch" "$source_sha"
