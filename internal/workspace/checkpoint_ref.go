@@ -21,11 +21,12 @@ const (
 )
 
 type CheckpointRef struct {
-	Ref       string
-	CommitSHA string
-	HeadSHA   string
-	BaseSHA   string
-	TreeSHA   string
+	Ref         string
+	CommitSHA   string
+	HeadSHA     string
+	BaseSHA     string
+	TreeSHA     string
+	transaction *checkpointTransaction
 }
 
 type CheckpointRefPublisher interface {
@@ -51,9 +52,6 @@ func checkpointRefGit(path string, env ...string) checkpointGitRunner {
 	}
 }
 
-// PushCheckpointRef snapshots HEAD plus every uncommitted change into a commit
-// whose parent is HEAD, without touching the branch or the real index, and
-// force-pushes it to the item's Detent-owned checkpoint ref.
 func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue, previous CheckpointRef, validate func(context.Context) error) (_ CheckpointRef, _ bool, err error) {
 	if validate == nil {
 		return previous, false, fmt.Errorf("%w: ownership validation is required", ErrCheckpointUnsafe)
@@ -64,6 +62,11 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	}
 	defer release()
 	git := checkpointRefGit(info.Path)
+	if paused, pauseErr := rebaseInProgress(ctx, info.Path); pauseErr != nil {
+		return previous, false, pauseErr
+	} else if paused && issue.NativeRework && issue.CheckpointQuiescent {
+		return l.pushReworkCheckpoint(ctx, info, issue, previous, validate)
+	}
 	if _, err := git(ctx, "symbolic-ref", "-q", "HEAD"); err != nil {
 		return previous, false, fmt.Errorf("%w: worktree is not on its branch (rebase or detached HEAD in progress)", ErrCheckpointUnsafe)
 	}
@@ -93,12 +96,15 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if err := checkpointUnpublishedHistory(ctx, git, head); err != nil {
 		return previous, false, err
 	}
-	output, err := git(ctx, "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", head, "-m", "detent: checkpoint "+issue.Identifier)
+	parents := []string{head}
+	if previous.CommitSHA != "" {
+		parents = append(parents, previous.CommitSHA)
+	}
+	commit, err := checkpointCommit(ctx, git, tree, parents)
 	if err != nil {
 		return previous, false, fmt.Errorf("create checkpoint commit: %w", err)
 	}
-	commit := strings.TrimSpace(output)
-	output, err = git(ctx, "rev-list", "--objects", "--disk-usage", commit, "--not", "--remotes")
+	output, err := git(ctx, "rev-list", "--objects", "--disk-usage", commit, "--not", "--remotes")
 	if err != nil {
 		return previous, false, fmt.Errorf("measure checkpoint: %w", err)
 	}
@@ -186,6 +192,9 @@ func checkpointSnapshot(ctx context.Context, git, index checkpointGitRunner) (he
 // checkpointMatches reports whether an existing worktree already holds the
 // checkpoint, so restoring it would only quarantine an identical copy.
 func checkpointMatches(ctx context.Context, path string, checkpoint *CheckpointRef) (matched bool) {
+	if checkpoint.transaction != nil {
+		return checkpointTransactionMatches(ctx, path, checkpoint.transaction)
+	}
 	scratch, err := changeSourceScratch()
 	if err != nil {
 		return false
@@ -231,6 +240,19 @@ func (l *LocalGit) fetchCheckpointRef(ctx context.Context, checkpoint *Checkpoin
 			}
 		}
 	}
+	kind, err := l.runGit(ctx, "cat-file", "-t", checkpoint.TreeSHA)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(kind) == "blob" {
+		transaction, err := readCheckpointTransaction(ctx, checkpointRefGit(l.sourceRoot), checkpoint)
+		if err != nil {
+			return err
+		}
+		checkpoint.transaction = transaction
+		checkpoint.HeadSHA, checkpoint.BaseSHA = transaction.Head, transaction.Onto
+		return nil
+	}
 	tree, err := l.runGit(ctx, "rev-parse", checkpoint.CommitSHA+"^{tree}")
 	if err != nil || strings.TrimSpace(tree) != checkpoint.TreeSHA {
 		return errors.Join(errors.New("checkpoint commit differs from its recorded tree"), err)
@@ -244,6 +266,9 @@ func (l *LocalGit) fetchCheckpointRef(ctx context.Context, checkpoint *Checkpoin
 }
 
 func restoreCheckpointTree(ctx context.Context, path string, checkpoint *CheckpointRef) error {
+	if checkpoint.transaction != nil {
+		return restoreCheckpointTransaction(ctx, path, checkpoint)
+	}
 	if _, err := runGitAt(ctx, path, "-c", "core.hooksPath="+os.DevNull, "read-tree", "-u", "--reset", checkpoint.TreeSHA); err != nil {
 		return fmt.Errorf("restore checkpoint tree: %w", err)
 	}

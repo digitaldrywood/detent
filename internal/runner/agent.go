@@ -1987,7 +1987,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			checkpoint.Resume = "resume_session"
 		}
 		req.checkpointRefs.apply(&checkpoint)
-		if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
+		if err := recordCheckpointRef(ctx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 			return RunResult{}, err
 		}
 	}
@@ -2055,7 +2055,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 			r.pushCheckpointRef(ctx, req.checkpointRefs, req, "rework_started")
 			req.checkpointRefs.apply(&checkpoint)
-			if err := req.Execution.Checkpoint(ctx, checkpoint); err != nil {
+			if err := recordCheckpointRef(ctx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 				return RunResult{}, err
 			}
 			reworkPrecheck = precheck

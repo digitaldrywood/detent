@@ -576,7 +576,7 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
 		return errors.Join(completionErr, err)
 	}
-	if err := req.Execution.Checkpoint(checkpointCtx, checkpoint); err != nil {
+	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 		return errors.Join(completionErr, err)
 	}
 	completionErr = errors.Join(completionErr, executionCancellation(req))

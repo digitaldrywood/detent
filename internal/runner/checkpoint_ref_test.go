@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -69,6 +70,43 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("completed turn did not push a checkpoint")
+	}
+}
+
+func TestCheckpointRefsRetainAcknowledgedSource(t *testing.T) {
+	t.Parallel()
+	for _, failure := range []string{"capture", "acknowledgement"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+			previous := tracker.NativeCheckpoint{HeadSHA: strings.Repeat("b", 40), WorkspaceDigest: "acknowledged", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
+			remoteCheckpoint(&previous)
+			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}}}}}}
+			execution := &testExecution{recovery: tracker.NativeRecovery{SourceAttemptID: "prior", Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "prior"}, Checkpoint: &previous}}}}
+			refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{NativeRework: true}, nil)
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			errUnavailable := errors.New("unavailable")
+			if failure == "capture" {
+				backend.publishErr = errUnavailable
+			} else {
+				execution.checkpointErr = errUnavailable
+			}
+			r.pushCheckpointRef(t.Context(), refs, RunRequest{}, "stage_finished")
+			candidate := executionCheckpoint(&workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}})
+			refs.apply(&candidate)
+			if failure == "acknowledgement" {
+				if err := recordCheckpointRef(context.Background(), refs, execution, candidate); !errors.Is(err, errUnavailable) {
+					t.Fatalf("acknowledgement = %v", err)
+				}
+			}
+			retained := executionCheckpoint(&workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "new edits", TrackedPaths: []string{"work.go"}})
+			refs.apply(&retained)
+			if retained.CommitSHA != previous.CommitSHA || retained.HeadSHA != previous.HeadSHA || retained.WorkspaceDigest != previous.WorkspaceDigest {
+				t.Fatalf("invented saved-work receipt: %#v", retained)
+			}
+			if refs.saved == nil || refs.saved.CommitSHA != previous.CommitSHA || refs.saved.WorkspaceDigest != previous.WorkspaceDigest {
+				t.Fatalf("acknowledged source changed: %#v", refs.saved)
+			}
+		})
 	}
 }
 
