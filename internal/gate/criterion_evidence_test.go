@@ -48,7 +48,17 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "copied receipt tree typo", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].TreeSHA = "typo" }, gaps: []string{"Return valid input"}},
 		{name: "missing reviewed head", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.HeadSHA = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "unknown reviewed head", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.HeadSHA = "unknown" }, gaps: []string{"Reject invalid input", "Return valid input"}},
-		{name: "missing expected tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "host receipts supply missing finalization tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].HeadSHA = "typo"
+			r.CriteriaEvidence[0].TreeSHA = "typo"
+		}, gaps: []string{"Return valid input"}},
+		{name: "missing trustworthy tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) {
+			for i := range r.Commands {
+				r.Commands[i].TreeSHA = ""
+			}
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "inconsistent trees without finalization", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) { r.Commands[1].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "foreign head without finalization", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) { r.Commands[1].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "unknown expected tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new("unknown"), gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "missing selected receipt", receiptIDs: []string{"timing_app", "missing"}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "duplicate selected receipt", receiptIDs: []string{"timing_app", "timing_app"}, gaps: []string{"Reject invalid input", "Return valid input"}},
@@ -106,8 +116,12 @@ func TestCriterionEvidence(t *testing.T) {
 			if len(result.CriteriaEvidence) != 2 || result.CriteriaEvidence[0].Criterion != "Reject invalid input" || result.CriteriaEvidence[1].Criterion != "Return valid input" || !reflect.DeepEqual(result.NotVerified, test.gaps) || len(result.Findings) != test.findings {
 				t.Fatalf("normalized evidence = %+v", result)
 			}
-			if entry := result.CriteriaEvidence[0]; entry.Kind == EvidenceReceipt && (entry.HeadSHA != result.HeadSHA || entry.TreeSHA != tree) {
-				t.Fatalf("normalized receipt identity = %+v, want head %q and tree %q", entry, result.HeadSHA, tree)
+			wantTree := tree
+			if wantTree == "" {
+				wantTree = "tree"
+			}
+			if entry := result.CriteriaEvidence[0]; entry.Kind == EvidenceReceipt && (entry.HeadSHA != result.HeadSHA || entry.TreeSHA != wantTree) {
+				t.Fatalf("normalized receipt identity = %+v, want head %q and tree %q", entry, result.HeadSHA, wantTree)
 			}
 		})
 	}
