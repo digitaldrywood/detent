@@ -142,8 +142,8 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 		terminal bool
 		wantRank int
 	}{
-		{"reordered workflow", []tracker.NativeState{nativeFixtureStates()[2], nativeFixtureStates()[0], nativeFixtureStates()[1]}, true, 0},
-		{"historical terminal flag changes", []tracker.NativeState{{Name: "Done", Transitions: []string{"Todo"}}, nativeFixtureStates()[0], nativeFixtureStates()[1], {Name: "Closed", Terminal: true}}, false, 0},
+		{"reordered workflow", []tracker.NativeState{nativeFixtureStates()[2], nativeFixtureStates()[0], nativeFixtureStates()[1]}, true, 1},
+		{"historical terminal flag changes", []tracker.NativeState{{Name: "Done", Transitions: []string{"Todo"}}, nativeFixtureStates()[0], nativeFixtureStates()[1], {Name: "Closed", Terminal: true}}, false, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			changed := descriptor

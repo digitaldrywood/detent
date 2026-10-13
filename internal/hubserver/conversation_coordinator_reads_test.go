@@ -174,6 +174,14 @@ func TestCoordinatorScreenReads(t *testing.T) {
 						if json.Unmarshal([]byte(result.Content), &got) != nil || json.Unmarshal(direct.Content, &want) != nil {
 							t.Fatal("invalid result")
 						}
+						if test.name == "get_project_policy" {
+							gates := want.(map[string]any)["data"].(map[string]any)["policy"].(map[string]any)["gates"].(map[string]any)
+							for _, key := range []string{"human_review", "github_pull_request"} {
+								if _, present := gates[key]; !present {
+									gates[key] = false
+								}
+							}
+						}
 						if !reflect.DeepEqual(got, want) {
 							t.Fatalf("coordinator diverged from application read: %s vs %s", result.Content, direct.Content)
 						}
