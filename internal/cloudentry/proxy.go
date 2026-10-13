@@ -120,14 +120,9 @@ const (
 	verificationRefreshed = "refreshed"
 )
 
-// browserClaims authorizes a proxied browser request from the stored
-// session and the organization's WorkOS access token, verified locally
-// against the cached JWKS. The provider is called only to refresh an expired
-// access token, so revocation and membership removal take effect at the next
-// refresh, one access-token lifetime at most.
 func (s *Service) browserClaims(c echo.Context, organization Organization, claims *cloudassert.Claims) (int, string, error) {
 	ctx := c.Request().Context()
-	session, err := s.storedSession(c)
+	session, err := s.session(c)
 	if err != nil {
 		return http.StatusUnauthorized, "", err
 	}
@@ -146,6 +141,17 @@ func (s *Service) browserClaims(c echo.Context, organization Organization, claim
 			return http.StatusForbidden, "", errNoSession
 		}
 		subject, email = authorized.Identity.Subject, authorized.EffectiveEmail
+	}
+	if authorized.Identity.Subject == session.Identity.Subject && authorized.Identity.SessionID == session.Identity.SessionID &&
+		authorized.Identity.CreatedAt.Equal(session.Identity.CreatedAt) && authorized.Identity.SupportActor == session.Identity.SupportActor && authorized.Identity.SupportReason == session.Identity.SupportReason {
+		authorized.Identity = session.Identity
+	} else {
+		cacheable := s.platformRole(ctx, session.Email) == "" && !authorized.Support
+		current, err := s.verifySession(c, authorized.Binding, authorized.Identity, cacheable)
+		if err != nil {
+			return http.StatusUnauthorized, "", err
+		}
+		authorized.Identity = current
 	}
 	access, verification, status, err := s.verifiedAccess(ctx, authorized)
 	if err != nil {

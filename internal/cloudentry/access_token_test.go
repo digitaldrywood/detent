@@ -2,15 +2,24 @@ package cloudentry
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"html"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
 
 type lockedBuffer struct {
@@ -42,6 +51,109 @@ func (p *fakeProvider) endSessions(user string) {
 	}
 }
 
+func TestSharedEntryAccountSessionValidity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		staff      bool
+		refresh    bool
+		entryFirst bool
+	}{
+		{name: "customer token proxy first"},
+		{name: "customer token entry first", entryFirst: true},
+		{name: "customer refresh proxy first", refresh: true},
+		{name: "customer refresh entry first", refresh: true, entryFirst: true},
+		{name: "admin token proxy first", staff: true},
+		{name: "admin token entry first", staff: true, entryFirst: true},
+		{name: "admin refresh proxy first", staff: true, refresh: true},
+		{name: "admin refresh entry first", staff: true, refresh: true, entryFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newEntryFixture(t)
+			if test.staff {
+				f.provider.users["user_alice"] = "bootstrap@example.test"
+			}
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/auth/oidc/start?organization=org_alpha", "user_alice:porg_alpha")
+			alice.login("/auth/oidc/start?organization=org_beta", "user_alice:porg_beta")
+			key := createTestAccessKey(t, alice, "global", nil, "")
+			alice.login("/auth/oidc/start", "user_alice:")
+			base, _ := url.Parse(testPublicURL)
+			var session accountSession
+			for _, cookie := range alice.jar.Cookies(base) {
+				if cookie.Name == f.service.cookieName("session") {
+					var err error
+					session, err = f.service.auth.session(t.Context(), apikey.HashToken(cookie.Value))
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if session.Hash == "" {
+				t.Fatal("missing account session")
+			}
+			f.provider.mu.Lock()
+			delete(f.provider.sessions, session.Identity.SessionID)
+			f.provider.mu.Unlock()
+			for _, organization := range []string{"org_alpha", "org_beta"} {
+				authorized, err := f.service.auth.authorization(t.Context(), session, organization)
+				if err != nil || authorized.Identity.SessionID == session.Identity.SessionID {
+					t.Fatalf("carried authorization %s = %+v, %v", organization, authorized.Identity, err)
+				}
+				tokens, err := f.service.auth.tokens(authorized)
+				if err != nil {
+					t.Fatal(err)
+				}
+				access, rotated, err := f.provider.RefreshAccess(t.Context(), tokens.RefreshToken)
+				if err != nil || access.SessionID != authorized.Identity.SessionID {
+					t.Fatalf("carried session cannot refresh: %+v, %v", access, err)
+				}
+				if err := f.service.auth.storeTokens(t.Context(), authorized.Binding, rotated); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.provider.CurrentSession(t.Context(), session.Identity); !errors.Is(err, auth.ErrHostedIdentity) {
+				t.Fatalf("ended account session = %v", err)
+			}
+			if test.refresh {
+				f.provider.expireAccess()
+			}
+			before := f.provider.providerCalls()
+			for _, credential := range []struct{ path, token string }{
+				{"/organizations/org_alpha/api/cloud/metadata", testAdminKey},
+				{"/api/v2/organizations/org_alpha/projects", key.Token},
+			} {
+				if response := alice.do(http.MethodGet, credential.path, nil, map[string]string{"Authorization": "Bearer " + credential.token}); response.StatusCode != http.StatusOK {
+					t.Fatalf("credential proxy = %d: %s", response.StatusCode, response.Body)
+				}
+			}
+			if calls := f.provider.providerCalls() - before; calls != 1 {
+				t.Fatalf("credential provider calls = %d, want only the API key membership check", calls)
+			}
+			entry := func() {
+				for _, path := range []string{"/api/cloud/session", "/api/cloud/organizations"} {
+					if response, body := alice.get(path); response.StatusCode != http.StatusUnauthorized {
+						t.Fatalf("entry %s = %d: %s", path, response.StatusCode, body)
+					}
+				}
+			}
+			if test.entryFirst {
+				entry()
+			}
+			for _, organization := range []string{"org_alpha", "org_beta"} {
+				if response, body := alice.get("/api/v2/organizations/" + organization + "/usage"); response.StatusCode != http.StatusUnauthorized {
+					t.Fatalf("proxy %s = %d: %s", organization, response.StatusCode, body)
+				}
+				if response, _ := alice.get("/organizations/" + organization + "/organization"); response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
+					t.Fatalf("org page %s = %d, %q", organization, response.StatusCode, response.Header.Get("Location"))
+				}
+			}
+			entry()
+		})
+	}
+}
+
 func TestSharedEntryAccessTokenVerification(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
@@ -53,7 +165,7 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 		name string
 		run  func(t *testing.T, f entryFixture, alice *browser)
 	}{
-		{"valid token makes no provider calls for reads or writes", func(t *testing.T, f entryFixture, alice *browser) {
+		{"valid token reuses session checks for reads and rechecks mutations", func(t *testing.T, f entryFixture, alice *browser) {
 			_, organizationPage := alice.get("/organizations/org_alpha/organization")
 			before := f.provider.providerCalls()
 			for range 5 {
@@ -65,8 +177,8 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if created.StatusCode != http.StatusSeeOther {
 				t.Fatalf("mutation status = %d: %s", created.StatusCode, created.Body)
 			}
-			if calls := f.provider.providerCalls() - before; calls != 0 {
-				t.Fatalf("provider calls = %d, want 0", calls)
+			if calls := f.provider.providerCalls() - before; calls != 1 {
+				t.Fatalf("provider calls = %d, want one session check for the mutation", calls)
 			}
 		}},
 		{"expired token refreshes once then verifies locally", func(t *testing.T, f entryFixture, alice *browser) {
@@ -75,24 +187,20 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
 				t.Fatalf("first read status = %d", response.StatusCode)
 			}
-			if calls := f.provider.providerCalls() - before; calls != 1 || f.provider.refreshes != 1 {
-				t.Fatalf("provider calls after expiry = %d (refreshes %d), want one refresh", calls, f.provider.refreshes)
+			if calls := f.provider.providerCalls() - before; calls != 2 || f.provider.refreshes != 1 {
+				t.Fatalf("provider calls after expiry = %d (refreshes %d), want one session check and one refresh", calls, f.provider.refreshes)
 			}
 			for range 3 {
 				if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
 					t.Fatalf("read status = %d", response.StatusCode)
 				}
 			}
-			if calls := f.provider.providerCalls() - before; calls != 1 {
-				t.Fatalf("provider calls after the refresh = %d, want 1", calls)
+			if calls := f.provider.providerCalls() - before; calls != 2 {
+				t.Fatalf("provider calls after the refresh = %d, want 2", calls)
 			}
 		}},
 		{"revoked session signs the browser out", func(t *testing.T, f entryFixture, alice *browser) {
 			f.provider.endSessions("user_alice")
-			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
-				t.Fatalf("read before expiry = %d, want 200 until the access token expires", response.StatusCode)
-			}
-			f.provider.expireAccess()
 			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("revoked API read = %d, want 401", response.StatusCode)
 			}
@@ -106,8 +214,11 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
 				t.Fatalf("revoked page read = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
 			}
-			if f.provider.refreshes != 1 {
-				t.Fatalf("refreshes = %d, want 1: the dropped authorization must not refresh again", f.provider.refreshes)
+			if response, _ := alice.get("/api/cloud/session"); response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("revoked entry read = %d, want 401", response.StatusCode)
+			}
+			if f.provider.refreshes != 0 {
+				t.Fatalf("refreshes = %d, want 0 for an ended session", f.provider.refreshes)
 			}
 		}},
 		{"removed member is refused at the next refresh", func(t *testing.T, f entryFixture, alice *browser) {
@@ -199,6 +310,136 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			alice := newBrowser(t, f.service.Handler())
 			alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 			test.run(t, f, alice)
+		})
+	}
+}
+
+func TestSharedEntrySupportSessionValidity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		wantProxy   int
+		wantAccount int
+	}{
+		{"active", http.StatusOK, http.StatusOK},
+		{"ended staff", http.StatusUnauthorized, http.StatusUnauthorized},
+		{"ended impersonation", http.StatusUnauthorized, http.StatusOK},
+		{"expired impersonation", http.StatusUnauthorized, http.StatusOK},
+		{"one hour cap", http.StatusUnauthorized, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newEntryFixture(t)
+			support := newBrowser(t, f.service.Handler())
+			support.login("/auth/oidc/start", "user_support:")
+			_, page := support.get("/support")
+			if response := support.do(http.MethodPost, "/support/start", url.Values{"organization": {"org_alpha"}, "reason": {"customer-request"}, "csrf": {csrfFrom(t, page)}}, nil); response.StatusCode != http.StatusOK {
+				t.Fatalf("start support = %d", response.StatusCode)
+			}
+			if response, _ := support.get("/auth/oidc/callback?code=" + url.QueryEscape("support|support@example.test|user_alice|porg_alpha|customer-request")); response.StatusCode != http.StatusSeeOther {
+				t.Fatalf("support callback = %d", response.StatusCode)
+			}
+			before := f.provider.verifications
+			for range 3 {
+				if response, _ := support.get("/api/v2/organizations/org_alpha/usage"); response.StatusCode != http.StatusOK {
+					t.Fatalf("active support = %d", response.StatusCode)
+				}
+			}
+			if calls := f.provider.verifications - before; calls != 6 {
+				t.Fatalf("support verifications = %d, want both sessions rechecked on all three requests", calls)
+			}
+			var capped auth.HostedIdentity
+			f.provider.mu.Lock()
+			for id, identity := range f.provider.sessions {
+				switch {
+				case test.name == "ended staff" && identity.Subject == "user_support":
+					delete(f.provider.sessions, id)
+				case identity.SupportActor != "" && test.name == "ended impersonation":
+					delete(f.provider.sessions, id)
+				case identity.SupportActor != "" && test.name == "expired impersonation":
+					identity.ExpiresAt = time.Now().Add(-time.Second)
+					f.provider.sessions[id] = identity
+				case identity.SupportActor != "" && test.name == "one hour cap":
+					identity.CreatedAt = time.Now().Add(-time.Hour)
+					identity.ExpiresAt = time.Now().Add(time.Hour)
+					f.provider.sessions[id] = identity
+					capped = identity
+				}
+			}
+			f.provider.mu.Unlock()
+			if capped.SessionID != "" {
+				encoded, err := json.Marshal(capped)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE authorizations SET identity_json = ? WHERE support = 1", string(encoded)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if response, _ := support.get("/api/v2/organizations/org_alpha/usage"); response.StatusCode != test.wantProxy {
+				t.Fatalf("support proxy = %d, want %d", response.StatusCode, test.wantProxy)
+			}
+			if response, _ := support.get("/api/cloud/session"); response.StatusCode != test.wantAccount {
+				t.Fatalf("staff account = %d, want %d", response.StatusCode, test.wantAccount)
+			}
+		})
+	}
+}
+
+func TestSharedEntrySessionRecheckAgreement(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		advance  time.Duration
+		method   string
+		shorten  bool
+		wantCode int
+	}{
+		{"cached revocation", providerSessionRecheck - time.Second, http.MethodGet, false, http.StatusOK},
+		{"rechecked revocation", providerSessionRecheck, http.MethodGet, false, http.StatusUnauthorized},
+		{"mutation rechecks revocation", 0, http.MethodPost, false, http.StatusUnauthorized},
+		{"shortened expiry ends cached access", 2 * time.Second, http.MethodGet, true, http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newEntryFixture(t)
+			alice := newBrowser(t, f.service.Handler())
+			alice.login("/auth/oidc/start?organization=org_alpha", "user_alice:porg_alpha")
+			clock := time.Now()
+			f.service.config.now = func() time.Time { return clock }
+			if test.shorten {
+				f.provider.mu.Lock()
+				for id, identity := range f.provider.sessions {
+					identity.ExpiresAt = clock.Add(time.Second)
+					f.provider.sessions[id] = identity
+				}
+				f.provider.mu.Unlock()
+			}
+			if response, _ := alice.get("/api/cloud/session"); response.StatusCode != http.StatusOK {
+				t.Fatalf("initial account check = %d", response.StatusCode)
+			}
+			if !test.shorten {
+				f.provider.endSessions("user_alice")
+			}
+			clock = clock.Add(test.advance)
+			base, _ := url.Parse(testPublicURL)
+			request := httptest.NewRequest(test.method, testPublicURL+"/organizations/org_alpha/organization", nil)
+			request.Header.Set("Origin", testPublicURL)
+			for _, cookie := range alice.jar.Cookies(base) {
+				request.AddCookie(cookie)
+			}
+			c := echo.New().NewContext(request, httptest.NewRecorder())
+			organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var claims cloudassert.Claims
+			if status, _, err := f.service.browserClaims(c, organization, &claims); status != test.wantCode || (err == nil) != (test.wantCode == http.StatusOK) {
+				t.Fatalf("proxy session check = %d, %v", status, err)
+			}
+			if response, _ := alice.get("/api/cloud/session"); response.StatusCode != test.wantCode {
+				t.Fatalf("entry session check = %d, want %d", response.StatusCode, test.wantCode)
+			}
 		})
 	}
 }
