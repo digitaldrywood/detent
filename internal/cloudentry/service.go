@@ -387,9 +387,6 @@ func (s *Service) setCookie(c echo.Context, name, value string, expires time.Tim
 	c.SetCookie(cookie)
 }
 
-// storedSession reads the account session from the entry's own store without
-// asking the provider; proxied requests verify the organization's access
-// token instead.
 func (s *Service) storedSession(c echo.Context) (accountSession, error) {
 	cookie, err := c.Cookie(s.cookieName("session"))
 	if err != nil || cookie.Value == "" || len(cookie.Value) > 256 {
@@ -403,26 +400,47 @@ func (s *Service) session(c echo.Context) (accountSession, error) {
 	if err != nil {
 		return accountSession{}, err
 	}
-	now := s.config.now()
-	method := c.Request().Method
-	// Staff and support sessions reach across organizations, so they are
-	// re-verified on every request rather than trusted for the recheck window.
 	cacheable := s.platformRole(c.Request().Context(), session.Email) == "" && session.Identity.SupportActor == ""
-	if cacheable && (method == http.MethodGet || method == http.MethodHead) && session.Identity.ExpiresAt.After(now) && s.verified.fresh(session.Hash, now) {
-		return session, nil
+	current, err := s.verifySession(c, session.Hash, session.Identity, cacheable)
+	if err != nil {
+		return accountSession{}, err
 	}
-	current, err := s.config.Provider.CurrentSession(c.Request().Context(), session.Identity)
-	if err != nil || current.Subject != session.Subject || !current.ExpiresAt.After(now) {
-		s.verified.forget(session.Hash)
+	session.Identity = current
+	return session, nil
+}
+
+func (s *Service) verifySession(c echo.Context, key string, identity auth.HostedIdentity, cacheable bool) (auth.HostedIdentity, error) {
+	now := s.config.now()
+	if identity.SupportActor != "" && identity.ExpiresAt.After(identity.CreatedAt.Add(time.Hour)) {
+		identity.ExpiresAt = identity.CreatedAt.Add(time.Hour)
+	}
+	if !identity.ExpiresAt.After(now) {
+		s.verified.forget(key)
+		return auth.HostedIdentity{}, errNoSession
+	}
+	method := c.Request().Method
+	if cacheable && (method == http.MethodGet || method == http.MethodHead) {
+		if current, fresh := s.verified.fresh(key, now); fresh {
+			return current, nil
+		}
+	}
+	current, err := s.config.Provider.CurrentSession(c.Request().Context(), identity)
+	if err != nil || current.Subject != identity.Subject || current.SessionID != identity.SessionID || !current.ExpiresAt.After(now) {
+		s.verified.forget(key)
 		reason := auth.HostedIdentityReason(err)
 		if err == nil {
 			reason = auth.HostedReasonSessionInvalid
 		}
 		s.config.Logger.InfoContext(c.Request().Context(), "hosted session revalidation failed", "reason", reason, "request_id", auth.HostedRequestID(c.Response(), c.Request()))
-		return accountSession{}, errNoSession
+		return auth.HostedIdentity{}, errNoSession
 	}
-	s.verified.record(session.Hash, now)
-	return session, nil
+	if current.ExpiresAt.Before(identity.ExpiresAt) {
+		identity.ExpiresAt = current.ExpiresAt
+	}
+	if cacheable {
+		s.verified.record(key, now, identity)
+	}
+	return identity, nil
 }
 
 func (s *Service) supportActor(ctx context.Context, email string) bool {

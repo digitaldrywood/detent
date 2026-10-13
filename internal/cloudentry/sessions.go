@@ -29,28 +29,33 @@ const providerSessionRecheck = 60 * time.Second
 
 type sessionVerifications struct {
 	mu       sync.Mutex
-	verified map[string]time.Time
+	verified map[string]sessionVerification
 }
 
-func (v *sessionVerifications) fresh(hash string, now time.Time) bool {
+type sessionVerification struct {
+	at       time.Time
+	identity auth.HostedIdentity
+}
+
+func (v *sessionVerifications) fresh(hash string, now time.Time) (auth.HostedIdentity, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	at, ok := v.verified[hash]
-	return ok && !now.Before(at) && now.Sub(at) < providerSessionRecheck
+	checked, ok := v.verified[hash]
+	return checked.identity, ok && !now.Before(checked.at) && now.Sub(checked.at) < providerSessionRecheck && checked.identity.ExpiresAt.After(now)
 }
 
-func (v *sessionVerifications) record(hash string, now time.Time) {
+func (v *sessionVerifications) record(hash string, now time.Time, identity auth.HostedIdentity) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.verified == nil {
-		v.verified = make(map[string]time.Time)
+		v.verified = make(map[string]sessionVerification)
 	}
-	for key, at := range v.verified {
-		if now.Sub(at) >= providerSessionRecheck || now.Before(at) {
+	for key, checked := range v.verified {
+		if now.Sub(checked.at) >= providerSessionRecheck || now.Before(checked.at) || !checked.identity.ExpiresAt.After(now) {
 			delete(v.verified, key)
 		}
 	}
-	v.verified[hash] = now
+	v.verified[hash] = sessionVerification{at: now, identity: identity}
 }
 
 func (v *sessionVerifications) forget(hash string) {
