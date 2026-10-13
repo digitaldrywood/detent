@@ -490,7 +490,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
 	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)
-	if issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
+	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 		if !issue.IssueContract.Exempt {
 			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
