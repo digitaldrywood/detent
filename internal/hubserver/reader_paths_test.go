@@ -167,6 +167,7 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 			"/projects", "/project-rank", "/members", "/fleet", "/plan", "/billing", "/secrets/" + flySpritesToken,
 			"/monthly-budget", "/model-selection", "/integrations/slack",
 			"/sprite-pool", "/work-view-preference",
+			"/issue-notification-preference",
 			"/projects/" + f.project + "/work-view-preference",
 			"/activity?project=" + f.project,
 			"/reports?project=" + f.project + "&range=24h",
@@ -313,6 +314,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"enableWAL":                   "Changing journal mode is a database write.",
 		"verifyIdentity":              "Startup reads back the application identity it writes on the same connection.",
 		"consumeHostedTransaction":    "UPDATE RETURNING atomically consumes a login transaction.",
+		"unsubscribeIssueEmail":       "UPDATE RETURNING atomically disables the issue subscription for the unsubscribe link.",
 		"attemptDiffBodyStored":       "The readback verifies the diff-body update just performed by this request.",
 		"vacuumAttemptDiffBodies":     "Offline maintenance measures the writer connection before vacuuming.",
 		"ensureHostedCustomer":        "The billing-intent readback follows its idempotent writer insertion.",
@@ -321,6 +323,9 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"bindHostedDatabase":          "Startup verifies binding through the connection that installs it.",
 	}
 	transactionReasons := map[string]string{
+		"collectIssueEmails":                "Queues notification batches and advances their event cursors atomically.",
+		"claimIssueEmail":                   "Deletes a due notification batch and reads its recipient in the same transaction before delivery.",
+		"issueNotificationPreference":       "Updates the member preference and deletes queued notifications atomically on PUT; GET uses the reader.",
 		"revokeHostedInvitationFor":         "Revokes the invitation and releases its reserved seat atomically.",
 		"sendReservedHostedInvitationFor":   "Records the invitation together with its grants and reserved seat.",
 		"editHostedInvitationFor":           "Updates invitation grants under current authority.",
