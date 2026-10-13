@@ -312,7 +312,7 @@ func (s *Service) postAttemptDiff(c echo.Context) error {
 	ctx := c.Request().Context()
 	var receipt tracker.AttemptDiffReceipt
 	err := s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		item, err := resolveAttemptDiffProducer(ctx, tx, scope, attemptID, request.Producer, now)

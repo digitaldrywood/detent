@@ -700,7 +700,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	var record conversationRecord
 	var response conversationBindResponse
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		lease, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
@@ -829,7 +829,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	var record conversationRecord
 	changed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		if _, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, "", true, now); err != nil {
@@ -1016,7 +1016,7 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	var response conversationTurnEventsResponse
 	replayed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		var item string

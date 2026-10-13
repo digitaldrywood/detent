@@ -59,6 +59,8 @@ func TestAdministrationInputBounds(t *testing.T) {
 		{"oversized page", operatortool.CredentialList, `{"limit":201}`, false},
 		{"negative offset", operatortool.CredentialList, `{"offset":-1}`, false},
 		{"null scopes", operatortool.CredentialCreate, `{"request_id":"x","name":"key","scopes":null}`, false},
+		{"reporter role", operatortool.MemberRole, `{"request_id":"x","member_id":"id","role":"reporter"}`, true},
+		{"reporter invitation", operatortool.InvitationSend, `{"request_id":"x","email":"tester@example.test","role":"reporter","grants":[{"project_id":"p","write":true,"runner":false}]}`, true},
 		{"invalid role", operatortool.MemberRole, `{"request_id":"x","member_id":"id","role":"staff"}`, false},
 		{"blank request", operatortool.InvitationRevoke, `{"request_id":" ","invitation_id":"id"}`, false},
 		{"invitation grants", operatortool.InvitationSend, `{"request_id":"x","email":"a@example.test","role":"member","grants":[{"project_id":"p","write":true,"runner":false}]}`, true},

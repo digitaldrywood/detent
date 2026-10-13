@@ -31,6 +31,9 @@ func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
 func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, _, err := s.authenticateAPIRequest(c)
+		if err == nil && credential.HostedRole == "reporter" && !hostedReadRequest(c) {
+			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+		}
 		if err != nil || credential.Hosted == nil || c.Param("organization") != s.config.Hosted.OrganizationID {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
@@ -263,7 +266,7 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
 		return err
 	}
 	grants := []hostedMemberGrant{{ProjectID: project, Write: write, Runner: runner}}
@@ -334,7 +337,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 	return project, tx.Commit()
 }
 func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
 	}
 	if states != nil {
@@ -361,6 +364,7 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if states == nil {
 		states = HostedProjectStates()
 	}
+	states = nativeTriageStates(states)
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
 	if err != nil {
@@ -413,12 +417,14 @@ ON CONFLICT(token_id,organization_id,project_id) DO NOTHING`, s.config.Hosted.Or
 // how the orchestrator names its review lane. Migrations 36, 38 and 39 move
 // projects created from the earlier templates onto this one.
 func HostedProjectStates() []tracker.NativeState {
-	return []tracker.NativeState{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
-		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
-		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
+	return nativeTriageStates([]tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done", "Cancelled"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done", "Cancelled"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done", "Cancelled"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging", "Cancelled"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress", "Cancelled"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}
+		{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}},
+		{Name: "Cancelled", Terminal: true, Transitions: []string{"Todo"}},
+	})
 }

@@ -221,14 +221,16 @@ func TestNativeTriageWorkflowProjection(t *testing.T) {
 			}
 			defer tx.Rollback()
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			if err := applyNativeProjectStates(t.Context(), tx, scope, nativeFixtureStates(), time.Now()); err != nil {
+			states := nativeFixtureStates()
+			states = append(states, tracker.NativeState{Name: "Triage", Dispatchable: true, Transitions: []string{"Todo"}})
+			if err := applyNativeProjectStates(t.Context(), tx, scope, states, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			project, err := readNativeProject(t.Context(), tx, scope)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (project.States[0].Name == "Triage") != bound || bound && (project.States[0].Terminal || project.States[0].Dispatchable) {
+			if project.States[0].Name != "Triage" || project.States[0].Terminal || project.States[0].Dispatchable {
 				t.Fatalf("lanes = %+v", project.States)
 			}
 		})

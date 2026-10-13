@@ -57,7 +57,7 @@ func (s *Service) commandRunAction(ctx context.Context, scope nativeScope, id st
 }
 func (s *Service) commandDeleteAction(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
 	err := s.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		return deleteProjectActionRow(ctx, tx, scope, id)

@@ -27,10 +27,6 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
-	writable := false
-	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item"}); err == nil {
-		writable = true
-	}
 	definitions := []operatortool.Definition{}
 	catalog, err := operatorCatalog(ctx)
 	if err != nil {
@@ -53,7 +49,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
 		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem:
-			if writable {
+			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
 		case operatortool.ListComments:
@@ -62,7 +58,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	if e.service.hostedShared() {
 		for _, definition := range operatortool.AttachmentCatalog() {
-			if writable || definition.Annotations.ReadOnly {
+			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil || definition.Annotations.ReadOnly {
 				definitions = append(definitions, definition)
 			}
 		}
@@ -120,7 +116,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			e.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", string(audit))
 		}()
 	}
-	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, ProjectID: selector.ProjectID})
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, Action: call.Name, ProjectID: selector.ProjectID})
 	if err != nil {
 		outcome = "denied"
 		return operatortool.Result{}, err
@@ -133,6 +129,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	scope.project = tracker.ProjectID(selector.ProjectID)
 	metadata.ActorKind = scope.actor().Kind
 	metadata.ViaKey = scope.actor().ViaKey
+	scope.action = call.Name
 	if call.Name == operatortool.UploadAttachment {
 		if !e.service.hostedShared() {
 			return operatortool.Result{}, operatortool.ErrAccessDenied

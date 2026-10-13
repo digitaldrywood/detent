@@ -103,7 +103,8 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   });
   mount();
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /^.*Repository (ready|action required)$/ }));
+  await screen.findByRole("button", { name: state === "approved" ? /Repository configuration ready/ : /Repository configuration action required/ });
+  await user.click(await screen.findByRole("button", { name: state === "no repository" ? /^.*Repository action required$/ : /^.*Repository ready$/ }));
   expect(await screen.findByLabelText("Which repository should Detent work on?")).toBeTruthy();
   await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
   expect(approveRequests).toEqual([]);
