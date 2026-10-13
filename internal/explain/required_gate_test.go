@@ -56,9 +56,36 @@ func TestNativeRequiredGateSeparatesValidationFromLanding(t *testing.T) {
 		historical bool
 		refusal    bool
 		local      bool
+		pending    bool
 		wantReason string
 	}{
 		{name: "current refusal during claimed repair", want: GateFailed, refusal: true, local: true},
+		{name: "base movement retains automatic landing retry without Waiting", want: GatePending, pending: true, local: true, edit: func(e *tracker.NativeRuntimeEvidence) {
+			e.CurrentVersion.Landing.RefusalKind = "base_moved"
+			e.CurrentVersion.Landing.Refusal = "Base branch moved; waiting to retry landing"
+		}},
+		{name: "batch member conflict retains automatic landing retry without Waiting", want: GatePending, pending: true, local: true, edit: func(e *tracker.NativeRuntimeEvidence) {
+			e.CurrentVersion.Landing.Path = "batch_member"
+			e.CurrentVersion.Landing.RefusalKind = "conflict"
+			e.CurrentVersion.Landing.Refusal = "Batch member conflicts with the current staging tree"
+		}},
+		{name: "ordinary conflict still requires repair", want: GateFailed, local: true, wantReason: "Source conflicts with the base branch", edit: func(e *tracker.NativeRuntimeEvidence) {
+			e.CurrentVersion.Landing.RefusalKind = "conflict"
+			e.CurrentVersion.Landing.Refusal = "Source conflicts with the base branch"
+			e.LatestTransition = nil
+		}},
+		{name: "explicit landing wait", want: GatePending, pending: true, local: true, edit: func(e *tracker.NativeRuntimeEvidence) {
+			e.CurrentVersion.Landing.Waiting = true
+			e.CurrentVersion.Landing.Refusal = "Waiting for landing validation"
+		}},
+		{name: "pending CI without refusal retains automatic landing retry", want: GatePending, pending: true, local: true, edit: func(e *tracker.NativeRuntimeEvidence) {
+			e.CurrentVersion.Landing.RefusalKind = ""
+			e.CurrentVersion.Landing.Refusal = "Waiting for required checks"
+			e.CurrentVersion.Landing.CI = &tracker.NativeLandingCIReceipt{HeadSHA: "head", State: "pending"}
+		}},
+		{name: "pending CI does not hide an external review refusal", want: GateFailed, refusal: true, local: true, edit: func(e *tracker.NativeRuntimeEvidence) {
+			e.CurrentVersion.Landing.CI = &tracker.NativeLandingCIReceipt{HeadSHA: "head", State: "pending"}
+		}},
 		{name: "superseding version", want: GateUnknown, historical: true, edit: func(e *tracker.NativeRuntimeEvidence) {
 			e.Attempt.Runtime.Landing = e.CurrentVersion.Landing
 			e.Change.Change.CurrentVersion = "version_new"
@@ -105,6 +132,10 @@ func TestNativeRequiredGateSeparatesValidationFromLanding(t *testing.T) {
 			if test.edit != nil {
 				test.edit(&e)
 			}
+			if test.pending {
+				e.Issue.State = "Merging"
+				e.LatestTransition = nil
+			}
 			got := FromNativeEvidence(e)
 			if got.RequiredGate.State != test.want {
 				t.Fatalf("gate = %#v, want %s", got.RequiredGate, test.want)
@@ -116,6 +147,12 @@ func TestNativeRequiredGateSeparatesValidationFromLanding(t *testing.T) {
 				merge := got.RequiredGate.ExternalMerge
 				if merge == nil || merge.Reason != "base_protected" || merge.Detail != finding || merge.SourceState != SourceLastKnown || merge.Historical || merge.ObservedAt == nil || !merge.ObservedAt.Equal(at) || got.RequiredGate.Reason != finding || len(got.Reasons) != 1 || got.Reasons[0].Detail != finding {
 					t.Fatalf("lost actionable refusal: %#v reasons=%#v", got.RequiredGate, got.Reasons)
+				}
+			}
+			if test.pending {
+				merge := got.RequiredGate.ExternalMerge
+				if merge == nil || merge.State != GatePending || merge.SourceState != SourceLastKnown || merge.Historical || merge.ObservedAt == nil || !merge.ObservedAt.Equal(at) || got.RequiredGate.Reason != landing.Refusal || len(got.RequiredGate.Failures) != 0 || len(got.Reasons) != 0 || got.CurrentLane.Name != "Merging" {
+					t.Fatalf("automatic retry described as a blocker: gate=%#v merge=%#v reasons=%#v", got.RequiredGate, merge, got.Reasons)
 				}
 			}
 			if test.want == GateUnknown && (got.RequiredGate.ExternalMerge.State != GateUnknown || len(got.Reasons) != 0) {
