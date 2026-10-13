@@ -101,6 +101,12 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board snapshot: %w", err))
 		}
+		params.Set("include", "summary")
+		summary, err := s.readIssues(projectCtx, projectScope, params)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board summary: %w", err))
+		}
+		page.Page = summary.Page
 		counts := nativeBoardInventory(project, page.Work.Lanes)
 		result.Projects = append(result.Projects, nativeBoardProject{Project: project, Counts: counts, Board: operatortool.NativeWorkPageView(string(project.ID), page)})
 		result.Counts.Running += counts.Running
