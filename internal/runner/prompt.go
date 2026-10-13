@@ -387,6 +387,16 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	}
 	appendValidatorDiffContext(&b, opts)
 	if opts.VersionID != "" {
+		b.WriteString("\nNative source review:\n")
+		b.WriteString("Review only the immutable native version identified above. The runner prepares its retained source in the named workspace and verifies the reviewed head and clean tree. An omitted inline patch does not require GitHub credentials or network access; do not call GitHub.\n")
+		if opts.WorkspacePath != "" && opts.BaseSHA != "" && opts.HeadSHA != "" {
+			b.WriteString("In that workspace, verify both pinned Git objects resolve to the exact base and head identified above, then read their comparison with these read-only commands:\n")
+			fmt.Fprintf(&b, "`git rev-parse --verify %s^{commit}`\n`git rev-parse --verify %s^{commit}`\n`git --no-pager diff --no-ext-diff --no-textconv %s %s --`\n", opts.BaseSHA, opts.HeadSHA, opts.BaseSHA, opts.HeadSHA)
+			b.WriteString("Inspect relevant files and tests from those explicit commits with git show. Never substitute working-tree or index edits, HEAD, a branch tip, a stale attempt artifact, or a different version as the reviewed source.\n")
+		}
+		b.WriteString("If the pinned source is unavailable, mismatched, or cannot be read, report the instance/evidence limitation truthfully under the existing verdict and unverified-criterion policy. Missing source is not approval or an actionable source defect; do not demand an unrelated source edit.\n")
+	}
+	if opts.VersionID != "" {
 		b.WriteString("\nHost-observed validation command receipts (bound to this immutable head and tree):\n")
 		for _, command := range opts.Commands {
 			fmt.Fprintf(&b, "receipt_id=%q command=%q head=%s tree=%s exit=%d output_truncated=%t\noutput=%q\n", command.ReceiptID, command.Command, command.HeadSHA, command.TreeSHA, command.ExitCode, command.OutputTruncated, command.Output)
@@ -447,7 +457,9 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	}
 	fmt.Fprintf(&b, "Unverified criterion policy: %s\n", validator.UnverifiedCriteria)
 	b.WriteString("Review instructions:\n")
-	b.WriteString("- Review only the PR diff identified above. If the inline patch is omitted, use the named GitHub PR diff at the stated head; do not use workspace git diff.\n")
+	if opts.VersionID == "" {
+		b.WriteString("- Review only the PR diff identified above. If the inline patch is omitted, use the named GitHub PR diff at the stated head; do not use workspace git diff.\n")
+	}
 	b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state.\n")
 	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
 	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")
