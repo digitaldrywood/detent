@@ -250,6 +250,7 @@ type Issue struct {
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
 	NativeRework            bool
+	CheckpointQuiescent     bool
 	FreshCheckout           bool
 	ProjectID               string
 	ID                      string
@@ -2358,9 +2359,14 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 }
 
 func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
+	return runGitAtWithInput(ctx, dir, env, fileOutput, "", args...)
+}
+
+func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput bool, input string, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
+	cmd.Stdin = strings.NewReader(input)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
