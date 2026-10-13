@@ -32,6 +32,19 @@ func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeI
 }
 
 func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+	var challenge duplicateChallenge
+	if err := json.Unmarshal(body, &challenge); err != nil {
+		return nil, err
+	}
+	if challenge.ChallengeToken != "" {
+		for i := range challenge.PossibleDuplicates {
+			match := &challenge.PossibleDuplicates[i]
+			var issue tracker.NativeIssue
+			issue.WorkItemID = match.WorkItemID
+			match.WebURL = s.nativeIssueResponse(issue).WebURL
+		}
+		return json.Marshal(challenge)
+	}
 	var issue tracker.NativeIssue
 	if err := json.Unmarshal(body, &issue); err != nil {
 		return nil, err
