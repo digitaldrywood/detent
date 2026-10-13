@@ -14,7 +14,7 @@ import (
 type reviewThreadClient struct {
 	pages     []string
 	readErr   error
-	failClose string
+	failReply string
 	cursors   []any
 	mutations []string
 }
@@ -32,7 +32,7 @@ func (c *reviewThreadClient) GraphQL(_ context.Context, query string, variables 
 		return json.Unmarshal([]byte(c.pages[len(c.cursors)-1]), out)
 	}
 	thread, _ := variables["thread"].(string)
-	if thread == c.failClose {
+	if thread == c.failReply {
 		return errors.New("mutation refused")
 	}
 	kind := "reply"
@@ -68,7 +68,6 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 		name          string
 		refusal       error
 		client        *reviewThreadClient
-		wantRetry     bool
 		wantReason    []string
 		wantMutations []string
 		wantCursors   int
@@ -79,11 +78,11 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			client:  &reviewThreadClient{},
 		},
 		{
-			name:          "a bot finding surfaced to an earlier Rework is resolved and the merge retries",
+			name:          "a bot finding surfaced at an earlier head stays actionable without disposition proof",
 			refusal:       conversation,
 			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P2 finding", surfacedEarlier), reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", "done"))}},
-			wantRetry:     true,
-			wantMutations: []string{"reply:T1", "resolve:T1"},
+			wantReason:    []string{ReviewConversationsRefusalText, "P2 finding"},
+			wantMutations: []string{"surface:T1"},
 			wantCursors:   1,
 		},
 		{
@@ -117,16 +116,16 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			wantCursors:   2,
 		},
 		{
-			name:        "a failed resolution keeps the finding actionable",
+			name:        "an earlier surfacing marker does not resolve a finding already surfaced at this head",
 			refusal:     conversation,
-			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding", surfacedEarlier))}},
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding", surfacedEarlier, surfacedNow))}},
 			wantReason:  []string{"P1 finding"},
 			wantCursors: 1,
 		},
 		{
 			name:        "a failed surface reply keeps the finding and reports the error",
 			refusal:     conversation,
-			client:      &reviewThreadClient{failClose: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding"))}},
+			client:      &reviewThreadClient{failReply: "T1", pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding"))}},
 			wantReason:  []string{"P1 finding", "surfacing reply failed", "mark review conversation as surfaced: mutation refused"},
 			wantCursors: 1,
 		},
@@ -139,19 +138,13 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := resolveLandingReviewThreads(context.Background(), test.client, "example/repo", 7, head, test.refusal)
-			if test.wantRetry {
-				if err != nil {
-					t.Fatalf("resolveLandingReviewThreads() = %v, want merge retry", err)
-				}
-			} else {
-				var refusal *LandRefusal
-				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
-					t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)
-				}
-				for _, want := range test.wantReason {
-					if !strings.Contains(err.Error(), want) {
-						t.Fatalf("refusal %q missing %q", err.Error(), want)
-					}
+			var refusal *LandRefusal
+			if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
+				t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)
+			}
+			for _, want := range test.wantReason {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("refusal %q missing %q", err.Error(), want)
 				}
 			}
 			if strings.Join(test.client.mutations, ",") != strings.Join(test.wantMutations, ",") {
