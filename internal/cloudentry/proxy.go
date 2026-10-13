@@ -211,7 +211,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	// even if the browser gives up on this request.
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken)
+	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken, current.Identity.OrganizationID)
 	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 		if rotated.RefreshToken != "" {
 			if err := s.auth.storeTokens(detached, authorized.Binding, rotated); err != nil {

@@ -88,6 +88,38 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 				t.Fatalf("provider calls after the refresh = %d, want 1", calls)
 			}
 		}},
+		{"shared session refreshes alternating organizations across token lifetimes", func(t *testing.T, f entryFixture, alice *browser) {
+			f.provider.mu.Lock()
+			f.provider.sharedSessions = true
+			f.provider.mu.Unlock()
+			alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
+			for range 3 {
+				f.provider.expireAccess()
+				for _, organization := range []string{"org_alpha", "org_beta"} {
+					if response, body := alice.get("/api/v2/organizations/" + organization + "/usage"); response.StatusCode != http.StatusOK {
+						t.Fatalf("%s read after expiry = %d: %s", organization, response.StatusCode, body)
+					}
+				}
+			}
+			if f.provider.refreshes != 6 {
+				t.Fatalf("refreshes = %d, want 6", f.provider.refreshes)
+			}
+		}},
+		{"refresh returning another organization drops the authorization", func(t *testing.T, f entryFixture, alice *browser) {
+			f.provider.mu.Lock()
+			f.provider.refreshOrg = "porg_beta"
+			f.provider.mu.Unlock()
+			f.provider.expireAccess()
+			if response, _ := alice.get(target); response.StatusCode != http.StatusForbidden {
+				t.Fatalf("mismatched organization status = %d, want 403", response.StatusCode)
+			}
+			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("read after authorization drop = %d, want 401", response.StatusCode)
+			}
+			if f.provider.refreshes != 1 {
+				t.Fatalf("refreshes = %d, want 1", f.provider.refreshes)
+			}
+		}},
 		{"revoked session signs the browser out", func(t *testing.T, f entryFixture, alice *browser) {
 			f.provider.endSessions("user_alice")
 			if response, _ := alice.get(target); response.StatusCode != http.StatusOK {
@@ -112,17 +144,28 @@ func TestSharedEntryAccessTokenVerification(t *testing.T) {
 			}
 		}},
 		{"removed member is refused at the next refresh", func(t *testing.T, f entryFixture, alice *browser) {
+			f.provider.mu.Lock()
+			f.provider.sharedSessions = true
+			f.provider.mu.Unlock()
+			alice.login("/organizations/org_beta/organization", "user_alice:porg_beta")
 			f.provider.removeMember("user_alice", "porg_alpha")
 			f.provider.expireAccess()
 			if response, _ := alice.get(target); response.StatusCode != http.StatusForbidden {
 				t.Fatalf("removed member status = %d, want 403", response.StatusCode)
 			}
 			before := f.provider.providerCalls()
-			if response, _ := alice.get(target); response.StatusCode == http.StatusOK {
-				t.Fatal("removed member read after the authorization was dropped")
+			if response, _ := alice.get(target); response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("removed member read after authorization drop = %d, want 401", response.StatusCode)
 			}
 			if calls := f.provider.providerCalls() - before; calls != 0 {
 				t.Fatalf("provider calls after the drop = %d, want 0", calls)
+			}
+			if response, _ := alice.get("/api/v2/organizations/org_beta/usage"); response.StatusCode != http.StatusOK {
+				t.Fatalf("remaining membership status = %d, want 200", response.StatusCode)
+			}
+			response, _ := alice.get("/organizations/org_alpha/organization")
+			if response.StatusCode != http.StatusSeeOther || !strings.HasPrefix(response.Header.Get("Location"), "/auth/oidc/start") {
+				t.Fatalf("removed member page = %d %q, want sign-in redirect", response.StatusCode, response.Header.Get("Location"))
 			}
 		}},
 		{"unreachable key set keeps the authorization", func(t *testing.T, f entryFixture, alice *browser) {

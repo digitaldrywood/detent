@@ -325,16 +325,17 @@ func (p *workosProvider) VerifyAccess(ctx context.Context, token string) (Hosted
 
 // RefreshAccess redeems a refresh token. WorkOS refresh tokens are single
 // use, so the caller persists the rotated pair before using it again.
-func (p *workosProvider) RefreshAccess(ctx context.Context, refreshToken string) (HostedAccess, HostedTokens, error) {
+func (p *workosProvider) RefreshAccess(ctx context.Context, refreshToken, organizationID string) (HostedAccess, HostedTokens, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return HostedAccess{}, HostedTokens{}, hostedDenial(HostedReasonSessionInvalid)
 	}
 	request := struct {
-		GrantType    string `json:"grant_type"`
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
-		RefreshToken string `json:"refresh_token"`
-	}{"refresh_token", p.clientID, p.apiKey, refreshToken}
+		GrantType      string `json:"grant_type"`
+		ClientID       string `json:"client_id"`
+		ClientSecret   string `json:"client_secret"`
+		RefreshToken   string `json:"refresh_token"`
+		OrganizationID string `json:"organization_id"`
+	}{"refresh_token", p.clientID, p.apiKey, refreshToken, organizationID}
 	var response workosAuthentication
 	if err := p.request(ctx, http.MethodPost, "/user_management/authenticate", request, &response); err != nil {
 		return HostedAccess{}, HostedTokens{}, err
