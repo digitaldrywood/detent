@@ -219,20 +219,8 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if !found {
 		return tracker.Lease{}, fmt.Errorf("%w: %s", tracker.ErrLeaseNotFound, request.LeaseID)
 	}
-	if record.session.FencingToken != request.FencingToken || record.session.ReleasedAt != nil ||
-		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
-		return tracker.Lease{}, fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
-	}
-	if err := requireApprovedLeasePolicy(ctx, tx, request.LeaseID, policyRequired); err != nil {
+	if err := requireRenewableLease(ctx, tx, record, request.FencingToken, now, policyRequired, scopes...); err != nil {
 		return tracker.Lease{}, err
-	}
-	for _, scope := range scopes {
-		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-			return tracker.Lease{}, err
-		}
-		if err := requireLeaseRunner(ctx, tx, request.LeaseID, scope); err != nil {
-			return tracker.Lease{}, err
-		}
 	}
 
 	if err := checkMonthlyLease(ctx, tx, record, now); err != nil {
@@ -658,6 +646,26 @@ WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
 	if err := requireOneLeaseMutation(result, record.session.ID); err != nil {
 		return err
 	}
+	return nil
+}
+
+func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, token tracker.FencingToken, now time.Time, policyRequired bool, scopes ...nativeScope) error {
+	if record.session.FencingToken != token || record.session.ReleasedAt != nil ||
+		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
+		return fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
+	}
+	if err := requireApprovedLeasePolicy(ctx, tx, record.session.ID, policyRequired); err != nil {
+		return err
+	}
+	for _, scope := range scopes {
+		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+			return err
+		}
+		if err := requireLeaseRunner(ctx, tx, record.session.ID, scope); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 

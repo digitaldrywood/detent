@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -748,6 +749,17 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		if !found {
 			t.Fatal("registered event did not persist authentic transcript")
 		}
+		f.advance(11 * time.Minute)
+		before := f.load(t)
+		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
+			t.Fatalf("expiry lost the registered worker: %+v", after.Execution)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " during expiry"}), http.StatusAccepted)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 		f.restart(t)
 		if execution := f.load(t).Execution; execution.Owner != owner || execution.Status != conversation.ExecutionRunning {
 			t.Fatalf("restart lost the registered worker: %+v", execution)
@@ -759,6 +771,13 @@ func TestConversationWorkerTurnEvents(t *testing.T) {
 		}
 		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusUnauthorized)
 		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-registered", "text": " revoked"}), http.StatusUnauthorized)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90}), http.StatusUnauthorized)
+		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted || execution.Owner != owner {
+			t.Fatalf("revoked runner retained conversation authority: %+v", execution)
+		}
 
 	})
 	f := newConversationWorkerFixture(t)
@@ -1001,6 +1020,67 @@ func TestConversationWorkerUnbind(t *testing.T) {
 
 func TestConversationReconcileLeaseLoss(t *testing.T) {
 	t.Parallel()
+	t.Run("same authority renews after reconciliation", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t,
+			map[string]any{"type": "turn_started", "thread_id": "thread-renew", "turn_id": "turn-renew"},
+			map[string]any{"type": "question_opened", "request_id": "req-renew", "thread_id": "thread-renew", "turn_id": "turn-renew", "prompts": []map[string]any{{"id": "q", "question": "Continue?"}}},
+		), http.StatusAccepted)
+		handed := f.queue(t, conversation.MessageText, "renew-control", "Keep working", nil)
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		before := f.load(t)
+		observation, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := f.chat.reconcileExecutions(observation); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled observation = %v", err)
+		}
+		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
+			t.Fatalf("failed observation changed the live execution: %+v", after.Execution)
+		}
+		f.advance(11 * time.Minute)
+		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if after := f.load(t); after.Execution != before.Execution || after.EventSeq != before.EventSeq {
+			t.Fatalf("expiry reconciliation changed the live execution: %+v", after.Execution)
+		}
+		if question := f.questions(t)[0]; question.Status != conversation.QuestionPending {
+			t.Fatalf("expiry reconciliation settled the question: %+v", question)
+		}
+		requireConversationDelivery(t, f, handed, "renew-control", conversation.DeliverySending)
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-renew", "text": "during expiry"}), http.StatusAccepted)
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90})
+		requireNativeStatus(t, response, http.StatusOK)
+		var renewed tracker.NativeLease
+		decodeHubResponse(t, response, &renewed)
+		if renewed.ID != f.lease.ID || renewed.FencingToken != f.lease.FencingToken || !renewed.ExpiresAt.After(f.now) {
+			t.Fatalf("renewed authority = %+v", renewed)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-renew", "text": "continued"}), http.StatusAccepted)
+		if after := f.load(t); after.Execution.Owner != before.Execution.Owner || after.Execution.Status != before.Execution.Status {
+			t.Fatalf("renewal changed the live execution: %+v", after.Execution)
+		}
+		var attempts int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE work_item_id = ?", f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != 1 {
+			t.Fatalf("renewal created another attempt: count=%d err=%v", attempts, err)
+		}
+		oldLease, oldAttempt, oldRun := f.lease, f.attempt, f.run
+		f.advance(91 * time.Second)
+		f.claim(t)
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-new", "turn_id": "turn-new"}), http.StatusAccepted)
+		replacement := f.load(t)
+		f.lease, f.attempt, f.run = oldLease, oldAttempt, oldRun
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(f.lease.ID)+"/renew", f.worker, tracker.NativeLeaseMutation{FencingToken: f.lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-old", "text": "late"}), http.StatusConflict, "stale_execution")
+		if after := f.load(t); after.Execution != replacement.Execution || after.EventSeq != replacement.EventSeq {
+			t.Fatalf("superseded owner changed the replacement: %+v", after.Execution)
+		}
+	})
 	f := newConversationWorkerFixture(t)
 	requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 	requireNativeStatus(t, f.turnEvents(t,
@@ -1013,7 +1093,10 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 	// Accepted after the hand-off, so it was never given to the worker.
 	waiting := f.queue(t, conversation.MessageText, "text-2", "And this one", nil)
 
-	t.Run("expired lease is reconciled", func(t *testing.T) {
+	t.Run("released lease is reconciled", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at = ? WHERE lease_id = ?", formatHubTime(f.now), f.lease.ID); err != nil {
+			t.Fatal(err)
+		}
 		f.advance(11 * time.Minute)
 		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-1", "text": "late"}), http.StatusConflict, "stale_execution")
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
@@ -1059,6 +1142,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 			t.Fatalf("execution after release = %#v", record.Execution)
 		}
 		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+		requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "item-released", "text": "late"}), http.StatusConflict, "stale_execution")
 	})
 
 	t.Run("restart preserves a current owner then fresh bind", func(t *testing.T) {
