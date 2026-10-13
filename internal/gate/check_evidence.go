@@ -11,6 +11,21 @@ import (
 const CheckEvidencePrefix = "detent-check-evidence: "
 const ScheduledEvidenceFence = "```detent-checks\n"
 
+type ScheduledValidationReport struct {
+	Repository string `json:"repository"`
+	RunID      string `json:"run_id"`
+	RunAttempt string `json:"run_attempt"`
+	RunURL     string `json:"run_url"`
+	HeadSHA    string `json:"head_sha"`
+	Conclusion string `json:"conclusion"`
+}
+
+func (r ScheduledValidationReport) Valid() bool {
+	return repositoryIdentity.MatchString(r.Repository) && decimalIdentity(r.RunID) && decimalIdentity(r.RunAttempt) && evidenceSHA.MatchString(r.HeadSHA) &&
+		r.RunURL == "https://github.com/"+r.Repository+"/actions/runs/"+r.RunID+"/attempts/"+r.RunAttempt &&
+		(r.Conclusion == "success" || r.Conclusion == "failure" || r.Conclusion == "skipped")
+}
+
 type CheckEnvironment struct {
 	OS           string `json:"os"`
 	Architecture string `json:"architecture"`

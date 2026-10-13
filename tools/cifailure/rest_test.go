@@ -71,6 +71,11 @@ func restFixture(t *testing.T, f *fakeCloud, getenv func(string) string) *cloudD
 				if err := decoder.Decode(&input); err != nil {
 					t.Fatal(err)
 				}
+				if input.ScheduledValidation != nil {
+					name = "record_scheduled_validation"
+					args["request_id"], args["scheduled_validation"] = input.IdempotencyKey, *input.ScheduledValidation
+					break
+				}
 				if input.Priority == nil || *input.Priority != 1 {
 					t.Fatal("REST creation did not request High")
 				}
@@ -129,6 +134,8 @@ func restFixture(t *testing.T, f *fakeCloud, getenv func(string) string) *cloudD
 				}
 				response = data.Project
 			}
+		} else if name == "record_scheduled_validation" {
+			response = f.reports[len(f.reports)-1]
 		} else if name == "add_comment" {
 			comments := f.comments[parts[1]]
 			response = comments[len(comments)-1]
@@ -200,6 +207,13 @@ func TestRESTReporting(t *testing.T) {
 			if len(f.items) != 1 || len(f.comments["wi_old"]) != 1 {
 				t.Fatal("REST reporter duplicated an existing occurrence")
 			}
+			wantConclusion := "failure"
+			if test.green {
+				wantConclusion = "success"
+			}
+			if len(f.reports) != 1 || f.reports[0].Conclusion != wantConclusion || f.reports[0].RunAttempt != "1" {
+				t.Fatalf("scheduled reports = %+v", f.reports)
+			}
 			if test.green {
 				comment := f.comments["wi_old"][0].Body
 				if !strings.Contains(comment, scheduledEnv("CI_DEVELOP_SHA")) || !strings.Contains(comment, "does not establish") || f.items[0].State != "Backlog" || len(gh.created) != 0 || len(gh.comments) != 0 {
@@ -211,6 +225,9 @@ func TestRESTReporting(t *testing.T) {
 			attempt++
 			if err := reportTo(t.Context(), strings.NewReader(input), gh.command, getenv, restFixture(t, f, getenv)); err != nil || len(f.comments["wi_old"]) != 2 {
 				t.Fatalf("later REST occurrence = %v, comments=%v", err, f.comments)
+			}
+			if len(f.reports) != 2 || f.reports[1].RunAttempt != "2" {
+				t.Fatalf("later reports = %+v", f.reports)
 			}
 		})
 	}

@@ -309,7 +309,7 @@ for (const theme of ["dark", "light"]) {
           : endpoint.endsWith("key-policy") ? { personal_keys: "approval" }
           : endpoint.endsWith("service-keys") ? { keys: [{ ...personal, id: "key_service", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: organization, project_access: "all", project_ids: [] }], effective_reach: undefined }] }
           : endpoint.endsWith("external-keys") ? { keys: [{ ...personal, effective_reach: [{ ...reach, status: "pending" }] }] }
-          : endpoint.endsWith("/organizations") ? { organizations: [{ id: organization, name: "Browser organization", url: mount }], pending_organizations: [] }
+          : endpoint.endsWith("/organizations") ? { email: "owner@example.test", csrf: "fixture-csrf", organizations: [{ id: organization, name: "Browser organization", url: mount }], pending: [], can_create: true }
           : { keys: [personal] };
         await route.fulfill({ json });
       });

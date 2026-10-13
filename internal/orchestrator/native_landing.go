@@ -44,7 +44,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && (landing.Waiting || landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA == "") {
+	if !landing.Landed && (landing.Waiting || landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
 		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true
@@ -86,7 +86,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if autoPromoteOptoutLabel(issue, cfg) {
 			destination = cfg.SourceState
 		}
-		rework := landing.CI != nil && landing.CI.State == "failure" || landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved || landing.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(landing.Refusal)
+		rework := landing.CI != nil && landing.CI.State == "failure" || landing.GateFailed || landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(landing.Refusal)
 		if rework {
 			destination = cfg.ReworkState
 		}

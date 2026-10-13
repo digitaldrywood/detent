@@ -952,6 +952,7 @@ events require worker scope. Instance administrators can perform these operation
 | --- | --- |
 | `GET /` | Project profile, states, transitions and readiness policy |
 | `POST /work-items` | `idempotency_key`, `title`, full `body`, configured `state`, optional `priority`, `labels`, `assignees`, import `provenance` |
+| `POST /work-items` (scheduled reporter evidence) | `idempotency_key`, `scheduled_validation` with `repository`, `run_id`, `run_attempt`, canonical `run_url`, pinned `head_sha`, and `conclusion: success`, `failure`, or `skipped`; no issue fields |
 | `GET /work-items` | Paged issues; repeatable exact `state`, `label`, `assignee`, `priority` filters (OR within a dimension, AND across dimensions; at most 32 values and 4096 bytes per dimension). `q` matches title, project name or ID plus `#number`, and labels; without `include=work`, it also matches body. `include=work` adds compact body-free items, bounded current open selection, and complete-filter lane/running totals independent of cursor. `include=board` reads indexed lane pages with attempt/change card summaries and maintained scope totals; `include=summary` provides the byte-bounded MCP list projection with explicit detail omissions and continuation; it cannot be combined with `work` |
 | `GET /work-items/{id}` | Full content, immutable scope, revision, authenticated author, import provenance, dependencies and optional external references |
 | `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `title`, `body`, `priority`, `labels` or `assignees` |
@@ -968,6 +969,27 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
+
+Scheduled reporter evidence requires operator or administrator authority and
+the project's selected checkout repository. This report-only variant returns
+the report and the Hub's `recorded_at` receipt time without creating or changing
+an issue. A repository/run/attempt is recorded once per project; retries retain
+the original receipt time and conflicting reports are refused. Failure issue
+filing and deduplication remain separate writes through the same owner.
+Skipped reports record scheduled activity when the pinned commit was already
+attempted. They refresh reporting cadence without supplying green validation
+evidence or changing the last green time.
+
+The existing `dead_man` flow finding reports delivery stalled when landings stop
+despite candidates and a free slot, or scheduled validation goes silent or
+stays red. Its evidence counts identify `landing_stalled`, `scheduled_silent`
+and `scheduled_red`. Silence uses twice the median of up to twenty recent
+positive report intervals, with a six-hour minimum. Red requires repeated
+failures still reporting, with no green report for twenty-four hours; without
+a prior green, the first report starts that window. A green report clears the
+scheduled signal on the next health evaluation. Projects without any scheduled
+report history are excluded. Existing health reads, needs-attention surfaces
+and email delivery carry this flow finding; it creates no tracker issue.
 
 Every work-item representation returned by create, get, list and update includes
 `web_url`. Hosted Hubs build this absolute link from the configured

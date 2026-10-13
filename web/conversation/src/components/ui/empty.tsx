@@ -7,20 +7,28 @@ import { cn } from "~/lib/utils";
 const emptySizeClassName = {
   compact:
     "min-h-64 gap-4 p-6 md:p-10 [&_[data-slot=empty-media]]:mb-0 [&_[data-slot=empty-title]]:text-[1.0625rem] [&_[data-slot=empty-title]]:leading-6 [&_[data-slot=empty-description]]:text-[0.8125rem] [&_[data-slot=empty-description]]:leading-[1.125rem]",
+  entry: "items-start gap-4 p-6 text-left text-wrap [&_[data-slot=empty-media]]:mb-4 [&_[data-slot=empty-header]]:items-start [&_[data-slot=empty-header]]:text-left [&_[data-slot=empty-description]]:text-foreground [&_[data-slot=empty-content]]:items-start",
   default: "gap-6 p-6 md:p-12",
   hero: "gap-6 p-6 md:p-12 [&_[data-slot=empty-title]]:text-2xl sm:[&_[data-slot=empty-title]]:text-3xl",
 } as const;
 
+const emptyPanelVariants = cva("", {
+  variants: { panel: { none: "", dashed: "rounded-xl border border-dashed border-border" } },
+  defaultVariants: { panel: "none" },
+});
+
 function Empty({
   className,
   size = "default",
+  panel,
   ...props
-}: React.ComponentProps<"div"> & { size?: keyof typeof emptySizeClassName }) {
+}: React.ComponentProps<"div"> & { size?: keyof typeof emptySizeClassName; panel?: VariantProps<typeof emptyPanelVariants>["panel"] }) {
   return (
     <div
       className={cn(
         "flex min-w-0 flex-1 flex-col items-center justify-center text-balance text-center",
         emptySizeClassName[size],
+        emptyPanelVariants({ panel }),
         className,
       )}
       data-slot="empty"

@@ -104,7 +104,7 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 	values := map[string]map[string]bool{}
 	var planning, validation int
 	var waits []float64
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return out, err
 	}
