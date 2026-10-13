@@ -195,12 +195,12 @@ func (w *resumedExecutionWorkspace) VerifyReworkRecovery(ctx context.Context, in
 	return verified, err
 }
 
-func (w *resumedExecutionWorkspace) PrepareRework(ctx context.Context, info workspace.Info, issue workspace.Issue, opts workspace.MergePrepareOptions) (workspace.MergePrepareResult, error) {
+func (w *resumedExecutionWorkspace) PrepareRework(ctx context.Context, info workspace.Info, issue workspace.Issue, opts workspace.MergePrepareOptions, validate func(context.Context) error) (workspace.MergePrepareResult, error) {
 	if w.beforePreparation != nil {
 		w.beforePreparation()
 	}
 	w.prepared = true
-	return w.LocalGit.PrepareRework(ctx, info, issue, opts)
+	return w.LocalGit.PrepareRework(ctx, info, issue, opts, validate)
 }
 
 func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace.Info, issue workspace.Issue) {
@@ -469,7 +469,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				}
 				pausedIssue := workspaceIssue("native", issue)
 				pausedIssue.NativeRework = true
-				prepared, err := gitWorkspace.PrepareRework(ctx, info, pausedIssue, workspace.MergePrepareOptions{})
+				prepared, err := gitWorkspace.PrepareRework(ctx, info, pausedIssue, workspace.MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
 					t.Fatalf("historical preparation did not pause: %+v, %v", prepared, err)
 				}
