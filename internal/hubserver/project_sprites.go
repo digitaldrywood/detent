@@ -246,37 +246,32 @@ func (s *Service) spriteWakeDispatchable(ctx context.Context, scope nativeScope,
 	return false, nil
 }
 
-func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+type spriteWakeTarget struct {
+	runnerID, name string
+	scope          nativeScope
+	envelope       hubsecrets.Envelope
+}
+
+func (s *Service) nextSpriteWakeTarget(ctx context.Context, scope nativeScope, state, last string) (spriteWakeTarget, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if s.config.SecretKeys == nil {
-		return 0, nil
-	}
-	client := http.Client{Timeout: 45 * time.Second}
-	if s.config.SpritesHTTPClient != nil {
-		client = *s.config.SpritesHTTPClient
-		client.Timeout = 45 * time.Second
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	woken := 0
-	last := ""
 	for {
 		dispatchable, err := s.spriteWakeDispatchable(ctx, scope, state)
 		if err != nil || !dispatchable {
-			return woken, err
+			return spriteWakeTarget{}, false, err
 		}
 		var configured bool
 		if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_pools WHERE organization_id=?)`, scope.organization).Scan(&configured); err != nil {
-			return woken, err
+			return spriteWakeTarget{}, false, err
 		}
 		var placement placementSnapshot
 		if configured {
 			placement, err = readPlacementSnapshot(ctx, s.database.reader, scope, s.config.now(), nil)
 			if err != nil {
-				return woken, err
+				return spriteWakeTarget{}, false, err
 			}
 			if placement.Provisionable == 0 {
-				return woken, nil
+				return spriteWakeTarget{}, false, nil
 			}
 		}
 		var name string
@@ -288,10 +283,10 @@ WHERE r.organization_id=? AND r.state='active' AND r.removed_at IS NULL AND r.la
 (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?))
 ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config.now().Add(-time.Minute)), last, scope.project).Scan(&runnerID, &name)
 		if errors.Is(err, sql.ErrNoRows) {
-			return woken, nil
+			return spriteWakeTarget{}, false, nil
 		}
 		if err != nil {
-			return woken, err
+			return spriteWakeTarget{}, false, err
 		}
 		last = name
 		if !validSpritesSlug(name) {
@@ -323,9 +318,32 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 			continue
 		}
 		if err != nil {
+			return spriteWakeTarget{}, false, err
+		}
+		return spriteWakeTarget{runnerID: runnerID, name: name, scope: secretScope, envelope: envelope}, true, nil
+	}
+}
+
+func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
+	if s.config.SecretKeys == nil {
+		return 0, nil
+	}
+	client := http.Client{Timeout: 45 * time.Second}
+	if s.config.SpritesHTTPClient != nil {
+		client = *s.config.SpritesHTTPClient
+		client.Timeout = 45 * time.Second
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	woken := 0
+	last := ""
+	for {
+		target, found, err := s.nextSpriteWakeTarget(ctx, scope, state, last)
+		if err != nil || !found {
 			return woken, err
 		}
-		started, err := s.wakeSpriteRunnerWithSecret(ctx, scope, secretScope, &client, name, envelope)
+		name, runnerID := target.name, target.runnerID
+		last = name
+		started, err := s.wakeSpriteRunnerWithSecret(ctx, scope, target.scope, &client, name, target.envelope)
 		if err != nil {
 			return woken, err
 		}
@@ -362,7 +380,9 @@ func spriteWakeSecret(ctx context.Context, db nativeQueryer, scope nativeScope, 
 }
 
 func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretScope nativeScope, client *http.Client, name string, envelope hubsecrets.Envelope) (bool, error) {
-	allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now())
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	allowed, err := monthlySpriteAllowed(readCtx, s.database.reader, scope, s.config.now())
+	cancelRead()
 	if err != nil || !allowed {
 		return false, err
 	}
@@ -390,9 +410,9 @@ func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretS
 }
 
 func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativeScope) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id,ws.source_name FROM projects p JOIN workflow_states ws ON ws.project_id=p.id WHERE p.organization_id=? AND p.profile='native' AND ws.dispatchable=1 AND ws.terminal=0 AND EXISTS(SELECT 1 FROM issues i WHERE i.project_id=p.id AND i.organization_id=p.organization_id AND i.workflow_state_id=ws.id AND i.archived=0 AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))) ORDER BY p.scheduling_rank,p.id,ws.source_name`, scope.organization, formatHubTime(s.config.now()))
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.id,ws.source_name FROM projects p JOIN workflow_states ws ON ws.project_id=p.id WHERE p.organization_id=? AND p.profile='native' AND ws.dispatchable=1 AND ws.terminal=0 AND EXISTS(SELECT 1 FROM issues i WHERE i.project_id=p.id AND i.organization_id=p.organization_id AND i.workflow_state_id=ws.id AND i.archived=0 AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))) ORDER BY p.scheduling_rank,p.id,ws.source_name`, scope.organization, formatHubTime(s.config.now()))
 	if err != nil {
 		return 0, err
 	}
@@ -412,6 +432,7 @@ func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativ
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return 0, err
 	}
+	cancelRead()
 	total := 0
 	for _, target := range targets {
 		scope.project = target.project

@@ -204,12 +204,14 @@ func TestOutboxDeadLettersPermanentAndExhaustedFailures(t *testing.T) {
 				now = now.Add(time.Second)
 			}
 			assertOutboxStatus(t, service.database.db, "dead-key", outboxDeadLetter, len(test.failures))
-			health, err := service.OutboxHealth(t.Context())
-			if err != nil {
-				t.Fatalf("OutboxHealth() error = %v", err)
-			}
-			if health.DeadLetters != 1 || len(health.OperatorActions) != 1 || health.OperatorActions[0].Action == "" {
-				t.Fatalf("OutboxHealth() = %#v, want one operator-visible dead letter", health)
+			for _, ctx := range []context.Context{t.Context(), nil} {
+				health, err := service.OutboxHealth(ctx)
+				if err != nil {
+					t.Fatalf("OutboxHealth() error = %v", err)
+				}
+				if health.DeadLetters != 1 || len(health.OperatorActions) != 1 || health.OperatorActions[0].Action == "" {
+					t.Fatalf("OutboxHealth() = %#v, want one operator-visible dead letter", health)
+				}
 			}
 		})
 	}
