@@ -116,7 +116,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if !hostedKeyAllows(credential.HostedKeyScope, permission) {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
 	}
-	if !hostedRoleAllows(credential.HostedRole, permission) {
+	if !hostedRoleAllows(credential.HostedRole, permission, call.Name) {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {

@@ -25,7 +25,7 @@ import { ApiError } from "./conversation.ts";
  * `admin` manage the organization; `member` writes where a grant says so;
  * `viewer` reads only (decisions.md §10.11).
  */
-export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "viewer"]);
+export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "reporter", "viewer"]);
 export type OrganizationRole = typeof OrganizationRole.Type;
 
 /** True for the two roles §12 gates the management endpoints behind. */

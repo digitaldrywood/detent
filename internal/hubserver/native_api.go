@@ -26,6 +26,10 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
+	action                string
+	actionItem            string
+	actionTarget          string
+	actionComment         string
 	scheduledRepair       *nativeScheduledRepair
 	sourceActor           *tracker.Actor
 	organization          tracker.OrganizationID
@@ -259,6 +263,25 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			} else {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
+				if write && credential.HostedRole == "reporter" {
+					switch c.Request().Method + " " + c.Path() {
+					case "POST " + nativeBase + "/work-items":
+						scope.action = operatortool.FileIssue
+					case "POST " + nativeBase + "/work-items/:item/comments":
+						scope.action = operatortool.AddComment
+					case "PATCH " + nativeBase + "/work-items/:item/comments/:comment":
+						scope.action = operatortool.EditComment
+					case "POST " + nativeBase + "/work-items/:item/workflow":
+						scope.action = operatortool.MoveItem
+					case "POST " + attachmentMetadataBase, "POST " + attachmentMetadataBase + "/check":
+						scope.action = operatortool.UploadAttachment
+					case "POST " + attachmentMetadataBase + "/:attachment/reference":
+						scope.action = operatortool.ReferenceAttachment
+					}
+					if !hostedRoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.action) {
+						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+					}
+				}
 				if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), scope, write); err != nil {
 					return s.nativeAPIError(c, err)
 				}
@@ -404,7 +427,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
 			return nil, err
 		}
-	} else if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	} else if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return nil, err
 	}
 	if options.RunnerAdministration {
@@ -560,7 +583,7 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 		return nil, false, err
 	}
 	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return nil, false, err
 	}
 	response, found, err := nativeCommandReceipt(ctx, tx, scope, operation, key, hash)

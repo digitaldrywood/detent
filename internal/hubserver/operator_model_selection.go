@@ -42,7 +42,7 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 			return scope, err
 		}
 		defer tx.Rollback()
-		if e.service.recheckHostedMutation(ctx, tx, scope) != nil {
+		if e.service.recheckHostedMutation(ctx, tx, &scope) != nil {
 			return scope, operatortool.ErrAccessDenied
 		}
 	}

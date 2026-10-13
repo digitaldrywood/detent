@@ -242,7 +242,7 @@ func (s *Service) secretMutation(ctx context.Context, scope nativeScope, operati
 			err = errors.Join(err, rollback)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return err
 	}
 	if err := operation(tx); err != nil {

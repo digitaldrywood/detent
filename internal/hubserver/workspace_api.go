@@ -334,7 +334,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope nativeScope, 
 	}
 	var closed workspaceRecord
 	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		record, err := service.readWorkspaceForActor(ctx, tx, scope, id)

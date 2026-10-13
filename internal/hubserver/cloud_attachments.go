@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"
@@ -103,6 +104,7 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment upload"))
 	}
 	scope := nativeRequestScope(c)
+	scope.action = operatortool.UploadAttachment
 	identity := input.Metadata
 	identity.ID, identity.ProjectID, identity.Uploader = "", "", ""
 	identity.CreatedAt = time.Time{}
@@ -150,6 +152,7 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 		key = input.ID
 	}
 	scope := nativeRequestScope(c)
+	scope.action = operatortool.UploadAttachment
 	input.RequestID = key
 	options, command := attachmentEvidenceCommand(scope, "attachment.record", input)
 	var requestIdentity any = input.Metadata
@@ -258,7 +261,19 @@ func (s *Service) deleteCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string) error {
-	return s.deleteCloudAttachmentMetadata(ctx, s.database.db, scope, id)
+	scope.action = operatortool.DeleteAttachment
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
+		return err
+	}
+	if err := s.deleteCloudAttachmentMetadata(ctx, tx, scope, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Service) deleteCloudAttachmentMetadata(ctx context.Context, query nativeExecer, scope nativeScope, id string) error {
@@ -291,12 +306,13 @@ func (s *Service) referenceCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nativeScope, id string, input attachment.SourceReference) error {
+	scope.action = operatortool.ReferenceAttachment
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return err
 	}
 	if _, _, err := readNativeIssue(ctx, tx, scope, input.WorkItemID); err != nil {
