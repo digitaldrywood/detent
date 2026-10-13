@@ -86,7 +86,7 @@ type HostedProvider interface {
 	IdentityProvider
 	CurrentSession(context.Context, HostedIdentity) (HostedIdentity, error)
 	VerifyAccess(context.Context, string) (HostedAccess, error)
-	RefreshAccess(context.Context, string) (HostedAccess, HostedTokens, error)
+	RefreshAccess(context.Context, string, string) (HostedAccess, HostedTokens, error)
 	Memberships(context.Context, string, string) ([]Membership, error)
 	Organization(context.Context, string) (Organization, error)
 	CreateOrganization(context.Context, string, string) (Organization, error)
