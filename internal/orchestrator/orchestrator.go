@@ -146,7 +146,6 @@ type Config struct {
 	GitHubGraphQLMinReserve       int64
 	GitHubRESTMinReserve          int64
 	ForgeHost                     string
-	ServiceIdentity               string
 	OutputTruncationMaxBytes      int
 	EfficiencyThresholds          efficiency.Thresholds
 	Staleness                     staleness.Config

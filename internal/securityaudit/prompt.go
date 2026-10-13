@@ -90,8 +90,8 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 	if maxDiffBytes <= 0 {
 		maxDiffBytes = DefaultMaxDiffBytes
 	}
-	if strings.TrimSpace(snapshot.Repository) == "" || snapshot.PRNumber <= 0 || strings.TrimSpace(snapshot.BaseSHA) == "" || strings.TrimSpace(snapshot.HeadSHA) == "" {
-		return "", errors.New("security audit snapshot requires repository, pull request number, base SHA, and head SHA")
+	if strings.TrimSpace(snapshot.Repository) == "" || (snapshot.PRNumber <= 0 && strings.TrimSpace(snapshot.IssueID) == "") || strings.TrimSpace(snapshot.BaseSHA) == "" || strings.TrimSpace(snapshot.HeadSHA) == "" {
+		return "", errors.New("security audit snapshot requires repository, change identity, base SHA, and head SHA")
 	}
 	size := len(snapshot.Diff)
 	if snapshot.DiffBytes > size {

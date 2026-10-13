@@ -1142,3 +1142,28 @@ only to resettable budget pacing and never clears a per-issue hard hold.
 
 <!-- BEGIN GENERATED CONFIG REFERENCE -->
 <!-- END GENERATED CONFIG REFERENCE -->
+
+### Per-change security audit
+
+`gate.security_audit.enabled` defaults to `true` for every tracker. The audit
+reviews each immutable base/head before merge. P1/P2 findings send the change to
+Rework; non-blocking findings remain recorded on the Change or pull request.
+Backend and runner failures are instance failures and do not become findings.
+
+The effective model selection's `stages.security_audit` selects the backend,
+model and effort. Codex and Claude use their ordinary authentication, including
+subscription and metered accounts. Each audit consumes provider tokens and
+runtime, reported with other stage usage; metered accounts incur their usual
+provider charges.
+
+To disable it, explicitly set the existing project gate policy in `detent.yaml`
+(or update that policy through the project's existing configuration API/MCP owner):
+
+```yaml
+gate:
+  security_audit:
+    enabled: false
+```
+
+An explicit `false` wins over the default. Repository-owned native policy changes
+still require approval through the existing trusted-revision policy owner.

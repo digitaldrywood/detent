@@ -242,8 +242,9 @@ func (a *mergingSecurityAuditor) Audit(ctx context.Context, request SecurityAudi
 	execution.Result.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/database/webhook.go", Line: 342, Body: "authorization bypass"}}
 	return execution, err
 }
-func (c *mergingSecurityAuditConnector) SecurityAuditSnapshot(_ context.Context, issue connector.Issue, _ int) (securityaudit.Snapshot, error) {
-	return securityAuditSnapshotFromIssue("detent", issue), nil
+func (c *mergingSecurityAuditConnector) PullRequestValidationDiff(_ context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	snapshot := securityAuditSnapshotFromIssue("detent", issue)
+	return connector.ValidationDiff{Repository: snapshot.Repository, PRNumber: snapshot.PRNumber, BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Patch: "diff"}, nil
 }
 
 func TestMergeWorkerActionableGateControls(t *testing.T) {
@@ -290,8 +291,6 @@ func TestMergeWorkerAuditFailureDoesNotPublishFindings(t *testing.T) {
 		mutate func(*securityaudit.Run)
 	}{
 		{name: "backend failure", mutate: func(r *securityaudit.Run) { r.ExitStatus = securityaudit.ExitStatusFailed }},
-		{name: "metered authentication", mutate: func(r *securityaudit.Run) { r.AuthenticationMode = "api_key" }},
-		{name: "untrusted evidence", mutate: func(r *securityaudit.Run) { r.ServiceIdentity = "untrusted" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o, tracker, issue := mergingSecurityAuditFixture()

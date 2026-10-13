@@ -770,6 +770,7 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
+	OnUsageUpdate   UsageUpdateHandler
 	Issue           connector.Issue
 	Snapshot        securityaudit.Snapshot
 	StartedAt       time.Time
@@ -777,6 +778,8 @@ type SecurityAuditRequest struct {
 }
 
 type SecurityAuditExecution struct {
+	RuntimeIdentity    agentidentity.Identity
+	SessionID          int64
 	InvocationID       string
 	AuthenticationMode string
 	WorkerProcess      procgroup.Identity
@@ -888,6 +891,7 @@ func (l NativeLanding) RequiresRework() bool {
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
+	SecurityAudit             *tracker.SecurityAuditReview
 	ImplementationReview      *gate.ValidatorResult
 	ImplementationReviewError string
 	Landing                   *NativeLanding

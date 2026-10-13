@@ -78,6 +78,14 @@ interactions are the main source of incidents, so the set may not grow.
 
 ## Validation
 
+Every change gets a per-change security audit before merge, bound to its exact
+base and head. P1/P2 findings send the change to Rework. A native Cloud
+project's release-time review found about 29 real P1/P2 issues in twelve days,
+but too late to stop the change that caused them. The audit runs through the
+configured `security_audit` stage and incurs the same provider usage and costs
+as other stages. A project turns it off with `gate.security_audit.enabled: false`.
+
+
 - Follow the validation rule in [AGENTS.md](AGENTS.md#validation).
 - Follow [deployment and release failure reporting](AGENTS.md#deployment-and-release-failure-reporting): every failing Detent scheduled full-suite job enters Todo at least High through the existing native owner, including unclassified and infrastructure failures. Reuse open job issues with new occurrence evidence, promote matching Backlog intake through the native workflow owner, and preserve Urgent, imported history, human questions, active/review lanes and operator holds. Infrastructure reports carry the infrastructure label and retain CI-instance attribution; other unknown instance diagnostics remain Backlog intake. A red suite receives no release tag. Scheduled release validation is separate from ordinary issue merging; do not demand local-gate publication or blocking CI.
 - New or modified Go behavior requires focused table-driven tests using only the standard library.
