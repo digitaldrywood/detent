@@ -194,8 +194,10 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 		gaps, failure, emptyFixtures, automaticIntake bool
 		readFailure                                   string
 		unconfirmed                                   bool
+		triageFirst                                   bool
 	}{
 		{name: "approved policy"},
+		{name: "reserved Triage first", triageFirst: true},
 		{name: "service smoke key", unconfirmed: true, failure: true},
 		{name: "automatic native intake", automaticIntake: true},
 		{name: "unprovisioned fixtures", emptyFixtures: true},
@@ -243,10 +245,23 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				isError := false
 				switch name {
 				case "list_projects":
-					result["data"] = map[string]any{"projects": []map[string]any{{"project_id": "prj_smoke", "organization_id": "org_smoke", "profile": "native", "states": []map[string]any{{"name": "Backlog", "transitions": []string{"Blocked"}}, {"name": "Blocked", "transitions": []string{"Cancelled"}}, {"name": "Cancelled", "terminal": true}}}}}
+					states := []map[string]any{{"name": "Backlog", "transitions": []string{"Blocked"}}, {"name": "Blocked", "transitions": []string{"Cancelled"}}, {"name": "Cancelled", "terminal": true}}
+					if test.triageFirst {
+						states = append([]map[string]any{{"name": "Triage", "transitions": []string{"Backlog", "Cancelled"}}}, states...)
+					}
+					result["data"] = map[string]any{"projects": []map[string]any{{"project_id": "prj_smoke", "organization_id": "org_smoke", "profile": "native", "states": states}}}
 				case operatortool.WorkList:
 					result["data"] = map[string]any{"items": []map[string]any{{"work_item_id": "wi_dependency"}}}
 				case operatortool.FileIssue:
+					if args["state"] == "Triage" {
+						t.Logf("ordinary file_issue request: %v; valid direct-create transition is Backlog -> Blocked", args)
+						isError = true
+						result = map[string]any{"code": "invalid_request", "message": "Triage is reserved for linked GitHub issue intake"}
+						break
+					}
+					if args["project_id"] != "prj_smoke" || args["state"] != "Backlog" {
+						t.Fatalf("wrong direct-create scope or state: %v", args)
+					}
 					revision = 1
 					result = map[string]any{"resource_id": "wi_smoke", "revision": "1"}
 				case operatortool.AddComment:
@@ -270,6 +285,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					revision++
 					result["revision"] = strconv.FormatInt(revision, 10)
 				case operatortool.EditItem, operatortool.SetDependency, operatortool.MoveItem, operatortool.ArchiveItem, operatortool.RestoreItem:
+					if name == operatortool.MoveItem && calls[name] == 1 && args["target_state"] != "Blocked" {
+						t.Fatalf("wrong smoke transition: %v", args)
+					}
 					if args["expected_revision"] != strconv.FormatInt(revision, 10) {
 						t.Fatalf("%s stale/wrong wire revision: %v, current=%d", name, args, revision)
 					}
