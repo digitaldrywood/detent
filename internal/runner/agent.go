@@ -2137,7 +2137,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return result, fmt.Errorf("acquire model permit: %w", err)
 		}
 	}
-	checkpoint := r.prepareWorkerCheckpoint(ctx, req, runWorkspace, info, workspaceIssue)
+	checkpoint := r.prepareWorkerCheckpoint(ctx, req, workflow.Config.Tracker.Kind, runWorkspace, info, workspaceIssue)
 	r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, runtimeIdentity, resumeState, orphanRecoveryOutcome, orphanRecoveryFallbackReason)
 	if err != nil {
