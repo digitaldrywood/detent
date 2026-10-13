@@ -18,6 +18,8 @@ import (
 // These commands are shared with dashboard adapters. They own persistence and
 // provider effects; MCP only supplies typed input and trusted mutation context.
 func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential) (hostedMembersResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
@@ -39,7 +41,7 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 		// Local removal/downgrade is authoritative even before provider propagation.
 		var active bool
 		var role string
-		err := s.database.db.QueryRowContext(ctx, "SELECT active,role FROM hosted_members WHERE user_id=?", member.UserID).Scan(&active, &role)
+		err := s.database.reader.QueryRowContext(ctx, "SELECT active,role FROM hosted_members WHERE user_id=?", member.UserID).Scan(&active, &role)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return response, err
 		}
@@ -75,7 +77,7 @@ func (s *Service) inviteHostedMemberFor(ctx context.Context, credential apiCrede
 	}
 	grants = append([]hostedMemberGrant{}, grants...)
 	sort.Slice(grants, func(i, j int) bool { return grants[i].ProjectID < grants[j].ProjectID })
-	if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, email, grants); err != nil {
+	if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, email, grants); err != nil {
 		return hostedInvitationView{}, err
 	}
 	command := hostedCommand{actor: credential.ID, operation: "POST /api/v2/organizations/" + s.config.Hosted.OrganizationID + "/members/invitations", key: key, input: struct {
@@ -150,8 +152,10 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 }
 
 func (s *Service) revokeHostedInvitationFor(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var email string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
 		return err
 	}
 	if err := auth.RevokeInvitationID(ctx, s.config.Hosted.Provider, id); err != nil {
@@ -178,11 +182,11 @@ func (s *Service) revokeHostedInvitationFor(ctx context.Context, id string) erro
 }
 
 func (s *Service) resendHostedInvitationFor(ctx context.Context, credential apiCredential, id string) error {
-	view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, id)
+	view, err := s.pendingHostedInvitationFor(ctx, s.database.reader, credential, id)
 	if err != nil {
 		return err
 	}
-	if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, view.Email, view.Grants); err != nil {
+	if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, view.Email, view.Grants); err != nil {
 		return err
 	}
 	return auth.ResendInvitationID(ctx, s.config.Hosted.Provider, id)

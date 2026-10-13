@@ -202,6 +202,8 @@ func (s *Service) getNativeRuntime(c echo.Context) error {
 }
 
 func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, err

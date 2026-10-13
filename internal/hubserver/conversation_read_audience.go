@@ -59,7 +59,7 @@ func conversationReadAudience(ctx context.Context, query nativeQueryer, organiza
 }
 
 func (t *coordinatorToolset) restrictReadAudience(ctx context.Context, record conversationRecord, credential apiCredential) error {
-	audience, err := conversationReadAudience(ctx, t.coordinator.service.store.db, record.OrganizationID, credential)
+	audience, err := conversationReadAudience(ctx, t.coordinator.service.store.reader, record.OrganizationID, credential)
 	if err != nil {
 		return operatortool.ErrAccessDenied
 	}

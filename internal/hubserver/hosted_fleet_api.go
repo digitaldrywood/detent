@@ -154,14 +154,16 @@ func readHostedRunnerNames(ctx context.Context, query nativeQueryer, organizatio
 
 // hostedFleet answers GET /fleet for any member of the organization.
 func (s *Service) hostedFleet(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	var result any
 	if c.QueryParam("include") == "names" {
 		var names map[string]hostedRunnerName
-		names, err = readHostedRunnerNames(c.Request().Context(), s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
+		names, err = readHostedRunnerNames(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else if c.QueryParam("include") == "host_metrics" {
 		var from, to time.Time
@@ -176,20 +178,22 @@ func (s *Service) hostedFleet(c echo.Context) error {
 				}
 			}
 		}
-		result, err = s.readHostedRunnerHostHistory(c.Request().Context(), credential, c.QueryParam("runner_id"), from, to)
+		result, err = s.readHostedRunnerHostHistory(ctx, credential, c.QueryParam("runner_id"), from, to)
 	} else {
-		result, err = s.readHostedFleet(c.Request().Context(), credential)
+		result, err = s.readHostedFleet(ctx, credential)
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
+	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential) (hostedFleetResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	readable, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return hostedFleetResponse{}, err
@@ -388,6 +392,8 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 // hostedVisibleReservations reads the live provider reservations held by
 // leases in projects the reader can see.
 func (s *Service) hostedVisibleReservations(ctx context.Context, visible map[tracker.ProjectID]bool) ([]scopedProviderAccount, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, ''), coalesce(lr.runner_id, '') FROM provider_reservations p
 JOIN leases l ON l.lease_id = p.lease_id JOIN issues i ON i.id = l.issue_id
 LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
@@ -451,6 +457,8 @@ func scopeProviderUsage(runners []hostedFleetRunner, reservations []scopedProvid
 }
 
 func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential apiCredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if runnerID == "" {
 		return nil, nativeInvalid("Runner ID is required for host history")
 	}

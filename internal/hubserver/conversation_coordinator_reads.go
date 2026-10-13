@@ -95,7 +95,7 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 	if err != nil {
 		return nil, err
 	}
-	if err := t.coordinator.service.authorizeRead(ctx, s.database.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
+	if err := t.coordinator.service.authorizeRead(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
 		return nil, fmt.Errorf("you don't have access to this conversation's stored answers: equal screen access is required: %w", operatortool.ErrAccessDenied)
 	}
 	var fields map[string]json.RawMessage
@@ -119,12 +119,12 @@ func (t *coordinatorToolset) screenRead(ctx context.Context, record conversation
 			if !canManageProjectSecrets(credential) {
 				err = operatortool.ErrAccessDenied
 			} else {
-				value, err = readSlackIntegration(ctx, s.database.db, record.OrganizationID)
+				value, err = readSlackIntegration(ctx, s.database.reader, record.OrganizationID)
 			}
 		}
 	case "get_project_budget":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil {
-			value, err = readMonthlyBudgetSettings(ctx, s.database.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential})
+			value, err = readMonthlyBudgetSettings(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential})
 		}
 	case "get_project_runners", "get_project_fleet":
 		if err = decodeCoordinatorArguments(call.Arguments, &struct{}{}); err == nil && call.Name == "get_project_runners" {
@@ -199,7 +199,7 @@ func coordinatorProjectReadScoped(name string) bool {
 }
 
 func (s *Service) coordinatorRunnerAttached(ctx context.Context, record conversationRecord, id string) (bool, error) {
-	r, err := readRunnerWithClock(ctx, s.database.db, record.OrganizationID, id, s.config.now)
+	r, err := readRunnerWithClock(ctx, s.database.reader, record.OrganizationID, id, s.config.now)
 	if err != nil {
 		return false, err
 	}
@@ -219,7 +219,7 @@ func (s *Service) coordinatorProjectRunners(ctx context.Context, record conversa
 	connected := map[string]bool{}
 	connectionHealth := map[string]string{}
 	for _, r := range fleet {
-		source, err := readRunnerWithClock(ctx, s.database.db, record.OrganizationID, r.ID, s.config.now)
+		source, err := readRunnerWithClock(ctx, s.database.reader, record.OrganizationID, r.ID, s.config.now)
 		if err != nil {
 			return nil, err
 		}

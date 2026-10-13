@@ -175,7 +175,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			if definition.Annotations.ReadOnly {
 				resolve = e.service.resolveOperatorNativeReadItem
 			}
-			item, resolveErr := resolve(ctx, e.service.database.db, scope, request.Identifier)
+			item, resolveErr := resolve(ctx, e.service.database.reader, scope, request.Identifier)
 			if resolveErr != nil {
 				if definition.Annotations.ReadOnly {
 					return operatortool.Result{}, safeWorkReadError(resolveErr)
@@ -188,7 +188,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
 			}
 			if request.Related != "" && !strings.HasPrefix(request.Related, "wi_") {
-				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Related)
+				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Related)
 				if resolveErr != nil {
 					return operatortool.Result{}, hubSafeChangeError(resolveErr)
 				}

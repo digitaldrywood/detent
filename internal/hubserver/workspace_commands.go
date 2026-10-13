@@ -66,31 +66,35 @@ func (s *Service) commandDeleteAction(ctx context.Context, scope nativeScope, id
 }
 
 func (s *Service) readAttachment(ctx context.Context, scope nativeScope, conversationID, id string) (conversationAttachmentRecord, []byte, error) {
-	record, err := s.conversations.loadConversation(ctx, s.database.db, scope, conversationID)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	record, err := s.conversations.loadConversation(ctx, s.database.reader, scope, conversationID)
 	if err != nil {
 		return conversationAttachmentRecord{}, nil, err
 	}
 	if err := conversation.ValidateAttachmentID(id); err != nil {
 		return conversationAttachmentRecord{}, nil, nativeNotFound()
 	}
-	attachment, err := s.conversations.store.readAttachment(ctx, s.database.db, record.ID, id)
+	attachment, err := s.conversations.store.readAttachment(ctx, s.database.reader, record.ID, id)
 	if err != nil {
 		return conversationAttachmentRecord{}, nil, translateConversationError(err)
 	}
-	content, err := s.conversations.store.readAttachmentContent(ctx, s.database.db, attachment.ArtifactRef)
+	content, err := s.conversations.store.readAttachmentContent(ctx, s.database.reader, attachment.ArtifactRef)
 	return attachment, content, translateConversationError(err)
 }
 
 func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspaceID, id string) (terminalRecordingRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return terminalRecordingRecord{}, err
 	}
-	workspace, err := service.readWorkspaceForActor(ctx, s.database.db, scope, workspaceID)
+	workspace, err := service.readWorkspaceForActor(ctx, s.database.reader, scope, workspaceID)
 	if err != nil {
 		return terminalRecordingRecord{}, err
 	}
-	recording, err := readTerminalRecordingByID(ctx, s.database.db, workspace.ID, id)
+	recording, err := readTerminalRecordingByID(ctx, s.database.reader, workspace.ID, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return terminalRecordingRecord{}, nativeNotFound()
 	}
@@ -103,15 +107,17 @@ func (s *Service) readRecording(ctx context.Context, scope nativeScope, workspac
 	return recording, nil
 }
 func (s *Service) readRecordings(ctx context.Context, scope nativeScope, workspaceID, relaySessionID string, limit int) ([]TerminalRecording, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return nil, err
 	}
-	workspace, err := service.readWorkspaceForActor(ctx, s.database.db, scope, workspaceID)
+	workspace, err := service.readWorkspaceForActor(ctx, s.database.reader, scope, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	stored, err := readTerminalRecordings(ctx, s.database.db, workspace.ID, relaySessionID)
+	stored, err := readTerminalRecordings(ctx, s.database.reader, workspace.ID, relaySessionID)
 	if err != nil {
 		return nil, err
 	}

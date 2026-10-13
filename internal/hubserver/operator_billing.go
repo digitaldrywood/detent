@@ -485,6 +485,8 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (s *Service) billingRequestBinding(ctx context.Context, name string, request billingActionRequest) (string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
 		return s.billingActionBinding(request.Price), "", nil
 	}
@@ -510,7 +512,7 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 		Pack                                                        HostedCreditPack
 	}{Account: cfg.AccountID, Mode: cfg.mode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
-		if err := s.database.db.QueryRowContext(ctx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
 			return "", "", err
 		}
 		if *request.Enabled {

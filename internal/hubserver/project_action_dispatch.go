@@ -55,7 +55,7 @@ const actionRunDispatchGrace = time.Second
 // already visits.
 func (w *workspaceService) dispatchQueuedActionRuns(ctx context.Context) {
 	now := w.now()
-	runs, err := readDispatchableActionRuns(ctx, w.server.database.db,
+	runs, err := readDispatchableActionRuns(ctx, w.server.database.reader,
 		now.Add(-actionRunDispatchGrace), actionRunDispatchBatch)
 	if err != nil {
 		w.logger.Warn("action_run.dispatch_failed", "error", err)

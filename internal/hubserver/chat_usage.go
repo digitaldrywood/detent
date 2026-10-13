@@ -107,6 +107,8 @@ func chatBillingWindow(now time.Time, subscription billing.Snapshot) usageWindow
 }
 
 func (d *database) chatUsageSummary(ctx context.Context, organization tracker.OrganizationID, window usageWindow, projects []string) (chatUsageSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	summary := chatUsageSummary{Range: window}
 	query := `SELECT coalesce(sum(input),0),coalesce(sum(cached_input),0),coalesce(sum(output),0),coalesce(sum(reasoning_output),0),count(*),coalesce(sum(price_id IS NULL),0),coalesce(sum(cost_usd),0)
  FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<?`
@@ -119,12 +121,14 @@ func (d *database) chatUsageSummary(ctx context.Context, organization tracker.Or
 		query += " AND project_id IN (SELECT value FROM json_each(?))"
 		args = append(args, encoded)
 	}
-	err := d.db.QueryRowContext(ctx, query, args...).Scan(&summary.Input, &summary.CachedInput, &summary.Output, &summary.ReasoningOutput, &summary.Turns, &summary.UnpricedTurns, &summary.CostUSD)
+	err := d.reader.QueryRowContext(ctx, query, args...).Scan(&summary.Input, &summary.CachedInput, &summary.Output, &summary.ReasoningOutput, &summary.Turns, &summary.UnpricedTurns, &summary.CostUSD)
 	summary.Tokens = summary.Input + summary.Output
 	return summary, err
 }
 
 func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if len(projects) == 0 {
 		return nil, nil
 	}
@@ -132,7 +136,7 @@ func (s *Service) chatUsageRows(ctx context.Context, window usageWindow, project
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.database.db.QueryContext(ctx, `SELECT turn_id,occurred_at,provider,model,input,cached_input,output,coalesce(cost_usd,0),coalesce(cache_savings_usd,0) FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND project_id IN (SELECT value FROM json_each(?)) ORDER BY occurred_at,turn_id`, s.config.Hosted.OrganizationID, window.From.UnixMicro(), window.To.UnixMicro(), encoded)
+	result, err := s.database.reader.QueryContext(ctx, `SELECT turn_id,occurred_at,provider,model,input,cached_input,output,coalesce(cost_usd,0),coalesce(cache_savings_usd,0) FROM conversation_usage WHERE organization_id=? AND occurred_at>=? AND occurred_at<? AND project_id IN (SELECT value FROM json_each(?)) ORDER BY occurred_at,turn_id`, s.config.Hosted.OrganizationID, window.From.UnixMicro(), window.To.UnixMicro(), encoded)
 	if err != nil {
 		return nil, err
 	}

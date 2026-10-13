@@ -181,6 +181,8 @@ func hostMetricAverage(sum float64, count uint64) *float64 {
 }
 
 func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracker.OrganizationID, runner string, from, to time.Time) ([]runnerHostHour, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	now := s.config.now().UTC().Truncate(time.Hour)
 	if from.IsZero() {
 		from = now.Add(-167 * time.Hour)

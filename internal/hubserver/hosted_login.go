@@ -215,6 +215,8 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 }
 
 func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Identity) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if identity.Subject != s.config.Hosted.BootstrapSubject || identity.Hosted.SupportActor != "" {
 		return nil
 	}
@@ -223,7 +225,7 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 		return err
 	}
 	var existing int
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&existing); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&existing); err != nil {
 		return err
 	}
 	if existing != 0 {
@@ -268,13 +270,15 @@ func (s *Service) startHostedSupport(c echo.Context) error {
 }
 
 func (s *Service) logoutHosted(c echo.Context) error {
-	session, hash, sessionErr := s.hostedSession(c.Request().Context(), c)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	session, hash, sessionErr := s.hostedSession(ctx, c)
 	if cookie, err := c.Cookie(hostedCookie); err == nil && hash == "" {
 		hash = apikey.HashToken(cookie.Value)
 	}
 	if sessionErr != nil && hash != "" {
 		var encoded string
-		err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&encoded)
+		err := s.database.reader.QueryRowContext(ctx, "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&encoded)
 		if err == nil && json.Unmarshal([]byte(encoded), &session.Identity) == nil && session.Identity != nil {
 			sessionErr = nil
 		}
@@ -282,7 +286,7 @@ func (s *Service) logoutHosted(c echo.Context) error {
 	if sessionErr != nil {
 		session.Identity = nil
 	}
-	outcome, err := s.logoutHostedFor(c.Request().Context(), hash, session.Identity)
+	outcome, err := s.logoutHostedFor(ctx, hash, session.Identity)
 	if err != nil {
 		return s.hostedDenied(c, http.StatusServiceUnavailable, "Sign-out is temporarily unavailable", auth.HostedDenial{Flow: "logout", Reason: "session_revoke_failed"})
 	}
@@ -362,6 +366,8 @@ func (s *Service) acceptHostedInvitationIDFor(ctx context.Context, identity auth
 	return s.acceptHostedInvitationReference(ctx, identity, id, true)
 }
 func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity auth.Identity, token string, byID bool) (resultErr error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if identity.Hosted == nil || token == "" || len(token) > 512 {
 		return auth.ErrHostedIdentity
 	}
@@ -377,7 +383,7 @@ func (s *Service) acceptHostedInvitationReference(ctx context.Context, identity 
 		return auth.ErrHostedIdentity
 	}
 	var role string
-	err = s.database.db.QueryRowContext(ctx, "SELECT role FROM hosted_invitations WHERE id = ? AND email = ? AND organization_id = ? AND accepted_user_id = ''", invitation.ID, strings.ToLower(identity.Email), s.config.Hosted.OrganizationID).Scan(&role)
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT role FROM hosted_invitations WHERE id = ? AND email = ? AND organization_id = ? AND accepted_user_id = ''", invitation.ID, strings.ToLower(identity.Email), s.config.Hosted.OrganizationID).Scan(&role)
 	if err != nil || !auth.ValidOrganizationRole(role) {
 		return auth.ErrHostedIdentity
 	}
@@ -455,6 +461,8 @@ func (s *Service) hostedInvitationDenied(c echo.Context, message string, denial 
 }
 
 func (s *Service) startHostedInvitation(c echo.Context) error {
+	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancelRead()
 	token := c.QueryParam("invitation_token")
 	if token == "" {
 		token = c.QueryParam("token")
@@ -474,7 +482,7 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 		return s.hostedInvitationDenied(c, problem, denial)
 	}
 	var accepted string
-	err = s.database.db.QueryRowContext(ctx, "SELECT accepted_user_id FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ?", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&accepted)
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT accepted_user_id FROM hosted_invitations WHERE id = ? AND organization_id = ? AND email = ?", invitation.ID, s.config.Hosted.OrganizationID, strings.ToLower(invitation.Email)).Scan(&accepted)
 	if err != nil {
 		return s.hostedInvitationDenied(c, auth.InvitationUnavailable, denial)
 	}

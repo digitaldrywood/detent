@@ -248,9 +248,11 @@ type hostedSharedBillingQuery struct {
 }
 
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := s.database.hostedEntitlement(c.Request().Context(), s.database.db, s.config.now())
+	entitlement, err := s.database.hostedEntitlement(ctx, s.database.reader, s.config.now())
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
@@ -262,7 +264,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	}
 	if cfg != nil {
 		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.mode()
-		binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
+		binding, err := s.database.hostedBillingBinding(ctx, cfg)
 		if err != nil && !errors.Is(err, errHostedBillingUnbound) {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
@@ -273,18 +275,18 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		}
 		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
 			s.billing.mu.Lock()
-			reconcileErr := s.billing.reconcile(c.Request().Context())
+			reconcileErr := s.billing.reconcile(ctx)
 			s.billing.mu.Unlock()
 			if reconcileErr != nil {
 				return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
 			}
 		}
 		var raw string
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
 			var checkout hostedCheckout
 			result.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
 		}
-		state, err := s.database.readHostedBilling(c.Request().Context())
+		state, err := s.database.readHostedBilling(ctx)
 		if err != nil {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
@@ -343,12 +345,13 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
 		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
-	ctx := c.Request().Context()
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	s.hostedMutationMu.Lock()
 	defer s.hostedMutationMu.Unlock()
 	var members int
 	var owner string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
 	}
 	if members != 0 {

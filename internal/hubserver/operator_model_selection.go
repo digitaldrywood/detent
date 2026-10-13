@@ -50,6 +50,8 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 }
 
 func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var request operatortool.ModelSelectionReadRequest
 	if operatortool.DecodeModelSelectionArguments(call, &request) != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -58,7 +60,7 @@ func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operato
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	selection, err := readCloudModelSelection(ctx, e.service.database.db, scope)
+	selection, err := readCloudModelSelection(ctx, e.service.database.reader, scope)
 	if err != nil {
 		return operatortool.Result{}, projectToolError(err)
 	}

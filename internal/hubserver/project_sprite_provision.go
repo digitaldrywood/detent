@@ -28,19 +28,21 @@ func spriteShellQuote(value string) string {
 }
 
 func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name string) ([]byte, error) {
-	actor, err := s.spritePoolAuthority(ctx, s.database.db, scope)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	actor, err := s.spritePoolAuthority(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
 	scope.credential.ID = actor
 	var project tracker.ProjectID
 	var provider string
-	err = s.database.db.QueryRowContext(ctx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&project, &provider)
+	err = s.database.reader.QueryRowContext(ctx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&project, &provider)
 	if err != nil {
 		return nil, err
 	}
 	scope.project = project
-	scope, slug, envelope, err := resolveSpritesSecret(ctx, s.database.db, scope)
+	scope, slug, envelope, err := resolveSpritesSecret(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +67,7 @@ func (s *Service) spritePoolClient() *http.Client {
 
 func (s *Service) poolSpriteRequest(ctx context.Context, scope nativeScope, name, method, path string, body []byte) (*http.Response, error) {
 	if method != http.MethodDelete && method != http.MethodGet {
-		allowed, err := monthlySpriteAllowed(ctx, s.database.db, scope, s.config.now())
+		allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, s.config.now())
 		if err != nil {
 			return nil, err
 		}
@@ -181,8 +183,10 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 }
 
 func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScope) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var count int
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken).Scan(&count)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, flySpritesToken).Scan(&count)
 	if err == nil && count == 0 {
 		err = sql.ErrNoRows
 	}
@@ -190,6 +194,8 @@ func (s *Service) poolSpriteTokenAvailable(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, member spritePoolMember, settings spritePoolSettings, enrollment runnerauth.Enrollment) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	version := "v" + strings.TrimPrefix(s.config.Version, "v")
 	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
 		return nativeInvalid("Sprite provisioning requires a Hub built from a pinned release")
@@ -244,7 +250,7 @@ printf "Runner bootstrap completed\n"
 		return execErr
 	}
 	var runner string
-	if err := s.database.db.QueryRowContext(ctx, `SELECT r.id FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.scope='organization' AND r.enrollment_id=? AND r.organization_id=? AND m.hostname=? AND json_extract(m.capabilities_json,'$.sprite_name')=?`, member.EnrollmentID, scope.organization, member.Name, member.Name).Scan(&runner); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT r.id FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.scope='organization' AND r.enrollment_id=? AND r.organization_id=? AND m.hostname=? AND json_extract(m.capabilities_json,'$.sprite_name')=?`, member.EnrollmentID, scope.organization, member.Name, member.Name).Scan(&runner); err != nil {
 		return err
 	}
 	response, err = s.poolSpriteRequest(ctx, scope, member.Name, http.MethodPost, "/"+member.Name+"/checkpoint", []byte(`{"comment":"Detent runner customer bootstrap"}`))

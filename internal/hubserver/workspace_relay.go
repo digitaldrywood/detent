@@ -1040,7 +1040,7 @@ func (r *workspaceRelay) workspaceRunReason(ctx context.Context, workspaceID str
 	// already happened.
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relayWriteTimeout)
 	defer cancel()
-	record, err := readWorkspaceByID(readCtx, r.service.server.database.db, workspaceID)
+	record, err := readWorkspaceByID(readCtx, r.service.server.database.reader, workspaceID)
 	if err != nil {
 		return workspacesession.RunReasonWorkspaceEnd
 	}
