@@ -67,6 +67,7 @@ const (
 
 type conversationRecord struct {
 	ID                string
+	ReadAudience      string
 	OrganizationID    tracker.OrganizationID
 	ProjectID         tracker.ProjectID
 	OwnerPrincipalID  string
@@ -184,7 +185,7 @@ const conversationMessageCount = `(SELECT count(*) FROM conversation_messages cm
 // conversationReadColumns is conversationColumns plus the derived columns a
 // read reports. Only conversationColumns names real columns, so it is the
 // list an INSERT uses.
-const conversationReadColumns = conversationColumns + ", " + conversationMessageCount
+const conversationReadColumns = conversationColumns + ", " + conversationMessageCount + ", read_audience"
 
 type conversationScanner interface {
 	Scan(dest ...any) error
@@ -197,7 +198,7 @@ func scanConversation(row conversationScanner) (conversationRecord, error) {
 	if err := row.Scan(
 		&record.ID, &record.OrganizationID, &record.ProjectID, &record.OwnerPrincipalID, &record.OwnerSubject, &record.Origin, &record.Title, &record.Visibility, &record.Status,
 		&subject, &workItem, &linkedAt, &record.Revision, &record.ProviderThreadID, &record.ProviderThreadRunnerID, &record.ProviderThreadOrigin, &execution, &record.EventSeq, &preferences, &created, &updated, &lastMessageAt, &settledAt, &record.Archived,
-		&record.MessageCount,
+		&record.MessageCount, &record.ReadAudience,
 	); err != nil {
 		return record, err
 	}
@@ -423,10 +424,11 @@ type conversationListQuery struct {
 	// Projects restricts an organization-wide listing to the projects the
 	// actor can read. A nil slice means every project; an empty non-nil
 	// slice means none.
-	Projects  []tracker.ProjectID
-	Principal string
-	Cursor    string
-	Limit     int
+	Projects     []tracker.ProjectID
+	Principal    string
+	ReadAudience string
+	Cursor       string
+	Limit        int
 	// Settled restricts the listing to settled or to active conversations.
 	// Nil lists both, active first (decisions section 14).
 	Settled *bool
@@ -452,7 +454,8 @@ func (s *conversationStore) listConversations(ctx context.Context, query nativeQ
 	}
 	var where strings.Builder
 	where.WriteString("organization_id = ? AND origin = 'user' AND archived = 0 AND (visibility = 'shared' OR owner_principal_id = ?)")
-	args := []any{filter.Organization, filter.Principal}
+	where.WriteString(" AND (read_audience = '' OR read_audience = ?)")
+	args := []any{filter.Organization, filter.Principal, filter.ReadAudience}
 	if filter.Project != "" {
 		where.WriteString(" AND project_id = ?")
 		args = append(args, filter.Project)
@@ -1181,6 +1184,7 @@ type workItemReference struct {
 	// read rule: a private chat is invisible to anyone but its owner.
 	Visibility       conversation.Visibility
 	OwnerPrincipalID string
+	ReadAudience     string
 }
 
 // listWorkItemReferences returns the messages that reference a work item,
@@ -1190,7 +1194,7 @@ func (s *conversationStore) listWorkItemReferences(ctx context.Context, query na
 	if limit <= 0 {
 		limit = conversationReferencePage
 	}
-	rows, err := query.QueryContext(ctx, `SELECT r.message_id, r.conversation_id, m.text, r.created_at, c.visibility, c.owner_principal_id
+	rows, err := query.QueryContext(ctx, `SELECT r.message_id, r.conversation_id, m.text, r.created_at, c.visibility, c.owner_principal_id, c.read_audience
 FROM message_references r
 JOIN conversation_messages m ON m.id = r.message_id
 JOIN conversations c ON c.id = r.conversation_id
@@ -1204,7 +1208,7 @@ ORDER BY r.created_at DESC, r.message_id DESC LIMIT ?`, workItemID, organization
 	for rows.Next() {
 		var reference workItemReference
 		var created string
-		if err := rows.Scan(&reference.MessageID, &reference.ConversationID, &reference.Excerpt, &created, &reference.Visibility, &reference.OwnerPrincipalID); err != nil {
+		if err := rows.Scan(&reference.MessageID, &reference.ConversationID, &reference.Excerpt, &created, &reference.Visibility, &reference.OwnerPrincipalID, &reference.ReadAudience); err != nil {
 			return nil, fmt.Errorf("list work item references: %w", err)
 		}
 		if reference.CreatedAt, err = parseTimeValue(created); err != nil {

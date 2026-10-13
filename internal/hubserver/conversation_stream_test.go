@@ -166,6 +166,14 @@ func TestConversationStreamReplaysAndFollows(t *testing.T) {
 	f := newStreamFixture(t)
 	created := f.create(t, f.token, map[string]any{"first_message": map[string]any{"key": "first", "text": "Stream me"}})
 	id := created.Conversation.ID
+	t.Run("replay stops at authorized head", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		bounded := newConversationStream(f.service.echo.NewContext(httptest.NewRequest(http.MethodGet, "/", nil), response))
+		cursor, err := bounded.replay(t.Context(), f.service.conversations.store, f.service.database.reader, id, 0, 1)
+		if err != nil || cursor != 1 || strings.Contains(response.Body.String(), string(conversation.EventCommandReceipt)) {
+			t.Fatalf("replay exceeded authorized head: cursor=%d error=%v data=%s", cursor, err, response.Body.String())
+		}
+	})
 	stream := f.open(t, f.token, id, 0)
 	first := stream.nextEvent(t)
 	second := stream.nextEvent(t)
@@ -337,6 +345,14 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 		credentialStatus int
 		want             string
 	}{
+		{
+			name: "screen read audience changed", account: "owner", want: conversationClosedAccessRevoked,
+			mutate: func(t *testing.T, f *browserHostedFixture, _ nativeScope) {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET read_audience='different-screen-access'"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
 		{
 			name: "expired session cookie", account: "owner", refresh: true, want: conversationClosedServerError, wantErr: auth.ErrInvalidSession,
 		},
@@ -527,7 +543,7 @@ func TestConversationStreamReauthorizationCloseReason(t *testing.T) {
 					t.Fatalf("close reason for %v = %q, want %q", failure, got, tt.want)
 				}
 			}
-			if tt.name != "conversation made private" {
+			if tt.name != "conversation made private" && tt.name != "screen read audience changed" {
 				sink := &conversationLogSink{}
 				f.service.conversations.logger = slog.New(slog.NewJSONHandler(sink, nil)).With("component", "conversation")
 				response := httptest.NewRecorder()

@@ -106,6 +106,9 @@ func (c *conversationService) resumeFor(ctx context.Context, tx *sql.Tx, record 
 	if decision.resumeThread() {
 		return conversationResumeResource{ThreadID: thread, ThreadOrigin: conversation.ThreadOriginFor(coordinator)}, nil
 	}
+	if record.ReadAudience != "" && !coordinator {
+		return conversationResumeResource{}, nil
+	}
 	handed := make(map[string]struct{}, len(pending))
 	for _, control := range pending {
 		handed[control.MessageID] = struct{}{}
@@ -161,7 +164,11 @@ func (c *conversationService) loadWorkerConversation(ctx context.Context, tx *sq
 	if err != nil {
 		return conversationRecord{}, "", translateConversationError(err)
 	}
-	if err := c.authorizeRead(scope, record); err != nil {
+	readable := record
+	if scope.credential.Scope == apiScopeWorker {
+		readable.ReadAudience = ""
+	}
+	if err := c.authorizeRead(ctx, tx, scope, readable); err != nil {
 		return conversationRecord{}, "", err
 	}
 	return record, record.WorkItemID, nil

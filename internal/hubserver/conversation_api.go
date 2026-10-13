@@ -192,7 +192,7 @@ func (c *conversationService) requireActorAuthority(ctx context.Context, tx *sql
 // authorizeManage allows the owner, or any actor with write access, to
 // rename a conversation or change its preferences.
 func (c *conversationService) authorizeManage(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
-	if err := c.authorizeRead(scope, record); err != nil {
+	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
 		return err
 	}
 	if record.OwnerPrincipalID == scope.credential.ID {
@@ -1448,22 +1448,32 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
-	record, err := s.conversations.loadConversation(ctx, s.database.db, scope, id)
-	if err != nil {
-		return nil, err
-	}
-	messages, err := s.conversations.store.listMessages(ctx, s.database.db, record.ID, before, limit)
-	if err != nil {
-		return nil, err
-	}
-	page := conversationMessagesPage{Messages: projectMessages(messages)}
-	_, page.NextCursor = conversationOlderCursor(page.Messages)
-	return json.Marshal(page)
+	var raw json.RawMessage
+	err := s.conversations.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
+		record, err := s.conversations.loadConversation(ctx, tx, scope, id)
+		if err != nil {
+			return err
+		}
+		messages, err := s.conversations.store.listMessages(ctx, tx, record.ID, before, limit)
+		if err != nil {
+			return err
+		}
+		page := conversationMessagesPage{Messages: projectMessages(messages)}
+		_, page.NextCursor = conversationOlderCursor(page.Messages)
+		raw, err = json.Marshal(page)
+		return err
+	})
+	return raw, err
 }
 
 func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversationListQuery) (json.RawMessage, error) {
 	filter.Organization = scope.organization
 	filter.Principal = scope.credential.ID
+	var err error
+	filter.ReadAudience, err = conversationReadAudience(ctx, s.database.db, scope.organization, scope.credential)
+	if err != nil {
+		return nil, err
+	}
 	records, next, err := s.conversations.store.listConversations(ctx, s.database.db, filter)
 	if err != nil {
 		return nil, err

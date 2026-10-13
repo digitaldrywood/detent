@@ -82,13 +82,16 @@ func (s *conversationStream) closed(reason string) error {
 
 // replay writes every committed event after cursor in pages and returns the
 // new cursor.
-func (s *conversationStream) replay(ctx context.Context, store *conversationStore, reader *sql.DB, conversationID string, cursor int64) (int64, error) {
-	for {
+func (s *conversationStream) replay(ctx context.Context, store *conversationStore, reader *sql.DB, conversationID string, cursor, through int64) (int64, error) {
+	for cursor < through {
 		events, err := store.replayEvents(ctx, reader, conversationID, cursor)
 		if err != nil {
 			return cursor, err
 		}
 		for _, event := range events {
+			if event.Seq > through {
+				return cursor, nil
+			}
 			if err := s.event(event); err != nil {
 				return cursor, err
 			}
@@ -98,6 +101,7 @@ func (s *conversationStream) replay(ctx context.Context, store *conversationStor
 			return cursor, nil
 		}
 	}
+	return cursor, nil
 }
 
 // streamConversationEvents implements GET /conversations/:conversation/events.
@@ -130,13 +134,13 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	for {
 		// The re-read proves the stream may continue: a settled conversation
 		// keeps streaming, only a revoked audience closes it.
-		_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
+		authorized, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 		if err != nil {
 			reason := conversationStreamCloseReason(err)
 			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.closed(reason)
 		}
-		if cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor); err != nil {
+		if cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor, authorized.EventSeq); err != nil {
 			if errors.Is(err, errConversationCursorExpired) {
 				return stream.closed(conversationClosedCursorExpired)
 			}

@@ -77,7 +77,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, append(append(append(coordinatorActionTools(), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...)...)
+	}, append(append(append(append(append(coordinatorActionTools(), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -96,6 +96,23 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 		}
 		t.coordinator.logger.Warn("coordinator tool failed", "conversation_id", t.state.conversationID, "tool", call.Name, "error", err)
 		return coordinatorToolError(err), nil
+	}
+	if !coordinatorScreenRead(call.Name) {
+		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.db, t.state.conversationID)
+		if readErr != nil {
+			return coordinatorToolError(readErr), nil
+		}
+		if actorCtx, contextErr := t.actionContext(ctx, record); contextErr == nil {
+			credential, authErr := currentHubOperator(actorCtx)
+			if authErr != nil {
+				return coordinatorToolError(authErr), nil
+			}
+			if err := t.restrictReadAudience(actorCtx, record, credential); err != nil {
+				return coordinatorToolError(err), nil
+			}
+		} else if record.ReadAudience != "" {
+			return coordinatorToolError(contextErr), nil
+		}
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -125,12 +142,34 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 	if err != nil {
 		return nil, err
 	}
+	if coordinatorScreenRead(call.Name) {
+		return t.screenRead(ctx, record, call)
+	}
+	if actorCtx, contextErr := t.actionContext(ctx, record); contextErr == nil {
+		credential, authErr := currentHubOperator(actorCtx)
+		if authErr != nil {
+			return nil, authErr
+		}
+		if err := t.coordinator.service.authorizeRead(actorCtx, t.coordinator.service.store.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
+			return nil, err
+		}
+		record.OwnerPrincipalID = credential.ID
+		record.OwnerSubject = ""
+		if credential.Hosted != nil {
+			record.OwnerSubject = credential.Hosted.Subject
+		}
+	} else if record.ReadAudience != "" {
+		return nil, contextErr
+	}
 	readable, err := t.readableProjects(ctx, record)
 	if err != nil {
 		return nil, err
 	}
 	if !slices.Contains(readable, record.ProjectID) {
 		return nil, errCoordinatorProjectUnreadable
+	}
+	if coordinatorSettingsTool(call.Name) {
+		return t.settingsTool(ctx, record, call)
 	}
 	switch call.Name {
 	case "read_skill":
