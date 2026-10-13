@@ -843,6 +843,8 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
+	BaseSHA           string
+	SecurityAudit     bool
 	Validation        *gate.CommandResult
 	RebaseRequired    bool
 	CI                *tracker.NativeLandingCIReceipt
@@ -862,6 +864,7 @@ type NativeLandingTarget struct {
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
+	SecurityAudit   *tracker.SecurityAuditReview
 	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
 	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
 	Path            string

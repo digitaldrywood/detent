@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -35,8 +36,10 @@ type sshBatchLander struct {
 func (l *sshBatchLander) LandChanges(ctx context.Context, requests []workspace.LandRequest) []workspace.LandOutcome {
 	l.callbacks.mu.Lock()
 	l.callbacks.batchValidations = make([]func(context.Context) error, len(requests))
+	l.callbacks.batchAudits = make([]func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error), len(requests))
 	for i, request := range requests {
 		l.callbacks.batchValidations[i] = request.Validate
+		l.callbacks.batchAudits[i] = request.Options.SecurityAudit
 	}
 	l.callbacks.mu.Unlock()
 	var results []sshLandingOutcome
@@ -62,6 +65,20 @@ func (c *SSHCallbacks) handleLandingBatch(ctx context.Context, method string, ar
 	case "landing.finish":
 		c.landingBatch.Finish()
 		return struct{}{}, nil
+	case "landing.audit":
+		var index int
+		var diff workspace.FileDiffs
+		if len(args) != 2 || json.Unmarshal(args[0], &index) != nil || json.Unmarshal(args[1], &diff) != nil {
+			return nil, errors.New("invalid SSH landing audit")
+		}
+		c.mu.Lock()
+		if index < 0 || index >= len(c.batchAudits) || c.batchAudits[index] == nil {
+			c.mu.Unlock()
+			return nil, errors.New("unknown SSH landing audit member")
+		}
+		audit := c.batchAudits[index]
+		c.mu.Unlock()
+		return audit(ctx, diff)
 	case "landing.validate":
 		var index int
 		if len(args) != 1 || json.Unmarshal(args[0], &index) != nil {
@@ -99,7 +116,7 @@ func (c *SSHCallbacks) handleLandingBatch(ctx context.Context, method string, ar
 			if err != nil {
 				return err
 			}
-			if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != request.Options.HeadSHA || current.Repository != request.Options.Repository || current.Method != request.Options.Method || current.GitHubPullRequest || !request.Options.Native {
+			if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.BaseSHA != target.BaseSHA || current.HeadSHA != request.Options.HeadSHA || current.Repository != request.Options.Repository || current.Method != request.Options.Method || current.GitHubPullRequest || !request.Options.Native || current.SecurityAudit != request.Options.SecurityAuditRequired {
 				return errors.New("SSH batch differs from the reviewed native version")
 			}
 			return nil
@@ -112,6 +129,15 @@ func (c *SSHCallbacks) handleLandingBatch(ctx context.Context, method string, ar
 		c.mu.Unlock()
 		if lander == nil {
 			return nil, errors.New("SSH batch source is unavailable")
+		}
+		if request.Options.SecurityAuditRequired {
+			request.Options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+				var audit tracker.SecurityAuditReview
+				if err := lander.peer.Call(ctx, "source.landing_audit", &audit, diff); err != nil {
+					return nil, err
+				}
+				return &audit, nil
+			}
 		}
 		result, err := c.landingBatch.Land(lander, request)
 		return newSSHLandingOutcome(result, err), nil
@@ -127,9 +153,19 @@ func (e *sshNativeExecution) FinishLandingBatch(ctx context.Context) error {
 
 func (e *sshNativeExecution) LandBatch(ctx context.Context, lander workspace.BatchLander, request workspace.LandRequest) (workspace.LandResult, error) {
 	e.sources.mu.Lock()
+	e.sources.landingAudit = request.Options.SecurityAudit
 	e.sources.landingBatch = func(ctx context.Context, requests []workspace.LandRequest) []sshLandingOutcome {
 		for i := range requests {
 			requests[i].Validate = func(ctx context.Context) error { return e.peer.Call(ctx, "landing.validate", nil, i) }
+			if requests[i].Options.SecurityAuditRequired {
+				requests[i].Options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+					var audit tracker.SecurityAuditReview
+					if err := e.peer.Call(ctx, "landing.audit", &audit, i, diff); err != nil {
+						return nil, err
+					}
+					return &audit, nil
+				}
+			}
 		}
 		outcomes := lander.LandChanges(ctx, requests)
 		results := make([]sshLandingOutcome, len(outcomes))

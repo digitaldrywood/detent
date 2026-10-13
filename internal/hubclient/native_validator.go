@@ -208,8 +208,24 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.change == nil || e.lastDiff == nil || e.lastDiff.HeadSHA != result.Run.HeadSHA || e.lastDiff.BaseSHA != result.Run.BaseSHA {
-		return errors.New("security audit differs from the published source")
+	var changeID, versionID string
+	if result.Landing {
+		if e.data.Identity == nil || e.data.Identity.Role != runner.RoleMerge {
+			return errors.New("landing security audit requires a merge execution")
+		}
+		detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
+		if err != nil {
+			return err
+		}
+		changeID, versionID = detail.Change.ID, detail.Change.CurrentVersion
+		if versionID != result.VersionID {
+			return errors.New("landing security audit version is no longer current")
+		}
+	} else {
+		if e.change == nil || e.lastDiff == nil || e.lastDiff.HeadSHA != result.Run.HeadSHA || e.lastDiff.BaseSHA != result.Run.BaseSHA {
+			return errors.New("security audit differs from the published source")
+		}
+		changeID, versionID = e.change.ChangeID, e.change.VersionID
 	}
 	decision := "approved"
 	if result.Verdict == "rework" {
@@ -222,9 +238,12 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 		fmt.Fprintf(&body, "\n\n%s %s: %s", finding.Severity, finding.Path, finding.Body)
 	}
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
-	_, err := client.ReviewChange(ctx, item, e.change.ChangeID, e.change.VersionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":security-audit:" + result.Run.InvocationID, LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, ExpectedVersionID: e.change.VersionID, Decision: decision, Body: body.String(), SecurityAudit: &result})
+	_, err := client.ReviewChange(ctx, item, changeID, versionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":security-audit:" + result.Run.InvocationID, LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, ExpectedVersionID: versionID, Decision: decision, Body: body.String(), SecurityAudit: &result})
 	if err != nil {
 		return err
+	}
+	if result.Landing {
+		return nil
 	}
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
 	if err != nil {
