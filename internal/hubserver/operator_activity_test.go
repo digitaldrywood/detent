@@ -113,6 +113,7 @@ func TestActivityTypicalDurations(t *testing.T) {
 
 func TestHostedActivityReads(t *testing.T) {
 	f := newUsageHostedFixture(t)
+	historyProject := f.createProject(t, "Historical project")
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	f.service.config.now = func() time.Time { return now }
 	db := f.service.database.db
@@ -131,6 +132,16 @@ func TestHostedActivityReads(t *testing.T) {
 	}
 	defer tx.Rollback()
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	historyScope := scope
+	historyScope.project = tracker.ProjectID(historyProject)
+	historyIssue, err := createNativeIssueTx(t.Context(), tx, historyScope, tracker.CreateIssue{Title: "Historical issue", State: "Todo"}, now.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
+SELECT 'activity_seed_history',i.id,l.machine_id,'activity_seed_history_session',l.expires_at,l.acquired_at,l.renewed_at,l.released_at,l.created_at,l.updated_at FROM leases l JOIN issues i ON i.native_id=? WHERE l.lease_id='lease_browser_usage_0_0'`, historyIssue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	for _, suffix := range []string{"1_0", "2_0"} {
 		issueScope := scope
 		if suffix == "1_0" {
@@ -192,15 +203,35 @@ func TestHostedActivityReads(t *testing.T) {
 		}
 	}
 
+	beforeHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
+	browserHostedStatus(t, beforeHistory, http.StatusOK)
 	historyAt := formatHubTime(now.Add(-30 * 24 * time.Hour))
 	if _, err := db.ExecContext(t.Context(), `WITH RECURSIVE samples(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM samples WHERE n<10001)
 INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
-SELECT printf('activity_history_%05d',n),l.issue_id,l.machine_id,printf('activity_history_session_%05d',n),?,?,?,?,?,? FROM samples JOIN leases l ON l.lease_id=CASE WHEN n%2=0 THEN 'lease_browser_usage_0_0' ELSE 'lease_browser_usage_1_0' END`, historyAt, historyAt, historyAt, historyAt, historyAt, historyAt); err != nil {
+SELECT printf('activity_history_%05d',n),l.issue_id,l.machine_id,printf('activity_history_session_%05d',n),?,?,?,?,?,? FROM samples JOIN leases l ON l.lease_id=CASE n%3 WHEN 0 THEN 'lease_browser_usage_0_0' WHEN 1 THEN 'lease_browser_usage_1_0' ELSE 'activity_seed_history' END`, historyAt, historyAt, historyAt, historyAt, historyAt, historyAt); err != nil {
+		t.Fatal(err)
+	}
+	historyData, err := json.Marshal(tracker.NativeRunData{Outcome: "succeeded", Runtime: &tracker.NativeRuntimeObservation{Phase: "implement", Identity: runtime.Identity, Phases: []tracker.NativePhase{{Name: "implement", StartedAt: now.Add(-30*24*time.Hour - time.Minute), FinishedAt: now.Add(-30 * 24 * time.Hour)}}}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at)
-SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencing_token,l.lease_id,1,'succeeded','{}',?,? FROM leases l JOIN issues i ON i.id=l.issue_id WHERE l.lease_id LIKE 'activity_history_%'`, historyAt, historyAt); err != nil {
+SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencing_token,l.lease_id,1,'succeeded',?,?,? FROM leases l JOIN issues i ON i.id=l.issue_id WHERE l.lease_id LIKE 'activity_history_%'`, string(historyData), historyAt, historyAt); err != nil {
 		t.Fatal(err)
+	}
+	afterHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
+	browserHostedStatus(t, afterHistory, http.StatusOK)
+	if !jsonEqualActivity(beforeHistory.Body.Bytes(), afterHistory.Body.Bytes()) {
+		t.Fatalf("historical attempts changed activity: before=%s after=%s", beforeHistory.Body.String(), afterHistory.Body.String())
+	}
+	for _, runner := range []string{"", "runner_browser_preview"} {
+		for _, running := range []bool{true, false} {
+			statement, args, err := activityAttemptsQuery(string(scope.organization), []string{f.project, f.privateProject, historyProject}, operatortool.ActivityRequest{Limit: 50, RunnerID: runner}, operatortool.AnalyticsWindow{From: now.Add(-7 * 24 * time.Hour), To: now}, now, running)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertActivityQueryPlan(t, f.service.database.reader, statement, args, "SEARCH n USING INDEX native_attempts_activity_")
+		}
 	}
 	for _, tt := range []struct {
 		name, account, query      string
@@ -289,7 +320,7 @@ SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencin
 
 	for _, query := range []string{"", "?project_id=" + f.project} {
 		measurements := []time.Duration{}
-		for range 6 {
+		for range 40 {
 			started := time.Now()
 			response := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity"+query)
 			if response.Code != http.StatusOK {
@@ -298,7 +329,7 @@ SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencin
 			measurements = append(measurements, time.Since(started))
 		}
 		slices.Sort(measurements)
-		t.Logf("10002 historical attempts, scope %q: p50=%s p95=%s", query, measurements[3], measurements[5])
+		t.Logf("10002 historical attempts across 3 projects with running and recent attempts, 40 HTTP samples, scope %q: p50=%s p95=%s", query, measurements[19], measurements[37])
 	}
 
 	for _, id := range []string{"attempt_browser_usage_0_0", "attempt_browser_usage_1_0"} {
