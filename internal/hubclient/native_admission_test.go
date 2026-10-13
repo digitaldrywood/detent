@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -23,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -217,6 +217,9 @@ func (r nativeDependencyRecoveryRunner) Run(ctx context.Context, request runner.
 }
 
 func TestNativeRecordedDependencyAdmission(t *testing.T) {
+	runtimeDatabasePath := testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+		return store.Open(ctx, store.Config{Path: path})
+	})
 	for _, test := range []struct {
 		name, refusal string
 		reasonCode    string
@@ -506,7 +509,7 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 			if test.advancePolicy {
 				h.repolicy(t)
 			}
-			runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+			runtimeStore, err := store.Open(t.Context(), store.Config{Path: runtimeDatabasePath(t)})
 			if err != nil {
 				t.Fatal(err)
 			}
