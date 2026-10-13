@@ -37,25 +37,28 @@ const (
 )
 
 type fakeProvider struct {
-	organizations   map[string]auth.Organization
-	createFailures  int
-	creates         int
-	mu              sync.Mutex
-	users           map[string]string
-	sessions        map[string]auth.HostedIdentity
-	memberships     map[string]auth.Membership
-	invitations     map[string]auth.Invitation
-	revokeErr       error
-	revoked         []string
-	sequence        int
-	authorizeBase   string
-	verifications   int
-	membershipLists int
-	refreshes       int
-	refreshDelay    time.Duration
-	keysDown        bool
-	access          map[string]fakeAccess
-	refresh         map[string]string
+	organizations       map[string]auth.Organization
+	createFailures      int
+	creates             int
+	mu                  sync.Mutex
+	users               map[string]string
+	sessions            map[string]auth.HostedIdentity
+	memberships         map[string]auth.Membership
+	invitations         map[string]auth.Invitation
+	revokeErr           error
+	revoked             []string
+	sequence            int
+	authorizeBase       string
+	verifications       int
+	membershipLists     int
+	refreshes           int
+	refreshDelay        time.Duration
+	sharedSessions      bool
+	lastSession         string
+	refreshOrganization string
+	keysDown            bool
+	access              map[string]fakeAccess
+	refresh             map[string]string
 }
 
 type fakeAccess struct {
@@ -122,7 +125,7 @@ func (p *fakeProvider) VerifyAccess(_ context.Context, token string) (auth.Hoste
 	return issued.access, nil
 }
 
-func (p *fakeProvider) RefreshAccess(_ context.Context, token string) (auth.HostedAccess, auth.HostedTokens, error) {
+func (p *fakeProvider) RefreshAccess(_ context.Context, token, organization string) (auth.HostedAccess, auth.HostedTokens, error) {
 	p.mu.Lock()
 	p.refreshes++
 	delay := p.refreshDelay
@@ -135,6 +138,13 @@ func (p *fakeProvider) RefreshAccess(_ context.Context, token string) (auth.Host
 	session, active := p.sessions[sessionID]
 	if !ok || !active {
 		return auth.HostedAccess{}, auth.HostedTokens{}, &auth.HostedIdentityError{Reason: auth.HostedReasonProviderRejected, Status: http.StatusBadRequest}
+	}
+	if organization != "" {
+		session.OrganizationID = organization
+		p.sessions[sessionID] = session
+	}
+	if p.refreshOrganization != "" {
+		session.OrganizationID = p.refreshOrganization
 	}
 	tokens := p.issueLocked(session)
 	return p.access[tokens.AccessToken].access, tokens, nil
@@ -187,6 +197,11 @@ func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Iden
 	p.sequence++
 	now := time.Now().UTC().Truncate(time.Second)
 	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: "session_" + user + "_" + string(rune('a'+p.sequence)), CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour)}
+	if p.sharedSessions {
+		hosted = p.sessions[p.lastSession]
+		hosted.OrganizationID = organization
+	}
+	p.lastSession = hosted.SessionID
 	p.sessions[hosted.SessionID] = hosted
 	return auth.Identity{Subject: user, Email: email, EmailVerified: true, Hosted: &hosted, Tokens: p.issueLocked(hosted)}, nil
 }
