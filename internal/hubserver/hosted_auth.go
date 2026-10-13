@@ -548,6 +548,9 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 	}
 	summary := "{}"
 	if m, ok := mutation.FromContext(ctx); ok {
+		if m.ActorKind != "" && m.ActorKind != "human" {
+			actor = m.PrincipalID
+		}
 		m.PrincipalID, m.OrganizationID = actor, s.config.Hosted.OrganizationID
 		m.RetryIdentity, m.InputHash = "", ""
 		raw, err := json.Marshal(struct {

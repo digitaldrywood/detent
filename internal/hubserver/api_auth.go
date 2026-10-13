@@ -38,6 +38,7 @@ type apiCredential struct {
 	HostedMembership    string
 	HostedPrincipal     string
 	HostedKeyScope      apikey.Scope
+	HostedKeyKind       string
 	HostedProjectAccess hostedProjectAccess
 	ManageRunners       bool
 	SessionHash         string
@@ -58,6 +59,7 @@ type apiErrorResponse struct {
 }
 
 type tokenRequest struct {
+	Kind          string              `json:"-"`
 	Name          string              `json:"name"`
 	Scope         apiScope            `json:"scope"`
 	Issuer        *apiCredential      `json:"-"`
@@ -72,6 +74,7 @@ type tokenGrantResponse struct {
 	ProjectID      string `json:"project_id"`
 }
 type tokenResponse struct {
+	Kind          string               `json:"kind,omitempty"`
 	ProjectAccess hostedProjectAccess  `json:"project_access,omitempty"`
 	Projects      []string             `json:"project_ids"`
 	ExpiresAt     *time.Time           `json:"expires_at,omitempty"`

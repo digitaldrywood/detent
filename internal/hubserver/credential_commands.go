@@ -36,7 +36,15 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 	defer tx.Rollback()
 	var user, organization, membership, keyScope any
 	nativeOnly := false
+	kind := "service"
 	if request.Issuer != nil {
+		kind = request.Kind
+		if kind == "" {
+			kind = "personal"
+		}
+		if kind != "personal" && kind != "service" {
+			return tokenResponse{}, nativeInvalid("Choose a personal or service key")
+		}
 		issuer := *request.Issuer
 		if s.config.Hosted == nil || issuer.Hosted == nil || issuer.Hosted.SupportActor != "" || issuer.HostedKeyScope != "" {
 			return tokenResponse{}, nativeInvalid("Sign in as an organization member to create an API key")
@@ -85,7 +93,7 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 	if request.ExpiresAt != nil {
 		expiry = formatHubTime(*request.ExpiresAt)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only,hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, request.Name, hash, tokenFingerprint(hash), request.Scope, formatHubTime(now), formatHubTime(now), expiry, nativeOnly, user, organization, membership, keyScope, access)
+	_, err = tx.ExecContext(ctx, `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at,expires_at,native_only,hosted_user_id,hosted_organization_id,hosted_membership_id,operator_key_scope,operator_project_access,key_kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, request.Name, hash, tokenFingerprint(hash), request.Scope, formatHubTime(now), formatHubTime(now), expiry, nativeOnly, user, organization, membership, keyScope, access, kind)
 	if err != nil {
 		return tokenResponse{}, &nativeError{Code: "token_conflict", Message: "API token name already exists", status: 409}
 	}
@@ -98,7 +106,7 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 		return tokenResponse{}, err
 	}
 	projects := append([]string{}, request.ProjectIDs...)
-	return tokenResponse{ProjectAccess: request.ProjectAccess, Projects: projects, ID: id, Name: request.Name, Scope: request.Scope, Token: token, Fingerprint: tokenFingerprint(hash), CreatedAt: now, ExpiresAt: request.ExpiresAt, KeyScope: request.KeyScope, NativeOnly: nativeOnly}, nil
+	return tokenResponse{Kind: kind, ProjectAccess: request.ProjectAccess, Projects: projects, ID: id, Name: request.Name, Scope: request.Scope, Token: token, Fingerprint: tokenFingerprint(hash), CreatedAt: now, ExpiresAt: request.ExpiresAt, KeyScope: request.KeyScope, NativeOnly: nativeOnly}, nil
 }
 
 func (s *Service) rotateAPITokenFor(ctx context.Context, id string) (tokenResponse, error) {
