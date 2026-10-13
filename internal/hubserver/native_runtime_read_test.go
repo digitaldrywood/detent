@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -42,6 +44,40 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	version := f.publish(t, "current", "")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	db := f.service.database.db
+	path := f.path + "/versions/" + version.ID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve-current"}, Decision: "approved"}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)
+	now := f.service.config.now().Add(time.Second)
+	f.service.config.now = func() time.Time { return now }
+	registered := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	registered.enroll(t)
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	mergeAttempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(registered.binding.MachineID), "succeeded", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: now}}, now, -1)
+	receipt := tracker.NativeLandingReceipt{ChangeID: f.change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, FromState: "Merging", TargetState: "In Progress", RefusalKind: "base_protected", Refusal: "base_protected", ObservedAt: now, Gate: &gate.CommandResult{ReceiptID: "receipt_example", Command: "make check-landing", HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("d", 40), FinishedAt: now, Output: strings.Repeat("validation output ", 4096)}}
+	if err := persistAttemptLanding(t.Context(), tx, mergeAttempt, receipt); err != nil {
+		t.Fatal(err)
+	}
+	finding := "Unresolved review: integration actor overwrites the runner actor"
+	issue := f.issue
+	issue.State = "In Progress"
+	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: issue.State, Reason: "worker_progress", ReasonDetail: finding}, now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(4 * time.Second)
+	repair := seedHealthRateAttempt(t, tx, scope, issue, string(registered.binding.MachineID), "running", tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Phase: "rework", HeartbeatAt: now}}, now, -1)
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.attempt_id',id) WHERE id=?", repair); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=NULL WHERE lease_id=(SELECT lease_id FROM native_attempts WHERE id=?)", repair); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	previous, count := 0, 0
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
@@ -84,6 +120,10 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			if count == 0 {
 				count = len(q.statements)
 			}
+			projected := explain.FromNativeEvidence(evidence)
+			if evidence.CurrentVersion == nil || evidence.CurrentVersion.VersionID != version.ID || evidence.CurrentVersion.HeadSHA != version.HeadSHA || evidence.CurrentVersion.Landing == nil || !evidence.CurrentVersion.Landing.Gate.OutputTruncated || len(evidence.CurrentVersion.Landing.Gate.Output) > 4096 || projected.RequiredGate.State != explain.GateFailed || projected.RequiredGate.Reason != finding || projected.RequiredGate.ExternalMerge.ObservedAt == nil || !projected.RequiredGate.ExternalMerge.ObservedAt.Equal(receipt.ObservedAt) || projected.RequiredGate.LocalValidation.State != explain.GatePassed || projected.Attempt.NativeID != repair || evidence.CurrentLease == nil || projected.Eligibility.Current.Outcome != "claimed" {
+				t.Fatalf("current refusal or claimed repair lost: gate=%#v merge=%#v version=%#v lease=%#v scheduling=%#v now=%s receipt_at=%s change_at=%s", projected.RequiredGate, projected.RequiredGate.ExternalMerge, evidence.CurrentVersion, evidence.CurrentLease, evidence.Scheduling, now.Format(time.RFC3339Nano), receipt.ObservedAt.Format(time.RFC3339Nano), evidence.Change.Change.UpdatedAt.Format(time.RFC3339Nano))
+			}
 			if len(q.statements) != count {
 				t.Fatalf("runtime query count grew with history: %d -> %d", count, len(q.statements))
 			}
@@ -120,6 +160,16 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 			}
 			t.Logf("%d historical versions: %d runtime queries; indexed current evidence", history, len(q.statements))
 		})
+	}
+	now = now.Add(time.Minute)
+	newVersion := f.publish(t, "superseding", version.ID)
+	evidence, err := readNativeRuntime(t.Context(), db, scope, string(f.issue.WorkItemID), "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := explain.FromNativeEvidence(evidence)
+	if evidence.CurrentVersion.VersionID != newVersion.ID || evidence.CurrentVersion.Landing != nil || projected.RequiredGate.State == explain.GateFailed || projected.RequiredGate.State == explain.GatePassed || len(projected.Reasons) != 0 || projected.RequiredGate.ExternalMerge.State != explain.GateUnknown {
+		t.Fatalf("superseding publication retained an old blocker: %#v", projected)
 	}
 }
 

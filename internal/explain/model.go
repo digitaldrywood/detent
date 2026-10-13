@@ -248,21 +248,45 @@ type PullRequest struct {
 }
 
 type Gate struct {
-	CIState        string      `json:"ci_state,omitempty"`
-	Reason         string      `json:"reason,omitempty"`
-	MergeableState string      `json:"mergeable_state,omitempty"`
-	HeadSHA        string      `json:"head_sha,omitempty"`
-	BaseSHA        string      `json:"base_sha,omitempty"`
-	AuditRunID     int64       `json:"audit_run_id,omitempty"`
-	AuditReason    string      `json:"audit_reason,omitempty"`
-	HumanAction    string      `json:"human_action,omitempty"`
-	State          GateState   `json:"state"`
-	SourceState    SourceState `json:"source_state"`
-	EvidenceID     string      `json:"evidence_id,omitempty"`
-	Source         string      `json:"source,omitempty"`
-	ObservedAt     *time.Time  `json:"observed_at,omitempty"`
-	Failures       []string    `json:"failures"`
-	Running        []string    `json:"running"`
+	LocalValidation *ValidationObservation `json:"local_validation,omitempty"`
+	ExternalMerge   *MergeObservation      `json:"external_merge,omitempty"`
+	CIState         string                 `json:"ci_state,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+	MergeableState  string                 `json:"mergeable_state,omitempty"`
+	HeadSHA         string                 `json:"head_sha,omitempty"`
+	BaseSHA         string                 `json:"base_sha,omitempty"`
+	AuditRunID      int64                  `json:"audit_run_id,omitempty"`
+	AuditReason     string                 `json:"audit_reason,omitempty"`
+	HumanAction     string                 `json:"human_action,omitempty"`
+	State           GateState              `json:"state"`
+	SourceState     SourceState            `json:"source_state"`
+	EvidenceID      string                 `json:"evidence_id,omitempty"`
+	Source          string                 `json:"source,omitempty"`
+	ObservedAt      *time.Time             `json:"observed_at,omitempty"`
+	Failures        []string               `json:"failures"`
+	Running         []string               `json:"running"`
+}
+
+type ValidationObservation struct {
+	State      GateState  `json:"state"`
+	ReceiptID  string     `json:"receipt_id,omitempty"`
+	Command    string     `json:"command"`
+	HeadSHA    string     `json:"head_sha"`
+	TreeSHA    string     `json:"tree_sha"`
+	ExitCode   int        `json:"exit_code"`
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
+}
+
+type MergeObservation struct {
+	State       GateState   `json:"state"`
+	SourceState SourceState `json:"source_state"`
+	ChangeID    string      `json:"change_id"`
+	VersionID   string      `json:"version_id"`
+	HeadSHA     string      `json:"head_sha"`
+	Reason      string      `json:"reason,omitempty"`
+	Detail      string      `json:"detail,omitempty"`
+	ObservedAt  *time.Time  `json:"observed_at,omitempty"`
+	Historical  bool        `json:"historical,omitempty"`
 }
 
 type SourceStatus struct {

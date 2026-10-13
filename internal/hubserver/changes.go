@@ -418,6 +418,12 @@ AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record
 }
 
 func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {
+	result, err := readCurrentChangeDetailWithVersion(ctx, query, scope, change, now)
+	result.Versions = nil
+	return result, err
+}
+
+func readCurrentChangeDetailWithVersion(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {
 	result := tracker.ChangeDetail{Change: change}
 	var staleApproval bool
 	version, found, err := readNativeChangeVersion(ctx, query, change)
@@ -445,7 +451,7 @@ AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record
 		return result, err
 	}
 	err = loadChangeExternal(ctx, query, scope, &result)
-	result.Versions, result.Reviews, result.Checks = nil, nil, nil
+	result.Reviews, result.Checks = nil, nil
 	return result, err
 }
 
