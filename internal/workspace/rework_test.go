@@ -420,9 +420,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				if err != nil || prepared.Status != MergePrepareStatusConflict {
 					t.Fatalf("prepare paused rework: %+v, %v", prepared, err)
 				}
-				checkpointIssue := issue
-				checkpointIssue.CheckpointQuiescent = true
-				checkpoint, changed, err := owner.PushCheckpointRef(t.Context(), info, checkpointIssue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				checkpoint, changed, err := owner.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
 				if err != nil || !changed {
 					t.Fatalf("paused rework checkpoint: changed=%v error=%v", changed, err)
 				}

@@ -123,9 +123,7 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	defer c.mu.Unlock()
 	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkpointTimeout)
 	defer cancel()
-	issue := c.issue
-	issue.CheckpointQuiescent = reason == "stage_finished" || reason == "rework_started"
-	next, pushed, err := c.publisher.PushCheckpointRef(pushCtx, c.info, issue, c.last, c.execution.Validate)
+	next, pushed, err := c.publisher.PushCheckpointRef(pushCtx, c.info, c.issue, c.last, c.execution.Validate)
 	c.failed = err != nil
 	if err != nil {
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_checkpoint_ref_failed", "reason", reason, "error", err)

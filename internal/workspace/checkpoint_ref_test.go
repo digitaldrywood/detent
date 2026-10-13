@@ -23,10 +23,12 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		validate    func(context.Context) error
 		want        error
 		excluded    string
-		transaction bool
+		transaction *portableReworkCheckpointCase
 	}{
 		{name: "runner killed mid-stage resumes elsewhere", validate: owned},
-		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: true},
+		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
+		{name: "periodic resolved rebase restores staged resolution", validate: owned, transaction: &portableReworkCheckpointCase{resolved: true}},
+		{name: "resolved rebase preserves excluded baseline files", validate: owned, transaction: &portableReworkCheckpointCase{resolved: true, baseline: true}},
 		{name: "excluded paths stay on the machine", validate: owned, excluded: ".env", edit: func(t *testing.T, path string) {
 			writeCheckpointFile(t, path, ".env", "TOKEN=example")
 			runGit(t, path, "add", "--force", "--", ".env")
@@ -72,8 +74,8 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			}
 			runGit(t, info.Path, "config", "user.name", "Test")
 			runGit(t, info.Path, "config", "user.email", "test@example.com")
-			if test.transaction {
-				verifyPortableReworkCheckpoint(t, source, info, issue, first, second, remote)
+			if test.transaction != nil {
+				verifyPortableReworkCheckpoint(t, source, info, issue, first, second, remote, *test.transaction)
 				return
 			}
 			writeCheckpointFile(t, info.Path, "committed.go", "package committed\n")
@@ -198,15 +200,29 @@ func writeCheckpointFile(t *testing.T, dir, path, content string) {
 	}
 }
 
-func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, issue Issue, first, second, remote string) {
+type portableReworkCheckpointCase struct {
+	resolved bool
+	baseline bool
+}
+
+func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, issue Issue, first, second, remote string, test portableReworkCheckpointCase) {
 	t.Helper()
-	issue.NativeRework, issue.CheckpointQuiescent = true, true
+	issue.NativeRework = true
+	if test.baseline {
+		if err := os.Mkdir(filepath.Join(first, ".detent"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeCheckpointFile(t, first, ".detent/fixture.md", "tracked baseline\n")
+		writeCheckpointFile(t, first, ".env.example", "EXAMPLE=fixture\n")
+		runGit(t, first, "add", "--force", ".detent/fixture.md", ".env.example")
+	}
 	for path, content := range map[string]string{"later.txt": "initial text\n", "binary.dat": "initial\x00binary", "name.txt": "rename contents\n"} {
 		writeCheckpointFile(t, first, path, content)
 	}
 	runGit(t, first, "add", ".")
 	runGit(t, first, "commit", "-m", "shared conflict fixture")
 	runGit(t, first, "push", "origin", "main")
+	runGit(t, second, "fetch", "origin")
 	runGit(t, info.Path, "merge", "--ff-only", "main")
 	writeCheckpointFile(t, info.Path, "README.md", "first source\n")
 	runGit(t, info.Path, "add", "README.md")
@@ -241,10 +257,18 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatalf("continue first resolution: %v", err)
 	}
 	writeCheckpointFile(t, info.Path, "later.txt", "partial later resolution\n")
+	if test.resolved {
+		writeCheckpointFile(t, info.Path, "binary.dat", "resolved\x00binary")
+		runGit(t, info.Path, "add", "-A")
+		if got := runGit(t, info.Path, "ls-files", "--unmerged"); got != "" {
+			t.Fatalf("fixture has unresolved conflicts: %s", got)
+		}
+	}
 	writeCheckpointFile(t, info.Path, "staged.txt", "staged alternative\n")
 	runGit(t, info.Path, "add", "staged.txt")
 	writeCheckpointFile(t, info.Path, "staged.txt", "unstaged alternative\n")
 	index := runGit(t, info.Path, "ls-files", "--stage", "-z")
+	staged := runGit(t, info.Path, "diff", "--cached", "--binary")
 	status := runGit(t, info.Path, "status", "--porcelain")
 	checkpoint, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, initial, func(ctx context.Context) error { return ctx.Err() })
 	if err != nil || !pushed {
@@ -257,14 +281,14 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatalf("unchanged transaction republished: %v, %v", pushed, err)
 	}
 
-	for _, failure := range []string{"staged secret", "unresolved secret", "staged size", "executable replay", "capture failure", "push failure", "live capture"} {
+	for _, failure := range []string{"staged secret", "unresolved secret", "staged size", "executable replay", "capture failure", "push failure", "lost ownership", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "excluded index path"} {
 		t.Run(failure, func(t *testing.T) {
 			before := readFile(t, filepath.Join(info.Path, "staged.txt"))
 			dir := linkedWorktreeGitDir(t, info.Path)
 			todo := readFile(t, filepath.Join(dir, "rebase-merge", "git-rebase-todo"))
 			stopped := readFile(t, filepath.Join(dir, "rebase-merge", "stopped-sha"))
-			current := issue
 			want := ErrCheckpointUnsafe
+			validate := func(ctx context.Context) error { return ctx.Err() }
 			switch failure {
 			case "staged secret":
 				writeCheckpointFile(t, info.Path, "staged.txt", strings.Join([]string{"-----BEGIN", "PRIVATE KEY-----"}, " "))
@@ -302,10 +326,19 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 				writeCheckpointFile(t, info.Path, "staged.txt", "publication candidate\n")
 				runGit(t, info.Path, "remote", "set-url", "--push", "origin", filepath.Join(t.TempDir(), "missing"))
 				want = nil
-			case "live capture":
-				current.CheckpointQuiescent = false
+			case "lost ownership":
+				writeCheckpointFile(t, info.Path, "staged.txt", "publication candidate\n")
+				validate = func(context.Context) error { return context.Canceled }
+				want = context.Canceled
+			case "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD":
+				if err := os.WriteFile(filepath.Join(dir, failure), []byte(original+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "excluded index path":
+				writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=changed\n")
+				runGit(t, info.Path, "add", "--force", ".env.example")
 			}
-			result, pushed, err := source.PushCheckpointRef(t.Context(), info, current, checkpoint, func(ctx context.Context) error { return ctx.Err() })
+			result, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, checkpoint, validate)
 			if err == nil || want != nil && !errors.Is(err, want) || pushed || result.CommitSHA != checkpoint.CommitSHA {
 				t.Fatalf("failed capture replaced custody: %#v, %v, %v", result, pushed, err)
 			}
@@ -313,6 +346,19 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 				t.Fatalf("failed capture replaced remote: %s", got)
 			}
 			writeCheckpointFile(t, info.Path, "staged.txt", "staged alternative\n")
+			switch failure {
+			case "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD":
+				if err := os.Remove(filepath.Join(dir, failure)); err != nil {
+					t.Fatal(err)
+				}
+			case "excluded index path":
+				runGit(t, info.Path, "reset", "HEAD", "--", ".env.example")
+				if test.baseline {
+					writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=fixture\n")
+				} else if err := os.Remove(filepath.Join(info.Path, ".env.example")); err != nil {
+					t.Fatal(err)
+				}
+			}
 			runGit(t, info.Path, "add", "staged.txt")
 			writeCheckpointFile(t, info.Path, "staged.txt", before)
 			if _, err := runGitAtWithInput(t.Context(), info.Path, nil, false, "0 "+strings.Repeat("0", 40)+"\tbinary.dat\x00"+index, "update-index", "-z", "--index-info"); err != nil {
@@ -393,6 +439,16 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	if runGit(t, restored.Path, "ls-files", "--stage", "-z") != index || runGit(t, restored.Path, "status", "--porcelain") != status {
 		t.Fatal("restored index alternatives or staged/unstaged state differ")
 	}
+	if got := runGit(t, restored.Path, "diff", "--cached", "--binary"); got != staged {
+		t.Fatal("restored staged diff differs from source runner")
+	}
+	if test.baseline {
+		for path, want := range map[string]string{".detent/fixture.md": "tracked baseline\n", ".env.example": "EXAMPLE=fixture\n"} {
+			if got := readFile(t, filepath.Join(restored.Path, path)); got != want {
+				t.Fatalf("baseline %s = %q", path, got)
+			}
+		}
+	}
 	for path, want := range map[string]string{"README.md": "first resolution\n", "later.txt": "partial later resolution\n", "staged.txt": "unstaged alternative\n"} {
 		if got := readFile(t, filepath.Join(restored.Path, path)); got != want {
 			t.Fatalf("%s = %q", path, got)
@@ -410,7 +466,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatalf("portable custody verification = %v, %v", verified, err)
 	}
 	continued, err := restorer.PrepareRework(t.Context(), restored, issue, MergePrepareOptions{})
-	if err != nil || continued.BaseSHA != prepared.BaseSHA || len(continued.ConflictPaths) < 3 {
+	if err != nil || continued.BaseSHA != prepared.BaseSHA || !test.resolved && len(continued.ConflictPaths) < 3 || test.resolved && len(continued.ConflictPaths) != 0 {
 		t.Fatalf("restored conflict = %#v, %v", continued, err)
 	}
 	writeCheckpointFile(t, restored.Path, "later.txt", "finished later resolution\n")
