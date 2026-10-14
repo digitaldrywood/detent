@@ -13,6 +13,32 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestCommitReadOnlyTransactionSkipsRefreshes(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO analytics_rollup_dirty SELECT native_id FROM issues WHERE native_id IS NOT NULL"); err != nil {
+		t.Fatal(err)
+	}
+	dirty := func() int {
+		var count int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_dirty").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	before := dirty()
+	tx, err := f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
+		t.Fatalf("commit a read-only transaction: %v", err)
+	}
+	if before == 0 || dirty() != before {
+		t.Fatalf("read-only commit changed the rollup work queue: %d dirty items, want %d", dirty(), before)
+	}
+}
+
 func rebuildTestAnalyticsRollups(t *testing.T, s *Service, scope nativeScope) {
 	t.Helper()
 	tx, err := s.database.db.BeginTx(t.Context(), nil)
@@ -229,16 +255,21 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 			t.Fatalf("project %s has no rollups to backfill", project.project)
 		}
 	}
-	migration, err := migrationFiles.ReadFile("migrations/20261013083000_analytics_rollups.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	down := strings.Split(string(migration), "-- +goose Down")[1]
-	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", 20261013083000); err != nil {
-		t.Fatal(err)
+	for _, version := range []struct {
+		id   int64
+		name string
+	}{{20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
+		migration, err := migrationFiles.ReadFile("migrations/" + strconv.FormatInt(version.id, 10) + "_" + version.name + ".sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		down := strings.Split(string(migration), "-- +goose Down")[1]
+		if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", version.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
 		t.Fatal(err)
