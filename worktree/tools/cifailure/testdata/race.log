@@ -1,0 +1,6 @@
+2026-09-30T01:02:04.0000000Z {"Time":"2026-09-30T01:02:04Z","Action":"run","Package":"github.com/digitaldrywood/detent/internal/orchestrator","Test":"TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle"}
+2026-09-30T01:02:04.0000000Z {"Action":"output","Package":"github.com/digitaldrywood/detent/internal/orchestrator","Test":"TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle","Output":"    dispatch_test.go:3281: missing skip_reason=already_running\n"}
+2026-09-30T01:02:04.0000000Z {"Action":"output","Package":"github.com/digitaldrywood/detent/internal/other","Test":"TestUnrelated","Output":"an interleaved passing test\n"}
+2026-09-30T01:02:04.0000000Z {"Action":"pass","Package":"github.com/digitaldrywood/detent/internal/other","Test":"TestUnrelated"}
+2026-09-30T01:02:04.0000000Z {"Action":"fail","Package":"github.com/digitaldrywood/detent/internal/orchestrator","Test":"TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle","Elapsed":0.025}
+2026-09-30T01:02:04.0000000Z {"Action":"fail","Package":"github.com/digitaldrywood/detent/internal/orchestrator","Elapsed":0.1}

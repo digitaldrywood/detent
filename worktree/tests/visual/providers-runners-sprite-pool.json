@@ -1,0 +1,16 @@
+{
+  "min_runners": 1,
+  "max_runners": 3,
+  "idle_seconds": 300,
+  "bootstrap": "git clone https://example.test/preview/project.git /workspace/project",
+  "revision": 4,
+  "members": [
+    {
+      "name": "preview-build-sprite",
+      "state": "enrolled",
+      "bootstrap_log": "Project checkout ready. Runner enrollment complete.",
+      "runner_id": "runner_sprite_preview",
+      "idle_since": "2026-09-10T12:00:00Z"
+    }
+  ]
+}

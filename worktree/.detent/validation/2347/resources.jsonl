@@ -1,0 +1,5 @@
+{"at": "2026-09-08T20:39:33.162497+00:00", "load": [164.15478515625, 79.99755859375, 63.41552734375], "processes": 2244, "runnable": 101, "test_and_go_processes": 11, "test_and_go_rss_kib": 2566144, "test_and_go_cpu_percent": 516.0}
+{"at": "2026-09-08T20:40:03.284588+00:00", "load": [131.705078125, 80.322265625, 64.1162109375], "processes": 2249, "runnable": 74, "test_and_go_processes": 10, "test_and_go_rss_kib": 4790832, "test_and_go_cpu_percent": 408.9}
+{"at": "2026-09-08T20:40:33.389760+00:00", "load": [123.82373046875, 83.630859375, 65.892578125], "processes": 2249, "runnable": 43, "test_and_go_processes": 11, "test_and_go_rss_kib": 1008944, "test_and_go_cpu_percent": 247.5}
+{"at": "2026-09-08T20:53:00.255414+00:00", "load": [55.91650390625, 59.9794921875, 60.4462890625], "processes": 2226, "runnable": 20, "test_and_go_processes": 1, "test_and_go_rss_kib": 284912, "test_and_go_cpu_percent": 220.6}
+{"at": "2026-09-08T21:12:24.132128+00:00", "phase": "hub_race_baseline", "load": [23.4150390625, 29.544921875, 42.09033203125], "processes": 2220, "runnable": 72, "test_and_go_processes": 1, "test_and_go_rss_kib": 353072, "test_and_go_cpu_percent": 231.3}

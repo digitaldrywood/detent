@@ -1,0 +1,32 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_42",
+        "mergeStateStatus": "CLEAN",
+        "mergeQueue": {
+          "url": "https://github.test/example/repo/queue/main",
+          "entries": {
+            "totalCount": 2
+          },
+          "configuration": {
+            "maximumEntriesToBuild": 3
+          }
+        },
+        "mergeQueueEntry": null,
+        "headRefOid": "b339d71",
+        "timelineItems": {
+          "nodes": [
+            {
+              "beforeCommit": {
+                "oid": "removed-head"
+              },
+              "reason": "failed_checks",
+              "createdAt": "2026-09-11T03:50:00Z"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
