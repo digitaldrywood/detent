@@ -135,8 +135,6 @@ func runnerStorageConstraint(ctx context.Context, cfg globalconfig.Config) strin
 }
 
 func runnerStorageConstraintForPaths(cfg globalconfig.Config, paths toolcache.Paths, volume func(string) (uint64, uint64, error)) string {
-	report := toolcache.ReadTrimReport(paths.Build)
-	var cacheCapacity uint64
 	roots := []string{paths.Build, cfg.WorkspaceRoot}
 	if cfg.WorkspaceRoot == "" {
 		roots = append(roots, filepath.Dir(cfg.Path))
@@ -149,18 +147,10 @@ func runnerStorageConstraintForPaths(cfg globalconfig.Config, paths toolcache.Pa
 		if err != nil {
 			return "Host storage is unavailable; waiting for a storage observation."
 		}
-		if root == paths.Build {
-			cacheCapacity = total
-		}
 		reserve := toolcache.Policy{}.NormalizedForCapacity(total).MaxBytes
 		if free < uint64(reserve) {
 			return fmt.Sprintf("Host storage has %s free below the %s reserve; waiting for disk space.", toolcache.FormatBytes(int64(min(free, 1<<63-1))), toolcache.FormatBytes(reserve))
 		}
 	}
-	policy := cfg.Global.Cache.NormalizedForCapacity(cacheCapacity)
-	if report.Error == "" && report.LastTrim != "" && report.RetainedBytes >= policy.MaxBytes {
-		return fmt.Sprintf("Host Go build cache reached its admission target (%s / %s); waiting for safe age expiry.", toolcache.FormatBytes(report.RetainedBytes), toolcache.FormatBytes(policy.MaxBytes))
-	}
-
 	return ""
 }
