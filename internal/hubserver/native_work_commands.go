@@ -514,6 +514,8 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Type: request.Type, Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
 	case operatortool.AddComment:
 		return s.createNativeCommentCommand(ctx, scope, request.Identifier, tracker.CreateComment{Mutation: command, Body: *request.Body})
+	case operatortool.VerifyFix:
+		return s.verifyNativeIssueCommand(ctx, scope, request.Identifier, tracker.VerifyFix{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Result: request.Result, Comment: request.Comment})
 	case operatortool.EditComment:
 		if request.ExpectedRevision <= 0 {
 			return nil, nativeInvalid("expected revision is required")

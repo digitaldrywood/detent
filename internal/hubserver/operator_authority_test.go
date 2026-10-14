@@ -192,6 +192,7 @@ func TestReporterOperatorAuthority(t *testing.T) {
 					{operatortool.EditComment, true},
 					{operatortool.MoveItem, true},
 					{operatortool.UpdateTestItem, true},
+					{operatortool.VerifyFix, true},
 					{operatortool.EditItem, false},
 					{operatortool.SetDependency, false},
 					{operatortool.SetQueuePriority, false},

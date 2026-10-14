@@ -23,6 +23,8 @@ func TestWorkReadArguments(t *testing.T) {
 		{"bug filter", WorkList, `{"project_id":"project","type":"bug"}`, true},
 		{"change request filter", WorkList, `{"project_id":"project","type":"change_request"}`, true},
 		{"unknown type filter", WorkList, `{"project_id":"project","type":"question"}`, false},
+		{"to-verify filter", WorkList, `{"project_id":"project","created_by":"me","verification":"pending"}`, true},
+		{"unknown verification filter", WorkList, `{"project_id":"project","verification":"failed"}`, false},
 		{"list default", WorkList, `{"project_id":"project"}`, true},
 		{"open fingerprint search", WorkList, `{"project_id":"project","fingerprint":"canonical","open":true,"limit":2}`, true},
 		{"nonboolean open", WorkList, `{"project_id":"project","open":"true"}`, false},

@@ -420,6 +420,11 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 				if err != nil || scope.actionTarget != "Cancelled" || issue.Actor.PrincipalID != scope.actor().PrincipalID {
 					return operatortool.ErrAccessDenied
 				}
+			case operatortool.VerifyFix:
+				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
+				if err != nil || issue.Actor.PrincipalID != scope.actor().PrincipalID {
+					return operatortool.ErrAccessDenied
+				}
 			case operatortool.EditComment:
 				comment, err := readNativeComment(ctx, tx, *scope, scope.actionItem, scope.actionComment)
 				if err != nil || comment.Actor.PrincipalID != scope.actor().PrincipalID {

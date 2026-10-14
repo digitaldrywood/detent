@@ -26,6 +26,7 @@ const (
 	SetQueuePriority       = "set_queue_priority"
 	TransferItem           = "transfer_item"
 	UpdateTestItem         = "update_test_item"
+	VerifyFix              = "verify_fix"
 )
 
 // WorkArguments are application inputs only. Connection authority, actor,
@@ -57,10 +58,11 @@ type WorkArguments struct {
 	BaseSHA             string    `json:"base_sha,omitempty"`
 	HeadSHA             string    `json:"head_sha,omitempty"`
 	FindingID           string    `json:"finding_id,omitempty"`
+	Result              string    `json:"result,omitempty"`
+	Comment             string    `json:"comment,omitempty"`
 	Evidence            string    `json:"evidence,omitempty"`
 	Item                int       `json:"item,omitempty"`
 	ItemText            string    `json:"text,omitempty"`
-	Result              string    `json:"result,omitempty"`
 	Note                string    `json:"note,omitempty"`
 	RelatedIssue        int       `json:"related_issue,omitempty"`
 }
@@ -84,6 +86,7 @@ func WorkCatalog() []Definition {
 		commandDefinition(AcknowledgeParks, "Acknowledge the item's existing park summary through the dashboard command.", selector, `"identifier"`, false),
 		commandDefinition(DisposeSecurityFinding, "Record a false-positive disposition for the exact trusted security finding using current authority.", selector+`,"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1},"base_sha":{"type":"string","minLength":1,"maxLength":256},"head_sha":{"type":"string","minLength":1,"maxLength":256},"finding_id":{"type":"string","minLength":1,"maxLength":256},"evidence":{"type":"string","minLength":1,"maxLength":4096}`, `"identifier","repository","pull_request","base_sha","head_sha","finding_id","evidence"`, true),
 		commandDefinition(UpdateTestItem, "Record a pass, fail or blocked result for one checklist item of a native issue labeled test-plan. Items are numbered from 1 in body order; text is the item's exact text from work_item test_plan and a changed item is refused as a conflict; the plan text is unchanged and the result records who and when. Reporters may record results. For a fail result, ask the tester for the number of the issue they filed and pass it as related_issue to link it as related; related_issue is accepted only with fail. work_item returns the plan's progress.", selector+`,"item":{"type":"integer","minimum":1,"maximum":1000},"text":{"type":"string","minLength":1,"maxLength":4096},"result":{"type":"string","enum":["pass","fail","blocked"]},"note":{"type":"string","maxLength":8000,"description":"At most 2000 characters."},"related_issue":{"type":"integer","minimum":1}`, `"identifier","item","text","result"`, false),
+		commandDefinition(VerifyFix, "Answer whether the fix works for a native issue awaiting verification: verification pending on an issue in Done that a person filed. Only the filer, or a member and above, may answer; a Reporter answers only on issues they filed. result verified records who verified and when, and the issue stays in Done. result not_fixed requires comment describing what is still broken (embed upload_attachment references to attach screenshots), adds it to the issue, and moves the issue from Done back to Todo through the workflow owner. Optional expected_revision refuses a stale answer.", selector+revision+`,"result":{"type":"string","enum":["verified","not_fixed"]},"comment":{"type":"string","minLength":1,"maxLength":32768}`, `"identifier","result"`, false),
 		commandDefinition(OrderItem, "Set queue ordering where the deployment dashboard offers it.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"rank":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","queue_scope","state","rank"`, false),
 	}
 	for _, name := range []string{ListComments, WorkflowTimeline} {
@@ -158,6 +161,9 @@ func DecodeWorkArguments(name string, raw json.RawMessage) (WorkArguments, error
 	}
 	if name == EditItem && request.Type == nil && request.Title == nil && request.Body == nil && request.Labels == nil && request.Priority == nil {
 		return request, invalidArgument("type, title, body, labels, priority", "at least one field is required")
+	}
+	if name == VerifyFix && request.Result == "not_fixed" && request.Comment == "" {
+		return request, invalidArgument("comment", "is required when result is not_fixed")
 	}
 	if (name == AddComment || name == EditComment) && strings.TrimSpace(*request.Body) == "" {
 		return request, invalidArgument("body", "must not be blank")

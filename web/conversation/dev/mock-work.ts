@@ -49,6 +49,7 @@ interface MockIssue {
   profile: string;
   type?: "bug" | "change_request";
   report_context?: { url?: string; app_build?: string; browser?: string; os?: string; viewport?: string; captured_at?: string };
+  verification?: { state: "pending" | "verified"; verified_by?: { kind: string; principal_id: string }; verified_at?: string };
   title: string;
   body: string;
   state: string;
@@ -484,6 +485,7 @@ export function createWorkMock(options: {
           terminal: lane === "Done",
           ...(index % 3 === 0 ? { type: "bug" as const } : index % 3 === 1 ? { type: "change_request" as const } : {}),
           ...(index === 0 ? { report_context: { url: "https://app.example.test/settings", app_build: "v1.4.2", browser: "Chrome 130", os: "macOS 15", viewport: "1440x900", captured_at: "2026-10-13T12:00:00Z" } } : {}),
+          ...(pagination && index === 3 ? { verification: { state: "pending" as const } } : {}),
           ...(index % 4 === 3 ? {} : { priority: index % 4 }),
           labels: index % 3 === 0 ? [LABELS[index % LABELS.length]!, "effort:medium"] : [],
           assignees: ASSIGNEES[index % ASSIGNEES.length] === "" ? [] : [ASSIGNEES[index % ASSIGNEES.length]!],
@@ -1581,6 +1583,44 @@ export function createWorkMock(options: {
         if (!issue.terminal && STATES.find((state) => state.name === target)?.terminal) terminalEntries.set(issue.work_item_id, new Date(now).toISOString());
         issue.state = target;
         issue.terminal = STATES.find((candidate) => candidate.name === target)?.terminal ?? false;
+        issue.revision = String(Number(issue.revision) + 1);
+        issue.updated_at = new Date().toISOString();
+        bump();
+        json(response, 200, issue);
+        return true;
+      }
+
+      if (action === "verification" && method === "POST") {
+        const body = await readBody();
+        const key = String(body.idempotency_key ?? "");
+        if (key.length === 0 || key.length > 128) {
+          invalid(response, "An idempotency key of at most 128 bytes is required");
+          return true;
+        }
+        if (String(body.expected_revision ?? "") !== issue.revision) {
+          json(response, 409, { code: "revision_conflict", message: "The requested operation is unavailable" });
+          return true;
+        }
+        if (issue.state !== "Done" || issue.verification?.state !== "pending") {
+          invalid(response, "Issue is not awaiting verification");
+          return true;
+        }
+        const result = String(body.result ?? "");
+        if (result === "verified") {
+          issue.verification = { state: "verified", verified_by: { kind: "human", principal_id: "tok_mock" }, verified_at: new Date().toISOString() };
+        } else if (result === "not_fixed") {
+          if (typeof body.comment !== "string" || body.comment.trim().length === 0) {
+            invalid(response, "not_fixed requires a comment describing what is still broken");
+            return true;
+          }
+          delete issue.verification;
+          issue.state = "Todo";
+          issue.terminal = false;
+          terminalEntries.delete(issue.work_item_id);
+        } else {
+          invalid(response, "result must be verified or not_fixed");
+          return true;
+        }
         issue.revision = String(Number(issue.revision) + 1);
         issue.updated_at = new Date().toISOString();
         bump();

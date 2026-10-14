@@ -94,6 +94,7 @@ type NativeIssue struct {
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
 	Type               string              `json:"type,omitempty"`
 	ReportContext      *ReportContext      `json:"report_context,omitempty"`
+	Verification       *NativeVerification `json:"verification,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	Snippet            string              `json:"snippet,omitempty"`
@@ -381,6 +382,26 @@ type UpdateComment struct {
 	Body             string   `json:"body"`
 }
 
+const (
+	VerificationPending  = "pending"
+	VerificationVerified = "verified"
+	VerifyResultVerified = "verified"
+	VerifyResultNotFixed = "not_fixed"
+)
+
+type NativeVerification struct {
+	State      string     `json:"state"`
+	VerifiedBy *Actor     `json:"verified_by,omitempty"`
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+}
+
+type VerifyFix struct {
+	Mutation
+	ExpectedRevision Revision `json:"expected_revision,string,omitempty"`
+	Result           string   `json:"result"`
+	Comment          string   `json:"comment,omitempty"`
+}
+
 type Transition struct {
 	Mutation
 	PolicyID         string   `json:"policy_id,omitempty"`
@@ -434,6 +455,7 @@ type CollaborationData struct {
 	Reason            string                   `json:"reason,omitempty"`
 	ReasonDetail      string                   `json:"reason_detail,omitempty"`
 	TestItem          *TestItemResult          `json:"test_item,omitempty"`
+	Verification      string                   `json:"verification,omitempty"`
 }
 
 type Page[T any] struct {

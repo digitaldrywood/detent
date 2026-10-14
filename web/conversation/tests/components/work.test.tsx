@@ -1294,6 +1294,50 @@ describe("the filter-first Work surface", () => {
     }
   });
 
+  it.each([
+    { result: "verified", filer: true },
+    { result: "not_fixed", filer: true },
+    { result: null, filer: false },
+  ] as const)("answers a pending fix verification ($result) only as its filer without a known role", async ({ result, filer }) => {
+    const sent: Record<string, unknown>[] = [];
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
+      if (String(input).endsWith("/verification")) sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const response = await fetch(input, init);
+      if (!filer || (init?.method ?? "GET") !== "GET" || !/\/work-items\/wi_[^/]+$/.test(new URL(input, "http://fixture.test").pathname)) return response;
+      const issue = await response.json() as NativeIssue;
+      return Response.json(issue.verification?.state === "pending" ? { ...issue, actor: { ...issue.actor, principal_id: "fixture-principal" } } : issue, { status: response.status });
+    });
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    const pending = page.items.find((item) => item.verification?.state === "pending")!;
+    const done = page.items.find((item) => item.state === "Done" && item.verification === undefined)!;
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: done.work_item_id } }));
+    await screen.findByRole("heading", { level: 1, name: done.title });
+    expect(screen.queryByTestId("issue-verification")).toBeNull();
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: pending.work_item_id } }));
+    await screen.findByRole("heading", { level: 1, name: pending.title });
+    if (result === null) {
+      expect(screen.queryByTestId("issue-verification")).toBeNull();
+      return;
+    }
+    const controls = within(await screen.findByTestId("issue-verification"));
+    if (result === "verified") {
+      fireEvent.click(controls.getByRole("button", { name: "Verified" }));
+    } else {
+      fireEvent.click(controls.getByRole("button", { name: "Still broken" }));
+      const submit = controls.getByTestId("verification-still-broken-submit");
+      expect(submit.hasAttribute("disabled")).toBe(true);
+      fireEvent.change(controls.getByLabelText("What is still broken?"), { target: { value: "Saving still loses the change." } });
+      expect(submit.hasAttribute("disabled")).toBe(false);
+      fireEvent.click(submit);
+    }
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject(result === "verified" ? { result } : { result, comment: "Saving still loses the change." });
+    expect(sent[0]!.expected_revision).toBe(pending.revision);
+    await waitFor(() => expect(screen.queryByTestId("issue-verification")).toBeNull());
+  });
+
   it("names the organization, follows organization changes and preserves project scope", async () => {
     const fixture = await pagedWork();
     await settledWork();

@@ -149,6 +149,15 @@ func validateNativeIssueQuery(params url.Values) error {
 					return err
 				}
 			}
+		case "verification":
+			if len(values) > 2 {
+				return nativeVerificationFilterInvalid()
+			}
+			for _, value := range values {
+				if value != tracker.VerificationPending && value != tracker.VerificationVerified {
+					return nativeVerificationFilterInvalid()
+				}
+			}
 		case "state", "label", "assignee", "priority":
 			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
 				return nativeInvalid("Query contains an unsupported field or value")
@@ -298,6 +307,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	var filterClauses strings.Builder
 	for _, filter := range []struct{ name, clause string }{
 		{"type", "i.issue_type = ?"},
+		{"verification", "i.verification_state = ?"},
 		{"state", "ws.detent_state = ?"},
 		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
 		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},
@@ -634,4 +644,8 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		}
 	}
 	return page, nil
+}
+
+func nativeVerificationFilterInvalid() error {
+	return &nativeError{Code: "invalid_request", Message: "verification must be pending or verified", status: http.StatusUnprocessableEntity, publicMessage: true}
 }
