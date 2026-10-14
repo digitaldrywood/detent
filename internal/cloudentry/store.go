@@ -86,7 +86,7 @@ func (s *store) prepare(ctx context.Context, applicationID int64, directory stri
 	if err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, s.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName("entry_schema_version"))
+	provider, err := goose.NewProvider(goose.DialectSQLite3, s.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName("entry_schema_version"), goose.WithAllowOutofOrder(true))
 	if err != nil {
 		return err
 	}
