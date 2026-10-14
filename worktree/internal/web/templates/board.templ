@@ -1,0 +1,1918 @@
+package templates
+
+import (
+	"net/url"
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+// BoardPage is the app's home: exception strip → figure row → fixed-height,
+// independently-scrollable lanes. The page itself never scrolls.
+templ BoardPage(data DashboardData) {
+	@AppShell(BoardShellDataFromDashboard(data), boardScopeSelect(data)) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+			>
+				@BoardSnapshot(data)
+			</div>
+		</main>
+		@boardAlertScript()
+		@boardLaneScript()
+		@boardKanbanDragScript()
+		@workViewScript()
+	}
+}
+
+// BoardSnapshot is the morph target for SSE ticks. Every element carries a
+// stable id so idiomorph preserves DOM (and lane scroll positions).
+// First paint: an unconfigured instance gets the first-run state, a
+// configured one waiting on its first snapshot gets lane skeletons —
+// never again once data exists. A degraded refresh that still carries
+// prior tracker data keeps the last-known lanes visible (via
+// projectKanbanBoardLoaded) rather than flashing skeletons.
+templ BoardSnapshot(data DashboardData) {
+	{{ alerts := boardAlerts(data.Snapshot) }}
+	{{ view := boardViewFromDashboard(data) }}
+	if boardFirstRun(data) {
+		if len(alerts) > 0 {
+			<div class="flex-none px-5 pt-3.5">
+				@boardAlertsBar(alerts)
+			</div>
+		}
+		@workToolbar(data, view)
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col" data-work-view-panel="board">
+			@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+		</div>
+		@workStateList("Connect a repository to start orchestrating work.")
+	} else if !projectKanbanBoardLoaded(data) {
+		if len(alerts) > 0 {
+			<div class="flex-none px-5 pt-3.5">
+				@boardAlertsBar(alerts)
+			</div>
+		}
+		@workToolbar(data, view)
+		<div class="flex min-h-0 min-w-0 flex-1 flex-col" data-work-view-panel="board">
+			if snapshotDegraded(data.Snapshot) {
+				<div class="flex-none px-5 pt-4">
+					@snapshotReadiness(data.Snapshot)
+				</div>
+			} else {
+				@primitives.SkeletonLanes(4)
+			}
+		</div>
+		if snapshotDegraded(data.Snapshot) {
+			@workStateList("Work data is unavailable. Check the toolbar health status for refresh details.")
+		} else {
+			@workListSkeleton()
+		}
+	} else {
+		@boardSnapshotBody(data, alerts, view)
+	}
+}
+
+templ boardSnapshotBody(data DashboardData, alerts []boardAlert, view boardView) {
+	if len(view.Exceptions) > 0 {
+		<div id="board-exceptions" class="flex-none px-5 pt-3.5">
+			@primitives.ExceptionStrip(view.Exceptions)
+		</div>
+	}
+	<p id="board-feedback" class={ "flex flex-none items-center gap-2 px-5 pt-3.5 text-xs " + boardFeedbackClass(data.Kanban.FeedbackKind) } role="status" aria-live="polite" hidden?={ data.Kanban.Feedback == "" }>
+		if data.Kanban.Feedback != "" {
+			<span aria-hidden="true">{ boardFeedbackGlyph(data.Kanban.FeedbackKind) }</span>
+			{ data.Kanban.Feedback }
+		}
+	</p>
+	@workToolbar(data, view)
+	<div id="board-figures" class="flex-none px-5 pb-3 pt-4">
+		@primitives.FigureRow(view.Figures) {
+			if len(alerts) > 0 {
+				@boardAlertsBar(alerts)
+			} else {
+				<span id="board-freshness" class={ "min-w-0 truncate font-mono text-xs tabular-nums " + boardExtraTextClass(refreshFreshnessKind(data.Snapshot)) }>{ refreshFreshnessSummary(data.Snapshot) }</span>
+			}
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+			@boardLanePicker(view)
+		}
+	</div>
+	<div class="flex min-h-0 min-w-0 flex-1 flex-col" data-work-view-panel="board">
+		<div
+			id="board-lane-position"
+			class="flex flex-none items-center justify-center px-5 pb-2 font-mono text-2xs text-sec tabular-nums md:hidden"
+			data-board-lane-position
+			role="status"
+			aria-live="polite"
+			aria-label={ "Lane 1 of " + formatCount(view.Visible) }
+		>
+			<span aria-hidden="true"><span data-board-lane-position-current>1</span>/<span data-board-lane-position-total>{ formatCount(view.Visible) }</span></span>
+		</div>
+		<div
+			id="board-lanes"
+			class={ boardLanesClass(data) }
+			data-board-lanes
+			data-board-key={ view.Key }
+			data-preserve-scroll="board-lanes"
+		>
+			for _, lane := range view.Lanes {
+				@boardLaneView2(lane)
+			}
+		</div>
+	</div>
+	@workList(view)
+}
+
+templ boardAlertsBar(alerts []boardAlert) {
+	if len(alerts) > 0 {
+		<section
+			id="board-alerts"
+			class={ boardAlertsClass(alerts) }
+			role="alert"
+			aria-live="polite"
+			data-board-alert-count={ strconv.Itoa(len(alerts)) }
+			data-board-alert-tone={ string(alerts[0].Tone) }
+			if boardAlertKindActive(alerts, boardAlertKindLastKnown) {
+				data-board-snapshot-stale="true"
+			}
+		>
+			<button
+				id="board-alerts-toggle"
+				type="button"
+				class="flex h-5 min-w-0 max-w-full items-center gap-1.5 px-2 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current"
+				data-board-alerts-toggle
+				aria-expanded="false"
+				aria-controls="board-alerts-overlay"
+				aria-label={ boardAlertButtonLabel(alerts) }
+			>
+				<span class="contents" data-board-alert-lead-glyph>
+					@boardAlertGlyph(alerts[0], "size-3.5 shrink-0")
+				</span>
+				<span class="shrink-0 font-medium" data-board-alert-count-label>{ boardCountLabel(len(alerts), "fault", "faults") }</span>
+				<span class="hidden shrink-0 text-current/60 md:inline" aria-hidden="true">·</span>
+				<span class="hidden min-w-0 flex-1 truncate text-text md:inline" data-board-alert-lead-summary>{ alerts[0].TerseSummary }</span>
+				if len(alerts) > 1 {
+					<span class="shrink-0 font-medium" data-board-alert-overflow>{ "+" + strconv.Itoa(len(alerts)-1) }</span>
+				}
+				<span class="shrink-0 transition-transform duration-150 data-[open=true]:rotate-180" data-board-alerts-chevron data-open="false" aria-hidden="true">
+					@icon.ChevronDown(icon.Props{Class: "size-3.5"})
+				</span>
+			</button>
+			<template data-board-alerts-overlay-template>
+				@boardAlertsOverlayContents(alerts)
+			</template>
+		</section>
+	}
+}
+
+templ boardAlertsOverlayContents(alerts []boardAlert) {
+	{{ dismissals := boardStalenessDismissals(alerts) }}
+	<div class="divide-y divide-line" data-board-alerts-overlay-content>
+		<header class="sticky top-0 z-10 flex h-10 items-center gap-2 border-b border-line bg-page px-3 text-sm">
+			<span class="contents" data-board-alert-lead-glyph>
+				@boardAlertGlyph(alerts[0], "size-4 shrink-0")
+			</span>
+			<p class="min-w-0 flex-1 truncate font-medium text-text" data-board-alert-count-label>{ boardCountLabel(len(alerts), "fault", "faults") }</p>
+			for _, dismissal := range dismissals {
+				<form
+					class="shrink-0"
+					hx-post={ "/api/v1/projects/" + url.PathEscape(dismissal.ProjectID) + "/staleness-warnings/acknowledge" }
+					hx-swap="none"
+					hx-confirm={ "Dismiss " + strconv.Itoa(len(dismissal.WarningIDs)) + " staleness warnings?" }
+					data-staleness-dismiss-form
+					data-staleness-dismiss-bulk
+					data-staleness-project-id={ dismissal.ProjectID }
+				>
+					for _, warningID := range dismissal.WarningIDs {
+						<input type="hidden" name="warning_id" value={ warningID }/>
+					}
+					<button type="submit" class="inline-flex shrink-0 items-center rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-staleness-dismiss-label>{ boardStalenessDismissalLabel(dismissal, len(dismissals)) }</button>
+				</form>
+			}
+			<button
+				type="button"
+				class="inline-flex shrink-0 items-center gap-1 rounded-chip px-2 py-1 text-xs font-medium text-sec hover:bg-elev hover:text-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				data-board-alerts-close
+				aria-label="Collapse board alerts"
+			>
+				@icon.ChevronUp(icon.Props{Class: "size-3.5"})
+				Close
+			</button>
+		</header>
+		<div class="grid divide-y divide-line">
+			for _, alert := range alerts {
+				<section
+					id={ alert.ID }
+					class="grid min-w-0 gap-2 px-4 py-3"
+					data-board-alert={ string(alert.Kind) }
+					data-board-alert-summary={ alert.TerseSummary }
+					data-board-alert-tone={ string(alert.Tone) }
+					if alert.StalenessWarningID != "" {
+						data-staleness-warning-id={ alert.StalenessWarningID }
+						data-staleness-project-id={ alert.StalenessProjectID }
+					}
+				>
+					<template data-board-alert-glyph-template>
+						@boardAlertGlyph(alert, "size-3.5 shrink-0")
+					</template>
+					<div class="flex min-w-0 items-start gap-3">
+						<div class="min-w-0 flex-1">
+							<p class="font-medium text-text">{ alert.TerseSummary }</p>
+							if alert.DetailSummary != "" {
+								<p class="mt-0.5 text-xs text-sec">{ alert.DetailSummary }</p>
+							}
+						</div>
+						if alert.DeepLink != "" {
+							<a class="shrink-0 text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(alert.DeepLink) }>
+								if alert.DeepLinkLabel != "" {
+									{ alert.DeepLinkLabel }
+								} else if alert.Overflow > 0 {
+									{ "+" + strconv.Itoa(alert.Overflow) + " more · Health" }
+								} else {
+									Health
+								}
+							</a>
+						}
+					</div>
+					if len(alert.DetailRows) > 0 {
+						<div class="grid gap-2 pl-3">
+							for _, row := range alert.DetailRows {
+								<div id={ row.ID } class="min-w-0 border-l border-line pl-3 text-xs">
+									<p class="flex min-w-0 flex-wrap items-baseline gap-x-2 text-text">
+										if row.Link != "" {
+											<a class="font-mono font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ templ.SafeURL(row.Link) }>{ row.Label }</a>
+										} else {
+											<span class="font-mono font-medium">{ row.Label }</span>
+										}
+										if row.Summary != "" {
+											<span class="text-sec">{ row.Summary }</span>
+										}
+									</p>
+									if row.Detail != "" {
+										<p class="mt-0.5 break-words text-sec">{ row.Detail }</p>
+									}
+								</div>
+							}
+						</div>
+					}
+					if alert.Action != nil {
+						<form
+							class="pl-3"
+							hx-post={ alert.Action.Path }
+							hx-target={ alert.Action.Target }
+							hx-swap={ boardAlertActionSwap(alert.Action) }
+							hx-confirm={ alert.Action.Confirm }
+							if alert.StalenessWarningID != "" {
+								data-staleness-dismiss-form
+								data-staleness-warning-id={ alert.StalenessWarningID }
+								data-staleness-project-id={ alert.StalenessProjectID }
+							}
+						>
+							<input type="hidden" name="confirm" value="true"/>
+							<button type="submit" class="inline-flex min-h-8 items-center justify-center rounded-card border border-current/40 bg-surface px-3 py-1.5 text-xs font-medium text-text hover:bg-current/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/50">{ alert.Action.Label }</button>
+						</form>
+					}
+				</section>
+			}
+		</div>
+	</div>
+}
+
+func boardAlertActionSwap(action *boardAlertAction) string {
+	if action != nil && action.Swap != "" {
+		return action.Swap
+	}
+	return "innerHTML"
+}
+
+templ boardAlertGlyph(alert boardAlert, class string) {
+	if alert.Tone == primitives.KindErr {
+		@icon.TriangleAlert(icon.Props{Class: class})
+	} else if alert.Tone == primitives.KindInfo {
+		@icon.Info(icon.Props{Class: class})
+	} else {
+		@icon.CircleAlert(icon.Props{Class: class})
+	}
+}
+
+templ boardAlertsOverlayHost() {
+	<div
+		id="board-alerts-overlay"
+		class="fixed z-40 hidden max-h-[40vh] overflow-y-auto rounded-card border border-line bg-page shadow-lg"
+		data-board-alerts-overlay-host
+		aria-hidden="true"
+		hidden
+	></div>
+}
+
+templ boardAlertScript() {
+	<script>
+		(function () {
+			var open = false;
+			var positionFrame = 0;
+
+			function alertsBar() {
+				return document.getElementById("board-alerts");
+			}
+
+			function alertsToggle() {
+				return document.querySelector("[data-board-alerts-toggle]");
+			}
+
+			function overlayHost() {
+				return document.querySelector("[data-board-alerts-overlay-host]");
+			}
+
+			function overlayTemplate() {
+				var bar = alertsBar();
+				return bar ? bar.querySelector("template[data-board-alerts-overlay-template]") : null;
+			}
+
+			function setToggleState(expanded) {
+				var toggle = alertsToggle();
+				if (!toggle) return;
+				toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+				var chevron = toggle.querySelector("[data-board-alerts-chevron]");
+				if (chevron) chevron.setAttribute("data-open", expanded ? "true" : "false");
+			}
+
+			function renderOverlay() {
+				var host = overlayHost();
+				var template = overlayTemplate();
+				if (!host || !(template instanceof HTMLTemplateElement)) return false;
+				host.replaceChildren(template.content.cloneNode(true));
+				if (window.htmx) window.htmx.process(host);
+				return true;
+			}
+
+			function positionOverlay() {
+				positionFrame = 0;
+				if (!open) return;
+				var bar = alertsBar();
+				var host = overlayHost();
+				if (!bar || !host) return;
+				var rect = bar.getBoundingClientRect();
+				var margin = 8;
+				var width = Math.min(640, Math.max(0, window.innerWidth - margin * 2));
+				var left = Math.min(Math.max(margin, rect.left), Math.max(margin, window.innerWidth - width - margin));
+				host.style.left = Math.round(left) + "px";
+				host.style.top = Math.round(rect.bottom + 4) + "px";
+				host.style.width = Math.round(width) + "px";
+			}
+
+			function requestOverlayPosition() {
+				if (positionFrame) return;
+				positionFrame = requestAnimationFrame(positionOverlay);
+			}
+
+			function closeOverlay(restoreFocus) {
+				open = false;
+				var host = overlayHost();
+				if (host) {
+					host.hidden = true;
+					host.classList.add("hidden");
+					host.setAttribute("aria-hidden", "true");
+				}
+				setToggleState(false);
+				if (restoreFocus) {
+					var toggle = alertsToggle();
+					if (toggle) toggle.focus();
+				}
+			}
+
+			function openOverlay() {
+				if (!renderOverlay()) return;
+				open = true;
+				var host = overlayHost();
+				if (!host) return;
+				host.hidden = false;
+				host.classList.remove("hidden");
+				host.setAttribute("aria-hidden", "false");
+				setToggleState(true);
+				positionOverlay();
+			}
+
+			function syncOverlayAfterMorph() {
+				if (!open) {
+					setToggleState(false);
+					return;
+				}
+				if (!alertsBar()) {
+					closeOverlay(false);
+					return;
+				}
+				var host = overlayHost();
+				var scrollTop = host ? host.scrollTop : 0;
+				if (!renderOverlay()) {
+					closeOverlay(false);
+					return;
+				}
+				host = overlayHost();
+				if (!host) return;
+				host.hidden = false;
+				host.classList.remove("hidden");
+				host.setAttribute("aria-hidden", "false");
+				host.scrollTop = scrollTop;
+				setToggleState(true);
+				positionOverlay();
+			}
+
+			function settledSnapshot(event) {
+				var detailTarget = event.detail && event.detail.target;
+				var target = detailTarget instanceof Element ? detailTarget : event.target;
+				if (!(target instanceof Element)) return false;
+				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
+			}
+
+			function dismissedWarningIDs(form) {
+				var ids = [];
+				var directID = form.dataset.stalenessWarningId || "";
+				if (directID) ids.push(directID);
+				form.querySelectorAll("input[name='warning_id']").forEach(function (input) {
+					if (input.value && !ids.includes(input.value)) ids.push(input.value);
+				});
+				return ids;
+			}
+
+			function removeDismissedWarnings(root, projectID, warningIDs) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert='staleness-warning'][data-staleness-warning-id]").forEach(function (warning) {
+					if (warning.dataset.stalenessProjectId !== projectID) return;
+					if (warningIDs.includes(warning.dataset.stalenessWarningId || "")) warning.remove();
+				});
+			}
+
+			function syncBulkDismissals(root) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-staleness-dismiss-bulk]").forEach(function (form) {
+					var projectID = form.dataset.stalenessProjectId || "";
+					var active = [];
+					root.querySelectorAll("[data-board-alert='staleness-warning'][data-staleness-warning-id]").forEach(function (warning) {
+						if (warning.dataset.stalenessProjectId === projectID) active.push(warning.dataset.stalenessWarningId || "");
+					});
+					form.querySelectorAll("input[name='warning_id']").forEach(function (input) {
+						if (!active.includes(input.value)) input.remove();
+					});
+					if (active.length === 0) {
+						form.remove();
+						return;
+					}
+					var label = form.querySelector("[data-staleness-dismiss-label]");
+					if (label) label.textContent = label.textContent.replace(/\(\d+\)$/, "(" + active.length + ")");
+				});
+			}
+
+			function faultCountLabel(count) {
+				return count + (count === 1 ? " fault" : " faults");
+			}
+
+			function syncAlertCountRoot(root, count) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert-count-label]").forEach(function (label) {
+					label.textContent = faultCountLabel(count);
+				});
+			}
+
+			function syncLeadAlertRoot(root, lead, glyphTemplate) {
+				if (!root || typeof root.querySelectorAll !== "function") return;
+				root.querySelectorAll("[data-board-alert-lead-glyph]").forEach(function (glyph) {
+					glyph.replaceChildren(glyphTemplate.content.cloneNode(true));
+				});
+				root.querySelectorAll("[data-board-alert-lead-summary]").forEach(function (summary) {
+					summary.textContent = lead.dataset.boardAlertSummary || "";
+				});
+			}
+
+			function syncLeadAlert(bar, roots, lead, count) {
+				var glyphTemplate = lead.querySelector("template[data-board-alert-glyph-template]");
+				if (!(glyphTemplate instanceof HTMLTemplateElement)) return;
+				roots.forEach(function (root) {
+					syncLeadAlertRoot(root, lead, glyphTemplate);
+				});
+				var tones = {
+					err: ["border-err/40", "bg-err/10", "text-err"],
+					info: ["border-info/40", "bg-info/10", "text-info"],
+					warn: ["border-warn/40", "bg-warn/10", "text-warn"],
+				};
+				Object.values(tones).flat().forEach(function (className) {
+					bar.classList.remove(className);
+				});
+				var tone = lead.dataset.boardAlertTone || "warn";
+				(tones[tone] || tones.warn).forEach(function (className) {
+					bar.classList.add(className);
+				});
+				bar.dataset.boardAlertTone = tone;
+				var toggle = alertsToggle();
+				if (toggle) {
+					var countLabel = count + (count === 1 ? " board fault" : " board faults");
+					toggle.setAttribute("aria-label", countLabel + ". Highest severity: " + (lead.dataset.boardAlertSummary || "") + ". Expand details.");
+				}
+			}
+
+			function settleStalenessDismissal(form) {
+				var projectID = form.dataset.stalenessProjectId || "";
+				var warningIDs = dismissedWarningIDs(form);
+				if (!projectID || warningIDs.length === 0) return;
+				var host = overlayHost();
+				var template = overlayTemplate();
+				removeDismissedWarnings(host, projectID, warningIDs);
+				if (template instanceof HTMLTemplateElement) removeDismissedWarnings(template.content, projectID, warningIDs);
+				syncBulkDismissals(host);
+				if (template instanceof HTMLTemplateElement) syncBulkDismissals(template.content);
+				var countRoot = template instanceof HTMLTemplateElement ? template.content : host;
+				var count = countRoot && typeof countRoot.querySelectorAll === "function" ? countRoot.querySelectorAll("[data-board-alert]").length : 0;
+				var bar = alertsBar();
+				if (!bar || count === 0) {
+					if (bar) bar.remove();
+					closeOverlay(false);
+					return;
+				}
+				bar.dataset.boardAlertCount = String(count);
+				syncAlertCountRoot(bar, count);
+				syncAlertCountRoot(host, count);
+				if (template instanceof HTMLTemplateElement) syncAlertCountRoot(template.content, count);
+				var lead = countRoot.querySelector("[data-board-alert]");
+				if (lead) {
+					var leadRoots = [bar, host];
+					if (template instanceof HTMLTemplateElement) leadRoots.push(template.content);
+					syncLeadAlert(bar, leadRoots, lead, count);
+				}
+				var overflow = bar.querySelector("[data-board-alert-overflow]");
+				if (overflow) {
+					overflow.textContent = "+" + Math.max(0, count - 1);
+					overflow.hidden = count <= 1;
+				}
+			}
+
+			document.addEventListener("click", function (event) {
+				var target = event.target instanceof Element ? event.target : null;
+				if (!target) return;
+				if (target.closest("[data-board-alerts-close]")) {
+					closeOverlay(true);
+					return;
+				}
+				if (!target.closest("[data-board-alerts-toggle]")) return;
+				if (open) {
+					closeOverlay(false);
+				} else {
+					openOverlay();
+				}
+			});
+
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape" && open) closeOverlay(true);
+			});
+
+			document.addEventListener("htmx:afterSettle", function (event) {
+				if (settledSnapshot(event)) syncOverlayAfterMorph();
+			});
+
+			document.addEventListener("htmx:beforeSwap", function (event) {
+				var requestElement = event.detail && event.detail.requestConfig && event.detail.requestConfig.elt;
+				var form = requestElement instanceof Element ? requestElement.closest("[data-staleness-dismiss-form]") : null;
+				if (!(form instanceof HTMLFormElement)) return;
+				var status = event.detail.xhr ? event.detail.xhr.status : 0;
+				if (status < 200 || status >= 300) return;
+				event.detail.shouldSwap = false;
+				settleStalenessDismissal(form);
+			});
+
+			window.addEventListener("resize", requestOverlayPosition);
+		})();
+	</script>
+}
+
+templ boardLaneView2(lane boardLaneView) {
+	<section
+		id={ lane.DomID }
+		class="flex w-full flex-none snap-start flex-col overflow-hidden rounded-card border border-line bg-surface data-[kanban-drop-allowed=false]:border-err/45 data-[kanban-drop-allowed=false]:opacity-70 data-[kanban-drop-allowed=false]:ring-2 data-[kanban-drop-allowed=false]:ring-inset data-[kanban-drop-allowed=false]:ring-err/20 data-[kanban-drop-allowed=true]:border-accent data-[kanban-drop-allowed=true]:ring-2 data-[kanban-drop-allowed=true]:ring-inset data-[kanban-drop-allowed=true]:ring-accent/30 data-[kanban-drop-source=true]:border-dashed data-[kanban-drop-source=true]:border-accent/50 data-[kanban-drop-source=true]:ring-2 data-[kanban-drop-source=true]:ring-inset data-[kanban-drop-source=true]:ring-accent/20 data-[lane-hidden=true]:hidden md:min-w-44 md:max-w-80 md:flex-1 md:snap-none md:data-[kanban-drop-allowed=false]:ring-0 md:data-[kanban-drop-allowed=true]:ring-0 md:data-[kanban-drop-source=true]:ring-0"
+		data-board-lane={ lane.LaneID }
+		data-board-lane-title={ lane.Title }
+		data-board-lane-default={ boardBoolAttr(lane.DefaultVisible) }
+		data-board-lane-card-count={ strconv.Itoa(lane.CardCount) }
+		data-board-lane-visibility-state={ string(boardLaneVisibilityAuto) }
+		data-board-lane-pinned="false"
+		data-lane-hidden={ boardBoolAttr(!lane.DefaultVisible) }
+		if lane.DropState != "" {
+			data-kanban-drop-state={ lane.DropState }
+			data-kanban-drop-key={ lane.DropKey }
+		}
+	>
+		<header class="flex flex-none items-center gap-1.5 border-b border-line px-3 py-2">
+			if lane.Live {
+				@primitives.StatusDot(primitives.KindOK, true)
+			}
+			<h2 class="text-xs font-semibold text-text">{ lane.Title }</h2>
+			<span class="font-mono text-2xs font-medium text-sec tabular-nums" data-work-lane-count data-work-lane-label={ lane.Count }>{ lane.Count }</span>
+		</header>
+		<div class="dt-lane-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2" data-preserve-scroll={ lane.DomID + "-scroll" } data-kanban-card-container>
+			if len(lane.Cards) == 0 {
+				<div class="contents" data-kanban-empty-line>
+					@primitives.EmptyLine(lane.EmptyMessage)
+				</div>
+			}
+			<div class="rounded-card border border-dashed border-line px-3 py-4 text-center text-xs text-sec" data-work-filter-empty hidden>No issues match the active filters.</div>
+			for _, card := range lane.Cards {
+				@boardCardView2(card)
+			}
+		</div>
+	</section>
+}
+
+templ boardCardView2(card boardCardView) {
+	<article
+		id={ card.DomID }
+		class={ boardCardClass(card) + boardCardInteractionClass(card) }
+		role="button"
+		tabindex="0"
+		{ sheetOpenAttrs(card.Project, card.Identity, card.Scope, true)... }
+		{ workItemDataAttributes(card.Work, "board")... }
+		data-detail-sheet-project={ card.Project }
+		data-detail-sheet-reference={ card.Number }
+		title={ boardCardHoverTitle(card) }
+		if card.DragDrop {
+			data-kanban-card
+			data-kanban-current-state={ card.CurrentState }
+			if card.DataSeq > 0 {
+				data-kanban-data-seq={ strconv.FormatUint(card.DataSeq, 10) }
+			}
+			if card.IssueID != "" {
+				data-kanban-issue-id={ card.IssueID }
+			}
+			if card.CanDrag {
+				data-kanban-action="move"
+				data-kanban-allowed-targets={ card.AllowedTargets }
+			}
+			else
+			if card.MoveDisabledText != "" {
+				data-kanban-move-disabled="true"
+				data-kanban-move-disabled-reason={ card.MoveDisabledText }
+			}
+		}
+	>
+		<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs text-sec" data-board-card-identity>
+			<span class="min-w-0 max-w-full break-words whitespace-normal font-medium leading-tight text-text" data-board-card-project>{ card.Project }</span>
+			<div class="flex min-w-0 max-w-full flex-wrap items-center gap-1" data-board-card-references>
+				<span class="contents" data-board-card-issue>
+					@primitives.TrackerReferenceLinkIsolated(card.Number, card.URL, boardCardNumberClass(card))
+				</span>
+				if card.MetaRight != "" {
+					<span class="contents" data-board-card-pr>
+						@primitives.TrackerReferenceLinkIsolated(card.MetaRight, card.PRURL, "flex-none max-w-full break-all tabular-nums")
+					</span>
+				}
+				<span class="min-w-0 truncate text-dim" data-board-creation-origin={ card.CreationOrigin }>
+					if card.CreationOrigin == "operator" {
+						<span>Operator</span>
+					} else {
+						<span>{ "Machine · " + card.CreationOrigin }</span>
+					}
+				</span>
+			</div>
+			<span class="flex min-w-0 max-w-[min(100%,max(55%,12ch))] shrink-0 items-center gap-1 font-medium" title={ "Model: " + card.Model } data-board-card-model>
+				<span class="min-w-0 truncate">{ card.Model }</span>
+				if card.ModelDefault {
+					<span class="shrink-0 text-dim">default</span>
+				}
+			</span>
+			<span class="shrink-0 text-dim" title="Configured effort" data-board-card-effort>{ card.Effort }</span>
+		</div>
+		<span class="hidden" data-board-card-state>{ card.State }</span>
+		<div class={ boardCardTitleClass(card) } data-board-card-title>{ card.Title }</div>
+		if len(card.Signals) > 0 {
+			<div class="grid min-w-0 gap-1" data-board-card-signals>
+				for _, signal := range card.Signals {
+					<div class={ "min-w-0 truncate text-2xs " + boardExtraTextClass(signal.Kind) } data-board-card-signal>{ signal.Text }</div>
+				}
+			</div>
+		}
+		<div class="min-w-0" data-board-card-content="comfy">
+			<div class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-2xs font-medium text-sec" data-board-card-priority-details>
+				if card.PriorityBadge != "" {
+					<span
+						id={ card.DomID + "-priority" }
+						class={ boardPriorityBadgeClass(card) }
+						tabindex="0"
+						role="img"
+						aria-label={ "Priority: " + card.PriorityBadge }
+						data-board-priority
+						data-board-priority-top={ boardBoolAttr(card.PriorityTop) }
+						data-help-trigger
+						data-help-scope="dispatch-priority"
+						data-help-term={ card.DomID + "-priority" }
+						data-help-title={ card.PriorityTitle }
+						data-help-description={ card.PriorityDetail }
+						onclick="event.stopPropagation()"
+					><span class="min-w-0 truncate">{ card.PriorityBadge }</span></span>
+				}
+			</div>
+		</div>
+		if card.CanDrag {
+			@boardKanbanDragMoveForm(card)
+		}
+	</article>
+}
+
+templ boardKanbanDragMoveForm(card boardCardView) {
+	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#snapshot" hx-swap="morph:innerHTML" data-kanban-drag-move-form>
+		<input type="hidden" name="kanban_drag" value="true"/>
+		<input type="hidden" name="kanban_board" value={ card.Scope }/>
+		<input type="hidden" name="project_id" value={ card.MoveProject }/>
+		<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		<input type="hidden" name="current_state" value={ card.CurrentState }/>
+		<input type="hidden" name="target_state" value="" data-kanban-drag-target-state/>
+		if card.PRNumber != "" {
+			<input type="hidden" name="pr_number" value={ card.PRNumber }/>
+		}
+	</form>
+}
+
+// boardLanePicker renders inside the figure row but is driven by the
+// delegated boardLaneScript outside #snapshot, so morphs cannot tear its
+// behavior down; the script re-asserts open state on htmx:afterSettle.
+templ boardLanePicker(view boardView) {
+	<details id="board-lane-picker" class="relative col-span-3 justify-self-start md:col-span-1" data-board-lane-picker data-work-board-only data-preserve-details="board-lane-picker">
+		<summary class="flex min-h-11 cursor-pointer list-none items-center gap-1.5 rounded-chip border border-line px-2.5 py-1 text-2xs text-sec hover:text-text [&::-webkit-details-marker]:hidden md:min-h-0">
+			Lanes <span data-board-lane-count class="tabular-nums">{ boardLaneCountLabel(view) }</span>
+			<span
+				class="rounded-chip bg-warn/15 px-1.5 py-0.5 font-mono text-warn"
+				data-board-hidden-card-count
+				title={ boardLaneHiddenCardSummary(view) }
+				aria-label={ boardLaneHiddenCardSummary(view) }
+				hidden?={ view.HiddenCards == 0 }
+			>{ boardLaneHiddenCardBadgeLabel(view) }</span>
+			@icon.ChevronDown(icon.Props{Class: "size-3"})
+		</summary>
+		<div class="absolute left-0 top-full z-40 mt-1 flex max-h-[calc(100vh-10rem)] w-[calc(100vw-2.5rem)] flex-col gap-1 overflow-y-auto rounded-card border border-line bg-elev p-1.5 md:left-auto md:right-0 md:max-h-none md:w-80 md:overflow-visible">
+			<div class="flex items-center justify-between gap-2 border-b border-line px-1 pb-1.5">
+				<span class="text-2xs font-medium uppercase text-sec">Visibility</span>
+				<button
+					type="button"
+					class="inline-flex min-h-11 items-center gap-1.5 rounded-chip border border-line px-2 text-2xs font-medium text-sec hover:border-accent hover:text-accent disabled:pointer-events-none disabled:opacity-40 md:min-h-7"
+					data-board-lane-reset-all
+					aria-label="Reset all lanes to Auto"
+					title="Reset all lanes to Auto"
+					disabled
+					aria-disabled="true"
+				>
+					@icon.RotateCcw(icon.Props{Class: "size-3"})
+					<span>Reset all</span>
+				</button>
+			</div>
+			for _, lane := range view.Lanes {
+				<div class={ boardLaneVisibilityRowClass(lane) } data-board-lane-row={ lane.LaneID } data-board-lane-card-count={ strconv.Itoa(lane.CardCount) } data-board-lane-hidden-populated={ boardBoolAttr(boardLaneHiddenPopulated(lane)) }>
+					<div class="flex min-w-0 items-center gap-2">
+						<span class="min-w-0 flex-1 truncate font-medium">{ lane.Title }</span>
+						<span class="rounded-chip bg-surface px-1.5 py-0.5 font-mono text-2xs text-sec tabular-nums">{ lane.Count }</span>
+					</div>
+					<div class="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5">
+						<span class="min-w-0 truncate text-2xs text-sec" title={ boardLaneVisibilityStatusTitle(lane) } data-board-lane-visibility-status>{ boardLaneVisibilityStatusLabel(lane) }</span>
+						<select
+							class="h-11 rounded-chip border border-line bg-surface px-2 text-2xs text-text outline-none focus:border-accent md:h-7"
+							data-board-lane-visibility={ lane.LaneID }
+							data-board-lane-visibility-state={ string(boardLaneVisibilityAuto) }
+							data-board-lane-visibility-effective={ boardBoolAttr(lane.DefaultVisible) }
+							aria-label={ "Visibility for " + lane.Title + " lane" }
+							title={ boardLaneVisibilityStatusTitle(lane) }
+						>
+							<option value={ string(boardLaneVisibilityAuto) } selected>Auto</option>
+							<option value={ string(boardLaneVisibilityShow) }>Show</option>
+							<option value={ string(boardLaneVisibilityHide) }>Hide</option>
+						</select>
+						<button
+							type="button"
+							class="inline-flex size-11 items-center justify-center rounded-chip border border-line text-sec hover:border-accent hover:text-accent disabled:pointer-events-none disabled:opacity-40 md:size-7"
+							data-board-lane-reset={ lane.LaneID }
+							value={ lane.LaneID }
+							aria-label={ "Reset " + lane.Title + " lane to Auto" }
+							title="Reset lane to Auto"
+							disabled
+							aria-disabled="true"
+						>
+							@icon.RotateCcw(icon.Props{Class: "size-3"})
+						</button>
+					</div>
+				</div>
+			}
+		</div>
+	</details>
+}
+
+templ boardLaneScript() {
+	<script>
+		(function () {
+			var storagePrefix = "detent.ui.board.lanes.v2.";
+			var legacyStoragePrefix = "detent.ui.board.lanes.";
+			var storageVersion = 1;
+			var stateAuto = "auto";
+			var stateShow = "show";
+			var stateHide = "hide";
+			var pickerOpen = false;
+			var activeLaneID = "";
+			var lanePositionFrame = 0;
+
+			function visibilityStorage() {
+				try {
+					return window.localStorage;
+				} catch (err) {
+					return null;
+				}
+			}
+			function storageKey(root) {
+				return storagePrefix + (root.getAttribute("data-board-key") || "fleet");
+			}
+			function legacyStorageKey(root) {
+				return legacyStoragePrefix + (root.getAttribute("data-board-key") || "fleet");
+			}
+			function emptyPrefs() {
+				return { show: new Set(), hide: new Set() };
+			}
+			function laneIDSet(ids) {
+				var out = new Set();
+				if (!Array.isArray(ids)) return out;
+				ids.forEach(function (id) {
+					if (typeof id === "string" && id.trim() !== "") out.add(id);
+				});
+				return out;
+			}
+			function normalizedPrefs(showIDs, hideIDs) {
+				var prefs = emptyPrefs();
+				laneIDSet(showIDs).forEach(function (id) {
+					prefs.show.add(id);
+				});
+				laneIDSet(hideIDs).forEach(function (id) {
+					if (!prefs.show.has(id)) prefs.hide.add(id);
+				});
+				return prefs;
+			}
+			function discardLegacyPrefs(root, store) {
+				var legacy = legacyStorageKey(root);
+				try {
+					if (legacy !== storageKey(root)) store.removeItem(legacy);
+				} catch (err) {}
+			}
+			function readPrefs(root) {
+				var store = visibilityStorage();
+				if (!store) return emptyPrefs();
+				discardLegacyPrefs(root, store);
+				var raw = "";
+				try {
+					raw = store.getItem(storageKey(root));
+				} catch (err) {
+					return emptyPrefs();
+				}
+				if (!raw) return emptyPrefs();
+				try {
+					var parsed = JSON.parse(raw);
+					if (!parsed || parsed.v !== storageVersion) {
+						try {
+							store.removeItem(storageKey(root));
+						} catch (err) {}
+						return emptyPrefs();
+					}
+					return normalizedPrefs(parsed.show, parsed.hide);
+				} catch (err) {
+					try {
+						store.removeItem(storageKey(root));
+					} catch (err) {}
+					return emptyPrefs();
+				}
+			}
+			function writePrefs(root, prefs) {
+				var store = visibilityStorage();
+				if (!store) return;
+				var show = Array.from(prefs.show).filter(Boolean).sort();
+				var hide = Array.from(prefs.hide).filter(function (id) {
+					return Boolean(id) && !prefs.show.has(id);
+				}).sort();
+				if (show.length === 0 && hide.length === 0) {
+					try {
+						store.removeItem(storageKey(root));
+					} catch (err) {}
+					return;
+				}
+				try {
+					store.setItem(storageKey(root), JSON.stringify({ v: storageVersion, show: show, hide: hide }));
+				} catch (err) {}
+			}
+			function prefsHaveOverrides(prefs) {
+				return prefs.show.size > 0 || prefs.hide.size > 0;
+			}
+			function queryRoot(scope) {
+				if (scope && typeof scope.querySelector === "function" && typeof scope.querySelectorAll === "function") return scope;
+				return document;
+			}
+			function boardLanesRoot(scope) {
+				if (scope instanceof Element && scope.matches("[data-board-lanes]")) return scope;
+				if (scope && typeof scope.querySelector === "function") return scope.querySelector("[data-board-lanes]");
+				return null;
+			}
+			function findByData(scope, attr, value) {
+				var root = queryRoot(scope);
+				var nodes = root.querySelectorAll("[" + attr + "]");
+				for (var i = 0; i < nodes.length; i += 1) {
+					if (nodes[i].getAttribute(attr) === value) return nodes[i];
+				}
+				return null;
+			}
+			function laneID(lane) {
+				return lane.getAttribute("data-board-lane") || "";
+			}
+			function laneDefaultVisible(lane) {
+				return lane.getAttribute("data-board-lane-default") === "true";
+			}
+			function laneCardCount(lane) {
+				var parsed = Number.parseInt(lane.getAttribute("data-board-lane-card-count") || "0", 10);
+				if (!Number.isFinite(parsed) || parsed < 0) return 0;
+				return parsed;
+			}
+			function laneTitle(lane) {
+				return lane.getAttribute("data-board-lane-title") || "lane";
+			}
+			function visibleBoardLanes(root) {
+				return Array.from(root.querySelectorAll("[data-board-lane]")).filter(function (lane) {
+					return lane.getAttribute("data-lane-hidden") !== "true";
+				});
+			}
+			function lanePositionIndex(root, lanes, preferredID) {
+				if (lanes.length === 0) return -1;
+				if (preferredID) {
+					var preferred = lanes.findIndex(function (lane) {
+						return laneID(lane) === preferredID;
+					});
+					if (preferred >= 0) return preferred;
+				}
+				if (!root.isConnected) return 0;
+				var rootRect = root.getBoundingClientRect();
+				var center = rootRect.left + root.clientWidth / 2;
+				var nearest = 0;
+				var nearestDistance = Number.POSITIVE_INFINITY;
+				lanes.forEach(function (lane, index) {
+					var rect = lane.getBoundingClientRect();
+					var distance = Math.abs(rect.left + rect.width / 2 - center);
+					if (distance < nearestDistance) {
+						nearest = index;
+						nearestDistance = distance;
+					}
+				});
+				return nearest;
+			}
+			function updateLanePosition(scope, root, preferredID) {
+				var lanes = visibleBoardLanes(root);
+				var index = lanePositionIndex(root, lanes, preferredID);
+				var current = index < 0 ? 0 : index + 1;
+				var position = queryRoot(scope).querySelector("[data-board-lane-position]");
+				if (position) {
+					var currentNode = position.querySelector("[data-board-lane-position-current]");
+					var totalNode = position.querySelector("[data-board-lane-position-total]");
+					if (currentNode) currentNode.textContent = String(current);
+					if (totalNode) totalNode.textContent = String(lanes.length);
+					position.setAttribute("aria-label", "Lane " + current + " of " + lanes.length);
+				}
+				if (root.isConnected && index >= 0) activeLaneID = laneID(lanes[index]);
+			}
+			function scheduleLanePosition(root) {
+				if (!root || !root.isConnected) return;
+				window.cancelAnimationFrame(lanePositionFrame);
+				lanePositionFrame = window.requestAnimationFrame(function () {
+					updateLanePosition(document, root, "");
+				});
+			}
+			function formatNumber(value) {
+				return new Intl.NumberFormat("en-US").format(value);
+			}
+			function cardCountLabel(count, singular, plural) {
+				return formatNumber(count) + " " + (count === 1 ? singular : plural);
+			}
+			function laneOverrideState(lane, prefs) {
+				var id = laneID(lane);
+				if (prefs.show.has(id)) return stateShow;
+				if (prefs.hide.has(id)) return stateHide;
+				return stateAuto;
+			}
+			function laneVisible(lane, state) {
+				if (state === stateShow) return true;
+				if (state === stateHide) return false;
+				return laneDefaultVisible(lane);
+			}
+			function stateLabel(lane, state, visible) {
+				var label = "";
+				if (state === stateShow) {
+					label = "Always shown";
+				} else if (state === stateHide) {
+					label = "Always hidden";
+				} else {
+					label = visible ? "Auto shown" : "Auto hidden";
+				}
+				if (!visible && laneCardCount(lane) > 0) {
+					return label + " - " + cardCountLabel(laneCardCount(lane), "hidden card", "hidden cards");
+				}
+				return label;
+			}
+			function stateTitle(lane, state, visible) {
+				var title = "";
+				if (state === stateShow) {
+					title = "Always show is saved for this lane.";
+				} else if (state === stateHide) {
+					title = "Always hide is saved for this lane.";
+				} else {
+					title = "Auto follows the board default.";
+				}
+				if (!visible && laneCardCount(lane) > 0) {
+					return title + " " + cardCountLabel(laneCardCount(lane), "card is", "cards are") + " hidden while this lane is off.";
+				}
+				return title;
+			}
+			function hiddenLaneSummary(lanes) {
+				if (lanes.length === 0) return "All populated lanes are visible.";
+				if (lanes.length === 1) {
+					var lane = lanes[0];
+					return cardCountLabel(lane.count, "hidden card", "hidden cards") + " in " + lane.title + ".";
+				}
+				var total = lanes.reduce(function (sum, lane) {
+					return sum + lane.count;
+				}, 0);
+				var labels = lanes.map(function (lane) {
+					return lane.title + " (" + formatNumber(lane.count) + ")";
+				}).join(", ");
+				return cardCountLabel(total, "hidden card", "hidden cards") + " across " + cardCountLabel(lanes.length, "lane", "lanes") + ": " + labels + ".";
+			}
+			function setResetDisabled(button, disabled) {
+				if (!(button instanceof HTMLButtonElement)) return;
+				button.disabled = disabled;
+				button.setAttribute("aria-disabled", disabled ? "true" : "false");
+			}
+			function updateLaneControls(scope, lane, state, visible) {
+				var id = laneID(lane);
+				var row = findByData(scope, "data-board-lane-row", id);
+				var hiddenPopulated = !visible && laneCardCount(lane) > 0;
+				if (row instanceof HTMLElement) {
+					row.dataset.boardLaneVisibilityState = state;
+					row.dataset.boardLaneVisibilityEffective = visible ? "visible" : "hidden";
+					row.dataset.boardLaneHiddenPopulated = hiddenPopulated ? "true" : "false";
+					row.classList.toggle("border-warn/45", hiddenPopulated);
+					row.classList.toggle("bg-warn/10", hiddenPopulated);
+					row.classList.toggle("border-transparent", !hiddenPopulated);
+					var status = row.querySelector("[data-board-lane-visibility-status]");
+					if (status) {
+						status.textContent = stateLabel(lane, state, visible);
+						status.setAttribute("title", stateTitle(lane, state, visible));
+					}
+				}
+				var select = findByData(scope, "data-board-lane-visibility", id);
+				if (select instanceof HTMLSelectElement) {
+					select.value = state;
+					select.dataset.boardLaneVisibilityState = state;
+					select.dataset.boardLaneVisibilityEffective = visible ? "visible" : "hidden";
+					select.setAttribute("title", stateTitle(lane, state, visible));
+				}
+				setResetDisabled(findByData(scope, "data-board-lane-reset", id), state === stateAuto);
+			}
+			function updateHiddenCardBadge(scope, hiddenCards, hiddenLanes) {
+				var root = queryRoot(scope);
+				var badge = root.querySelector("[data-board-hidden-card-count]");
+				if (!badge) return;
+				var summary = hiddenLaneSummary(hiddenLanes);
+				badge.hidden = hiddenCards === 0;
+				badge.textContent = hiddenCards > 0 ? formatNumber(hiddenCards) + " hidden" : "";
+				badge.setAttribute("title", summary);
+				badge.setAttribute("aria-label", summary);
+			}
+			function updateResetAll(scope, prefs) {
+				queryRoot(scope).querySelectorAll("[data-board-lane-reset-all]").forEach(function (button) {
+					setResetDisabled(button, !prefsHaveOverrides(prefs));
+				});
+			}
+			function applyTo(scope) {
+				var root = boardLanesRoot(scope);
+				if (!root) return false;
+				var prefs = readPrefs(root);
+				var total = 0;
+				var visible = 0;
+				var hiddenCards = 0;
+				var hiddenLanes = [];
+				root.querySelectorAll("[data-board-lane]").forEach(function (lane) {
+					total += 1;
+					var state = laneOverrideState(lane, prefs);
+					var show = laneVisible(lane, state);
+					var cards = laneCardCount(lane);
+					lane.setAttribute("data-lane-hidden", show ? "false" : "true");
+					lane.setAttribute("data-board-lane-visibility-state", state);
+					lane.setAttribute("data-board-lane-pinned", state === stateAuto ? "false" : "true");
+					if (show) {
+						visible += 1;
+					} else if (cards > 0) {
+						hiddenCards += cards;
+						hiddenLanes.push({ title: laneTitle(lane), count: cards });
+					}
+					updateLaneControls(scope, lane, state, show);
+				});
+				var count = queryRoot(scope).querySelector("[data-board-lane-count]");
+				if (count) count.textContent = visible + "/" + total;
+				updateHiddenCardBadge(scope, hiddenCards, hiddenLanes);
+				updateResetAll(scope, prefs);
+				var picker = queryRoot(scope).querySelector("[data-board-lane-picker]");
+				if (picker && pickerOpen) picker.setAttribute("open", "");
+				updateLanePosition(scope, root, activeLaneID);
+				if (root.isConnected) scheduleLanePosition(root);
+				if (typeof window.__detentBoardKanbanDragAdjustSnapshot === "function") {
+					window.__detentBoardKanbanDragAdjustSnapshot(scope);
+				}
+				return true;
+			}
+			function apply() {
+				applyTo(document);
+			}
+			function adjustedBoardHTML(html) {
+				if (typeof html !== "string" || html.indexOf("data-board-lanes") < 0) return "";
+				var template = document.createElement("template");
+				template.innerHTML = html;
+				if (!applyTo(template.content)) return "";
+				return template.innerHTML;
+			}
+			function snapshotSwapTarget(event) {
+				var target = event.detail && event.detail.target;
+				if (!(target instanceof Element)) target = event.target;
+				if (!(target instanceof Element)) return false;
+				return target.id === "snapshot" || Boolean(target.closest("#snapshot"));
+			}
+			function applyBeforeSwap(event) {
+				var detail = event.detail || {};
+				if (!snapshotSwapTarget(event) || typeof detail.serverResponse !== "string") return;
+				var adjusted = adjustedBoardHTML(detail.serverResponse);
+				if (!adjusted) return;
+				detail.serverResponse = adjusted;
+			}
+			function applyBeforeSSEMessage(event) {
+				var detail = event.detail || {};
+				var target = detail.elt;
+				if (!(target instanceof Element)) target = event.target;
+				if (!(target instanceof Element) || target.id !== "snapshot") return;
+				if (!window.htmx || typeof window.htmx.swap !== "function") return;
+				var adjusted = adjustedBoardHTML(detail.data);
+				if (!adjusted) return;
+				event.preventDefault();
+				window.htmx.swap(target, adjusted, { swapStyle: target.getAttribute("hx-swap") || "innerHTML" }, { contextElement: target });
+			}
+			function setLaneState(root, id, state) {
+				var prefs = readPrefs(root);
+				prefs.show.delete(id);
+				prefs.hide.delete(id);
+				if (state === stateShow) prefs.show.add(id);
+				if (state === stateHide) prefs.hide.add(id);
+				writePrefs(root, prefs);
+				apply();
+			}
+			document.addEventListener("change", function (event) {
+				var target = event.target instanceof Element ? event.target : null;
+				var select = target ? target.closest("[data-board-lane-visibility]") : null;
+				if (!(select instanceof HTMLSelectElement)) return;
+				var root = document.querySelector("[data-board-lanes]");
+				if (!root) return;
+				var state = select.value;
+				if (state !== stateShow && state !== stateHide) state = stateAuto;
+				setLaneState(root, select.getAttribute("data-board-lane-visibility") || "", state);
+			});
+			document.addEventListener("toggle", function (event) {
+				var picker = event.target;
+				if (picker instanceof Element && picker.hasAttribute("data-board-lane-picker")) {
+					pickerOpen = picker.open;
+				}
+			}, true);
+			document.addEventListener("click", function (event) {
+				var target = event.target instanceof Element ? event.target : null;
+				var root = document.querySelector("[data-board-lanes]");
+				var reset = target ? target.closest("[data-board-lane-reset]") : null;
+				if (reset instanceof HTMLButtonElement && root) {
+					event.preventDefault();
+					setLaneState(root, reset.value || reset.getAttribute("data-board-lane-reset") || "", stateAuto);
+					return;
+				}
+				var resetAll = target ? target.closest("[data-board-lane-reset-all]") : null;
+				if (resetAll instanceof HTMLButtonElement && root) {
+					event.preventDefault();
+					writePrefs(root, emptyPrefs());
+					apply();
+					return;
+				}
+				var picker = document.querySelector("[data-board-lane-picker]");
+				if (picker && picker.open && !picker.contains(event.target)) {
+					picker.removeAttribute("open");
+					pickerOpen = false;
+				}
+			});
+			document.addEventListener("keydown", function (event) {
+				if (event.key !== "Escape") return;
+				var picker = document.querySelector("[data-board-lane-picker]");
+				if (picker && picker.open) {
+					picker.removeAttribute("open");
+					pickerOpen = false;
+				}
+			});
+			document.addEventListener("htmx:beforeSwap", applyBeforeSwap);
+			document.addEventListener("htmx:sseBeforeMessage", applyBeforeSSEMessage);
+			document.addEventListener("htmx:afterSettle", apply);
+			document.addEventListener("DOMContentLoaded", apply);
+			document.addEventListener("scroll", function (event) {
+				var root = event.target instanceof Element && event.target.matches("[data-board-lanes]") ? event.target : null;
+				if (root) scheduleLanePosition(root);
+			}, true);
+			window.addEventListener("resize", function () {
+				scheduleLanePosition(document.querySelector("[data-board-lanes]"));
+			});
+			window.addEventListener("storage", function (event) {
+				if (event.key && event.key.indexOf(storagePrefix) === 0) apply();
+			});
+			apply();
+		})();
+	</script>
+}
+
+// boardKanbanDragScript implements card dragging with pointer events instead
+// of the native HTML5 drag-and-drop API. Chromium on Wayland starts a
+// compositor-level drag session even for in-page HTML5 drags, and several
+// compositors (COSMIC, Plasma, Hyprland) cancel or break that session, so a
+// real mouse drag dies before it starts while synthesized test drags pass.
+// Pointer tracking with elementFromPoint hit-testing never leaves the page,
+// works on every platform, and lets Playwright exercise the real code path.
+templ boardKanbanDragScript() {
+	<script>
+		(function () {
+			if (window.__detentBoardKanbanDragHandlersRegistered) return;
+			window.__detentBoardKanbanDragHandlersRegistered = true;
+			var DRAG_THRESHOLD_PX = 6;
+			var TOUCH_MOVE_TOLERANCE_PX = 10;
+			var TOUCH_LONG_PRESS_MS = 450;
+			var TOUCH_EDGE_ZONE_PX = 56;
+			var TOUCH_EDGE_ADVANCE_MS = 500;
+			// Real mouse clicks travel a few pixels between press and release,
+			// so distance alone cannot separate a click from a drag. A short
+			// gesture released back over the source lane is a click: finish the
+			// drag without swallowing the click so the detail sheet still opens.
+			var CLICK_GESTURE_MS = 250;
+			var draggedIssueID = "";
+			var draggedAllowedTargetKeys = [];
+			var pending = null;
+			var active = null;
+			var recentTouchStart = null;
+			function connectionAllowsMoves() {
+				return document.documentElement.getAttribute("data-detent-connection") === "connected";
+			}
+			function clearPending() {
+				if (pending && pending.longPressTimer) window.clearTimeout(pending.longPressTimer);
+				pending = null;
+				recentTouchStart = null;
+			}
+			function touchWithIdentifier(touches, identifier) {
+				if (!touches || identifier === null || identifier === undefined) return null;
+				for (var index = 0; index < touches.length; index += 1) {
+					if (touches[index].identifier === identifier) return touches[index];
+				}
+				return null;
+			}
+			function recentTouchIdentifier(card, event) {
+				if (event.pointerType !== "touch" || !recentTouchStart) return null;
+				if (Date.now() - recentTouchStart.startedAt >= 100) return null;
+				if (!(recentTouchStart.target instanceof Node) || !card.contains(recentTouchStart.target)) return null;
+				return recentTouchStart.identifier;
+			}
+			function feedback(message, kind) {
+				var target = document.getElementById("board-feedback");
+				if (!target) return;
+				var text = String(message || "").trim();
+				target.className = "flex flex-none items-center gap-2 px-5 pt-3.5 text-xs " + (kind === "error" ? "text-err" : "text-sec");
+				target.textContent = text;
+				target.hidden = text === "";
+			}
+			function queryRoot(scope) {
+				if (scope && typeof scope.querySelector === "function" && typeof scope.querySelectorAll === "function") return scope;
+				return document;
+			}
+			function draggedCard(scope) {
+				if (!draggedIssueID || !window.CSS || typeof CSS.escape !== "function") return null;
+				return queryRoot(scope).querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
+			}
+			function cardByIssueID(scope, issueID) {
+				var cards = queryRoot(scope).querySelectorAll("[data-kanban-card][data-kanban-issue-id]");
+				for (var index = 0; index < cards.length; index += 1) {
+					if (cards[index].dataset.kanbanIssueId === issueID) return cards[index];
+				}
+				return null;
+			}
+			function laneByState(scope, state) {
+				var lanes = queryRoot(scope).querySelectorAll("[data-kanban-drop-state]");
+				for (var index = 0; index < lanes.length; index += 1) {
+					if (lanes[index].dataset.kanbanDropState === state) return lanes[index];
+				}
+				return null;
+			}
+			function cardContainer(lane) {
+				return lane instanceof HTMLElement ? lane.querySelector("[data-kanban-card-container]") : null;
+			}
+			function updateEmptyLine(container) {
+				if (!(container instanceof HTMLElement)) return;
+				var emptyLine = container.querySelector("[data-kanban-empty-line]");
+				if (emptyLine instanceof HTMLElement) emptyLine.hidden = Boolean(container.querySelector("[data-kanban-card]"));
+			}
+			function placeCardInLane(card, state, scope) {
+				var lane = laneByState(scope, state);
+				var container = cardContainer(lane);
+				if (!(card instanceof HTMLElement) || !(lane instanceof HTMLElement) || !(container instanceof HTMLElement)) return null;
+				var previousContainer = card.parentElement;
+				container.appendChild(card);
+				lane.dataset.laneHidden = "false";
+				updateEmptyLine(previousContainer);
+				updateEmptyLine(container);
+				return lane;
+			}
+			function copyPendingMove(source, target) {
+				[
+					"kanbanPendingMove",
+					"kanbanPendingOrigin",
+					"kanbanPendingSeq",
+					"kanbanPendingTargetWasHidden"
+				].forEach(function (key) {
+					if (source.dataset[key] === undefined) {
+						delete target.dataset[key];
+					} else {
+						target.dataset[key] = source.dataset[key];
+					}
+				});
+			}
+			function clearPendingMove(card) {
+				if (!(card instanceof HTMLElement)) return;
+				delete card.dataset.kanbanPendingMove;
+				delete card.dataset.kanbanPendingOrigin;
+				delete card.dataset.kanbanPendingSeq;
+				delete card.dataset.kanbanPendingTargetWasHidden;
+			}
+			function pendingMoveSuperseded(liveCard, serverCard) {
+				var targetState = liveCard.dataset.kanbanPendingMove || "";
+				if ((serverCard.dataset.kanbanCurrentState || "") === targetState) return true;
+				var pendingSeq = Number.parseInt(liveCard.dataset.kanbanPendingSeq || "", 10);
+				var serverSeq = Number.parseInt(serverCard.dataset.kanbanDataSeq || "", 10);
+				return Number.isFinite(pendingSeq) && Number.isFinite(serverSeq) && serverSeq > pendingSeq;
+			}
+			function applyPendingMoveState(scope) {
+				var root = queryRoot(scope);
+				var applied = false;
+				document.querySelectorAll("#snapshot [data-kanban-card][data-kanban-pending-move]").forEach(function (liveCard) {
+					if (!(liveCard instanceof HTMLElement)) return;
+					var issueID = liveCard.dataset.kanbanIssueId || "";
+					var serverCard = cardByIssueID(root, issueID);
+					if (!(serverCard instanceof HTMLElement)) return;
+					if (pendingMoveSuperseded(liveCard, serverCard)) {
+						if (serverCard === liveCard) clearPendingMove(serverCard);
+						return;
+					}
+					copyPendingMove(liveCard, serverCard);
+					if (placeCardInLane(serverCard, liveCard.dataset.kanbanPendingMove || "", root)) applied = true;
+				});
+				return applied;
+			}
+			function targetKeysFromValue(value) {
+				return String(value || "").split(/\s+/).filter(Boolean);
+			}
+			function allowedTargetKeys(card) {
+				if (card instanceof HTMLElement) {
+					var keys = targetKeysFromValue(card.dataset.kanbanAllowedTargets || "");
+					if (keys.length > 0) return keys;
+				}
+				return draggedAllowedTargetKeys.slice();
+			}
+			function laneAllowed(card, lane) {
+				if (!(lane instanceof HTMLElement)) return false;
+				var key = lane.dataset.kanbanDropKey || "";
+				return key !== "" && allowedTargetKeys(card).includes(key);
+			}
+			function setDropTargetState(card, scope) {
+				var sourceLane = card instanceof HTMLElement ? card.closest("[data-kanban-drop-state]") : null;
+				queryRoot(scope).querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
+					if (!(lane instanceof HTMLElement)) return;
+					if (lane.dataset.kanbanDropWasHidden === undefined) {
+						lane.dataset.kanbanDropWasHidden = lane.dataset.laneHidden || "false";
+					}
+					lane.dataset.laneHidden = "false";
+					if (lane === sourceLane) {
+						// The origin lane is not a transition target, but styling
+						// it blocked reads as an error; mark it as the source so
+						// the operator can see where the card came from.
+						lane.dataset.kanbanDropSource = "true";
+						delete lane.dataset.kanbanDropAllowed;
+						lane.removeAttribute("aria-disabled");
+						return;
+					}
+					delete lane.dataset.kanbanDropSource;
+					var allowed = laneAllowed(card, lane);
+					lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";
+					lane.setAttribute("aria-disabled", allowed ? "false" : "true");
+				});
+			}
+			function applyActiveDragState(scope) {
+				if (!draggedIssueID || draggedAllowedTargetKeys.length === 0) return false;
+				var root = queryRoot(scope);
+				var card = draggedCard(root);
+				if (card instanceof HTMLElement) card.dataset.kanbanDragging = "true";
+				setDropTargetState(card, root);
+				applyTouchDragStyles(card, root);
+				return true;
+			}
+			function applyDragState(scope) {
+				var pendingApplied = applyPendingMoveState(scope);
+				return applyActiveDragState(scope) || pendingApplied;
+			}
+			window.__detentBoardKanbanDragAdjustSnapshot = applyDragState;
+			function clearDropTargetState() {
+				document.querySelectorAll("[data-kanban-drop-state]").forEach(function (lane) {
+					if (!(lane instanceof HTMLElement)) return;
+					if (lane.dataset.kanbanDropWasHidden !== undefined) {
+						lane.dataset.laneHidden = lane.dataset.kanbanDropWasHidden;
+						delete lane.dataset.kanbanDropWasHidden;
+					}
+					delete lane.dataset.kanbanDropAllowed;
+					delete lane.dataset.kanbanDropSource;
+					lane.removeAttribute("aria-disabled");
+				});
+				document.querySelectorAll("[data-kanban-card][data-kanban-dragging='true']").forEach(function (card) {
+					if (card instanceof HTMLElement) delete card.dataset.kanbanDragging;
+				});
+			}
+			function responseMessage(response) {
+				if (!response) return "";
+				var doc = new DOMParser().parseFromString(response, "text/html");
+				return (doc.body.textContent || "").trim();
+			}
+			function buildGhost(card, rect) {
+				var ghost = card.cloneNode(true);
+				ghost.removeAttribute("id");
+				ghost.querySelectorAll("[id]").forEach(function (node) {
+					node.removeAttribute("id");
+				});
+				var form = ghost.querySelector("[data-kanban-drag-move-form]");
+				if (form) form.remove();
+				delete ghost.dataset.kanbanDragging;
+				var origin = document.createElement("div");
+				origin.className = "mb-1.5 flex items-center gap-1.5 border-b border-line pb-1.5 font-mono text-2xs font-medium text-accent";
+				origin.textContent = "From " + (card.dataset.kanbanCurrentState || "current lane");
+				ghost.insertBefore(origin, ghost.firstChild);
+				ghost.setAttribute("aria-hidden", "true");
+				ghost.style.position = "fixed";
+				ghost.style.left = "0";
+				ghost.style.top = "0";
+				ghost.style.margin = "0";
+				ghost.style.width = rect.width + "px";
+				ghost.style.height = rect.height + "px";
+				ghost.style.pointerEvents = "none";
+				ghost.style.zIndex = "1000";
+				ghost.style.opacity = "0.9";
+				ghost.style.boxShadow = "0 12px 32px rgba(0, 0, 0, 0.35)";
+				ghost.style.willChange = "transform";
+				document.body.appendChild(ghost);
+				return ghost;
+			}
+			function moveGhost(ghost, x, y, offsetX, offsetY) {
+				ghost.style.transform = "translate(" + Math.round(x - offsetX) + "px, " + Math.round(y - offsetY) + "px)";
+			}
+			function laneFromPoint(x, y) {
+				var hit = document.elementFromPoint(x, y);
+				return hit instanceof Element ? hit.closest("[data-kanban-drop-state]") : null;
+			}
+			function applyTouchStyle(element, styles) {
+				if (!active || active.pointerType !== "touch" || !(element instanceof HTMLElement) || !element.isConnected) return;
+				if (!active.touchStyles.has(element)) {
+					var original = {};
+					Object.keys(styles).forEach(function (property) {
+						original[property] = element.style[property];
+					});
+					active.touchStyles.set(element, original);
+				}
+				Object.keys(styles).forEach(function (property) {
+					element.style[property] = styles[property];
+				});
+			}
+			function applyTouchDragStyles(card, scope) {
+				if (!active || active.pointerType !== "touch") return;
+				var root = queryRoot(scope);
+				var lanes = root.querySelector("[data-board-lanes]");
+				applyTouchStyle(lanes, { touchAction: "none", scrollSnapType: "none" });
+				applyTouchStyle(card, {
+					touchAction: "none",
+					outline: "2px solid var(--color-accent)",
+					outlineOffset: "2px"
+				});
+			}
+			function restoreTouchDragStyles() {
+				if (!active || !active.touchStyles) return;
+				active.touchStyles.forEach(function (styles, element) {
+					Object.keys(styles).forEach(function (property) {
+						element.style[property] = styles[property];
+					});
+				});
+				active.touchStyles.clear();
+			}
+			// Native drags auto-scrolled the lane strip at the viewport edges;
+			// pointer drags must do it themselves. Scrolls only while the
+			// pointer moves, which is enough to reach off-screen lanes.
+			function autoScrollLanes(x) {
+				var lanes = document.getElementById("board-lanes");
+				if (!lanes) return;
+				var rect = lanes.getBoundingClientRect();
+				if (x < rect.left + 48) {
+					lanes.scrollLeft -= 16;
+				} else if (x > rect.right - 48) {
+					lanes.scrollLeft += 16;
+				}
+			}
+			function visibleDropLanes(lanes) {
+				return Array.from(lanes.querySelectorAll("[data-kanban-drop-state]")).filter(function (lane) {
+					return lane instanceof HTMLElement && lane.dataset.laneHidden !== "true";
+				});
+			}
+			function closestLaneIndex(lanes, laneNodes) {
+				var center = lanes.getBoundingClientRect().left + lanes.clientWidth / 2;
+				var closest = 0;
+				var distance = Infinity;
+				laneNodes.forEach(function (lane, index) {
+					var rect = lane.getBoundingClientRect();
+					var candidate = Math.abs(rect.left + rect.width / 2 - center);
+					if (candidate < distance) {
+						distance = candidate;
+						closest = index;
+					}
+				});
+				return closest;
+			}
+			function advanceTouchLane(direction) {
+				if (!active || active.pointerType !== "touch" || active.edgeDirection !== direction) return;
+				active.edgeTimer = null;
+				var lanes = document.getElementById("board-lanes");
+				if (!lanes) return;
+				var laneNodes = visibleDropLanes(lanes);
+				if (laneNodes.length === 0) return;
+				var current = closestLaneIndex(lanes, laneNodes);
+				var target = Math.max(0, Math.min(laneNodes.length - 1, current + direction));
+				if (target !== current) {
+					laneNodes[target].scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+				}
+				if (active && active.edgeDirection === direction && target !== current) {
+					active.edgeTimer = window.setTimeout(function () {
+						advanceTouchLane(direction);
+					}, TOUCH_EDGE_ADVANCE_MS);
+				}
+			}
+			function updateTouchEdgeAdvance(x) {
+				if (!active || active.pointerType !== "touch") return;
+				var lanes = document.getElementById("board-lanes");
+				if (!lanes) return;
+				var rect = lanes.getBoundingClientRect();
+				var direction = x < rect.left + TOUCH_EDGE_ZONE_PX ? -1 : (x > rect.right - TOUCH_EDGE_ZONE_PX ? 1 : 0);
+				if (direction === active.edgeDirection) return;
+				if (active.edgeTimer) window.clearTimeout(active.edgeTimer);
+				active.edgeDirection = direction;
+				active.edgeTimer = direction === 0 ? null : window.setTimeout(function () {
+					advanceTouchLane(direction);
+				}, TOUCH_EDGE_ADVANCE_MS);
+			}
+			function stopTouchEdgeAdvance() {
+				if (!active) return;
+				if (active.edgeTimer) window.clearTimeout(active.edgeTimer);
+				active.edgeTimer = null;
+				active.edgeDirection = 0;
+			}
+			function suppressNextClick() {
+				var until = Date.now() + 400;
+				document.addEventListener("click", function suppress(event) {
+					document.removeEventListener("click", suppress, true);
+					if (Date.now() > until) return;
+					event.preventDefault();
+					event.stopImmediatePropagation();
+				}, true);
+			}
+			function beginDrag(event) {
+				var press = pending;
+				if (!press) return;
+				if (press.longPressTimer) window.clearTimeout(press.longPressTimer);
+				draggedIssueID = press.issueID;
+				draggedAllowedTargetKeys = press.targets;
+				var card = draggedCard(document) || press.card;
+				active = {
+					pointerId: press.pointerId,
+					pointerType: press.pointerType,
+					touchIdentifier: press.touchIdentifier,
+					offsetX: press.startX - press.rect.left,
+					offsetY: press.startY - press.rect.top,
+					ghost: buildGhost(card, press.rect),
+					lastLaneBlocked: false,
+					startedAt: press.startedAt,
+					captureElement: press.card,
+					touchStyles: new Map(),
+					edgeDirection: 0,
+					edgeTimer: null
+				};
+				pending = null;
+				recentTouchStart = null;
+				if (active.pointerType === "touch" && typeof active.captureElement.setPointerCapture === "function") {
+					try {
+						active.captureElement.setPointerCapture(active.pointerId);
+					} catch (_) {}
+				}
+				card.dataset.kanbanDragging = "true";
+				setDropTargetState(card, document);
+				applyTouchDragStyles(card, document);
+				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
+				moveGhost(active.ghost, event.clientX, event.clientY, active.offsetX, active.offsetY);
+			}
+			function finishDrag(keepClick) {
+				if (active) {
+					stopTouchEdgeAdvance();
+					restoreTouchDragStyles();
+					if (active.ghost) active.ghost.remove();
+					if (active.captureElement && typeof active.captureElement.releasePointerCapture === "function") {
+						try {
+							if (active.captureElement.hasPointerCapture(active.pointerId)) active.captureElement.releasePointerCapture(active.pointerId);
+						} catch (_) {}
+					}
+				}
+				clearPending();
+				active = null;
+				draggedIssueID = "";
+				draggedAllowedTargetKeys = [];
+				clearDropTargetState();
+				// A drag ends with the pointer still over a card, so the release
+				// also fires a click; swallow it or the detail sheet opens.
+				if (!keepClick) suppressNextClick();
+			}
+			function cancelDrag(keepClick) {
+				if (!active) {
+					clearPending();
+					return;
+				}
+				finishDrag(keepClick);
+				feedback("Move cancelled.", "error");
+			}
+			function rollbackPendingMove(card) {
+				if (!(card instanceof HTMLElement) || !card.dataset.kanbanPendingMove) return;
+				var targetLane = card.closest("[data-kanban-drop-state]");
+				var targetWasHidden = card.dataset.kanbanPendingTargetWasHidden === "true";
+				var originState = card.dataset.kanbanPendingOrigin || "";
+				clearPendingMove(card);
+				placeCardInLane(card, originState, document);
+				if (targetLane instanceof HTMLElement) {
+					targetLane.dataset.laneHidden = targetWasHidden ? "true" : "false";
+					updateEmptyLine(cardContainer(targetLane));
+				}
+			}
+			function moveDragTo(x, y) {
+				if (!active) return;
+				moveGhost(active.ghost, x, y, active.offsetX, active.offsetY);
+				if (active.pointerType === "touch") {
+					updateTouchEdgeAdvance(x);
+				} else {
+					autoScrollLanes(x);
+				}
+				var lane = laneFromPoint(x, y);
+				var card = draggedCard(document);
+				var blocked = lane instanceof HTMLElement && lane.dataset.kanbanDropSource !== "true" && !laneAllowed(card, lane);
+				if (blocked && !active.lastLaneBlocked) {
+					feedback("Move blocked by transition policy.", "error");
+				} else if (!blocked && active.lastLaneBlocked) {
+					feedback("Moving " + ((card && card.dataset.kanbanCurrentState) || "card") + ".");
+				}
+				active.lastLaneBlocked = blocked;
+			}
+			document.addEventListener("pointerdown", function (event) {
+				if (active || event.button !== 0 || event.isPrimary === false) return;
+				var pressedElement = event.target instanceof Element ? event.target : null;
+				var pressedCard = pressedElement ? pressedElement.closest("[data-kanban-card]") : null;
+				if (pressedCard && (!connectionAllowsMoves() || pressedCard.dataset.kanbanMoveDisabled === "true")) {
+					// A press can still open the detail sheet. Showing drag feedback
+					// here shifts the card before touch-up and loses the tap target.
+					// Disabled move reasons remain available in the card's hover title.
+					return;
+				}
+				var card = pressedCard && pressedCard.dataset.kanbanAction === "move" ? pressedCard : null;
+				if (!card) return;
+				if (card.dataset.kanbanPendingMove) return;
+				var issueID = card.dataset.kanbanIssueId || "";
+				if (!issueID) return;
+				pending = {
+					pointerId: event.pointerId,
+					pointerType: event.pointerType,
+					touchIdentifier: recentTouchIdentifier(card, event),
+					card: card,
+					issueID: issueID,
+					targets: targetKeysFromValue(card.dataset.kanbanAllowedTargets || ""),
+					rect: card.getBoundingClientRect(),
+					startX: event.clientX,
+					startY: event.clientY,
+					lastX: event.clientX,
+					lastY: event.clientY,
+					startedAt: Date.now(),
+					longPressTimer: null
+				};
+				if (event.pointerType === "touch") {
+					var pointerId = event.pointerId;
+					pending.longPressTimer = window.setTimeout(function () {
+						if (!pending || pending.pointerId !== pointerId) return;
+						beginDrag({ clientX: pending.lastX, clientY: pending.lastY });
+					}, TOUCH_LONG_PRESS_MS);
+				}
+			});
+			document.addEventListener("touchstart", function (event) {
+				if (active || !event.changedTouches || event.changedTouches.length === 0) return;
+				var touch = event.changedTouches[0];
+				recentTouchStart = {
+					identifier: touch.identifier,
+					target: event.target,
+					startedAt: Date.now()
+				};
+				if (pending && pending.pointerType === "touch" && event.target instanceof Node && pending.card.contains(event.target)) {
+					pending.touchIdentifier = touch.identifier;
+				}
+			});
+			document.addEventListener("pointermove", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					if (pending.pointerType === "touch") {
+						if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) >= TOUCH_MOVE_TOLERANCE_PX) {
+							clearPending();
+							return;
+						}
+						pending.lastX = event.clientX;
+						pending.lastY = event.clientY;
+						return;
+					}
+					// A missed pointerup (released outside the window) must not
+					// leave a stale press that turns a later hover into a drag.
+					if (event.buttons === 0) {
+						clearPending();
+						return;
+					}
+					if (Math.hypot(event.clientX - pending.startX, event.clientY - pending.startY) < DRAG_THRESHOLD_PX) return;
+					beginDrag(event);
+					return;
+				}
+				if (!active || event.pointerId !== active.pointerId) return;
+				if (active.pointerType !== "touch" && event.buttons === 0) {
+					// The release happened outside the window, so no click is
+					// coming — cancelling must not arm the click suppressor or
+					// it would eat the next real click after recovery.
+					cancelDrag(true);
+					return;
+				}
+				event.preventDefault();
+				moveDragTo(event.clientX, event.clientY);
+			}, { passive: false });
+			function dropAt(x, y) {
+				if (!active) return;
+				if (!connectionAllowsMoves()) {
+					cancelDrag();
+					feedback("Move cancelled because the board connection was lost.", "error");
+					return;
+				}
+				var lane = laneFromPoint(x, y);
+				var card = draggedCard(document);
+				if (!(lane instanceof HTMLElement)) {
+					cancelDrag();
+					return;
+				}
+				if (lane.dataset.kanbanDropSource === "true") {
+					if (Date.now() - active.startedAt < CLICK_GESTURE_MS) {
+						finishDrag(true);
+						feedback("");
+						return;
+					}
+					cancelDrag();
+					return;
+				}
+				if (!laneAllowed(card, lane)) {
+					finishDrag();
+					feedback("Move blocked by transition policy.", "error");
+					return;
+				}
+				var form = card ? card.querySelector("[data-kanban-drag-move-form]") : null;
+				var targetState = form ? form.querySelector("[data-kanban-drag-target-state]") : null;
+				if (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {
+					cancelDrag();
+					return;
+				}
+				targetState.value = lane.dataset.kanbanDropState || "";
+				card.dataset.kanbanPendingMove = targetState.value;
+				card.dataset.kanbanPendingOrigin = card.dataset.kanbanCurrentState || "";
+				if (card.dataset.kanbanDataSeq) card.dataset.kanbanPendingSeq = card.dataset.kanbanDataSeq;
+				card.dataset.kanbanPendingTargetWasHidden = lane.dataset.kanbanDropWasHidden || lane.dataset.laneHidden || "false";
+				placeCardInLane(card, targetState.value, document);
+				finishDrag();
+				placeCardInLane(card, targetState.value, document);
+				form.requestSubmit();
+			}
+			document.addEventListener("pointerup", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					clearPending();
+					return;
+				}
+				if (!active || event.pointerId !== active.pointerId) return;
+				dropAt(event.clientX, event.clientY);
+			});
+			document.addEventListener("pointercancel", function (event) {
+				if (pending && event.pointerId === pending.pointerId) {
+					clearPending();
+					return;
+				}
+				if (active && event.pointerId === active.pointerId && active.pointerType !== "touch") cancelDrag();
+			});
+			document.addEventListener("touchmove", function (event) {
+				if (!active || active.pointerType !== "touch") return;
+				event.preventDefault();
+				var touch = touchWithIdentifier(event.touches, active.touchIdentifier);
+				if (!touch && active.touchIdentifier === null && event.touches && event.touches.length === 1) touch = event.touches[0];
+				if (touch) moveDragTo(touch.clientX, touch.clientY);
+			}, { passive: false });
+			document.addEventListener("touchend", function (event) {
+				if (pending && pending.pointerType === "touch") {
+					var pendingTouch = touchWithIdentifier(event.changedTouches, pending.touchIdentifier);
+					if (!pendingTouch && !(pending.touchIdentifier === null && event.touches && event.touches.length === 0)) return;
+					clearPending();
+					return;
+				}
+				if (!active || active.pointerType !== "touch") return;
+				var touch = touchWithIdentifier(event.changedTouches, active.touchIdentifier);
+				if (!touch && active.touchIdentifier === null && event.touches && event.touches.length === 0) touch = event.changedTouches && event.changedTouches[0];
+				if (touch) dropAt(touch.clientX, touch.clientY);
+			});
+			document.addEventListener("touchcancel", function (event) {
+				if (pending && pending.pointerType === "touch") {
+					var pendingTouch = touchWithIdentifier(event.changedTouches, pending.touchIdentifier);
+					if (!pendingTouch && !(pending.touchIdentifier === null && event.touches && event.touches.length === 0)) return;
+					clearPending();
+					return;
+				}
+				if (!active || active.pointerType !== "touch") return;
+				var touch = touchWithIdentifier(event.changedTouches, active.touchIdentifier);
+				if (touch || (active.touchIdentifier === null && event.touches && event.touches.length === 0)) cancelDrag();
+			});
+			document.addEventListener("contextmenu", function (event) {
+				var touchPress = pending && pending.pointerType === "touch";
+				var touchDrag = active && active.pointerType === "touch";
+				if ((touchPress || touchDrag) && event.target instanceof Element && event.target.closest("[data-kanban-card]")) {
+					event.preventDefault();
+				}
+			});
+			document.addEventListener("keydown", function (event) {
+				if (event.key === "Escape" && active) cancelDrag();
+			});
+			document.addEventListener("detent:connectionChange", function (event) {
+				if (!event.detail || event.detail.state === "connected") return;
+				if (active) cancelDrag();
+				else clearPending();
+			});
+			window.addEventListener("blur", function () {
+				if (active) cancelDrag();
+			});
+			// Native HTML5 drags stay disabled inside cards (links, images):
+			// they would start a compositor drag session that steals the pointer.
+			document.addEventListener("dragstart", function (event) {
+				if (event.target instanceof Element && event.target.closest("[data-kanban-card]")) {
+					event.preventDefault();
+				}
+			});
+			document.addEventListener("htmx:afterSettle", function () {
+				applyDragState(document);
+			});
+			function handleMoveError(event) {
+				var form = event.detail && event.detail.elt;
+				if (!(form instanceof HTMLFormElement) || !form.matches("[data-kanban-drag-move-form]")) return;
+				var issueIDInput = form.querySelector("input[name='issue_id']");
+				var issueID = issueIDInput instanceof HTMLInputElement ? issueIDInput.value : "";
+				var card = form.closest("[data-kanban-card][data-kanban-pending-move]");
+				if (!(card instanceof HTMLElement) || !card.isConnected) card = cardByIssueID(document, issueID);
+				rollbackPendingMove(card);
+				var response = event.detail.xhr ? event.detail.xhr.responseText : "";
+				feedback(responseMessage(response) || "Move failed.", "error");
+			}
+			document.body.addEventListener("htmx:responseError", handleMoveError);
+			document.body.addEventListener("htmx:sendError", handleMoveError);
+			document.body.addEventListener("htmx:timeout", handleMoveError);
+		})();
+	</script>
+}
+
+// boardScopeSelect is the topbar scope control: a CSS-only dropdown living
+// outside #snapshot linking to each project's board.
+templ boardScopeSelect(data DashboardData) {
+	<details class="group/scope relative min-w-0">
+		<summary class="flex min-w-0 cursor-pointer list-none items-center gap-1.5 rounded-card border border-line px-2.5 py-1 text-xs text-sec hover:text-text [&::-webkit-details-marker]:hidden">
+			<span class="min-w-0 truncate">{ boardScopeLabel(data) }</span>
+			<span aria-hidden="true">▾</span>
+		</summary>
+		<div class="absolute left-0 top-full z-40 mt-1 flex w-52 flex-col gap-0.5 rounded-card border border-line bg-elev p-1.5">
+			<a href="/" class="rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">All projects</a>
+			for _, project := range appShellProjects(DashboardShellDataFromDashboard(data)) {
+				<a href={ templ.SafeURL(project.Href) } class="truncate rounded-chip px-2 py-1 text-xs text-text hover:bg-surface">{ project.Name }</a>
+			}
+		</div>
+	</details>
+}

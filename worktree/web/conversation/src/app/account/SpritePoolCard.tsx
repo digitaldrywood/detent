@@ -1,0 +1,101 @@
+import React from "react";
+
+import { Button } from "../../components/ui/button.tsx";
+import { Dialog, DialogTrigger, DialogPopup, DialogHeader, DialogTitle, DialogDescription, DialogPanel } from "../../components/ui/dialog.tsx";
+import { Input } from "../../components/ui/input.tsx";
+import { SettingsRow } from "../settings/settingsLayout.tsx";
+import { useAccountApi, useAccountBootstrap } from "./context.ts";
+import { ControlError } from "./controls.tsx";
+import { useResource } from "./useResource.ts";
+
+export function SpritePoolCard({ projectId, canManage, compact = false, attentionOnly = false, onAttentionChange }: {
+  readonly projectId: string;
+  readonly canManage: boolean;
+  readonly compact?: boolean;
+  readonly attentionOnly?: boolean;
+  readonly onAttentionChange?: (projectId: string, needsAttention: boolean) => void;
+}): React.ReactElement {
+  const api = useAccountApi();
+  const account = useAccountBootstrap();
+  const token = useResource(() => compact ? api.spritesSecret(projectId) : Promise.resolve(null), [api, projectId, compact]);
+  const pool = useResource(() => api.spritePool(projectId), [api, projectId]);
+  const [floor, setFloor] = React.useState(0);
+  const [ceiling, setCeiling] = React.useState(0);
+  const [idle, setIdle] = React.useState(300);
+  const [bootstrap, setBootstrap] = React.useState("");
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (pool.value === undefined) return;
+    setFloor(pool.value.min_runners);
+    setCeiling(pool.value.max_runners);
+    setIdle(pool.value.idle_seconds);
+    setBootstrap(pool.value.bootstrap);
+  }, [pool.value?.revision]);
+
+  async function save(): Promise<void> {
+    if (pending || pool.value === undefined) return;
+    setPending(true);
+    setError(null);
+    try {
+      pool.set(await api.setSpritePool(projectId, { min_runners: floor, max_runners: ceiling, idle_seconds: idle, bootstrap, revision: pool.value.revision }));
+    } catch {
+      setError("Could not save the pool. Reload its settings and try again.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const title = "Organization Sprite pool";
+  const turnedOn = pool.value !== undefined && (pool.value.max_runners > 0 || pool.value.members.some((member) => member.state !== "deleted"));
+  const notSetUp = pool.value !== undefined && !turnedOn;
+  const needsAttention = turnedOn && !token.loading && (token.error !== null || token.value?.present === false);
+  const integrationsUrl = `${account?.base_path ?? ""}/settings/integrations#sprites`;
+  React.useEffect(() => {
+    if (compact) onAttentionChange?.(projectId, needsAttention);
+  }, [compact, projectId, needsAttention, onAttentionChange]);
+  const status = pool.value === undefined ? (pool.error === null ? "Loading…" : "Could not load the pool.") : `${pool.value.members.filter((member) => member.state !== "deleted").length} members`;
+  const content = <div className="w-full space-y-4 py-4">
+      {canManage && pool.value !== undefined ? <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="space-y-1 text-sm">Minimum runners<Input type="number" min={0} required value={floor} disabled={pending} onChange={(event) => setFloor(Number(event.target.value))} /></label>
+          <label className="space-y-1 text-sm">Maximum runners<Input type="number" min={floor} required value={ceiling} disabled={pending} onChange={(event) => setCeiling(Number(event.target.value))} /></label>
+          <label className="space-y-1 text-sm">Idle seconds<Input type="number" min={30} max={86400} required value={idle} disabled={pending} onChange={(event) => setIdle(Number(event.target.value))} /></label>
+        </div>
+        <label className="block space-y-1 text-sm">Extra bootstrap (optional)
+          <textarea className="min-h-32 w-full rounded-md border border-border bg-background p-2 font-mono text-xs" value={bootstrap} maxLength={65536} disabled={pending} onChange={(event) => setBootstrap(event.target.value)} />
+        </label>
+        <p className="text-xs text-muted-foreground">Optional shell steps run before runner enrollment. Repository setup comes from hooks.runner_setup after checkout. Use your secret delivery service; do not paste credentials here. DETENT_PROJECT_ID and DETENT_HUB_URL are available. Runner policy approval is still required.</p>
+        <Button type="submit" size="sm" disabled={pending}>{pending ? "Saving…" : "Save pool"}</Button>
+      </form> : null}
+      {error === null ? null : <ControlError message={error} />}
+      <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void pool.refresh()}>Reload pool</Button>
+      {pool.value?.members.map((member) => <div key={member.name} className="space-y-1 rounded-md border border-border p-3 text-sm">
+        <p className="break-all font-medium">{member.name} · {member.state}</p>
+        {member.runner_id === "" ? <p className="text-xs text-muted-foreground">Runner has not enrolled.</p> : <p className="text-xs text-muted-foreground">Enrolled; work readiness follows runner health, provider setup and project policy.</p>}
+        <details><summary className="cursor-pointer text-xs">Last bootstrap log</summary><pre className="mt-2 whitespace-pre-wrap break-words text-xs">{member.bootstrap_log || "No bootstrap progress recorded."}</pre></details>
+      </div>)}
+    </div>;
+  if (!compact) return <SettingsRow title={title} description="The Hub creates fresh runners as queued work needs them and deletes idle members above the minimum. Set the maximum to zero to disable provisioning." status={status}>{content}</SettingsRow>;
+  if (attentionOnly && !needsAttention) return <></>;
+  return <div className="px-4" data-testid="sprite-pool-row">
+    <Dialog>
+      <SettingsRow title={title}
+        description={notSetUp ? "Not set up. Sprites start runners for every project when work is queued." : pool.value === undefined ? status : `Floor ${pool.value.min_runners} · Ceiling ${pool.value.max_runners} · Idle ${pool.value.idle_seconds}s · ${status}`}
+        control={notSetUp && token.value?.present !== true
+          ? <Button size="xs" variant="outline" render={<a href={integrationsUrl} />}>Set up Sprites</Button>
+          : <DialogTrigger render={<Button size="xs" variant="outline">{notSetUp ? "Set up Sprites" : canManage ? "Configure pool" : "View pool"}</Button>} />}
+      >
+        {turnedOn && token.loading ? <p className="pb-3 text-xs text-muted-foreground">Checking Sprites token…</p> : needsAttention ? <p className="pb-3 text-xs text-warning-foreground">
+          {token.error !== null ? "Could not check the organization’s Sprites token." : "No organization Sprites token is set, so the Hub cannot start Sprites."}{" "}
+          <a className="underline underline-offset-4" href={integrationsUrl}>{token.error !== null ? "Review the token" : "Set a Sprites token"}</a>
+        </p> : null}
+      </SettingsRow>
+      <DialogPopup className="sm:max-w-xl">
+        <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>The Hub creates runners for queued work and deletes idle members above the floor. Set the ceiling to zero to disable provisioning.</DialogDescription></DialogHeader>
+        <DialogPanel>{content}</DialogPanel>
+      </DialogPopup>
+    </Dialog>
+  </div>;
+}
