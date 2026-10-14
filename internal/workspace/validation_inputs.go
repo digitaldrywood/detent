@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,10 +16,35 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/gate"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
+var landingValidationRecipe = regexp.MustCompile(`^bash scripts/check-landing\.sh "([^"\r\n]+)" "([1-9][0-9]*)" "([^"\r\n]+)"package workspace
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/gate"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
+)
+
+)
 var generatedGoBuildPrefixMap = regexp.MustCompile(`(^|[ \t])-ffile-prefix-map=[^ \t=]+[/\\]go-build[0-9]+=([^ \t]+)([ \t]|$)`)
 
 // Only a tool version query has no package execution inputs. Build, vet, tests
@@ -26,10 +52,74 @@ var generatedGoBuildPrefixMap = regexp.MustCompile(`(^|[ \t])-ffile-prefix-map=[
 // this collector cannot bind. Their successful receipts remain observations,
 // and each independent review must execute its configured command.
 func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation string) *gate.CommandEvidence {
-	if !directGoValidation(validation) {
-		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	if directGoValidation(validation) {
+		return validationEnvironment(ctx, command, true)
 	}
-	return validationEnvironment(ctx, command)
+	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	if validation != "make check-landing" {
+		return evidence
+	}
+	entries, err := os.ReadDir(command.Dir)
+	if err != nil {
+		return evidence
+	}
+	for _, entry := range entries {
+		if entry.Name() == "GNUmakefile" || entry.Name() == "makefile" {
+			return evidence
+		}
+	}
+	for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
+		actual, err := os.ReadFile(filepath.Join(command.Dir, name))
+		if err != nil {
+			return evidence
+		}
+		supported, err := fs.ReadFile(detent.ValidationFS(), name)
+		if err != nil || !bytes.Equal(actual, supported) {
+			return evidence
+		}
+	}
+	for _, entry := range command.Env {
+		key, value, _ := strings.Cut(entry, "=")
+		if value != "" && slices.Contains([]string{"MAKEFILES", "MAKEFLAGS", "GNUMAKEFLAGS", "MFLAGS", "BASH_ENV", "ENV"}, key) {
+			return evidence
+		}
+	}
+	resolve := validationProbe(ctx, command, "make --no-print-directory -n check-landing")
+	if resolve == nil {
+		return evidence
+	}
+	output, err := resolve.Output()
+	if err != nil {
+		return evidence
+	}
+	args := landingValidationRecipe.FindStringSubmatch(strings.TrimSpace(string(output)))
+	if len(args) != 4 {
+		return evidence
+	}
+	base, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "rev-parse", "--verify", args[1]+"^{commit}")
+	if err != nil {
+		return evidence
+	}
+	module, moduleErr := os.ReadFile(filepath.Join(command.Dir, "go.mod"))
+	if moduleErr != nil {
+		return evidence
+	}
+	toolchain := "auto"
+	found := false
+	for _, line := range strings.Split(string(module), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "toolchain" {
+			if found {
+				return evidence
+			}
+			found = true
+			toolchain = fields[1]
+		}
+	}
+	probe := *command
+	probe.Env = append(slices.Clone(command.Env), "GOTOOLCHAIN="+toolchain, "GOMAXPROCS=1")
+	evidence = validationEnvironment(ctx, &probe, false)
+	return evidence
 }
 
 func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte) string {

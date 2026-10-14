@@ -784,6 +784,9 @@ fi
 				if err != nil || string(invocations) != strings.Repeat("build\n", 1+test.wantRuns) {
 					t.Fatalf("landing validation repeated: %q %v", invocations, err)
 				}
+				if !test.unsupported && !strings.HasPrefix(test.changedInput, "environment-") && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
+					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
+				}
 				if (strings.HasSuffix(test.changedInput, "vettool") || strings.HasSuffix(test.changedInput, "profile")) && receipt.Evidence.InputsSHA != "" {
 					t.Fatal("external analysis input received a reusable identity")
 				}
