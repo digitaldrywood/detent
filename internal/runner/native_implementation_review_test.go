@@ -426,6 +426,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				runRunnerGit(t, source, "add", ".")
 				if test.changedInput == "gitlink" {
 					head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+					runRunnerGit(t, source, "clone", "--no-hardlinks", source, filepath.Join(source, "package-source"))
 					runRunnerGit(t, source, "update-index", "--add", "--cacheinfo", "160000,"+head+",package-source")
 				}
 				runRunnerGit(t, source, "commit", "-m", "landing fixture")
