@@ -45,10 +45,8 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	for _, entry := range command.Env {
 		key, value, _ := strings.Cut(entry, "=")
 		if key == "GOFLAGS" {
-			for _, flag := range strings.Fields(value) {
-				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-toolexec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") {
-					return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
-				}
+			if !reusableGoValidationFlags(strings.Fields(value)) {
+				return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 			}
 		}
 	}
@@ -337,10 +335,8 @@ func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte) s
 	identities["sdk_sha"] = hex.EncodeToString(sdk)
 	for key, value := range goEnvironment {
 		if key == "GOFLAGS" {
-			for _, flag := range strings.Fields(value) {
-				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-toolexec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") || strings.HasPrefix(flag, "-ldflags") {
-					return ""
-				}
+			if !reusableGoValidationFlags(strings.Fields(value)) {
+				return ""
 			}
 		}
 		if slices.Contains([]string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS"}, key) {
