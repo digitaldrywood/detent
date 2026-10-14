@@ -4,15 +4,15 @@ import React from "react";
 
 import { InlineButton } from "../../../components/ui/button.tsx";
 import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from "../../../components/ui/menu.tsx";
+import type { ReportsRange } from "../../../contracts/reports.ts";
 import { cn } from "../../../lib/utils.ts";
+import type { ReportsSearch } from "../../reports/model.ts";
 import type { ShippedCount } from "../lib/model.ts";
 import { COMPLETED_WINDOW_LABELS, COMPLETED_WINDOWS, DEFAULT_COMPLETED_WINDOW, type CompletedWindow } from "../lib/viewState.ts";
 
-interface ReportsLinkSearch {
-  readonly range: "24h" | "7d";
-}
+type ReportsLinkSearch = Pick<ReportsSearch, "range">;
 
-const REPORTS_RANGE: Readonly<Record<CompletedWindow, ReportsLinkSearch["range"]>> = { "1h": "24h", "24h": "24h", "7d": "7d" };
+const REPORTS_RANGE: Readonly<Record<CompletedWindow, ReportsRange>> = { "1h": "24h", "24h": "24h", "7d": "7d" };
 
 export function CompletedCounter({
   count,

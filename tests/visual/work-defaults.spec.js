@@ -156,6 +156,11 @@ for (const scope of ["all", "project"]) {
     await page.getByRole("menuitemradio", { name: /^24 hours/ }).click();
     await expect(counter).toHaveText(`${2 * copies} shipped · 24h`);
     expect(new URL(page.url()).searchParams.has("completed")).toBe(false);
+    await counter.click();
+    await page.getByRole("menuitem", { name: /Open in Reports/ }).click();
+    await expect(page).toHaveURL(/\/reports\?range=24h$/);
+    await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("group", { name: "Report range" }).getByRole("button", { name: "24h", exact: true })).toHaveAttribute("aria-pressed", "true");
   });
 
   test(`${scope} saved 48h, 14d and all windows fall back to 24 hours`, async ({ page }) => {
