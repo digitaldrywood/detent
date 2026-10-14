@@ -4,8 +4,10 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 type ChangeRequest struct {
@@ -139,7 +141,18 @@ type PublishChangeVersion struct {
 	ChangeVersionInput
 }
 
+type SecurityAuditReview struct {
+	VersionID  string                 `json:"version_id,omitempty"`
+	Landing    bool                   `json:"landing,omitempty"`
+	Identity   agentidentity.Identity `json:"identity"`
+	Verdict    string                 `json:"verdict"`
+	SessionID  int64                  `json:"session_id"`
+	DiffDigest string                 `json:"diff_digest"`
+	Run        securityaudit.Run      `json:"run"`
+}
+
 type ChangeReview struct {
+	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`
 	SessionMachineID     MachineID             `json:"session_machine_id,omitempty"`
 	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
 	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
@@ -152,6 +165,7 @@ type ChangeReview struct {
 }
 
 type ReviewChange struct {
+	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`
 	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
 	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
 	Mutation

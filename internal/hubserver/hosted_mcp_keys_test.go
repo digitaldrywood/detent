@@ -290,13 +290,16 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							} else {
 								requireNativeStatus(t, write, http.StatusOK)
 							}
-							_, err = (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{Name: operatortool.WorkList, Arguments: json.RawMessage(`{"project_id":"` + project + `"}`)})
-							if readDenied && scenario != "foreign organization route" && !errors.Is(err, operatortool.ErrAccessDenied) {
-								t.Fatalf("MCP read after authority change: %v", err)
+							for _, readTool := range []string{operatortool.WorkList, operatortool.WorkBulkExport} {
+								_, err = (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{Name: readTool, Arguments: json.RawMessage(`{"project_id":"` + project + `"}`)})
+								if readDenied && scenario != "foreign organization route" && !errors.Is(err, operatortool.ErrAccessDenied) {
+									t.Fatalf("MCP read after authority change: %v", err)
+								}
+								if !readDenied && err != nil {
+									t.Fatal(err)
+								}
 							}
-							if !readDenied && err != nil {
-								t.Fatal(err)
-							}
+
 							mcpRead := serve(http.MethodPost, strings.Replace(mcpEndpoint, "org_security", organization, 1), `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"work_list","arguments":{"project_id":"`+project+`","limit":20}}}`)
 							var rpc struct {
 								Error  json.RawMessage `json:"error"`

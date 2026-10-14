@@ -28,7 +28,7 @@ func TestRequiredGateReportsConfiguredEvidence(t *testing.T) {
 		}, state: "pending", reason: string(gate.ReasonSecurityAuditMissing)},
 		{name: "audit failed", prepare: func(_ *connector.Issue, s *AutoPromoteSummary) {
 			s.SecurityAudit = securityaudit.Evaluation{RunID: 13, Reason: securityaudit.ReasonFailed}
-		}, state: "failed", reason: string(gate.ReasonSecurityAuditFailed)},
+		}, state: "pending", reason: string(gate.ReasonSecurityAuditFailed)},
 		{name: "audit findings", prepare: func(_ *connector.Issue, s *AutoPromoteSummary) {
 			s.SecurityAudit = securityaudit.Evaluation{RunID: 13, Reason: securityaudit.ReasonUnresolvedFindings}
 		}, state: "failed", reason: string(gate.ReasonSecurityAuditFindings)},

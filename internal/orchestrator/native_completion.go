@@ -97,7 +97,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return true
 	}
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
-		if preProvider && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
+		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
@@ -224,7 +224,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	implementationRework := change != nil && change.ImplementationReview != nil && change.ImplementationReview.Verdict == gate.ValidatorVerdictRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
-	unfinished := validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
+	auditRework := change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
+	unfinished := auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
 			target, ok = rework, true

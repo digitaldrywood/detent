@@ -49,6 +49,15 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		page, err := s.readHealthFindings(ctx, scope, request.State, request.Since, request.Cursor, min(request.Limit, 100))
 		return hubWorkResult(r, request, page, err)
 	}
+	if name == operatortool.WorkBulkExport {
+		params := request.NativeWorkQuery()
+		params.Del("include")
+		page, err := s.readBulkExport(ctx, scope, params)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		return operatortool.EncodeBulkExport(page)
+	}
 	if name == operatortool.WorkList {
 		params := request.NativeWorkQuery()
 		if _, err := nativeCreatedBy(scope, params); err != nil {
@@ -259,7 +268,7 @@ func (s *Service) resolveOperatorNativeItem(ctx context.Context, query nativeQue
 }
 
 func (operatorWorkReads) WorkReadNames(context.Context) []string {
-	return []string{operatortool.HealthFindings, operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings}
+	return []string{operatortool.HealthFindings, operatortool.WorkList, operatortool.WorkItem, operatortool.WorkConfig, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkVersion, operatortool.WorkRelationships, operatortool.WorkRuns, operatortool.WorkReferences, operatortool.WorkExport, operatortool.WorkBulkExport, operatortool.BoardActivity, operatortool.BoardReceipt, operatortool.BoardSession, operatortool.BoardSessionHistory, operatortool.WorkAttemptReceipt, operatortool.GitHubScopeTimings}
 }
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {

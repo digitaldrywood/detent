@@ -440,7 +440,7 @@ func (s *session) startToolCall(parent context.Context, key string, message requ
 			}
 			return
 		}
-		if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, NewToolCallResult(protocolVersion, result.Content, false)); writeErr != nil {
+		if writeErr := s.writeVersionResult(message.ID, protocolVersion, message.Method, NewToolCallResult(protocolVersion, result.Content, false), 3*operatortool.ResultByteLimit(call.Name)+64*1024); writeErr != nil {
 			return
 		}
 	}()
@@ -455,8 +455,9 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	if len(result.Content) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, &operatortool.ResultTooLargeError{SizeBytes: len(result.Content), LimitBytes: operatortool.MaxResultBytes}
+	limit := operatortool.ResultByteLimit(call.Name)
+	if len(result.Content) > limit {
+		return operatortool.Result{}, &operatortool.ResultTooLargeError{SizeBytes: len(result.Content), LimitBytes: limit}
 	}
 	if !isJSONObject(result.Content) {
 		return operatortool.Result{}, errors.New("operator tool result is not a JSON object")
@@ -524,8 +525,8 @@ func (s *session) cancelActive() {
 	}
 }
 
-func (s *session) writeResult(id json.RawMessage, result any) error {
-	return s.write(response{JSONRPC: "2.0", ID: responseID(id), Result: result})
+func (s *session) writeResult(id json.RawMessage, result any, limits ...int) error {
+	return s.write(response{JSONRPC: "2.0", ID: responseID(id), Result: result}, limits...)
 }
 
 func (s *session) writeError(id json.RawMessage, code int, message string, data any) error {
@@ -543,12 +544,16 @@ func responseID(id json.RawMessage) json.RawMessage {
 	return id
 }
 
-func (s *session) write(message response) error {
+func (s *session) write(message response, limits ...int) error {
 	frame, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("encode MCP response: %w", err)
 	}
-	if len(frame) > MaxHTTPResponseBytes {
+	limit := MaxHTTPResponseBytes
+	if len(limits) > 0 {
+		limit = limits[0]
+	}
+	if len(frame) > limit {
 		frame = marshalHTTPResponse(oversizedResponse(message.ID, len(frame)))
 	}
 	frame = append(frame, '\n')

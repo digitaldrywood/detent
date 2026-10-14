@@ -50,6 +50,7 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  */
 export const BootstrapOrganization = Schema.Struct({
   slug: Schema.optional(Schema.String),
+  role: Schema.optional(OrganizationRole),
   id: Schema.String,
   name: Schema.String,
   public_url: Schema.String,
@@ -228,6 +229,7 @@ export type Invitation = typeof Invitation.Type;
 
 /** `GET /members`. A plain member sees only themselves and no invitations. */
 export const MembersResponse = Schema.Struct({
+  member_count: Schema.optional(Schema.Number),
   members: Schema.Array(Member),
   invitations: Schema.Array(Invitation),
 });

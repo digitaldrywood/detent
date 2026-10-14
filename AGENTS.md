@@ -150,6 +150,14 @@ by scanning the machine, or routing by where earlier work ran.
 
 ## Validation
 
+Every change gets a per-change security audit before merge, bound to its exact
+base and head. P1/P2 findings send the change to Rework. A native Cloud
+project's release-time review found about 29 real P1/P2 issues in twelve days,
+but too late to stop the change that caused them. The audit runs through the
+configured `security_audit` stage and incurs the same provider usage and costs
+as other stages. A project turns it off with `gate.security_audit.enabled: false`.
+
+
 Run `make check-land` before reporting source work complete and fix every
 failure in the same run. Do not hand back a red gate. Workers run `make check-land`
 under this repository's validation instructions. The Cloud project's approved
