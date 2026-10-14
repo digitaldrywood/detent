@@ -238,6 +238,7 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		probeOnly           bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "literal packages and supported flags retain identity", command: "go test ./... -short -count=1", probeOnly: true, toolchainKnown: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
 		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
 		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},
@@ -269,8 +270,12 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.probeOnly {
-				if backend.ReviewCommandEnvironment(t.Context(), info, issue, test.command).Known() {
-					t.Fatal("Go metadata was accepted for an unverified command toolchain")
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, issue, test.command)
+				if evidence.Environment.Known() != test.toolchainKnown {
+					t.Fatalf("command toolchain applicability: got %v, want %v", evidence.Environment.Known(), test.toolchainKnown)
+				}
+				if test.toolchainKnown && evidence.InputsSHA == "" {
+					t.Fatal("supported literal Go command lost its input identity")
 				}
 				return
 			}
