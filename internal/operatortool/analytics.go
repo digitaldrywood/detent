@@ -65,11 +65,12 @@ type AnalyticsIssueResidence struct {
 }
 
 type AnalyticsAging struct {
-	WorkItemID   string    `json:"work_item_id"`
-	Lane         string    `json:"lane"`
-	EnteredAt    time.Time `json:"entered_at"`
-	Hours        float64   `json:"hours"`
-	LaneP90Hours *float64  `json:"lane_p90_hours,omitempty"`
+	WorkItemID     string    `json:"work_item_id"`
+	Lane           string    `json:"lane"`
+	EnteredAt      time.Time `json:"entered_at"`
+	Hours          float64   `json:"hours"`
+	LaneP90Hours   *float64  `json:"lane_p90_hours,omitempty"`
+	SinceTodoHours *float64  `json:"since_todo_hours,omitempty"`
 }
 
 type AnalyticsQueue struct {
