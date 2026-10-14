@@ -125,10 +125,29 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	if err != nil || unchanged.Gap || len(unchanged.Deltas) != 0 {
 		t.Fatalf("unchanged=%#v err=%v", unchanged, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_sequences SET replay_floor=? WHERE project_id=?", initial.Sequence+1, scope.project); err != nil {
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	gap, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, initial.Sequence)
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE retained(n) AS (
+SELECT 1 UNION ALL SELECT n+1 FROM retained WHERE n<?)
+INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json)
+SELECT ?,?,NULL,NULL FROM retained`, nativeBoardReplayLimit, scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	var beforeReset int64
+	if err := tx.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&beforeReset); err != nil {
+		t.Fatal(err)
+	}
+	if err := resetNativeBoardPolicy(t.Context(), tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	f.create(t, "Card after policy reset")
+	gap, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, beforeReset)
 	if err != nil || !gap.Gap {
 		t.Fatalf("gap=%#v err=%v", gap, err)
 	}
@@ -186,21 +205,33 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	var version tracker.ChangeVersion
 	var lease tracker.NativeLease
 	worker := f.worker(t, "board-worker")
-	assertDelta := func(t *testing.T, status string, count int) {
+	assertDelta := func(t *testing.T, status string, count int, reset ...bool) {
 		t.Helper()
 		frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if frame.Gap || len(frame.Deltas) == 0 {
-			t.Fatalf("frame=%#v", frame)
-		}
-		for _, delta := range frame.Deltas {
-			if delta.Current == nil || delta.Current.Issue.WorkItemID != f.issue.WorkItemID {
-				t.Fatalf("wrong delta=%#v", delta)
+		var card *tracker.NativeBoardCard
+		if len(reset) > 0 && reset[0] {
+			if !frame.Gap || len(frame.Deltas) != 0 {
+				t.Fatalf("policy reset frame=%#v", frame)
 			}
+			page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+			if err != nil || len(page.Cards) != 1 {
+				t.Fatalf("reset page=%#v, error=%v", page, err)
+			}
+			card = &page.Cards[0]
+		} else {
+			if frame.Gap || len(frame.Deltas) == 0 {
+				t.Fatalf("frame=%#v", frame)
+			}
+			for _, delta := range frame.Deltas {
+				if delta.Current == nil || delta.Current.Issue.WorkItemID != f.issue.WorkItemID {
+					t.Fatalf("wrong delta=%#v", delta)
+				}
+			}
+			card = frame.Deltas[len(frame.Deltas)-1].Current
 		}
-		card := frame.Deltas[len(frame.Deltas)-1].Current
 		if card.Issue.WorkItemID != f.issue.WorkItemID {
 			t.Fatalf("wrong card: %s", card.Issue.WorkItemID)
 		}
@@ -276,7 +307,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			now = now.Add(time.Second)
 			test.mutate(t)
-			assertDelta(t, test.status, test.count)
+			assertDelta(t, test.status, test.count, test.name == "review policy requirement" || test.name == "restored review requirement")
 		})
 	}
 	unaffected := f.create(t, "Historical card without Change")
@@ -321,17 +352,28 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			ids, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM policy_dirty_cards ORDER BY work_item_id")
 			want := []string{string(f.issue.WorkItemID), string(historical.WorkItemID)}
 			slices.Sort(want)
-			if err != nil || !slices.Equal(ids, want) {
-				t.Fatalf("policy dirty cards=%v want=%v err=%v", ids, want, err)
+			if err != nil || len(ids) != 0 {
+				t.Fatalf("approval rebuilt historical cards=%v err=%v", ids, err)
+			}
+			frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
+			if err != nil || !frame.Gap {
+				t.Fatalf("policy did not invalidate old replay=%+v, error=%v", frame, err)
+			}
+			since = frame.Sequence
+			page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+			if err != nil {
+				t.Fatal(err)
 			}
 			for _, id := range want {
-				var raw string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
 				var card tracker.NativeBoardCard
-				if err := json.Unmarshal([]byte(raw), &card); err != nil {
-					t.Fatal(err)
+				for _, candidate := range page.Cards {
+					if string(candidate.Issue.WorkItemID) == id {
+						card = candidate
+						break
+					}
+				}
+				if card.Change == nil {
+					t.Fatalf("missing returned historical/current card %s", id)
 				}
 				wantStatus := "stale_policy"
 				if test.name == "restored policy" || test.name == "instruction-only custom policy" {
@@ -450,4 +492,82 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		})
 	}
 	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/prj_ungranted/events?board=true&since=0", nil), http.StatusForbidden)
+}
+
+func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	type projectCards struct {
+		fixture nativeFixture
+		policy  policy.Descriptor
+		items   []tracker.NativeIssue
+		changes []tracker.ChangeRequest
+		want    string
+	}
+	projects := []projectCards{}
+	for index, name := range []string{"changed-audit", "unchanged-gates"} {
+		f := newNativeFixture(t, service, "", name)
+		descriptor := hubTestPolicy()
+		approveHubTestPolicy(t, service, f.base+"/policy", descriptor)
+		cards := projectCards{fixture: f, policy: descriptor, want: "reviewed"}
+		for _, state := range []string{"Todo", "Done"} {
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: state}, Title: name + " " + state, Body: issueContractTestSections, State: state})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: name + " " + state})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			response = performHubAPIRequest(t, service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			cards.items = append(cards.items, issue)
+			cards.changes = append(cards.changes, change)
+		}
+		cards.policy.SourceDigest = policy.Digest([]byte(name))
+		if index == 0 {
+			cards.policy.Gates.SecurityAudit = true
+			cards.want = "stale_policy"
+		}
+		cards.policy = cards.policy.WithID()
+		projects = append(projects, cards)
+	}
+	tx, err := service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, project := range projects {
+		scope := string(project.fixture.project.OrganizationID) + "/" + string(project.fixture.project.ID)
+		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range projects {
+		scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+		page, err := service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for index, issue := range project.items {
+			var card tracker.NativeBoardCard
+			for _, candidate := range page.Cards {
+				if candidate.Issue.WorkItemID == issue.WorkItemID {
+					card = candidate
+					break
+				}
+			}
+			if card.Issue.State != issue.State || card.Change == nil || card.Change.Status != project.want {
+				t.Fatalf("project %s card lane = %s, Change = %+v, want unchanged lane and %s", project.fixture.project.ID, card.Issue.State, card.Change, project.want)
+			}
+			detail, err := readChangeDetail(t.Context(), service.database.reader, scope, string(issue.WorkItemID), project.changes[index].ID, service.config.now())
+			if err != nil || detail.Summary.Status != card.Change.Status {
+				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
+			}
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -231,6 +233,44 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		}
 		if runtimeUpdateIdle(t.Context(), registry) {
 			t.Fatal("updater treated pending completion as idle")
+		}
+		cacheRoot := t.TempDir()
+		cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cacheRoot, "README"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(cacheRoot, "00"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		output := filepath.Join(cacheRoot, "00", strings.Repeat("a", 64)+"-d")
+		if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		candidate := scheduler.ProjectCandidate{ID: "fixture"}
+		gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{candidate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		managed := &runnerBuildCache{cache: cache, root: cacheRoot, gate: gate, processes: runtimeStore}
+		if err := managed.trim(ctx, toolcache.Policy{MaxBytes: 1000}, now); err != nil {
+			t.Fatalf("deferred publication blocked quiescent cache reclamation: %v", err)
+		}
+		if report := managed.observe(); report == nil || report.SizeEvictedBytes != 2000 {
+			t.Fatalf("recent output retained during publication hold: %+v", report)
+		}
+		state, err = tracked.Orchestrator().State(ctx)
+		if err != nil || state.UnsettledWork() != 1 {
+			t.Fatalf("cache maintenance altered completion custody: unsettled=%d err=%v", state.UnsettledWork(), err)
+		}
+		slot, acquired, err := gate.TryAcquire(ctx, candidate, scheduler.SlotRequest{State: "Todo"}, now)
+		if err != nil || !acquired {
+			t.Fatalf("dispatch remained paused after cache reclamation: acquired=%t err=%v", acquired, err)
+		}
+		if err := gate.Release(slot); err != nil {
+			t.Fatal(err)
 		}
 	})
 }

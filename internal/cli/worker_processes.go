@@ -32,8 +32,14 @@ func reapWorkerProcesses(
 	reap workerProcessReapFunc,
 ) error {
 	return reapWorkerProcessesWithCleanup(ctx, processStore, logger, reason, grace, now, reap, func(process store.WorkerProcess) error {
+		if process.Role == store.WorkerProcessRoleHostValidation {
+			if _, err := workspace.ReapWorkerArtifactPathProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
+				return &workerProcessTerminationError{err: fmt.Errorf("reap host validation processes: %w", err)}
+			}
+			return cleanupWorkerProcessArtifacts(process)
+		}
 		if _, err := workspace.ReapWorkerArtifactProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
-			return fmt.Errorf("reap worker artifact processes: %w", err)
+			return &workerProcessTerminationError{err: fmt.Errorf("reap worker artifact processes: %w", err)}
 		}
 		return cleanupWorkerProcessArtifacts(process)
 	})
@@ -119,11 +125,21 @@ func reapWorkerProcessesWithCleanup(
 			terminationFailed = true
 			continue
 		}
-		if outcome != procgroup.TerminationOutcomeStaleIdentity {
+		if outcome == procgroup.TerminationOutcomeStaleIdentity {
+			if _, err := workspace.ReapWorkerArtifactPathProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
+				result = errors.Join(result, &workerProcessTerminationError{err: err})
+				terminationFailed = true
+				continue
+			}
+		} else {
 			if cleanupErr := retryWorkerProcessArtifactCleanup(ctx, process, logger.With(attrs...), cleanup); cleanupErr != nil {
 				attrs = append(attrs, "error", cleanupErr)
 				logger.Info("worker process lifecycle decision", attrs...)
 				result = errors.Join(result, cleanupErr)
+				var termination *workerProcessTerminationError
+				if errors.As(cleanupErr, &termination) {
+					terminationFailed = true
+				}
 				continue
 			}
 		}
@@ -158,6 +174,11 @@ func reapWorkerProcessesWithCleanup(
 	}
 	return result
 }
+
+type workerProcessTerminationError struct{ err error }
+
+func (e *workerProcessTerminationError) Error() string { return e.err.Error() }
+func (e *workerProcessTerminationError) Unwrap() error { return e.err }
 
 // workerArtifactCleanupError reports that every prior worker was confirmed
 // terminated but at least one workspace artifact cleanup failed; the session

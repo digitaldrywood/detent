@@ -574,6 +574,10 @@ func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, 
 	if _, _, err := readNativeIssue(ctx, q, scope, item); err != nil {
 		return tracker.NativeAttempt{}, err
 	}
+	return readNativeAttemptRecord(ctx, q, scope, item, id, now)
+}
+
+func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.status,a.started_at,a.updated_at,a.checkpoint_json,a.artifact_ids_json,l.expires_at,l.released_at,l.renewed_at,a.work_item_revision,a.dispatch_generation FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?`, scope.organization, scope.project, item, id)
 	if err != nil {
 		return tracker.NativeAttempt{}, err

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
@@ -24,6 +25,16 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonGo := t.TempDir()
+	cacheRoot := t.TempDir()
+	cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedContext, release, err := cache.Use(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
 
 	tests := []struct {
 		name      string
@@ -32,6 +43,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 		hostFlags string
 		variables map[string]string
 		want      map[string]string
+		managed   bool
 	}{
 		{
 			name:      "disabled budget leaves environment",
@@ -70,6 +82,13 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			want:      map[string]string{"A": "1"},
 		},
 		{
+			name:      "managed cache reaches non-Go workspace",
+			workspace: nonGo,
+			managed:   true,
+			variables: map[string]string{"A": "1"},
+			want:      map[string]string{"A": "1", "GOCACHE": cacheRoot},
+		},
+		{
 			name:      "missing workspace leaves environment",
 			budget:    budget,
 			variables: map[string]string{"A": "1"},
@@ -92,7 +111,11 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			}
 			input := procgroup.Environment{Variables: tt.variables, PathPrefixes: []string{"/shim"}}
 
-			got := r.withGoBudget(tt.workspace, input)
+			ctx := t.Context()
+			if tt.managed {
+				ctx = managedContext
+			}
+			got := r.withGoBudget(ctx, tt.workspace, input)
 
 			if len(got.Variables) != len(tt.want) {
 				t.Fatalf("variables = %v, want %v", got.Variables, tt.want)

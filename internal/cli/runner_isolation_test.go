@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,7 +79,7 @@ func TestBackendProbeReapsDescendantPipes(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	cmd := backendProbeCommand(ctx, "sh -c 'sleep 30 & wait'", "sh", nil)
-	_, err := runBackendProbe(cmd)
+	_, err := runBackendProbe(ctx, cmd)
 	if err == nil {
 		t.Fatal("probe ignored cancellation")
 	}
@@ -98,7 +99,7 @@ func TestBackendProbeReapsChildrenAfterParentExits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	cmd := backendProbeCommand(ctx, "sh -c 'sleep 30 & echo $!'", "sh", nil)
-	output, err := runBackendProbe(cmd)
+	output, err := runBackendProbe(ctx, cmd)
 	if err == nil {
 		t.Fatal("probe did not report inherited output pipes")
 	}
@@ -136,9 +137,14 @@ func TestBackendReadinessProblem(t *testing.T) {
 	}{
 		{"codex signed out", workflowconfig.AgentBackendCodex, "", "linux", "codex login status", "Not logged in", "codex login --device-auth", true},
 		{"claude signed out", workflowconfig.AgentBackendClaudeCode, "", "linux", "claude auth status --json", `{"loggedIn":false}`, "claude auth login", true},
+		{"codex killed", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "darwin", "codex login status", "signal: killed", "", false},
+		{"claude killed", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude auth status --json", "signal: killed", "", false},
 		{"codex missing", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "codex: command not found", "npm install -g @openai/codex", false},
+		{"codex missing default shell", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "sh: 1: codex: not found", "npm install -g @openai/codex", false},
+		{"claude missing default shell", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude --version", "sh: 1: claude: not found", "npm install -g @anthropic-ai/claude-code", false},
 		{"sandbox", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "operation not permitted", "", false},
 		{"sandbox tooling missing", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "bwrap: command not found", "sudo apt-get install bubblewrap socat", false},
+		{"sandbox tooling missing default shell", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "sh: 1: bwrap: not found", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox socket tooling missing", workflowconfig.AgentBackendClaudeCode, isolation.Sandbox, "linux", "claude --print", "socat: no such file or directory", "sudo apt-get install bubblewrap socat", false},
 		{"host repair", workflowconfig.AgentBackendCodex, isolation.Sandbox, "darwin", "codex sandbox", "bwrap: command not found", "", false},
 	} {
@@ -146,6 +152,9 @@ func TestBackendReadinessProblem(t *testing.T) {
 			p := backendReadinessProblem("codex", test.kind, test.tier, test.goos, &backendCheckError{Check: test.command, Err: errors.New(test.output), SignedOut: test.signedOut})
 			if p.Check != test.command || p.ErrorOutput != test.output || p.FixCommand != test.fix || !strings.HasPrefix(p.Subject, "codex") {
 				t.Fatalf("problem=%+v", p)
+			}
+			if test.output == "signal: killed" && p.Code != "backend_probe_failed" {
+				t.Fatalf("killed probe reported missing backend: %+v", p)
 			}
 			if test.signedOut && p.Message != "not signed in" {
 				t.Fatalf("message=%q", p.Message)
@@ -158,6 +167,18 @@ func TestBackendReadinessProblem(t *testing.T) {
 }
 
 func TestRunnerCodexSignInRefresh(t *testing.T) {
+	if address := os.Getenv("DETENT_TEST_LOGIN_PROBE_ADDRESS"); address != "" {
+		connection, err := net.Dial("tcp", address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		var data [1]byte
+		if _, err := connection.Read(data[:]); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
 	}
@@ -165,15 +186,19 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 	t.Setenv("DETENT_SERVICE_MANAGER", "test")
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", home)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	script := filepath.Join(home, "codex-probe")
 	marker := filepath.Join(home, "signed-in")
 	observed := filepath.Join(home, "observed-home")
-	content := "#!/bin/sh\nprintf '%s' \"$CODEX_HOME\" > " + strconv.Quote(observed) + "\nif test -f " + strconv.Quote(marker) + "; then exit 0; fi\necho 'Not logged in' >&2\nexit 1\n"
+	content := "#!/bin/sh\nprintf '%s' \"$CODEX_HOME\" > " + strconv.Quote(observed) + "\nif test -f " + strconv.Quote(marker) + "; then\nif test -n \"$DETENT_TEST_LOGIN_PROBE_ADDRESS\"; then exec " + strconv.Quote(executable) + " -test.run=^TestRunnerCodexSignInRefresh$ -- \"$@\"; fi\nexit 0\nfi\necho 'Not logged in' >&2\nexit 1\n"
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	backend := workflowconfig.AgentBackend{Kind: workflowconfig.AgentBackendCodex, Command: strconv.Quote(script) + " app-server"}
-	err := probeBackendSignIn(t.Context(), backend)
+	err = probeBackendSignIn(t.Context(), backend)
 	if err == nil || !strings.Contains(err.Error(), "Not logged in") {
 		t.Fatalf("auth error=%v", err)
 	}
@@ -186,5 +211,49 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 	}
 	if err := probeBackendSignIn(t.Context(), backend); err != nil {
 		t.Fatalf("sign-in did not clear: %v", err)
+	}
+	for _, test := range []struct {
+		name     string
+		deadline bool
+		want     error
+	}{
+		{"parent cancelled", false, context.Canceled},
+		{"parent deadline", true, context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			t.Setenv("DETENT_TEST_LOGIN_PROBE_ADDRESS", listener.Addr().String())
+			ctx, cancel := context.WithCancel(t.Context())
+			if test.deadline {
+				cancel()
+				ctx, cancel = context.WithTimeout(t.Context(), 3*time.Second)
+			}
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				defer listener.Close()
+				done <- probeBackendSignIn(ctx, backend)
+			}()
+			connection, err := listener.Accept()
+			if err != nil {
+				t.Fatalf("probe exited before login readiness: accept=%v probe=%v", err, <-done)
+			}
+			defer connection.Close()
+			if !test.deadline {
+				cancel()
+			}
+			err = <-done
+			if !errors.Is(err, test.want) {
+				t.Fatalf("probe lost parent error: %v", err)
+			}
+			problem := backendReadinessProblem("example-project/codex", backend.Kind, isolation.NativeTrusted, runtime.GOOS, err)
+			if problem.Code != "backend_probe_failed" || problem.FixCommand != "" || strings.Contains(problem.FixHint, "Sign in") || !strings.Contains(problem.Check, "login status") {
+				t.Fatalf("cancelled probe recommended backend repair: %+v", problem)
+			}
+		})
 	}
 }

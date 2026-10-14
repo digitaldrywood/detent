@@ -140,6 +140,7 @@ type startOptions struct {
 }
 
 type Dependencies struct {
+	HostBuildCache            *toolcache.Managed
 	HostCacheReport           func() *toolcache.Report
 	TrimHostCache             func(context.Context, toolcache.Policy, time.Time) error
 	Connector                 connector.Connector

@@ -266,7 +266,7 @@ func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, iss
 	}
 }
 
-func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, error) {
 	if req.Issue.IsolationPolicy != nil {
 		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
 	}
