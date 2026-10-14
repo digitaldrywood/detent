@@ -37,7 +37,22 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 		if err != nil {
 			return result, err
 		}
-		detail.Reviews = currentRecoveryReviews(detail.Reviews)
+		implementationReview, validator := -1, -1
+		for i := len(detail.Reviews) - 1; i >= 0; i-- {
+			if implementationReview < 0 && detail.Reviews[i].ImplementationReview != nil {
+				implementationReview = i
+			}
+			if validator < 0 && detail.Reviews[i].Validator != nil {
+				validator = i
+			}
+		}
+		reviews := detail.Reviews[:0]
+		for i, review := range detail.Reviews {
+			if review.ImplementationReview == nil && review.Validator == nil || i == implementationReview || i == validator {
+				reviews = append(reviews, review)
+			}
+		}
+		detail.Reviews = reviews
 		result.ChangeDetail = &detail
 		if change.CurrentVersion != "" {
 			if len(detail.Versions) != 1 {
@@ -97,23 +112,4 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 		return result, err
 	}
 	return result, tx.Commit()
-}
-
-func currentRecoveryReviews(reviews []tracker.ChangeReview) []tracker.ChangeReview {
-	implementation, acceptance := -1, -1
-	for i, review := range reviews {
-		if review.ImplementationReview != nil {
-			implementation = i
-		}
-		if review.Validator != nil {
-			acceptance = i
-		}
-	}
-	var current []tracker.ChangeReview
-	for i, review := range reviews {
-		if review.Actor.Kind == "human" || review.ImplementationReview == nil && review.Validator == nil || i == implementation || i == acceptance {
-			current = append(current, review)
-		}
-	}
-	return current
 }
