@@ -76,7 +76,7 @@ jobs:
           default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
           default_branch_ref="refs/heads/$default_branch"
           if [ -z "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" ]; then
-            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; scheduled-full-ci is always required."
+            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks"
             exit 1
           fi
           gh api -H "Accept: application/vnd.github+json" \
