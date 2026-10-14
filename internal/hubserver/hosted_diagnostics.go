@@ -294,22 +294,27 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return nil, err
 	}
-	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at)
+	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at),l.key
 FROM json_each(?) l JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id')
 AND e.type='workflow.transitioned' AND json_extract(e.data_json,'$.to_state')='Merging'
 AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) GROUP BY l.key ORDER BY l.key`
 	if _, projected := q.(analyticsRollupReader); projected {
-		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT json_extract(e.data_json,'$.At') FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND json_extract(e.data_json,'$.ID')=json_extract(l.value,'$.work_item_id') AND julianday(json_extract(e.data_json,'$.At'))<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY json_extract(e.data_json,'$.AtNS') DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered FROM waits WHERE entered IS NOT NULL ORDER BY key`
+		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT json_extract(e.data_json,'$.At') FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND json_extract(e.data_json,'$.ID')=json_extract(l.value,'$.work_item_id') AND julianday(json_extract(e.data_json,'$.At'))<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY json_extract(e.data_json,'$.AtNS') DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key FROM waits WHERE entered IS NOT NULL`
 	}
 	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var waits []float64
+	type wait struct {
+		landing int
+		seconds float64
+	}
+	var ordered []wait
 	for rows.Next() {
 		var landed, entered string
-		if err := rows.Scan(&landed, &entered); err != nil {
+		var landing int
+		if err := rows.Scan(&landed, &entered, &landing); err != nil {
 			return nil, err
 		}
 		finish, err := parseTimeValue(landed)
@@ -320,7 +325,12 @@ AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_a
 		if err != nil {
 			return nil, err
 		}
-		waits = append(waits, finish.Sub(start).Seconds())
+		ordered = append(ordered, wait{landing, finish.Sub(start).Seconds()})
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].landing < ordered[j].landing })
+	var waits []float64
+	for _, w := range ordered {
+		waits = append(waits, w.seconds)
 	}
 	return waits, rows.Err()
 }
@@ -407,11 +417,16 @@ func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope native
 }
 
 func diagnosticsLeaseCapacityFrom(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
-	rows, err := q.QueryContext(ctx, `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND i.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`, scope.organization, scope.project, formatHubTime(out.To), formatHubTime(out.From))
+	statement := `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND i.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
+	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+		statement = `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l WHERE l.organization_id=? AND l.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
+	}
+	rows, err := q.QueryContext(ctx, statement, scope.organization, scope.project, formatHubTime(out.To), formatHubTime(out.From))
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	held := make([]time.Duration, len(out.Capacity))
 	for rows.Next() {
 		var acquired, released, expires string
 		if err := rows.Scan(&acquired, &released, &expires); err != nil {
@@ -430,13 +445,17 @@ func diagnosticsLeaseCapacityFrom(ctx context.Context, q nativeQueryer, scope na
 			return err
 		}
 		finish = minTime(finish, expiry)
-		for i := range out.Capacity {
-			b := &out.Capacity[i]
-			end := minTime(b.Hour.Add(time.Hour), out.To)
-			from, to := maxTime(start, b.Hour), minTime(finish, end)
+		for i, b := range out.Capacity {
+			from, to := maxTime(start, b.Hour), minTime(finish, minTime(b.Hour.Add(time.Hour), out.To))
 			if to.After(from) {
-				b.Slots += to.Sub(from).Seconds() / end.Sub(b.Hour).Seconds()
+				held[i] += to.Sub(from)
 			}
+		}
+	}
+	for i := range out.Capacity {
+		b := &out.Capacity[i]
+		if held[i] > 0 {
+			b.Slots += held[i].Seconds() / minTime(b.Hour.Add(time.Hour), out.To).Sub(b.Hour).Seconds()
 		}
 	}
 	return rows.Err()
