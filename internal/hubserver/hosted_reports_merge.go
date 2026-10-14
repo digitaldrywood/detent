@@ -339,16 +339,17 @@ func reportsAgingTop(items []operatortool.AnalyticsAging, limit int) []operatort
 }
 
 func mergeReportClasses(reports []hostedReportsReport, classes func(hostedReportsReport) []reportClassTotal) []reportClassTotal {
-	byClass := map[string]*reportClassTotal{}
-	order := []string{}
+	index := map[string]int{}
+	out := []reportClassTotal{}
 	for _, r := range reports {
 		for _, class := range classes(r) {
-			merged := byClass[class.Class]
-			if merged == nil {
-				merged = &reportClassTotal{Class: class.Class, Kind: class.Kind}
-				byClass[class.Class] = merged
-				order = append(order, class.Class)
+			i, seen := index[class.Class]
+			if !seen {
+				i = len(out)
+				index[class.Class] = i
+				out = append(out, reportClassTotal{Class: class.Class, Kind: class.Kind})
 			}
+			merged := &out[i]
 			merged.Count += class.Count
 			merged.Issues += class.Issues
 			merged.Cost += class.Cost
@@ -364,11 +365,8 @@ func mergeReportClasses(reports []hostedReportsReport, classes func(hostedReport
 			}
 		}
 	}
-	out := make([]reportClassTotal, 0, len(order))
-	for _, name := range order {
-		class := byClass[name]
-		class.WorkItems = class.WorkItems[:min(len(class.WorkItems), reportClassTopIssues)]
-		out = append(out, *class)
+	for i := range out {
+		out[i].WorkItems = out[i].WorkItems[:min(len(out[i].WorkItems), reportClassTopIssues)]
 	}
 	slices.SortStableFunc(out, func(a, b reportClassTotal) int { return cmp.Compare(b.Count, a.Count) })
 	return out
@@ -376,20 +374,22 @@ func mergeReportClasses(reports []hostedReportsReport, classes func(hostedReport
 
 func mergeReportsCoverage(reports []hostedReportsReport) []diagnosticsCoverage {
 	type total struct {
+		name            string
 		observed, total int
 		unobserved      bool
 		untotalled      bool
 	}
-	byName := map[string]*total{}
-	order := []string{}
+	index := map[string]int{}
+	totals := []total{}
 	for _, r := range reports {
 		for _, c := range r.Coverage {
-			t := byName[c.Source]
-			if t == nil {
-				t = &total{}
-				byName[c.Source] = t
-				order = append(order, c.Source)
+			i, seen := index[c.Source]
+			if !seen {
+				i = len(totals)
+				index[c.Source] = i
+				totals = append(totals, total{name: c.Source})
 			}
+			t := &totals[i]
 			if c.Observed == nil {
 				t.unobserved = true
 			} else {
@@ -402,10 +402,9 @@ func mergeReportsCoverage(reports []hostedReportsReport) []diagnosticsCoverage {
 			}
 		}
 	}
-	out := make([]diagnosticsCoverage, 0, len(order))
-	for _, name := range order {
-		t := byName[name]
-		c := diagnosticsCoverage{Source: name}
+	out := make([]diagnosticsCoverage, 0, len(totals))
+	for _, t := range totals {
+		c := diagnosticsCoverage{Source: t.name}
 		if !t.unobserved {
 			c.Observed = new(t.observed)
 		}
