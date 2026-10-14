@@ -1,0 +1,6 @@
+[
+  { "kind": "human", "principal_id": "actor-contract" },
+  { "kind": "runner", "principal_id": "actor-contract" },
+  { "kind": "integration", "principal_id": "github" },
+  { "kind": "integration", "principal_id": "health_detector" }
+]

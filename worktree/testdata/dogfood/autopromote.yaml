@@ -1,0 +1,80 @@
+issues:
+  - id: mock-issue-autopromote
+    identifier: digitaldrywood/detent#9001
+    title: Dogfood auto-promote fixture
+    description: Safe fixture issue for isolated runtime auto-promote validation.
+    state: Human Review
+    url: https://github.test/digitaldrywood/detent/issues/9001
+    labels:
+      - enhancement
+      - stage:s7
+    assigned_to_worker: true
+    updated_at: 2026-06-01T12:00:00Z
+    stage_updated_at: 2026-06-01T12:00:00Z
+    pull_request:
+      number: 9001
+      url: https://github.test/digitaldrywood/detent/pull/9001
+      branch_name: detent/mock-issue-autopromote
+      state: OPEN
+      ci_status: success
+      codex_review_state: COMMENTED
+      codex_review_submitted_at: 2026-06-01T12:00:00Z
+  - id: mock-issue-review-finding
+    identifier: digitaldrywood/detent#9002
+    title: Dogfood review finding fixture
+    state: Human Review
+    url: https://github.test/digitaldrywood/detent/issues/9002
+    labels:
+      - bug
+      - stage:s7
+    assigned_to_worker: true
+    updated_at: 2026-06-01T12:00:00Z
+    stage_updated_at: 2026-06-01T12:00:00Z
+    pull_request:
+      number: 9002
+      url: https://github.test/digitaldrywood/detent/pull/9002
+      branch_name: detent/mock-issue-review-finding
+      state: OPEN
+      ci_status: success
+      codex_review_state: P1
+      codex_review_submitted_at: 2026-06-01T12:00:00Z
+      codex_review_findings:
+        - body: P1 mock finding
+          url: https://github.test/digitaldrywood/detent/pull/9002#discussion_r1
+          path: internal/mock.go
+          line: 42
+  - id: mock-issue-resume
+    identifier: digitaldrywood/detent#9003
+    title: Dogfood restart resume fixture
+    state: In Progress
+    url: https://github.test/digitaldrywood/detent/issues/9003
+    labels:
+      - enhancement
+      - stage:s7
+    assigned_to_worker: true
+    updated_at: 2026-06-01T12:00:00Z
+    stage_updated_at: 2026-06-01T12:00:00Z
+    pull_request:
+      number: 9003
+      url: https://github.test/digitaldrywood/detent/pull/9003
+      branch_name: detent/mock-issue-resume
+      state: OPEN
+      ci_status: pending
+  - id: mock-issue-merged
+    identifier: digitaldrywood/detent#9004
+    title: Dogfood merged PR fixture
+    state: Done
+    url: https://github.test/digitaldrywood/detent/issues/9004
+    labels:
+      - enhancement
+      - stage:s7
+    assigned_to_worker: true
+    closed: true
+    updated_at: 2026-06-01T12:00:00Z
+    stage_updated_at: 2026-06-01T12:00:00Z
+    pull_request:
+      number: 9004
+      url: https://github.test/digitaldrywood/detent/pull/9004
+      branch_name: detent/mock-issue-merged
+      state: MERGED
+      ci_status: success

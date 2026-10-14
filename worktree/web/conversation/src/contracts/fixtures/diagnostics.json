@@ -1,0 +1,52 @@
+{
+  "from": "2026-10-05T18:00:00Z",
+  "to": "2026-10-06T17:00:00Z",
+  "partial": true,
+  "busy_percent": 74.8,
+  "stalled": 3,
+  "findings": [
+    { "id": "finding_watch", "severity": "watch", "class": "capacity", "when": "2026-10-06T16:00:00Z", "summary": "Runner claims are waiting for capacity", "next_action": "Check runner limits and active slots.", "subject": { "kind": "fleet" } },
+    { "id": "finding_attention", "severity": "attention", "class": "flow", "when": "2026-10-06T15:00:00Z", "summary": "Repeated attempts without progress", "next_action": "Review the issue's recorded failures before retrying.", "subject": { "kind": "issue", "work_item_id": "wi_fixture", "project_id": "prj_fixture" } },
+    { "id": "finding_project", "severity": "watch", "class": "human", "when": "2026-10-06T14:00:00Z", "summary": "Project work is waiting on an answer", "next_action": "Review the pending question.", "subject": { "kind": "project", "project_id": "prj_fixture" } }
+  ],
+  "detector_tick": "2026-10-06T16:58:00Z",
+  "capacity": [
+    { "hour": "2026-10-05T18:00:00Z", "slots": 1, "todo": 8 },
+    { "hour": "2026-10-05T21:00:00Z", "slots": 2, "todo": 10 },
+    { "hour": "2026-10-06T00:00:00Z", "slots": 2, "todo": null },
+    { "hour": "2026-10-06T03:00:00Z", "slots": 6, "todo": 18 },
+    { "hour": "2026-10-06T06:00:00Z", "slots": 8, "todo": 25 },
+    { "hour": "2026-10-06T09:00:00Z", "slots": 7, "todo": 32 },
+    { "hour": "2026-10-06T12:00:00Z", "slots": 5, "todo": 21 },
+    { "hour": "2026-10-06T15:00:00Z", "slots": 8, "todo": 12 },
+    { "hour": "2026-10-06T16:00:00Z", "slots": 8, "todo": 10 }
+  ],
+  "claimed": 1183,
+  "ready": 220,
+  "skipped": 46,
+  "skip_reasons": [{ "source": "native_provider_capacity", "reason": "Provider capacity is full", "count": 46 }],
+  "merge_entered": 452,
+  "merge_landed": 85,
+  "merge_wait_p50": 5,
+  "merge_wait_p90": 180,
+  "merge_wait_max": 5820,
+  "refused": [{ "reason": "conflict", "count": 34 }, { "reason": "base protected", "count": 1 }],
+  "coverage": [
+    { "source": "Transitions", "observed": 841, "total": 841 },
+    { "source": "Attempts", "observed": 953, "total": 953 },
+    { "source": "Usage joins", "observed": 481, "total": 953 },
+    { "source": "Activity receipts", "observed": 273, "total": 953 },
+    { "source": "Queue intervals", "observed": 12, "total": 1183 },
+    { "source": "Skip reasons", "observed": 46, "total": 46 },
+    { "source": "Merge identity", "observed": 85, "total": 85 },
+    { "source": "Landing refusal reason", "observed": null, "total": null },
+    { "source": "Detector tick", "observed": 1, "total": 1 }
+  ],
+  "configuration": [
+    { "name": "Plan gate", "value": "Enabled", "effect": "24 plan sessions in this window" },
+    { "name": "Validator gate", "value": "Disabled", "effect": "No validator sessions" },
+    { "name": "Gate kind", "value": "Command", "effect": null },
+    { "name": "Merge method", "value": "Squash", "effect": "85 landings" },
+    { "name": "Lifetime limit", "value": "60 sessions", "effect": null }
+  ]
+}
