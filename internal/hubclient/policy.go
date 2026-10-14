@@ -32,7 +32,7 @@ func (c *Client) ProjectPolicy(ctx context.Context, repository string) (policy.A
 	if err != nil {
 		return approval, err
 	}
-	err = c.request(ctx, http.MethodGet, path, nil, &approval)
+	err = c.request(ctx, http.MethodGet, path+"?limit=1", nil, &approval)
 	return approval, err
 }
 
