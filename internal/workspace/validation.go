@@ -31,7 +31,7 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 
 func directGoValidation(validation string) bool {
 	args := strings.Fields(validation)
-	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\\\"'`$;&|<>\n\r()%!^") {
+	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\\\"'`$;&|<>\n\r()%!^*?[]{}~#") {
 		return false
 	}
 	switch args[1] {
@@ -41,6 +41,11 @@ func directGoValidation(validation string) bool {
 	}
 	if args[1] == "version" && len(args) != 2 {
 		return false
+	}
+	for _, arg := range args[2:] {
+		if !strings.HasPrefix(arg, "-") && (strings.HasPrefix(arg, "/") || arg == ".." || strings.HasPrefix(arg, "../") || strings.Contains(arg, "/../") || strings.HasSuffix(arg, "/..") || strings.HasSuffix(arg, ".go")) {
+			return false
+		}
 	}
 	return reusableGoValidationFlags(args[2:])
 }
