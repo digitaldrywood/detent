@@ -136,3 +136,8 @@ runners are stateless like GitHub Actions runners. A runner depends only on its
 install configuration; every job starts in a fresh workspace from an exact commit
 or a Hub-stored source bundle; work that must survive is published to the Hub.
 Never pin work to a machine or add machine-local state later jobs depend on.
+
+Follow [INV-18](docs/invariants.md#inv-18--hub-writes-stay-small):
+a request's write transaction writes only what that request owns and never
+rebuilds rollups or reprojects other rows; derived data is refreshed in the
+background one item per short transaction. New Hub columns are typed, never JSON.

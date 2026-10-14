@@ -544,3 +544,23 @@ source transfer are being removed under this rule; no change may extend them.
 **Enforcement:** Review applies this rule to changes in runner, workspace,
 hubclient, recovery and placement code. This is a review rule; it adds no
 check, gate, configuration or runtime mechanism.
+
+## INV-18 — Hub writes stay small
+
+A request's write transaction writes only the rows that request owns. It never
+rebuilds rollups, recounts totals, cleans up, backfills or reprojects other
+rows. Derived data is maintained by background work, one item per short
+transaction, and may lag the request that changed it.
+
+Work inside any write transaction is bounded by the size of the request, never
+by the size of history. Reads use the reader pool, never the writer
+connection.
+
+New Hub tables and columns store typed columns, never JSON documents. Existing
+JSON columns are being migrated to typed columns under this rule, and the
+in-commit board card refresh is being moved to background work; no change may
+extend either.
+
+**Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
+`TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
+the history bound and reader rule to Hub persistence changes.
