@@ -242,6 +242,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "clock-behind newer pass supersedes failure", validator: true, verdict: "pass", latestPassed: true},
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
 		{name: "matching wrapped finalization receipt is reused", validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
+		{name: "matching bounded Go flags reuse receipt", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "stable-flags"},
 		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
 		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
 		{name: "double dash effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-double-vettool", wantRuns: 2},
@@ -295,8 +296,11 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				if test.changedInput == "environment-quoted-profile" {
 					t.Setenv("GOFLAGS", "\"-pgo=custom\"")
 				}
-				if test.changedInput == "effective-vettool" || test.changedInput == "effective-double-vettool" || test.changedInput == "effective-quoted-profile" {
+				if test.changedInput == "effective-vettool" || test.changedInput == "effective-double-vettool" || test.changedInput == "effective-quoted-profile" || test.changedInput == "stable-flags" {
 					flags := "-vettool=custom"
+					if test.changedInput == "stable-flags" {
+						flags = "-tags=fixture"
+					}
 					if test.changedInput == "effective-double-vettool" {
 						flags = "--vettool=custom"
 					}
