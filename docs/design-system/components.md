@@ -327,7 +327,7 @@ A small contextual interaction anchored to its trigger: a filter, a short form, 
 
 ### Menu
 
-A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives rows a 40px height for touch; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
+A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives item and radio rows a 44px height on phones and 40px from the small breakpoint; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
 
 - Kind: Primitive; status: available; id: `menu`.
 - Import: `import { MenuCreateHandle, Menu, MenuPortal, MenuTrigger, MenuPopup, MenuGroup, MenuItem, MenuCheckboxItem, MenuRadioGroup, MenuRadioItem, MenuRadioItemIndicator, MenuGroupLabel, MenuSeparator, MenuShortcut, MenuSub, MenuSubTrigger, MenuSubPopup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, MenuItemLabel } from "~/components/ui/menu";`

@@ -299,7 +299,9 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         <div className="flex shrink-0 items-center gap-1">
           <LiveCounter count={board.resolved ? stats.running : null} loading={board.loading} />
           <CompletedCounter
-            count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
+            count={board.totals?.completed ?? null}
+            cancelled={board.totals?.cancelled ?? null}
+            windows={board.totals?.shippedWindows ?? null}
             completedWindow={view.completedWindow}
             onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
             loading={board.loading}

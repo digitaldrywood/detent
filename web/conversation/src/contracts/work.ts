@@ -195,8 +195,13 @@ export const NativeIssue = Schema.Struct({
 });
 export type NativeIssue = typeof NativeIssue.Type;
 
+export const NativeShippedWindow = Schema.Struct({ window: Schema.String, shipped: Schema.Number, cancelled: Schema.Number });
+export type NativeShippedWindow = typeof NativeShippedWindow.Type;
+
 export const NativeWorkSummary = Schema.Struct({
   completed: Schema.optional(Schema.Number),
+  cancelled: Schema.optional(Schema.Number),
+  shipped_windows: Schema.optional(Schema.Array(NativeShippedWindow)),
   items: Schema.Array(NativeIssue),
   lanes: Schema.Array(Schema.Struct({ state: Schema.String, total: Schema.Number, running: Schema.Number })),
   truncated: Schema.Boolean,

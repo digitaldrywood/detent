@@ -610,12 +610,8 @@ describe("completed counts", () => {
     const stats = boardStats(items, lanes);
     expect(stats.completed).toBe(4);
     expect(stats.importedClosed).toBe(2);
-    render(<CompletedCounter count={stats.completed} completedWindow="all" onCompletedWindowChange={vi.fn()} loading={false} />);
     expect(stats.running + stats.waiting + stats.needAttention + stats.backlog).toBe(stats.open);
     expect(stats.open).toBe(10);
-    expect(screen.getByTestId("stat-completed").textContent).toBe("4 completed · All time");
-    expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
-    expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 
   it("partitions server lane totals with custom holding lanes and matches the local fallback", async () => {
@@ -647,30 +643,32 @@ describe("completed counts", () => {
       }
       if (url.pathname.endsWith("/work-items")) {
         return Response.json({ ...await response.json(), work: {
-          lanes, completed: 9, total: 43, as_of: "2026-10-07T12:00:00Z", truncated: false, items: [],
+          lanes, completed: 9, cancelled: 2, total: 43, as_of: "2026-10-07T12:00:00Z", truncated: false, items: [],
+          shipped_windows: [{ window: "1h", shipped: 1, cancelled: 0 }, { window: "24h", shipped: 9, cancelled: 2 }, { window: "7d", shipped: 30, cancelled: 5 }],
         } });
       }
       return response;
     });
     let current!: ReturnType<typeof useBoard>;
-    function Probe() { current = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all" }); return <div />; }
+    function Probe() { current = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "24h" }); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
     expect(current.error).toBeNull();
-    expect(current.totals).toMatchObject({ running: 4, waiting: 11, needAttention: 9, backlog: 10, open: 34, completed: 9, total: 43 });
+    expect(current.totals).toMatchObject({ running: 4, waiting: 11, needAttention: 9, backlog: 10, open: 34, completed: 9, cancelled: 2, total: 43,
+      shippedWindows: { "1h": { shipped: 1, cancelled: 0 }, "24h": { shipped: 9, cancelled: 2 }, "7d": { shipped: 30, cancelled: 5 } } });
     const localItems = lanes.flatMap((lane) => Array.from({ length: lane.total }, (_, index) => item({
       id: `${lane.state}-${index}`, state: lane.state,
       terminal: ["Done", "Cancelled"].includes(lane.state),
       attempt: index < lane.running ? toAttemptView(ATTEMPTS) : null,
     })));
     const fallback = boardStats(localItems, current.lanes);
-    for (const key of ["running", "waiting", "needAttention", "backlog", "open", "completed", "total"] as const) {
+    for (const key of ["running", "waiting", "needAttention", "backlog", "open", "total"] as const) {
       expect(fallback[key]).toBe(current.totals![key]);
     }
     expect(fallback.running + fallback.waiting + fallback.needAttention + fallback.backlog).toBe(34);
 
     let filtered!: ReturnType<typeof useBoard>;
-    function FilteredProbe() { filtered = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all", state: ["In Progress", "Rework"] }); return <div />; }
+    function FilteredProbe() { filtered = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, state: ["In Progress", "Rework"] }); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><FilteredProbe /></ClientContext.Provider>);
     await waitFor(() => expect(filtered.resolved).toBe(true));
     expect(filtered.totals?.running).toBe(2);
@@ -681,11 +679,11 @@ describe("completed counts", () => {
     const props = { count: totals.completed, loading: false, onCompletedWindowChange: vi.fn() };
     const mounted = render(<CompletedCounter {...props} />);
     const counts = screen.getByTestId("stat-completed");
-    expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
+    expect(counts.textContent).toContain(`${totals.completed} shipped · 24h`);
     expect(within(counts).queryByRole("button", { name: /^Load / })).toBeNull();
     mounted.rerender(<CompletedCounter {...props} loading />);
     expect(counts.closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
-    expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
+    expect(counts.textContent).toContain(`${totals.completed} shipped · 24h`);
     mounted.rerender(<CompletedCounter {...props} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
@@ -1404,17 +1402,34 @@ describe("the filter-first Work surface", () => {
     });
   });
 
+  it("offers 1 hour, 24 hours and 7 days with their counts, the cancelled line and a Reports link", async () => {
+    const windows = { "1h": { shipped: 6, cancelled: 2 }, "24h": { shipped: 87, cancelled: 41 }, "7d": { shipped: 301, cancelled: 96 } };
+    const onChange = vi.fn();
+    const counter = () => <CompletedCounter count={6} cancelled={2} windows={windows} completedWindow="1h" onCompletedWindowChange={onChange} loading={false} />;
+    render(<RouterProvider router={createRouter({ routeTree: createRootRoute({ component: counter }), history: createMemoryHistory({ initialEntries: ["/"] }) })} />);
+    const trigger = await screen.findByTestId("stat-completed");
+    expect(trigger.textContent).toBe("6 shipped · 1h");
+    fireEvent.click(trigger);
+    expect(await screen.findByText("Shipped in the last")).toBeTruthy();
+    expect(screen.getAllByRole("menuitemradio").map((option) => option.textContent)).toEqual(["1 hour6", "24 hours87", "7 days301"]);
+    expect(screen.getByRole("menuitemradio", { name: /^1 hour/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("shipped-cancelled").textContent).toBe("Plus 2 cancelled in 1 hour");
+    expect(screen.getByRole("menuitem", { name: /Open in Reports/ }).getAttribute("href")).toBe("/reports?range=24h");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^7 days/ }));
+    expect(onChange).toHaveBeenCalledWith("7d");
+  });
+
   it("opens the completed window menu and requests a fresh count for the selection", async () => {
     const { requests, router } = await pagedWork();
     await settledWork();
     expect(within(screen.getByTestId("work-toolbar")).queryByText(/Completed/)).toBeNull();
     expect(screen.getByTestId("stat-completed").tagName).toBe("BUTTON");
     fireEvent.click(screen.getByTestId("stat-completed"));
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7 days$/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7 days/ }));
     await settledWork();
     expect(parseViewState(router.state.location.searchStr).completedWindow).toBe("7d");
     expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).some((request) => request.url.searchParams.get("completed_window") === "7d")).toBe(true);
-    expect(screen.getByTestId("stat-completed").textContent).toContain("completed · 7d");
+    expect(screen.getByTestId("stat-completed").textContent).toContain("shipped · 7d");
   });
 
   it.each(["Todo", ""])("ignores the %s board lane scope in the Active list", async (lanes) => {
@@ -1472,14 +1487,14 @@ describe("the filter-first Work surface", () => {
     expect((screen.getByRole("searchbox", { name: "Search issues" }) as HTMLInputElement).value).toBe(q);
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" || q === "3421" ? "1 completed · 48h" : "2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" || q === "3421" ? "1 shipped · 24h" : "2 shipped · 24h");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
     if (q === "Older title needle") {
       fireEvent.change(screen.getByRole("searchbox", { name: "Search issues" }), { target: { value: "Older title needle b" } });
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
-      expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Choose the completed window.");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
+      expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Choose the shipped window.");
     }
   });
 
@@ -1489,15 +1504,15 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Older title needle b")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     fireEvent.click(screen.getByTestId("filters-trigger"));
     for (const filter of ["label-choice-b", "assignee-operator-b", "priority-High"]) {
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     }
     fireEvent.keyDown(document, { key: "Escape" });
     const reads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"));
@@ -1524,7 +1539,7 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Older title needle b")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
     expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBe("me");
     const request = fixture.requests.findLast(({ url }) => url.pathname.endsWith("/work-items"))!;
     expect(request.url.searchParams.get("created_by")).toBe("me");
@@ -1545,10 +1560,10 @@ describe("the filter-first Work surface", () => {
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
     fireEvent.click(await screen.findByTestId("filter-label-choice-b"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("label"))
       .toEqual(["choice-a", "choice-b"]);
   });
@@ -1602,7 +1617,7 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork('/work?view=list&tab=all&q=older-label&pages=legacy-cursor');
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
       !request.url.searchParams.has("cursor"))).toBe(true);
   });
@@ -1636,7 +1651,7 @@ describe("the filter-first Work surface", () => {
     expect(await screen.findByTestId("work-error")).not.toBeNull();
     expect(screen.queryByTestId("issue-card")).toBeNull();
     expect(screen.queryByTestId("work-list-row")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("— completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("— shipped · 24h");
   });
 
   it("finishes a slow first read and retains usable work during continuous activity", async () => {

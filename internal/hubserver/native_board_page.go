@@ -108,7 +108,7 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	from, err := nativeCompletedFrom(params.Get("completed_window"), now)
+	selected, err := nativeShippedWindow(params.Get("completed_window"))
 	if err != nil {
 		return nil, err
 	}
@@ -121,9 +121,12 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	closed, err := readNativeClosedPopulation(ctx, q, scope, closedWhere, closedArgs, from, now)
-	summary.Completed = len(closed.Shipped)
-	return summary, err
+	windows, err := readNativeShippedWindows(ctx, q, scope, closedWhere, closedArgs, now)
+	if err != nil {
+		return nil, err
+	}
+	applyNativeShippedWindows(summary, windows, selected)
+	return summary, nil
 }
 
 func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {

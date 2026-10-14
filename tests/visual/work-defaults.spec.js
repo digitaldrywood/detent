@@ -1,3 +1,4 @@
+const path = require("node:path");
 const { test, expect } = require("@playwright/test");
 const { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
@@ -38,7 +39,7 @@ for (const scope of ["all", "project"]) {
       await expect(page.getByTestId(`stat-${counter}`)).toHaveCount(0);
     }
     const heading = page.getByRole("heading", { level: 1 });
-    const completed = page.getByRole("button", { name: /completed ·/ });
+    const completed = page.getByRole("button", { name: /shipped ·/ });
     expect(await heading.evaluate((title) => title.closest("header")?.textContent)).not.toMatch(/\d+ (projects|issues)/);
     expect(await completed.evaluate((counter) => Boolean(counter.closest("header")?.querySelector("h1")?.compareDocumentPosition(counter) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
     const titleBox = await heading.boundingBox();
@@ -115,42 +116,84 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("work-list-row")).toHaveCount(130 * copies);
   });
 
-  test(`${scope} completed window reads the Hub total and survives reload and remembered navigation`, async ({ page }) => {
+  test(`${scope} shipped window reads the Hub totals and survives reload and remembered navigation`, async ({ page }) => {
     const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
     await openWork(page, route);
     const copies = scope === "all" ? 2 : 1;
-    await page.getByRole("button", { name: "New issue", exact: true }).click();
-    await expect(page.getByRole("dialog", { name: "New issue" })).toBeVisible();
-    await page.getByRole("dialog", { name: "New issue" }).getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
-    for (const [window, count] of [["7d", 3], ["14d", 3], ["all", 4]]) {
+    const counter = page.getByTestId("stat-completed");
+    await expect(counter).toHaveText(`${2 * copies} shipped · 24h`);
+    await expect(counter).toHaveRole("button");
+    await counter.click();
+    await expect(counter).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByRole("menu").getByText("Shipped in the last", { exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitemradio")).toHaveText([`1 hour${copies}`, `24 hours${2 * copies}`, `7 days${3 * copies}`]);
+    await expect(page.getByRole("menuitemradio", { name: /^24 hours/ })).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("shipped-cancelled")).toHaveText(`Plus ${copies} cancelled in 24 hours`);
+    await expect(page.getByRole("menuitem", { name: /Open in Reports/ })).toHaveAttribute("href", /\/reports\?range=24h$/);
+    const anchor = await counter.boundingBox();
+    const menu = await page.getByRole("menu").boundingBox();
+    expect(Math.abs(menu.x - anchor.x)).toBeLessThan(2);
+    await page.keyboard.press("Escape");
+    for (const [window, count, label, range] of [["7d", 3, "7 days", "7d"], ["1h", 1, "1 hour", "24h"]]) {
       const saved = page.waitForResponse((response) => response.url().endsWith("/work-view-preference") && response.request().method() === "PUT" && new URLSearchParams(response.request().postDataJSON().query).get("completed") === window);
-      const counter = page.getByTestId("stat-completed");
-      await expect(counter).toHaveRole("button");
       const request = page.waitForRequest((request) => new URL(request.url()).searchParams.get("completed_window") === window);
       await counter.click();
-      await expect(counter).toHaveAttribute("aria-expanded", "true");
-      await expect(page.getByRole("menuitemradio")).toHaveText(["48 hours", "7 days", "14 days", "All time"]);
-      const anchor = await counter.boundingBox();
-      const menu = await page.getByRole("menu").boundingBox();
-      expect(Math.abs(menu.x - anchor.x)).toBeLessThan(2);
-      await page.getByRole("menuitemradio", { name: window === "all" ? "All time" : window === "7d" ? "7 days" : "14 days", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: new RegExp(`^${label}`) }).click();
       await request;
-      await page.keyboard.press("Escape");
-      await expect(page.getByTestId("stat-completed")).toHaveText(`${count * copies} completed · ${window === "all" ? "All time" : window}`);
+      await expect(counter).toHaveText(`${count * copies} shipped · ${window}`);
       await expect(page).toHaveURL(new RegExp(`completed=${window}`));
       await saved;
+      await counter.click();
+      await expect(page.getByRole("menuitem", { name: /Open in Reports/ })).toHaveAttribute("href", new RegExp(`/reports\\?range=${range}$`));
+      await page.keyboard.press("Escape");
     }
     await page.reload();
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · All time`);
+    await expect(counter).toHaveText(`${copies} shipped · 1h`);
     await page.goto(new URL(route, hub.fixture.url).toString());
-    await expect(page).toHaveURL(/completed=all/);
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${4 * copies} completed · All time`);
-    await page.getByTestId("stat-completed").click();
-    await page.getByRole("menuitemradio", { name: "48 hours", exact: true }).click();
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} completed · 48h`);
+    await expect(page).toHaveURL(/completed=1h/);
+    await expect(counter).toHaveText(`${copies} shipped · 1h`);
+    await counter.click();
+    await page.getByRole("menuitemradio", { name: /^24 hours/ }).click();
+    await expect(counter).toHaveText(`${2 * copies} shipped · 24h`);
     expect(new URL(page.url()).searchParams.has("completed")).toBe(false);
+    await counter.click();
+    await page.getByRole("menuitem", { name: /Open in Reports/ }).click();
+    await expect(page).toHaveURL(/\/reports\?range=24h$/);
+    await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("group", { name: "Report range" }).getByRole("button", { name: "24h", exact: true })).toHaveAttribute("aria-pressed", "true");
   });
+
+  test(`${scope} saved 48h, 14d and all windows fall back to 24 hours`, async ({ page }) => {
+    const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
+    const copies = scope === "all" ? 2 : 1;
+    await openWork(page, route);
+    for (const legacy of ["48h", "14d", "all"]) {
+      const stored = await page.evaluate(async ({ project, query }) => {
+        const bootstrap = await (await fetch("/chat/bootstrap")).json();
+        const target = project === null ? `${bootstrap.api_base}/work-view-preference` : `${bootstrap.api_base}/projects/${project}/work-view-preference`;
+        const response = await fetch(target, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+          body: JSON.stringify({ query }),
+        });
+        return response.status;
+      }, { project: scope === "all" ? null : hub.fixture.project_id, query: `completed=${legacy}` });
+      expect(stored).toBe(200);
+      await page.goto(new URL(route, hub.fixture.url).toString());
+      await expect(page.getByTestId("stat-completed")).toHaveText(`${2 * copies} shipped · 24h`);
+    }
+  });
+
+  for (const theme of ["light", "dark"]) {
+    test(`${scope} open shipped menu in ${theme}`, async ({ page }) => {
+      const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
+      await openWork(page, route);
+      await page.evaluate((value) => { document.documentElement.classList.add("no-transitions"); document.documentElement.classList.toggle("dark", value === "dark"); document.documentElement.dataset.theme = value; }, theme);
+      await page.getByTestId("stat-completed").click();
+      await expect(page.getByTestId("shipped-cancelled")).toBeVisible();
+      await page.screenshot({ path: path.join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `work-shipped-menu-${scope}-${theme}.png`) });
+    });
+  }
 }
 
 test("terminal URL and stored lane names never produce board lanes", async ({ page }) => {
@@ -195,8 +238,9 @@ test("a terminal move removes the card and refreshes the completed count", async
     await page.getByRole("menuitem", { name: "Done", exact: true }).click();
     expect((await saved).ok()).toBe(true);
     await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} shipped · 24h`);
     await page.reload();
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} completed · 48h`);
+    await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} shipped · 24h`);
     await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
     await expect(page.locator('[data-testid="board-lane"][data-terminal="true"]')).toHaveCount(0);
   } finally {

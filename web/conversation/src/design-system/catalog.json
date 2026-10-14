@@ -418,7 +418,7 @@
       },
       "states": ["open", "highlighted", "checked", "disabled", "kept mounted"],
       "keyboard": "Enter, Space or arrow keys open from the trigger; arrow keys move; typeahead jumps; Enter activates; ArrowRight opens a submenu; Escape closes and returns focus.",
-      "use": "A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density=\"touch\"` gives rows a 40px height for touch; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.",
+      "use": "A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density=\"touch\"` gives item and radio rows a 44px height on phones and 40px from the small breakpoint; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.",
       "avoid": "Choosing a saved value (use Select) and searching (use Combobox or Command).",
       "related": ["select", "popover", "button"]
     },

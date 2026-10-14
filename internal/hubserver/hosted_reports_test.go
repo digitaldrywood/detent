@@ -185,16 +185,30 @@ func TestReportsShippedPopulation(t *testing.T) {
 			t.Fatalf("close on the boundary in [%s, %s) = %t, want %t", window.from, window.to, got, window.want)
 		}
 	}
-	board, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{"completed_window": {"48h"}}, to)
+	day := operatortool.AnalyticsWindow{From: to.Add(-24 * time.Hour), To: to, Bucket: time.Hour}
+	dayProject, err := readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: maxAnalyticsPopulation}, day)
 	if err != nil {
 		t.Fatal(err)
 	}
-	work, err := readNativeWorkSummary(t.Context(), f.service.database.reader, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 10, to, "48h", "")
+	dayReport, err := f.service.readHostedReportsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: day, Projects: []nativeAnalyticsProject{dayProject}}, f.service.database.reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if board.Completed != report.Completion.Done || work.Completed != report.Completion.Done {
-		t.Fatalf("board=%d work=%d reports=%d", board.Completed, work.Completed, report.Completion.Done)
+	if dayReport.Completion.Done != 6 || dayReport.Completion.Cancelled != 2 {
+		t.Fatalf("24h reports done=%d cancelled=%d, want 6 and 2", dayReport.Completion.Done, dayReport.Completion.Cancelled)
+	}
+	board, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{"completed_window": {"24h"}}, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := readNativeWorkSummary(t.Context(), f.service.database.reader, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 10, to, "24h", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, summary := range map[string]*tracker.NativeWorkSummary{"board": board, "work": work} {
+		if summary.Completed != dayReport.Completion.Done || summary.Cancelled != dayReport.Completion.Cancelled {
+			t.Fatalf("%s shipped=%d cancelled=%d, reports shipped=%d cancelled=%d", name, summary.Completed, summary.Cancelled, dayReport.Completion.Done, dayReport.Completion.Cancelled)
+		}
 	}
 }
 

@@ -126,13 +126,21 @@ describe("the board's view state", () => {
     expect(readStoredViewState("default-roundtrip")).toBeNull();
   });
 
-  it.each(["48h", "7d", "14d", "all"])("persists the %s completed window in the URL and remembered view", (window) => {
-    const state = parseViewState(`completed=${window}`);
-    expect(state.completedWindow).toBe(window);
+  it.each([
+    { saved: "1h", want: "1h" },
+    { saved: "24h", want: "24h" },
+    { saved: "7d", want: "7d" },
+    { saved: "48h", want: "24h" },
+    { saved: "14d", want: "24h" },
+    { saved: "all", want: "24h" },
+    { saved: "invalid", want: "24h" },
+  ] as const)("reads the saved $saved shipped window as $want in the URL and remembered view", ({ saved, want }) => {
+    const state = parseViewState(`completed=${saved}`);
+    expect(state.completedWindow).toBe(want);
     expect(parseViewState(serializeViewState(state))).toEqual(state);
+    expect(serializeViewState(state).includes("completed=")).toBe(want !== "24h");
     writeStoredViewState("window", { ...state, view: "list" });
-    expect(readStoredViewState("window")?.completedWindow).toBe(window);
-    expect(parseViewState("completed=invalid").completedWindow).toBe("48h");
+    expect(readStoredViewState("window")?.completedWindow).toBe(want);
   });
 
   it("toggles a filter value on and off and counts what is active", () => {

@@ -893,10 +893,16 @@ const ACTIVITY_ROWS = mergeActivity({
   viewerPrincipalId: "tok_7b21",
 });
 
+const SHIPPED_WINDOWS: Readonly<Record<string, { shipped: number; cancelled: number }>> = {
+  "1h": { shipped: 6, cancelled: 2 },
+  "24h": { shipped: 87, cancelled: 41 },
+  "7d": { shipped: 301, cancelled: 96 },
+};
+
 function WorkTopBarSpecimen({ title, connection }: { title: string; connection: ConnectionChip }) {
-  const [completedWindow, setCompletedWindow] = React.useState<WorkViewState["completedWindow"]>("48h");
+  const [completedWindow, setCompletedWindow] = React.useState<WorkViewState["completedWindow"]>("24h");
   return <WorkTopBar context="Work" title={title} connection={connection}
-    completed={<div className="flex shrink-0 items-center gap-1"><LiveCounter count={6} loading={false} /><CompletedCounter count={146} completedWindow={completedWindow} onCompletedWindowChange={setCompletedWindow} loading={false} /></div>}
+    completed={<div className="flex shrink-0 items-center gap-1"><LiveCounter count={6} loading={false} /><CompletedCounter count={SHIPPED_WINDOWS[completedWindow]!.shipped} cancelled={SHIPPED_WINDOWS[completedWindow]!.cancelled} windows={SHIPPED_WINDOWS} completedWindow={completedWindow} onCompletedWindowChange={setCompletedWindow} loading={false} /></div>}
     actions={<Button size="sm" className="hidden md:inline-flex"><PlusIcon />New issue</Button>}
     mobileActions={<SplitButton className="md:hidden" aria-label="Work actions">
       <Button><SparklesIcon />Ask</Button>
