@@ -278,6 +278,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 		executor := hostedOperatorExecutor{service: f.service}
 		args := map[string]any{"project_id": string(f.project.ID), "labels": []string{"bounded"}, "limit": 500}
 		seen := 0
+		seenIDs := map[tracker.NativeWorkItemID]bool{}
 		pages := 0
 		for {
 			raw, err := json.Marshal(args)
@@ -296,9 +297,11 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 				t.Fatal("invalid byte-bounded export page")
 			}
 			for _, item := range page.Items {
-				if seen >= len(expected) || item.WorkItemID != expected[seen].WorkItemID || item.Body != expected[seen].Body || len(item.OmittedFields) != 0 {
-					t.Fatalf("lost full content at %d", seen)
+				want, exists := expectedByID[item.WorkItemID]
+				if !exists || seenIDs[item.WorkItemID] || item.Body != want.Body || len(item.OmittedFields) != 0 {
+					t.Fatalf("lost full content or duplicate item at %s", item.WorkItemID)
 				}
+				seenIDs[item.WorkItemID] = true
 				seen++
 			}
 			pages++
