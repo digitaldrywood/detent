@@ -297,6 +297,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					t.Skip("POSIX landing wrapper")
 				}
 				t.Setenv("CHECK_LAND_BASE", "origin/develop")
+				t.Setenv("MAKEFLAGS", "")
 				source := initRunnerSourceRepo(t)
 				if test.changedInput == "environment-vettool" {
 					t.Setenv("GOFLAGS", "-vettool=custom")
