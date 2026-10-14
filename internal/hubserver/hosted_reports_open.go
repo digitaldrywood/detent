@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -30,22 +31,22 @@ type reportsPrior struct {
 	LaneSeconds           map[string]float64 `json:"lane_seconds"`
 }
 
-func reportsOpenAt(timeline analyticsResidenceTimeline, states map[string]tracker.NativeState, at time.Time) (string, bool) {
-	if timeline.issue.partial || states[timeline.state].Terminal || !timeline.entered.Before(at) {
+func reportsOpenAt(issue reportsOpenIssue, states map[string]tracker.NativeState, at time.Time) (string, bool) {
+	if issue.partial || states[issue.state].Terminal || !issue.entered.Before(at) {
 		return "", false
 	}
-	group := analyticsResidenceGroup(timeline.state, states)
+	group := analyticsResidenceGroup(issue.state, states)
 	return group, group == "system" || group == "held"
 }
 
-func reportsOpenWorkFor(timelines []analyticsResidenceTimeline, issues []analyticsResidenceIssue, states map[string]tracker.NativeState, lanes []operatortool.AnalyticsLaneDuration, w operatortool.AnalyticsWindow, clipped bool) reportsOpenWork {
+func reportsOpenWorkFor(in reportsInputs, lanes []operatortool.AnalyticsLaneDuration, w operatortool.AnalyticsWindow) reportsOpenWork {
 	out := reportsOpenWork{Items: []operatortool.AnalyticsAging{}}
 	p90 := map[string]float64{}
 	for _, lane := range lanes {
 		p90[lane.Lane] = lane.P90Seconds / 3600
 	}
-	for _, timeline := range timelines {
-		group, open := reportsOpenAt(timeline, states, w.To)
+	for _, issue := range in.open {
+		group, open := reportsOpenAt(issue, in.states, w.To)
 		if !open {
 			continue
 		}
@@ -54,15 +55,15 @@ func reportsOpenWorkFor(timelines []analyticsResidenceTimeline, issues []analyti
 		} else {
 			out.Count++
 		}
-		if w.To.Sub(timeline.entered) > reportsStuckAfter {
+		if w.To.Sub(issue.entered) > reportsStuckAfter {
 			out.Stuck++
 		}
-		item := operatortool.AnalyticsAging{WorkItemID: timeline.issue.id, Lane: timeline.state, EnteredAt: timeline.entered, Hours: w.To.Sub(timeline.entered).Hours()}
-		if hours, ok := p90[timeline.state]; ok {
+		item := operatortool.AnalyticsAging{WorkItemID: issue.id, Lane: issue.state, EnteredAt: issue.entered, Hours: w.To.Sub(issue.entered).Hours()}
+		if hours, ok := p90[issue.state]; ok {
 			item.LaneP90Hours = &hours
 		}
-		if timeline.started != nil {
-			since := w.To.Sub(*timeline.started).Hours()
+		if issue.started != nil {
+			since := w.To.Sub(*issue.started).Hours()
 			item.SinceTodoHours = &since
 		}
 		out.Items = append(out.Items, item)
@@ -74,27 +75,16 @@ func reportsOpenWorkFor(timelines []analyticsResidenceTimeline, issues []analyti
 		case a.Hours < b.Hours:
 			return 1
 		default:
-			return 0
+			return strings.Compare(a.WorkItemID, b.WorkItemID)
 		}
 	})
 	out.Items = out.Items[:min(len(out.Items), reportsOpenWorkRows)]
-	if clipped {
+	if in.clipped {
 		return out
 	}
 	previous := 0
-	for _, issue := range issues {
-		if !issue.created.Before(w.From) {
-			continue
-		}
-		earlier := issue
-		earlier.events = nil
-		for _, event := range issue.events {
-			if event.at.Before(w.From) {
-				earlier.events = append(earlier.events, event)
-			}
-		}
-		timeline := buildAnalyticsResidenceTimeline(earlier, states, w.From)
-		if _, open := reportsOpenAt(timeline, states, w.From); open && w.From.Sub(timeline.entered) > reportsStuckAfter {
+	for _, issue := range in.priorOpen {
+		if _, open := reportsOpenAt(issue, in.states, w.From); open && w.From.Sub(issue.entered) > reportsStuckAfter {
 			previous++
 		}
 	}
@@ -102,30 +92,22 @@ func reportsOpenWorkFor(timelines []analyticsResidenceTimeline, issues []analyti
 	return out
 }
 
-func (s *Service) reportsPriorWindow(ctx context.Context, scope nativeScope, timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, w operatortool.AnalyticsWindow) (reportsPrior, error) {
-	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
-	out := reportsPrior{LaneSeconds: reportsLaneSeconds(timelines, states, prior)}
-	quality, err := readAnalyticsQuality(ctx, s.database.reader, scope, operatortool.AnalyticsRequest{ProjectID: string(scope.project), Limit: maxAnalyticsPopulation}, prior)
+// reportsPriorQuality reads the rework rate and infrastructure returns of the
+// window before w through the same rollup reader as the analytics read.
+func (s *Service) reportsPriorQuality(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow, out *reportsPrior) error {
+	q, err := analyticsProjectReader(ctx, analyticsRollupReader{s.database.reader}, scope)
 	if err != nil {
-		return out, err
+		return err
+	}
+	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
+	quality, err := readAnalyticsQuality(ctx, q, scope, operatortool.AnalyticsRequest{ProjectID: string(scope.project), Limit: maxAnalyticsPopulation}, prior)
+	if err != nil {
+		return err
 	}
 	out.ReworkPercent = quality.ReworkPercent
 	if !quality.Partial {
 		returns := quality.InfraReturns
 		out.InfrastructureReturns = &returns
 	}
-	return out, nil
-}
-
-// reportsLaneSeconds totals residence per lane over a window, the same
-// population as the lane table's Total and Share.
-func reportsLaneSeconds(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, w operatortool.AnalyticsWindow) map[string]float64 {
-	out := map[string]float64{}
-	residence, _ := summarizeAnalyticsResidence(timelines, states, w.From, w.To)
-	for _, lane := range residence.Lanes {
-		if lane.Group != "excluded" {
-			out[lane.Lane] = lane.Seconds
-		}
-	}
-	return out
+	return nil
 }

@@ -314,7 +314,8 @@ func TestReportsOpenWork(t *testing.T) {
 	for _, issue := range issues {
 		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
 	}
-	got := reportsOpenWorkFor(timelines, issues, states, nil, w, false)
+	in := reportsTimelineInputs(timelines, issues, states, w, false)
+	got := reportsOpenWorkFor(in, nil, w)
 	ids := []string{}
 	for _, item := range got.Items {
 		ids = append(ids, item.WorkItemID)
@@ -329,10 +330,11 @@ func TestReportsOpenWork(t *testing.T) {
 		t.Fatalf("since todo=%v", *got.Items[0].SinceTodoHours)
 	}
 	prior := operatortool.AnalyticsWindow{From: at(0), To: w.From}
-	if lanes := reportsLaneSeconds(timelines, states, prior); lanes["Todo"] != (90+80+30)*3600 || lanes["Backlog"] != 0 || lanes["Rework"] != 10*3600 {
+	if lanes := in.lanes(prior.From, prior.To); lanes["Todo"] != (90+80+30)*3600 || lanes["Backlog"] != 0 || lanes["Rework"] != 10*3600 {
 		t.Fatalf("prior lane seconds=%v", lanes)
 	}
-	if clipped := reportsOpenWorkFor(timelines, issues, states, nil, w, true); clipped.PreviousStuck != nil {
+	in.clipped = true
+	if clipped := reportsOpenWorkFor(in, nil, w); clipped.PreviousStuck != nil {
 		t.Fatalf("clipped history reported a prior count")
 	}
 }
@@ -384,8 +386,8 @@ func TestReportsSeriesBuckets(t *testing.T) {
 	}
 	usage := map[string][]usageRow{"a": {{Period: at(day(7, 12)), Cost: 2}}, "b": {{Period: at(day(8, 3)), Cost: 1.5}}, "": {{Period: at(day(14, 5)), Cost: 0.5}}}
 	w := operatortool.AnalyticsWindow{From: at(day(7, 10)), To: end, Bucket: time.Hour}
-	shipped := reportsShipped(timelines, w.From, w.To)
-	series := reportsSeries(timelines, states, attempts, usage, shipped, w)
+	in := reportsTimelineInputs(timelines, nil, states, w, false)
+	series := reportsSeries(in, attempts, usage, w)
 	if len(series) != 8 || !series[0].From.Equal(w.From) || !series[0].To.Equal(at(day(8, 0))) || !series[7].From.Equal(at(day(14, 0))) || !series[7].To.Equal(end) {
 		t.Fatalf("buckets=%d first=%s..%s last=%s..%s, want UTC days clipped to the window", len(series), series[0].From, series[0].To, series[len(series)-1].From, series[len(series)-1].To)
 	}
@@ -454,7 +456,7 @@ func TestReportsSeriesBuckets(t *testing.T) {
 		t.Fatalf("failure detail=%+v", timeout)
 	}
 	spend := []reportsSpend{{WorkItemID: "shipped", Cost: 2}, {WorkItemID: "open", Cost: 1.5}}
-	reportsSpendOutcomes(spend, attempts, timelines, shipped)
+	reportsSpendOutcomes(spend, attempts, in)
 	if !reflect.DeepEqual(spend, []reportsSpend{{WorkItemID: "shipped", Cost: 2, Attempts: 1, Shipped: true, State: "Done"}, {WorkItemID: "open", Cost: 1.5, Attempts: 1, State: "Todo"}}) {
 		t.Fatalf("spend=%+v", spend)
 	}

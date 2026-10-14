@@ -497,6 +497,10 @@ func projectAnalyticsResidenceRollups(ctx context.Context, q nativeQueryer, scop
 			continue
 		}
 		item := operatortool.AnalyticsAging{WorkItemID: id, Lane: sample.State, EnteredAt: sample.Entered, Hours: out.Window.To.Sub(sample.Entered).Hours()}
+		if sample.Started != nil {
+			since := out.Window.To.Sub(*sample.Started).Hours()
+			item.SinceTodoHours = &since
+		}
 		for _, lane := range residence.Lanes {
 			if lane.Lane == item.Lane {
 				hours := lane.P90Seconds / 3600

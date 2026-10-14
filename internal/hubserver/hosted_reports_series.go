@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const reportsOtherStage = "other"
@@ -87,20 +86,10 @@ func reportsLastDone(timeline analyticsResidenceTimeline, from, to time.Time) (t
 	return last, found
 }
 
-func reportsShipped(timelines []analyticsResidenceTimeline, from, to time.Time) map[string]bool {
-	shipped := map[string]bool{}
-	for _, timeline := range timelines {
-		if _, ok := reportsLastDone(timeline, from, to); ok {
-			shipped[timeline.issue.id] = true
-		}
-	}
-	return shipped
-}
-
 // reportsSeries counts each shipped issue once, on its last Done in the window,
 // and splits every usage row in the window by stage, so the buckets sum to
 // the Shipped and Total spend headlines.
-func reportsSeries(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, shipped map[string]bool, w operatortool.AnalyticsWindow) []reportsSeriesBucket {
+func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, w operatortool.AnalyticsWindow) []reportsSeriesBucket {
 	spans := reportsSeriesSpans(w)
 	index := reportsSeriesIndex(spans)
 	span := w.To.Sub(w.From)
@@ -109,41 +98,29 @@ func reportsSeries(timelines []analyticsResidenceTimeline, states map[string]tra
 		shift[i] = reportsSeriesSpan{s.from.Add(-span), s.to.Add(-span)}
 	}
 	priorIndex := reportsSeriesIndex(shift)
-	finished := make([][]analyticsResidenceTimeline, len(spans))
-	prior := make([]int, len(spans))
-	for _, timeline := range timelines {
-		if done, ok := reportsLastDone(timeline, w.From, w.To); ok {
-			if i := index(done); i >= 0 {
-				finished[i] = append(finished[i], timeline)
-			}
-		}
-		if done, ok := reportsLastDone(timeline, w.From.Add(-span), w.From); ok {
-			if i := priorIndex(done); i >= 0 {
-				prior[i]++
-			}
-		}
-	}
 	out := make([]reportsSeriesBucket, 0, len(spans))
-	for i, s := range spans {
-		completion := reportsCompletions(finished[i], states, s.from, s.to)
-		residence, _ := summarizeAnalyticsResidence(timelines, states, s.from, s.to)
-		bucket := reportsSeriesBucket{
-			From: s.from, To: s.to,
-			Done:          len(finished[i]),
-			PriorDone:     prior[i],
-			Cycle:         completion.System,
-			Lead:          completion.Lead,
-			LaneSeconds:   map[string]float64{},
-			StageCost:     map[string]float64{},
-			ReworkClasses: map[string]int{},
-		}
-		for _, lane := range residence.Lanes {
-			if lane.Group != "excluded" {
-				bucket.LaneSeconds[lane.Lane] = lane.Seconds
+	cycles := make([][2][]float64, len(spans))
+	for _, s := range spans {
+		out = append(out, reportsSeriesBucket{From: s.from, To: s.to, LaneSeconds: in.lanes(s.from, s.to), StageCost: map[string]float64{}, ReworkClasses: map[string]int{}})
+	}
+	for _, done := range in.done {
+		if i := index(done.at); i >= 0 {
+			out[i].Done++
+			if done.timed {
+				cycles[i][0] = append(cycles[i][0], done.system)
+				cycles[i][1] = append(cycles[i][1], done.lead)
 			}
 		}
-		out = append(out, bucket)
 	}
+	for _, done := range in.priorDone {
+		if i := priorIndex(done.at); i >= 0 {
+			out[i].PriorDone++
+		}
+	}
+	for i := range out {
+		out[i].Cycle, out[i].Lead = analyticsDuration(cycles[i][0]), analyticsDuration(cycles[i][1])
+	}
+	shipped := in.shipped()
 	byAttempt := map[string]nativeAnalyticsAttempt{}
 	for _, a := range attempts {
 		byAttempt[a.AttemptID] = a
@@ -191,15 +168,12 @@ func reportsSeriesClasses(series []reportsSeriesBucket, returns []qualityReturn,
 	}
 }
 
-func reportsSpendOutcomes(spend []reportsSpend, attempts []nativeAnalyticsAttempt, timelines []analyticsResidenceTimeline, shipped map[string]bool) {
+func reportsSpendOutcomes(spend []reportsSpend, attempts []nativeAnalyticsAttempt, in reportsInputs) {
 	counts := map[string]int{}
 	for _, a := range attempts {
 		counts[a.WorkItemID]++
 	}
-	lanes := map[string]string{}
-	for _, timeline := range timelines {
-		lanes[timeline.issue.id] = timeline.state
-	}
+	lanes, shipped := in.lanesOf(), in.shipped()
 	for i := range spend {
 		id := spend[i].WorkItemID
 		spend[i].Attempts = counts[id]

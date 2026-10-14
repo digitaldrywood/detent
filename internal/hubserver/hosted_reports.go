@@ -115,6 +115,9 @@ func (s *Service) hostedReports(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
 	report, err := s.readHostedReports(ctx, analytics)
+	if err == nil {
+		err = s.reportsPriorQuality(ctx, nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(project)}, analytics.Window, &report.Prior)
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
@@ -195,15 +198,16 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
 	out.Runners = reportsRunnerTotals(p.allAttempts, usage)
-	shipped := reportsShipped(timelines, w.From, w.To)
-	reportsSpendOutcomes(out.Spend, p.allAttempts, timelines, shipped)
+	reportsSpendOutcomes(out.Spend, p.allAttempts, inputs)
+	out.OpenWork = reportsOpenWorkFor(inputs, p.LaneResidence.Lanes, w)
+	out.Prior = reportsPrior{LaneSeconds: inputs.lanes(w.From.Add(-w.To.Sub(w.From)), w.From)}
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
 	reportClassDetails(out.Rework, out.Failures, p.Quality.returns, p.failures)
 	if err := s.reportsTrackingIssues(ctx, scope, out.Failures, p.failures); err != nil {
 		return out, err
 	}
-	out.Series = reportsSeries(timelines, states, p.allAttempts, usage, shipped, w)
+	out.Series = reportsSeries(inputs, p.allAttempts, usage, w)
 	reportsSeriesClasses(out.Series, p.Quality.returns, p.failures, w)
 	policy, err := diagnosticsPolicyValues(ctx, q, scope)
 	if err != nil {
