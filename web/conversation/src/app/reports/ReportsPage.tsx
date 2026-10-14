@@ -120,7 +120,7 @@ function downloadCsv(report: ReportsReport, range: ReportsRange, project: string
 function windowLabel(report: ReportsReport): string {
   const { from, to } = report.analytics.window;
   const lastHour = new Date(Date.parse(to) - 3_600_000).toISOString();
-  return `${formatDayShort(from.slice(0, 10))} – ${formatDayShort(to.slice(0, 10))} · hourly data through ${formatDateTimeShort(lastHour)}`;
+  return `${formatDayShort(from.slice(0, 10))} – ${formatDayShort(to.slice(0, 10))} · hourly data through ${formatDateTimeShort(lastHour, "UTC")} UTC`;
 }
 
 export function ReportsView({

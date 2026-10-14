@@ -41,6 +41,8 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
   const rows = failureRows(report, search.kind);
   const showInfra = search.kind !== "issue";
   const showIssue = search.kind !== "infrastructure";
+  const unclassified = buckets.map((bucket) => Math.max(0, bucket.failed - bucket.failed_infrastructure - bucket.failed_issue));
+  const showUnclassified = search.kind === "all" && unclassified.some((value) => value > 0);
   return (
     <div className="flex flex-col gap-6">
       <MetricTileGroup aria-label="Failures headline" className="lg:grid-cols-4">
@@ -71,12 +73,13 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
                 ? [
                     ...(showInfra ? [{ label: "Infrastructure", color: KIND_COLORS.infrastructure }] : []),
                     ...(showIssue ? [{ label: "Issue", color: KIND_COLORS.issue }] : []),
+                    ...(showUnclassified ? [{ label: "Not classified", color: KIND_COLORS.unknown }] : []),
                   ]
                 : [{ label: "Failed attempts", color: KIND_COLORS.unknown }]
             }
           />
         }
-        footnote={splitKnown ? "Issue includes failures not yet classified." : "The infrastructure and issue split per day is not recorded."}
+        footnote={splitKnown ? undefined : "The infrastructure and issue split per day is not recorded."}
       >
         <Chart
           ariaLabel="Failed attempts per bucket split by infrastructure and issue"
@@ -89,7 +92,10 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
                     ? [{ id: "infrastructure", label: "Infrastructure", color: KIND_COLORS.infrastructure, kind: "bar" as const, stack: "failed", values: buckets.map((bucket) => bucket.failed_infrastructure) }]
                     : []),
                   ...(showIssue
-                    ? [{ id: "issue", label: "Issue", color: KIND_COLORS.issue, kind: "bar" as const, stack: "failed", values: buckets.map((bucket) => Math.max(0, bucket.failed - bucket.failed_infrastructure)) }]
+                    ? [{ id: "issue", label: "Issue", color: KIND_COLORS.issue, kind: "bar" as const, stack: "failed", values: buckets.map((bucket) => bucket.failed_issue) }]
+                    : []),
+                  ...(showUnclassified
+                    ? [{ id: "unclassified", label: "Not classified", color: KIND_COLORS.unknown, kind: "bar" as const, stack: "failed", values: unclassified }]
                     : []),
                 ]
               : [{ id: "failed", label: "Failed attempts", color: KIND_COLORS.unknown, kind: "bar" as const, values: buckets.map((bucket) => bucket.failed) }]

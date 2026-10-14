@@ -9,53 +9,128 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const reportsOtherStage = "other"
+
 type reportsSeriesBucket struct {
 	From                 time.Time                      `json:"from"`
 	To                   time.Time                      `json:"to"`
 	Done                 int                            `json:"done"`
 	PriorDone            int                            `json:"prior_done"`
 	Failed               int                            `json:"failed"`
+	FailedInfrastructure int                            `json:"failed_infrastructure"`
+	FailedIssue          int                            `json:"failed_issue"`
 	Cycle                operatortool.AnalyticsDuration `json:"cycle"`
 	Lead                 operatortool.AnalyticsDuration `json:"lead"`
 	LaneSeconds          map[string]float64             `json:"lane_seconds"`
 	StageCost            map[string]float64             `json:"stage_cost"`
 	NotShippedCost       float64                        `json:"not_shipped_cost"`
 	ReworkClasses        map[string]int                 `json:"rework_classes"`
-	FailedInfrastructure int                            `json:"failed_infrastructure"`
 }
 
-func reportsSeriesStep(w operatortool.AnalyticsWindow) time.Duration {
-	if w.To.Sub(w.From) >= 7*24*time.Hour {
-		return 24 * time.Hour
+// reportsWindowStart aligns a window of whole days to UTC midnight, so its
+// last day is today so far; shorter windows keep their rolling start.
+func reportsWindowStart(to time.Time, hours int) time.Time {
+	if hours < 7*24 {
+		return to.Add(-time.Duration(hours) * time.Hour)
 	}
-	return time.Hour
+	days := time.Duration(hours/24) * 24 * time.Hour
+	midnight := to.Truncate(24 * time.Hour)
+	if midnight.Equal(to) {
+		return to.Add(-days)
+	}
+	return midnight.Add(24*time.Hour - days)
+}
+
+type reportsSeriesSpan struct{ from, to time.Time }
+
+// reportsSeriesSpans returns the display buckets: UTC calendar days for a
+// window of seven days or more, clipped to the window, otherwise hours.
+func reportsSeriesSpans(w operatortool.AnalyticsWindow) []reportsSeriesSpan {
+	step, start := time.Hour, w.From
+	if w.To.Sub(w.From) >= 6*24*time.Hour {
+		step, start = 24*time.Hour, w.From.Truncate(24*time.Hour)
+	}
+	spans := []reportsSeriesSpan{}
+	for from := start; from.Before(w.To); from = from.Add(step) {
+		spans = append(spans, reportsSeriesSpan{maxTime(from, w.From), minTime(from.Add(step), w.To)})
+	}
+	return spans
+}
+
+func reportsSeriesIndex(spans []reportsSeriesSpan) func(time.Time) int {
+	return func(at time.Time) int {
+		i, found := slices.BinarySearchFunc(spans, at, func(span reportsSeriesSpan, at time.Time) int {
+			switch {
+			case at.Before(span.from):
+				return 1
+			case !at.Before(span.to):
+				return -1
+			default:
+				return 0
+			}
+		})
+		if !found {
+			return -1
+		}
+		return i
+	}
+}
+
+func reportsLastDone(timeline analyticsResidenceTimeline, from, to time.Time) (time.Time, bool) {
+	var last time.Time
+	found := false
+	for _, done := range timeline.done {
+		if !done.Before(from) && done.Before(to) && (!found || done.After(last)) {
+			last, found = done, true
+		}
+	}
+	return last, found
 }
 
 func reportsShipped(timelines []analyticsResidenceTimeline, from, to time.Time) map[string]bool {
 	shipped := map[string]bool{}
 	for _, timeline := range timelines {
-		for _, done := range timeline.done {
-			if !done.Before(from) && done.Before(to) {
-				shipped[timeline.issue.id] = true
-				break
-			}
+		if _, ok := reportsLastDone(timeline, from, to); ok {
+			shipped[timeline.issue.id] = true
 		}
 	}
 	return shipped
 }
 
+// reportsSeries counts each shipped issue once, on its last Done in the window,
+// and splits every usage row in the window by stage, so the buckets sum to
+// the Shipped and Total spend headlines.
 func reportsSeries(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, shipped map[string]bool, w operatortool.AnalyticsWindow) []reportsSeriesBucket {
-	step := reportsSeriesStep(w)
+	spans := reportsSeriesSpans(w)
+	index := reportsSeriesIndex(spans)
 	span := w.To.Sub(w.From)
-	out := []reportsSeriesBucket{}
-	for from := w.From; from.Before(w.To); from = from.Add(step) {
-		to := minTime(from.Add(step), w.To)
-		completion := reportsCompletions(timelines, states, from, to)
-		residence, _ := summarizeAnalyticsResidence(timelines, states, from, to)
+	shift := make([]reportsSeriesSpan, len(spans))
+	for i, s := range spans {
+		shift[i] = reportsSeriesSpan{s.from.Add(-span), s.to.Add(-span)}
+	}
+	priorIndex := reportsSeriesIndex(shift)
+	finished := make([][]analyticsResidenceTimeline, len(spans))
+	prior := make([]int, len(spans))
+	for _, timeline := range timelines {
+		if done, ok := reportsLastDone(timeline, w.From, w.To); ok {
+			if i := index(done); i >= 0 {
+				finished[i] = append(finished[i], timeline)
+			}
+		}
+		if done, ok := reportsLastDone(timeline, w.From.Add(-span), w.From); ok {
+			if i := priorIndex(done); i >= 0 {
+				prior[i]++
+			}
+		}
+	}
+	out := make([]reportsSeriesBucket, 0, len(spans))
+	for i, s := range spans {
+		completion := reportsCompletions(finished[i], states, s.from, s.to)
+		residence, _ := summarizeAnalyticsResidence(timelines, states, s.from, s.to)
 		bucket := reportsSeriesBucket{
-			From: from, To: to,
-			Done:          completion.Done,
-			PriorDone:     reportsCompletions(timelines, states, from.Add(-span), to.Add(-span)).Done,
+			From: s.from, To: s.to,
+			Done:          len(finished[i]),
+			PriorDone:     prior[i],
 			Cycle:         completion.System,
 			Lead:          completion.Lead,
 			LaneSeconds:   map[string]float64{},
@@ -69,29 +144,51 @@ func reportsSeries(timelines []analyticsResidenceTimeline, states map[string]tra
 		}
 		out = append(out, bucket)
 	}
-	index := reportsSeriesIndex(w)
+	byAttempt := map[string]nativeAnalyticsAttempt{}
 	for _, a := range attempts {
-		if a.Status == "failed" {
-			if i := index(a.ObservedAt); i >= 0 {
-				out[i].Failed++
-			}
+		byAttempt[a.AttemptID] = a
+	}
+	for attemptID, rows := range usage {
+		a, known := byAttempt[attemptID]
+		stage := reportsOtherStage
+		if known && a.Identity.Role != "" {
+			stage = a.Identity.Role
 		}
-		stage := a.Identity.Role
-		if stage == "" {
-			stage = "Unavailable"
-		}
-		for _, u := range usage[a.AttemptID] {
+		for _, u := range rows {
 			i := index(u.Period)
 			if i < 0 {
 				continue
 			}
-			out[i].StageCost[stage] += u.Cost
-			if !shipped[a.WorkItemID] {
+			if known && !shipped[a.WorkItemID] {
 				out[i].NotShippedCost += u.Cost
+			} else {
+				out[i].StageCost[stage] += u.Cost
 			}
 		}
 	}
 	return out
+}
+
+func reportsSeriesClasses(series []reportsSeriesBucket, returns []qualityReturn, failures []nativeFailure, w operatortool.AnalyticsWindow) {
+	index := reportsSeriesIndex(reportsSeriesSpans(w))
+	for _, r := range returns {
+		if i := index(r.at); i >= 0 && i < len(series) {
+			series[i].ReworkClasses[r.class.Name]++
+		}
+	}
+	for _, f := range failures {
+		i := index(f.at)
+		if i < 0 || i >= len(series) {
+			continue
+		}
+		series[i].Failed++
+		switch classifyFailure(f.example).Kind {
+		case reportKindInfrastructure:
+			series[i].FailedInfrastructure++
+		case reportKindIssue:
+			series[i].FailedIssue++
+		}
+	}
 }
 
 func reportsSpendOutcomes(spend []reportsSpend, attempts []nativeAnalyticsAttempt, timelines []analyticsResidenceTimeline, shipped map[string]bool) {
@@ -108,30 +205,6 @@ func reportsSpendOutcomes(spend []reportsSpend, attempts []nativeAnalyticsAttemp
 		spend[i].Attempts = counts[id]
 		spend[i].Shipped = shipped[id]
 		spend[i].State = lanes[id]
-	}
-}
-
-func reportsSeriesIndex(w operatortool.AnalyticsWindow) func(time.Time) int {
-	step := reportsSeriesStep(w)
-	return func(at time.Time) int {
-		if at.Before(w.From) || !at.Before(w.To) {
-			return -1
-		}
-		return int(at.Sub(w.From) / step)
-	}
-}
-
-func reportsSeriesClasses(series []reportsSeriesBucket, returns []qualityReturn, failures []nativeFailure, w operatortool.AnalyticsWindow) {
-	index := reportsSeriesIndex(w)
-	for _, r := range returns {
-		if i := index(r.at); i >= 0 && i < len(series) {
-			series[i].ReworkClasses[r.class.Name]++
-		}
-	}
-	for _, f := range failures {
-		if i := index(f.at); i >= 0 && i < len(series) && classifyFailure(f.example).Kind == reportKindInfrastructure {
-			series[i].FailedInfrastructure++
-		}
 	}
 }
 

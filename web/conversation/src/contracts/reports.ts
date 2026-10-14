@@ -68,6 +68,7 @@ const SeriesBucket = Schema.Struct({
   prior_done: Schema.optional(Schema.Number),
   failed: Schema.Number,
   failed_infrastructure: Schema.Number,
+  failed_issue: Schema.Number,
   cycle: Duration,
   lead: Duration,
   lane_seconds: Schema.Record(Schema.String, Schema.Number),

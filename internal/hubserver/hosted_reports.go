@@ -109,7 +109,7 @@ func (s *Service) hostedReports(c echo.Context) error {
 	} else if hours > 240 {
 		bucket = 4 * time.Hour
 	}
-	w := operatortool.AnalyticsWindow{From: to.Add(-time.Duration(hours) * time.Hour), To: to, Bucket: bucket}
+	w := operatortool.AnalyticsWindow{From: reportsWindowStart(to, hours), To: to, Bucket: bucket}
 	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project, Limit: maxAnalyticsPopulation}, w)
 	if err != nil || len(analytics.Projects) != 1 {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")

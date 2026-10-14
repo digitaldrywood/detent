@@ -446,50 +446,50 @@
   ],
   "throughput": [
     {
-      "from": "2026-10-06T00:00:00Z",
-      "to": "2026-10-07T00:00:00Z",
+      "from": "2026-10-07T00:00:00Z",
+      "to": "2026-10-08T00:00:00Z",
       "done": 36,
       "failed": 20,
       "slots": 7
     },
     {
-      "from": "2026-10-07T00:00:00Z",
-      "to": "2026-10-08T00:00:00Z",
+      "from": "2026-10-08T00:00:00Z",
+      "to": "2026-10-09T00:00:00Z",
       "done": 44,
       "failed": 26,
       "slots": 7
     },
     {
-      "from": "2026-10-08T00:00:00Z",
-      "to": "2026-10-09T00:00:00Z",
+      "from": "2026-10-09T00:00:00Z",
+      "to": "2026-10-10T00:00:00Z",
       "done": 32,
       "failed": 18,
       "slots": 7
     },
     {
-      "from": "2026-10-09T00:00:00Z",
-      "to": "2026-10-10T00:00:00Z",
+      "from": "2026-10-10T00:00:00Z",
+      "to": "2026-10-11T00:00:00Z",
       "done": 48,
       "failed": 28,
       "slots": 7
     },
     {
-      "from": "2026-10-10T00:00:00Z",
-      "to": "2026-10-11T00:00:00Z",
+      "from": "2026-10-11T00:00:00Z",
+      "to": "2026-10-12T00:00:00Z",
       "done": 52,
       "failed": 18,
       "slots": 7
     },
     {
-      "from": "2026-10-11T00:00:00Z",
-      "to": "2026-10-12T00:00:00Z",
+      "from": "2026-10-12T00:00:00Z",
+      "to": "2026-10-13T00:00:00Z",
       "done": 24,
       "failed": 14,
       "slots": 7
     },
     {
-      "from": "2026-10-12T00:00:00Z",
-      "to": "2026-10-13T00:00:00Z",
+      "from": "2026-10-13T00:00:00Z",
+      "to": "2026-10-13T10:00:00Z",
       "done": 40,
       "failed": 26,
       "slots": 7
@@ -497,12 +497,13 @@
   ],
   "series": [
     {
-      "from": "2026-10-06T00:00:00Z",
-      "to": "2026-10-07T00:00:00Z",
+      "from": "2026-10-07T00:00:00Z",
+      "to": "2026-10-08T00:00:00Z",
       "done": 36,
       "prior_done": 29,
       "failed": 20,
       "failed_infrastructure": 12,
+      "failed_issue": 7,
       "cycle": {
         "count": 36,
         "seconds": 1907712,
@@ -541,12 +542,13 @@
       }
     },
     {
-      "from": "2026-10-07T00:00:00Z",
-      "to": "2026-10-08T00:00:00Z",
+      "from": "2026-10-08T00:00:00Z",
+      "to": "2026-10-09T00:00:00Z",
       "done": 44,
       "prior_done": 35,
       "failed": 26,
       "failed_infrastructure": 16,
+      "failed_issue": 10,
       "cycle": {
         "count": 44,
         "seconds": 2559744,
@@ -585,12 +587,13 @@
       }
     },
     {
-      "from": "2026-10-08T00:00:00Z",
-      "to": "2026-10-09T00:00:00Z",
+      "from": "2026-10-09T00:00:00Z",
+      "to": "2026-10-10T00:00:00Z",
       "done": 32,
       "prior_done": 27,
       "failed": 18,
       "failed_infrastructure": 10,
+      "failed_issue": 8,
       "cycle": {
         "count": 32,
         "seconds": 1548288,
@@ -629,12 +632,13 @@
       }
     },
     {
-      "from": "2026-10-09T00:00:00Z",
-      "to": "2026-10-10T00:00:00Z",
+      "from": "2026-10-10T00:00:00Z",
+      "to": "2026-10-11T00:00:00Z",
       "done": 48,
       "prior_done": 39,
       "failed": 28,
       "failed_infrastructure": 18,
+      "failed_issue": 9,
       "cycle": {
         "count": 48,
         "seconds": 2985984,
@@ -673,12 +677,13 @@
       }
     },
     {
-      "from": "2026-10-10T00:00:00Z",
-      "to": "2026-10-11T00:00:00Z",
+      "from": "2026-10-11T00:00:00Z",
+      "to": "2026-10-12T00:00:00Z",
       "done": 52,
       "prior_done": 40,
       "failed": 18,
       "failed_infrastructure": 12,
+      "failed_issue": 6,
       "cycle": {
         "count": 52,
         "seconds": 2875392,
@@ -717,12 +722,13 @@
       }
     },
     {
-      "from": "2026-10-11T00:00:00Z",
-      "to": "2026-10-12T00:00:00Z",
+      "from": "2026-10-12T00:00:00Z",
+      "to": "2026-10-13T00:00:00Z",
       "done": 24,
       "prior_done": 17,
       "failed": 14,
       "failed_infrastructure": 8,
+      "failed_issue": 6,
       "cycle": {
         "count": 24,
         "seconds": 1092096,
@@ -759,12 +765,13 @@
       }
     },
     {
-      "from": "2026-10-12T00:00:00Z",
-      "to": "2026-10-13T00:00:00Z",
+      "from": "2026-10-13T00:00:00Z",
+      "to": "2026-10-13T10:00:00Z",
       "done": 40,
       "prior_done": 33,
       "failed": 26,
       "failed_infrastructure": 14,
+      "failed_issue": 11,
       "cycle": {
         "count": 40,
         "seconds": 2188800,
@@ -969,8 +976,8 @@
   "analytics": {
     "project_id": "prj_reports",
     "window": {
-      "from": "2026-10-06T00:00:00Z",
-      "to": "2026-10-13T00:00:00Z"
+      "from": "2026-10-07T00:00:00Z",
+      "to": "2026-10-13T10:00:00Z"
     },
     "partial": false,
     "unavailable": [
@@ -1266,8 +1273,8 @@
       "unavailable": [],
       "buckets": [
         {
-          "from": "2026-10-06T00:00:00Z",
-          "to": "2026-10-07T00:00:00Z",
+          "from": "2026-10-07T00:00:00Z",
+          "to": "2026-10-08T00:00:00Z",
           "worked_items": 60,
           "reworked_items": 17,
           "landed_versions": 36,
@@ -1281,8 +1288,8 @@
           "causes": {}
         },
         {
-          "from": "2026-10-07T00:00:00Z",
-          "to": "2026-10-08T00:00:00Z",
+          "from": "2026-10-08T00:00:00Z",
+          "to": "2026-10-09T00:00:00Z",
           "worked_items": 60,
           "reworked_items": 16,
           "landed_versions": 44,
@@ -1296,8 +1303,8 @@
           "causes": {}
         },
         {
-          "from": "2026-10-08T00:00:00Z",
-          "to": "2026-10-09T00:00:00Z",
+          "from": "2026-10-09T00:00:00Z",
+          "to": "2026-10-10T00:00:00Z",
           "worked_items": 60,
           "reworked_items": 18,
           "landed_versions": 32,
@@ -1311,8 +1318,8 @@
           "causes": {}
         },
         {
-          "from": "2026-10-09T00:00:00Z",
-          "to": "2026-10-10T00:00:00Z",
+          "from": "2026-10-10T00:00:00Z",
+          "to": "2026-10-11T00:00:00Z",
           "worked_items": 60,
           "reworked_items": 15,
           "landed_versions": 48,
@@ -1326,8 +1333,8 @@
           "causes": {}
         },
         {
-          "from": "2026-10-10T00:00:00Z",
-          "to": "2026-10-11T00:00:00Z",
+          "from": "2026-10-11T00:00:00Z",
+          "to": "2026-10-12T00:00:00Z",
           "worked_items": 60,
           "reworked_items": 17,
           "landed_versions": 52,
@@ -1341,8 +1348,8 @@
           "causes": {}
         },
         {
-          "from": "2026-10-11T00:00:00Z",
-          "to": "2026-10-12T00:00:00Z",
+          "from": "2026-10-12T00:00:00Z",
+          "to": "2026-10-13T00:00:00Z",
           "worked_items": 60,
           "reworked_items": 11,
           "landed_versions": 24,
@@ -1356,8 +1363,8 @@
           "causes": {}
         },
         {
-          "from": "2026-10-12T00:00:00Z",
-          "to": "2026-10-13T00:00:00Z",
+          "from": "2026-10-13T00:00:00Z",
+          "to": "2026-10-13T10:00:00Z",
           "worked_items": 60,
           "reworked_items": 22,
           "landed_versions": 40,

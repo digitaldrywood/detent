@@ -119,23 +119,29 @@ export function quantile(values: readonly number[], q: number): number | null {
 
 export type SeriesBucket = NonNullable<ReportsReport["series"]>[number];
 
-/** The report's buckets at display grain: the Hub's series, or its throughput rolled up to days. */
+const DAY = 86_400_000;
+const DAILY_SPAN = 6 * DAY;
+
+/** The report's buckets at display grain: the Hub's series, or its throughput rolled up to UTC calendar days. */
 export function reportBuckets(report: ReportsReport): readonly SeriesBucket[] {
   if (report.series !== undefined) return report.series;
-  const span = Date.parse(report.analytics.window.to) - Date.parse(report.analytics.window.from);
-  const step = span >= 7 * 86_400_000 ? 86_400_000 : 3_600_000;
+  const from = Date.parse(report.analytics.window.from);
+  const to = Date.parse(report.analytics.window.to);
+  const daily = to - from >= DAILY_SPAN;
+  const origin = daily ? Math.floor(from / DAY) * DAY : from;
+  const step = daily ? DAY : 3_600_000;
   const empty = { count: 0, seconds: 0, p50_seconds: 0, p90_seconds: 0 };
   const buckets = new Map<number, SeriesBucket>();
   for (const bucket of report.throughput) {
-    const from = Date.parse(report.analytics.window.from);
-    const index = Math.floor((Date.parse(bucket.from) - from) / step);
-    const start = from + index * step;
+    const index = Math.floor((Date.parse(bucket.from) - origin) / step);
+    const start = origin + index * step;
     const current = buckets.get(index) ?? {
-      from: new Date(start).toISOString(),
-      to: new Date(start + step).toISOString(),
+      from: new Date(Math.max(start, from)).toISOString(),
+      to: new Date(Math.min(start + step, to)).toISOString(),
       done: 0,
       failed: 0,
       failed_infrastructure: 0,
+      failed_issue: 0,
       cycle: empty,
       lead: empty,
       lane_seconds: {},
@@ -148,13 +154,16 @@ export function reportBuckets(report: ReportsReport): readonly SeriesBucket[] {
   return [...buckets.entries()].toSorted(([a], [b]) => a - b).map(([, bucket]) => bucket);
 }
 
+/** Axis labels from each bucket's UTC calendar day, or its UTC hour for a short window. */
 export function bucketCategories(buckets: readonly SeriesBucket[]) {
+  const first = buckets[0];
+  const last = buckets.at(-1);
+  const daily = first !== undefined && last !== undefined && Date.parse(last.to) - Date.parse(first.from) >= DAILY_SPAN;
   return buckets.map((bucket) => {
-    const hourly = Date.parse(bucket.to) - Date.parse(bucket.from) < 86_400_000;
     const day = bucket.from.slice(0, 10);
-    return hourly
-      ? { key: bucket.from, label: formatHourShort(bucket.from, "UTC"), shortLabel: formatHourShort(bucket.from, "UTC") }
-      : { key: bucket.from, label: formatDayShort(day), shortLabel: String(Number(day.slice(8, 10))) };
+    return daily
+      ? { key: bucket.from, label: formatDayShort(day), shortLabel: String(Number(day.slice(8, 10))) }
+      : { key: bucket.from, label: formatHourShort(bucket.from, "UTC"), shortLabel: formatHourShort(bucket.from, "UTC") };
   });
 }
 
@@ -205,7 +214,9 @@ export function issueTitle(report: ReportsReport, id: string): string {
   return report.titles[id] ?? report.spend.find((item) => item.work_item_id === id)?.title ?? id;
 }
 
+/** One RFC 4180 field; a leading formula character is neutralised so a spreadsheet shows it as text. */
 export function csvCell(value: string | number): string {
-  const text = String(value);
-  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  const raw = String(value);
+  const text = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }

@@ -82,14 +82,14 @@ export function costRows(stages: readonly Stage[], group: "stage" | "model"): re
     .toSorted((a, b) => b.cost - a.cost);
 }
 
-/** Splits a bucket's stage spend into shipped stage groups plus the not-shipped share. */
+/** A bucket's spend: the Hub attributes each usage row to its attempt's stage, or to not-shipped work, so the parts sum to Total spend. */
 export function stageStack(bucket: { stage_cost: Readonly<Record<string, number>>; not_shipped_cost: number }) {
-  const total = Object.values(bucket.stage_cost).reduce((sum, value) => sum + value, 0);
-  const shippedShare = total > 0 ? Math.max(0, total - bucket.not_shipped_cost) / total : 0;
   const known = new Set<string>(STAGE_GROUPS.flatMap((group) => group.stages));
-  const groups = STAGE_GROUPS.map((group) => group.stages.reduce((sum, stage) => sum + (bucket.stage_cost[stage] ?? 0), 0) * shippedShare);
-  const other = Object.entries(bucket.stage_cost).filter(([stage]) => !known.has(stage)).reduce((sum, [, value]) => sum + value, 0) * shippedShare;
-  return { groups, other, notShipped: Math.min(total, bucket.not_shipped_cost) };
+  const groups = STAGE_GROUPS.map((group) => group.stages.reduce((sum, stage) => sum + (bucket.stage_cost[stage] ?? 0), 0));
+  const other = Object.entries(bucket.stage_cost)
+    .filter(([stage]) => !known.has(stage))
+    .reduce((sum, [, value]) => sum + value, 0);
+  return { groups, other, notShipped: bucket.not_shipped_cost };
 }
 
 export function costCsv(report: ReportsReport): string {
@@ -98,7 +98,7 @@ export function costCsv(report: ReportsReport): string {
     lines.push(["Stage", row.name, row.detail, row.sessions, row.succeeded, row.cost.toFixed(2)].map(csvCell).join(","));
   for (const item of report.spend)
     lines.push(["Issue", item.title || report.titles[item.work_item_id] || item.work_item_id, item.state ?? "", item.attempts ?? "", "", item.cost_usd.toFixed(2)].map(csvCell).join(","));
-  return `${lines.join("\n")}\n`;
+  return `${lines.join("\r\n")}\r\n`;
 }
 
 export function CostTab({
@@ -158,7 +158,7 @@ export function CostTab({
               ? undefined
               : { text: `${percentText((100 * notShipped) / report.cost_usd)} of spend`, direction: "flat", tone: "bad" }
           }
-          detail="cancelled + failed attempts"
+          detail="attempts on issues not shipped in this range"
         />
         <MetricTile
           label="Tokens"
@@ -177,7 +177,7 @@ export function CostTab({
             ariaLabel="Spend per bucket, stacked by stage, with spend on work that did not ship"
             categories={categories}
             height={230}
-            formatValue={(value) => (value >= 1000 ? `$${(value / 1000).toFixed(1)}k` : formatUsd(value).replace(/\.00$/, ""))}
+            formatValue={(value) => `$${formatTokens(value)}`}
             series={[
               ...STAGE_GROUPS.map((group, index) => ({
                 id: group.id,

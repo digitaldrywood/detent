@@ -7,6 +7,7 @@ import { costRows, stageStack } from "../src/app/reports/CostTab.tsx";
 import { failureRows } from "../src/app/reports/FailuresTab.tsx";
 import {
   countDelta,
+  csvCell,
   durationDelta,
   parseReportsSearch,
   pointsDelta,
@@ -49,19 +50,31 @@ describe("Reports read", () => {
     expect(pointsDelta(61.2, undefined)).toBeNull();
   });
 
-  it("rolls hourly throughput up to days when the Hub sends no series", () => {
+  it("writes RFC 4180 cells and neutralises formula prefixes", () => {
+    expect(["plain", "a,b", 'say "hi"', "=SUM(A1)", "-1", "@x", 12].map(csvCell)).toEqual([
+      "plain",
+      '"a,b"',
+      '"say ""hi"""',
+      "'=SUM(A1)",
+      "'-1",
+      "'@x",
+      "12",
+    ]);
+  });
+
+  it("rolls hourly throughput up to UTC calendar days when the Hub sends no series", () => {
     const report = decode({
       ...fixture,
       series: undefined,
-      analytics: { ...fixture.analytics, window: { from: "2026-10-06T00:00:00Z", to: "2026-10-13T00:00:00Z" } },
+      analytics: { ...fixture.analytics, window: { from: "2026-10-06T10:00:00Z", to: "2026-10-13T10:00:00Z" } },
       throughput: [
-        { from: "2026-10-06T01:00:00Z", to: "2026-10-06T02:00:00Z", done: 2, failed: 1, slots: null },
-        { from: "2026-10-06T05:00:00Z", to: "2026-10-06T06:00:00Z", done: 3, failed: 0, slots: null },
+        { from: "2026-10-06T11:00:00Z", to: "2026-10-06T12:00:00Z", done: 2, failed: 1, slots: null },
+        { from: "2026-10-06T15:00:00Z", to: "2026-10-06T16:00:00Z", done: 3, failed: 0, slots: null },
         { from: "2026-10-08T05:00:00Z", to: "2026-10-08T06:00:00Z", done: 1, failed: 4, slots: null },
       ],
     });
     expect(reportBuckets(report).map(({ from, done, failed }) => ({ from, done, failed }))).toEqual([
-      { from: "2026-10-06T00:00:00.000Z", done: 5, failed: 1 },
+      { from: "2026-10-06T10:00:00.000Z", done: 5, failed: 1 },
       { from: "2026-10-08T00:00:00.000Z", done: 1, failed: 4 },
     ]);
   });
@@ -84,10 +97,10 @@ describe("Reports read", () => {
     expect(rows.at(-1)?.class).toBe("Not classified");
   });
 
-  it("splits stage spend into shipped stage groups and the not-shipped share", () => {
-    expect(stageStack({ stage_cost: { code: 60, rework: 20, plan: 10, validator: 10 }, not_shipped_cost: 25 })).toEqual({
-      groups: [45, 15, 0, 15],
-      other: 0,
+  it("stacks attributed stage spend, other spend and not-shipped spend so they sum to the total", () => {
+    expect(stageStack({ stage_cost: { code: 60, rework: 20, plan: 10, validator: 10, other: 3 }, not_shipped_cost: 25 })).toEqual({
+      groups: [60, 20, 0, 20],
+      other: 3,
       notShipped: 25,
     });
     const report = decode(fixture);
