@@ -326,17 +326,22 @@ func TestInspect(t *testing.T) {
 }
 
 func TestTrimSizeTarget(t *testing.T) {
-	now := time.Now()
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name                   string
 		cap                    int64
 		keepRecent, keepNewest bool
 		reclaimed              int64
+		managed                bool
+		marker                 string
 	}{
-		{"age only below cap", 100, true, true, 10},
-		{"exact cap", 24, true, true, 10},
-		{"recent retained above target", 14, true, true, 10},
-		{"fresh entries and metadata retained", 1, true, true, 10},
+		{"age only below cap", 100, true, true, 10, false, ""},
+		{"exact cap", 24, true, true, 10, false, ""},
+		{"recent retained above target", 14, true, true, 10, false, ""},
+		{"fresh entries and metadata retained", 1, true, true, 10, false, ""},
+		{"managed replacement marker boundary", 70, false, true, 20, true, ""},
+		{"managed counter width boundary", 61, false, false, 30, true, ""},
+		{"managed oversized previous marker", 70, false, true, 20, true, strings.Repeat("x", 1000)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -363,9 +368,18 @@ func TestTrimSizeTarget(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			reclaimed, err := Trim(context.Background(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now)
+			if tt.marker != "" {
+				if err := os.WriteFile(filepath.Join(root, "detent-trim.txt"), []byte(tt.marker), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var report Report
+			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, tt.managed)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tt.managed && report.RetainedBytes > tt.cap {
+				t.Fatalf("retained %d bytes exceeds target %d", report.RetainedBytes, tt.cap)
 			}
 			if reclaimed != tt.reclaimed {
 				t.Fatalf("reclaimed %d, want %d", reclaimed, tt.reclaimed)
@@ -374,6 +388,16 @@ func TestTrimSizeTarget(t *testing.T) {
 				_, err := os.Stat(filepath.Join(root, name))
 				if keep && err != nil || !keep && !os.IsNotExist(err) {
 					t.Errorf("%s: stat=%v, keep=%t", name, err, keep)
+				}
+			}
+			if tt.managed {
+				previous := report.RetainedBytes
+				report = Report{}
+				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, true); err != nil {
+					t.Fatal(err)
+				}
+				if report.RetainedBytes > tt.cap || report.RetainedBytes > previous || report.SizeEvictedBytes != 0 {
+					t.Fatalf("replacement changed retained cache: %+v; previously %d", report, previous)
 				}
 			}
 		})
@@ -561,7 +585,11 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	if err := os.Chtimes(older, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	policy := Policy{MaxBytes: 1000}
+	owner, err := os.Stat(filepath.Join(root, ".detent-owner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := Policy{MaxBytes: 1000 + owner.Size()}
 	leased, release, err := cache.Use(t.Context())
 	if err != nil || ManagedBuildFromContext(leased) != root {
 		t.Fatalf("lease: root=%q err=%v", ManagedBuildFromContext(leased), err)
