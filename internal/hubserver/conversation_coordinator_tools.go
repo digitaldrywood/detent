@@ -79,7 +79,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, append(append(append(append(append(append(coordinatorActionTools(), coordinatorWorkflowTools()...), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...)...)
+	}, append(append(append(append(append(append(append(coordinatorActionTools(), coordinatorWorkflowTools()...), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...), coordinatorCatalogTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -88,7 +88,7 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	t.state.endTextSegment(ctx)
 	result, err := t.execute(ctx, call)
 	if err != nil {
-		if coordinatorWorkflowTool(call.Name) || call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+		if coordinatorWorkflowTool(call.Name) || call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) || call.Name == coordinatorToolCallTool {
 			err = coordinatorActionError(err)
 		}
 		if coordinatorWorkflowMutation(call.Name) || call.Name == "set_runner_tier" || coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
@@ -232,6 +232,10 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 			return nil, err
 		}
 		return t.explainIssue(ctx, record, readable, args.WorkItemID)
+	case coordinatorToolFindTools:
+		return t.findTools(ctx, record, call)
+	case coordinatorToolCallTool:
+		return t.callTool(ctx, record, call)
 	case "load_split_issue_skill":
 		return t.loadSplitIssueSkill(call.Arguments)
 	case string(chat.ActionArchiveItems):
