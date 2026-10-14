@@ -161,6 +161,7 @@ function Chart({
   const groupWidth = columns.reduce((sum, _, index) => sum + (index === 0 ? primaryWidth : secondaryWidth + gap), 0);
   const useShort = categories.some((category) => category.shortLabel !== undefined) && slot < 44;
   const labelEvery = Math.max(1, Math.ceil((useShort ? 20 : MIN_LABEL_SPACING) / slot));
+  const sparseLabels = useShort && categories.some((category) => category.shortLabel === "");
   const empty = series.every((item) => item.values.every((value) => value === null || value === 0));
 
   const readout = active === null ? null : categories[active];
@@ -269,7 +270,7 @@ function Chart({
           ))}
         <g fill="var(--muted-foreground)" fontSize={11} textAnchor="middle">
           {categories.map((category, index) =>
-            index % labelEvery === 0 ? (
+            (sparseLabels ? Boolean(category.shortLabel) : index % labelEvery === 0) ? (
               <text key={category.key} x={center(index)} y={height - 6}>
                 {useShort ? (category.shortLabel ?? category.label) : category.label}
               </text>

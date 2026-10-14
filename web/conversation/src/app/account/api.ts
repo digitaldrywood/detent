@@ -21,6 +21,8 @@ import {
   CreateOrganizationResponse,
   FleetResponse,
   FleetNamesResponse,
+  RunnerCapacityRead,
+  RunnerHostHour,
   Member,
   MembersResponse,
   NextResponse,
@@ -573,6 +575,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       };
     },
     fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
+    runnerCapacity: (runner: string) => send(RunnerCapacityRead, "GET", `${base}/runners/${encodeURIComponent(runner)}/capacity`),
+    runnerHostHistory: (runner: string, from: string, to: string) =>
+      send(Schema.Array(RunnerHostHour), "GET", `${base}/fleet?include=host_metrics&runner_id=${encodeURIComponent(runner)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
     billingUsage: () => send(BillingUsageReport, "GET", `${base}/billing?view=usage`),

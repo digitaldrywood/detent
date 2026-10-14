@@ -160,6 +160,27 @@ describe("runner rows", () => {
     expect(runnerDisplay(other.result.current, id)).toBe(id);
   });
 
+  it.each([
+    ["lower", 4, "Suggest 4 ↓"],
+    ["raise", 7, "Room for 7 ↑"],
+    ["insufficient_evidence", undefined, "Gathering data"],
+    ["hold", 6, null],
+  ] as const)("labels a %s suggestion on the runner row", (direction, limit, label) => {
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} suggestions={{ [RUNNER.id]: { ...(limit === undefined ? {} : { limit }), current: 6, direction, hours_covered: 48, saturated_hours: 0, reasons: [] } }} />);
+    const chip = within(screen.getByTestId("host-card")).queryByTestId("suggested-limit");
+    expect(chip?.textContent ?? null).toBe(label);
+  });
+
+  it("reads the suggestion and host history through the existing runner and fleet routes", async () => {
+    const fetch = vi.fn(async (_input: string, _init?: RequestInit) => new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } }));
+    const api = makeAccountApi({ origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test", fetch });
+    await api.runnerHostHistory("runner/a", "2026-09-03T13:00:00Z", "2026-09-10T13:00:00Z");
+    expect(fetch.mock.calls[0]![0]).toBe("https://hub.test/api/v2/organizations/org_test/fleet?include=host_metrics&runner_id=runner%2Fa&from=2026-09-03T13%3A00%3A00Z&to=2026-09-10T13%3A00%3A00Z");
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ recommendation: { suggested_limit: { limit: 4, current: 6, direction: "lower", hours_covered: 30, saturated_hours: 5, reasons: [] } } }), { status: 200, headers: { "content-type": "application/json" } }));
+    expect((await api.runnerCapacity("runner/a")).recommendation?.suggested_limit?.limit).toBe(4);
+    expect(fetch.mock.calls[1]![0]).toBe("https://hub.test/api/v2/organizations/org_test/runners/runner%2Fa/capacity");
+  });
+
   it("removes through the existing DELETE API and accepts its empty response", async () => {
     const fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const api = makeAccountApi({ origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test", fetch });
@@ -342,6 +363,59 @@ describe("providers", () => {
 });
 
 describe("runner details", () => {
+  const LOWER = { limit: 4, current: 6, direction: "lower", hours_covered: 91, saturated_hours: 19, reasons: ["CPU stayed at 90% or more in 11 of 91 busy hours."] };
+  const HOUR = {
+    hour: "2026-09-10T10:00:00Z", logical_cores: 16, memory_total_bytes: 128 * 2 ** 30, memory_available_min_bytes: 24 * 2 ** 30, memory_sample_count: 120,
+    swap_used_max_bytes: 0, pressure_warn_count: 0, pressure_critical_count: 0, cpu_sample_count: 120, cpu_busy_average_percent: 95, load1_max: 32, load_sample_count: 120,
+    disk_free_min_bytes: 50 * 2 ** 30, disk_total_min_bytes: 2000 * 2 ** 30, disk_sample_count: 120,
+  };
+
+  it("fills only the draft from the suggestion until Save runner", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} suggestions={{ [RUNNER.id]: LOWER }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const box = within(screen.getByTestId("suggested-limit-box"));
+    expect(box.getByText("Suggested: 4 jobs at once")).toBeTruthy();
+    expect(box.getByText(LOWER.reasons[0]!)).toBeTruthy();
+    fireEvent.click(box.getByRole("button", { name: "Use 4" }));
+    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("4");
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, { ...ROUTING, capacity_limit: 4 }));
+  });
+
+  it("shows thin evidence without a number or an apply button", () => {
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={vi.fn()} suggestions={{ [RUNNER.id]: { current: 6, direction: "insufficient_evidence", hours_covered: 9, saturated_hours: 0, reasons: [] } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const box = within(screen.getByTestId("suggested-limit-box"));
+    expect(box.getByText("Not enough data yet")).toBeTruthy();
+    expect(box.queryByRole("button")).toBeNull();
+  });
+
+  it("charts host load for the selected range and notes low disk", async () => {
+    const load = vi.fn().mockResolvedValue([HOUR, { ...HOUR, hour: "2026-09-10T11:00:00Z", cpu_busy_average_percent: 40, load1_max: 8, disk_free_min_bytes: 120 * 2 ** 30 }]);
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} loadHostHistory={load} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const section = within(await screen.findByTestId("host-load"));
+    await waitFor(() => expect(section.getByText("Hours ≥ 90% CPU")).toBeTruthy());
+    expect(section.getByText("95%")).toBeTruthy();
+    expect(section.getByText("2")).toBeTruthy();
+    expect(section.getByText("24 GB")).toBeTruthy();
+    expect(section.getByText(/Free disk fell to 50 GB/)).toBeTruthy();
+    expect(load).toHaveBeenCalledWith(RUNNER.id, "2026-09-03T13:00:00.000Z", "2026-09-10T13:00:00.000Z");
+    fireEvent.click(section.getByRole("button", { name: "24h" }));
+    await waitFor(() => expect(load).toHaveBeenLastCalledWith(RUNNER.id, "2026-09-09T13:00:00.000Z", "2026-09-10T13:00:00.000Z"));
+  });
+
+  it.each([403, 404])("hides host load without an error when the read returns %s", async (status) => {
+    const load = vi.fn().mockRejectedValue(new AccountError({ status, code: "not_found", message: "Not found" }));
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} loadHostHistory={load} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    await waitFor(() => expect(load).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId("host-load")).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("round-trips allowed project IDs, including unreadable projects", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);

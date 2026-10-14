@@ -419,6 +419,35 @@ const SEED_RUNNERS: RunnerEligibilityRow[] = [
   },
 ];
 
+const MOCK_SUGGESTIONS: Record<string, unknown> = {
+  rnr_mock: { limit: 1, current: 2, direction: "lower", hours_covered: 91, saturated_hours: 19, reasons: ["CPU stayed at 90% or more in 11 of 91 busy hours.", "Memory pressure or growing swap in 8 of 91 busy hours.", "Free disk fell to 0.0 GB on Oct 11."] },
+  rnr_mock_mini: { current: 2, direction: "insufficient_evidence", hours_covered: 9, saturated_hours: 0, reasons: ["9 of the 24 covered hours needed so far."] },
+};
+
+const MOCK_HOST_CPU = [68, 62, 48, 55, 77, 100, 100, 99, 100, 98, 100, 100, 100, 100, 94, 95, 87, 34, 37, 45, 34, 33, 30, 36, 70, 61, 28, 69, 77, 67, 63, 53, 39, 39, 29, 16, 31, 22, 36, 48, 81, 63, 87, 60, 77, 80, 75, 81, 65, 74, 69, 76, 73, 58, 73, 62, 55, 60, 68, 68, 63, 68, 78, 73, 69, 69, 83, 77, 80, 77, 76, 84, 71, 93, 88, 91, 68, 62, 70, 56, 47, 36, 31, 39, 41, 54, 63, 50, 67, 73, 42];
+const MOCK_HOST_LOAD = [4.2, 6.5, 15.9, 3.9, 4.8, 8.7, 11.9, 17.3, 13.7, 12.7, 16.8, 19.3, 16.2, 16.9, 17.7, 18.4, 14.1, 3.2, 3.3, 2.5, 0.7, 0.9, 0.9, 1.7, 10.8, 2.8, 2.6, 2.5, 2.4, 2.6, 2.9, 1.8, 1.4, 1.8, 1, 0.9, 1.3, 1, 2.9, 2.8, 8.8, 3.7, 14, 14.9, 4, 7.5, 5.5, 5.3, 6.5, 7.7, 7.2, 7.2, 6.2, 4, 4.1, 4, 1.7, 1.7, 2.1, 2.1, 1.8, 4.2, 4.8, 3.2, 6.9, 4.9, 10.2, 6.8, 5.2, 6, 13.6, 4.8, 6.9, 10.1, 11.1, 18.7, 13.4, 7.1, 8.4, 5.4, 2.7, 2.3, 2, 2.4, 2.5, 5, 4.8, 5.1, 16.3, 10.7, 3.1];
+
+function mockHostHours(from: string | null, to: string | null): unknown[] {
+  const GIB = 1024 ** 3;
+  const end = to ? Date.parse(to) : Date.now();
+  const start = from ? Date.parse(from) : end - 168 * 3_600_000;
+  const count = Math.min(MOCK_HOST_CPU.length, Math.max(0, Math.round((end - start) / 3_600_000)));
+  return Array.from({ length: count }, (_, index) => {
+    const i = MOCK_HOST_CPU.length - count + index;
+    const swap = i < 24 ? 60 : i < 40 ? 14 : 0;
+    return {
+      hour: new Date(end - (count - index) * 3_600_000).toISOString(),
+      sample_count: 120, logical_cores: 16,
+      memory_total_bytes: 128 * GIB, memory_available_min_bytes: (i < 24 ? 26 : 46) * GIB, memory_sample_count: 120,
+      swap_used_max_bytes: swap * GIB, swap_sample_count: 120,
+      pressure_warn_count: [0, 1, 2, 16, 17, 18, 19, 23].includes(i) ? 40 : 0, pressure_critical_count: 0, pressure_sample_count: 120,
+      cpu_busy_sum_percent: MOCK_HOST_CPU[i]! * 120, cpu_busy_max_percent: 100, cpu_sample_count: 120, cpu_busy_average_percent: MOCK_HOST_CPU[i]!,
+      load1_max: MOCK_HOST_LOAD[i]! * 16, load_sample_count: 120,
+      disk_free_min_bytes: (i === 17 ? 0 : 400) * GIB, disk_total_min_bytes: 2000 * GIB, disk_sample_count: 120,
+    };
+  });
+}
+
 /**
  * `GET /fleet`. The host numbers and the runner's own are deliberately
  * different, because the host card draws two meters rather than one, and one
@@ -2654,6 +2683,10 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    if (tail === "fleet" && method === "GET" && url.searchParams.get("include") === "host_metrics") {
+      json(response, 200, mockHostHours(url.searchParams.get("from"), url.searchParams.get("to")));
+      return true;
+    }
     if (tail === "fleet" && method === "GET") {
       if (url.searchParams.get("include") === "names") {
         const runners = organizationMode === "empty" ? [] : SEED_FLEET.runners;
@@ -2810,6 +2843,16 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       // A bare array, not an envelope: the runner routing endpoints predate
       // the hosted JSON API and keep the shapes they already had.
       json(response, 200, account.runners.map((entry) => entry.runner));
+      return true;
+    }
+
+    if (segments.length === 3 && segments[0] === "runners" && segments[2] === "capacity" && method === "GET") {
+      const suggested = MOCK_SUGGESTIONS[segments[1] ?? ""];
+      if (suggested === undefined) {
+        notFound(response, "No such runner.");
+        return true;
+      }
+      json(response, 200, { recommendation: { advisory: true, periods: [], suggested_limit: suggested } });
       return true;
     }
 
