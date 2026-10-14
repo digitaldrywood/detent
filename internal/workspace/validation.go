@@ -33,28 +33,6 @@ func directGoValidation(validation string) bool {
 	return validation == "go version"
 }
 
-func reusableGoValidationFlags(args []string) bool {
-	for _, arg := range args {
-		if strings.ContainsAny(arg, "\"'") {
-			return false
-		}
-		if strings.HasPrefix(arg, "--") {
-			arg = "-" + strings.TrimLeft(arg, "-")
-		}
-		if !strings.HasPrefix(arg, "-") {
-			continue
-		}
-		name, _, _ := strings.Cut(arg, "=")
-		name = strings.TrimPrefix(name, "-")
-		switch name {
-		case "a", "n", "x", "v", "race", "msan", "asan", "trimpath", "work", "p", "buildvcs", "buildmode", "tags", "mod", "modcacherw", "installsuffix", "c", "short", "json", "run", "bench", "benchtime", "benchmem", "count", "cpu", "failfast", "fullpath", "list", "parallel", "shuffle", "skip", "timeout", "vet":
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	defer func() { gate.ObservePipelineCommand(ctx, &result) }()
 	if strings.TrimSpace(command) == "" || strings.TrimSpace(issue.PullRequestHeadSHA) == "" {
