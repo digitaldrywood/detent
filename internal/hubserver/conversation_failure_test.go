@@ -764,6 +764,83 @@ func TestConversationLostAcknowledgementStaysUnknown(t *testing.T) {
 			}
 		})
 	}
+
+	for _, nextAttempt := range []bool{false, true} {
+		t.Run("queued before completion/next_attempt="+strconv.FormatBool(nextAttempt), func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
+			command := conversation.Command{Key: "queued-1", Kind: conversation.CommandMessage, Text: "Use the attached evidence", Expected: conversation.Expected{AttemptID: f.attempt, TurnID: "turn-1"}}
+			accepted := f.command(t, f.token, command)
+			requireNativeStatus(t, accepted, http.StatusOK)
+			var receipt conversation.Receipt
+			decodeHubResponse(t, accepted, &receipt)
+			queued := f.messages(t)[receipt.MessageID]
+			requireConversationDelivery(t, f, queued, command.Key, conversation.DeliveryQueued)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_completed", "turn_id": "turn-1", "status": "completed"}), http.StatusAccepted)
+			if execution := f.load(t).Execution; execution.Status != conversation.ExecutionRunning || execution.Owner.TurnID != "" {
+				t.Fatalf("execution after provider completion = %#v", execution)
+			}
+			for _, cursor := range []int64{0, queued.Seq} {
+				response := f.controls(t, cursor, 0)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page workerControlsResponse
+				decodeHubResponse(t, response, &page)
+				if len(page.Controls) != 0 || page.Cursor != cursor {
+					t.Fatalf("controls between turns = %#v, want no handoff and unchanged cursor %d", page, cursor)
+				}
+			}
+			requireConversationDelivery(t, f, queued, command.Key, conversation.DeliveryQueued)
+			api := conversationAPIFixture{nativeFixture: f.nativeFixture}
+			snapshot := api.snapshot(t, f.token, f.record.ID)
+			if len(snapshot.Messages) != 1 || snapshot.Messages[0].ID != receipt.MessageID || snapshot.Messages[0].Text != command.Text || snapshot.Messages[0].Delivery != conversation.DeliveryQueued || snapshot.Messages[0].AttemptID == nil || *snapshot.Messages[0].AttemptID != f.attempt || snapshot.Messages[0].TurnID == nil || *snapshot.Messages[0].TurnID != "turn-1" {
+				t.Fatalf("queued steering lost its content or owner: %#v", snapshot.Messages)
+			}
+			replayed := f.command(t, f.token, command)
+			requireNativeStatus(t, replayed, http.StatusOK)
+			var again conversation.Receipt
+			decodeHubResponse(t, replayed, &again)
+			if again.MessageID != receipt.MessageID || again.Status != conversation.DeliveryQueued || len(f.messages(t)) != 1 {
+				t.Fatalf("reconnected command = %#v", again)
+			}
+			if nextAttempt {
+				previous := f.generation()
+				requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+				requireConversationDelivery(t, f, queued, command.Key, conversation.DeliveryQueued)
+				f.release(t)
+				f.claim(t)
+				bound := f.bind(t, nil)
+				requireNativeStatus(t, bound, http.StatusOK)
+				var next workerBindResponse
+				decodeHubResponse(t, bound, &next)
+				if len(next.Pending) != 1 || next.Pending[0].MessageID != receipt.MessageID || next.Pending[0].Text != command.Text || next.Pending[0].Expected.AttemptID != f.attempt {
+					t.Fatalf("next attempt pending controls = %#v", next.Pending)
+				}
+				f.as(previous, func() {
+					requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+				})
+			}
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-2", "turn_id": "turn-2"}), http.StatusAccepted)
+			if !nextAttempt {
+				response := f.controls(t, 0, 0)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page workerControlsResponse
+				decodeHubResponse(t, response, &page)
+				if len(page.Controls) != 1 || page.Controls[0].MessageID != receipt.MessageID || page.Controls[0].Text != command.Text || page.Controls[0].Expected.AttemptID != f.attempt || page.Controls[0].Expected.TurnID != "turn-2" {
+					t.Fatalf("next turn controls = %#v", page.Controls)
+				}
+				requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "control_result", "key": command.Key, "status": "delivered"}), http.StatusAccepted)
+			}
+			requireConversationDelivery(t, f, queued, command.Key, conversation.DeliveryDelivered)
+			response := f.controls(t, 0, 0)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page workerControlsResponse
+			decodeHubResponse(t, response, &page)
+			if len(page.Controls) != 0 {
+				t.Fatalf("delivered steering replayed: %#v", page.Controls)
+			}
+		})
+	}
 }
 
 func TestConversationHubRestartRecovery(t *testing.T) {
