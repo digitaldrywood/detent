@@ -31,6 +31,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 	for _, version := range detail.Versions {
 		if version.ID == detail.Change.CurrentVersion {
 			target.HeadSHA, target.Number = version.HeadSHA, version.Number
+			target.BaseSHA, target.SecurityAudit = version.BaseSHA, version.Policy.Gates.SecurityAudit
 			target.Repository, target.GitHubPullRequest = version.Repository, version.Policy.Gates.GitHubPullRequest
 			target.External = version.External
 			target.Validation = version.Validation
@@ -66,7 +67,7 @@ func (e *nativeExecution) RecordLanding(ctx context.Context, landing runner.Nati
 	}
 	_, err := e.claim.source.client.LandChangeVersion(ctx, e.claim.lease.WorkItemID, landing.ChangeID, landing.VersionID, tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":landing", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
-		Receipt:  &tracker.NativeLandingReceipt{Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased},
+		Receipt:  &tracker.NativeLandingReceipt{SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased},
 		MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased,
 	})
 	return err

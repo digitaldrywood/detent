@@ -119,6 +119,8 @@ func TestSSHHelperProcess(t *testing.T) {
 		if err := cmd.Run(); err != nil {
 			os.Exit(1)
 		}
+	case "probe-v2":
+		fmt.Fprintln(os.Stdout, 2)
 	case "probe":
 		if !SSHWorkerReady() {
 			os.Exit(1)
@@ -236,6 +238,49 @@ func TestSSHWorkerLifecycle(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
+	t.Run("reject protocol v2", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := &sshRunner{command: func(ctx context.Context, _, command string) *exec.Cmd {
+			if command != "detent "+SSHProbeArgument {
+				t.Fatalf("incompatible worker dispatched: %s", command)
+			}
+			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestSSHHelperProcess$")
+			cmd.Env = append(os.Environ(), "DETENT_SSH_TEST_HELPER=probe-v2")
+			return cmd
+		}}
+		if run.WorkerHostAvailable(ctx, "fixture-v2") {
+			t.Fatal("worker without the security audit contract remained eligible")
+		}
+		left, right := net.Pipe()
+		defer left.Close()
+		defer right.Close()
+		finished := make(chan error, 1)
+		go func() {
+			finished <- RunSSHWorker(ctx, right, right, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		}()
+		peer := runnerpkg.NewSSHPeer(ctx, left, left, nil)
+		defer peer.Close()
+		var response runnerpkg.SSHRunResponse
+		if err := peer.Call(ctx, "run", &response, sshBootstrap{Version: 2}); err == nil || !strings.Contains(err.Error(), "incompatible SSH worker protocol") {
+			t.Fatalf("old bootstrap reached execution: %v", err)
+		}
+		if err := left.Close(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-finished:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("incompatible worker did not stop")
+		}
+	})
 	for _, native := range []bool{false, true} {
 		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native) })
 	}

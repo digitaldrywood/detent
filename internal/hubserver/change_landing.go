@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -240,6 +241,34 @@ func (s *Service) landChange(c echo.Context) error {
 		}
 		if detail.Summary.Status != "reviewed" {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
+		}
+		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest {
+			if request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "" || request.Receipt.MergeSHA != request.MergeSHA {
+				return nil, nativeInvalid("landing requires security audit evidence for its exact base and head")
+			}
+			audit := request.Receipt.SecurityAudit
+			run := audit.Run
+			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: request.MergeSHA}, "", []string{"none"})
+			auditRaw, err := marshalNative(audit)
+			if err != nil {
+				return nil, err
+			}
+			recorded := false
+			for _, review := range detail.Reviews {
+				if review.VersionID != version.ID || review.SecurityAudit == nil || !review.SecurityAudit.Landing || review.Decision != "approved" {
+					continue
+				}
+				reviewRaw, err := marshalNative(review.SecurityAudit)
+				if err != nil {
+					return nil, err
+				}
+				if auditRaw == reviewRaw {
+					recorded = true
+				}
+			}
+			if !evaluation.Allowed || audit.Verdict != "pass" || !audit.Landing || !recorded {
+				return nil, nativeInvalid("landing security audit does not match recorded approval for the integrated change")
+			}
 		}
 		quality, err := readLandingQualitySnapshot(ctx, tx, scope, change, version, now)
 		if err != nil {

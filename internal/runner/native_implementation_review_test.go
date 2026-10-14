@@ -26,6 +26,7 @@ type implementationReviewExecution struct {
 	attachmentValidatorExecution
 	events            *[]string
 	validatorDisabled bool
+	auditResult       tracker.SecurityAuditReview
 	reviewResult      gate.ValidatorResult
 	validatorResult   gate.ValidatorResult
 	recordError       error
@@ -50,6 +51,17 @@ func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeVa
 		input.Version.Validation = e.validation
 	}
 	return input, nil
+}
+
+func (e *implementationReviewExecution) SecurityAuditVersion(ctx context.Context) (NativeValidation, error) {
+	*e.events = append(*e.events, "audit version")
+	return e.attachmentValidatorExecution.ValidatorVersion(ctx)
+}
+
+func (e *implementationReviewExecution) RecordSecurityAudit(_ context.Context, result tracker.SecurityAuditReview) error {
+	*e.events = append(*e.events, "record audit")
+	e.auditResult = result
+	return nil
 }
 
 func (e *implementationReviewExecution) RecordReview(_ context.Context, result gate.ValidatorResult) error {
@@ -120,10 +132,20 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 	if err := transport.RecordValidator(t.Context(), validator); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := transport.SecurityAuditVersion(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	audit := tracker.SecurityAuditReview{SessionID: 125, Verdict: "pass"}
+	if err := transport.RecordSecurityAudit(t.Context(), audit); err != nil {
+		t.Fatal(err)
+	}
+	if execution.auditResult.SessionID != 125 {
+		t.Fatal("SSH lost security audit result")
+	}
 	if !reflect.DeepEqual(execution.reviewResult, review) || !reflect.DeepEqual(execution.validatorResult, validator) {
 		t.Fatalf("SSH confused source and acceptance records: source=%+v acceptance=%+v", execution.reviewResult, execution.validatorResult)
 	}
-	if want := []string{"review version", "record review", "validator version", "record validator"}; !reflect.DeepEqual(events, want) {
+	if want := []string{"review version", "record review", "validator version", "record validator", "audit version", "record audit"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("SSH lost separate review callbacks: got %v, want %v", events, want)
 	}
 }
@@ -705,7 +727,7 @@ fi
 			}
 			r, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{Config: config.Config{
-					Gate: gate.Config{Run: command, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: test.validator}},
+					Gate: gate.Config{Run: command, SecurityAudit: gate.SecurityAuditConfig{Enabled: false}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: test.validator}},
 					Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{
 						{Name: "implementation", Role: RoleCode, Backend: "codex", Model: "review-model"},
 						{Name: "acceptance", Role: RoleValidator, Backend: "codex", Model: "validator-model"},

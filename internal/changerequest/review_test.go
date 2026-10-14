@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -35,6 +36,20 @@ func TestSummarizeVersionReview(t *testing.T) {
 			}
 		}
 	}
+	audits := func(blockedVersion string, landing bool, laterPass bool) func(*tracker.ChangeDetail, *time.Time) {
+		return func(d *tracker.ChangeDetail, now *time.Time) {
+			d.Change.ProjectID = "prj_example"
+			version := &d.Versions[0]
+			version.Repository, version.BaseSHA = "https://github.com/example-org/example-project", strings.Repeat("b", 40)
+			version.Policy.Gates.SecurityAudit = true
+			run := securityaudit.Run{ID: 42, InvocationID: "audit", ProjectID: "prj_example", Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: *now, StartedAt: *now, CompletedAt: *now, Verdict: "fail", Summary: "Authorization bypass", Findings: []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "Authorization bypass"}}}
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: blockedVersion, Decision: "changes_requested", SecurityAudit: &tracker.SecurityAuditReview{Landing: landing, Verdict: "rework", Run: run}})
+			if laterPass {
+				run.ID, run.Verdict, run.Findings = 43, "pass", nil
+				d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: version.ID, Decision: "approved", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: run}})
+			}
+		}
+	}
 	for _, test := range []struct {
 		name   string
 		edit   func(*tracker.ChangeDetail, *time.Time)
@@ -42,6 +57,9 @@ func TestSummarizeVersionReview(t *testing.T) {
 		checks string
 		status string
 	}{
+		{"unchanged source audit cannot be cleared by pass", audits("v1", false, true), "approved", "success", "needs_evidence"},
+		{"unchanged landing audit cannot be cleared by pass", audits("v1", true, true), "approved", "success", "needs_evidence"},
+		{"new source version can pass after blocking audit", audits("old", false, true), "approved", "success", "reviewed"},
 		{"reviewed", func(_ *tracker.ChangeDetail, _ *time.Time) {}, "approved", "success", "reviewed"},
 		{"required source acceptance only", stages(gate.AutomatedReviewRequired, true, acceptancePass), "approved", "success", "needs_evidence"},
 		{"required source reversed retained acceptance", stages(gate.AutomatedReviewRequired, true, acceptancePass, sourcePass), "approved", "success", "needs_evidence"},

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type LandRequest struct {
@@ -194,6 +196,9 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 					}
 				}
 			}
+			if err == nil && request.Options.SecurityAuditRequired {
+				result.SecurityAudit, err = auditIntegratedLanding(ctx, staging, stageHead, merged, request.Options)
+			}
 			if err != nil {
 				out[i] = LandOutcome{Result: result, Err: err}
 				if _, resetErr := runGitAt(ctx, staging, "reset", "--hard", stageHead); resetErr != nil {
@@ -339,4 +344,36 @@ func shortLandingCommand(ctx context.Context, path, base, head, approvedCommand 
 		command += " && go test -p ${TEST_PROCS:-4} -short -timeout=60s " + scope + " && golangci-lint run --allow-parallel-runners --concurrency=${TEST_PROCS:-4} --timeout=5m --new-from-rev=" + base + " --whole-files " + scope
 	}
 	return command, packages, nil
+}
+
+func auditIntegratedLanding(ctx context.Context, path, base, head string, opts LandOptions) (*tracker.SecurityAuditReview, error) {
+	if opts.SecurityAudit == nil {
+		return nil, errors.New("landing security audit producer is unavailable")
+	}
+	if _, err := runGitAt(ctx, path, "diff", "--quiet", head, "--"); err != nil {
+		return nil, fmt.Errorf("landing security audit requires the integrated source tree: %w", err)
+	}
+	diff, err := GitFileDiffs(ctx, path, base, opts.SecurityAuditMaxDiffBytes)
+	if err != nil {
+		return nil, err
+	}
+	if diff.BaseSHA != base || diff.HeadSHA != head {
+		return nil, errors.New("landing security audit diff differs from the integrated change")
+	}
+	audit, err := opts.SecurityAudit(ctx, diff)
+	if err != nil {
+		return nil, err
+	}
+	if audit == nil {
+		return nil, errors.New("landing security audit evidence is unavailable")
+	}
+	run := audit.Run
+	evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: run.ProjectID, Repository: opts.Repository, PRNumber: run.PRNumber, BaseSHA: base, HeadSHA: head}, "", []string{"none"})
+	if !evaluation.Allowed {
+		return nil, errors.New("landing security audit evidence differs from the integrated change")
+	}
+	if audit.Verdict != "pass" {
+		return audit, &ValidationError{Stage: ValidationStageLanding, Err: errors.New("security audit requires Rework")}
+	}
+	return audit, nil
 }
