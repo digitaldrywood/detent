@@ -1,0 +1,480 @@
+# Cloud runners on Fly Sprites
+
+[Back to the documentation index](../README.md#documentation)
+
+A Fly Sprite can host your Detent Cloud runner, agent sign-ins, and project
+checkouts. The runner executes work inside the Sprite; the Hub owns the work
+items and wakes the runner for new work. This guide takes you from a Fly account
+to a completed issue with the console closed.
+
+An organization owner or admin with runner-management access can
+also ask **Luna** to add Sprites, add a runner, set up Fly, or provide more
+capacity. The AI guided conversation from the Runners page uses the same intake.
+Luna asks one question at a time and remembers answers already given:
+
+1. Scope defaults to All projects, including projects created later. One Sprite pool belongs to the organization.
+2. Luna reads whether the Sprites organization token is set. If it is missing,
+   follow the secure connector link, save it there, and return to continue.
+3. How many runners? The first-runner default is a floor and ceiling of 1/1,
+   which you can accept with "yes". The floor retains minimum capacity and can
+   incur Fly usage without queued work; the ceiling limits growth and potential
+   concurrent usage. Provider subscriptions and usage are separate costs.
+4. Review one preview of the settings and approve it in chat.
+
+The organization pool serves every current and future project. Luna remembers bounds already supplied,
+for example "2 and 2", without asking again. Pool bootstrap is optional; saved
+extra steps are preserved and run before the pinned runner bootstrap. Project
+setup comes from the repository's hooks.runner_setup after checkout. The runner
+reports whether that hook is declared with its readiness report. If a connected
+runner reports a checkout without it, Luna offers one Todo issue, "derive runner
+setup from CI", for an agent to inspect CI workflows, Makefile, lockfiles and
+toolchain files and land the setup script as a normal reviewed change. You do
+not need to write setup commands in chat. Unknown readiness is not evidence of
+a missing hook, and setup detection does not block enabling the pool.
+
+Luna reports observed bootstrap progress in plain language and gives the next
+action you need to take, such as provider sign-in inside the Sprite or Git
+access. Follow the sign-in steps below inside the Sprite; never paste tokens,
+provider API keys or private bootstrap credentials into chat. After a token,
+billing or bootstrap failure,
+correct the cause and approve Luna's scale-up retry. The existing pool lifecycle
+cleans up the failed member and provisions within the saved bounds. A connected
+runner still needs Git access, configured providers and approved repository
+policy; verify a confirmed Todo issue reaches a real pushed branch before
+considering onboarding complete.
+
+## 1. What you need
+
+- A [Fly.io account](https://fly.io/app/sign-up) with Sprites billing enabled
+  for the organization you will use. Use a dedicated Fly organization and set
+  a spend alert.
+- A Detent Cloud organization and project, with permission to enroll runners.
+  Saving the Sprites token requires owner or admin access.
+- Access to the project's Git repository, including permission to push the
+  changes its workflow will land.
+- A Codex or Claude Code account, or a Google provider account for Gemini
+  through Pi. Provider subscriptions and API usage are separate from Fly costs.
+- A terminal on your own machine for the Sprite CLI and a browser for sign-in.
+
+All customer-specific values below are placeholders. Replace `ORG_SLUG`,
+`SPRITE_NAME`, `PROJECT_NAME`, `REPOSITORY_URL`, and `vX.Y.Z` before running
+commands. Use the same release tag for the bootstrap download and its
+`--version` argument; the enrollment dialog supplies the Hub's published tag.
+
+## 2. Install the Sprite CLI and sign in
+
+On your own machine, install the CLI and sign in to Fly:
+
+```sh
+curl -fsSL https://sprites.dev/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+sprite --help
+sprite login
+```
+
+Complete the browser login with the Fly account that belongs to your chosen
+organization. Fly's [CLI installation](https://docs.fly.io/sprites/cli/installation)
+page also covers Windows and manual installation.
+
+## 3. Create and save a Sprites organization token
+
+Authenticate the intended Fly organization on your own machine:
+
+```sh
+sprite org auth -o ORG_SLUG
+```
+
+`sprite org auth -o <org>` only works when the Fly login is a member of that
+organization. An organization name alone does not grant access. Otherwise,
+have an authorized member create a token in the
+[Sprites dashboard](https://sprites.dev/account) and share it privately.
+You can also create a dedicated token there when CLI authentication succeeds;
+Fly's [authentication guide](https://docs.fly.io/sprites/cli/authentication)
+explains CLI token storage and retrieval.
+
+The complete organization token has four slash-separated parts:
+
+```text
+org-slug/org-id/token-id/secret
+```
+
+The first part identifies the Fly organization. The other three identify the
+organization and token and carry its secret. Copy the entire value, without
+spaces or line breaks. A Fly login token, a token ID, or just the final secret
+is not a Sprites organization token.
+
+In the Hub, open **Settings > Integrations**, find
+**Sprites organization token**, paste the value into **Organization token**, and choose **Set
+token**. Confirm the status becomes **Connected to** your Fly organization
+slug. Projects inherit this token; their project integration can set an override.
+
+The Hub validates the format and makes an authenticated Sprite list request,
+including for an empty organization. Its copy is encrypted and write-only.
+**Remove** deletes the Hub's copy; revoke the token in Sprites to invalidate it.
+
+If you received a dashboard token and still need to configure your local Sprite
+CLI, Fly supports this command with the complete token substituted:
+
+```sh
+sprite auth setup --token 'org-slug/org-id/token-id/secret'
+```
+
+Treat that command as a credential: keep it out of shared terminal history and
+logs. The Sprites token authorizes Fly operations; the separate enrollment
+token in the next step registers a runner with Detent.
+
+## 4. Enroll a runner in the Hub
+
+Open **Settings > Runners > Enroll a runner**. Under **Where will it run?**,
+select **A Fly Sprite**. Each Sprite is a dedicated VM: full access
+(`native-trusted`) inside it is the default, and sandbox is available as an
+alternative. Full access lets agents use the VM's files, credentials and
+network; sandbox restricts their access. The enrollment access choice is passed
+to `detent hub runner register --isolation-tier`.
+
+For **Add runner > AI assisted**, Luna asks the access question once and includes
+`isolation_tier` in the approved Sprite pool settings. The saved choice applies
+to newly provisioned pool members. Changing an existing runner uses a separate
+`set_runner_tier` preview: an organization owner or admin must approve it, even
+when ordinary chat confirmations are off. No re-enrollment is needed. Ask Luna
+why a runner is not working to read its tier and problems; `tier_unavailable`
+means its backends do not support the selected tier. Projects requiring sandbox
+cannot use full-access runners.
+
+1. Enter the Sprite name as the runner's **Name**. Use lowercase letters,
+   numbers, and hyphens, at most 63 characters, starting and ending with a
+   letter or number. Use this same name when creating the Sprite.
+2. Start with **Concurrency** set to `1`.
+3. Select only the **Projects** this runner will serve. Resolve any **No
+   Sprites token is set** warning through the integration settings above.
+4. Choose **Create command** and keep the dialog open for the setup commands.
+
+The generated `detent hub runner register ...` command contains a single-use
+enrollment token valid for up to 15 minutes. Copy the full command when the
+bootstrap asks for it. If it expires before registration, create a fresh
+command. Closing the dialog clears its displayed command.
+
+## Repository project setup
+
+Declare project tools once in the project's `detent.yaml`. Detent uses this
+configuration with `scripts/runner-setup.sh` to run `make setup`, install its
+pinned Go tools into `$(go env GOPATH)/bin`, and prepare the root and Cloud app
+Node dependencies from their committed lockfiles with `npm ci`:
+
+```yaml
+hooks:
+  runner_setup: scripts/runner-setup.sh
+  shell: bash
+  timeout_ms: 900000
+```
+
+Commit the script alongside the configuration. Make it idempotent,
+non-interactive, and free of secrets. For example, check whether a CLI is
+already installed at the required version before installing it into a directory
+on the runner's existing PATH. The script runs from the source checkout with
+the runner's permissions and inherited environment; exports inside it do not
+change later agent environments. Keep installation in this script rather than
+manually installing project tools on individual Sprites.
+
+Both pool members and manually enrolled Sprites use the same runner owner.
+It runs setup when preparing the project, records a successful content hash in
+that Sprite's local store, and runs again only when the script or configured
+shell changes. Later attempts and runner restarts reuse that hash. Each Sprite
+has its own record, so every member installs the tools automatically. Keep the
+runner store when restoring a checkpoint to preserve successful setup evidence.
+When changing Makefile tool pins or dependency lockfiles, also change the setup
+script so existing runners invalidate their successful setup hash.
+
+A failure prevents that project's claims and dispatch on that Sprite until
+setup succeeds. The runner reports an instance failure in its logs and the
+project's local-check API report; no issue failure allowance is consumed.
+Other projects and Sprites can continue. The existing project polling retries
+the failed setup. See [project setup configuration](config.md#workspace-deliverable-and-worker-placement)
+for hash, workflow-ref, timeout, and path semantics.
+
+## 5. Create the Sprite and bootstrap the runner
+
+On your own machine, use the Fly organization whose token you saved in the Hub:
+
+```sh
+sprite create -o ORG_SLUG SPRITE_NAME
+sprite console -o ORG_SLUG -s SPRITE_NAME
+```
+
+If creation already opens a console, continue there. The following commands
+run **inside the Sprite**, from its home directory. Substitute the published
+release tag shown in the enrollment dialog:
+
+```sh
+cd "$HOME"
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/vX.Y.Z/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh
+bash sprite-runner-bootstrap.sh --version vX.Y.Z
+```
+
+At the hidden prompt, paste the Hub's complete enrollment command and press
+Enter. Input does not echo. Paste it at that prompt rather than running it as
+a shell command. The bootstrap parses it without shell expansion and passes
+its token through the environment to Detent.
+
+The script installs the standard runner toolset below and checksum-verified Detent. It
+registers the runner and starts a Sprite Service named `detent-runner`.
+This Service restarts after a cold wake; a host `--service` flag in the pasted
+command is replaced by the Sprite Service.
+
+The bootstrap fills missing `global.io.degraded_max_concurrent_agents` and
+`global.cpu.degraded_max_concurrent_agents` settings with `1`, preserving
+operator values and the rest of the configuration. Sprite I/O pressure can
+exceed the default threshold even while idle; this floor lets one agent
+proceed under I/O or CPU pressure. Project, pool, provider, and other capacity
+limits still apply. The printed summary shows the configured floors. See
+[host pressure configuration](config.md).
+
+### Standard runner toolset
+
+Every runner receives the same pinned tools during bootstrap, so agents can
+use them without installing dependencies during a turn. Installed tools and
+browser binaries stay on the Sprite's disk across pauses and runner updates.
+The bootstrap prints their versions and verifies a Chromium headless launch
+and screenshot of a local page before enrolling or starting the runner.
+
+| Tool | Pin | Purpose |
+| --- | --- | --- |
+| Go | Toolchain in the release's `go.mod` | Build and test Go projects with the required compiler. |
+| GitHub CLI (`gh`) | 2.101.0 | GitHub authentication and repository workflows; includes `--attach` for issue and PR comments. |
+| Codex | 0.160.0 | Replace the image's broken preinstalled Codex with the npm CLI. |
+| Claude Code | 2.1.289 | Run the Claude backend using the npm CLI. |
+| Playwright | 1.63.0, with its matching Chromium | Verify web behavior headlessly and take screenshots. |
+| ripgrep (`rg`) | 15.2.0 | Search source text quickly. |
+| fd | 10.3.0 | Find source files quickly. |
+| PostgreSQL client (`psql`) | Ubuntu `postgresql-client-17=17.10-0ubuntu0.25.10.1` | Query PostgreSQL databases for development and diagnostics. |
+| Docker | Ubuntu `docker.io=29.1.3-0ubuntu3~25.10.1`, when supported | Run container-based project dependencies. |
+
+Go, Detent, GitHub CLI and ripgrep downloads are checked against published
+SHA-256 manifests. fd archives are checked against the release's published
+SHA-256 digests pinned in the script. npm verifies package integrity, and APT
+verifies the signed Ubuntu package indexes and package checksums.
+The pinned `yaml` Node package (2.8.3) merges the pressure defaults while
+preserving existing values and YAML comments.
+
+Playwright installs Chromium and its Ubuntu system dependencies when the
+headless screenshot probe fails. Its native Linux browser cache is
+`~/.cache/ms-playwright`; the bootstrap preserves explicit browser-cache
+overrides. Only Chromium is installed, including its headless shell. The
+Playwright CLI is on PATH, so `npx playwright` can use the installed version
+from a checkout without a project-specific Playwright dependency. A checkout
+with its own Playwright version may require that version's browsers.
+
+Docker installation first checks root mount, network and PID namespaces and
+writable cgroups. If those capabilities are unavailable, the closing summary
+explains why Docker was skipped. When installed and no accessible daemon is
+running, a Sprite Service named `detent-docker` starts the daemon with persistent
+data under `~/.local/share/detent-runner/docker` and a socket accessible to the
+Sprite user's primary group. Docker runtime support still needs verification
+on the target Sprite with `docker info` and a project container.
+
+Re-running the bootstrap with empty input upgrades tools to these pins and
+skips downloads and package installs for current tools. It repeats the local
+Chromium screenshot probe, reuses the runner identity, restarts the runner
+service and creates a checkpoint. Provider credentials and checkouts remain
+on disk. These are bootstrap operations; agents do not repeat the installs.
+
+Default locations are:
+
+| Item | Location inside the Sprite |
+| --- | --- |
+| Runner configuration | `~/.config/detent-runner/global.yaml` |
+| Private runner identity | `~/.config/detent-runner/identity.json` |
+| Project checkouts | `~/detent-runner/PROJECT_ID` |
+| Service launcher | `~/.local/lib/detent-sprite-runner/start` |
+
+Keep the paths printed by registration if you selected custom paths. The
+script takes an initial checkpoint and prints its ID, but provider sign-in,
+Git access, and checkout preparation still need the following steps. Use one
+runner per Sprite and keep its identity on that Sprite.
+
+## 6. Sign in to your agents
+
+Inside the Sprite, put the installed binaries on your console's path:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Detent supports these backend kinds:
+
+| Agent | Detent backend kind | Sign-in |
+| --- | --- | --- |
+| Codex | `codex` | `codex login --device-auth` |
+| Claude Code | `claude_code` | `claude auth login` |
+| Pi, for Gemini | `pi_agent` | Install Pi and authenticate its Google provider |
+
+Run the login for each provider your project's routes use. Follow the device
+or browser link on your own machine, then verify inside the Sprite:
+
+```sh
+codex login status
+claude auth status
+```
+
+For Gemini, use **Pi** with `kind: pi_agent` and `provider: google`. The bootstrap
+does not install Pi. Follow the [Pi backend guide](pi-agent.md) for the required
+RPC protocol, provider authentication, and route/model selection. A backend
+entry in the runner's existing `agents.backends` list looks like:
+
+```yaml
+agents:
+  backends:
+    - id: pi-google
+      kind: pi_agent
+      protocol: rpc
+      command: pi
+      provider: google
+```
+
+Merge the entry into your configuration and select it through the existing
+agent routes with an exact model ID from your Pi catalog. Pi requires the
+operator to select **native-trusted isolation**. It cannot run sandboxed or
+read-only roles; keep validation on another configured backend.
+
+**OpenCode is not a Detent backend.** A CLI being available in a Sprite image
+does not make it a supported Detent backend, including the standalone Gemini
+CLI.
+
+## 7. Prepare Git access and the project checkout
+
+Inside the Sprite, for GitHub-hosted repositories you can configure Git access
+with the installed GitHub CLI:
+
+```sh
+gh auth login
+gh auth setup-git
+```
+
+Alternatively, use the project's existing SSH or HTTPS Git credentials. The
+runner needs clone/fetch access and the push access required by the project's
+landing workflow. Configure the Git author and any signing setup that workflow
+requires:
+
+```sh
+git config --global user.name 'YOUR_NAME'
+git config --global user.email 'YOUR_EMAIL'
+git ls-remote REPOSITORY_URL HEAD
+```
+
+The runner clones allowed repositories under its configured `workspace_root`
+and reuses existing matching checkouts there. It reads `detent.yaml` and
+`WORKFLOW.md` from the repository's current default branch. Declare build and
+test dependencies in `hooks.runner_setup`
+and configure the agent routes it uses; see
+[Cloud onboarding](cloud-onboarding.md#repository-configuration-and-policy).
+Repeat for every enrolled project.
+
+When the runner reports a pending repository policy, open Hub **Settings >
+Projects**, select the project, and open its **Settings**. Review the reported
+policy and use **Approve updated policy** if offered. An owner/admin with the
+project's write access must approve it before dispatch.
+
+## 8. Restart and take a checkpoint
+
+After sign-in, checkout, and configuration changes, rerun the same pinned
+bootstrap **inside the Sprite** with empty input:
+
+```sh
+cd "$HOME"
+bash sprite-runner-bootstrap.sh --version vX.Y.Z < /dev/null
+sprite-env services get detent-runner
+sprite-env checkpoints create --comment 'runner ready: agents and checkouts configured'
+```
+
+Empty input reuses the registered identity and restarts the existing Service;
+it does not redeem another enrollment token. The bootstrap preserves existing
+configuration values, fills missing pressure floors, and takes a checkpoint.
+Save the ready checkpoint ID so your baseline includes runner sign-ins and
+successful repository setup. Restoring with
+`sprite-env checkpoints restore CHECKPOINT_ID` rewinds the same Sprite's files,
+including credentials; it does not renew credentials that have since expired.
+
+Check **Settings > Runners** for its connection, provider, and project readiness.
+Resolve any remaining policy or authentication requirements before testing wake.
+
+## 9. Verify the wake loop with no console open
+
+1. Exit the Sprite console with `exit`. Close any remaining exec, console,
+   or port-forwarding sessions. Leave the Sprite idle until it is **cold**;
+   it may first become **warm**. Check status in the Sprites dashboard or,
+   from your own machine, with `sprite list -o ORG_SLUG`.
+2. In your Detent Cloud project, file a small, focused **Todo** issue, such as
+   a requested documentation correction. The lane must be dispatchable in
+   that project's approved workflow.
+3. Keep the console closed. Confirm in the Hub that the runner reconnects,
+   claims the issue, and publishes a Change Request. Complete any review or
+   check steps required by your project, then confirm the change lands and
+   the issue reaches **Done**.
+4. With no further work or open sessions, confirm the Sprite pauses again
+   (warm, then eventually cold).
+
+The Hub uses the project's token override, or its inherited organization token, to start the cold runner's
+`detent-runner` Service. Detent holds a Sprite task during active work and
+releases it afterward. An open console would wake the Sprite itself and would
+not verify this loop. A connected runner alone is not proof that it can claim
+and land work. Fly explains Service and task behavior in
+[Keeping a Sprite running](https://docs.fly.io/sprites/keeping-sprites-running).
+
+## 10. Updating, costs, and troubleshooting
+
+### Updating
+
+Inside the Sprite, take a checkpoint before updating. Download the bootstrap
+from the chosen new release tag and run it with the same tag and empty input:
+
+```sh
+cd "$HOME"
+sprite-env checkpoints create --comment 'before runner update'
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/vX.Y.Z/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh
+bash sprite-runner-bootstrap.sh --version vX.Y.Z < /dev/null
+detent --version
+sprite-env services get detent-runner
+```
+
+The script reuses enrollment, preserves configuration and checkouts, installs
+the pinned Detent release, refreshes the agent CLIs, and restarts the Service.
+Verify provider sign-in and repeat the console-closed wake test, then save a
+new ready checkpoint.
+
+### Costs
+
+Sprites bills consumed resources, rather than a fixed VM size. Fly's published
+unit rates checked for this guide are:
+
+| Consumed resource | Rate in USD |
+| --- | ---: |
+| CPU time | $0.03825 per CPU-hour |
+| Memory | $0.021875 per GB-hour |
+| Hot storage | $0.000683 per GB-hour |
+| Cold storage | $0.000027 per GB-hour |
+
+Compute billing stops while paused; persisted storage remains billable. Agent
+provider costs are separate. Plan allowances, concurrency limits, and rates
+can change: check [Fly's current Sprites pricing](https://fly.io/sprites/#pricing)
+and your actual usage before choosing a plan. Keep a spend alert on the Fly
+organization.
+
+### Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Hub rejects the Sprites token | Use the complete `org-slug/org-id/token-id/secret` value with no whitespace. Confirm it is active and belongs to the same Fly organization as the Sprite. The Hub must reach the Sprites API and have its secret keys configured; ask the Hub operator if a valid token still cannot be saved. |
+| `org not found` from the Sprite CLI | Check the Fly organization slug and the account used by `sprite login`. `sprite org auth -o <org>` needs membership; otherwise obtain a dashboard token from an authorized member and configure it with `sprite auth setup`. |
+| Work waits while the Sprite is cold | Check the project's Sprites integration, the runner's selected project scope and active identity, the exact Sprite name/organization, and that the issue is in a dispatchable lane. Confirm the `detent-runner` Service exists. If it wakes but does not claim work, check repository policy approval, checkout/dependencies, provider authentication/routes, capacity, and both degraded-capacity fields. Manually opening a console helps diagnose but does not prove automatic wake. |
+| Hub `401` after a long stop | Runner credentials last 24 hours and normally renew while active. If the credential expired while stopped, create a fresh Hub enrollment command for the same name, projects, and capacity, then rerun the bootstrap and paste it at the hidden prompt. Registration reuses the identity and configuration on that Sprite. Empty input alone cannot re-enroll an expired credential. Check Hub revocation/grants if re-enrollment is refused. |
+| Runner starts then fails, or an issue does not progress | Inspect the Service with `sprite-env services get detent-runner` and read `~/.config/detent-runner/detent.log`. With a custom configuration path, the default log sits beside that configuration unless the runtime log/database path is overridden. |
+
+Reopen the console for diagnosis, read the log, and exit again before retesting:
+
+```sh
+tail -n 100 "$HOME/.config/detent-runner/detent.log"
+```
+
+If bootstrap fails only at checkpoint creation, the runner may already be
+registered and its Service installed. Inspect those before retrying; preserve
+the existing configuration and identity.
