@@ -174,12 +174,21 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 	if managed {
 		slices.SortFunc(candidates, func(a, b trimEntry) int { return a.modified.Compare(b.modified) })
 	}
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	marker := "detent-trim.txt"
+	var previousMarkerBytes int64
+	if info, err := cache.Lstat(marker); err == nil && info.Mode().IsRegular() {
+		previousMarkerBytes = info.Size()
+	}
+	metadata := func(retained int64) string {
+		return fmt.Sprintf("%s\n%d %d %020d\n", stamp, report.AgeExpiredBytes, report.SizeEvictedBytes, retained)
+	}
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return reclaimed, err
 		}
 		aged := candidate.modified.Before(now.Add(-policy.MaxAge))
-		if !aged && (!managed || total <= policy.MaxBytes) {
+		if !aged && (!managed || total-previousMarkerBytes+int64(len(metadata(0))) <= policy.MaxBytes) {
 			continue
 		}
 		current, err := cache.Lstat(candidate.name)
@@ -208,15 +217,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		reclaimed += candidate.bytes
 		total -= candidate.bytes
 	}
-	stamp := now.UTC().Format(time.RFC3339Nano)
-	marker := "detent-trim.txt"
-	if info, err := cache.Lstat(marker); err == nil && info.Mode().IsRegular() {
-		total -= info.Size()
-	}
-	// Fixed-width retained bytes keep metadata size independent of its value.
-	metadata := func(retained int64) string {
-		return fmt.Sprintf("%s\n%d %d %020d\n", stamp, report.AgeExpiredBytes, report.SizeEvictedBytes, retained)
-	}
+	total -= previousMarkerBytes
 	data := metadata(total + int64(len(metadata(0))))
 	err = cache.WriteFile(marker, []byte(data), 0o600)
 	if err == nil {
