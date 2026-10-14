@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,13 +28,21 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		urgent      bool
 		version     string
 		lastApplied string
+		nextVersion string
+		nextWant    string
 	}{
 		{name: "restart declined", want: "uncertain", calls: 1},
 		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
+		{name: "urgent equal version does not drain", urgent: true, version: "1.2.3", want: "refused"},
+		{name: "urgent older version does not drain", urgent: true, version: "1.2.2", want: "refused"},
 		{name: "urgent release preserves a newer applied artifact awaiting restart", urgent: true, lastApplied: "1.2.5", want: "refused"},
 		{name: "Hub follows without automatic opt ins or latest discovery", follow: true, restart: true, want: "restart_requested", calls: 1},
+		{name: "equivalent urgent request retains Hub apply", follow: true, restart: true, want: "restart_requested", calls: 1, nextVersion: "1.2.4", nextWant: "restart_requested"},
+		{name: "equivalent urgent request retains detached target", follow: true, pending: true, restart: true, want: "uncertain", calls: 1, nextVersion: "1.2.4", nextWant: "uncertain"},
+		{name: "older urgent request retains newer applied artifact", follow: true, restart: true, want: "restart_requested", calls: 1, nextVersion: "1.2.2", nextWant: "refused"},
+		{name: "urgent request equal to running retains newer applied artifact", follow: true, restart: true, want: "restart_requested", calls: 1, nextVersion: "1.2.3", nextWant: "refused"},
 		{name: "Hub equal version does not drain", follow: true, version: "1.2.3", want: "refused"},
 		{name: "Hub older version does not drain", follow: true, version: "1.2.2", want: "refused"},
 		{name: "Hub follow refuses stale build", follow: true, stale: true, want: "refused"},
@@ -86,6 +95,13 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			if repeated.Receipt.Status != test.want || updater.applyCalls != test.calls || drains != test.calls {
 				t.Fatalf("repeat receipt=%+v calls/drains=%d/%d", repeated, updater.applyCalls, drains)
 			}
+			if test.calls == 0 {
+				now = now.Add(config.CheckInterval)
+				delayed := scheduler.EnrolledUpdate(t.Context(), running, &request)
+				if delayed.Receipt.Status != "refused" || delayed.Receipt.FailureReason == "" || updater.applyCalls != 0 || drains != 0 {
+					t.Fatalf("invalid target became retryable: %+v calls/drains=%d/%d", delayed.Receipt, updater.applyCalls, drains)
+				}
+			}
 			if test.calls == 1 && test.applyError == nil && restarts != 1 {
 				t.Fatalf("restart owner calls=%d", restarts)
 			}
@@ -96,9 +112,31 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			if err != nil || strings.Contains(string(raw), "secret") || strings.Contains(string(raw), "/private") {
 				t.Fatalf("unsafe evidence=%s error=%v", raw, err)
 			}
-			resumed, err := NewScheduler(config)
-			if err != nil {
-				t.Fatal(err)
+			var nextRequest *runnerauth.UpdateRequest
+			if test.nextVersion != "" {
+				before, found, err := loadSchedulerState(config.StatePath)
+				if err != nil || !found {
+					t.Fatalf("load installer receipt: found=%t error=%v", found, err)
+				}
+				now = now.Add(time.Minute)
+				nextRequest = &runnerauth.UpdateRequest{RequestedAt: now, ID: "update-urgent", Service: "detent", Version: test.nextVersion, Release: true, Urgent: true}
+				for range 2 {
+					next := scheduler.EnrolledUpdate(t.Context(), running, nextRequest)
+					if next == nil || next.Validate() != nil || next.Receipt.Status != test.nextWant || updater.applyCalls != 1 || drains != 1 || restarts != 1 {
+						t.Fatalf("interleaved receipt=%+v calls/drains/restarts=%d/%d/%d", next, updater.applyCalls, drains, restarts)
+					}
+					if test.nextWant == "refused" {
+						if next.Receipt.Request != *nextRequest || next.Receipt.FailureReason == "" || next.Receipt.Applied != nil || next.Receipt.VerifiedTarget != nil {
+							t.Fatalf("invalid target lacks truthful refusal: %+v", next.Receipt)
+						}
+					} else if !reflect.DeepEqual(next.Receipt, observed.Receipt) {
+						t.Fatalf("equivalent request replaced installer receipt: got %+v want %+v", next.Receipt, observed.Receipt)
+					}
+				}
+				persisted, found, err := loadSchedulerState(config.StatePath)
+				if err != nil || !found || !reflect.DeepEqual(persisted.EnrolledReceipt, before.EnrolledReceipt) {
+					t.Fatalf("interleaved request lost persisted proof: %+v error=%v", persisted.EnrolledReceipt, err)
+				}
 			}
 			resumedRunning := running
 			if observed.Receipt.VerifiedTarget != nil {
@@ -106,6 +144,13 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			}
 			if observed.Receipt.Applied != nil {
 				resumedRunning = *observed.Receipt.Applied
+			}
+			resumedRunning.VerifiedRelease = false
+			resumedRunning.Source = "unknown"
+			config.RunningBuild = resumedRunning
+			resumed, err := NewScheduler(config)
+			if err != nil {
+				t.Fatal(err)
 			}
 			after := resumed.EnrolledUpdate(t.Context(), resumedRunning, &request)
 			expected := test.want
@@ -117,8 +162,14 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			}
 			if observed.Receipt.Applied != nil || observed.Receipt.VerifiedTarget != nil {
 				witnessed := resumed.EnrolledUpdate(t.Context(), resumedRunning, nil)
-				if witnessed.Receipt.Running == nil {
-					t.Fatal("post-start running receipt was not retained")
+				if !witnessed.Supported || !witnessed.Running.VerifiedRelease || witnessed.Running.Source != "release" || witnessed.Receipt.Running == nil || witnessed.Receipt.Request != request || witnessed.Receipt.Applied.Commit != strings.Repeat("c", 40) || witnessed.Receipt.Applied.SHA256 != strings.Repeat("d", 64) {
+					t.Fatalf("post-start verified running proof was not retained: %+v", witnessed)
+				}
+				if nextRequest != nil && nextRequest.Version == request.Version {
+					matching := resumed.EnrolledUpdate(t.Context(), resumedRunning, nextRequest)
+					if matching.Receipt.Status != "running" || !matching.Running.VerifiedRelease || matching.Receipt.Request != request || updater.applyCalls != 1 {
+						t.Fatalf("equivalent post-start request lost verified proof: %+v", matching)
+					}
 				}
 				newer := resumedRunning
 				newer.Version = "1.2.5"
@@ -134,6 +185,11 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				patched.VerifiedRelease = false
 				if resumed.EnrolledUpdate(t.Context(), patched, nil).Receipt.Status == "running" {
 					t.Fatal("patched source claimed verified running release")
+				}
+				mismatched := resumedRunning
+				mismatched.SHA256 = strings.Repeat("f", 64)
+				if report := resumed.EnrolledUpdate(t.Context(), mismatched, nil); report.Receipt.Status == "running" || report.Running.VerifiedRelease {
+					t.Fatalf("mismatched artifact claimed verified running release: %+v", report)
 				}
 			}
 		})
