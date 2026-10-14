@@ -4059,7 +4059,7 @@ func validatorJSONPayload(output string) (string, error) {
 	return output[start : end+1], nil
 }
 
-func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
+func (r *Runner) reapWorkspace(ctx context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -4081,7 +4081,7 @@ func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (Work
 	return WorkspaceReapResult{}, nil
 }
 
-func (r *Runner) ReconcileWorkspaces(ctx context.Context, activeIssues []connector.Issue) (WorkspaceReconcileResult, error) {
+func (r *Runner) reconcileWorkspaces(ctx context.Context, activeIssues []connector.Issue) (WorkspaceReconcileResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

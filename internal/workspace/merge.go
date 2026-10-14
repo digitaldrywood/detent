@@ -445,6 +445,17 @@ func WithValidationProcessOwner(ctx context.Context, owner ValidationProcessOwne
 	return context.WithValue(ctx, validationProcessOwnerKey{}, owner)
 }
 
+func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwner {
+	if ctx == nil {
+		return nil
+	}
+	owner, ok := ctx.Value(validationProcessOwnerKey{}).(ValidationProcessOwner)
+	if !ok {
+		return nil
+	}
+	return owner
+}
+
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	result.Command = command
 	result.ExitCode = -1
@@ -469,7 +480,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			resultErr = errors.Join(resultErr, process.Finished(cleanupCtx, result, cleanupErr))
 		}
 	}()
-	if owner, ok := ctx.Value(validationProcessOwnerKey{}).(ValidationProcessOwner); ok {
+	if owner := ValidationProcessOwnerFromContext(ctx); owner != nil {
 		process, err = owner(ctx, info, issue, scratch)
 		if err != nil {
 			return result, fmt.Errorf("reserve host validation process: %w", err)

@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -7674,11 +7675,17 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 
 func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 	t.Parallel()
+	cacheRoot := t.TempDir()
+	cache, cacheErr := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+	if cacheErr != nil {
+		t.Fatal(cacheErr)
+	}
 
 	workspaceBackend := &fakeWorkspaceBackend{
 		cleanupResult: workspace.CleanupResult{Worktrees: 1, Branches: 1, Processes: 2},
 	}
 	runner, err := NewRunner(Dependencies{
+		BuildCache:   cache,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -7696,6 +7703,10 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 		t.Fatalf("ReapWorkspace() error = %v", err)
 	}
 
+	if workspaceBackend.cleanupCache != cacheRoot {
+		t.Fatalf("cleanup did not use managed cache: %q", workspaceBackend.cleanupCache)
+	}
+
 	if result.Worktrees != 1 || result.Branches != 1 || result.Processes != 2 {
 		t.Fatalf("ReapWorkspace() result = %#v, want 1 worktree, 1 branch, 2 processes", result)
 	}
@@ -7709,6 +7720,11 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 
 func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	t.Parallel()
+	cacheRoot := t.TempDir()
+	cache, cacheErr := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+	if cacheErr != nil {
+		t.Fatal(cacheErr)
+	}
 
 	workspaceBackend := &fakeResidualWorkspaceBackend{
 		fakeWorkspaceBackend: &fakeWorkspaceBackend{},
@@ -7722,6 +7738,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 		},
 	}
 	runner, err := NewRunner(Dependencies{
+		BuildCache:   cache,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -7735,6 +7752,10 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileWorkspaces() error = %v", err)
 	}
+	if workspaceBackend.cache != cacheRoot {
+		t.Fatalf("cleanup did not use managed cache: %q", workspaceBackend.cache)
+	}
+
 	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.CompletedPaths) != 1 || result.CompletedPaths[0] != "/workspaces/removed" || len(result.Failures) != 1 {
 		t.Fatalf("ReconcileWorkspaces() = %+v", result)
 	}
@@ -7823,6 +7844,7 @@ type fakeWorkspaceBackend struct {
 	diffCalls      int
 	createIssue    workspace.Issue
 	cleanupIssue   workspace.Issue
+	cleanupCache   string
 	cleanupResult  workspace.CleanupResult
 	recoveryStates []workspace.RecoveryState
 	recoveryErr    error
@@ -7857,11 +7879,13 @@ func (w *reviewMutationWorkspace) VerifyReviewTree(context.Context, workspace.In
 type fakeResidualWorkspaceBackend struct {
 	*fakeWorkspaceBackend
 	active []workspace.Issue
+	cache  string
 	result workspace.ReconcileResult
 	err    error
 }
 
-func (b *fakeResidualWorkspaceBackend) ReconcileResiduals(_ context.Context, active []workspace.Issue) (workspace.ReconcileResult, error) {
+func (b *fakeResidualWorkspaceBackend) ReconcileResiduals(ctx context.Context, active []workspace.Issue) (workspace.ReconcileResult, error) {
+	b.cache = toolcache.ManagedBuildFromContext(ctx)
 	b.active = append([]workspace.Issue(nil), active...)
 	return b.result, b.err
 }
@@ -7902,7 +7926,8 @@ func (b *fakeWorkspaceBackend) Cleanup(context.Context, string) error {
 	return nil
 }
 
-func (b *fakeWorkspaceBackend) CleanupIssue(_ context.Context, issue workspace.Issue) (workspace.CleanupResult, error) {
+func (b *fakeWorkspaceBackend) CleanupIssue(ctx context.Context, issue workspace.Issue) (workspace.CleanupResult, error) {
+	b.cleanupCache = toolcache.ManagedBuildFromContext(ctx)
 	b.cleanupIssue = issue
 	return b.cleanupResult, nil
 }

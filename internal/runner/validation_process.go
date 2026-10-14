@@ -31,9 +31,16 @@ func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector
 	if !ok {
 		return ctx
 	}
-	return workspace.WithValidationProcessOwner(ctx, func(ctx context.Context, info workspace.Info, _ workspace.Issue, scratch string) (workspace.ValidationProcess, error) {
+	return workspace.WithValidationProcessOwner(ctx, func(ctx context.Context, info workspace.Info, observedIssue workspace.Issue, scratch string) (workspace.ValidationProcess, error) {
+		issueID, identifier := issue.ID, issue.Identifier
+		if issueID == "" {
+			issueID = observedIssue.ID
+		}
+		if identifier == "" {
+			identifier = observedIssue.Identifier
+		}
 		sessionID, err := owner.StartSession(ctx, store.SessionStart{
-			ProjectID: r.projectID, IssueID: issue.ID, Identifier: issue.Identifier, IssueURL: issue.URL,
+			ProjectID: r.projectID, IssueID: issueID, Identifier: identifier, IssueURL: issue.URL,
 			WorkAttemptID: attemptID, StartedAt: time.Now().UTC(), AgentBackendKind: "host", AgentRole: store.WorkerProcessRoleHostValidation,
 		})
 		if err != nil {
