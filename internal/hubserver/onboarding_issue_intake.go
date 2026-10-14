@@ -104,6 +104,10 @@ func (s *Service) projectGitHubBatch(ctx context.Context, scope nativeScope) (gi
 	return githubBatchResponse(ctx, s.database.reader, scope, batch)
 }
 
+func intakeInvalid(message string) error {
+	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
 func batchHasPending(batch *tracker.GitHubBatch) bool {
 	if batch.Status == "discovering" {
 		return true
@@ -125,7 +129,7 @@ func requireBatchRunner(ctx context.Context, tx *sql.Tx, scope nativeScope, runn
 		return err
 	}
 	if count == 0 {
-		return nativeInvalid("Select an active enrolled runner with a recent matching checkout report")
+		return intakeInvalid("Select an active enrolled runner with a recent matching checkout report")
 	}
 	return nil
 }
@@ -160,22 +164,22 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 			repository = integration.Repository
 		}
 		if integration.Profile != "native" || repository == "" {
-			return nil, nativeInvalid("Attach the native project's runner checkout first")
+			return nil, intakeInvalid("Attach the native project's runner checkout first")
 		}
 		if !integration.ManualImportEnabled {
-			return nil, nativeInvalid("Manual import of existing GitHub issues is disabled")
+			return nil, intakeInvalid("Manual import of existing GitHub issues is disabled")
 		}
 		switch request.Action {
 		case "discover", "start":
 			if batch != nil && (batchHasPending(batch) || slices.ContainsFunc(batch.Items, func(item tracker.GitHubBatchItem) bool { return item.Status == "failed" })) {
-				return nil, nativeInvalid("Finish the current intake before starting another preview")
+				return nil, intakeInvalid("Finish the current intake before starting another preview")
 			}
 			if len(request.Labels) > 20 {
-				return nil, nativeInvalid("At most 20 label filters are allowed")
+				return nil, intakeInvalid("At most 20 label filters are allowed")
 			}
 			for _, label := range request.Labels {
 				if strings.TrimSpace(label) == "" || len(label) > 100 {
-					return nil, nativeInvalid("Label filters must be nonempty and at most 100 bytes")
+					return nil, intakeInvalid("Label filters must be nonempty and at most 100 bytes")
 				}
 			}
 			if s.config.ImportBackend == nil {
@@ -198,13 +202,13 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 			}
 		case "more":
 			if batch == nil || batch.Status != "preview" || batch.Page.NextCursor == "" || len(batch.Page.Issues) >= batchLimit(batch) {
-				return nil, nativeInvalid("No further preview page is available (maximum 1000 issues per intake)")
+				return nil, intakeInvalid("No further preview page is available (maximum 1000 issues per intake)")
 			}
 			batch.Discovery.Cursor = batch.Page.NextCursor
 			batch.Status = "discovering"
 		case "apply":
 			if batch == nil || batch.Status != "preview" || len(request.Numbers) == 0 || len(request.Numbers) > batchLimit(batch) {
-				return nil, nativeInvalid("Select issues from the completed preview")
+				return nil, intakeInvalid("Select issues from the completed preview")
 			}
 			if !batch.HubOwned {
 				if err := requireBatchRunner(ctx, tx, scope, batch.RunnerID, repository, now); err != nil {
@@ -227,7 +231,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				seen[number] = true
 				index := slices.IndexFunc(batch.Page.Issues, func(preview tracker.GitHubIssuePreview) bool { return preview.Number == number })
 				if index < 0 {
-					return nil, nativeInvalid("Selected issue is absent from the preview")
+					return nil, intakeInvalid("Selected issue is absent from the preview")
 				}
 				preview := batch.Page.Issues[index]
 				destination, labels, err := batchIssueDestination(project.States, batch, preview.Labels)
@@ -256,10 +260,10 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 			}
 		case "close_source":
 			if batch == nil || batch.Status != "finished" {
-				return nil, nativeInvalid("Finish importing before closing source issues")
+				return nil, intakeInvalid("Finish importing before closing source issues")
 			}
 			if s.config.OutboxBackend == nil || s.database.linkedSourceBase == "" {
-				return nil, nativeInvalid("Closing source issues requires configured GitHub transport and a public Cloud URL")
+				return nil, intakeInvalid("Closing source issues requires configured GitHub transport and a public Cloud URL")
 			}
 			for index, item := range batch.Items {
 				if item.Status != "completed" || item.SourceCloseRequested {
@@ -277,7 +281,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 			}
 		case "retry":
 			if batch == nil || !batch.HubOwned && batchHasPending(batch) && (request.RunnerID == "" || request.RunnerID == batch.RunnerID) {
-				return nil, nativeInvalid("Wait for current intake work to finish, or select another runner")
+				return nil, intakeInvalid("Wait for current intake work to finish, or select another runner")
 			}
 			if request.RunnerID != "" {
 				batch.RunnerID = request.RunnerID
@@ -334,7 +338,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				}
 			}
 		default:
-			return nil, nativeInvalid("Unknown intake action")
+			return nil, intakeInvalid("Unknown intake action")
 		}
 		if err := saveGitHubBatch(ctx, tx, scope, batch); err != nil {
 			return nil, err
@@ -615,7 +619,7 @@ func (s *Service) githubBatchLimit(ctx context.Context, query nativeQueryer, now
 	}
 	limit := int(min(entitlement.Allowances["unarchived_issues"], 50000))
 	if limit <= 0 {
-		return 0, nativeInvalid("The plan does not allow issue import")
+		return 0, intakeInvalid("The plan does not allow issue import")
 	}
 	return limit, nil
 }
@@ -636,18 +640,18 @@ func configureBatchDestination(ctx context.Context, tx *sql.Tx, scope nativeScop
 	}
 	lane, exists := findBatchLane(project.States, destination)
 	if !exists || lane.Dispatchable && !request.AllowDispatch {
-		return nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
+		return intakeInvalid("Select a destination and explicitly confirm any dispatchable lane")
 	}
 	if len(request.LabelLanes) > 100 {
-		return nativeInvalid("At most 100 label lane mappings are allowed")
+		return intakeInvalid("At most 100 label lane mappings are allowed")
 	}
 	for label, name := range request.LabelLanes {
 		lane, exists := findBatchLane(project.States, name)
 		if label == "" || len(label) > 100 || !exists || lane.Dispatchable && !request.AllowDispatch {
-			return nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
+			return intakeInvalid("Select a destination and explicitly confirm any dispatchable lane")
 		}
 	}
-	batch.Destination, batch.AllowDispatch, batch.LabelLanes = destination, request.AllowDispatch, request.LabelLanes
+	batch.Destination, batch.AllowDispatch, batch.LabelLanes, batch.IgnoreLanes = destination, request.AllowDispatch, request.LabelLanes, request.IgnoreLanes
 	return nil
 }
 
@@ -655,14 +659,18 @@ func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBa
 	destination := batch.Destination
 	labels := []string{}
 	mapped := ""
+	conflict := false
 	for _, label := range sourceLabels {
 		name, explicit := batch.LabelLanes[label]
+		if batch.IgnoreLanes {
+			name = ""
+		}
 		laneLabel := explicit && strings.HasPrefix(strings.ToLower(label), "detent:")
 		if strings.HasPrefix(strings.ToLower(label), "detent:") {
 			for _, state := range states {
-				if strings.EqualFold(label, "detent:"+state.Name) {
+				if strings.EqualFold(label, "detent:"+state.Name) || strings.EqualFold(label, "detent:"+strings.ReplaceAll(state.Name, " ", "-")) {
 					laneLabel = true
-					if !explicit {
+					if !explicit && !batch.IgnoreLanes && (!state.Dispatchable || batch.AllowDispatch) {
 						name = state.Name
 					}
 					break
@@ -671,7 +679,7 @@ func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBa
 		}
 		if name != "" {
 			if mapped != "" && mapped != name {
-				return "", nil, nativeInvalid("Source labels map to conflicting lanes")
+				conflict = true
 			}
 			mapped = name
 		}
@@ -679,12 +687,12 @@ func batchIssueDestination(states []tracker.NativeState, batch *tracker.GitHubBa
 			labels = append(labels, label)
 		}
 	}
-	if mapped != "" {
+	if mapped != "" && !conflict {
 		destination = mapped
 	}
 	lane, exists := findBatchLane(states, destination)
 	if !exists || lane.Dispatchable && !batch.AllowDispatch {
-		return "", nil, nativeInvalid("Select a destination and explicitly confirm any dispatchable lane")
+		return "", nil, intakeInvalid("Select a destination and explicitly confirm any dispatchable lane")
 	}
 	return destination, labels, nil
 }
