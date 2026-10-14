@@ -490,9 +490,9 @@ func selectResidenceSamples(selected []*analyticsResidenceSample, stride int, in
 			hourly++
 		}
 		var row *residenceRow
-		if edge > 0 && edges[edge-1].hour == hour {
+		if edge > 0 && len(edges) >= edge && edges[edge-1].hour == hour {
 			row = &edges[edge-1]
-		} else if hourly > 0 {
+		} else if hourly > 0 && len(hours) >= hourly {
 			row = &hours[hourly-1]
 		}
 		if row == nil {
