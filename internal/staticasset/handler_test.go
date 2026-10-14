@@ -17,6 +17,9 @@ func TestHandlerServesNegotiatedCachedRepresentations(t *testing.T) {
 		"app/conversation/chunks/Work-AbCd1234.js.gz": {Data: []byte("chunk-gz")},
 		"app/conversation/favicon-32.png":             {Data: []byte("png")},
 		"fonts/Geist-Variable.woff2":                  {Data: []byte("font")},
+		"app/conversation/app.css":                    {Data: []byte("body{}")},
+		"app/conversation/app.js.map":                 {Data: []byte("{}")},
+		"app/conversation/sniffed.detentunknown":      {Data: []byte("\x89PNG\r\n\x1a\nrest")},
 	}
 	for _, test := range []struct {
 		name, path, accept string
@@ -31,6 +34,9 @@ func TestHandlerServesNegotiatedCachedRepresentations(t *testing.T) {
 		{name: "hashed chunk immutable", path: "/app/conversation/chunks/Work-AbCd1234.js", accept: "br, gzip", status: http.StatusOK, body: "chunk-gz", encoding: "gzip", cache: ImmutableCacheControl, vary: "Accept-Encoding", ctype: "text/javascript; charset=utf-8"},
 		{name: "uncompressed file has no vary", path: "/app/conversation/favicon-32.png", accept: "br", status: http.StatusOK, body: "png", cache: RevalidateCacheControl, ctype: "image/png"},
 		{name: "dashboard font revalidated", path: "/fonts/Geist-Variable.woff2", status: http.StatusOK, body: "font", cache: RevalidateCacheControl, ctype: "font/woff2"},
+		{name: "stylesheet", path: "/app/conversation/app.css", status: http.StatusOK, body: "body{}", cache: RevalidateCacheControl, ctype: "text/css; charset=utf-8"},
+		{name: "source map", path: "/app/conversation/app.js.map", status: http.StatusOK, body: "{}", cache: RevalidateCacheControl, ctype: "application/json"},
+		{name: "unknown extension sniffed", path: "/app/conversation/sniffed.detentunknown", status: http.StatusOK, body: "\x89PNG\r\n\x1a\nrest", cache: RevalidateCacheControl, ctype: "image/png"},
 		{name: "missing file", path: "/app/conversation/chunks/Gone-AbCd1234.js", status: http.StatusNotFound},
 		{name: "directory", path: "/app/conversation/chunks", status: http.StatusNotFound},
 		{name: "traversal", path: "/../app/conversation/app.js", status: http.StatusNotFound},

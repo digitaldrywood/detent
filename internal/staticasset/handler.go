@@ -38,6 +38,17 @@ type encoding struct {
 	extension string
 }
 
+var contentTypes = map[string]string{
+	".css":   "text/css; charset=utf-8",
+	".js":    "text/javascript; charset=utf-8",
+	".json":  "application/json",
+	".map":   "application/json",
+	".svg":   "image/svg+xml",
+	".wasm":  "application/wasm",
+	".woff":  "font/woff",
+	".woff2": "font/woff2",
+}
+
 var encodings = []encoding{{token: "br", extension: ".br"}, {token: "gzip", extension: ".gz"}}
 
 // Handler serves files from an fs.FS rooted at the static tree. Requests carry
@@ -92,11 +103,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if coding != "" {
 		header.Set("Content-Encoding", coding)
 	}
-	contentType := mime.TypeByExtension(path.Ext(name))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	header.Set("Content-Type", contentType)
+	header.Set("Content-Type", h.contentType(name))
 	header.Set("ETag", tag)
 	if Immutable(name) {
 		header.Set("Cache-Control", ImmutableCacheControl)
@@ -118,6 +125,27 @@ func (h *Handler) representation(name, accept string) (string, string, bool) {
 		}
 	}
 	return served, coding, variants
+}
+
+// contentType names a file's type from the extensions the client build emits,
+// independent of the host's mime.types, then from the system table, and last
+// by sniffing the uncompressed bytes.
+func (h *Handler) contentType(name string) string {
+	extension := strings.ToLower(path.Ext(name))
+	if known, ok := contentTypes[extension]; ok {
+		return known
+	}
+	if system := mime.TypeByExtension(extension); system != "" {
+		return system
+	}
+	file, err := h.files.Open(name)
+	if err != nil {
+		return "application/octet-stream"
+	}
+	defer func() { _ = file.Close() }() //nolint:errcheck // Only the sniffed prefix matters.
+	prefix := make([]byte, 512)
+	read, _ := io.ReadFull(file, prefix) //nolint:errcheck // A short file sniffs from what it has.
+	return http.DetectContentType(prefix[:read])
 }
 
 type seekableFile struct {

@@ -147,7 +147,8 @@ function devFonts(): Plugin {
 }
 
 /** The output files whose names carry their content hash. */
-const HASHED_FILE = /^(chunks|assets)\/.+-[\w-]{8}\.[a-z0-9]+$/;
+/** `[name]-[hash]` with the eight lowercase hex characters `hashCharacters: "hex"` produces. */
+const HASHED_FILE = /^(chunks|assets)\/[^/]+-[0-9a-f]{8}\.(js|css|wasm|svg|png|woff2?)$/;
 const COMPRESSIBLE = /\.(js|css|svg|txt|json|wasm)$/;
 
 /**
@@ -179,6 +180,7 @@ function precompressAndBudget(): Plugin {
         .filter((entry) => entry.isFile())
         .map((entry) => relative(outDir, join(entry.parentPath, entry.name)).split(sep).join("/"));
       const unhashed = files.filter((name) => /^(chunks|assets)\//.test(name) && !HASHED_FILE.test(name));
+      if (!files.some((name) => name.startsWith("chunks/"))) throw new Error("The build emitted no route chunks under chunks/.");
       if (unhashed.length > 0) {
         throw new Error(`Files under chunks/ and assets/ are served as immutable and must carry a content hash: ${unhashed.join(", ")}`);
       }
@@ -408,7 +410,7 @@ export default defineConfig({
   // `?worker` suffix. Rollup refuses the default `iife` worker format once the
   // graph code-splits, which this one does, so the workers are ES modules —
   // which every browser that can run the rest of this bundle supports.
-  worker: { format: "es" },
+  worker: { format: "es", rollupOptions: { output: { hashCharacters: "hex" } } },
   build: {
     outDir: "../../static/app/conversation",
     emptyOutDir: true,
@@ -444,6 +446,7 @@ export default defineConfig({
         // block in that language is rendered. `embed.go` embeds `static/**`
         // recursively, so the chunks ship and are served from the same prefix.
         inlineDynamicImports: false,
+        hashCharacters: "hex",
         chunkFileNames: "chunks/[name]-[hash].js",
         assetFileNames: (asset) =>
           asset.names?.some((name) => name.endsWith(".css")) ? "app.css" : "assets/[name]-[hash][extname]",
