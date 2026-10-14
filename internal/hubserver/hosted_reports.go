@@ -46,6 +46,9 @@ type reportsSpend struct {
 	WorkItemID string  `json:"work_item_id"`
 	Title      string  `json:"title"`
 	Cost       float64 `json:"cost_usd"`
+	Attempts   int     `json:"attempts"`
+	Shipped    bool    `json:"shipped"`
+	State      string  `json:"state,omitempty"`
 }
 
 type reportsBucket struct {
@@ -95,13 +98,15 @@ func (s *Service) hostedReports(c echo.Context) error {
 	if !slices.Contains(projects, project) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	hours := map[string]int{"24h": 24, "48h": 48, "7d": 168, "30d": 720}[c.QueryParam("range")]
+	hours := map[string]int{"24h": 24, "48h": 48, "7d": 168, "30d": 720, "90d": 2160}[c.QueryParam("range")]
 	if hours == 0 {
 		return s.nativeAPIError(c, nativeInvalid("Unsupported report range"))
 	}
 	to := s.config.now().UTC().Truncate(time.Hour)
 	bucket := time.Hour
-	if hours > 240 {
+	if hours > 720 {
+		bucket = 24 * time.Hour
+	} else if hours > 240 {
 		bucket = 4 * time.Hour
 	}
 	w := operatortool.AnalyticsWindow{From: to.Add(-time.Duration(hours) * time.Hour), To: to, Bucket: bucket}
@@ -125,7 +130,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (hostedReportsReport, error) {
 	p := analytics.Projects[0]
 	w := analytics.Window
-	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
+	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Series: []reportsSeriesBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
 	diagnostics, err := s.readHostedDiagnosticsFrom(ctx, analytics, q)
 	if err != nil {
 		return out, err
@@ -189,8 +194,13 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		return out, err
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
+	shipped := reportsShipped(timelines, w.From, w.To)
+	reportsSpendOutcomes(out.Spend, p.allAttempts, timelines, shipped)
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
+	reportClassDetails(out.Rework, out.Failures, p.Quality.returns, p.failures)
+	out.Series = reportsSeries(timelines, states, p.allAttempts, usage, shipped, w)
+	reportsSeriesClasses(out.Series, p.Quality.returns, p.failures, w)
 	policy, err := diagnosticsPolicyValues(ctx, q, scope)
 	if err != nil {
 		return out, err
@@ -203,13 +213,16 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	if policy["Plan gate"] == "" || policy["Validator gate"] == "" {
 		out.Unavailable = append(out.Unavailable, "stage_gate_configuration")
 	}
+	failedIssues := map[string]bool{}
 	for _, a := range p.allAttempts {
 		if a.Status == "failed" {
+			failedIssues[a.WorkItemID] = true
 			if i := nativeAnalyticsBucketIndex(a.ObservedAt, w); i >= 0 {
 				out.Throughput[i].Failed++
 			}
 		}
 	}
+	out.FailedIssues = len(failedIssues)
 	for i, b := range out.Throughput {
 		var seconds float64
 		for _, capacity := range diagnostics.Capacity {
@@ -244,6 +257,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	}
 	for _, signature := range p.FailureSignatures.Items {
 		titleIDs = append(titleIDs, signature.WorkItems...)
+	}
+	for _, class := range slices.Concat(out.Rework, out.Failures) {
+		titleIDs = append(titleIDs, class.WorkItems...)
 	}
 	encodedIDs, err := marshalNative(titleIDs)
 	if err != nil {

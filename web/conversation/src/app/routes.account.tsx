@@ -27,6 +27,7 @@ const UsageRoute = lazyRouteComponent(() => import("./usage/UsagePage.tsx"), "Us
 const ActivityRoute = lazyRouteComponent(() => import("./activity/ActivityPage.tsx"), "ActivityRoute");
 const DiagnosticsRoute = lazyRouteComponent(() => import("./diagnostics/DiagnosticsPage.tsx"), "DiagnosticsRoute");
 const ReportsRoute = lazyRouteComponent(() => import("./reports/ReportsPage.tsx"), "ReportsRoute");
+const REPORT_TAB_PATHS = new Set(["flow", "quality", "cost", "failures"]);
 
 /**
  * The navigation the screens take. It is passed in rather than imported so the
@@ -58,6 +59,7 @@ export const ACCOUNT_ROUTE_PATHS = [
   "/settings/$section",
   "/usage",
   "/reports",
+  "/reports/$tab",
   "/diagnostics",
   "/projects/$project/settings",
   "/projects/$project/setup",
@@ -96,6 +98,15 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
     createRoute({ getParentRoute, path: "/settings/$section", component: SettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
     createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
+    createRoute({
+      getParentRoute,
+      path: "/reports/$tab",
+      beforeLoad: ({ params, search }) => {
+        const { tab } = params as { tab: string };
+        if (!REPORT_TAB_PATHS.has(tab)) throw redirect({ to: "/reports", search: search as never });
+      },
+      component: ReportsRoute,
+    }),
     createRoute({ getParentRoute, path: "/activity", component: ActivityRoute }),
     createRoute({ getParentRoute, path: "/diagnostics", component: DiagnosticsRoute }),
     createRoute({

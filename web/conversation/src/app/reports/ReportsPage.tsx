@@ -1,19 +1,15 @@
-import React, { useState } from "react";
-import { Link } from "@tanstack/react-router";
-import { Badge } from "../../components/ui/badge.tsx";
+import React, { useEffect, useState } from "react";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { DownloadIcon, ListFilterIcon } from "lucide-react";
+
 import { Button } from "../../components/ui/button.tsx";
 import { RefreshIcon } from "../../components/ui/refresh-icon.tsx";
 import { ScrollArea } from "../../components/ui/scroll-area.tsx";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../components/ui/select.tsx";
 import { Skeleton } from "../../components/ui/skeleton.tsx";
-import { Toggle, ToggleGroup } from "../../components/ui/toggle-group.tsx";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "../../components/ui/table.tsx";
+import { Tabs, TabsList, TabsPanel, TabsTab } from "../../components/ui/tabs.tsx";
+import { Toggle } from "../../components/ui/toggle.tsx";
+import { Toggle as GroupToggle, ToggleGroup } from "../../components/ui/toggle-group.tsx";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -21,1007 +17,296 @@ import {
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type {
-  ReportsReport,
-  ReportsRange,
-  ReportsTimeView,
-} from "../../contracts/reports.ts";
+import type { ReportsReport, ReportsRange } from "../../contracts/reports.ts";
+import type { BootstrapProject } from "../../contracts/index.ts";
 import { useAccountApi } from "../account/context.ts";
 import { useSidebarData } from "../adapters/sidebarData.tsx";
 import { usePageTitle } from "../pageTitle.ts";
-import { formatCount, formatTokens, formatUsd } from "../usage/usageFormat.ts";
+import { formatDateTimeShort, formatDayShort } from "../usage/usageFormat.ts";
+import { CostTab, costCsv } from "./CostTab.tsx";
+import { FailuresTab } from "./FailuresTab.tsx";
+import { FlowTab } from "./FlowTab.tsx";
+import {
+  isReportTab,
+  parseReportsSearch,
+  rangeOption,
+  REPORT_RANGES,
+  REPORT_TABS,
+  reportsSearchParams,
+  type ReportsSearch,
+  type ReportTab,
+} from "./model.ts";
+import { OverviewTab } from "./OverviewTab.tsx";
+import { QualityTab } from "./QualityTab.tsx";
 
-import { DEFAULT_REPORTS_RANGE, useReports } from "./reportsQuery.ts";
-
-const WINDOWS: readonly { value: ReportsRange; label: string }[] = [
-  { value: "24h", label: "Past 24h" },
-  { value: "48h", label: "48h" },
-  { value: "7d", label: "7 days" },
-  { value: "30d", label: "30 days" },
-];
-const UNAVAILABLE = "Not recorded";
-const LANES: Readonly<Record<string, string>> = {
-  Todo: "var(--info)",
-  "In Progress": "var(--success)",
-  Merging: "var(--foreground)",
-  Rework: "var(--warning)",
-  Blocked: "var(--muted-foreground)",
-  "Human Review":
-    "color-mix(in oklab, var(--muted-foreground) 60%, var(--background))",
+const FILTERS = ["Label", "Priority", "Type", "Filed by"] as const;
+const TAB_FILTERS: Readonly<Record<ReportTab, readonly string[]>> = {
+  overview: [...FILTERS, "Runner"],
+  flow: [...FILTERS, "Runner"],
+  quality: [...FILTERS, "Runner"],
+  cost: [...FILTERS, "Model", "Stage"],
+  failures: ["Label", "Priority", "Runner", "Stage"],
 };
-const laneColor = (lane: string) => LANES[lane] ?? "var(--muted-foreground)";
-const hours = (seconds: number) =>
-  seconds < 3600
-    ? `${(seconds / 60).toFixed(1)} min`
-    : `${(seconds / 3600).toFixed(1)} h`;
-const compactDuration = (seconds: number) =>
-  seconds < 3600
-    ? `${(seconds / 60).toFixed(0)}m`
-    : `${(seconds / 3600).toFixed(1)}h`;
-const percent = (value: number | null) =>
-  value === null ? UNAVAILABLE : `${value.toFixed(1)}%`;
-const at = (value: string) =>
-  new Date(value).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 
 export function ReportsRoute(): React.ReactElement {
   usePageTitle("Reports");
   const api = useAccountApi();
   const sidebar = useSidebarData();
-  const project = sidebar?.projects.find(
-    (p) => p.id === sidebar.activeProjectId,
-  );
-  const [range, setRange] = useState<ReportsRange>(DEFAULT_REPORTS_RANGE);
-  const [view, setView] = useState<ReportsTimeView>("system");
-  const reports = useReports(api, project?.id ?? null, range);
+  const navigate = useNavigate();
+  const params = useParams({ strict: false }) as { tab?: string };
+  const rawSearch = useSearch({ strict: false }) as Record<string, unknown>;
+  const tab: ReportTab = isReportTab(params.tab) ? params.tab : "overview";
+  const search = parseReportsSearch(rawSearch);
+  const project = sidebar?.projects.find((p) => p.id === sidebar.activeProjectId);
+  const range = search.range;
+  const [revision, setRevision] = useState(0);
+  const [state, setState] = useState<{
+    report: ReportsReport | null;
+    pending: boolean;
+    error: string | null;
+    key: string | null;
+  }>({ report: null, pending: true, error: null, key: null });
+  const key = project === undefined ? null : `${project.id}:${range}:${revision}`;
+  useEffect(() => {
+    let current = true;
+    setState({ report: null, pending: project !== undefined, error: null, key });
+    if (project !== undefined)
+      void api.reports(project.id, range).then(
+        (report) => {
+          if (current) setState({ report, pending: false, error: null, key });
+        },
+        () => {
+          if (current) setState({ report: null, pending: false, error: "Reports are temporarily unavailable.", key });
+        },
+      );
+    return () => {
+      current = false;
+    };
+  }, [api, project?.id, range, revision]);
+  const current = state.key === key;
+  const go = (nextTab: ReportTab, nextSearch: ReportsSearch) => {
+    void navigate({
+      to: nextTab === "overview" ? "/reports" : "/reports/$tab",
+      params: nextTab === "overview" ? {} : { tab: nextTab },
+      search: reportsSearchParams(nextSearch),
+    } as never);
+  };
   return (
     <ReportsView
-      report={reports.report}
-      pending={reports.pending}
-      error={reports.error}
-      scope={project?.name ?? "Choose a project"}
-      range={range}
-      view={view}
-      onRangeChange={setRange}
-      onViewChange={setView}
-      onRefresh={() => void reports.refresh()}
+      report={current ? state.report : null}
+      pending={project !== undefined && (!current || state.pending)}
+      error={current ? state.error : null}
+      projects={sidebar?.projects ?? []}
+      project={project ?? null}
+      onProjectChange={sidebar?.onProjectChange}
+      tab={tab}
+      search={search}
+      onNavigate={go}
+      onRefresh={() => setRevision((value) => value + 1)}
     />
   );
 }
 
-function Metric({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail?: string;
-}): React.ReactElement {
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <span className="text-2xl font-semibold tabular-nums">{value}</span>
-      <span className="text-xs text-muted-foreground">{label}</span>
-      {detail && (
-        <span className="text-xs text-muted-foreground">{detail}</span>
-      )}
-    </div>
-  );
+function downloadCsv(report: ReportsReport, range: ReportsRange, project: string): void {
+  const blob = new Blob([costCsv(report)], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${project}-cost-${range}.csv`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <section
-      aria-label={title}
-      className="flex min-w-0 flex-col gap-3 border-t border-border pt-5"
-    >
-      <h2 className="text-sm font-medium">{title}</h2>
-      {children}
-    </section>
-  );
-}
-function Missing({
-  children = UNAVAILABLE,
-}: {
-  children?: React.ReactNode;
-}): React.ReactElement {
-  return <p className="text-xs text-muted-foreground">{children}</p>;
-}
-function IssueLink({
-  id,
-  titles,
-}: {
-  id: string;
-  titles: ReportsReport["titles"];
-}): React.ReactElement {
-  return (
-    <Link
-      to="/work/i/$workItemId"
-      params={{ workItemId: id }}
-      search={{ tab: "diagnostics" } as never}
-      className="break-words text-foreground underline underline-offset-2"
-    >
-      {titles[id] ?? id}
-    </Link>
-  );
+
+function windowLabel(report: ReportsReport): string {
+  const { from, to } = report.analytics.window;
+  const lastHour = new Date(Date.parse(to) - 3_600_000).toISOString();
+  return `${formatDayShort(from.slice(0, 10))} – ${formatDayShort(to.slice(0, 10))} · hourly data through ${formatDateTimeShort(lastHour)}`;
 }
 
 export function ReportsView({
   report,
   pending,
   error,
-  scope,
-  range,
-  view,
-  onRangeChange,
-  onViewChange,
+  projects,
+  project,
+  onProjectChange,
+  tab,
+  search,
+  onNavigate,
   onRefresh,
 }: {
-  report: ReportsReport | null;
-  pending: boolean;
-  error: string | null;
-  scope: string;
-  range: ReportsRange;
-  view: ReportsTimeView;
-  onRangeChange: (range: ReportsRange) => void;
-  onViewChange: (view: ReportsTimeView) => void;
-  onRefresh: () => void;
+  readonly report: ReportsReport | null;
+  readonly pending: boolean;
+  readonly error: string | null;
+  readonly projects: readonly BootstrapProject[];
+  readonly project: BootstrapProject | null;
+  readonly onProjectChange?: ((id: string) => void) | undefined;
+  readonly tab: ReportTab;
+  readonly search: ReportsSearch;
+  readonly onNavigate: (tab: ReportTab, search: ReportsSearch) => void;
+  readonly onRefresh: () => void;
 }): React.ReactElement {
-  const p = report?.analytics;
-  const unavailable = (key: string) =>
-    report?.unavailable.includes(key) ?? true;
-  const residenceMissing = unavailable(
-    "lane_residence_and_unclaimed_waits_unavailable",
-  );
-  const completion = report?.completion;
-  const timing = view === "system" ? completion?.system : completion?.lead;
-  const lanes =
-    (view === "lead"
-      ? report?.completion.lanes
-      : p?.lane_residence.lanes
-    )?.filter(
-      (lane) =>
-        lane.group !== "excluded" &&
-        lane.lane !== "Backlog" &&
-        lane.lane !== "Triage",
-    ) ?? [];
-  const delta = report ? report.completion.done - report.previous.done : null;
-  const usageMissing = unavailable("recorded_usage");
-  const completionMissing = residenceMissing || timing?.count === 0;
+  const range = rangeOption(search.range);
+  const setSearch = (patch: Partial<ReportsSearch>) => onNavigate(tab, { ...search, ...patch });
+  const setRange = (value: unknown) => {
+    const match = REPORT_RANGES.find((option) => option.value === value);
+    if (match) setSearch({ range: match.value });
+  };
+  const filters = TAB_FILTERS[tab];
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-      <WorkspacePageHeader className="h-auto">
+      <WorkspacePageHeader className="h-auto min-h-(--workspace-topbar-height) border-border border-b">
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 py-2">
-          <WorkspaceBreadcrumb
-            ariaLabel="Reports breadcrumb"
-            className="min-w-0 flex-1"
-          >
+          <WorkspaceBreadcrumb ariaLabel="Reports breadcrumb" className="min-w-0 flex-1">
             <WorkspaceBreadcrumbItem>
               <h1>Reports</h1>
             </WorkspaceBreadcrumbItem>
             <WorkspaceBreadcrumbSeparator />
             <WorkspaceBreadcrumbItem current>
-              <span className="truncate">{scope}</span>
+              {projects.length > 0 && onProjectChange ? (
+                <Select value={project?.id ?? ""} onValueChange={(value) => typeof value === "string" && value !== "" && onProjectChange(value)}>
+                  <SelectTrigger aria-label="Project" size="compact" className="w-auto min-w-0 max-w-56">
+                    <SelectValue>{project?.name ?? "Choose a project"}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {projects.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        {item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              ) : (
+                <span className="truncate">{project?.name ?? "Choose a project"}</span>
+              )}
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Refresh reports"
-            disabled={pending}
-            onClick={onRefresh}
-          >
-            <RefreshIcon refreshing={pending} />
-          </Button>
-          <div className="flex w-full flex-wrap gap-2 xl:w-auto">
-            <ToggleGroup
-              aria-label="Time view"
-              variant="segmented"
-              value={[view]}
-              onValueChange={(v) => {
-                if (v[0] === "system" || v[0] === "lead") onViewChange(v[0]);
-              }}
-            >
-              <Toggle value="system">System time</Toggle>
-              <Toggle value="lead">Lead time</Toggle>
-            </ToggleGroup>
-            <ToggleGroup
-              aria-label="Report window"
-              variant="segmented"
-              value={[range]}
-              onValueChange={(v) => {
-                const match = WINDOWS.find((w) => w.value === v[0]);
-                if (match) onRangeChange(match.value);
-              }}
-            >
-              {WINDOWS.map((w) => (
-                <Toggle key={w.value} value={w.value}>
-                  {w.label}
-                </Toggle>
+          <div className="hidden items-center gap-2 sm:flex">
+            <ToggleGroup aria-label="Report range" value={[search.range]} onValueChange={(value) => setRange(value[0])}>
+              {REPORT_RANGES.map((option) => (
+                <GroupToggle key={option.value} value={option.value}>
+                  {option.label}
+                </GroupToggle>
               ))}
+              <GroupToggle value="custom" disabled aria-label="Custom range: not available yet">
+                Custom
+              </GroupToggle>
             </ToggleGroup>
+            <Toggle size="sm" variant="outline" pressed={search.compare} onPressedChange={(pressed) => setSearch({ compare: pressed })}>
+              vs {range.prior}
+            </Toggle>
+            {tab === "cost" ? (
+              <Button
+                size="compact"
+                variant="outline"
+                disabled={!report}
+                onClick={() => report && downloadCsv(report, search.range, project?.name ?? "project")}
+              >
+                <DownloadIcon aria-hidden />
+                Export CSV
+              </Button>
+            ) : null}
+            <Button size="icon-sm" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh}>
+              <RefreshIcon refreshing={pending} />
+            </Button>
           </div>
         </div>
       </WorkspacePageHeader>
-      <ScrollArea className="min-h-0 flex-1">
-        <WorkspacePageContainer width="wide" data-testid="reports-page">
-          {pending ? (
-            <div
-              role="status"
-              aria-label="Loading reports"
-              className="flex flex-col gap-6"
-            >
-              <Skeleton className="h-20 w-full" />
-              <Skeleton className="h-44 w-full" />
-              <Skeleton className="h-44 w-full" />
-            </div>
-          ) : error ? (
-            <p role="status" className="text-sm text-muted-foreground">
-              {error}
-            </p>
-          ) : !report || !p ? (
-            <Missing>
-              Choose a project in the sidebar to view its reports.
-            </Missing>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>
-                  {at(p.window.from)} to {at(p.window.to)} · complete hours
-                </span>
-              </div>
-              <section
-                aria-label="Headline metrics"
-                className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-6"
-              >
-                <Metric
-                  label="Issues done"
-                  value={formatCount(report.completion.done)}
-                  detail={
-                    delta === null
-                      ? "Prior window unavailable"
-                      : `${delta >= 0 ? "+" : ""}${delta} vs prior window`
-                  }
-                />
-                <Metric
-                  label={`${view === "system" ? "System" : "Lead"} time / issue p50`}
-                  value={
-                    completionMissing || !timing
-                      ? UNAVAILABLE
-                      : hours(timing.p50_seconds)
-                  }
-                  detail={
-                    view === "system"
-                      ? "First Todo to Done · controlled lanes"
-                      : "Created to Done · includes held time"
-                  }
-                />
-                <Metric
-                  label={`${view === "system" ? "System" : "Lead"} time / issue p90`}
-                  value={
-                    completionMissing || !timing
-                      ? UNAVAILABLE
-                      : hours(timing.p90_seconds)
-                  }
-                />
-                <Metric
-                  label="Working time / issue p50"
-                  value={
-                    completionMissing || !completion?.working.count
-                      ? UNAVAILABLE
-                      : hours(completion.working.p50_seconds)
-                  }
-                />
-                <Metric
-                  label="Landed first try"
-                  value={percent(
-                    unavailable("landed_first_try")
-                      ? null
-                      : report.first_try_percent,
-                  )}
-                />
-                <Metric
-                  label="Cost / issue done"
-                  value={
-                    usageMissing || !report.completion.done
-                      ? UNAVAILABLE
-                      : formatUsd(
-                          report.completion.cost_usd / report.completion.done,
-                        )
-                  }
-                  detail={
-                    usageMissing
-                      ? UNAVAILABLE
-                      : `${formatTokens(report.tokens)} tokens · ${percent(report.input > 0 ? (100 * report.cached) / report.input : null)} cached`
-                  }
-                />
-              </section>
-              <Section
-                title={
-                  view === "system"
-                    ? "Where system time goes"
-                    : "Where lead time goes"
-                }
-              >
-                {residenceMissing ? (
-                  <Missing />
-                ) : (
-                  <>
-                    <LaneBands lanes={lanes} view={view} />
-                    {view === "lead" && (
-                      <Missing>
-                        Created-to-Done headline includes intake. Bands show
-                        full lane residence for completed issues after first
-                        Todo; Backlog and Triage are excluded.
-                      </Missing>
-                    )}
-                    <LaneQuantiles lanes={lanes} />
-                  </>
-                )}
-              </Section>
-              <QualityMetrics quality={p.quality} />
-              <Section
-                title="Throughput"
-              >
-                <ThroughputChart
-                  buckets={report.throughput}
-                  failedUnavailable={unavailable("failed_attempts")}
-                  doneUnavailable={residenceMissing}
-                />
-                <Missing>
-                  Issues done and failed attempts per hour · slots in use
-                  (average).{" "}
-                  {report.throughput[0] &&
-                    `Buckets: ${(Date.parse(report.throughput[0].to) - Date.parse(report.throughput[0].from)) / 3600000}h.`}
-                </Missing>
-              </Section>
-              <Section
-                title="Aging work in progress"
-              >
-                {residenceMissing ? (
-                  <Missing />
-                ) : p.lane_residence.aging.items.length === 0 ? (
-                  <Missing>No open work in the recorded population.</Missing>
-                ) : (
-                  <>
-                    <AgingChart items={p.lane_residence.aging.items} />
-                    <div className="flex flex-col gap-2 text-xs">
-                      {p.lane_residence.aging.items
-                        .toSorted((a, b) => b.hours - a.hours)
-                        .slice(0, 5)
-                        .map((item) => (
-                          <div
-                            key={item.work_item_id}
-                            className="flex flex-wrap justify-between gap-2"
-                          >
-                            <IssueLink
-                              id={item.work_item_id}
-                              titles={report.titles}
-                            />
-                            <span className="tabular-nums text-muted-foreground">
-                              {item.lane} · {item.hours.toFixed(1)} h
-                            </span>
-                          </div>
-                        ))}
-                    </div>
-                    <Missing>
-                      Amber: past lane p90 · red: past 24h · age at window end.
-                    </Missing>
-                  </>
-                )}
-              </Section>
-              <Section
-                title="Stages and models"
-              >
-                <StageTable rows={report.stages} usageMissing={usageMissing} />
-                <Missing>
-                  Timing uses completed recorded phases; cache share uses input
-                  tokens. Cost / issue uses distinct issues per row.{" "}
-                  {unavailable("stage_gate_configuration") &&
-                    "Project gate configuration is not recorded."}
-                </Missing>
-              </Section>
-              <Section
-                title="Rework by cause"
-              >
-                {residenceMissing ? (
-                  <Missing />
-                ) : report.rework_classes.length === 0 ? (
-                  <Missing>
-                    No recorded rework transitions in this window.
-                  </Missing>
-                ) : (
-                  <ClassTable
-                    label="Cause"
-                    countLabel="Returns"
-                    rows={report.rework_classes}
-                    usageMissing={usageMissing}
-                  />
-                )}
-              </Section>
-              <Section
-                title="Cost concentration"
-              >
-                {usageMissing ? (
-                  <Missing />
-                ) : report.spend.length === 0 ? (
-                  <Missing>No issue spend recorded.</Missing>
-                ) : (
-                  <div className="flex flex-col gap-3">
-                    {report.spend.slice(0, 10).map((item) => (
-                      <div
-                        key={item.work_item_id}
-                        className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 text-xs"
-                      >
-                        <IssueLink
-                          id={item.work_item_id}
-                          titles={report.titles}
-                        />
-                        <span className="tabular-nums">
-                          {formatUsd(item.cost_usd)} ·{" "}
-                          {percent(
-                            report.cost_usd > 0
-                              ? (100 * item.cost_usd) / report.cost_usd
-                              : null,
-                          )}
-                        </span>
-                        <svg
-                          viewBox="0 0 100 3"
-                          className="col-span-2 h-1 w-full"
-                          preserveAspectRatio="none"
-                          aria-hidden
-                        >
-                          <rect width="100" height="3" fill="var(--muted)" />
-                          <rect
-                            width={
-                              report.cost_usd > 0
-                                ? (100 * item.cost_usd) / report.cost_usd
-                                : 0
-                            }
-                            height="3"
-                            fill="var(--foreground)"
-                          />
-                        </svg>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Section>
-              <Section
-                title="Failure signatures"
-              >
-                {report.failure_classes.length === 0 ? (
-                  <Missing>
-                    No recorded failure signatures in this window.
-                  </Missing>
-                ) : (
-                  <ClassTable
-                    label="Failure"
-                    countLabel="Attempts"
-                    rows={report.failure_classes}
-                    usageMissing={usageMissing}
-                  />
-                )}
-              </Section>
-            </>
-          )}
-        </WorkspacePageContainer>
-      </ScrollArea>
-    </div>
-  );
-}
-
-type Lane = ReportsReport["analytics"]["lane_residence"]["lanes"][number];
-function LaneBands({
-  lanes,
-  view,
-}: {
-  lanes: readonly Lane[];
-  view: ReportsTimeView;
-}): React.ReactElement {
-  const system = lanes.filter((l) => l.group === "system");
-  const held = lanes.filter((l) => l.group === "held");
-  const total = lanes.reduce((s, l) => s + l.seconds, 0);
-  return (
-    <div className="flex flex-col gap-3">
-      {[
-        { label: "Detent controls", lanes: system },
-        { label: "Held by people", lanes: held },
-      ].map((group) => {
-        const sum = group.lanes.reduce((s, l) => s + l.seconds, 0);
-        let x = 0;
-        const denominator = view === "lead" ? total : sum;
-        return (
-          <div key={group.label} className="flex flex-col gap-2">
-            <div className="flex justify-between text-xs">
-              <span>{group.label}</span>
-              <span className="tabular-nums">{hours(sum)}</span>
-            </div>
-            <svg
-              viewBox="0 0 100 8"
-              className="h-6 w-full"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label={`${group.label}: ${hours(sum)}`}
-            >
-              <rect width="100" height="8" fill="var(--muted)" />
-              {group.lanes.map((lane) => {
-                const width =
-                  denominator > 0 ? (100 * lane.seconds) / denominator : 0;
-                const start = x;
-                x += width;
-                return (
-                  <rect
-                    key={lane.lane}
-                    x={start}
-                    width={width}
-                    height="8"
-                    fill={laneColor(lane.lane)}
-                  >
-                    <title>
-                      {lane.lane}: {hours(lane.seconds)}
-                    </title>
-                  </rect>
-                );
-              })}
-            </svg>
-            <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
-              {group.lanes.map((lane) => (
-                <span key={lane.lane} className="flex items-center gap-1.5">
-                  <span
-                    className="size-2 shrink-0"
-                    style={{ background: laneColor(lane.lane) }}
-                  />
-                  {lane.lane}{" "}
-                  <span className="tabular-nums text-muted-foreground">
-                    {hours(lane.seconds)}
-                  </span>
-                </span>
+      <Tabs value={tab} onValueChange={(value) => isReportTab(value) && onNavigate(value, search)} className="min-h-0 flex-1">
+        <div className="flex items-center gap-2 ps-(--workspace-gutter-start) pe-(--workspace-gutter-end) pt-3 sm:hidden">
+          <Select value={search.range} onValueChange={setRange}>
+            <SelectTrigger aria-label="Report range" className="w-auto min-w-0">
+              <SelectValue>{range.long}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="start" alignItemWithTrigger={false}>
+              {REPORT_RANGES.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.long}
+                </SelectItem>
               ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-function LaneQuantiles({
-  lanes,
-}: {
-  lanes: readonly Lane[];
-}): React.ReactElement {
-  const max = Math.max(1, ...lanes.map((l) => l.p90_seconds));
-  return (
-    <div className="grid gap-2 pt-2">
-      {lanes.map((lane) => (
-        <div
-          key={lane.lane}
-          className="grid grid-cols-[6rem_minmax(0,1fr)_7rem] items-center gap-2 text-xs"
-        >
-          <span>{lane.lane}</span>
-          <svg
-            viewBox="0 0 100 6"
-            className="h-4 w-full"
-            preserveAspectRatio="none"
-            role="img"
-            aria-label={`${lane.lane} p50 ${hours(lane.p50_seconds)} to p90 ${hours(lane.p90_seconds)}`}
-          >
-            <rect
-              width={(100 * lane.p90_seconds) / max}
-              height="6"
-              fill={laneColor(lane.lane)}
-              opacity="0.3"
-            />
-            <rect
-              width={(100 * lane.p50_seconds) / max}
-              height="6"
-              fill={laneColor(lane.lane)}
-            />
-          </svg>
-          <span className="whitespace-nowrap text-right tabular-nums">
-            {compactDuration(lane.p50_seconds)} →{" "}
-            {compactDuration(lane.p90_seconds)}
-          </span>
+            </SelectPopup>
+          </Select>
+          <Button variant="outline" disabled aria-label="Filters: not available yet">
+            <ListFilterIcon aria-hidden />
+            Filters
+          </Button>
+          <Button size="icon" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh} className="ml-auto">
+            <RefreshIcon refreshing={pending} />
+          </Button>
         </div>
-      ))}
-    </div>
-  );
-}
-function ThroughputChart({
-  buckets,
-  failedUnavailable,
-  doneUnavailable,
-}: {
-  buckets: ReportsReport["throughput"];
-  failedUnavailable: boolean;
-  doneUnavailable: boolean;
-}): React.ReactElement {
-  if (buckets.length === 0) return <Missing />;
-  const values = buckets.map((b) => ({
-    ...b,
-    hours: (Date.parse(b.to) - Date.parse(b.from)) / 3600000,
-  }));
-  const max = Math.max(
-    1,
-    ...values.flatMap((b) => [
-      b.done / b.hours,
-      b.failed / b.hours,
-      b.slots ?? 0,
-    ]),
-  );
-  const step = 600 / values.length;
-  const y = (n: number) => 148 - (n / max) * 120;
-  const points = values
-    .map((b, i) =>
-      b.slots === null ? null : `${30 + (i + 0.5) * step},${y(b.slots)}`,
-    )
-    .filter((p) => p !== null)
-    .join(" ");
-  return (
-    <>
-      <svg
-        viewBox="0 0 660 180"
-        className="w-full"
-        role="img"
-        aria-label="Throughput per hour and average slots in use"
-      >
-        <text x="2" y="25" fill="var(--muted-foreground)" fontSize="11">
-          {max.toFixed(1)}
-        </text>
-        <text x="12" y="148" fill="var(--muted-foreground)" fontSize="11">
-          0
-        </text>
-        <line x1="30" y1="148" x2="630" y2="148" stroke="var(--border)" />
-        {values.map((b, i) => (
-          <g key={b.from}>
-            {!doneUnavailable && (
-              <>
-                <rect
-                  x={30 + i * step}
-                  y={y(b.done / b.hours)}
-                  width={Math.max(0.5, step * 0.42)}
-                  height={148 - y(b.done / b.hours)}
-                  fill="var(--success)"
-                >
-                  <title>
-                    {at(b.from)} · {b.done / b.hours} done/h
-                  </title>
-                </rect>
-              </>
-            )}
-            {!failedUnavailable && (
-              <rect
-                x={30 + i * step + step * 0.44}
-                y={y(b.failed / b.hours)}
-                width={Math.max(0.5, step * 0.42)}
-                height={148 - y(b.failed / b.hours)}
-                fill="var(--destructive)"
-              >
-                <title>
-                  {at(b.from)} · {b.failed / b.hours} failed/h
-                </title>
-              </rect>
-            )}
-          </g>
-        ))}
-        <polyline
-          points={points}
-          fill="none"
-          stroke="var(--foreground)"
-          strokeWidth="1.5"
-        />
-        <text x="30" y="173" fill="var(--muted-foreground)" fontSize="11">
-          {at(buckets[0]!.from)}
-        </text>
-        <text
-          x="630"
-          y="173"
-          textAnchor="end"
-          fill="var(--muted-foreground)"
-          fontSize="11"
-        >
-          {at(buckets[buckets.length - 1]!.to)}
-        </text>
-      </svg>
-      <div className="flex flex-wrap gap-4 text-xs">
-        <span className="text-success-foreground">
-          Issues done / h{doneUnavailable ? " · Not recorded" : ""}
-        </span>
-        <span className="text-destructive-foreground">
-          Failed attempts / h{failedUnavailable ? " · Not recorded" : ""}
-        </span>
-        <span>
-          Slots in use
-          {values.every((b) => b.slots === null) ? " · Not recorded" : ""}
-        </span>
-      </div>
-    </>
-  );
-}
-function AgingChart({
-  items,
-}: {
-  items: ReportsReport["analytics"]["lane_residence"]["aging"]["items"];
-}): React.ReactElement {
-  const lanes = [...new Set(items.map((i) => i.lane))];
-  const max = Math.max(24, ...items.map((i) => i.hours));
-  return (
-    <svg
-      viewBox={`0 0 660 ${lanes.length * 30 + 28}`}
-      className="w-full"
-      role="img"
-      aria-label="Open issue ages in current lane"
-    >
-      {lanes.map((lane, i) => (
-        <g key={lane}>
-          <text
-            x="0"
-            y={i * 30 + 19}
-            fontSize="11"
-            fill="var(--muted-foreground)"
-          >
-            {lane}
-          </text>
-          <line
-            x1="100"
-            y1={i * 30 + 15}
-            x2="640"
-            y2={i * 30 + 15}
-            stroke="var(--border)"
-          />
-        </g>
-      ))}
-      {items.map((item) => (
-        <circle
-          key={item.work_item_id}
-          cx={100 + (540 * item.hours) / max}
-          cy={lanes.indexOf(item.lane) * 30 + 15}
-          r="4"
-          fill={
-            item.hours > 24
-              ? "var(--destructive)"
-              : item.lane_p90_hours !== undefined &&
-                  item.hours > item.lane_p90_hours
-                ? "var(--warning)"
-                : laneColor(item.lane)
-          }
-        >
-          <title>
-            {item.work_item_id} · {item.lane} · {item.hours.toFixed(1)} h
-          </title>
-        </circle>
-      ))}
-      <text
-        x="100"
-        y={lanes.length * 30 + 18}
-        fontSize="11"
-        fill="var(--muted-foreground)"
-      >
-        0h
-      </text>
-      <text
-        x="640"
-        y={lanes.length * 30 + 18}
-        textAnchor="end"
-        fontSize="11"
-        fill="var(--muted-foreground)"
-      >
-        {max.toFixed(1)}h
-      </text>
-    </svg>
-  );
-}
-function StageTable({
-  rows,
-  usageMissing,
-}: {
-  rows: ReportsReport["stages"];
-  usageMissing: boolean;
-}): React.ReactElement {
-  if (rows.length === 0)
-    return <Missing>No recorded sessions in this window.</Missing>;
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          {[
-            "Stage / model / effort",
-            "Sessions",
-            "p50",
-            "p90",
-            "Succeeded",
-            "Tokens",
-            "Cached",
-            "Cost",
-            "Cost / issue",
-          ].map((h) => (
-            <TableHead key={h}>{h}</TableHead>
+        <TabsList aria-label="Report sections" className="ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)">
+          {REPORT_TABS.map((item) => (
+            <TabsTab key={item.id} value={item.id}>
+              {item.label}
+            </TabsTab>
           ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => (
-          <TableRow key={`${row.stage}:${row.model}:${row.effort}`}>
-            <TableCell>
-              <div className="min-w-40">
-                {row.stage}
-                {!row.disabled && (
-                  <>
-                    <br />
-                    <span className="text-muted-foreground">
-                      {row.model} · {row.effort}
-                    </span>
-                  </>
-                )}
-              </div>
-            </TableCell>
-            {row.disabled ? (
-              <TableCell colSpan={8}>Disabled by project gates</TableCell>
-            ) : (
-              <>
-                {[
-                  formatCount(row.sessions),
-                  row.duration.count
-                    ? hours(row.duration.p50_seconds)
-                    : UNAVAILABLE,
-                  row.duration.count
-                    ? hours(row.duration.p90_seconds)
-                    : UNAVAILABLE,
-                  percent(
-                    row.sessions ? (100 * row.succeeded) / row.sessions : null,
-                  ),
-                  usageMissing || !row.usage_observed
-                    ? UNAVAILABLE
-                    : formatTokens(row.tokens),
-                  percent(
-                    !usageMissing && row.input > 0
-                      ? (100 * row.cached) / row.input
-                      : null,
-                  ),
-                  usageMissing || !row.usage_observed
-                    ? UNAVAILABLE
-                    : formatUsd(row.cost_usd),
-                  usageMissing || !row.usage_observed || !row.issues
-                    ? UNAVAILABLE
-                    : formatUsd(row.cost_usd / row.issues),
-                ].map((value, i) => (
-                  <TableCell key={i} className="whitespace-nowrap tabular-nums">
-                    {value}
-                  </TableCell>
+        </TabsList>
+        <ScrollArea className="min-h-0 flex-1">
+          <WorkspacePageContainer width="expanded" data-testid="reports-page" className="pt-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div role="group" aria-label="Filters" className="hidden flex-wrap items-center gap-2 sm:flex">
+                {filters.map((name) => (
+                  <Toggle key={name} size="compact" variant="pill-outline" disabled aria-label={`${name} filter: not available yet`}>
+                    {name}
+                  </Toggle>
                 ))}
-              </>
-            )}
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
-
-const CLASS_KINDS: Readonly<
-  Record<string, { label: string; variant: "info" | "warning" | "secondary" }>
-> = {
-  infrastructure: { label: "Infrastructure", variant: "info" },
-  issue: { label: "Issue", variant: "warning" },
-};
-function ClassTable({
-  label,
-  countLabel,
-  rows,
-  usageMissing,
-}: {
-  label: string;
-  countLabel: string;
-  rows: ReportsReport["failure_classes"];
-  usageMissing: boolean;
-}): React.ReactElement {
-  return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>{label}</TableHead>
-          <TableHead>Kind</TableHead>
-          <TableHead className="text-right">{countLabel}</TableHead>
-          <TableHead className="text-right">Issues</TableHead>
-          <TableHead className="text-right">Spend</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => {
-          const kind = CLASS_KINDS[row.kind] ?? {
-            label: "Unknown",
-            variant: "secondary",
-          };
-          return (
-            <TableRow key={row.class}>
-              <TableCell className="whitespace-nowrap">{row.class}</TableCell>
-              <TableCell>
-                <Badge size="sm" variant={kind.variant}>
-                  {kind.label}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-right tabular-nums">
-                {formatCount(row.count)}
-              </TableCell>
-              <TableCell className="text-right tabular-nums">
-                {formatCount(row.issues)}
-              </TableCell>
-              <TableCell className="whitespace-nowrap text-right tabular-nums">
-                {usageMissing ? UNAVAILABLE : formatUsd(row.cost_usd)}
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
-  );
-}
-
-const QUALITY_CAUSES = [
-  ["underspecified_issue", "Underspecified issue"],
-  ["missing_criterion", "Missing criterion"],
-  ["validator_miss", "Validator miss"],
-  ["infrastructure", "Infrastructure"],
-] as const;
-
-export function QualityMetrics({ quality }: {
-  quality: ReportsReport["analytics"]["quality"];
-}): React.ReactElement {
-  return (
-    <Section title="Rework and escapes">
-      {quality === undefined ? <Missing /> : <>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-          <Metric label="Rework rate" value={percent(quality.rework_percent)}
-            detail={`${formatCount(quality.reworked_items)} of ${formatCount(quality.worked_items)} worked items returned before landing`} />
-          <Metric label="Returned by infrastructure" value={formatCount(quality.infrastructure_returns)}
-            detail="Attributed to the runner and excluded from the rework rate" />
-          <Metric label="Escape rate" value={percent(quality.escape_percent)}
-            detail={`${formatCount(quality.escaped_versions)} of ${formatCount(quality.landed_versions)} versions landed in this window`} />
-        </div>
-        <Missing>
-          Escape rate follows the landing cohort through the end of this window.
-          Cause counts follow detection time, including earlier landings.
-          Infrastructure is attributed to the instance and excluded from the escape rate.
-        </Missing>
-        {quality.pending_classification > 0 && <Missing>
-          {formatCount(quality.pending_classification)} escapes await cause classification and are included in the escape rate.
-        </Missing>}
-        <Table>
-          <TableHeader><TableRow>
-            <TableHead>Window start</TableHead>
-            <TableHead className="text-right">Rework rate</TableHead>
-            <TableHead className="text-right">Escape rate</TableHead>
-            {QUALITY_CAUSES.map(([key, label]) => <TableHead key={key} className="text-right">{label}</TableHead>)}
-            <TableHead className="text-right">Awaiting classification</TableHead>
-          </TableRow></TableHeader>
-          <TableBody>
-            {quality.buckets.filter((bucket) => bucket.worked_items > 0 || bucket.landed_versions > 0 || bucket.escapes > 0).map((bucket) => <TableRow key={bucket.from}>
-              <TableCell>{at(bucket.from)}</TableCell>
-              <TableCell className="text-right tabular-nums">{percent(bucket.rework_percent)}</TableCell>
-              <TableCell className="text-right tabular-nums">{percent(bucket.escape_percent)}</TableCell>
-              {QUALITY_CAUSES.map(([key]) => <TableCell key={key} className="text-right tabular-nums">{formatCount(bucket.causes[key] ?? 0)}</TableCell>)}
-              <TableCell className="text-right tabular-nums">{formatCount(bucket.pending_classification)}</TableCell>
-            </TableRow>)}
-            <TableRow>
-              <TableCell>Total in window</TableCell>
-              <TableCell className="text-right tabular-nums">{percent(quality.rework_percent)}</TableCell>
-              <TableCell className="text-right tabular-nums">{percent(quality.escape_percent)}</TableCell>
-              {QUALITY_CAUSES.map(([key]) => <TableCell key={key} className="text-right tabular-nums">{formatCount(quality.causes[key] ?? 0)}</TableCell>)}
-              <TableCell className="text-right tabular-nums">{formatCount(quality.pending_classification)}</TableCell>
-            </TableRow>
-          </TableBody>
-        </Table>
-        {quality.escapes === 0 && <Missing>No recorded escapes in this window.</Missing>}
-      </>}
-    </Section>
+              </div>
+              <span className="flex-1" />
+              {tab === "flow" ? (
+                <ToggleGroup
+                  aria-label="Clock starts"
+                  value={[search.clock]}
+                  onValueChange={(value) => {
+                    if (value[0] === "todo" || value[0] === "created") setSearch({ clock: value[0] });
+                  }}
+                >
+                  <GroupToggle value="todo">From first Todo</GroupToggle>
+                  <GroupToggle value="created">From created</GroupToggle>
+                </ToggleGroup>
+              ) : tab === "failures" ? (
+                <ToggleGroup
+                  aria-label="Failure kind"
+                  value={[search.kind]}
+                  onValueChange={(value) => {
+                    if (value[0] === "all" || value[0] === "infrastructure" || value[0] === "issue") setSearch({ kind: value[0] });
+                  }}
+                >
+                  <GroupToggle value="all">All</GroupToggle>
+                  <GroupToggle value="infrastructure">Infrastructure</GroupToggle>
+                  <GroupToggle value="issue">Issue</GroupToggle>
+                </ToggleGroup>
+              ) : report && tab === "overview" ? (
+                <span className="text-muted-foreground text-xs">{windowLabel(report)}</span>
+              ) : null}
+            </div>
+            <TabsPanel value={tab} className="flex flex-col gap-6">
+              {pending ? (
+                <div role="status" aria-label="Loading reports" className="flex flex-col gap-6">
+                  <Skeleton className="h-24 w-full rounded-xl" />
+                  <Skeleton className="h-64 w-full rounded-xl" />
+                  <Skeleton className="h-44 w-full rounded-xl" />
+                </div>
+              ) : error ? (
+                <p role="status" className="text-muted-foreground text-sm">
+                  {error}
+                </p>
+              ) : !report ? (
+                <p className="text-muted-foreground text-xs">Choose a project in the sidebar to view its reports.</p>
+              ) : tab === "flow" ? (
+                <FlowTab report={report} search={search} />
+              ) : tab === "quality" ? (
+                <QualityTab report={report} search={search} />
+              ) : tab === "cost" ? (
+                <CostTab report={report} search={search} onSearch={setSearch} />
+              ) : tab === "failures" ? (
+                <FailuresTab report={report} search={search} />
+              ) : (
+                <OverviewTab report={report} search={search} onOpenTab={(next) => onNavigate(next, search)} />
+              )}
+            </TabsPanel>
+          </WorkspacePageContainer>
+        </ScrollArea>
+      </Tabs>
+    </div>
   );
 }

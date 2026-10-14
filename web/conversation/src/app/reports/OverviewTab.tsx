@@ -1,0 +1,206 @@
+import React from "react";
+
+import { Chart, ChartLegend, ChartPanel, ProportionBar } from "../../components/ui/chart.tsx";
+import { MetricTile, MetricTileGroup } from "../../components/ui/metric-tile.tsx";
+import type { ReportsReport } from "../../contracts/reports.ts";
+import { formatCount, formatUsd } from "../usage/usageFormat.ts";
+import {
+  bucketCategories,
+  countDelta,
+  duration,
+  durationDelta,
+  HELD_LANES,
+  hoursLabel,
+  laneColor,
+  percentText,
+  pointsDelta,
+  rangeOption,
+  reportBuckets,
+  type ReportsSearch,
+  type ReportTab,
+  usdDelta,
+} from "./model.ts";
+import { Dash, IssueLink, LaneBadge, Muted, TabLink } from "./parts.tsx";
+
+export function costPerShipped(cost: number | undefined, done: number): number | null {
+  return cost === undefined || done <= 0 ? null : cost / done;
+}
+
+export function stuckItems(report: ReportsReport) {
+  return report.analytics.lane_residence.aging.items.toSorted((a, b) => b.hours - a.hours);
+}
+
+export function ageTone(item: { hours: number; lane_p90_hours?: number | undefined }): string {
+  if (item.hours > 24) return "text-destructive-foreground";
+  if (item.lane_p90_hours !== undefined && item.hours > item.lane_p90_hours) return "text-warning-foreground";
+  return "text-muted-foreground";
+}
+
+export function OverviewTab({
+  report,
+  search,
+  onOpenTab,
+}: {
+  readonly report: ReportsReport;
+  readonly search: ReportsSearch;
+  readonly onOpenTab: (tab: ReportTab) => void;
+}): React.ReactElement {
+  const compare = search.compare;
+  const prior = rangeOption(search.range).prior;
+  const usageMissing = report.unavailable.includes("recorded_usage");
+  const residenceMissing = report.unavailable.includes("lane_residence_and_unclaimed_waits_unavailable");
+  const completion = report.completion;
+  const previous = report.previous.partial ? undefined : report.previous;
+  const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
+  const cost = usageMissing ? undefined : report.cost_usd;
+  const perShipped = costPerShipped(cost, completion.done);
+  const priorPerShipped = previous ? costPerShipped(report.previous_cost_usd, previous.done) : null;
+  const stuck = stuckItems(report);
+  const stuckOver = stuck.filter((item) => item.hours > 24).length;
+  const buckets = reportBuckets(report);
+  const categories = bucketCategories(buckets);
+  const hasPrior = buckets.some((bucket) => bucket.prior_done !== undefined);
+  const shippedSpend = report.spend.filter((item) => item.shipped === true).slice(0, 5);
+  const shippedKnown = report.spend.some((item) => item.shipped !== undefined);
+  const lanes = completion.lanes.filter((lane) => lane.group !== "excluded" && lane.lane !== "Backlog" && lane.lane !== "Triage");
+  const laneSeconds = (name: string) => lanes.filter((lane) => lane.lane === name).reduce((sum, lane) => sum + lane.seconds, 0);
+  const segments = [
+    { label: "Waiting in Todo", value: laneSeconds("Todo"), color: laneColor("Todo") },
+    { label: "In Progress", value: laneSeconds("In Progress"), color: laneColor("In Progress") },
+    { label: "Rework", value: laneSeconds("Rework"), color: laneColor("Rework") },
+    { label: "Merging", value: laneSeconds("Merging"), color: laneColor("Merging") },
+    {
+      label: "Held by people",
+      value: lanes.filter((lane) => HELD_LANES.has(lane.lane)).reduce((sum, lane) => sum + lane.seconds, 0),
+      color: laneColor("Held"),
+    },
+  ];
+  const segmentTotal = segments.reduce((sum, segment) => sum + segment.value, 0);
+  const share = (value: number) => (segmentTotal > 0 ? percentText((100 * value) / segmentTotal) : "—");
+  const lever = segments.toSorted((a, b) => b.value - a.value)[0];
+  const todo = completion.lanes.find((lane) => lane.lane === "Todo");
+  return (
+    <div className="flex flex-col gap-6">
+      <MetricTileGroup aria-label="Headline metrics" className="lg:grid-cols-5">
+        <MetricTile
+          label="Shipped"
+          value={residenceMissing ? null : formatCount(completion.done)}
+          delta={compare ? (residenceMissing ? null : countDelta(completion.done, previous?.done, true, ` vs ${prior}`)) : undefined}
+          detail={report.cancelled === undefined ? <>Cancelled <Dash /></> : `plus ${formatCount(report.cancelled)} cancelled`}
+        />
+        <MetricTile
+          label="Cycle time p50"
+          value={residenceMissing || completion.system.count === 0 ? null : duration(completion.system.p50_seconds)}
+          delta={compare ? durationDelta(completion.system.p50_seconds, previous?.system.p50_seconds) : undefined}
+          detail={completion.system.count === 0 ? "Todo → Done" : `p90 ${duration(completion.system.p90_seconds)} · Todo → Done`}
+        />
+        <MetricTile
+          label="Landed first try"
+          value={firstTry === null ? null : percentText(firstTry)}
+          delta={compare ? pointsDelta(firstTry, report.previous_first_try_percent) : undefined}
+          detail={`of ${formatCount(completion.done)} shipped`}
+        />
+        <MetricTile
+          label="Cost per shipped issue"
+          value={perShipped === null ? null : formatUsd(perShipped)}
+          delta={compare ? usdDelta(perShipped, priorPerShipped) : undefined}
+          detail={cost === undefined ? undefined : `${formatUsd(cost)} total`}
+        />
+        <MetricTile
+          label="Stuck over 24h"
+          value={residenceMissing ? null : formatCount(stuckOver)}
+          delta={compare ? null : undefined}
+          detail="open, past lane p90"
+        />
+      </MetricTileGroup>
+
+      <ChartPanel
+        title="Shipped per day"
+        actions={
+          <ChartLegend
+            items={[
+              { label: "Shipped", color: "var(--success)" },
+              { label: "Failed attempts", color: "var(--warning)" },
+              ...(compare && hasPrior ? [{ label: rangeOption(search.range).prior.replace(/^p/, "P"), color: "var(--muted-foreground)", dashed: true }] : []),
+            ]}
+          />
+        }
+        footnote={`Hover a day for counts. Bucket: day for 7d+, hour for 24h.${residenceMissing ? " Shipped counts are not recorded." : ""}`}
+      >
+        <Chart
+          ariaLabel="Shipped issues and failed attempts per bucket"
+          categories={categories}
+          height={260}
+          series={[
+            { id: "shipped", label: "Shipped", color: "var(--success)", kind: "bar", values: buckets.map((bucket) => (residenceMissing ? null : bucket.done)) },
+            { id: "failed", label: "Failed attempts", color: "var(--warning)", kind: "bar", values: buckets.map((bucket) => bucket.failed) },
+            ...(compare && hasPrior
+              ? [{ id: "prior", label: "Prior period", color: "var(--muted-foreground)", kind: "line" as const, dashed: true, values: buckets.map((bucket) => bucket.prior_done ?? null) }]
+              : []),
+          ]}
+        />
+      </ChartPanel>
+
+      <div className="grid min-w-0 gap-6 lg:grid-cols-2">
+        <ChartPanel title="Where cycle time goes" actions={<TabLink tab="flow" onOpen={onOpenTab}>Open Flow</TabLink>}>
+          {residenceMissing || segmentTotal === 0 ? (
+            <Muted>
+              <Dash /> {residenceMissing ? "Lane residence is not recorded." : "No completed issues in this range."}
+            </Muted>
+          ) : (
+            <>
+              <ProportionBar
+                ariaLabel={segments.map((segment) => `${segment.label} ${share(segment.value)}`).join(", ")}
+                segments={segments}
+              />
+              <ChartLegend items={segments.map((segment) => ({ label: `${segment.label} ${share(segment.value)}`, color: segment.color }))} />
+              {lever && lever.label === "Waiting in Todo" && todo ? (
+                <Muted>Biggest lever: Todo wait. Median issue waits {duration(todo.p50_seconds)} for a slot.</Muted>
+              ) : lever ? (
+                <Muted>Biggest lever: {lever.label}, {share(lever.value)} of cycle time.</Muted>
+              ) : null}
+            </>
+          )}
+        </ChartPanel>
+        <ChartPanel title="Most expensive shipped issues" actions={<TabLink tab="cost" onOpen={onOpenTab}>Open Cost</TabLink>}>
+          {usageMissing || !shippedKnown ? (
+            <Muted>
+              <Dash /> Spend by shipped issue is not recorded.
+            </Muted>
+          ) : shippedSpend.length === 0 ? (
+            <Muted>No shipped issue spend in this range.</Muted>
+          ) : (
+            <div className="flex flex-col">
+              {shippedSpend.map((item) => (
+                <div key={item.work_item_id} className="flex min-w-0 items-center gap-3 border-border border-t py-2.5 text-sm">
+                  <IssueLink id={item.work_item_id} report={report} className="flex-1" />
+                  <span className="whitespace-nowrap tabular-nums">{formatUsd(item.cost_usd)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </ChartPanel>
+      </div>
+
+      <ChartPanel title="Stuck right now" actions={<TabLink tab="flow" onOpen={onOpenTab}>All aging work</TabLink>}>
+        {residenceMissing ? (
+          <Muted>
+            <Dash /> Aging work is not recorded.
+          </Muted>
+        ) : stuck.length === 0 ? (
+          <Muted>No open work in progress.</Muted>
+        ) : (
+          <div className="flex flex-col">
+            {stuck.slice(0, 4).map((item) => (
+              <div key={item.work_item_id} className="flex min-w-0 items-center gap-3 border-border border-t py-2.5 text-sm">
+                <LaneBadge lane={item.lane} />
+                <IssueLink id={item.work_item_id} report={report} className="flex-1" />
+                <span className={`whitespace-nowrap tabular-nums ${ageTone(item)}`}>{hoursLabel(item.hours)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </ChartPanel>
+    </div>
+  );
+}

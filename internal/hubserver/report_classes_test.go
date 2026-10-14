@@ -1,7 +1,7 @@
 package hubserver
 
 import (
-	"slices"
+	"reflect"
 	"testing"
 	"time"
 
@@ -71,7 +71,7 @@ func TestReportFailureClassTotals(t *testing.T) {
 		{Class: "Conflict on landing", Kind: reportKindIssue, Count: 1, Issues: 1, Cost: 5},
 		{Class: "Not classified", Kind: reportKindUnknown, Count: 1, Issues: 1, Cost: 1},
 	}
-	if !slices.Equal(got, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("failure classes = %+v, want %+v", got, want)
 	}
 }
@@ -104,7 +104,7 @@ func TestReportReworkClassTotals(t *testing.T) {
 		{Class: "Conflict on landing", Kind: reportKindIssue, Count: 2, Issues: 2, Cost: 5},
 		{Class: "Landing refused: protected base", Kind: reportKindInfrastructure, Count: 1, Issues: 1, Cost: 5},
 	}
-	if !slices.Equal(got, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("rework classes = %+v, want %+v", got, want)
 	}
 	if quality.ReworkedItems != 3 || quality.InfraReturns != 1 {

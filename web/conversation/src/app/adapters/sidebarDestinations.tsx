@@ -281,7 +281,7 @@ export function SidebarDestinations(): React.ReactElement | null {
                     {findings.length}
                   </Badge>
                 ) : undefined}
-                active={row.to !== null && navigation.activePath === row.to}
+                active={row.to !== null && (navigation.activePath === row.to || navigation.activePath.startsWith(`${row.to}/`))}
                 onClick={row.to === null ? undefined : () => navigate(row.to as string)}
                 onIntent={row.to === null ? undefined : () => navigation.onPrefetch?.(row.to as string)}
               />

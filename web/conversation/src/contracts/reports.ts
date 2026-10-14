@@ -57,10 +57,33 @@ const ClassTotal = Schema.Struct({
   count: Schema.Number,
   issues: Schema.Number,
   cost_usd: Schema.Number,
+  work_items: Schema.optional(Schema.Array(Schema.String)),
+  first_seen: Schema.optional(Schema.String),
+  last_seen: Schema.optional(Schema.String),
+});
+const SeriesBucket = Schema.Struct({
+  from: Schema.String,
+  to: Schema.String,
+  done: Schema.Number,
+  prior_done: Schema.optional(Schema.Number),
+  failed: Schema.Number,
+  failed_infrastructure: Schema.Number,
+  cycle: Duration,
+  lead: Duration,
+  lane_seconds: Schema.Record(Schema.String, Schema.Number),
+  stage_cost: Schema.Record(Schema.String, Schema.Number),
+  not_shipped_cost: Schema.Number,
+  rework_classes: Schema.Record(Schema.String, Schema.Number),
 });
 export const ReportsReport = Schema.Struct({
   rework_classes: Schema.Array(ClassTotal),
   failure_classes: Schema.Array(ClassTotal),
+  series: Schema.optional(Schema.Array(SeriesBucket)),
+  cancelled: Schema.optional(Schema.Number),
+  previous_cost_usd: Schema.optional(Schema.Number),
+  previous_first_try_percent: Schema.optional(Schema.NullOr(Schema.Number)),
+  previous_failed: Schema.optional(Schema.Number),
+  failed_issues: Schema.optional(Schema.Number),
   completion: Completion,
   previous: Completion,
   tokens: Schema.Number,
@@ -99,6 +122,9 @@ export const ReportsReport = Schema.Struct({
       work_item_id: Schema.String,
       title: Schema.String,
       cost_usd: Schema.Number,
+      attempts: Schema.optional(Schema.Number),
+      shipped: Schema.optional(Schema.Boolean),
+      state: Schema.optional(Schema.String),
     }),
   ),
   throughput: Schema.Array(
@@ -133,6 +159,7 @@ export const ReportsReport = Schema.Struct({
           entered_at: Schema.String,
           hours: Schema.Number,
           lane_p90_hours: Schema.optional(Schema.Number),
+          since_todo_hours: Schema.optional(Schema.Number),
         }),
       ),
       rework_causes: Schema.Array(
@@ -160,5 +187,5 @@ export const ReportsReport = Schema.Struct({
   }),
 });
 export type ReportsReport = typeof ReportsReport.Type;
-export type ReportsRange = "24h" | "48h" | "7d" | "30d";
+export type ReportsRange = "24h" | "48h" | "7d" | "30d" | "90d";
 export type ReportsTimeView = "system" | "lead";
