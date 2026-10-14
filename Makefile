@@ -163,12 +163,32 @@ COVER_SHARD ?= 1/1
 
 test-cover:
 	@mkdir -p tmp
-	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out
+	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out tmp/hub-{a,b,c}-cover.raw.out tmp/hub-cover.raw.out tmp/packages-cover.raw.out
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
 		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
 	fi
-	@packages="$$(bash scripts/cover-packages.sh $(COVER_SHARD))" && \
-	$(GO_TEST) -timeout=20m -coverprofile=tmp/rest-cover.raw.out $$packages -count=1
+	@set -e; packages="$$(bash scripts/cover-packages.sh $(COVER_SHARD))"; \
+	hub=; remaining=; profiles=; \
+	for package in $$packages; do \
+		case "$$package" in \
+			github.com/digitaldrywood/detent/internal/hubserver) hub=1 ;; \
+			*) remaining="$$remaining $$package" ;; \
+		esac; \
+	done; \
+	if [ -n "$$hub" ]; then \
+		$(GO_TEST) -coverprofile=tmp/hub-a-cover.raw.out ./internal/hubserver -count=1 -run '^Test[A-GI-O]'; \
+		$(GO_TEST) -coverprofile=tmp/hub-b-cover.raw.out ./internal/hubserver -count=1 -run '^Test[HW]'; \
+		$(GO_TEST) -coverprofile=tmp/hub-c-cover.raw.out ./internal/hubserver -count=1 -skip '^Test[A-GI-O]|^Test[HW]'; \
+		go run ./tools/covermerge -union tmp/hub-a-cover.raw.out tmp/hub-b-cover.raw.out tmp/hub-c-cover.raw.out > tmp/hub-cover.raw.out; \
+		profiles=tmp/hub-cover.raw.out; \
+	fi; \
+	if [ -n "$$remaining" ]; then \
+		$(GO_TEST) -coverprofile=tmp/packages-cover.raw.out $$remaining -count=1; \
+		profiles="$$profiles tmp/packages-cover.raw.out"; \
+	fi; \
+	set -- $$profiles; \
+	if [ "$$#" -eq 1 ]; then cp "$$1" tmp/rest-cover.raw.out; \
+	else go run ./tools/covermerge "$$@" > tmp/rest-cover.raw.out; fi
 	# Keep the web timing check isolated and coverage profiles disjoint.
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
 		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web -count=1 && \
