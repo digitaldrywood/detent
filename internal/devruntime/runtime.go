@@ -626,6 +626,8 @@ func defaultIssues() []connector.Issue {
 				Number:                 9001,
 				URL:                    "https://github.test/example-org/example-project/pull/9001",
 				BranchName:             "detent/mock-issue-autopromote",
+				BaseSHA:                "isolated-mock-base",
+				HeadSHA:                "isolated-mock-head",
 				State:                  "OPEN",
 				CIStatus:               "success",
 				CodexReviewState:       "COMMENTED",
