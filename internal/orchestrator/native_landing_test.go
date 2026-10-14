@@ -833,6 +833,6 @@ type nativeLandingReasonConnector struct {
 }
 
 func (c *nativeLandingReasonConnector) UpdateIssueState(ctx context.Context, id, state string) error {
-	c.reasonDetail = connector.LaneTransitionReason(ctx)
+	c.reasonDetail = connector.LaneTransitionReasonDetail(ctx)
 	return c.nativeWorkflowConnector.UpdateIssueState(ctx, id, state)
 }

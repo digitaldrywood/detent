@@ -98,7 +98,7 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	wait.SessionID = running.SessionID
 	detail := fmt.Sprintf("%s (source: %s, work attempt: %d, session: %s, kind: %s)", wait.Question, wait.Source, wait.WorkAttemptID, wait.SessionID, wait.Kind)
 	report, _ := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
-	detail = nativeCompletionReason(detail, report, event.Result.FinalMessage)
+	detail = nativeCompletionReason(detail, report, event.Result.FinalMessage, nil)
 	remedy := "Record direction for this question, then move the issue to Rework: " + wait.Question
 	if wait.Kind == "implementation_permission" {
 		remedy = "The worker requested implementation permission. Check the assigned scope and record direction, preserving explicit approval gates, then move the issue to Rework: " + wait.Question

@@ -49,7 +49,7 @@ func TestLaneWritePersistsBeforeTrackerAndRetainsUncertainIdentity(t *testing.T)
 				if wantReason == "" {
 					wantReason = "test transition"
 				}
-				if reason := connector.LaneTransitionReason(ctx); reason != wantReason {
+				if reason := connector.LaneTransitionReasonDetail(ctx); reason != wantReason {
 					t.Fatalf("tracker lost lane ledger reason: %q", reason)
 				}
 				return tt.mutationErr

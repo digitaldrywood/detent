@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -512,7 +513,11 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 	if issue.State == state {
 		return nil
 	}
-	request := tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress", ReasonDetail: connector.LaneTransitionReason(ctx)}
+	transitionReason := "worker_progress"
+	if reason := connector.LaneTransitionReason(ctx); reason == string(gate.ReasonValidatorRework) {
+		transitionReason = reason
+	}
+	request := tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: transitionReason, ReasonDetail: connector.LaneTransitionReasonDetail(ctx)}
 	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
 	if reason == "recorded_blocker_recovery" || reason == "dependency_auto_unblock" {
 		attempts, history, readErr := c.recordedBlockerContext(ctx, issue.WorkItemID)

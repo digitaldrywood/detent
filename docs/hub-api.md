@@ -1090,7 +1090,8 @@ Titles are limited to 500 bytes, bodies to 256 KiB, comments to 64 KiB, and requ
 to 1 MiB. There are at most 100 labels and 100 assignees, each at most 200 bytes;
 priority ranges from 0 (urgent) to 3 (low). Empty label/assignee arrays clear them.
 Unknown request fields and unsupported query parameters fail validation.
-Workflow reasons are `user_requested`, `worker_progress` and `dependency_ready`.
+Workflow reasons are `user_requested`, `worker_progress`, `validator_rework` and
+`dependency_ready`.
 Workflow mutations may include `reason_detail`, bounded to 8 KiB of UTF-8 text;
 the Hub preserves it in `workflow.transitioned` history. Orchestrator lane writes
 forward the lane ledger's reason as readable text through this field.
