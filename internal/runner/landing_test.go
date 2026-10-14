@@ -269,6 +269,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			}
 			publishedBranch := sourceBranch
 			var operations []string
+			reviewThreadReads := 0
 			originalClient := http.DefaultClient
 			http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
 				response := ""
@@ -277,6 +278,14 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 					return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"API rate limit exceeded"}`))}, nil
 				}
 				if req.URL.Path == "/graphql" {
+					query, err := io.ReadAll(req.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if bytes.Contains(query, []byte("NativeLandingReviewThreads")) {
+						reviewThreadReads++
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}}`))}, nil
+					}
 					return workerGitHubPrincipalResponse(), nil
 				}
 				operations = append(operations, req.Method)
@@ -331,6 +340,9 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			}
 			if external && strings.Join(operations, ",") != "GET,GET,PUT" || !external && publishedBranch == code.Branch {
 				t.Fatalf("landing used wrong publication owner: %s, %v", publishedBranch, operations)
+			}
+			if (reviewThreadReads > 0) != external {
+				t.Fatalf("unresolved review conversation reads = %d, want reads only for an external PR", reviewThreadReads)
 			}
 			if native {
 				if len(operations) != 0 || result.GitHubScope != nil || result.NativeLanding.Path != "clean_push" || result.NativeLanding.Gate != nil || strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/main")) != result.NativeLanding.MergeSHA {
