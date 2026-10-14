@@ -1,0 +1,269 @@
+package templates
+
+import (
+	"strconv"
+
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/primitives"
+)
+
+// FleetPage is the secondary ops view: agent activity hero above the fold,
+// then figures, PR pipeline lanes, and three quiet metric cards. Trends
+// beyond the immediate window live on Reports.
+templ FleetPage(data DashboardData) {
+	@AppShell(FleetShellDataFromDashboard(data), boardScopeSelect(data)) {
+		<main class="flex min-h-0 min-w-0 flex-1 flex-col">
+			<div
+				id="snapshot"
+				class="flex min-h-0 min-w-0 flex-1 flex-col gap-4.5 overflow-y-auto overflow-x-hidden px-5 py-4.5"
+				sse-swap="snapshot"
+				hx-swap="morph:innerHTML"
+				data-preserve-scroll="fleet-scroll"
+			>
+				@FleetSnapshotV2(data)
+			</div>
+		</main>
+	}
+}
+
+// FleetSnapshotV2 is the morph target streamed on SSE ticks for /fleet.
+templ FleetSnapshotV2(data DashboardData) {
+	@updatePendingBanner(data.Snapshot, "")
+	if data.RunnerFleetEnabled {
+		<div class="flex flex-none items-center justify-between gap-3 rounded-card border border-line bg-surface px-3 py-2">
+			<span class="text-xs text-sec">Runner health, routing and shared host capacity</span>
+			<a class="text-xs font-semibold text-accent" href="/fleet/runners">Runners</a>
+		</div>
+	}
+	if boardFirstRun(data) {
+		@primitives.FirstRun("Connect a repository to start orchestrating.", "Add project", "/settings", "projects are defined in the global config")
+	} else if !snapshotCarriesData(data) {
+		if snapshotDegraded(data.Snapshot) {
+			<div class="flex-none px-5 pt-4">
+				@snapshotReadiness(data.Snapshot)
+			</div>
+		} else {
+			@primitives.SkeletonPanel(2)
+			@primitives.SkeletonLanes(3)
+		}
+	} else {
+		@fleetSnapshotBody(data)
+	}
+}
+
+templ fleetSnapshotBody(data DashboardData) {
+	{{ view := fleetViewFromDashboard(data) }}
+	if len(view.Exceptions) > 0 {
+		<div id="fleet-exceptions" class="flex-none">
+			@primitives.ExceptionStrip(view.Exceptions)
+		</div>
+	} else {
+		<div id="fleet-all-clear" class="flex-none [&>p]:min-w-0 [&>p]:flex-wrap">
+			@primitives.AllClear(view.AllClear)
+		</div>
+	}
+	@AgentActivityPanel(view.Agents, view.AgentCount, view.AgentPools, runtimeCountComplete(data.Snapshot))
+	<div id="fleet-figures" class="flex-none">
+		@primitives.FigureRow(view.Figures) {
+			@primitives.MonoFigure("fig-tps", view.TPS)
+			@primitives.MonoFigure("fig-spend", view.Spend)
+			@primitives.MonoFigure("fig-uptime", view.Uptime)
+		}
+	</div>
+	<div id="fleet-pr-pipeline" class="flex flex-none flex-col gap-2.5">
+		<div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+			<h2 class="text-sm font-semibold text-text">PR pipeline</h2>
+			if view.Merge.Available {
+				<div class="flex min-w-0 flex-wrap items-center gap-3 font-mono text-2xs text-sec tabular-nums" data-merge-queue-summary>
+					<span data-merge-queue-depth>Depth <strong class="font-semibold text-text">{ view.Merge.Depth }</strong></span>
+					<span data-merge-queue-eta>Drain ETA <strong class="font-semibold text-text">{ view.Merge.DrainETA }</strong></span>
+				</div>
+			}
+		</div>
+		<div class="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-3">
+			for _, lane := range view.PRLanes {
+				<section id={ lane.ID } class="flex h-48 min-w-0 flex-col overflow-hidden rounded-card border border-line bg-surface">
+					<header class="flex flex-none items-baseline gap-1.5 border-b border-line px-3 py-2">
+						<h3 class="text-xs font-semibold text-text">{ lane.Title }</h3>
+						<span class="font-mono text-2xs font-medium text-sec tabular-nums">{ lane.Count }</span>
+					</header>
+					<div class="dt-lane-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden p-2" data-preserve-scroll={ lane.ID + "-scroll" }>
+						if len(lane.Cards) == 0 {
+							@primitives.EmptyLine(lane.Empty)
+						}
+						for _, card := range lane.Cards {
+							<article id={ card.DomID } class="flex flex-none flex-col gap-1 rounded-card border border-line bg-elev px-3 py-2.5">
+								<div class="flex min-w-0 items-center gap-2 font-mono text-2xs font-medium text-sec">
+									@primitives.TrackerReferenceLink(card.Ref, card.URL, "flex-none max-w-24 truncate text-text")
+									<span class="min-w-16 truncate">{ card.Project }</span>
+									<span class="flex-1"></span>
+									if card.Meta != "" {
+										<span class="flex-none whitespace-nowrap tabular-nums">{ card.Meta }</span>
+									}
+								</div>
+								<div class="line-clamp-2 text-xs text-text">{ card.Title }</div>
+								if card.Status != "" {
+									<div class="truncate font-mono text-2xs font-medium text-accent">{ card.Status }</div>
+								}
+							</article>
+						}
+					</div>
+				</section>
+			}
+		</div>
+	</div>
+	@fleetMetricCards(view.Metrics)
+	@concurrencyCard(data.Snapshot.Concurrency)
+}
+
+// AgentActivityPanel is the hero: one row per live agent, shared between
+// Fleet and the project Overview tab so the composition never drifts.
+templ AgentActivityPanel(agents []fleetAgentRow, count string, pools []fleetAgentPool, runtimeComplete bool) {
+	@primitives.Panel(primitives.PanelProps{ID: "agent-activity", Title: "Agent activity", Count: count, Live: len(agents) > 0, Class: "flex-none"}) {
+		if len(pools) > 0 && !(len(pools) == 1 && pools[0].Name == "default" && !pools[0].Saturated && !pools[0].Draining) {
+			<div id="agent-pool-capacity" class="flex flex-none flex-wrap items-center gap-2 border-b border-line px-4 py-2" data-agent-pool-capacity>
+				<span class="mr-0.5 text-2xs font-medium text-dim" data-pool-capacity-label>Pool capacity</span>
+				for _, pool := range pools {
+					<div
+						id={ pool.ID }
+						class={ fleetAgentPoolClass(pool) }
+						data-agent-pool={ pool.Name }
+						data-pool-saturated={ strconv.FormatBool(pool.Saturated) }
+						aria-label={ pool.Name + " pool, " + pool.Usage + " capacity used" }
+					>
+						@primitives.StatusDot(pool.StatusKind, false)
+						<span class="truncate" data-pool-name>{ pool.Name }</span>
+						<span class="text-text" data-pool-usage>{ pool.Usage }</span>
+						if pool.Draining {
+							<span data-pool-capacity-status>Draining</span>
+						} else if pool.Reclaiming {
+							<span data-pool-capacity-status>Yielding borrowed capacity</span>
+						} else if pool.Saturated {
+							<span data-pool-capacity-status>At capacity</span>
+						}
+					</div>
+				}
+			</div>
+		}
+		if len(agents) == 0 {
+			if runtimeComplete {
+				@primitives.EmptyLine("All agents idle")
+			} else {
+				@primitives.EmptyLine("Runtime state is initializing")
+			}
+		}
+		for i, agent := range agents {
+			<div
+				id={ agent.ID }
+				class={ fleetAgentRowClass(i == len(agents)-1, agent.StopPath != "") }
+				data-fleet-agent-row
+			>
+				<div class="flex min-w-0 flex-col gap-1">
+					<div class="flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs font-medium text-sec md:flex-nowrap">
+						@primitives.StatusDot(primitives.KindOK, true)
+						<span class="min-w-0 break-words md:min-w-20 md:truncate" data-agent-repo>{ agent.Repo }</span>
+						<span class="flex-none" data-agent-issue>
+							@primitives.TrackerReferenceLink(agent.Number, agent.URL, "text-text md:max-w-32 md:truncate")
+						</span>
+					</div>
+					<div class="break-words text-sm font-medium text-text md:truncate">{ agent.Title }</div>
+				</div>
+				<div class="flex items-center gap-2 font-mono text-xs text-sec tabular-nums md:hidden">
+					<span data-agent-elapsed>{ agent.Elapsed }</span>
+					<span aria-hidden="true">·</span>
+					<span data-agent-telemetry>{ agent.Telemetry }</span>
+				</div>
+				<div class="hidden font-mono text-xs text-sec tabular-nums md:block">{ agent.Elapsed }</div>
+				<div class="flex min-w-0 items-center gap-1.5 text-xs text-info">
+					@primitives.StatusDot(primitives.KindInfo, false)
+					<span class="break-words md:truncate" data-agent-stage>{ agent.Stage }</span>
+				</div>
+				<div
+					class="h-1 overflow-hidden rounded-xs bg-line"
+					if agent.ProgressTitle != "" {
+						title={ agent.ProgressTitle }
+					}
+				>
+					if agent.Progress > 0 {
+						<div class={ contextPressureMeterClass(agent.ProgressKind) } style={ fleetProgressStyle(agent.Progress) }></div>
+					}
+				</div>
+				<div class="hidden text-right font-mono text-xs text-sec tabular-nums md:block">{ agent.Telemetry }</div>
+				if agent.StopPath != "" {
+					<div class="justify-self-start md:justify-self-end">
+						@dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}) {
+							<button
+								type="button"
+								class="inline-flex size-9 items-center justify-center rounded-md border border-err/40 text-err hover:bg-err/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-err"
+								hx-get={ agent.StopPath }
+								hx-target={ kanbanDialogTargetSelector() }
+								hx-swap="innerHTML"
+								aria-label={ "Stop run and route item for " + agent.Repo + agent.Number }
+								title="Stop run and route item"
+							>
+								@icon.CircleStop(icon.Props{Class: "size-4"})
+							</button>
+						}
+					</div>
+				}
+			</div>
+		}
+	}
+}
+
+// fleetMetricCards renders the three quiet metric cards.
+templ fleetMetricCards(metrics fleetMetrics) {
+	<div id="fleet-metrics" class="grid min-w-0 flex-none grid-cols-1 gap-3 md:grid-cols-3">
+		<section id="metric-spend" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">
+			<div class="flex items-baseline justify-between gap-2">
+				<span class="text-xs text-sec">Notional USD · today</span>
+				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ metrics.SpendValue }</span>
+			</div>
+			if metrics.HasSpend {
+				<div class="mt-2 h-1 overflow-hidden rounded-xs bg-line" title={ metrics.SpendTitle }>
+					<div class={ fleetMeterClass(metrics.SpendWarn) } style={ fleetProgressStyle(metrics.SpendPct) }></div>
+				</div>
+			}
+			if metrics.SpendNote != "" {
+				<p class="text-2xs text-dim">{ metrics.SpendNote }</p>
+			}
+		</section>
+		<section id="metric-tokens" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">
+			<div class="flex items-baseline justify-between gap-2">
+				<span class="text-xs text-sec">Tokens · total</span>
+				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ metrics.TokensValue }</span>
+			</div>
+			if metrics.HasTokens {
+				@SparklineChart(metrics.TokenChart)
+			} else {
+				<p class="text-2xs text-dim">No throughput trend yet</p>
+			}
+			if metrics.HasContext {
+				<div class="mt-1 flex items-center justify-between gap-2 text-2xs">
+					<span class="text-dim">Max context</span>
+					<span class={ "whitespace-nowrap font-mono font-medium tabular-nums " + boardExtraTextClass(metrics.ContextKind) } title={ metrics.ContextTitle }>
+						{ metrics.ContextValue }
+						@primitives.TrackerReferenceLink(metrics.ContextRef, metrics.ContextURL, "ml-1")
+					</span>
+				</div>
+				<div class="h-1 overflow-hidden rounded-xs bg-line" title={ metrics.ContextTitle }>
+					<div class={ contextPressureMeterClass(metrics.ContextKind) } style={ fleetProgressStyle(metrics.ContextPct) }></div>
+				</div>
+			}
+		</section>
+		<section id="metric-quota" class="flex flex-col gap-2 rounded-card border border-line bg-surface px-3.5 py-3">
+			<div class="flex items-baseline justify-between gap-2">
+				<span class="text-xs text-sec">GitHub quota</span>
+				<span class="whitespace-nowrap font-mono text-sm font-medium text-text tabular-nums">{ metrics.QuotaValue }</span>
+			</div>
+			if metrics.HasQuota {
+				<div class="mt-2 h-1 overflow-hidden rounded-xs bg-line">
+					<div class={ fleetMeterClass(metrics.QuotaWarn) } style={ fleetProgressStyle(metrics.QuotaPct) }></div>
+				</div>
+			} else {
+				<p class="text-2xs text-dim">No quota data yet</p>
+			}
+		</section>
+	</div>
+}
