@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -145,6 +146,12 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	}
 	result, err := (hostedOperatorExecutor{s}).Execute(ctx, operatortool.Call{Name: call.Name, Arguments: call.Arguments})
 	if err != nil {
+		if errors.Is(err, operatortool.ErrInvalidArguments) {
+			return invalidAPIRequest(c, err)
+		}
+		if errors.Is(err, chat.ErrActionNotFound) {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
 		var refusal *apikey.Refusal
 		if errors.As(err, &refusal) {
 			return c.JSON(http.StatusForbidden, refusal)
