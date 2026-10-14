@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/devruntime"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -35,10 +36,13 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	output := &lockedBuffer{}
+	audits := make(chan isolatedAuditObservation, 1)
+	cfg := devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output)
+	cfg.Runner = observedDevRuntimeRunner{audits: audits}
 	done := make(chan error, 1)
 	runtimeDone := make(chan struct{})
 	go func() {
-		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+		done <- startRunning(ctx, cfg)
 		close(runtimeDone)
 	}()
 	t.Cleanup(func() {
@@ -60,6 +64,31 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	})
 	if !strings.Contains(body, `"status":"running"`) {
 		t.Fatalf("state response missing running status:\n%s", body)
+	}
+
+	select {
+	case audit := <-audits:
+		if audit.request.Snapshot.BaseSHA != "isolated-mock-base" || audit.request.Snapshot.HeadSHA != "isolated-mock-head" || audit.execution.AuthenticationMode != "isolated_mock" || !strings.HasPrefix(audit.execution.InvocationID, "isolated-mock-") || !strings.Contains(audit.execution.Result.Summary, "no provider or worker process ran") {
+			t.Fatalf("audit lacks exact synthetic source or provenance: %#v", audit)
+		}
+		for _, field := range []string{"base", "head", "diff", "pull request"} {
+			request := audit.request
+			switch field {
+			case "base":
+				request.Snapshot.BaseSHA = "other-base"
+			case "head":
+				request.Snapshot.HeadSHA = "other-head"
+			case "diff":
+				request.Snapshot.Diff = "other-diff"
+			case "pull request":
+				request.Snapshot.PRNumber = 9002
+			}
+			if _, err := (devRuntimeRunner{}).Audit(t.Context(), request); err == nil {
+				t.Fatalf("isolated audit accepted mismatched %s", field)
+			}
+		}
+	default:
+		t.Fatal("mock issue promoted without executing its isolated security audit")
 	}
 
 	cancel()
@@ -866,4 +895,25 @@ func boardStateCountFromBody(t *testing.T, body string, state string) int {
 
 func newRuntimeHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{}, Timeout: time.Second}
+}
+
+type isolatedAuditObservation struct {
+	request   orchestrator.SecurityAuditRequest
+	execution orchestrator.SecurityAuditExecution
+}
+
+type observedDevRuntimeRunner struct {
+	devRuntimeRunner
+	audits chan isolatedAuditObservation
+}
+
+func (r observedDevRuntimeRunner) Audit(ctx context.Context, request orchestrator.SecurityAuditRequest) (orchestrator.SecurityAuditExecution, error) {
+	execution, err := r.devRuntimeRunner.Audit(ctx, request)
+	if err == nil {
+		select {
+		case r.audits <- isolatedAuditObservation{request: request, execution: execution}:
+		default:
+		}
+	}
+	return execution, err
 }
