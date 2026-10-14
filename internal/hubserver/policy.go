@@ -61,7 +61,13 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	approval, err := readProjectPolicyWithHistory(ctx, s.database.reader, scope, limit, c.QueryParam("after"))
+	var approval policy.Approval
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if ok && credential.Runner.Valid() {
+		approval, err = readProjectPolicy(ctx, s.database.reader, scope)
+	} else {
+		approval, err = readProjectPolicyWithHistory(ctx, s.database.reader, scope, limit, c.QueryParam("after"))
+	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -320,11 +326,17 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id WHERE project_policies.policy_id IS NOT excluded.policy_id", scope, change.Policy.ID); err != nil {
 		return result, err
 	}
-	if err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy); err != nil {
+	reviewChanged, err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy)
+	if err != nil {
 		return result, err
 	}
 	if current != change.Policy.ID {
 		if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, change.Policy.ID, now); err != nil {
+			return result, err
+		}
+	}
+	if current != change.Policy.ID || reviewChanged {
+		if err := resetNativeBoardPolicy(ctx, tx, scope); err != nil {
 			return result, err
 		}
 	}
@@ -355,30 +367,30 @@ func followsRepositoryGate(rules tracker.ChangeReviewPolicy) bool {
 // rewritten: it goes stale, and publishing says so until the administrator
 // approves it again against the new descriptor. A descriptor whose gates the
 // default cannot satisfy leaves the project as it is.
-func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope string, descriptor policy.Descriptor) error {
+func followDefaultChangeReviewPolicy(ctx context.Context, tx *sql.Tx, scope string, descriptor policy.Descriptor) (bool, error) {
 	organization, project, ok := strings.Cut(scope, "/")
 	if !ok || strings.HasPrefix(scope, "repository:") {
-		return nil
+		return false, nil
 	}
 	native := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}
 	current, err := readChangePolicy(ctx, tx, native)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return false, err
 	}
 	rules := defaultChangeReviewPolicy(descriptor)
 	if err == nil && (current.ID == rules.ID || !followsRepositoryGate(current)) {
-		return nil
+		return false, nil
 	}
 	if changerequest.ValidatePolicy(rules, descriptor) != nil {
-		return nil
+		return false, nil
 	}
 	raw, err := json.Marshal(rules)
 	if err != nil {
-		return err
+		return false, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO change_review_policies (organization_id, project_id, policy_json) VALUES (?, ?, ?)
 ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.policy_json`, native.organization, native.project, string(raw))
-	return err
+	return err == nil, err
 }
 
 // backfillChangeReviewPolicies gives every project with an approved
@@ -396,7 +408,7 @@ func backfillChangeReviewPolicies(ctx context.Context, tx *sql.Tx) error {
 		if err != nil {
 			continue
 		}
-		if err := followDefaultChangeReviewPolicy(ctx, tx, scope, approval.Policy); err != nil {
+		if _, err := followDefaultChangeReviewPolicy(ctx, tx, scope, approval.Policy); err != nil {
 			return fmt.Errorf("backfill review policy for %s: %w", scope, err)
 		}
 	}
@@ -653,6 +665,9 @@ func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expe
 		return nil, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it")
 	}
 	if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, "", now); err != nil {
+		return nil, err
+	}
+	if err := resetNativeBoardPolicy(ctx, tx, scope); err != nil {
 		return nil, err
 	}
 	return struct {

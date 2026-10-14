@@ -227,6 +227,12 @@ organization/project scope. Policies are resolved on the customer host. See
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
 | `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. Every new committed workflow definition reachable from the bound repository's default branch, including replacements of an approved policy, is applied through the existing atomic policy approval path as `repository-default-branch`. Replaying a historical approval does not replace current authority. Other reports remain pending. |
 
+Enrolled runner credentials receive the current approved descriptor and approval
+provenance from `GET .../policy`, without workflow apply history. Operator reads
+retain complete historical definitions and the existing `limit` and `after`
+pagination. Retained history therefore does not enlarge the runner's current
+execution contract.
+
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
 only and is not served in hosted mode. Runners report each distinct resolved
