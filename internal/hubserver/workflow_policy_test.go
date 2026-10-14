@@ -37,7 +37,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		bind, adopt, nativeRevision                                                           bool
 		history                                                                               int
 		historyLegacy                                                                         string
+		largeHistory                                                                          bool
 	}{
+		{name: "runner current policy with retained authored history", initial: true, autoInitial: true, canonical: true, reachable: true, replay: true, largeHistory: true, status: http.StatusNoContent, applied: true},
 		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
 		{name: "instruction change with legacy policy identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "policy", status: http.StatusNoContent, applied: true},
 		{name: "instruction change with legacy review identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "review", status: http.StatusNoContent, applied: true},
@@ -88,7 +90,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			original := hubTestPolicy()
 			original.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
 			if test.canonical {
-				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+				instructions := "Run the work.\n"
+				if test.largeHistory {
+					instructions = strings.Repeat(instructions, 14000)
+				}
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte(instructions), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -489,6 +495,29 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if len(approval.History) != historyCount {
 				t.Fatalf("history count = %d, want %d", len(approval.History), historyCount)
 			}
+			if test.largeHistory {
+				if response.Body.Len() <= 1<<20 {
+					t.Fatalf("retained history did not reproduce oversized response: %d bytes", response.Body.Len())
+				}
+				client, err := hubclient.New(hubclient.Config{URL: "https://policy-history.example.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native(f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err := native.ProjectPolicy(t.Context())
+				if err != nil {
+					t.Fatalf("runner cannot read current policy with retained history: %v", err)
+				}
+				if !reflect.DeepEqual(current.Policy, approval.Policy) || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 || current.HistoryNext != "" {
+					t.Fatal("runner current policy changed approval or included unrelated history")
+				}
+				currentResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", token, nil)
+				requireNativeStatus(t, currentResponse, http.StatusOK)
+				t.Logf("human history response bytes=%d, runner current response bytes=%d", response.Body.Len(), currentResponse.Body.Len())
+			}
 			if test.applied {
 				entry := approval.History[0]
 				previous := ""
@@ -566,8 +595,15 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: "machine_second", SessionID: "second", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				current, err := native.ProjectPolicy(t.Context())
-				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || !reflect.DeepEqual(current.History, approval.History) {
-					t.Fatalf("legacy load rewrote approval or history: %+v %v", current, err)
+				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 {
+					t.Fatalf("legacy load rewrote approval or included history: %+v %v", current, err)
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var retained policy.Approval
+				decodeHubResponse(t, response, &retained)
+				if !reflect.DeepEqual(retained, approval) {
+					t.Fatal("legacy runner load changed operator approval or retained history")
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": original.ID}), http.StatusNoContent)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusConflict)
