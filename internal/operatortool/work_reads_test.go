@@ -83,6 +83,17 @@ func TestWorkReadArguments(t *testing.T) {
 	if _, err := DecodeWorkRead(WorkList, json.RawMessage(`{"project_id":"`+strings.Repeat("x", 257)+`"}`)); !errors.Is(err, ErrInvalidArguments) {
 		t.Fatal(err)
 	}
+	for _, test := range []struct{ raw, reason string }{
+		{`{"project_id":"project","include":["work","summary"]}`, "include accepts summary or work, not both"},
+		{`{"project_id":"project","archived":null}`, "arguments do not match the work_list input schema"},
+		{`{"project_id":"project","assignee":"owner","assignees":["` + strings.Repeat(`x","`, 31) + `x"]}`, "at most 32 values are allowed per filter"},
+	} {
+		_, err := DecodeWorkRead(WorkList, json.RawMessage(test.raw))
+		var request *RequestError
+		if !errors.Is(err, ErrInvalidArguments) || !errors.As(err, &request) || request.Message != test.reason {
+			t.Fatalf("%s: want refusal %q, got %v", test.raw, test.reason, err)
+		}
+	}
 	for _, definition := range WorkReadCatalog() {
 		if !definition.Annotations.ReadOnly || definition.Annotations.Destructive || !definition.Annotations.Idempotent || definition.Meta.Toolset != "board" {
 			t.Fatalf("unsafe read definition: %#v", definition)

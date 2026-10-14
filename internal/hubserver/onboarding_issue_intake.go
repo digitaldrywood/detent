@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -273,7 +272,15 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				if previewIndex < 0 || batch.Page.Issues[previewIndex].Closed {
 					continue
 				}
-				target := s.database.linkedSourceBase + "/work/i/" + url.PathEscape(string(item.WorkItemID))
+				path, err := readIssueBrowserPath(ctx, tx, string(item.WorkItemID))
+				if err != nil {
+					return nil, err
+				}
+				base := s.database.linkedSourceBase
+				if s.config.Hosted != nil {
+					base = strings.TrimRight(s.config.Hosted.PublicURL, "/")
+				}
+				target := base + path
 				if err := enqueueNativeSummary(ctx, tx, scope, string(item.WorkItemID), "intake-close:"+batch.ID, "Tracked in Detent: "+target, true, now); err != nil {
 					return nil, err
 				}

@@ -779,7 +779,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	}
 	f.waitState(t, id, "ready")
 	status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
-	if !strings.Contains(status.Body, `"next":"/organizations/`+id+`/work"`) {
+	if !strings.Contains(status.Body, `"next":"/delta/work"`) {
 		t.Fatalf("ready provisioning JSON = %s", status.Body)
 	}
 	session := member.do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})

@@ -925,10 +925,10 @@ func TestSharedEntryLoginTransactions(t *testing.T) {
 		status                                      int
 		fallback                                    bool
 	}{
-		{name: "selected alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/organizations/org_alpha/work", status: http.StatusSeeOther},
-		{name: "selected beta", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/work", status: http.StatusSeeOther},
-		{name: "chooser return alpha", query: "return=/organizations", selected: "porg_alpha", authorized: "org_alpha", location: "/organizations/org_alpha/work", status: http.StatusSeeOther},
-		{name: "chooser return beta", query: "return=/organizations", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/work", status: http.StatusSeeOther},
+		{name: "selected alpha", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
+		{name: "selected beta", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
+		{name: "chooser return alpha", query: "return=/organizations", selected: "porg_alpha", authorized: "org_alpha", location: "/alpha/work", status: http.StatusSeeOther},
+		{name: "chooser return beta", query: "return=/organizations", selected: "porg_beta", authorized: "org_beta", location: "/beta/work", status: http.StatusSeeOther},
 		{name: "deep link", query: "organization=org_beta&return=/organizations/org_beta/organization", selected: "porg_beta", authorized: "org_beta", location: "/organizations/org_beta/organization", status: http.StatusSeeOther},
 		{name: "mismatch", query: "organization=org_alpha&return=/organizations/org_alpha/work", selected: "porg_beta", status: http.StatusForbidden},
 		{name: "no selection", location: "/organizations", status: http.StatusSeeOther},
