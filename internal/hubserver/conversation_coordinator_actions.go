@@ -291,6 +291,7 @@ func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record
 	action.OrganizationID = string(record.OrganizationID)
 	action.ConversationID = record.ID
 	action.ID = action.RequestID
+	action.Agent = coordinatorAgent(t.state.model)
 	if err := t.coordinator.write(ctx, record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		data, err := json.Marshal(map[string]any{"operator_action": map[string]any{"action": action, "conversation_id": record.ID}})
 		if err != nil {
@@ -312,6 +313,11 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	if err != nil {
 		return chat.ActionExecution{}, err
 	}
+	agent, err := s.coordinatorProposalAgent(ctx, action)
+	if err != nil {
+		return chat.ActionExecution{}, err
+	}
+	ctx = withCoordinatorAgent(ctx, agent)
 	if coordinatorCatalogWrite(string(action.Kind)) {
 		return s.executeCoordinatorCatalogCall(ctx, action)
 	}

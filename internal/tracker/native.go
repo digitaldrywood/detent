@@ -72,6 +72,9 @@ type Actor struct {
 	PrincipalID string `json:"principal_id"`
 	ViaKey      string `json:"via_key,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
+	// Agent names the assistant that acted on the principal's behalf, such
+	// as "Luna (gpt-6.1-sol)"; empty when the principal acted directly.
+	Agent string `json:"agent,omitempty"`
 }
 
 type Provenance struct {

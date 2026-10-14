@@ -51,6 +51,7 @@ type Action struct {
 	ConnectionID         string                      `json:"connection_id"`
 	OrganizationID       string                      `json:"organization_id"`
 	Client               string                      `json:"client"`
+	Agent                string                      `json:"agent,omitempty"`
 	RequestID            string                      `json:"request_id"`
 	Arguments            json.RawMessage             `json:"arguments"`
 	ID                   string                      `json:"id"`
