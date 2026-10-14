@@ -4,7 +4,7 @@ import { BarMeter, Chart, ChartLegend, ChartPanel } from "../../components/ui/ch
 import { MetricTile, MetricTileGroup } from "../../components/ui/metric-tile.tsx";
 import type { ReportsReport } from "../../contracts/reports.ts";
 import { formatCount } from "../usage/usageFormat.ts";
-import { bucketCategories, percentText, pointsDelta, reportBuckets, type ReportsSearch } from "./model.ts";
+import { bucketCategories, countDelta, percentText, pointsDelta, reportBuckets, type ReportsSearch } from "./model.ts";
 import { Dash, ExpandRow, IssueLink, Muted } from "./parts.tsx";
 import { REWORK_GROUPS, reworkByGroup, reworkGroupOf } from "./rework.ts";
 
@@ -40,13 +40,13 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
         <MetricTile
           label="Sent back for issue reasons"
           value={quality?.rework_percent == null ? null : percentText(quality.rework_percent)}
-          delta={compare ? null : undefined}
+          delta={compare ? pointsDelta(quality?.rework_percent ?? null, report.prior?.rework_percent, false) : undefined}
           detail="review findings, missing criteria"
         />
         <MetricTile
           label="Bounced by infrastructure"
           value={quality === undefined ? null : formatCount(quality.infrastructure_returns)}
-          delta={compare ? null : undefined}
+          delta={compare ? (quality === undefined ? null : countDelta(quality.infrastructure_returns, report.prior?.infrastructure_returns, false)) : undefined}
           detail="landing errors · counted against the runner, not the issue"
         />
         <MetricTile
@@ -59,7 +59,7 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
       <ChartPanel
         title="Why work went back, per day"
         actions={<ChartLegend items={REWORK_GROUPS.map((group) => ({ label: group.label, color: group.color }))} />}
-        footnote="Blue causes are infrastructure: attributed to the runner, excluded from the issue rework rate."
+        footnote="Landing refused is infrastructure: attributed to the runner and excluded from the issue rework rate."
       >
         {seriesKnown ? (
           <Chart

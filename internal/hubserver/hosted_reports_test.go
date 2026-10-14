@@ -294,6 +294,49 @@ func TestReportsFirstTryHistory(t *testing.T) {
 
 func reportsPercent(value float64) *float64 { return &value }
 
+func TestReportsOpenWork(t *testing.T) {
+	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
+	states := map[string]tracker.NativeState{"Done": {Terminal: true}, "Todo": {Dispatchable: true}, "Rework": {Dispatchable: true}, "Backlog": {}}
+	move := func(hour int, from, to string) analyticsResidenceEvent {
+		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}}
+	}
+	w := operatortool.AnalyticsWindow{From: at(100), To: at(200), Bucket: time.Hour}
+	issues := []analyticsResidenceIssue{
+		{id: "backlog", created: at(0), initial: "Backlog"},
+		{id: "todo", created: at(10), initial: "Todo"},
+		{id: "held", created: at(150), initial: "Todo", events: []analyticsResidenceEvent{move(160, "Todo", "Blocked")}},
+		{id: "working", created: at(190), initial: "Todo", events: []analyticsResidenceEvent{move(195, "Todo", "In Progress")}},
+		{id: "done", created: at(20), initial: "Todo", events: []analyticsResidenceEvent{move(110, "Todo", "Done")}},
+		{id: "late", created: at(60), initial: "Todo", events: []analyticsResidenceEvent{move(90, "Todo", "Rework"), move(120, "Rework", "Done")}},
+	}
+	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+	for _, issue := range issues {
+		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+	}
+	got := reportsOpenWorkFor(timelines, issues, states, nil, w, false)
+	ids := []string{}
+	for _, item := range got.Items {
+		ids = append(ids, item.WorkItemID)
+	}
+	if got.Count != 2 || got.Held != 1 || got.Stuck != 2 || !slices.Equal(ids, []string{"todo", "held", "working"}) {
+		t.Fatalf("open work=%+v ids=%v", got, ids)
+	}
+	if got.PreviousStuck == nil || *got.PreviousStuck != 2 {
+		t.Fatalf("previous stuck=%v, want todo and done open over 24h at the prior window end", got.PreviousStuck)
+	}
+	if *got.Items[0].SinceTodoHours != 190 {
+		t.Fatalf("since todo=%v", *got.Items[0].SinceTodoHours)
+	}
+	prior := operatortool.AnalyticsWindow{From: at(0), To: w.From}
+	if lanes := reportsLaneSeconds(timelines, states, prior); lanes["Todo"] != (90+80+30)*3600 || lanes["Backlog"] != 0 || lanes["Rework"] != 10*3600 {
+		t.Fatalf("prior lane seconds=%v", lanes)
+	}
+	if clipped := reportsOpenWorkFor(timelines, issues, states, nil, w, true); clipped.PreviousStuck != nil {
+		t.Fatalf("clipped history reported a prior count")
+	}
+}
+
 func TestReportsWindowStart(t *testing.T) {
 	to := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
 	midnight := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)

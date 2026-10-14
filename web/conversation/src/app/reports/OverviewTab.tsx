@@ -26,8 +26,23 @@ export function costPerShipped(cost: number | undefined, done: number): number |
   return cost === undefined || done <= 0 ? null : cost / done;
 }
 
-export function stuckItems(report: ReportsReport) {
-  return report.analytics.lane_residence.aging.items.toSorted((a, b) => b.hours - a.hours);
+const EXCLUDED_LANES = new Set(["Backlog", "Triage"]);
+
+/** Open work in the lanes Detent works and the lanes people hold, longest in lane first; never Backlog or Triage. */
+export function openWork(report: ReportsReport) {
+  if (report.open_work !== undefined) return { ...report.open_work, total: report.open_work.count + report.open_work.held };
+  const items = report.analytics.lane_residence.aging.items
+    .filter((item) => !EXCLUDED_LANES.has(item.lane))
+    .toSorted((a, b) => b.hours - a.hours);
+  const held = items.filter((item) => HELD_LANES.has(item.lane)).length;
+  return {
+    items,
+    count: items.length - held,
+    held,
+    stuck: items.filter((item) => item.hours > 24).length,
+    previous_stuck: undefined,
+    total: items.length,
+  };
 }
 
 export function ageTone(item: { hours: number; lane_p90_hours?: number | undefined }): string {
@@ -55,8 +70,8 @@ export function OverviewTab({
   const cost = usageMissing ? undefined : report.cost_usd;
   const perShipped = costPerShipped(cost, completion.done);
   const priorPerShipped = previous ? costPerShipped(report.previous_cost_usd, previous.done) : null;
-  const stuck = stuckItems(report);
-  const stuckOver = stuck.filter((item) => item.hours > 24).length;
+  const open = openWork(report);
+  const stuck = open.items;
   const buckets = reportBuckets(report);
   const categories = bucketCategories(buckets);
   const hasPrior = buckets.some((bucket) => bucket.prior_done !== undefined);
@@ -108,9 +123,9 @@ export function OverviewTab({
         />
         <MetricTile
           label="Stuck over 24h"
-          value={residenceMissing ? null : formatCount(stuckOver)}
-          delta={compare ? null : undefined}
-          detail="open, past lane p90"
+          value={residenceMissing ? null : formatCount(open.stuck)}
+          delta={compare ? countDelta(open.stuck, open.previous_stuck, false) : undefined}
+          detail="open, in lane over 24 h"
         />
       </MetricTileGroup>
 

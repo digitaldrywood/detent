@@ -153,6 +153,82 @@
   "cancelled": 112,
   "previous_failed": 177,
   "failed_issues": 71,
+  "open_work": {
+    "count": 26,
+    "held": 1,
+    "stuck": 2,
+    "previous_stuck": 4,
+    "items": [
+      {
+        "work_item_id": "wi_pilot",
+        "lane": "Todo",
+        "entered_at": "2026-10-03T00:00:00Z",
+        "hours": 240,
+        "lane_p90_hours": 37,
+        "since_todo_hours": 240
+      },
+      {
+        "work_item_id": "wi_urls",
+        "lane": "Rework",
+        "entered_at": "2026-10-11T17:00:00Z",
+        "hours": 31,
+        "lane_p90_hours": 11,
+        "since_todo_hours": 144
+      },
+      {
+        "work_item_id": "wi_pages",
+        "lane": "Blocked",
+        "entered_at": "2026-10-12T05:00:00Z",
+        "hours": 19,
+        "lane_p90_hours": 8,
+        "since_todo_hours": 48
+      },
+      {
+        "work_item_id": "wi_rollups",
+        "lane": "Rework",
+        "entered_at": "2026-10-12T12:00:00Z",
+        "hours": 12,
+        "lane_p90_hours": 11,
+        "since_todo_hours": 24
+      },
+      {
+        "work_item_id": "wi_export",
+        "lane": "In Progress",
+        "entered_at": "2026-10-12T17:48:00Z",
+        "hours": 6.2,
+        "lane_p90_hours": 2.9,
+        "since_todo_hours": 22
+      },
+      {
+        "work_item_id": "wi_running",
+        "lane": "In Progress",
+        "entered_at": "2026-10-12T21:30:00Z",
+        "hours": 2.5,
+        "lane_p90_hours": 2.9,
+        "since_todo_hours": 7
+      },
+      {
+        "work_item_id": "wi_old",
+        "lane": "Merging",
+        "entered_at": "2026-10-12T23:36:00Z",
+        "hours": 0.4,
+        "lane_p90_hours": 2.5,
+        "since_todo_hours": 5
+      }
+    ]
+  },
+  "prior": {
+    "rework_percent": 31.4,
+    "infrastructure_returns": 76,
+    "lane_seconds": {
+      "Todo": 1140624,
+      "In Progress": 307152,
+      "Rework": 342000,
+      "Merging": 138989,
+      "Blocked": 79488,
+      "Human Review": 67320
+    }
+  },
   "runners": [
     {
       "runner_id": "run_studio",

@@ -16,7 +16,7 @@ import {
   reportBuckets,
   type ReportsSearch,
 } from "./model.ts";
-import { ageTone, stuckItems } from "./OverviewTab.tsx";
+import { ageTone, openWork } from "./OverviewTab.tsx";
 import { Dash, IssueLink, LaneBadge, Muted, ShowMore } from "./parts.tsx";
 
 const STACK = [
@@ -40,8 +40,8 @@ export function FlowTab({ report, search }: { readonly report: ReportsReport; re
   const priorTiming = lead ? previous?.lead : previous?.system;
   const todo = completion.lanes.find((lane) => lane.lane === "Todo");
   const priorTodo = previous?.lanes.find((lane) => lane.lane === "Todo");
-  const aging = stuckItems(report);
-  const wipMore = report.analytics.lane_residence.aging.next_offset !== undefined;
+  const open = openWork(report);
+  const aging = open.items;
   const buckets = reportBuckets(report);
   const categories = bucketCategories(buckets);
   const hours = (seconds: number) => seconds / 3600;
@@ -74,7 +74,7 @@ export function FlowTab({ report, search }: { readonly report: ReportsReport; re
         />
         <MetricTile
           label="Work in progress"
-          value={residenceMissing ? null : `${formatCount(aging.length)}${wipMore ? "+" : ""}`}
+          value={residenceMissing ? null : formatCount(open.count)}
           detail="open, dispatchable"
         />
       </MetricTileGroup>
@@ -148,9 +148,8 @@ export function FlowTab({ report, search }: { readonly report: ReportsReport; re
                 {residence
                   .toSorted((a, b) => b.seconds - a.seconds)
                   .map((lane) => {
-                    const now = completion.lanes.find((item) => item.lane === lane.lane)?.seconds;
-                    const before = previous?.lanes.find((item) => item.lane === lane.lane)?.seconds;
-                    const change = now !== undefined && before ? Math.round((100 * (now - before)) / before) : null;
+                    const before = report.prior?.lane_seconds[lane.lane];
+                    const change = before ? Math.round((100 * (lane.seconds - before)) / before) : null;
                     return (
                       <TableRow key={lane.lane}>
                         <TableCell className="font-medium">{lane.lane}</TableCell>
@@ -214,9 +213,9 @@ export function FlowTab({ report, search }: { readonly report: ReportsReport; re
             </Table>
             <ShowMore
               shown={5}
-              total={aging.length}
+              total={open.total}
               expanded={showAll}
-              label={`Show all ${formatCount(aging.length)}${wipMore ? "+" : ""}`}
+              label={aging.length < open.total ? `Show top ${formatCount(aging.length)}` : `Show all ${formatCount(open.total)}`}
               onToggle={() => setShowAll((value) => !value)}
             />
           </>

@@ -253,6 +253,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	for _, item := range p.LaneResidence.Aging.Items {
 		titleIDs = append(titleIDs, item.WorkItemID)
 	}
+	for _, item := range out.OpenWork.Items {
+		titleIDs = append(titleIDs, item.WorkItemID)
+	}
 	for _, item := range out.Spend {
 		titleIDs = append(titleIDs, item.WorkItemID)
 	}

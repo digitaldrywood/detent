@@ -21,6 +21,14 @@ const Completion = Schema.Struct({
   partial: Schema.Boolean,
   lanes: Schema.Array(Lane),
 });
+const AgingItem = Schema.Struct({
+  work_item_id: Schema.String,
+  lane: Schema.String,
+  entered_at: Schema.String,
+  hours: Schema.Number,
+  lane_p90_hours: Schema.optional(Schema.Number),
+  since_todo_hours: Schema.optional(Schema.Number),
+});
 const Page = <S extends Schema.Top>(item: S) =>
   Schema.Struct({
     items: Schema.Array(item),
@@ -85,6 +93,22 @@ export const ReportsReport = Schema.Struct({
   previous_first_try_percent: Schema.optional(Schema.NullOr(Schema.Number)),
   previous_failed: Schema.optional(Schema.Number),
   failed_issues: Schema.optional(Schema.Number),
+  open_work: Schema.optional(
+    Schema.Struct({
+      count: Schema.Number,
+      held: Schema.Number,
+      stuck: Schema.Number,
+      previous_stuck: Schema.optional(Schema.Number),
+      items: Schema.Array(AgingItem),
+    }),
+  ),
+  prior: Schema.optional(
+    Schema.Struct({
+      rework_percent: Schema.NullOr(Schema.Number),
+      infrastructure_returns: Schema.optional(Schema.Number),
+      lane_seconds: Schema.Record(Schema.String, Schema.Number),
+    }),
+  ),
   runners: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -165,16 +189,7 @@ export const ReportsReport = Schema.Struct({
       system_total: Duration,
       held_total: Duration,
       lead_total: Duration,
-      aging: Page(
-        Schema.Struct({
-          work_item_id: Schema.String,
-          lane: Schema.String,
-          entered_at: Schema.String,
-          hours: Schema.Number,
-          lane_p90_hours: Schema.optional(Schema.Number),
-          since_todo_hours: Schema.optional(Schema.Number),
-        }),
-      ),
+      aging: Page(AgingItem),
       rework_causes: Schema.Array(
         Schema.Struct({
           from_state: Schema.String,
