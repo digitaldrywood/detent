@@ -289,7 +289,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	return evidence
 }
 
-func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, executables []string) ([]byte, error) {
+func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, executables []string) (identity []byte, resultErr error) {
 	ignored, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
@@ -302,14 +302,17 @@ func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, executables
 		}
 		boundExecutables[filepath.ToSlash(path)] = true
 	}
-	paths := []string{"node_modules", "web/conversation/node_modules", "static/app/conversation", "static/css/output.css", "docs/config.md", "config.reference.yaml"}
+	paths := []struct {
+		name      string
+		directory bool
+	}{{"node_modules", true}, {"web/conversation/node_modules", true}, {"static/app/conversation", true}, {"static/css/output.css", false}, {"docs/config.md", false}, {"config.reference.yaml", false}}
 	for _, name := range strings.Split(ignored, "\x00") {
 		if name == "" || boundExecutables[name] {
 			continue
 		}
 		bound := false
 		for _, path := range paths {
-			if name == path || strings.HasPrefix(name, path+"/") {
+			if name == path.name || path.directory && strings.HasPrefix(name, path.name+"/") {
 				bound = true
 				break
 			}
@@ -318,31 +321,40 @@ func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, executables
 			return nil, fs.ErrInvalid
 		}
 	}
+	root, err := os.OpenRoot(command.Dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
 	digest := sha256.New()
-	for _, name := range paths {
-		path := filepath.Join(command.Dir, filepath.FromSlash(name))
-		info, err := os.Lstat(path)
+	for _, path := range paths {
+		info, err := root.Lstat(path.name)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		var identity []byte
-		if info.IsDir() {
-			identity, err = validationDirectoryIdentity(path)
-		} else if info.Mode().IsRegular() {
+		var contentIdentity []byte
+		if path.directory && info.IsDir() {
+			var child *os.Root
+			child, err = root.OpenRoot(path.name)
+			if err == nil {
+				contentIdentity, err = validationRootIdentity(child)
+				err = errors.Join(err, child.Close())
+			}
+		} else if !path.directory && info.Mode().IsRegular() {
 			var content []byte
-			content, err = os.ReadFile(path)
+			content, err = root.ReadFile(path.name)
 			value := sha256.Sum256(content)
-			identity = value[:]
+			contentIdentity = value[:]
 		} else {
 			return nil, fs.ErrInvalid
 		}
 		if err != nil {
 			return nil, err
 		}
-		if err := json.NewEncoder(digest).Encode(struct{ Path, Mode, SHA string }{name, info.Mode().String(), hex.EncodeToString(identity)}); err != nil {
+		if err := json.NewEncoder(digest).Encode(struct{ Path, Mode, SHA string }{path.name, info.Mode().String(), hex.EncodeToString(contentIdentity)}); err != nil {
 			return nil, err
 		}
 	}
@@ -509,8 +521,12 @@ func validationDirectoryIdentity(path string) (identity []byte, resultErr error)
 		return nil, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
+	return validationRootIdentity(root)
+}
+
+func validationRootIdentity(root *os.Root) ([]byte, error) {
 	digest := sha256.New()
-	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

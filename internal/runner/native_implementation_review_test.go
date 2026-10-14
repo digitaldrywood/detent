@@ -246,6 +246,8 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "CGO native dependencies require commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "cgo-enabled", wantRuns: 2},
 		{name: "new ignored package fixture requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "ignored-package", wantRuns: 2},
 		{name: "changed generated embed asset requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-embed", wantRuns: 1},
+		{name: "external generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "external-generated", wantRuns: 2},
+		{name: "directory at generated file path requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-file-directory", wantRuns: 2},
 		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
 		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
 		{name: "double dash effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-double-vettool", wantRuns: 2},
@@ -342,7 +344,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					t.Fatal(err)
 				}
 				for name, content := range map[string]string{
-					".gitignore":        "tmp/\nnode_modules/\n/static/app/conversation/\n",
+					".gitignore":        "tmp/\nnode_modules/\n/static/app/conversation/\n/docs/config.md/\n",
 					".golangci-version": "v2.14.0\n",
 					"main.go":           "package main\nfunc main() {}\n",
 				} {
@@ -389,6 +391,30 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 						t.Fatal(err)
 					}
 					if err := os.Symlink(app, filepath.Join(source, "web", "conversation")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.changedInput == "external-generated" {
+					outside := t.TempDir()
+					if err := os.MkdirAll(filepath.Join(outside, "conversation"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(outside, "conversation", "fixture"), []byte("external fixture"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Join(source, "static"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(outside, filepath.Join(source, "static", "app")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.changedInput == "generated-file-directory" {
+					path := filepath.Join(source, "docs", "config.md", "fixture.key")
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("ignored fixture"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
