@@ -4,7 +4,7 @@
 // They are the one Detent insertion in the copied `components/Sidebar.tsx`,
 // and they live in `app/adapters/sidebarDestinations.tsx`.
 import { cleanup, fireEvent, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderSidebar, resetSidebarState } from "./sidebarHarness.tsx";
 
@@ -28,6 +28,20 @@ describe("the sidebar's Work navigation", () => {
     expect(row.disabled).toBe(false);
     fireEvent.click(row);
     expect(onNavigate).toHaveBeenCalledWith(destination);
+  });
+
+  it.each([
+    ["work", "/work/p/proj_alpha"],
+    ["activity", "/activity"],
+    ["diagnostics", "/diagnostics"],
+    ["reports", "/reports"],
+  ])("prefetches %s on hover and on focus", async (id, destination) => {
+    const onPrefetch = vi.fn();
+    await renderSidebar({ navigation: { activePath: "/chat", onNavigate: () => {}, onPrefetch } });
+    const row = screen.getByTestId(`nav-${id}`);
+    fireEvent.pointerEnter(row);
+    fireEvent.focus(row);
+    expect(onPrefetch.mock.calls).toEqual([[destination], [destination]]);
   });
 
   it("sends Work to the all-projects board when no project is chosen", async () => {

@@ -262,6 +262,24 @@ export const WorkItemPage = Schema.Struct({
 });
 export type WorkItemPage = typeof WorkItemPage.Type;
 
+/** One issue-picker row: `fields=picker` on the work item list. */
+export const IssuePickerItem = Schema.Struct({
+  work_item_id: NativeWorkItemId,
+  number: Schema.Number,
+  title: Schema.String,
+  state: Schema.String,
+  terminal: Schema.Boolean,
+  priority: Schema.optional(Schema.Number),
+});
+export type IssuePickerItem = typeof IssuePickerItem.Type;
+
+export const IssuePickerPage = Schema.Struct({
+  items: Schema.Array(IssuePickerItem),
+  next_cursor: Schema.optional(Schema.String),
+  total: Schema.optional(Schema.Number),
+});
+export type IssuePickerPage = typeof IssuePickerPage.Type;
+
 /** Priority as the hub numbers it, in the order the tracker ranks it. */
 export const PRIORITY_NAMES = ["Urgent", "High", "Normal", "Low"] as const;
 

@@ -4,7 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
-import { Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+import { Outlet, useNavigate, useParams, useRouter, useRouterState } from "@tanstack/react-router";
 
 import type { Conversation } from "../contracts/index.ts";
 import { HUB_ENVIRONMENT_ID } from "../contracts/index.ts";
@@ -245,6 +245,11 @@ function ShellBody(): React.ReactElement {
   };
 
   const rename = useAtomSet(client.renameConversation, { mode: "promise" });
+  const router = useRouter();
+  const activeProjectId = projectId === "" ? null : projectId;
+  const prefetch = React.useCallback((to: string) => {
+    void import("./lib/routePrefetch.ts").then(({ prefetchRoute }) => prefetchRoute(to, { router, client, activeProjectId }));
+  }, [activeProjectId, client, router]);
 
   const sidebarProps: SidebarShellData = {
     organizationName: client.bootstrap.organization.name,
@@ -288,6 +293,7 @@ function ShellBody(): React.ReactElement {
     navigation: {
       activePath,
       onNavigate: (to: string) => void navigate({ to }),
+      onPrefetch: prefetch,
     },
     attention,
     findings,

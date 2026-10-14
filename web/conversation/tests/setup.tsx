@@ -1,7 +1,9 @@
 // Test environment shims.
 //
 import type { ReactNode, Ref } from "react";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+
+import { clearQueryCache } from "../src/app/lib/queryCache.ts";
 
 import type { LegendListRef } from "@legendapp/list/react";
 
@@ -126,5 +128,7 @@ if (typeof Blob !== "undefined" && typeof Blob.prototype.arrayBuffer !== "functi
     value: NodeFile,
   });
 }
+
+afterEach(() => clearQueryCache());
 
 export {};

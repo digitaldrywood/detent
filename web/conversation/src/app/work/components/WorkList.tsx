@@ -25,6 +25,7 @@ export function WorkList({
   showProject,
   now,
   onOpen,
+  onIntent,
   movesFor,
   onMove,
 }: {
@@ -36,6 +37,7 @@ export function WorkList({
   showProject: boolean;
   now?: number;
   onOpen: (item: WorkItemView) => void;
+  onIntent?: (item: WorkItemView) => void;
   movesFor: (item: WorkItemView) => readonly string[];
   onMove: (item: WorkItemView, toState: string) => void;
 }): React.ReactElement {
@@ -110,6 +112,8 @@ export function WorkList({
                     ref={(button) => { issueButtons.current[index] = button; }}
                     onKeyDown={(event) => navigateRows(event, index)}
                     onClick={() => onOpen(item)}
+                    onPointerEnter={onIntent === undefined ? undefined : () => onIntent(item)}
+                    onFocus={onIntent === undefined ? undefined : () => onIntent(item)}
                     title={item.title}
                     className="max-w-full cursor-pointer truncate rounded-sm text-left align-middle outline-none ring-ring focus-visible:ring-2 hover:underline"
                   >

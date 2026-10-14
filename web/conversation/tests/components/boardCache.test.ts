@@ -4,7 +4,8 @@ import { makeAccountApi } from "../../src/app/account/api.ts";
 import * as disk from "../../src/app/work/lib/boardDisk.ts";
 import { boardAccountKey, clearBoardCache, confirmWorkItem, getBoardRead, rejectBoardCache } from "../../src/app/work/lib/boardStore.ts";
 import { DEFAULT_VIEW_STATE } from "../../src/app/work/lib/viewState.ts";
-import { makeWorkHttp } from "../../src/app/work/lib/workHttp.ts";
+import { makeWorkHttp, type FetchLike } from "../../src/app/work/lib/workHttp.ts";
+import { getQueryData, setQueryData } from "../../src/app/lib/queryCache.ts";
 import type { NativeIssue } from "../../src/contracts/work.ts";
 import { isLive } from "../../src/app/work/lib/model.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
@@ -58,6 +59,34 @@ describe("the Work snapshot ordering", () => {
     read.loadBacklog();
     await expect.poll(() => read.snapshot().backlogHasMore).toBe(false);
     expect(read.snapshot().items.filter((item) => item.state === "Backlog")).toHaveLength(405);
+  });
+
+  it.each([
+    { name: "reads lanes beside the project when the bootstrap carries the workflow", known: true },
+    { name: "reads lanes after the project when the workflow is unknown", known: false },
+  ])("$name", async ({ known }) => {
+    const source = workPaginationFixture();
+    await source.control();
+    const project = await makeWorkHttp({ ...source.client.http, fetch: source.fetch }).getProject("proj_alpha");
+    const gate = deferred<void>();
+    const fetch: FetchLike = async (input, init) => {
+      if (new URL(input, "http://fixture.test").pathname.endsWith("/projects/proj_alpha")) await gate.promise;
+      return source.fetch(input, init);
+    };
+    const bootstrap = source.client.bootstrap;
+    const client = known
+      ? { ...source.client, bootstrap: { ...bootstrap, projects: bootstrap.projects.map((entry) => ({ ...entry, states: project.states })) } }
+      : source.client;
+    const read = getBoardRead(client, makeWorkHttp({ ...source.client.http, fetch }), "proj_alpha", DEFAULT_VIEW_STATE);
+    const lanes = () => source.requests.filter(({ url }) => url.pathname.endsWith("/work-items")).length;
+    const before = lanes();
+    read.start();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lanes() > before).toBe(known);
+    gate.resolve();
+    await expect.poll(() => read.snapshot().resolved).toBe(true);
+    expect(read.snapshot().items.length).toBeGreaterThan(0);
+    expect(read.snapshot().lanes.map((lane) => lane.name)).toEqual(project.states.map((state) => state.name));
   });
 
   it.each(["disk-first", "network-first"])("keeps fresh revisions with %s completion", async (order) => {
@@ -226,11 +255,13 @@ describe("the Work snapshot ordering", () => {
     const source = await fixture();
     source.read.reload();
     await expect.poll(() => source.read.snapshot().resolved).toBe(true);
+    setQueryData(["reports", "cached"], "previous organization");
     const api = makeAccountApi({ ...source.client.http,
       fetch: async () => action === "logout" ? new Response(null, { status: 204 }) : Response.json({ next: "/work" }) });
     if (action === "logout") await api.logout();
     else await api.switchOrganization({ organization: "another", key: "switch" });
     expect(source.read.snapshot().items).toHaveLength(0);
+    expect(getQueryData(["reports", "cached"])).toBeUndefined();
     expect(writes.mock.calls.at(-1)?.[0]).toBeNull();
   });
 

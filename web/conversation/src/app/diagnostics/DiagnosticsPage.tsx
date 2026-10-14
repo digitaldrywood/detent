@@ -24,6 +24,8 @@ import {
   type DiagnosticFinding,
 } from "../../contracts/diagnostics.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { getQueryData, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
+import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics } from "./diagnosticsQuery.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
@@ -55,6 +57,13 @@ const timestamp = (value: string) =>
     minute: "2-digit",
   });
 
+interface FindingsState {
+  readonly findings: readonly DiagnosticFinding[] | null;
+  readonly detectorTick: string | null;
+  readonly findingsError: string | null;
+}
+
+const EMPTY_FINDINGS: FindingsState = { findings: null, detectorTick: null, findingsError: null };
 export function DiagnosticsRoute(): React.ReactElement {
   usePageTitle("Diagnostics");
   const api = useAccountApi();
@@ -64,40 +73,28 @@ export function DiagnosticsRoute(): React.ReactElement {
   const [revision, setRevision] = useState(0);
   const [askedFinding, setAskedFinding] = useState<DiagnosticFinding | null>(null);
   const [askFocusRequest, setAskFocusRequest] = useState(0);
-  const [state, setState] = useState<{
-    report: DiagnosticsReport | null;
-    runners: readonly FleetRunner[] | null;
-    findings: readonly DiagnosticFinding[] | null;
-    detectorTick: string | null;
-    findingsError: string | null;
-    pending: boolean;
-    error: string | null;
-  }>({
-    report: null,
-    runners: null,
-    findings: null,
-    detectorTick: null,
-    findingsError: null,
-    pending: true,
-    error: null,
-  });
+  const projects = React.useMemo(() => (bootstrap?.projects ?? [])
+    .filter((project) => project.profile === "native")
+    .map((project) => project.id), [bootstrap?.projects]);
+  const projectsKey = projects.join(",");
+  const reportQuery = useQuery(diagnosticsKey(api, range), readDiagnostics(api, range),
+    { staleTime: DIAGNOSTICS_STALE_MS, keepPreviousIn: String(scopeOf(api)) });
+  const findingsKey = React.useMemo(() => ["diagnostics-findings", scopeOf(api), projectsKey] as const, [api, projectsKey]);
+  const [findings, setFindings] = useState<{ readonly key: typeof findingsKey; readonly value: FindingsState }>(() =>
+    ({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS }));
+  useEffect(() => {
+    if (findings.key === findingsKey && findings.value !== EMPTY_FINDINGS) setQueryData(findingsKey, findings.value);
+  }, [findings, findingsKey]);
+  const findingsState = findings.key === findingsKey ? findings.value : getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS;
   useEffect(() => {
     let current = true;
-    setState({
-      report: null,
-      runners: null,
-      findings: null,
-      detectorTick: null,
-      findingsError: null,
-      pending: true,
-      error: null,
-    });
-    const projects = (bootstrap?.projects ?? [])
-      .filter((project) => project.profile === "native")
-      .map((project) => project.id);
+    setFindings({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS });
     let request = 0;
     let tick: string | null = null;
     let since: string | undefined;
+    const update = (next: (previous: FindingsState) => FindingsState) => {
+      setFindings((previous) => ({ key: findingsKey, value: next(previous.key === findingsKey ? previous.value : EMPTY_FINDINGS) }));
+    };
     const refreshFindings = async (live: boolean) => {
       const version = ++request;
       try {
@@ -108,7 +105,7 @@ export function DiagnosticsRoute(): React.ReactElement {
         if (!current || request !== version) return;
         since ??= open.last_tick_at ?? undefined;
         tick = open.last_tick_at;
-        setState((previous) => {
+        update((previous) => {
           const findings =
             open.last_tick_at === null ? null : findingsFromRead(open);
           const updates = new Map(
@@ -124,7 +121,6 @@ export function DiagnosticsRoute(): React.ReactElement {
             : [];
           const ids = new Set(retained.map((finding) => finding.id));
           return {
-            ...previous,
             findings:
               findings === null
                 ? null
@@ -137,27 +133,11 @@ export function DiagnosticsRoute(): React.ReactElement {
           };
         });
       } catch {
-        if (current && request === version) setState((previous) => ({ ...previous, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." }));
+        if (current && request === version) update((previous) => ({ ...previous, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." }));
         return;
       }
     };
-    void Promise.allSettled([
-      api.diagnostics(range),
-      api.fleet(),
-      refreshFindings(false),
-    ]).then(([report, fleet]) => {
-      if (!current) return;
-      setState((previous) => ({
-        ...previous,
-        report: report.status === "fulfilled" ? report.value : null,
-        runners: fleet.status === "fulfilled" ? fleet.value.runners : null,
-        pending: false,
-        error:
-          report.status === "rejected"
-            ? "Diagnostics are temporarily unavailable."
-            : null,
-      }));
-    });
+    void refreshFindings(false);
     const refreshLive = () => {
       if (document.visibilityState === "visible") void refreshFindings(true);
     };
@@ -177,7 +157,14 @@ export function DiagnosticsRoute(): React.ReactElement {
       unsubscribe?.();
       document.removeEventListener("visibilitychange", refreshLive);
     };
-  }, [api, http, bootstrap?.projects, range, revision]);
+  }, [api, http, projects, findingsKey, revision]);
+  const state = {
+    report: reportQuery.data?.report ?? null,
+    runners: reportQuery.data?.runners ?? null,
+    ...findingsState,
+    pending: reportQuery.pending,
+    error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
+  };
   const projectFor = (finding: DiagnosticFinding) =>
     bootstrap?.projects.find((project) => project.id === finding.subject.project_id);
   const askedProject = askedFinding === null ? undefined : projectFor(askedFinding);
@@ -189,7 +176,10 @@ export function DiagnosticsRoute(): React.ReactElement {
       canManage={bootstrap?.actor.can_manage ?? false}
       range={range}
       onRangeChange={setRange}
-      onRefresh={() => setRevision((value) => value + 1)}
+      onRefresh={() => {
+        void reportQuery.refresh();
+        setRevision((value) => value + 1);
+      }}
       onAsk={(finding) => {
         setAskedFinding(finding);
         setAskFocusRequest((request) => request + 1);

@@ -166,7 +166,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort", "created_after", "created_before", "updated_after", "created_by")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort", "created_after", "created_before", "updated_after", "created_by", "fields")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -195,12 +195,19 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if params.Get("fields") == nativeIssuePickerFields {
+		return c.JSON(http.StatusOK, nativeIssuePickerResponse(page))
+	}
 	return c.JSON(http.StatusOK, page)
 }
 
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	picker, err := nativeIssuePickerRequested(params)
+	if err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
 	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
 		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
 			return tracker.NativeIssuePage{}, nativeInvalid("Date filters require an issue list projection")
@@ -364,6 +371,16 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
+	}
+	if picker {
+		page.Items, err = readNativeIssuePickerRows(ctx, s.database.reader, scope, items)
+		if err != nil {
+			return tracker.NativeIssuePage{}, err
+		}
+		if len(items) > 0 {
+			cursor.Issues = &items[len(items)-1].Position
+		}
+		items = nil
 	}
 	for _, item := range items {
 		id := item.ID

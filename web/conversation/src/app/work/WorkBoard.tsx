@@ -41,6 +41,7 @@ import { useShell } from "../App.tsx";
 import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 import { allProjectsLabel } from "../lib/projectScope.ts";
+import { prefetchIssue } from "./lib/issueQuery.ts";
 
 function applyFilters(
   items: readonly WorkItemView[],
@@ -180,6 +181,11 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
       void navigate({ to: "/work/i/$workItemId", params: { workItemId: item.id } });
     },
     [navigate],
+  );
+
+  const intent = React.useCallback(
+    (item: WorkItemView) => prefetchIssue(http, item.id, item.projectId),
+    [http],
   );
 
   const move = React.useCallback(
@@ -416,6 +422,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
             onLoadMore={board.loadMore}
             showProject={projectId === null}
             onOpen={open}
+            onIntent={intent}
             movesFor={movesFor}
             onMove={move}
           />
@@ -438,6 +445,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   loadingMore={board.backlogLoading}
                   showProject={projectId === null}
                   onOpen={open}
+                  onIntent={intent}
                   movesFor={movesFor}
                   onMove={move}
                   movingIds={moving}
