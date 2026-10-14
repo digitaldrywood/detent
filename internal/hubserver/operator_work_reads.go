@@ -103,6 +103,9 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		return operatortool.NativeRuntimeResult(name, request, evidence)
 	case operatortool.WorkItem:
+		if err := attachNativeTestPlan(ctx, s.database.db, scope, &item); err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
 		view := operatortool.NativeItemView(request.ProjectID, item)
 		if strings.Contains(item.Body, "detent-checks") {
 			view.ValidationAudit, err = readValidationAudit(ctx, s.database.reader, scope, request.Reference, "", "", "")

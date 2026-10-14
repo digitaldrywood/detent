@@ -39,6 +39,7 @@ import {
   RelayTicket,
   REVISION_CONFLICT,
   SourceRecovery,
+  type TestItemResult,
   type TransitionReason,
   WorkItemPage,
   WorkItemPullRequestList,
@@ -215,6 +216,17 @@ export interface WorkHttp {
     expectedRevision: string;
     relatedWorkItemId: string;
     operation: "add" | "remove";
+  }) => Promise<NativeIssue>;
+  /** Records one checklist item's result on an issue labeled `test-plan`; the body is unchanged. */
+  readonly recordTestItem: (input: {
+    projectId: string;
+    itemId: string;
+    key: string;
+    item: number;
+    text: string;
+    result: TestItemResult;
+    note?: string;
+    relatedIssueNumber?: number;
   }) => Promise<NativeIssue>;
   readonly listAttempts: (
     projectId: string,
@@ -630,6 +642,15 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         expected_revision: input.expectedRevision,
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
+      }),
+    recordTestItem: (input) =>
+      send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/test-items`), {
+        idempotency_key: input.key,
+        item: input.item,
+        text: input.text,
+        result: input.result,
+        ...(input.note === undefined || input.note.trim() === "" ? {} : { note: input.note.trim() }),
+        ...(input.relatedIssueNumber === undefined ? {} : { related_issue_number: input.relatedIssueNumber }),
       }),
     listAttempts: (projectId, itemId, limit, signal, cursor) =>
       send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),

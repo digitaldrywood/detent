@@ -42,7 +42,7 @@ var smokeSkipped = strings.Fields(`
  create_workspace delete_workspace create_conversation post_conversation_command link_conversation patch_conversation
  upload_conversation_attachment create_project_action patch_project_action delete_project_action create_project_action_run
  artifact_access create_change publish_change_version discuss_change review_change view_change_file
- approve_change_review_policy bind_artifact_service
+ approve_change_review_policy bind_artifact_service update_test_item
 `)
 
 var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment move_item set_dependency order_item set_queue_priority archive_item restore_item set_priority update_project_integration`)

@@ -172,6 +172,9 @@ func workflowExecutionFailure(err error) (chat.ActionExecution, error) {
 			safe = operatortool.ErrInvalidArguments
 		case failure.status == http.StatusConflict && failure.Code == "revision_conflict":
 			message = "Resource has changed"
+		case failure.Code == "invalid_request" && failure.publicMessage:
+			message = failure.Message
+			safe = &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
 		}
 	}
 	return chat.ActionExecution{Message: message}, safe

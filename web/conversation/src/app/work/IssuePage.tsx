@@ -60,6 +60,7 @@ import {
 import { IssueResources, type ResourceRow } from "./components/IssueResources.tsx";
 import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics.tsx";
 import { SourceRecoveryControls } from "./components/SourceRecoveryControls.tsx";
+import { TestPlanProgress, type TestItemRecord } from "./components/TestPlanProgress.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
@@ -782,6 +783,20 @@ function IssueSurface({
       onComment={postComment}
       onOpenIssue={(id) => void navigate({ to: "/work/i/$workItemId", params: { workItemId: id } })}
       onOpenConversationPage={openConversationPage}
+      onRecordTestItem={async (record) => {
+        const updated = await http.recordTestItem({
+          projectId,
+          itemId: workItemId,
+          key: newWorkKey("test-item"),
+          item: record.item,
+          text: record.text,
+          result: record.result,
+          note: record.note,
+          ...(record.relatedIssueNumber === undefined ? {} : { relatedIssueNumber: record.relatedIssueNumber }),
+        });
+        apply((current) => current === null ? current : { ...current, issue: updated });
+        reload();
+      }}
     />,
     `${issueNumber(item.identifier, item.number)} ${item.title}`,
   );
@@ -817,6 +832,7 @@ interface IssueBodyProps {
   readonly onComment: (body: string) => Promise<void>;
   readonly onOpenIssue: (workItemId: string) => void;
   readonly onOpenConversationPage: () => void;
+  readonly onRecordTestItem: (record: TestItemRecord) => Promise<void>;
   /** Opens any Change Request linked to this issue. */
   readonly onOpenChange: (changeId: string) => void;
 }
@@ -1199,6 +1215,10 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           </div>
 
           {data.issue.report_context === undefined ? null : <ReportContextBlock context={data.issue.report_context} />}
+          {data.issue.test_plan === undefined ? null : (
+            <TestPlanProgress plan={data.issue.test_plan} canRecord={props.canWrite && data.project.profile === "native"}
+              onRecord={props.onRecordTestItem} onOpenIssue={props.onOpenIssue} />
+          )}
 
           {/* §19.6: sub-issue creation is not in this slice, and §16 says a
               feature stays present with its reason rather than disappearing. */}
