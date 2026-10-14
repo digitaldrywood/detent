@@ -52,28 +52,18 @@ release. Develop pushes do not deploy to staging and cannot replace a release
 during its smoke validation. A later reviewed PR promotes the tagged snapshot
 to `main` as production history; that PR does not build or deploy a new artifact.
 
-An authorized operator can bootstrap Cloud from a pinned develop commit through
-the [operator prerelease path](branching.md#operator-landed-cloud-deploys):
+Every release, including an urgent operator recovery, follows the release-branch
+sequence above. Freeze a develop snapshot, land fixes on develop, and cherry-pick
+those fixes with `-x` through PRs to the release branch. Never dispatch a develop
+prerelease or substitute `make check-land` for release-branch full-suite evidence.
 
-```sh
-gh workflow run release.yml --repo digitaldrywood/detent --ref develop -f operator_landed=true
-```
+## Existing develop preview compatibility
 
-This workflow pins the dispatch commit, runs `make check-land`, binds its
-authenticated source-check evidence and publishes a signed operator prerelease.
-Staging and production smoke checks still apply. It does not require green
-scheduled-full-suite evidence or replace the stable installer release. Retry
-failed jobs without rerunning an already successful source check, so immutable
-tag provenance continues to identify that check.
-
-## Manual develop previews
-
-The runtime also supports manually deployed develop builds (`develop-` versions)
-on `https://staging.cloud.detent.build`. This capability is separate from the
-automated release deployment sequence; do not replace staging while that
-sequence is using it. Develop previews
-start from a disposable snapshot of the released registry, auth store and
-managed tenant files. SQLite snapshots include committed WAL data and are taken
+The runtime retains support for existing develop builds (`develop-` versions).
+This compatibility does not authorize a new staging or production deployment
+from develop; use the release-branch workflow above. Develop previews start from
+a disposable snapshot of the released registry, auth store and managed tenant
+files. SQLite snapshots include committed WAL data and are taken
 without applying migrations to the source databases. The shared entry retains
 the existing release registry ownership lock, routes tenants through preview
 sockets, and runs startup migrations only in the copy under
@@ -142,8 +132,8 @@ the GitHub Actions repository variable
 Repository branch rulesets require no status checks. The provenance verifier
 also inspects active rulesets so any unexpected required check remains binding.
 A missing or malformed variable, missing status, stale status ID, or fabricated
-tag annotation prevents signing and publication. The operator prerelease path
-instead binds its authenticated `Verify operator-landed source` check.
+tag annotation prevents signing and publication. The workflow always requires
+`scheduled-full-ci` in addition to configured release-only checks.
 
 GoReleaser generates the package manifests during snapshots and skips
 publishing when the corresponding package-manager token is unavailable. The
