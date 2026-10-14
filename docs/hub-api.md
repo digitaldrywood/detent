@@ -757,6 +757,22 @@ measured disk bytes per slot, slot hours and over-capacity hour counts.
 The result remains advice based on retained telemetry, including a zero range
 when observed pressure leaves no safe slot estimate.
 
+`recommendation.suggested_limit` turns the same hours into one advisory "Jobs
+at once" value: `limit`, `current`, `direction` (`lower`, `raise`, `hold` or
+`insufficient_evidence`), `hours_covered`, `saturated_hours` and up to three
+`reasons`. An hour counts when it has memory and CPU samples. It is saturated
+when slots were in use and memory pressure warned or was critical, PSI `some`
+avg10 averaged above 10, swap grew by at least 1 GiB over the previous hour, or
+CPU busy averaged 90% or more in it and an adjacent hour. Load average is not
+used. Fewer than 24 counted hours returns `insufficient_evidence` without a
+limit. When more than 5% of hours are saturated the limit lowers to the highest
+of the two levels below `current` whose hours (rounded slot use, at least three)
+stayed at or under 5% saturated, otherwise to `current` minus one, never below
+one. When saturation stays at or under 5% and every slot was busy (slot use at
+least 90% of `current`) in at least a quarter of the hours, it raises by one.
+Otherwise it holds. Free disk under 10% adds a reason and never changes the
+limit. The value is stateless and never changes routing, capacity or dispatch.
+
 Native Hubs advertise `runner_host_metrics` before runners include optional
 `host_metrics` in a heartbeat. A batch contains at most 24 summaries of at most
 1 KiB each. `host_metrics_acknowledged` identifies processed hours and restart

@@ -463,3 +463,96 @@ func TestRunnerRecommendationLeaseHistoryCost(t *testing.T) {
 		})
 	}
 }
+
+func TestRunnerSuggestedLimit(t *testing.T) {
+	t.Parallel()
+	studioCPU := []float64{68, 62, 48, 55, 77, 100, 100, 99, 100, 98, 100, 100, 100, 100, 94, 95, 87, 34, 37, 45, 34, 33, 30, 36, 70, 61, 28, 69, 77, 67, 63, 53, 39, 39, 29, 16, 31, 22, 36, 48, 81, 63, 87, 60, 77, 80, 75, 81, 65, 74, 69, 76, 73, 58, 73, 62, 55, 60, 68, 68, 63, 68, 78, 73, 69, 69, 83, 77, 80, 77, 76, 84, 71, 93, 88, 91, 68, 62, 70, 56, 47, 36, 31, 39, 41, 54, 63, 50, 67, 73, 42}
+	studioWarn := "1110000000000000111100010000000000000000000000000000000000000000000000000000000000000000000"
+	hostHours := func(n int, edit func(int, *recommendationHour)) []recommendationHour {
+		start := time.Date(2026, 10, 10, 21, 0, 0, 0, time.UTC)
+		hours := make([]recommendationHour, n)
+		for i := range hours {
+			hours[i] = recommendationHour{Summary: hostmetrics.Summary{
+				Hour: start.Add(time.Duration(i) * time.Hour), LogicalCores: 16,
+				MemoryTotalBytes: 128 * capacityGiB, MemoryAvailableMinBytes: 48 * capacityGiB, MemorySampleCount: 120,
+				CPUBusySumPercent: 40 * 120, CPUSampleCount: 120,
+				DiskFreeMinBytes: 600 * capacityGiB, DiskTotalMinBytes: 2000 * capacityGiB, DiskSampleCount: 120,
+			}, Slots: 4}
+			if edit != nil {
+				edit(i, &hours[i])
+			}
+		}
+		return hours
+	}
+	for _, test := range []struct {
+		name      string
+		current   int
+		hours     []recommendationHour
+		direction string
+		limit     int
+		reasons   []string
+	}{
+		{"studio overload lowers to clean level with disk reason", 8, hostHours(len(studioCPU), func(i int, h *recommendationHour) {
+			h.CPUBusySumPercent = studioCPU[i] * 120
+			h.Slots = 6
+			if studioCPU[i] >= 90 || studioWarn[i] == '1' {
+				h.Slots = 8
+			}
+			if studioWarn[i] == '1' {
+				h.PressureWarnCount = 10
+			}
+			if i == 17 {
+				h.DiskFreeMinBytes = 0
+			}
+		}), "lower", 6, []string{"CPU stayed at 90% or more in 11 of 91 hours.", "Memory pressure or growing swap in 8 of 91 hours.", "Free disk fell to 0 GB on Oct 11."}},
+		{"memory pressure alone lowers by one without a clean level", 8, hostHours(48, func(i int, h *recommendationHour) {
+			h.Slots = 8
+			if i%4 == 0 {
+				h.PressureCriticalCount = 1
+			}
+		}), "lower", 7, []string{"Memory pressure or growing swap in 12 of 48 hours."}},
+		{"swap growth counts as memory saturation", 6, hostHours(48, func(i int, h *recommendationHour) {
+			h.SwapUsedMaxBytes = uint64(i) * 2 * capacityGiB
+		}), "lower", 5, []string{"Memory pressure or growing swap in 47 of 48 hours."}},
+		{"isolated hot CPU hour is not saturation", 6, hostHours(48, func(i int, h *recommendationHour) {
+			if i%2 == 0 {
+				h.CPUBusySumPercent = 95 * 120
+			}
+		}), "hold", 6, []string{"Saturated in 0 of 48 hours."}},
+		{"pressure while idle is not saturation", 6, hostHours(48, func(_ int, h *recommendationHour) {
+			h.Slots = 0
+			h.PressureWarnCount = 5
+		}), "hold", 6, []string{"Saturated in 0 of 48 hours."}},
+		{"low disk alone holds and reports disk", 6, hostHours(48, func(i int, h *recommendationHour) {
+			if i == 30 {
+				h.DiskFreeMinBytes = 12 * capacityGiB
+			}
+		}), "hold", 6, []string{"Saturated in 0 of 48 hours.", "Free disk fell to 12 GB on Oct 12."}},
+		{"full slots without saturation raise by one", 4, hostHours(40, func(i int, h *recommendationHour) {
+			if i%10 < 3 {
+				h.Slots = 3.8
+			} else {
+				h.Slots = 1
+			}
+		}), "raise", 5, []string{"Every slot was busy in 12 of 40 hours without saturation."}},
+		{"idle host never raises", 4, hostHours(72, func(_ int, h *recommendationHour) { h.Slots = 0 }), "hold", 4, []string{"Saturated in 0 of 72 hours."}},
+		{"stopped runner holds", 0, hostHours(48, nil), "hold", 0, []string{"The runner is stopped at 0 jobs at once."}},
+		{"uncovered hours do not count", 6, hostHours(30, func(i int, h *recommendationHour) {
+			if i < 10 {
+				h.CPUSampleCount = 0
+			}
+		}), "insufficient_evidence", -1, []string{"20 of the 24 covered hours needed so far."}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := suggestLimit(test.current, test.hours)
+			limit := -1
+			if got.Limit != nil {
+				limit = *got.Limit
+			}
+			if got.Direction != test.direction || limit != test.limit || got.Current != test.current || !reflect.DeepEqual(got.Reasons, test.reasons) {
+				t.Fatalf("suggestion=%+v limit=%d, want direction=%s limit=%d reasons=%q", got, limit, test.direction, test.limit, test.reasons)
+			}
+		})
+	}
+}
