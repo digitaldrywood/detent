@@ -215,8 +215,12 @@ func TestReportsFilterDimensions(t *testing.T) {
 		for _, project := range []string{f.project, reportsAllProjects} {
 			var facets reportsFacets
 			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+project+"&range=24h", http.StatusOK), &facets)
-			runner := func(id string) bool { return slices.ContainsFunc(facets.Runners, func(r reportsFacet) bool { return r.ID == id }) }
-			filer := func(id string) bool { return slices.ContainsFunc(facets.FiledBy, func(r reportsFacet) bool { return r.ID == id }) }
+			runner := func(id string) bool {
+				return slices.ContainsFunc(facets.Runners, func(r reportsFacet) bool { return r.ID == id })
+			}
+			filer := func(id string) bool {
+				return slices.ContainsFunc(facets.FiledBy, func(r reportsFacet) bool { return r.ID == id })
+			}
 			if !slices.Contains(facets.Labels, "rpt-cloud") || !filer("principal_rpt_two") || !runner("runner_browser_preview") {
 				t.Fatalf("%s options miss the readable project: %+v", project, facets)
 			}
