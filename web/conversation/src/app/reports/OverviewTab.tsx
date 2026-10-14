@@ -60,11 +60,10 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
   const completion = report.completion;
   const previous = report.previous.partial ? undefined : report.previous;
   const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
-  const cost = usageMissing ? undefined : report.cost_usd;
   const perShipped = usageMissing ? null : costPerShipped(completion.cost_usd, completion.done);
   const priorPerShipped = usageMissing ? null : costPerShipped(report.previous.cost_usd, report.previous.done);
   const open = openWork(report);
-  const stuck = open.items;
+  const stuck = open.items.filter((item) => item.hours > 24);
   const buckets = reportBuckets(report);
   const categories = bucketCategories(buckets);
   const hasPrior = buckets.some((bucket) => bucket.prior_done !== undefined);
@@ -112,7 +111,7 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
           label="Cost per shipped issue"
           value={perShipped === null ? null : formatUsd(perShipped)}
           delta={compare ? usdDelta(perShipped, priorPerShipped) : undefined}
-          detail={cost === undefined ? undefined : `${formatUsd(cost)} total`}
+          detail={perShipped === null ? undefined : `${formatUsd(completion.cost_usd)} lifetime, shipped issues`}
         />
         <MetricTile
           className="max-sm:hidden"
@@ -197,7 +196,7 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
             <Dash /> Aging work is not recorded.
           </Muted>
         ) : stuck.length === 0 ? (
-          <Muted>No open work in progress.</Muted>
+          <Muted>Nothing open has been in its lane over 24 h.</Muted>
         ) : (
           <div className="flex flex-col">
             {stuck.slice(0, 4).map((item) => (

@@ -3,6 +3,8 @@
     "done": 276,
     "cancelled": 112,
     "cost_usd": 6201.72,
+    "cost_p50_usd": 11.2,
+    "cost_p90_usd": 58.4,
     "system": {
       "count": 276,
       "seconds": 15102720,

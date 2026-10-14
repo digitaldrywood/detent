@@ -16,6 +16,7 @@ import {
 } from "../src/app/reports/model.ts";
 import { reworkRows } from "../src/app/reports/QualityTab.tsx";
 import { reworkByGroup, reworkGroupOf } from "../src/app/reports/rework.ts";
+import { windowLabel } from "../src/app/reports/ReportsPage.tsx";
 
 const decode = (value: unknown) => Schema.decodeUnknownSync(ReportsReport)(value);
 
@@ -48,6 +49,13 @@ describe("Reports read", () => {
     expect(durationDelta(9 * 3600, 0)).toBeNull();
     expect(pointsDelta(61.2, 65.3)).toEqual({ text: "4 pts", direction: "down", tone: "bad" });
     expect(pointsDelta(61.2, undefined)).toBeNull();
+  });
+
+  it("labels the window by calendar day, ending a midnight window on the day before", () => {
+    const at = (from: string, to: string) => windowLabel(decode({ ...fixture, analytics: { ...fixture.analytics, window: { from, to } } }));
+    expect(at("2026-10-07T00:00:00Z", "2026-10-13T10:00:00Z")).toBe("Oct 7 – Oct 13 · 6 days + today · hourly data through Oct 13, 9 AM UTC");
+    expect(at("2026-10-06T00:00:00Z", "2026-10-13T00:00:00Z")).toBe("Oct 6 – Oct 12 · 7 days · hourly data through Oct 12, 11 PM UTC");
+    expect(at("2026-10-12T10:00:00Z", "2026-10-13T10:00:00Z")).toBe("Oct 12 – Oct 13 · hourly data through Oct 13, 9 AM UTC");
   });
 
   it("writes RFC 4180 cells and neutralises formula prefixes", () => {

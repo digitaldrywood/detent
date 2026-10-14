@@ -164,6 +164,9 @@ func TestReportsShippedPopulation(t *testing.T) {
 	if c := report.Completion; c.Done != 7 || c.Cancelled != 2 || c.Partial || c.System.Count != 7 || throughput != 7 || c.Cost != shippedCost {
 		t.Fatalf("completion=%+v throughput=%d want 7 shipped, 2 cancelled, lifetime cost %v", c, throughput, shippedCost)
 	}
+	if c := report.Completion; c.CostP50 == nil || c.CostP90 == nil || *c.CostP50 != 0 || *c.CostP90 <= 0 || *c.CostP90 > shippedCost {
+		t.Fatalf("shipped spend p50=%v p90=%v, want 0 and a share of %v: one of seven shipped issues spent", c.CostP50, c.CostP90, shippedCost)
+	}
 	if p := report.Previous; p.Done != 1 || p.Cancelled != 0 || p.Partial || p.Cost != 0 {
 		t.Fatalf("previous=%+v", p)
 	}

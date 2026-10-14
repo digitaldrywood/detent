@@ -25,7 +25,8 @@ export interface ChartLegendItem {
   readonly dashed?: boolean;
 }
 
-const AXIS_WIDTH = 44;
+const AXIS_MIN_WIDTH = 44;
+const AXIS_CHAR_WIDTH = 6.4;
 const LABEL_HEIGHT = 24;
 const TOP = 8;
 const MIN_LABEL_SPACING = 52;
@@ -140,9 +141,6 @@ function Chart({
   const [ref, width] = useWidth(640);
   const [active, setActive] = React.useState<number | null>(null);
   const count = Math.max(1, categories.length);
-  const plotWidth = Math.max(1, width - AXIS_WIDTH);
-  const plotBottom = height - LABEL_HEIGHT;
-  const slot = plotWidth / count;
   const columns = columnsOf(series);
   const totals = categories.map((_, index) => {
     const stacked = columns.map((column) => column.series.reduce((sum, item) => sum + (item.values[index] ?? 0), 0));
@@ -151,6 +149,10 @@ function Chart({
   });
   const ticks = chartTicks(Math.max(...totals, 0) || 1);
   const top = ticks[ticks.length - 1] ?? 1;
+  const AXIS_WIDTH = Math.max(AXIS_MIN_WIDTH, Math.ceil(Math.max(...ticks.map((tick) => formatValue(tick).length)) * AXIS_CHAR_WIDTH) + 8);
+  const plotWidth = Math.max(1, width - AXIS_WIDTH);
+  const plotBottom = height - LABEL_HEIGHT;
+  const slot = plotWidth / count;
   const y = (value: number) => plotBottom - (value / top) * (plotBottom - TOP);
   const center = (index: number) => AXIS_WIDTH + slot * (index + 0.5);
   const primaryWidth = Math.max(1, Math.min(56, slot * (columns.length > 1 ? 0.32 : 0.36)));

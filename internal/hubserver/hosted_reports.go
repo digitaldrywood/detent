@@ -20,6 +20,8 @@ type reportsCompletion struct {
 	Done      int                                  `json:"done"`
 	Cancelled int                                  `json:"cancelled"`
 	Cost      float64                              `json:"cost_usd"`
+	CostP50   *float64                             `json:"cost_p50_usd,omitempty"`
+	CostP90   *float64                             `json:"cost_p90_usd,omitempty"`
 	System    operatortool.AnalyticsDuration       `json:"system"`
 	Lead      operatortool.AnalyticsDuration       `json:"lead"`
 	Working   operatortool.AnalyticsDuration       `json:"working"`
@@ -385,7 +387,16 @@ func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeSco
 		return out, nil, err
 	}
 	out.Done, out.Cancelled = len(population.Shipped), population.Cancelled
-	out.Cost, err = readNativeShippedSpend(ctx, q, scope, ids, to)
+	var perIssue map[string]float64
+	out.Cost, perIssue, err = readNativeShippedSpend(ctx, q, scope, ids, to)
+	if len(perIssue) > 0 {
+		costs := make([]float64, 0, len(perIssue))
+		for _, cost := range perIssue {
+			costs = append(costs, cost)
+		}
+		spread := analyticsDuration(costs)
+		out.CostP50, out.CostP90 = &spread.P50Seconds, &spread.P90Seconds
+	}
 	return out, population.Shipped, err
 }
 
@@ -541,11 +552,16 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	if usageRows > 0 {
 		out.PriorCost = &cost
 	}
-	var attempts, failed int
-	if err := q.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(a.status='failed'),0) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts, &failed); err != nil {
+	var attempts int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts); err != nil {
+		return fmt.Errorf("read prior attempts: %w", err)
+	}
+	failures, partial, err := readNativeFailures(ctx, q, scope, "", &prior)
+	if err != nil {
 		return fmt.Errorf("read prior failed attempts: %w", err)
 	}
-	if attempts > 0 {
+	if attempts > 0 && !partial {
+		failed := len(failures)
 		out.PriorFailed = &failed
 	}
 	landings, err := nativeAnalyticsLandings(ctx, q, scope, prior)

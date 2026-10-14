@@ -15,6 +15,8 @@ const Completion = Schema.Struct({
   done: Schema.Number,
   cancelled: Schema.Number,
   cost_usd: Schema.Number,
+  cost_p50_usd: Schema.optional(Schema.Number),
+  cost_p90_usd: Schema.optional(Schema.Number),
   system: Duration,
   lead: Duration,
   working: Duration,

@@ -76,20 +76,38 @@ WHERE b.organization_id=? AND b.project_id=? AND b.archived IN (0,1) AND b.termi
 	return out, nil
 }
 
-func readNativeShippedSpend(ctx context.Context, q nativeQueryer, scope nativeScope, ids []string, to time.Time) (float64, error) {
+// readNativeShippedSpend returns the lifetime spend of the shipped issues up
+// to `to`, in total and per issue; an issue with no usage spent nothing.
+func readNativeShippedSpend(ctx context.Context, q nativeQueryer, scope nativeScope, ids []string, to time.Time) (float64, map[string]float64, error) {
 	var cost float64
+	perIssue := make(map[string]float64, len(ids))
+	for _, id := range ids {
+		perIssue[id] = 0
+	}
 	err := forShippedBatches(ids, func(batch string) error {
-		var part float64
-		if err := q.QueryRowContext(ctx, `SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u
-WHERE u.organization_id=? AND u.period<? AND u.project_id=?
-AND u.attempt_id IN (SELECT a.id FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id IN (SELECT value FROM json_each(?)))`,
-			scope.organization, to.UTC().Format(usagePeriodLayout), scope.project, scope.organization, scope.project, batch).Scan(&part); err != nil {
+		rows, err := q.QueryContext(ctx, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM native_attempts a
+JOIN attempt_usage u ON u.attempt_id=a.id AND u.organization_id=? AND u.project_id=? AND u.period<?
+WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id IN (SELECT value FROM json_each(?)) GROUP BY a.work_item_id`,
+			scope.organization, scope.project, to.UTC().Format(usagePeriodLayout), scope.organization, scope.project, batch)
+		if err != nil {
 			return fmt.Errorf("read shipped spend: %w", err)
 		}
-		cost += part
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var part float64
+			if err := rows.Scan(&id, &part); err != nil {
+				return fmt.Errorf("read shipped spend: %w", err)
+			}
+			perIssue[id] += part
+			cost += part
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read shipped spend: %w", err)
+		}
 		return nil
 	})
-	return cost, err
+	return cost, perIssue, err
 }
 
 func readProjectSpend(ctx context.Context, q nativeQueryer, scope nativeScope, from, to time.Time) (float64, int, error) {

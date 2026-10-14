@@ -13,7 +13,6 @@ import {
   NOT_SHIPPED_COLOR,
   OTHER_STAGE_COLOR,
   percentText,
-  quantile,
   reportBuckets,
   type ReportsSearch,
   STAGE_GROUPS,
@@ -116,9 +115,8 @@ export function CostTab({
   const shippedKnown = report.spend.some((item) => item.shipped !== undefined);
   const perShipped = report.completion.done > 0 ? report.completion.cost_usd / report.completion.done : null;
   const priorPerShipped = report.previous.done > 0 ? report.previous.cost_usd / report.previous.done : undefined;
-  const shippedCosts = report.spend.filter((item) => item.shipped === true).map((item) => item.cost_usd);
-  const p50 = quantile(shippedCosts, 0.5);
-  const p90 = quantile(shippedCosts, 0.9);
+  const p50 = report.completion.cost_p50_usd ?? null;
+  const p90 = report.completion.cost_p90_usd ?? null;
   const buckets = reportBuckets(report);
   const seriesKnown = report.series !== undefined;
   const notShipped = seriesKnown ? buckets.reduce((sum, bucket) => sum + bucket.not_shipped_cost, 0) : null;
@@ -177,7 +175,7 @@ export function CostTab({
             ariaLabel="Spend per bucket, stacked by stage, with spend on work that did not ship"
             categories={categories}
             height={230}
-            formatValue={(value) => `$${formatTokens(value)}`}
+            formatValue={(value) => formatUsd(value)}
             series={[
               ...STAGE_GROUPS.map((group, index) => ({
                 id: group.id,

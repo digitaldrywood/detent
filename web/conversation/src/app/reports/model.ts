@@ -112,12 +112,6 @@ export function usdDelta(current: number | null, previous: number | null | undef
 
 export const percentText = (value: number) => `${Math.round(value)}%`;
 
-export function quantile(values: readonly number[], q: number): number | null {
-  if (values.length === 0) return null;
-  const sorted = values.toSorted((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))]!;
-}
-
 export type SeriesBucket = NonNullable<ReportsReport["series"]>[number];
 
 const DAY = 86_400_000;

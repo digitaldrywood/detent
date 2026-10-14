@@ -93,10 +93,18 @@ function downloadCsv(report: ReportsReport, range: ReportsRange, project: string
   URL.revokeObjectURL(url);
 }
 
-function windowLabel(report: ReportsReport): string {
-  const { from, to } = report.analytics.window;
-  const lastHour = new Date(Date.parse(to) - 3_600_000).toISOString();
-  return `${formatDayShort(from.slice(0, 10))} – ${formatDayShort(to.slice(0, 10))} · hourly data through ${formatDateTimeShort(lastHour, "UTC")} UTC`;
+const DAY_MS = 86_400_000;
+
+/** "Oct 7 – Oct 13 · 6 days + today · hourly data through Oct 13, 9 AM UTC"; a window ending at midnight ends on the day before. */
+export function windowLabel(report: ReportsReport): string {
+  const from = Date.parse(report.analytics.window.from);
+  const to = Date.parse(report.analytics.window.to);
+  const lastDay = new Date(to - 1).toISOString().slice(0, 10);
+  const lastHour = new Date(to - 3_600_000).toISOString();
+  const days = Math.floor((to - from) / DAY_MS);
+  const today = (to - from) % DAY_MS !== 0;
+  const span = to - from < 6 * DAY_MS ? "" : ` · ${days} ${days === 1 ? "day" : "days"}${today ? " + today" : ""}`;
+  return `${formatDayShort(report.analytics.window.from.slice(0, 10))} – ${formatDayShort(lastDay)}${span} · hourly data through ${formatDateTimeShort(lastHour, "UTC")} UTC`;
 }
 
 export function ReportsView({
