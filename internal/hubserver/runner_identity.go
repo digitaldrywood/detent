@@ -295,6 +295,10 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 		}
 	}
+	configurationIssuer, err := s.prepareProjectConfigurationIssuer(c.Request().Context(), scope, request.ProjectConfiguration)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		if scope.credential.Runner.RunnerID != "" {
 			if request.SpriteName != "" {
@@ -378,7 +382,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, err
 				}
 			}
-			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, now)
+			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, request.ProjectConfiguration, configurationIssuer, now)
 			if err != nil {
 				return nil, err
 			}
