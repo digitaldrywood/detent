@@ -1375,6 +1375,15 @@ Each tenant Hub aggregates requests in memory and flushes every minute to
 Goose schema. Minute rows retain caller, route, status class and latency for
 14 days. Neither the shared entry nor the host aggregates tenant metrics.
 
+The same flush folds requests into hourly rows per route template and status
+class, retained for 90 days. With `window=<duration>` (1h to 2160h) the
+endpoint also returns `route_latency` with `from`, `to`, `bucket` and
+`buckets`. Each bucket row has `from`, `route`, `status_class` (`2xx`, `4xx`,
+and so on), `count`, `sum_ms`, `p50_ms`, `p95_ms` and `max_ms`, for the 20
+busiest routes in the window. MCP `time_series` returns the same
+`route_latency` to administrators for its window, in buckets of at least one
+hour and at most 240 buckets.
+
 Authenticated runners use a UTC-minute request budget of
 `120 + 60 * effective capacity`, where effective capacity is the minimum of
 the host capacity, runner reported capacity, and runner capacity limit. This

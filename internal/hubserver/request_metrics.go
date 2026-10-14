@@ -200,6 +200,9 @@ func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending
 			return err
 		}
 	}
+	if err := writeRequestHours(ctx, tx, now, pending); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

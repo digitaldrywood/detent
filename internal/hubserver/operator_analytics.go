@@ -102,6 +102,7 @@ type nativeAnalyticsProject struct {
 }
 type nativeAnalyticsReport struct {
 	Requests       *requestMetricsReport        `json:"requests,omitempty"`
+	RouteLatency   *routeLatencyHistory         `json:"route_latency,omitempty"`
 	OrganizationID string                       `json:"organization_id"`
 	Projects       []nativeAnalyticsProject     `json:"projects"`
 	ObservedAt     time.Time                    `json:"observed_at"`
@@ -139,6 +140,16 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 		}
 		if visible {
 			report.Requests = &requests
+		}
+	}
+	if call.Name == operatortool.TimeSeries {
+		history, visible, err := s.adminRouteLatency(ctx, w.From, w.To, w.Bucket)
+		if err != nil {
+			s.config.Logger.Warn("read route latency history", "error", err)
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		if visible {
+			report.RouteLatency = &history
 		}
 	}
 	return hubOperatorResult(report)
