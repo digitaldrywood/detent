@@ -242,6 +242,12 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "clock-behind newer pass supersedes failure", validator: true, verdict: "pass", latestPassed: true},
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
 		{name: "matching wrapped finalization receipt is reused", validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
+		{name: "matching bounded Go flags reuse receipt", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "stable-flags"},
+		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
+		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
+		{name: "double dash effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-double-vettool", wantRuns: 2},
+		{name: "quoted environment profile requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-quoted-profile", wantRuns: 2},
+		{name: "quoted effective profile requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-quoted-profile", wantRuns: 2},
 		{name: "wrapped receipt survives transport", ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
 		{name: "changed effective wrapper toolchain requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "toolchain", wantRuns: 1},
 		{name: "changed Go flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "flags", wantRuns: 1},
@@ -284,6 +290,27 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				}
 				t.Setenv("CHECK_LAND_BASE", "origin/develop")
 				source := initRunnerSourceRepo(t)
+				if test.changedInput == "environment-vettool" {
+					t.Setenv("GOFLAGS", "-vettool=custom")
+				}
+				if test.changedInput == "environment-quoted-profile" {
+					t.Setenv("GOFLAGS", "\"-pgo=custom\"")
+				}
+				if test.changedInput == "effective-vettool" || test.changedInput == "effective-double-vettool" || test.changedInput == "effective-quoted-profile" || test.changedInput == "stable-flags" {
+					flags := "-vettool=custom"
+					if test.changedInput == "stable-flags" {
+						flags = "-tags=fixture"
+					}
+					if test.changedInput == "effective-double-vettool" {
+						flags = "--vettool=custom"
+					}
+					if test.changedInput == "effective-quoted-profile" {
+						flags = "\\\"-pgo=custom\\\""
+					}
+					if err := os.WriteFile(filepath.Join(source, ".git", "effective-go-flags"), []byte(flags), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
@@ -678,8 +705,11 @@ fi
 				if err != nil || string(invocations) != strings.Repeat("build\n", 1+test.wantRuns) {
 					t.Fatalf("landing validation repeated: %q %v", invocations, err)
 				}
-				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
+				if !test.unsupported && !strings.HasPrefix(test.changedInput, "environment-") && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
 					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
+				}
+				if (strings.HasSuffix(test.changedInput, "vettool") || strings.HasSuffix(test.changedInput, "profile")) && receipt.Evidence.InputsSHA != "" {
+					t.Fatal("external analysis input received a reusable identity")
 				}
 				if test.changedInput == "linter" || test.wantRuns == 0 {
 					invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "linter-invocations"))
