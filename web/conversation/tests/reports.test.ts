@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import * as Schema from "effect/Schema";
 import fixture from "../src/contracts/fixtures/reports.json";
 import { ReportsReport } from "../src/contracts/reports.ts";
-import { makeAccountApi } from "../src/app/account/api.ts";
+import { makeAccountApi, reportsQuery } from "../src/app/account/api.ts";
+import { plainSearchOptions } from "../src/app/lib/searchParams.ts";
+import { chipSummary, filterOptions } from "../src/app/reports/filters.tsx";
 import { costRows, stageStack } from "../src/app/reports/CostTab.tsx";
 import { failureRows } from "../src/app/reports/FailuresTab.tsx";
 import {
@@ -12,6 +14,7 @@ import {
   parseReportsSearch,
   pointsDelta,
   reportBuckets,
+  reportsQueryFilters,
   reportsSearchParams,
 } from "../src/app/reports/model.ts";
 import { reworkRows } from "../src/app/reports/QualityTab.tsx";
@@ -36,6 +39,13 @@ describe("Reports read", () => {
       [{ range: "30d", clock: "created" }, { range: "30d", clock: "created" }],
       [{ range: "48h", group: "nope", compare: "off" }, { compare: "off" }],
       [{ kind: "issue", issues: "not-shipped", group: "model" }, { kind: "issue", issues: "not-shipped", group: "model" }],
+      [{ from: "2026-10-01", to: "2026-10-05", range: "30d" }, { from: "2026-10-01", to: "2026-10-05" }],
+      [{ from: "2026-07-01", to: "2026-10-05", range: "30d" }, { range: "30d" }],
+      [{ from: "2026-10-05", to: "2026-10-01" }, {}],
+      [{ from: "2026-10-01" }, {}],
+      [{ project: "all", labels: ["ui", "cloud", "ui"], priorities: ["high", "Nope"], filed_by: "p_1", runners: "r_1", models: "m", stages: "code" }, { project: "all", labels: ["cloud", "ui"], priorities: ["High"], filed_by: ["p_1"], runners: ["r_1"], models: ["m"], stages: ["code"] }],
+      [{ labels: "a,b" }, { labels: ["a,b"] }],
+      [{ project: "prj_1", types: "bug" }, { types: ["bug"] }],
     ] as const) {
       expect(reportsSearchParams(parseReportsSearch(search))).toEqual(params);
     }
@@ -141,5 +151,36 @@ describe("Reports read", () => {
     });
     await api.reports("project / one", "90d");
     expect(requested).toContain("reports?project=project%20%2F%20one&range=90d");
+  });
+
+  it("round-trips repeated filter parameters through the router, keeping commas inside a value", () => {
+    const search = parseReportsSearch(plainSearchOptions.parseSearch("labels=a%2Cb&labels=cloud&priorities=High&range=30d"));
+    expect(search.filters.labels).toEqual(["a,b", "cloud"]);
+    expect(plainSearchOptions.stringifySearch(reportsSearchParams(search))).toBe("?range=30d&labels=a%2Cb&labels=cloud&priorities=High");
+  });
+
+  it("sends a custom range and each filter value as its own parameter", () => {
+    const filters = reportsQueryFilters(
+      parseReportsSearch({ labels: ["cloud", "a&b"], priorities: ["Urgent", "Low"], types: "bug", filed_by: "p 1", runners: "r", models: "m", stages: "code" }).filters,
+    );
+    expect(reportsQuery("all", { from: "2026-10-01", to: "2026-10-05" }, filters)).toBe(
+      "project=all&from=2026-10-01&to=2026-10-05&labels=a%26b&labels=cloud&priorities=3&priorities=0&types=bug&filed_by=p%201&runners=r&models=m&stages=code",
+    );
+    expect(reportsQuery("prj", "7d", parseReportsSearch({}).filters)).toBe("project=prj&range=7d");
+  });
+
+  it("offers each chip's facets, keeps a selected value the facets dropped and names a set chip by its value", () => {
+    const facets = { labels: ["cloud"], filed_by: [{ id: "p_1", name: "cory@example.com" }, { id: "p_2", name: "" }], runners: [], models: [], stages: ["code"] };
+    expect(filterOptions("labels", facets, ["gone"])).toEqual([
+      { value: "cloud", label: "cloud" },
+      { value: "gone", label: "gone" },
+    ]);
+    expect(filterOptions("filedBy", facets, []).map((option) => option.label)).toEqual(["cory@example.com", "p_2"]);
+    expect(filterOptions("stages", facets, []).map((option) => option.label)).toEqual(["Code"]);
+    expect(filterOptions("priorities", undefined, []).map((option) => option.value)).toEqual(["Urgent", "High", "Normal", "Low"]);
+    const people = filterOptions("filedBy", facets, ["p_1"]);
+    expect(chipSummary("Filed by", people, [])).toBe("Filed by");
+    expect(chipSummary("Filed by", people, ["p_1"])).toBe("Filed by: cory@example.com");
+    expect(chipSummary("Label", people, ["a", "b"])).toBe("Label: 2 selected");
   });
 });

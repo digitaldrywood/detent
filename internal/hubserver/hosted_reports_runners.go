@@ -45,7 +45,7 @@ func reportsRunnerTotals(attempts []nativeAnalyticsAttempt, usage map[string][]u
 	}
 	out := make([]reportsRunner, 0, len(runners))
 	for id, runner := range runners {
-		runner.Duration = analyticsDuration(durations[id])
+		runner.Duration = sampledDuration(durations[id])
 		out = append(out, *runner)
 	}
 	slices.SortFunc(out, func(a, b reportsRunner) int {

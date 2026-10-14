@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { DownloadIcon, ListFilterIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Popover, PopoverPopup, PopoverTrigger } from "../../components/ui/popover.tsx";
 import { RefreshIcon } from "../../components/ui/refresh-icon.tsx";
 import { ScrollArea } from "../../components/ui/scroll-area.tsx";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../components/ui/select.tsx";
@@ -17,7 +18,7 @@ import {
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { ReportsReport, ReportsRange } from "../../contracts/reports.ts";
+import type { ReportsFacets, ReportsReport } from "../../contracts/reports.ts";
 import type { BootstrapProject } from "../../contracts/index.ts";
 import { useAccountApi } from "../account/context.ts";
 import { useSidebarData } from "../adapters/sidebarData.tsx";
@@ -25,29 +26,53 @@ import { usePageTitle } from "../pageTitle.ts";
 import { formatDateTimeShort, formatDayShort } from "../usage/usageFormat.ts";
 import { CostTab, costCsv } from "./CostTab.tsx";
 import { FailuresTab } from "./FailuresTab.tsx";
+import { anyFilterSet, CustomRangePicker, customRangeLabel, filterOptions, ReportFilterChip } from "./filters.tsx";
 import { FlowTab } from "./FlowTab.tsx";
 import {
+  ALL_PROJECTS,
+  CUSTOM_RANGE,
   isReportTab,
+  NO_FILTERS,
   parseReportsSearch,
+  priorRecorded,
   rangeOption,
+  REPORT_FILTERS,
   REPORT_RANGES,
   REPORT_TABS,
+  reportsQueryFilters,
   reportsSearchParams,
+  type ReportFilterKey,
   type ReportsSearch,
   type ReportTab,
 } from "./model.ts";
 import { OverviewTab } from "./OverviewTab.tsx";
 import { QualityTab } from "./QualityTab.tsx";
-import { useReports } from "./reportsQuery.ts";
+import { useReportOptions, useReports } from "./reportsQuery.ts";
 
-const FILTERS = ["Label", "Priority", "Type", "Filed by"] as const;
-const TAB_FILTERS: Readonly<Record<ReportTab, readonly string[]>> = {
-  overview: [...FILTERS, "Runner"],
-  flow: [...FILTERS, "Runner"],
-  quality: [...FILTERS, "Runner"],
-  cost: [...FILTERS, "Model", "Stage"],
-  failures: ["Label", "Priority", "Runner", "Stage"],
+const ISSUE_FILTERS = ["labels", "priorities", "types", "filedBy", "runners"] as const;
+/** The chips each tab offers; a chip set on another tab stays visible so it can be cleared. */
+const TAB_FILTERS: Readonly<Record<ReportTab, readonly ReportFilterKey[]>> = {
+  overview: ISSUE_FILTERS,
+  flow: ISSUE_FILTERS,
+  quality: ISSUE_FILTERS,
+  cost: [...ISSUE_FILTERS, "models", "stages"],
+  failures: ISSUE_FILTERS,
 };
+
+/** The report with every prior-period value removed when the project did not exist then, so each tile says "No prior data". */
+function withPriorPeriod(report: ReportsReport | null): ReportsReport | null {
+  if (report === null || priorRecorded(report)) return report;
+  return {
+    ...report,
+    previous: { ...report.previous, partial: true },
+    previous_cost_usd: undefined,
+    previous_first_try_percent: null,
+    previous_failed: undefined,
+    prior: undefined,
+    open_work: report.open_work === undefined ? undefined : { ...report.open_work, previous_stuck: undefined },
+    series: report.series?.map((bucket) => ({ ...bucket, prior_done: undefined })),
+  };
+}
 
 export function ReportsRoute(): React.ReactElement {
   usePageTitle("Reports");
@@ -59,7 +84,10 @@ export function ReportsRoute(): React.ReactElement {
   const tab: ReportTab = isReportTab(params.tab) ? params.tab : "overview";
   const search = parseReportsSearch(rawSearch);
   const project = sidebar?.projects.find((p) => p.id === sidebar.activeProjectId);
-  const reports = useReports(api, project?.id ?? null, search.range);
+  const projectId = search.project === ALL_PROJECTS && (sidebar?.projects.length ?? 0) > 0 ? ALL_PROJECTS : (project?.id ?? null);
+  const range = search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? { from: search.from, to: search.to } : search.range === CUSTOM_RANGE.value ? "7d" : search.range;
+  const reports = useReports(api, projectId === null ? null : { projectId, range, filters: reportsQueryFilters(search.filters) });
+  const options = useReportOptions(api, projectId, range);
   const go = (nextTab: ReportTab, nextSearch: ReportsSearch) => {
     void navigate({
       to: nextTab === "overview" ? "/reports" : "/reports/$tab",
@@ -69,8 +97,9 @@ export function ReportsRoute(): React.ReactElement {
   };
   return (
     <ReportsView
-      report={reports.report}
-      pending={project !== undefined && reports.pending}
+      report={withPriorPeriod(reports.report)}
+      options={options}
+      pending={projectId !== null && reports.pending}
       error={reports.error}
       projects={sidebar?.projects ?? []}
       project={project ?? null}
@@ -83,7 +112,7 @@ export function ReportsRoute(): React.ReactElement {
   );
 }
 
-function downloadCsv(report: ReportsReport, range: ReportsRange, project: string): void {
+function downloadCsv(report: ReportsReport, range: string, project: string): void {
   const blob = new Blob([costCsv(report)], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -109,6 +138,7 @@ export function windowLabel(report: ReportsReport): string {
 
 export function ReportsView({
   report,
+  options,
   pending,
   error,
   projects,
@@ -120,6 +150,7 @@ export function ReportsView({
   onRefresh,
 }: {
   readonly report: ReportsReport | null;
+  readonly options?: ReportsFacets | undefined;
   readonly pending: boolean;
   readonly error: string | null;
   readonly projects: readonly BootstrapProject[];
@@ -134,9 +165,23 @@ export function ReportsView({
   const setSearch = (patch: Partial<ReportsSearch>) => onNavigate(tab, { ...search, ...patch });
   const setRange = (value: unknown) => {
     const match = REPORT_RANGES.find((option) => option.value === value);
-    if (match) setSearch({ range: match.value });
+    if (match) setSearch({ range: match.value, from: null, to: null });
   };
-  const filters = TAB_FILTERS[tab];
+  const setCustom = (from: string, to: string) => setSearch({ range: CUSTOM_RANGE.value, from, to });
+  const custom = search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? customRangeLabel(search.from, search.to) : null;
+  const allProjects = search.project === ALL_PROJECTS;
+  const projectName = allProjects ? "All projects" : (project?.name ?? "Choose a project");
+  const rangeName = custom === null ? search.range : `${search.from}-${search.to}`;
+  const chips = REPORT_FILTERS.filter((filter) => TAB_FILTERS[tab].includes(filter.key) || search.filters[filter.key].length > 0).map((filter) => (
+    <ReportFilterChip
+      key={filter.key}
+      label={filter.label}
+      options={filterOptions(filter.key, options, search.filters[filter.key])}
+      selected={search.filters[filter.key]}
+      onChange={(values) => setSearch({ filters: { ...search.filters, [filter.key]: values } })}
+    />
+  ));
+  const setCount = Object.values(search.filters).filter((values) => values.length > 0).length;
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
       <WorkspacePageHeader className="h-auto min-h-(--workspace-topbar-height) border-border border-b">
@@ -148,11 +193,23 @@ export function ReportsView({
             <WorkspaceBreadcrumbSeparator />
             <WorkspaceBreadcrumbItem current>
               {projects.length > 0 && onProjectChange ? (
-                <Select value={project?.id ?? ""} onValueChange={(value) => typeof value === "string" && value !== "" && onProjectChange(value)}>
+                <Select
+                  value={allProjects ? ALL_PROJECTS : (project?.id ?? "")}
+                  onValueChange={(value) => {
+                    if (typeof value !== "string" || value === "") return;
+                    if (value === ALL_PROJECTS) {
+                      setSearch({ project: ALL_PROJECTS });
+                      return;
+                    }
+                    if (allProjects) setSearch({ project: null });
+                    onProjectChange(value);
+                  }}
+                >
                   <SelectTrigger aria-label="Project" size="compact" className="w-auto min-w-0 max-w-56">
-                    <SelectValue>{project?.name ?? "Choose a project"}</SelectValue>
+                    <SelectValue>{projectName}</SelectValue>
                   </SelectTrigger>
                   <SelectPopup align="start" alignItemWithTrigger={false}>
+                    <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
                     {projects.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
                         {item.name}
@@ -161,7 +218,7 @@ export function ReportsView({
                   </SelectPopup>
                 </Select>
               ) : (
-                <span className="truncate">{project?.name ?? "Choose a project"}</span>
+                <span className="truncate">{projectName}</span>
               )}
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
@@ -172,9 +229,16 @@ export function ReportsView({
                   {option.label}
                 </GroupToggle>
               ))}
-              <GroupToggle value="custom" disabled aria-label="Custom range: not available yet">
-                Custom
-              </GroupToggle>
+              <CustomRangePicker
+                from={search.from}
+                to={search.to}
+                onApply={setCustom}
+                trigger={
+                  <GroupToggle value={CUSTOM_RANGE.value} aria-label={custom === null ? "Custom range" : `Custom range, ${custom}`}>
+                    {custom ?? CUSTOM_RANGE.label}
+                  </GroupToggle>
+                }
+              />
             </ToggleGroup>
             <Toggle size="sm" variant="outline" pressed={search.compare} onPressedChange={(pressed) => setSearch({ compare: pressed })}>
               vs {range.prior}
@@ -184,7 +248,7 @@ export function ReportsView({
                 size="compact"
                 variant="outline"
                 disabled={!report}
-                onClick={() => report && downloadCsv(report, search.range, project?.name ?? "project")}
+                onClick={() => report && downloadCsv(report, rangeName, allProjects ? "all-projects" : (project?.name ?? "project"))}
               >
                 <DownloadIcon aria-hidden />
                 Export CSV
@@ -200,7 +264,7 @@ export function ReportsView({
         <div className="flex items-center gap-2 ps-(--workspace-gutter-start) pe-(--workspace-gutter-end) pt-3 sm:hidden">
           <Select value={search.range} onValueChange={setRange}>
             <SelectTrigger aria-label="Report range" className="w-auto min-w-0">
-              <SelectValue>{range.long}</SelectValue>
+              <SelectValue>{custom ?? range.long}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="start" alignItemWithTrigger={false}>
               {REPORT_RANGES.map((option) => (
@@ -210,10 +274,28 @@ export function ReportsView({
               ))}
             </SelectPopup>
           </Select>
-          <Button variant="outline" disabled aria-label="Filters: not available yet">
-            <ListFilterIcon aria-hidden />
-            Filters
-          </Button>
+          <CustomRangePicker
+            from={search.from}
+            to={search.to}
+            onApply={setCustom}
+            trigger={<Button variant="outline" aria-label="Custom range">{CUSTOM_RANGE.label}</Button>}
+          />
+          <Popover>
+            <PopoverTrigger render={<Button variant="outline" aria-label={setCount > 0 ? `Filters, ${setCount} set` : "Filters"} />}>
+              <ListFilterIcon aria-hidden />
+              {setCount > 0 ? `Filters · ${setCount}` : "Filters"}
+            </PopoverTrigger>
+            <PopoverPopup align="start" width="sm">
+              <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2 pointer-coarse:gap-4">
+                {chips}
+              </div>
+              {anyFilterSet(search.filters) ? (
+                <Button size="compact" variant="ghost" className="mt-2" onClick={() => setSearch({ filters: NO_FILTERS })}>
+                  Clear filters
+                </Button>
+              ) : null}
+            </PopoverPopup>
+          </Popover>
           <Button size="icon" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh} className="ml-auto">
             <RefreshIcon refreshing={pending} />
           </Button>
@@ -228,12 +310,8 @@ export function ReportsView({
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="expanded" data-testid="reports-page" className="pt-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <div role="group" aria-label="Filters" className="hidden flex-wrap items-center gap-2 sm:flex">
-                {filters.map((name) => (
-                  <Toggle key={name} size="compact" variant="pill-outline" disabled aria-label={`${name} filter: not available yet`}>
-                    {name}
-                  </Toggle>
-                ))}
+              <div role="group" aria-label="Filters" className="hidden flex-wrap items-center gap-2 pointer-coarse:gap-4 sm:flex">
+                {chips}
               </div>
               <span className="flex-1" />
               {tab === "flow" ? (

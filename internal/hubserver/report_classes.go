@@ -27,6 +27,7 @@ type reportClassTotal struct {
 	FirstSeen          *time.Time `json:"first_seen,omitempty"`
 	LastSeen           *time.Time `json:"last_seen,omitempty"`
 	TrackingWorkItemID string     `json:"tracking_work_item_id,omitempty"`
+	itemCounts         map[string]int
 }
 
 type reportClassRule struct {

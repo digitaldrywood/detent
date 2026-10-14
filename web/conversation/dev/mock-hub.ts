@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 
 import { createWorkMock } from "./mock-work.ts";
 import reportsFixture from "../src/contracts/fixtures/reports.json";
+import reportOptionsFixture from "../src/contracts/fixtures/reportOptions.json";
 import type {
   Conversation,
   ConversationEvent,
@@ -2670,6 +2671,10 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    if (segments[0] === "reports" && segments[1] === "options" && segments.length === 2 && method === "GET") {
+      json(response, 200, structuredClone(reportOptionsFixture));
+      return true;
+    }
     if (segments[0] === "reports" && segments.length === 1 && method === "GET") {
       const report = structuredClone(reportsFixture);
       report.analytics.project_id = url.searchParams.get("project") ?? "proj_alpha";

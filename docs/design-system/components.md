@@ -1578,16 +1578,16 @@ Showing a secret such as an API key redacted until revealed.
 
 ### Reports page
 
-Project reports in five tabs (Overview, Flow, Quality, Cost and Failures), each chart first with its rows below; the tab and range live in the URL.
+Project or organization reports in five tabs (Overview, Flow, Quality, Cost and Failures), each chart first with its rows below. The project (or All projects), a preset or custom range, the comparison and every filter chip live in the URL, so a copied link reproduces the view.
 
 - Kind: Composition; status: available; id: `reports-page`.
 - Import: `import { ReportsRoute, ReportsView } from "~/app/reports/ReportsPage";`
 - Source: [src/app/reports/ReportsPage.tsx](../../web/conversation/src/app/reports/ReportsPage.tsx).
 - Variants: none.
-- States: loading, empty, error, not recorded.
-- Keyboard: Project, range, comparison and refresh controls, then the section tabs, the view toggles and each card's links and expandable rows in reading order.
-- Avoid: Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.
-- Related: [Tabs](#tabs), [Metric tile](#metric-tile), [Chart](#chart), [Toggle group](#toggle-group), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
+- States: loading, empty, error, not recorded, filtered, no prior data.
+- Keyboard: Project, range, custom range, comparison and refresh controls, then the section tabs, the filter chips (each a Combobox, with a clear button once set), the view toggles and each card's links and expandable rows in reading order.
+- Avoid: Point-in-time snapshots as historical flow metrics, unrecorded values as zeroes, or a 0% delta when the prior period has no data.
+- Related: [Tabs](#tabs), [Metric tile](#metric-tile), [Chart](#chart), [Toggle group](#toggle-group), [Combobox](#combobox), [Calendar](#calendar), [Popover](#popover), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
 
 ### Usage page
 

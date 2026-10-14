@@ -294,7 +294,8 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	if err != nil {
 		return out, err
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?) AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?)) ORDER BY native_id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From))
+	issues, issueArgs := reportsIssueClause(ctx, "i.native_id")
+	rows, err := queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?) AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))`+issues+` ORDER BY native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
 	if err != nil {
 		return out, err
 	}
@@ -456,7 +457,7 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 		items = append(items, item)
 	}
 	for lane, values := range lanes {
-		summary.Lanes = append(summary.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, frames.states), AnalyticsDuration: analyticsDuration(values)})
+		summary.Lanes = append(summary.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, frames.states), AnalyticsDuration: sampledDuration(values)})
 	}
 	sort.Slice(summary.Lanes, func(i, j int) bool { return summary.Lanes[i].Lane < summary.Lanes[j].Lane })
 	for _, cause := range causes {
@@ -469,7 +470,7 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 		}
 		return a.ReasonDetail < b.ReasonDetail
 	})
-	summary.SystemTotal, summary.HeldTotal, summary.QueueTotal, summary.LeadTotal = analyticsDuration(system), analyticsDuration(held), analyticsDuration(queue), analyticsDuration(lead)
+	summary.SystemTotal, summary.HeldTotal, summary.QueueTotal, summary.LeadTotal = sampledDuration(system), sampledDuration(held), sampledDuration(queue), sampledDuration(lead)
 	return summary, items
 }
 
