@@ -334,6 +334,10 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 	if err != nil {
 		return err
 	}
+	currentPolicy, err := readChangeSummaryPolicy(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
 	states := make([]connector.WorkflowState, len(project.States))
 	for i, lane := range project.States {
 		states[i] = connector.WorkflowState{Name: lane.Name, Dispatchable: lane.Dispatchable, Terminal: lane.Terminal, OperatorOnly: lane.OperatorOnly, Transitions: lane.Transitions}
@@ -346,18 +350,15 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 		if !found || change.CurrentLanding() != nil || change.CurrentVersion == "" {
 			continue
 		}
-		version, err := readChangeVersion(ctx, tx, change.ID, change.CurrentVersion)
+		version, err := readChangeVersionSnapshot(ctx, tx, change.ID, change.CurrentVersion)
 		if err != nil {
 			return err
 		}
 		if preservedPolicyID != "" && version.PolicyID == preservedPolicyID {
 			continue
 		}
-		detail, err := readCurrentChangeDetail(ctx, tx, scope, change, now)
-		if err != nil {
-			return err
-		}
-		if detail.Summary.Status != "stale_policy" {
+		policyID, reviewID := currentPolicy.identities(&version)
+		if policyID == version.PolicyID && reviewID == version.ReviewPolicy.ID {
 			continue
 		}
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)

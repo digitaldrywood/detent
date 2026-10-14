@@ -171,7 +171,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id
 	return change, nil
 }
 
-func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
+func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
 	var version tracker.ChangeVersion
 	var raw string
 	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
@@ -179,6 +179,14 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 	}
 	if err := json.Unmarshal([]byte(raw), &version); err != nil {
 		return version, fmt.Errorf("decode version snapshot: %w", err)
+	}
+	return version, nil
+}
+
+func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
+	version, err := readChangeVersionSnapshot(ctx, query, changeID, versionID)
+	if err != nil {
+		return version, err
 	}
 	if err := resolveVersionPublication(ctx, query, changeID, &version); err != nil {
 		return version, fmt.Errorf("resolve publication: %w", err)
@@ -492,15 +500,11 @@ func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeSco
 	return current.summarize(detail, now, priorApproval), nil
 }
 
-func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Time, priorApproval bool) tracker.ChangeSummary {
+func (p changeSummaryPolicy) identities(version *tracker.ChangeVersion) (string, string) {
 	policyID, reviewID := p.approval.Policy.ID, p.rules.ID
-	for _, version := range detail.Versions {
-		if version.ID != detail.Change.CurrentVersion {
-			continue
-		}
+	if version != nil {
 		if version.Policy.Gates.LandingMode == "rolling_barrier" {
-			policyID = ""
-			break
+			return "", reviewID
 		}
 		currentRules := p.rules
 		currentRules.PolicyID = policyID
@@ -509,8 +513,19 @@ func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Tim
 			slices.Equal(version.ReviewPolicy.RequiredChecks, p.rules.RequiredChecks) && changerequest.ValidatePolicy(currentRules, p.approval.Policy) == nil {
 			policyID, reviewID = version.PolicyID, version.ReviewPolicy.ID
 		}
-		break
 	}
+	return policyID, reviewID
+}
+
+func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Time, priorApproval bool) tracker.ChangeSummary {
+	var current *tracker.ChangeVersion
+	for i := range detail.Versions {
+		if detail.Versions[i].ID == detail.Change.CurrentVersion {
+			current = &detail.Versions[i]
+			break
+		}
+	}
+	policyID, reviewID := p.identities(current)
 	return changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, priorApproval)
 }
 
@@ -622,6 +637,9 @@ ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.p
 	}
 	if previous.ID != rules.ID {
 		if err := routeStaleNativeLandingChanges(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.actor().PrincipalID, "", s.config.now()); err != nil {
+			return nil, err
+		}
+		if err := resetNativeBoardPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
 			return nil, err
 		}
 	}
