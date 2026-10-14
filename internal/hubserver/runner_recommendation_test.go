@@ -573,6 +573,15 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 				h.PressureWarnCount = 1
 			}
 		}), "lower", 5, []string{"Memory pressure or growing swap in 42 of 72 busy hours."}},
+		{"shared runner keeps disk and adjacency from person hours", "UTC", "shared", 6, hostHours(72, func(_ int, h *recommendationHour) {
+			hour := h.Hour.Hour()
+			if hour == 13 {
+				h.DiskFreeMinBytes = capacityGiB
+			}
+			if hour == 21 || hour == 22 {
+				h.CPUBusySumPercent = 95 * 120
+			}
+		}), "lower", 5, []string{"CPU stayed at 90% or more for 2+ hours running in 3 of 30 busy hours.", "Free disk fell to 1.1 GB on Oct 11."}},
 		{"shared runner needs 24 free hours", "UTC", "shared", 6, hostHours(48, nil), "insufficient_evidence", -1, []string{"20 of the 24 covered hours needed so far."}},
 		{"stopped runner holds", "UTC", "", 0, hostHours(48, nil), "hold", 0, []string{"The runner is stopped at 0 jobs at once."}},
 		{"uncovered hours do not count", "UTC", "", 6, hostHours(30, func(i int, h *recommendationHour) {
@@ -583,15 +592,14 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			machineUse := test.machineUse
-			if machineUse == "" {
-				machineUse = "dedicated"
+			got := suggestLimit(test.current, test.timezone, test.hours, nil)
+			if test.machineUse != "" {
+				out, err := recommendRunner(runnerauth.Routing{CapacityLimit: test.current, MachineUse: test.machineUse, Availability: runnerauth.Availability{Timezone: test.timezone}}, test.hours, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = out.Suggested
 			}
-			out, err := recommendRunner(runnerauth.Routing{CapacityLimit: test.current, MachineUse: machineUse, Availability: runnerauth.Availability{Timezone: test.timezone}}, test.hours, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := out.Suggested
 			limit := -1
 			if got.Limit != nil {
 				limit = *got.Limit
