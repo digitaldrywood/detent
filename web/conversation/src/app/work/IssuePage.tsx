@@ -33,6 +33,7 @@ import type {
   NativeIssue,
   NativeLabel,
   NativeProject,
+  ReportContext,
 } from "../../contracts/work.ts";
 import { priorityValue } from "../../contracts/work.ts";
 import type { ConversationDetail } from "../../runtime/state/conversationState.ts";
@@ -820,6 +821,33 @@ interface IssueBodyProps {
   readonly onOpenChange: (changeId: string) => void;
 }
 
+const REPORT_CONTEXT_FIELDS = [
+  ["url", "URL"],
+  ["app_build", "App build"],
+  ["browser", "Browser"],
+  ["os", "OS"],
+  ["viewport", "Viewport"],
+  ["captured_at", "Captured"],
+] as const satisfies readonly (readonly [keyof ReportContext, string])[];
+
+function ReportContextBlock({ context }: { readonly context: ReportContext }): React.ReactElement | null {
+  const rows = REPORT_CONTEXT_FIELDS.flatMap(([key, label]) => context[key] === undefined || context[key] === "" ? [] : [{ label, value: context[key] }]);
+  if (rows.length === 0) return null;
+  return (
+    <section className="rounded-[var(--radius)] border border-border bg-card px-4 py-3" data-testid="issue-report-context" aria-labelledby="issue-report-context-title">
+      <h2 id="issue-report-context-title" className="text-[13px] text-muted-foreground">Report context</h2>
+      <dl className="mt-1.5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px]">
+        {rows.map((row) => (
+          <React.Fragment key={row.label}>
+            <dt className="text-muted-foreground">{row.label}</dt>
+            <dd className="min-w-0 break-words">{row.value}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 /**
  * Everything below the header band.
  *
@@ -1169,6 +1197,8 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               </button>
             ) : null}
           </div>
+
+          {data.issue.report_context === undefined ? null : <ReportContextBlock context={data.issue.report_context} />}
 
           {/* §19.6: sub-issue creation is not in this slice, and §16 says a
               feature stays present with its reason rather than disappearing. */}

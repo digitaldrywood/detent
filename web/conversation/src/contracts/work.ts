@@ -127,8 +127,20 @@ export const NativeDependency = Schema.Struct({
 });
 export type NativeDependency = typeof NativeDependency.Type;
 
+export const ReportContext = Schema.Struct({
+  url: Schema.optional(Schema.String),
+  app_build: Schema.optional(Schema.String),
+  browser: Schema.optional(Schema.String),
+  os: Schema.optional(Schema.String),
+  viewport: Schema.optional(Schema.String),
+  captured_at: Schema.optional(Schema.String),
+});
+export type ReportContext = typeof ReportContext.Type;
+
 export const NativeIssue = Schema.Struct({
   type: Schema.optional(Schema.Literals(["bug", "change_request"])),
+  /** Where and on what the filer saw the problem. Absent when none was supplied; list and board reads omit it. */
+  report_context: Schema.optional(ReportContext),
 	linked_source: Schema.optional(Schema.Struct({
 		url: Schema.String,
 		status: Schema.String,

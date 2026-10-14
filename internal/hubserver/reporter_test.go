@@ -271,20 +271,33 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "bug") || !strings.Contains(refusal.Message, "change_request") {
 				t.Fatalf("missing type error=%v", err)
 			}
+			withoutEnvironment := strings.ReplaceAll(reporterBugSections, "\n## Environment\nFirefox on Linux, build example.", "")
 			for index, test := range []struct {
 				kind, body, missing string
+				context             map[string]any
 			}{
-				{"bug", strings.ReplaceAll(reporterBugSections, "## Actual\nThe change disappears.\n", ""), "Actual"},
-				{"bug", strings.ReplaceAll(reporterBugSections, "The change disappears.", ""), "Actual"},
-				{"change_request", strings.ReplaceAll(reporterChangeSections, "## Why\nKeep the task in view.", ""), "Why"},
-				{"change_request", strings.ReplaceAll(reporterChangeSections, "Keep the task in view.", ""), "Why"},
+				{"bug", strings.ReplaceAll(reporterBugSections, "## Actual\nThe change disappears.\n", ""), "Actual", nil},
+				{"bug", strings.ReplaceAll(reporterBugSections, "The change disappears.", ""), "Actual", nil},
+				{"change_request", strings.ReplaceAll(reporterChangeSections, "## Why\nKeep the task in view.", ""), "Why", nil},
+				{"change_request", strings.ReplaceAll(reporterChangeSections, "Keep the task in view.", ""), "Why", nil},
+				{"bug", withoutEnvironment, "Environment", nil},
+				{"bug", withoutEnvironment, "Environment", map[string]any{"browser": "Chrome 130", "os": "macOS 15"}},
+				{"bug", withoutEnvironment, "Environment", map[string]any{"app_build": "v1.4.2", "browser": " "}},
+				{"bug", reporterBugSections, "report_context", map[string]any{"browser": "Chrome 130", "referrer": "secret-referrer"}},
+				{"bug", reporterBugSections, "report_context", map[string]any{"url": "https://example.test/" + strings.Repeat("secret-path", 200)}},
+				{"bug", reporterBugSections, "report_context", map[string]any{"browser": "secret-browser\nsecond line"}},
+				{"bug", reporterBugSections, "report_context", map[string]any{"viewport": 1280}},
 			} {
-				args, err := json.Marshal(map[string]any{"project_id": f.project, "request_id": fmt.Sprintf("incomplete-%d", index), "title": "Incomplete report", "type": test.kind, "description": test.body})
+				arguments := map[string]any{"project_id": f.project, "request_id": fmt.Sprintf("incomplete-%d", index), "title": "Incomplete report", "type": test.kind, "description": test.body}
+				if test.context != nil {
+					arguments["report_context"] = test.context
+				}
+				args, err := json.Marshal(arguments)
 				if err != nil {
 					t.Fatal(err)
 				}
 				_, err = executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: args})
-				if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, test.missing) {
+				if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, test.missing) || strings.Contains(refusal.Message, "secret") {
 					t.Fatalf("missing %s: %v", test.missing, err)
 				}
 			}
@@ -294,6 +307,10 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 			}
 			for i, state := range []string{"", "Todo", "Cancelled", "Triage", "Missing"} {
 				args := map[string]any{"project_id": f.project, "request_id": fmt.Sprintf("file-%d", i), "title": "Tester report", "type": []string{"bug", "change_request"}[i%2], "description": reporterTestBody([]string{"bug", "change_request"}[i%2]), "state": state}
+				if i == 0 {
+					args["description"] = withoutEnvironment
+					args["report_context"] = map[string]any{"url": "https://app.example.test/settings", "app_build": "v1.4.2", "browser": "Chrome 130", "os": "macOS 15", "viewport": "1440x900", "captured_at": "2026-10-13T12:00:00Z"}
+				}
 				raw, err := json.Marshal(args)
 				if err != nil {
 					t.Fatal(err)
@@ -330,6 +347,13 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				}
 				if content.Data.State != "Triage" || content.Data.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("result=%s", result.Content)
+				}
+				wantContext := (*tracker.ReportContext)(nil)
+				if i == 0 {
+					wantContext = &tracker.ReportContext{URL: "https://app.example.test/settings", AppBuild: "v1.4.2", Browser: "Chrome 130", OS: "macOS 15", Viewport: "1440x900", CapturedAt: "2026-10-13T12:00:00Z"}
+				}
+				if !reflect.DeepEqual(content.Data.ReportContext, wantContext) {
+					t.Fatalf("report context=%+v", content.Data.ReportContext)
 				}
 			}
 		})

@@ -93,6 +93,7 @@ type NativeIssue struct {
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
 	Type               string              `json:"type,omitempty"`
+	ReportContext      *ReportContext      `json:"report_context,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	Snippet            string              `json:"snippet,omitempty"`
@@ -221,6 +222,7 @@ type CreateIssue struct {
 	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
 	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
 	Type                string                          `json:"type,omitempty"`
+	ReportContext       *ReportContext                  `json:"report_context,omitempty"`
 	Title               string                          `json:"title"`
 	Body                string                          `json:"body"`
 	State               string                          `json:"state"`

@@ -42,10 +42,10 @@ func TestPrepare(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		name, declared, media string
-		content               []byte
-		failure               error
-		image                 bool
+		name, file, declared, media string
+		content                     []byte
+		failure                     error
+		image                       bool
 	}{
 		{name: "png inferred", content: pngData.Bytes(), media: "image/png", image: true},
 		{name: "png polyglot", declared: "image/png", content: append(append([]byte{}, pngData.Bytes()...), []byte("<script>sentinel</script>")...), media: "image/png", image: true},
@@ -58,6 +58,18 @@ func TestPrepare(t *testing.T) {
 		{name: "csv", declared: "text/csv", content: []byte("a,b\n1,2"), media: "text/csv"},
 		{name: "json", declared: "application/json", content: []byte(`{"a":1}`), media: "application/json"},
 		{name: "json containing markup", declared: "application/json", content: []byte(`{"html":"<svg/>"}`), media: "application/json"},
+		{name: "har declared", file: "session.har", declared: "application/har+json", content: []byte(`{"log":{"version":"1.2","entries":[]}}`), media: HARMediaType},
+		{name: "har uploaded as json", file: "session.har", declared: "application/json", content: []byte(`{"log":{"entries":[{"response":{"content":{"text":"<html></html>"}}}]}}`), media: HARMediaType},
+		{name: "har without declared type", file: "session.HAR", declared: "application/octet-stream", content: []byte(`{"log":{}}`), media: HARMediaType},
+		{name: "har sniffed as text", file: "session.har", declared: "text/plain; charset=utf-8", content: []byte(`{"log":{}}`), media: HARMediaType},
+		{name: "har not json", file: "session.har", declared: "application/har+json", content: []byte("not json"), failure: ErrInvalid},
+		{name: "har html", file: "session.har", content: []byte("<!doctype html><html>hi</html>"), failure: ErrInvalid},
+		{name: "log declared text", file: "console.log", declared: "text/plain", content: []byte("[error] Uncaught TypeError\n"), media: "text/plain"},
+		{name: "log without declared type", file: "console.log", content: []byte("12:00:01 GET /api 500\n"), media: "text/plain"},
+		{name: "log as octet stream", file: "console.log", declared: "application/octet-stream", content: []byte("warn: slow\n"), media: "text/plain"},
+		{name: "log binary", file: "console.log", declared: "application/octet-stream", content: []byte{0, 1, 2}, failure: ErrInvalid},
+		{name: "log html", file: "console.log", content: []byte("<!doctype html><html>hi</html>"), failure: ErrInvalid},
+		{name: "html named log", file: "console.log", declared: "text/html", content: []byte("<html>hi</html>"), failure: ErrInvalid},
 		{name: "empty", failure: ErrInvalid},
 		{name: "mismatch", declared: "image/jpeg", content: pngData.Bytes(), failure: ErrInvalid},
 		{name: "svg", declared: "image/svg+xml", content: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), failure: ErrInvalid},
@@ -71,7 +83,11 @@ func TestPrepare(t *testing.T) {
 		{name: "size cap", declared: "text/plain", content: bytes.Repeat([]byte("a"), MaxBytes+1), failure: ErrTooLarge},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			upload, err := Prepare(bytes.NewReader(test.content), "../../file", test.declared, t.TempDir())
+			file, name := "../../file", "file"
+			if test.file != "" {
+				file, name = test.file, test.file
+			}
+			upload, err := Prepare(bytes.NewReader(test.content), file, test.declared, t.TempDir())
 			if test.failure != nil {
 				if !errors.Is(err, test.failure) {
 					t.Fatalf("error=%v want %v", err, test.failure)
@@ -86,7 +102,7 @@ func TestPrepare(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if upload.ContentType != test.media || upload.Name != "file" || upload.Size != int64(len(stored)) || upload.Validate() != nil {
+			if upload.ContentType != test.media || upload.Name != name || upload.Size != int64(len(stored)) || upload.Validate() != nil {
 				t.Fatalf("metadata=%+v", upload.Metadata)
 			}
 			if test.image && (bytes.Contains(stored, exif) || bytes.Contains(stored, []byte("<script>"))) {
