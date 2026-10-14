@@ -303,3 +303,195 @@ func analyticsCommitPlanViolation(detail string, tables map[string]string, scann
 	}
 	return "reads a whole organization or project"
 }
+
+// seedProductionShapedRollups adds the rollup population of the production
+// tenant whose Reports timed out: thousands of attempts with runtime
+// payloads, usage rows and tens of thousands of transition events spread
+// over ninety days.
+func seedProductionShapedRollups(t *testing.T, s *Service, scope nativeScope, attempts, usage, events int) {
+	t.Helper()
+	now := s.config.now().UTC().Format(usagePeriodLayout)
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
+items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
+shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' seconds') AS at FROM n)
+INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
+SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at FROM shaped`,
+			[]any{events, scope.organization, scope.project, now, events, scope.organization, scope.project}},
+		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
+			[]any{scope.organization, scope.project}},
+		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
+items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
+shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' seconds') AS at FROM n)
+INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json)
+SELECT ?,?,unixepoch(at)/3600*3600,'attempt','bench_attempt_'||i,1,json_object('id','bench_attempt_'||i,'work_item_id',(SELECT native_id FROM items WHERE k=i%total),'lease_id','bench_lease_'||i,
+ 'status',CASE WHEN i%7=0 THEN 'failed' ELSE 'succeeded' END,'started_at',at,'updated_at',strftime('%Y-%m-%dT%H:%M:%SZ',at,'+30 minutes'),
+ 'data_json',json_object('runtime',json_object('identity',json_object('role','code'),'phases',json_array(json_object('name','code','padding',hex(zeroblob(1500)))))))
+FROM shaped`,
+			[]any{attempts, scope.organization, scope.project, now, attempts, scope.organization, scope.project}},
+		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
+shaped AS (SELECT i,'bench_attempt_'||(i%?) AS attempt,strftime('%Y-%m-%dT%H:00:00Z',?,'-'||(i*7776000/?)||' seconds') AS period FROM n)
+INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json)
+SELECT ?,?,unixepoch(period),'usage',json_array(attempt,period,'openai','gpt-6-astra','USD'),0.25,json_object('attempt_id',attempt,'period',period,'provider','openai','model','gpt-6-astra','input',1000,'cached_input',0,'output',200,'cost_estimate',0.25,'currency','USD','updated_at',period)
+FROM shaped`,
+			[]any{usage, attempts, now, usage, scope.organization, scope.project}},
+	}
+	for _, statement := range statements {
+		if _, err := s.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
+			t.Fatalf("seed production-shaped rollups: %v\n%s", err, statement.query)
+		}
+	}
+}
+
+type explainedPlanLine struct {
+	id, parent int
+	detail     string
+}
+
+func explainPlanTree(t *testing.T, db *sql.DB, statement string, args []any) []explainedPlanLine {
+	t.Helper()
+	rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+statement, args...)
+	if err != nil {
+		t.Fatalf("explain %s: %v", statement, err)
+	}
+	defer rows.Close()
+	var plan []explainedPlanLine
+	for rows.Next() {
+		var line explainedPlanLine
+		var unused int
+		if err := rows.Scan(&line.id, &line.parent, &unused, &line.detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return plan
+}
+
+// rollupRepeatedReadViolations reports the reads of analytics_hourly_rollups
+// that run once per outer row, in a join's inner loop or a correlated
+// subquery, without a key narrower than the project's metric. Each such read
+// walks the whole metric of the project for every outer row.
+func rollupRepeatedReadViolations(statement string, plan []explainedPlanLine) []string {
+	tables := sqlTableAliases(statement)
+	byID := make(map[int]explainedPlanLine, len(plan))
+	for _, line := range plan {
+		byID[line.id] = line
+	}
+	var violations []string
+	accessed := make(map[int]bool)
+	for _, line := range plan {
+		kind, rest, ok := strings.Cut(line.detail, " ")
+		if !ok || (kind != "SCAN" && kind != "SEARCH") {
+			continue
+		}
+		name, _, _ := strings.Cut(rest, " ")
+		name = strings.ToLower(name)
+		isRollup := name == "analytics_hourly_rollups" || tables[name] == "analytics_hourly_rollups"
+		inner := accessed[line.parent]
+		accessed[line.parent] = true
+		for parent := line.parent; !inner && parent != 0; parent = byID[parent].parent {
+			inner = strings.HasPrefix(byID[parent].detail, "CORRELATED")
+		}
+		if !isRollup || !inner {
+			continue
+		}
+		if kind == "SCAN" {
+			violations = append(violations, line.detail)
+			continue
+		}
+		open, close := strings.LastIndex(rest, "("), strings.LastIndex(rest, ")")
+		keyed := false
+		if open >= 0 && close > open {
+			for _, term := range strings.Split(rest[open+1:close], " AND ") {
+				column := strings.TrimSpace(strings.FieldsFunc(term, func(r rune) bool { return r == '=' || r == '<' || r == '>' })[0])
+				keyed = keyed || (column != "organization_id" && column != "project_id" && column != "metric")
+			}
+		}
+		if !keyed {
+			violations = append(violations, line.detail)
+		}
+	}
+	return violations
+}
+
+// windowedRollupReads names the rollup reads bounded by the report window;
+// each must reach its rows through the window, not the whole project.
+var windowedRollupReads = []struct{ name, fragment, index string }{
+	{"usage rows", "FROM analytics_attempt_usage u LEFT JOIN analytics_native_attempts a ON a.id = u.attempt_id", "analytics_usage_window"},
+	{"attempts in window", "julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?=''", "analytics_attempt_updated"},
+	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_window"},
+}
+
+func TestAnalyticsRollupReportPlans(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	seedProductionShapedRollups(t, f.service, scope, 5000, 3000, 20000)
+	reader := f.service.database.reader
+	for _, window := range []string{"7d", "30d"} {
+		t.Run(window, func(t *testing.T) {
+			var mu sync.Mutex
+			var statements []tracedStatement
+			timing := &requestTiming{trace: func(query string, args []driver.NamedValue) {
+				values := make([]any, 0, len(args))
+				for _, arg := range args {
+					values = append(values, arg.Value)
+				}
+				mu.Lock()
+				statements = append(statements, tracedStatement{query, values})
+				mu.Unlock()
+			}}
+			ctx, cancel := context.WithTimeout(withRequestTiming(t.Context(), timing), 2*time.Minute)
+			defer cancel()
+			request := httptest.NewRequest(http.MethodGet, f.server.URL+browserHostedOrganizationBase+"/reports?project="+f.project+"&range="+window, nil).WithContext(ctx)
+			request.AddCookie(f.cookies["owner"])
+			response := httptest.NewRecorder()
+			started := time.Now()
+			f.service.Handler().ServeHTTP(response, request)
+			elapsed := time.Since(started)
+			if response.Code != http.StatusOK {
+				t.Fatalf("HTTP %d after %s: %s", response.Code, elapsed, response.Body.String())
+			}
+			t.Logf("reports %s on the production-shaped rollups took %s", window, elapsed)
+			mu.Lock()
+			defer mu.Unlock()
+			windowed := make(map[string]bool)
+			for _, statement := range statements {
+				if !strings.Contains(statement.query, "analytics_hourly_rollups") && !strings.Contains(statement.query, "analytics_native_attempts") && !strings.Contains(statement.query, "analytics_attempt_usage") {
+					continue
+				}
+				plan := explainPlanTree(t, reader, statement.query, statement.args)
+				details := make([]string, 0, len(plan))
+				for _, line := range plan {
+					details = append(details, line.detail)
+				}
+				if violations := rollupRepeatedReadViolations(statement.query, plan); len(violations) > 0 {
+					t.Errorf("rollup read repeats an unkeyed project read %v\nstatement: %s\nplan: %v", violations, statement.query, details)
+				}
+				normalized := strings.Join(strings.Fields(statement.query), " ")
+				for _, read := range windowedRollupReads {
+					if !strings.Contains(normalized, read.fragment) {
+						continue
+					}
+					windowed[read.name] = true
+					bounded := slices.ContainsFunc(details, func(detail string) bool {
+						return strings.Contains(detail, " INDEX "+read.index+" (") && strings.Contains(detail, ">?")
+					})
+					if !bounded {
+						t.Errorf("%s read does not use the window index %s\nstatement: %s\nplan: %v", read.name, read.index, statement.query, details)
+					}
+				}
+			}
+			for _, read := range windowedRollupReads {
+				if !windowed[read.name] {
+					t.Errorf("reports %s did not run the %s read", window, read.name)
+				}
+			}
+		})
+	}
+}
