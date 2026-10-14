@@ -145,16 +145,17 @@ type Lane struct {
 }
 
 type Transition struct {
-	EvidenceID string     `json:"evidence_id"`
-	From       string     `json:"from,omitempty"`
-	To         string     `json:"to"`
-	At         time.Time  `json:"at"`
-	Source     string     `json:"source,omitempty"`
-	Actor      *Actor     `json:"actor,omitempty"`
-	Reason     string     `json:"reason,omitempty"`
-	Provenance Provenance `json:"provenance"`
-	PRNumber   *int64     `json:"pr_number,omitempty"`
-	SessionID  int64      `json:"session_id,omitempty"`
+	EvidenceID   string     `json:"evidence_id"`
+	From         string     `json:"from,omitempty"`
+	To           string     `json:"to"`
+	At           time.Time  `json:"at"`
+	Source       string     `json:"source,omitempty"`
+	Actor        *Actor     `json:"actor,omitempty"`
+	Reason       string     `json:"reason,omitempty"`
+	ReasonDetail string     `json:"reason_detail,omitempty"`
+	Provenance   Provenance `json:"provenance"`
+	PRNumber     *int64     `json:"pr_number,omitempty"`
+	SessionID    int64      `json:"session_id,omitempty"`
 }
 
 type Actor struct {

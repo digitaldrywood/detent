@@ -31,16 +31,29 @@ func ReportProgress(ctx context.Context) {
 
 type laneTransitionReasonContextKey struct{}
 
-func WithLaneTransitionReason(ctx context.Context, reason string) context.Context {
-	return context.WithValue(ctx, laneTransitionReasonContextKey{}, reason)
+type laneTransitionReason struct {
+	code   string
+	detail string
+}
+
+func WithLaneTransitionReason(ctx context.Context, reason, detail string) context.Context {
+	return context.WithValue(ctx, laneTransitionReasonContextKey{}, laneTransitionReason{code: reason, detail: detail})
 }
 
 func LaneTransitionReason(ctx context.Context) string {
-	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(string)
+	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(laneTransitionReason)
 	if !ok {
 		return ""
 	}
-	return reason
+	return reason.code
+}
+
+func LaneTransitionReasonDetail(ctx context.Context) string {
+	reason, ok := ctx.Value(laneTransitionReasonContextKey{}).(laneTransitionReason)
+	if !ok {
+		return ""
+	}
+	return reason.detail
 }
 
 var (
