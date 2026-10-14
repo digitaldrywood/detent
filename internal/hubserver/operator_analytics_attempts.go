@@ -15,13 +15,25 @@ type nativeAnalyticsAttemptPopulation struct {
 	Clipped   bool
 }
 
+// analyticsAttemptsInStartedOrder is the attempts table a windowed read
+// orders by started_at. On rollups it reads analytics_attempt_started, whose
+// order is the read's order and whose updated_at column bounds the window
+// before any payload is read.
+func analyticsAttemptsInStartedOrder(q nativeQueryer) string {
+	if _, projected := q.(analyticsRollupReader); !projected {
+		return "native_attempts"
+	}
+	return `(SELECT organization_id,project_id,dimension AS id,json_work_item_id AS work_item_id,json_extract(data_json,'$.lease_id') AS lease_id,json_extract(data_json,'$.status') AS status,
+json_started_at AS started_at,json_updated_at AS updated_at,data_json FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')`
+}
+
 func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, runner string) (nativeAnalyticsAttemptPopulation, error) {
 	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
 	rows, err := queryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]'), coalesce(json_extract(a.data_json,'$.runtime.phases_dropped'),0), coalesce(json_extract(a.data_json,'$.runtime.activity'),'null'), coalesce(json_extract(a.data_json,'$.runtime.identity'),'{}'), coalesce(json_extract(a.data_json,'$.runtime.landing'),'null'), coalesce(json_extract(a.data_json,'$.runtime.pipeline'),'[]'), coalesce(json_extract(a.data_json,'$.runtime.pipeline_dropped'),0), coalesce(json_extract(a.data_json,'$.runtime.validation'),'null'), (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND u.organization_id=a.organization_id AND u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?))
-FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?='' OR coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'')=?)`+scoped+` ORDER BY a.started_at,a.id LIMIT ? OFFSET ?`, append([]any{formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), runner, runner}, scopedArgs...)...)
+FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?='' OR coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id'),'')=?)`+scoped+` ORDER BY a.started_at,a.id LIMIT ? OFFSET ?`, append([]any{formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), runner, runner}, scopedArgs...)...)
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}

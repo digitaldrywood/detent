@@ -26,7 +26,7 @@ var hostedErrorClass = regexp.MustCompile(`^[A-Za-z0-9_.*]{1,80}$`)
 
 var hostedRouteTemplate = regexp.MustCompile(`^/[A-Za-z0-9_/:.*-]{0,200}$`)
 
-var hostedTimingCounters = map[string]bool{"status": true, "duration_ms": true, "writer_hold_ms": true, "writer_txs": true,
+var hostedTimingCounters = map[string]bool{"status": true, "duration_ms": true, "writer_hold_ms": true, "writer_txs": true, "db_ms": true,
 	"waits": true, "wait_ms": true, "in_use": true, "interval_s": true}
 
 func (h hostedLogHandler) Enabled(ctx context.Context, level slog.Level) bool {

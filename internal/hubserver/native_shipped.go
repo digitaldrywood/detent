@@ -148,10 +148,10 @@ func readNativeShippedSpend(ctx context.Context, q nativeQueryer, scope nativeSc
 		perIssue[id] = 0
 	}
 	err := forShippedBatches(ids, func(batch string) error {
-		rows, err := q.QueryContext(ctx, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM native_attempts a
-JOIN attempt_usage u ON u.attempt_id=a.id AND u.organization_id=? AND u.project_id=? AND u.period<?
-WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id IN (SELECT value FROM json_each(?)) GROUP BY a.work_item_id`,
-			scope.organization, scope.project, to.UTC().Format(usagePeriodLayout), scope.organization, scope.project, batch)
+		rows, err := q.QueryContext(ctx, `SELECT a.work_item_id,coalesce(sum(u.cost_estimate),0) FROM json_each(?) w
+CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=w.value
+CROSS JOIN attempt_usage u ON u.attempt_id=a.id AND u.organization_id=? AND u.project_id=? AND +u.period<? GROUP BY a.work_item_id`,
+			batch, scope.organization, scope.project, scope.organization, scope.project, to.UTC().Format(usagePeriodLayout))
 		if err != nil {
 			return fmt.Errorf("read shipped spend: %w", err)
 		}
