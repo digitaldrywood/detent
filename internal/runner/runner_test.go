@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -390,7 +391,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
 	}
-	if len(sessionStore.workerProcesses) != 1 || sessionStore.workerProcesses[0].PID != 4242 || !sessionStore.workerProcesses[0].StartedAt.Equal(processStartedAt) {
+	if len(sessionStore.workerProcesses) != 2 || sessionStore.workerProcesses[0].PID != 0 || sessionStore.workerProcesses[0].CleanupPath == "" || sessionStore.workerProcesses[1].PID != 4242 || !sessionStore.workerProcesses[1].StartedAt.Equal(processStartedAt) || sessionStore.workerProcesses[0].CleanupPath != sessionStore.workerProcesses[1].CleanupPath {
 		t.Fatalf("worker process updates = %#v", sessionStore.workerProcesses)
 	}
 	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 4 {
@@ -1806,8 +1807,11 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 		workspaceReapErr error
 		outcome          procgroup.TerminationOutcome
 		wantScratch      bool
+		noProcess        bool
 	}{
 		{name: "reaped process group"},
+		{name: "reserved before process update", noProcess: true},
+		{name: "unobserved descendant exit not verified", noProcess: true, workspaceReapErr: errors.New("unobserved descendant remained alive"), wantScratch: true},
 		{name: "process group exit not verified", reapErr: errors.New("process group remained alive"), wantScratch: true},
 		{name: "workspace descendant exit not verified", workspaceReapErr: errors.New("workspace descendant remained alive"), wantScratch: true},
 		{name: "stale process identity", outcome: procgroup.TerminationOutcomeStaleIdentity, wantScratch: true},
@@ -1822,6 +1826,9 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 			const sessionID = int64(2954)
 			identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
 			backend := &scratchWritingAgentBackend{workerProcess: identity}
+			if tt.noProcess {
+				backend.workerProcess = procgroup.Identity{}
+			}
 			t.Cleanup(func() {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Fatal(err)
@@ -1838,6 +1845,11 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 					},
 				},
 			}
+			backend.beforeStart = func(req AgentTurnRequest) {
+				if sessionStore.process.PID != 0 || sessionStore.process.CleanupRoot != workspacePath || sessionStore.process.CleanupPath != req.TempDir {
+					t.Fatalf("backend started without scratch reservation: %+v", sessionStore.process)
+				}
+			}
 			scratchPresentDuringReap := false
 			r := &Runner{
 				now:             time.Now,
@@ -1851,6 +1863,12 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 						return tt.outcome, tt.reapErr
 					}
 					return procgroup.TerminationOutcomeTerminated, tt.reapErr
+				},
+				reapArtifactProcesses: func(_ context.Context, root, path string, _ time.Duration) (int, error) {
+					if !tt.noProcess || root != workspacePath || path != backend.tempDir {
+						t.Fatalf("unexpected scratch fallback: root=%q path=%q", root, path)
+					}
+					return 0, tt.workspaceReapErr
 				},
 				reapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
 					if tt.outcome == procgroup.TerminationOutcomeStaleIdentity {
@@ -7657,11 +7675,17 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 
 func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 	t.Parallel()
+	cacheRoot := t.TempDir()
+	cache, cacheErr := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+	if cacheErr != nil {
+		t.Fatal(cacheErr)
+	}
 
 	workspaceBackend := &fakeWorkspaceBackend{
 		cleanupResult: workspace.CleanupResult{Worktrees: 1, Branches: 1, Processes: 2},
 	}
 	runner, err := NewRunner(Dependencies{
+		BuildCache:   cache,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -7679,6 +7703,10 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 		t.Fatalf("ReapWorkspace() error = %v", err)
 	}
 
+	if workspaceBackend.cleanupCache != cacheRoot {
+		t.Fatalf("cleanup did not use managed cache: %q", workspaceBackend.cleanupCache)
+	}
+
 	if result.Worktrees != 1 || result.Branches != 1 || result.Processes != 2 {
 		t.Fatalf("ReapWorkspace() result = %#v, want 1 worktree, 1 branch, 2 processes", result)
 	}
@@ -7692,6 +7720,11 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 
 func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	t.Parallel()
+	cacheRoot := t.TempDir()
+	cache, cacheErr := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+	if cacheErr != nil {
+		t.Fatal(cacheErr)
+	}
 
 	workspaceBackend := &fakeResidualWorkspaceBackend{
 		fakeWorkspaceBackend: &fakeWorkspaceBackend{},
@@ -7705,6 +7738,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 		},
 	}
 	runner, err := NewRunner(Dependencies{
+		BuildCache:   cache,
 		Workflow:     config.Workflow{Config: config.Config{}},
 		Workspace:    workspaceBackend,
 		AgentBackend: &fakeCodexClient{},
@@ -7718,6 +7752,10 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileWorkspaces() error = %v", err)
 	}
+	if workspaceBackend.cache != cacheRoot {
+		t.Fatalf("cleanup did not use managed cache: %q", workspaceBackend.cache)
+	}
+
 	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.CompletedPaths) != 1 || result.CompletedPaths[0] != "/workspaces/removed" || len(result.Failures) != 1 {
 		t.Fatalf("ReconcileWorkspaces() = %+v", result)
 	}
@@ -7806,6 +7844,7 @@ type fakeWorkspaceBackend struct {
 	diffCalls      int
 	createIssue    workspace.Issue
 	cleanupIssue   workspace.Issue
+	cleanupCache   string
 	cleanupResult  workspace.CleanupResult
 	recoveryStates []workspace.RecoveryState
 	recoveryErr    error
@@ -7840,11 +7879,13 @@ func (w *reviewMutationWorkspace) VerifyReviewTree(context.Context, workspace.In
 type fakeResidualWorkspaceBackend struct {
 	*fakeWorkspaceBackend
 	active []workspace.Issue
+	cache  string
 	result workspace.ReconcileResult
 	err    error
 }
 
-func (b *fakeResidualWorkspaceBackend) ReconcileResiduals(_ context.Context, active []workspace.Issue) (workspace.ReconcileResult, error) {
+func (b *fakeResidualWorkspaceBackend) ReconcileResiduals(ctx context.Context, active []workspace.Issue) (workspace.ReconcileResult, error) {
+	b.cache = toolcache.ManagedBuildFromContext(ctx)
 	b.active = append([]workspace.Issue(nil), active...)
 	return b.result, b.err
 }
@@ -7885,7 +7926,8 @@ func (b *fakeWorkspaceBackend) Cleanup(context.Context, string) error {
 	return nil
 }
 
-func (b *fakeWorkspaceBackend) CleanupIssue(_ context.Context, issue workspace.Issue) (workspace.CleanupResult, error) {
+func (b *fakeWorkspaceBackend) CleanupIssue(ctx context.Context, issue workspace.Issue) (workspace.CleanupResult, error) {
+	b.cleanupCache = toolcache.ManagedBuildFromContext(ctx)
 	b.cleanupIssue = issue
 	return b.cleanupResult, nil
 }
@@ -7980,10 +8022,14 @@ type scratchWritingAgentBackend struct {
 	writableRoots []string
 	workerProcess procgroup.Identity
 	scratchReady  []bool
+	beforeStart   func(AgentTurnRequest)
 }
 
 func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	if b.beforeStart != nil {
+		b.beforeStart(req)
+	}
 	b.writableRoots = req.ExtraWritableRoots
 	_, scratchErr := os.Stat(req.TempDir)
 	b.scratchReady = append(b.scratchReady, scratchErr == nil)

@@ -280,17 +280,23 @@ func (s *sqliteStore) UpdateSessionProviderIdentity(ctx context.Context, session
 }
 
 func (s *sqliteStore) UpdateSessionWorkerProcess(ctx context.Context, sessionID int64, registration WorkerProcessRegistration) error {
-	if sessionID <= 0 || registration.PID <= 0 || registration.StartedAt.IsZero() {
+	if sessionID <= 0 || registration.PID < 0 {
 		return ErrNotFound
 	}
-	startedAt, err := requiredTimestamp("worker_started_at", registration.StartedAt)
-	if err != nil {
-		return err
+	var startedAt sql.NullString
+	if registration.PID > 0 {
+		value, err := requiredTimestamp("worker_started_at", registration.StartedAt)
+		if err != nil {
+			return err
+		}
+		startedAt = sql.NullString{String: value, Valid: true}
+	} else if registration.GroupID != 0 || !registration.StartedAt.IsZero() || strings.TrimSpace(registration.CleanupRoot) == "" || strings.TrimSpace(registration.CleanupPath) == "" {
+		return ErrNotFound
 	}
 	rows, err := s.queries.UpdateCodexSessionWorkerProcess(ctx, sqlc.UpdateCodexSessionWorkerProcessParams{
 		WorkerPid:         sql.NullInt64{Int64: int64(registration.PID), Valid: true},
 		WorkerPgid:        sql.NullInt64{Int64: int64(registration.GroupID), Valid: true},
-		WorkerStartedAt:   sql.NullString{String: startedAt, Valid: true},
+		WorkerStartedAt:   startedAt,
 		WorkerCleanupRoot: nullString(registration.CleanupRoot),
 		WorkerCleanupPath: nullString(registration.CleanupPath),
 		ID:                sessionID,
@@ -308,9 +314,12 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 	}
 	processes := make([]WorkerProcess, 0, len(rows))
 	for _, row := range rows {
-		startedAt, err := parseTimestamp("worker_started_at", row.WorkerStartedAt)
-		if err != nil {
-			return nil, err
+		var startedAt time.Time
+		if row.WorkerStartedAt != "" {
+			startedAt, err = parseTimestamp("worker_started_at", row.WorkerStartedAt)
+			if err != nil {
+				return nil, err
+			}
 		}
 		var completedAt time.Time
 		if strings.TrimSpace(row.CompletedAt) != "" {
@@ -320,6 +329,7 @@ func (s *sqliteStore) ListActiveWorkerProcesses(ctx context.Context) ([]WorkerPr
 			}
 		}
 		processes = append(processes, WorkerProcess{
+			Role:        row.AgentRole,
 			SessionID:   row.SessionID,
 			IssueID:     strings.TrimSpace(row.IssueID),
 			Identifier:  strings.TrimSpace(row.Identifier),

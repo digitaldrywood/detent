@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -8,6 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func TestLocalGitCleanupChecksEveryWorkspace(t *testing.T) {
@@ -219,9 +224,27 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			source := initSourceRepo(t)
 			publishCleanupSource(t, source)
 			trace := filepath.Join(t.TempDir(), "hook-ran")
+			cacheRoot := t.TempDir()
+			cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, release, err := cache.Use(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			reserved, registered, finished := false, false, false
+			ctx = WithValidationProcessOwner(ctx, func(context.Context, Info, Issue, string) (ValidationProcess, error) {
+				reserved = true
+				return validationProcessFixture{
+					started:  func(procgroup.Identity) error { registered = true; return nil },
+					finished: func(gate.CommandResult, error) error { finished = true; return nil },
+				}, nil
+			})
 			backend, err := NewLocalGit(LocalGitOptions{
 				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
-				Hooks: Hooks{BeforeRemove: "touch " + shellQuote(trace) + " && printf 'hook work' > README.md"},
+				Hooks: Hooks{BeforeRemove: "test \"$GOCACHE\" = " + shellQuote(cacheRoot) + " && touch " + shellQuote(trace) + " && printf 'hook work' > README.md"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -237,13 +260,16 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			result, err := backend.CleanupIssue(t.Context(), issue)
+			result, err := backend.CleanupIssue(ctx, issue)
 			if !errors.Is(err, ErrWorkspacePreserved) || result.Worktrees != 0 {
 				t.Fatalf("cleanup = %+v, %v; want preservation", result, err)
 			}
 			_, err = os.Stat(trace)
 			if dirty != errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("hook trace stat = %v, dirty = %t", err, dirty)
+			}
+			if reserved != !dirty || registered != !dirty || finished != !dirty {
+				t.Fatalf("cleanup hook ownership: reserved=%t registered=%t finished=%t dirty=%t", reserved, registered, finished, dirty)
 			}
 			want := "hook work"
 			if dirty {

@@ -112,7 +112,8 @@ SELECT s.id, COALESCE(s.work_attempt_id, 0), COALESCE(s.issue_id, ''), COALESCE(
        COALESCE(s.issue_url, ''), COALESCE(s.started_at, ''), COALESCE(s.completed_at, ''),
        COALESCE(s.total_tokens, 0), COALESCE(s.final_state, ''), COALESCE(s.orphan_recovery_outcome, '')
 FROM codex_sessions s
-WHERE COALESCE(s.completed_at, s.started_at, '') >= ?
+WHERE COALESCE(s.agent_role, '') != 'host_validation'
+  AND COALESCE(s.completed_at, s.started_at, '') >= ?
   AND (
     EXISTS (SELECT 1 FROM usage_events u WHERE u.session_id = s.id AND u.project_id = ?)
     OR EXISTS (SELECT 1 FROM work_attempts w WHERE w.id = s.work_attempt_id AND w.project_id = ?)

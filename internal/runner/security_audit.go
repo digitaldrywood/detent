@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution SecurityAuditExecution, err error) {
+func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution SecurityAuditExecution, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -58,7 +58,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	selectionIssue := req.Issue
 	selectionIssue.Description = ""
-	baseEnvironment := r.withGoBudget(auditWorkspace, workerEnvironment(map[string]string{
+	baseEnvironment := r.withGoBudget(ctx, auditWorkspace, workerEnvironment(map[string]string{
 		"GH_TOKEN":                             "",
 		"GITHUB_TOKEN":                         "",
 		serviceapi.AddressEnvironment:          "",
@@ -111,6 +111,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		MaxRSSBytes:      r.maxAgentRSSBytes,
 		RSSPollInterval:  r.rssPollInterval,
 		processRSS:       r.processRSS,
+		reserveScratch:   r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse

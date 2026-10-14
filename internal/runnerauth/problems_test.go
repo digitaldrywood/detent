@@ -61,9 +61,9 @@ func TestMergeProblems(t *testing.T) {
 }
 
 func TestValidateReportedProblems(t *testing.T) {
-	for _, code := range []string{"tier_unavailable", "backend_missing", "host_service_unreachable", "settings_invalid", "keep_awake_failed", "home_project_unservable", "settings_rejected", "version_unsupported", "unknown"} {
+	for _, code := range []string{"tier_unavailable", "backend_missing", "backend_probe_failed", "host_service_unreachable", "settings_invalid", "keep_awake_failed", "home_project_unservable", "settings_rejected", "version_unsupported", "unknown"} {
 		t.Run(code, func(t *testing.T) {
-			want := code == "tier_unavailable" || code == "backend_missing" || code == "host_service_unreachable" || code == "settings_invalid" || code == "keep_awake_failed"
+			want := code == "tier_unavailable" || code == "backend_missing" || code == "backend_probe_failed" || code == "host_service_unreachable" || code == "settings_invalid" || code == "keep_awake_failed"
 			if got := ValidateReportedProblems([]Problem{NewProblem(code)}) == nil; got != want {
 				t.Fatalf("valid=%v want=%v", got, want)
 			}

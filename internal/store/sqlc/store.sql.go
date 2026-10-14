@@ -204,7 +204,8 @@ WITH issue_sessions AS (
     completed_at,
     lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned') AS successful
   FROM codex_sessions
-  WHERE started_at IS NOT NULL
+  WHERE COALESCE(agent_role, '') != 'host_validation'
+    AND started_at IS NOT NULL
     AND completed_at IS NOT NULL
     AND NOT EXISTS (
       SELECT 1 FROM work_attempts AS attempt
@@ -1452,7 +1453,8 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   COUNT(*) AS sessions
 FROM codex_sessions
-WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
   AND completed_at >= ?2
   AND completed_at < ?3
 GROUP BY COALESCE(NULLIF(trim(model), ''), NULLIF(trim(requested_model), ''), 'unassigned')
@@ -1508,14 +1510,14 @@ func (q *Queries) DailyDigestModels(ctx context.Context, arg DailyDigestModelsPa
 
 const dailyDigestRuntime = `-- name: DailyDigestRuntime :one
 SELECT
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS sessions,
-  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS cached_input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS output_tokens,
-  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS total_tokens,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS sessions,
+  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS cached_input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS output_tokens,
+  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3) AS total_tokens,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (?1 = '' OR session.project_id IN (SELECT value FROM json_each(?1))) AND session.completed_at >= ?2 AND session.completed_at < ?3 AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
   (SELECT COUNT(*) FROM work_attempts AS attempt WHERE (?1 = '' OR attempt.project_id IN (SELECT value FROM json_each(?1))) AND attempt.started_at < ?3 AND attempt.completed_at > ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
   (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, ?3)) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, ?2)) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE (?1 = '' OR attempt.project_id IN (SELECT value FROM json_each(?1))) AND attempt.started_at < ?3 AND attempt.completed_at > ?2 AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
   (SELECT COUNT(DISTINCT trip.identifier) FROM (
@@ -1584,7 +1586,8 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE substr(completed_at, 1, 10) = ?
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND substr(completed_at, 1, 10) = ?
 GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 `
@@ -2492,7 +2495,8 @@ SELECT
   CAST(SUM(CASE WHEN completed_at IS NOT NULL AND turns = 0 AND turn_start_refused = 1
     THEN 0 ELSE 1 END) AS INTEGER) AS sessions
 FROM codex_sessions NOT INDEXED
-WHERE codex_sessions.project_id = ?1
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND codex_sessions.project_id = ?1
   AND codex_sessions.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
     WHERE session_by_id.issue_id = ?2
@@ -2831,7 +2835,8 @@ SELECT
   CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN input_tokens ELSE 0 END), 0) AS INTEGER) AS resumed_input_tokens,
   CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN cached_input_tokens ELSE 0 END), 0) AS INTEGER) AS resumed_cached_tokens
 FROM codex_sessions
-WHERE completed_at IS NOT NULL
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND completed_at IS NOT NULL
 `
 
 type LifetimeTotalsRow struct {
@@ -3063,12 +3068,13 @@ func (q *Queries) ListActiveWorkAttempts(ctx context.Context, arg ListActiveWork
 const listActiveWorkerProcesses = `-- name: ListActiveWorkerProcesses :many
 SELECT
   id AS session_id,
+  CAST(COALESCE(agent_role, '') AS TEXT) AS agent_role,
   CAST(COALESCE(issue_id, '') AS TEXT) AS issue_id,
   CAST(COALESCE(identifier, '') AS TEXT) AS identifier,
   CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
-  CAST(worker_pid AS INTEGER) AS worker_pid,
+  CAST(COALESCE(worker_pid, 0) AS INTEGER) AS worker_pid,
   CAST(COALESCE(worker_pgid, 0) AS INTEGER) AS worker_pgid,
-  CAST(worker_started_at AS TEXT) AS worker_started_at,
+  CAST(COALESCE(worker_started_at, '') AS TEXT) AS worker_started_at,
   CAST(COALESCE(worker_cleanup_root, '') AS TEXT) AS worker_cleanup_root,
   CAST(COALESCE(worker_cleanup_path, '') AS TEXT) AS worker_cleanup_path,
   CAST(COALESCE(final_state, '') AS TEXT) AS final_state,
@@ -3076,12 +3082,13 @@ SELECT
   CAST(COALESCE(owner_generation, 0) AS INTEGER) AS owner_generation
 FROM codex_sessions
 WHERE worker_reaped_at IS NULL
-  AND worker_pid > 0
+  AND (worker_pid > 0 OR (worker_cleanup_root IS NOT NULL AND worker_cleanup_path IS NOT NULL))
 ORDER BY started_at, id
 `
 
 type ListActiveWorkerProcessesRow struct {
 	SessionID         int64  `json:"session_id"`
+	AgentRole         string `json:"agent_role"`
 	IssueID           string `json:"issue_id"`
 	Identifier        string `json:"identifier"`
 	IssueURL          string `json:"issue_url"`
@@ -3106,6 +3113,7 @@ func (q *Queries) ListActiveWorkerProcesses(ctx context.Context) ([]ListActiveWo
 		var i ListActiveWorkerProcessesRow
 		if err := rows.Scan(
 			&i.SessionID,
+			&i.AgentRole,
 			&i.IssueID,
 			&i.Identifier,
 			&i.IssueURL,
@@ -3312,7 +3320,8 @@ WITH issue_events AS (
     CAST(0 AS INTEGER)
   FROM codex_sessions AS session
   LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
-  WHERE session.started_at IS NOT NULL
+  WHERE COALESCE(session.agent_role, '') != 'host_validation'
+    AND session.started_at IS NOT NULL
     AND (?4 = '' OR attempt.project_id = ?4 OR attempt.project_id IS NULL)
     AND session.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
@@ -3347,7 +3356,8 @@ WITH issue_events AS (
     CAST(0 AS INTEGER)
   FROM codex_sessions AS session
   LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
-  WHERE session.completed_at IS NOT NULL
+  WHERE COALESCE(session.agent_role, '') != 'host_validation'
+    AND session.completed_at IS NOT NULL
     AND (?4 = '' OR attempt.project_id = ?4 OR attempt.project_id IS NULL)
     AND session.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
@@ -3489,7 +3499,8 @@ func (q *Queries) ListIssueActivityEvents(ctx context.Context, arg ListIssueActi
 const listIssueCodexSessions = `-- name: ListIssueCodexSessions :many
 SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused, owner_generation
 FROM codex_sessions
-WHERE project_id = ?1
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND project_id = ?1
   AND (
     (?2 != '' AND issue_id = ?2)
     OR (?3 != '' AND identifier = ?3)
@@ -4152,6 +4163,7 @@ func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, ar
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
 SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id, work_attempt_id, agent_route, provider, provider_provenance, requested_model_provenance, model_provenance, reasoning_effort, reasoning_effort_provenance, service_tier, service_tier_provenance, identity_observed_at, orphan_recovery_outcome, skill_draft_proposed, orphan_recovery_fallback_reason, worker_pid, worker_pgid, worker_started_at, worker_reaped_at, worker_reap_outcome, project_id, worker_reap_reason, worker_cleanup_root, worker_cleanup_path, runtime_identity_json, turn_start_refused, owner_generation
 FROM codex_sessions
+WHERE COALESCE(agent_role, '') != 'host_validation'
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
 `
@@ -4631,7 +4643,8 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE substr(completed_at, 1, 10) = ?1
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND substr(completed_at, 1, 10) = ?1
   AND (
     project_id = ?2
     OR trim(COALESCE(project_id, '')) = ''
@@ -5103,6 +5116,7 @@ SET worker_pid = ?1,
     worker_reap_outcome = NULL,
     worker_reap_reason = NULL
 WHERE id = ?6
+  AND (?1 > 0 OR worker_pid IS NULL OR worker_reaped_at IS NOT NULL)
 `
 
 type UpdateCodexSessionWorkerProcessParams struct {

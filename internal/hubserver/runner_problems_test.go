@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -14,13 +15,14 @@ import (
 )
 
 func TestRunnerProblemsHeartbeat(t *testing.T) {
-	for _, code := range []string{"tier_unavailable", "backend_missing", "host_service_unreachable", "settings_invalid", "keep_awake_failed"} {
+	for _, code := range []string{"tier_unavailable", "backend_missing", "backend_probe_failed", "host_service_unreachable", "settings_invalid", "keep_awake_failed"} {
 		t.Run(code, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
-			heartbeat["problems"] = []map[string]any{{"project_id": "site", "code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling", "subject": "codex", "check": "codex login status", "error_output": "Not logged in; OPENAI_API_KEY=private-key", "fix_command": "codex login --device-auth"}}
+			observed := time.Now().UTC().Add(-time.Minute)
+			heartbeat["problems"] = []map[string]any{{"reported_at": observed, "project_id": "site", "code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling", "subject": "codex", "check": "codex login status", "error_output": "Not logged in; OPENAI_API_KEY=private-key", "fix_command": "codex login --device-auth"}}
 			post := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
@@ -55,6 +57,9 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			runner.Problems[0].ProjectID = ""
 			if fleet := hostedFleetRunnerView(runner, "test", nil, f.service.config.now()); fleet.CapacityHealth != "" || fleet.Health != "needs_attention" {
 				t.Fatalf("runner-wide failure lost its availability warning: %+v", fleet)
+			}
+			if !problems[0].ReportedAt.Equal(observed) {
+				t.Fatalf("heartbeat replaced probe observation time: %+v", problems[0])
 			}
 			reported := problems[0].ReportedAt
 			_, again := read()

@@ -375,23 +375,35 @@ Review rejects semantic reservation and preemption substitutes.
 
 ## INV-12 — Native toolchain caches
 
-Workers inherit the host's native toolchain caches. Detent may trim a native
-cache through mechanisms the toolchain tolerates, but never relocates it,
-keys it per project or attempt, or introduces configuration that does either.
-Per-attempt isolation is limited to the host-provided `TMPDIR`/`TMP`/`TEMP`;
-workers never fall back to host scratch or use the orchestrator's scratch.
+Workers inherit the host's native toolchain caches, except that an enrolled
+local Cloud runner may use one runner-owned Go build cache shared across its
+projects and daemon generations. That cache is bound to one canonical runtime
+store. Its existing process recovery owner must account for worker and host
+validation children before recent entries can be reclaimed. Maintenance pauses
+new dispatch, waits for consumers, reaps surviving recorded processes, and
+resumes dispatch after reclamation. The retained-size target applies at these
+maintenance points; it is not a hard bound on a running build's peak usage.
 
-The runner must not set `GOCACHE`, `GOMODCACHE`, `GOBIN`,
-`GOLANGCI_LINT_CACHE`, `GOFLAGS`, `npm_config_cache`, `PNPM_HOME`,
-`YARN_CACHE_FOLDER`, `CARGO_HOME`, `CARGO_TARGET_DIR`, `PIP_CACHE_DIR`,
-`UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH` or `DOCKER_CONFIG` unless
-explicitly passed through by the operator. Preserve host values and explicit
-overrides. New `workspace.*cache*` keys are rejected; the removed
+Explicit operator cache overrides remain native and unmanaged. Local-board and
+SSH workers retain native build caches. The old native build cache is not
+removed automatically because operators and other applications may still use
+it. Native caches may only be trimmed through mechanisms the toolchain
+supports. No cache is keyed per project or attempt, and no new cache
+configuration is introduced. Per-attempt isolation is limited to the
+host-provided `TMPDIR`/`TMP`/`TEMP`; workers never fall back to host scratch or
+use the orchestrator's scratch.
+
+Apart from that owned build cache, the runner must not set `GOCACHE`,
+`GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE`, `GOFLAGS`, `npm_config_cache`,
+`PNPM_HOME`, `YARN_CACHE_FOLDER`, `CARGO_HOME`, `CARGO_TARGET_DIR`,
+`PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH` or `DOCKER_CONFIG`
+unless explicitly passed through by the operator. Preserve host values and
+explicit overrides. New `workspace.*cache*` keys are rejected; the removed
 `workspace.cache_strategy` is ignored with its compatibility warning.
 
-Sandbox grants use the existing native caches without relocation. Restricted
-turns keep cache writes and network access disabled. SSH workers use remote
-host caches, scratch and the shared Go admission budget.
+Sandbox grants follow the selected cache paths. Restricted turns keep cache
+writes and network access disabled. SSH workers use remote host caches,
+scratch and the shared Go admission budget.
 
 **Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment`,
 `TestINV12BackendToolchainEnvironment` in `internal/runner`;
