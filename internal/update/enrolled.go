@@ -8,6 +8,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
+const enrolledTargetRefusal = "Requested update target is not applicable to the observed runner state"
+
 func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.BuildEvidence, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
 	if s == nil {
 		return nil
@@ -60,13 +62,26 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	defer s.operationMu.Unlock()
 	observed := s.enrolledObservation(running)
-	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
+	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && observed.Receipt.FailureReason != enrolledTargetRefusal && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
 		if !retry || s.cfg.Now().Before(observed.Receipt.ObservedAt.Add(s.cfg.CheckInterval)) {
 			return observed
 		}
 	}
-	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", ObservedAt: s.cfg.Now().UTC()}
+	if request.Validate() != nil {
+		return observed
+	}
+	var installed *runnerauth.BuildEvidence
+	if observed.Receipt != nil {
+		installed = observed.Receipt.Applied
+		if installed == nil {
+			installed = observed.Receipt.VerifiedTarget
+		}
+	}
+	if observed.Supported && request.Release && installed != nil && installed.VerifiedRelease && request.Version == installed.Version {
+		return observed
+	}
+	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: enrolledTargetRefusal, ObservedAt: s.cfg.Now().UTC()}
 	targetMatches := retry || request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
 	if request.FollowHub {
 		comparison, err := CompareVersions(request.Version, running.Version)
@@ -80,8 +95,9 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			targetMatches = targetMatches && err == nil && comparison > 0
 		}
 	}
-	if request.Validate() != nil || !observed.Supported || request.Service != observed.Service || !targetMatches || !request.Release && !observed.Pending {
-		if request.Validate() != nil {
+	if !observed.Supported || request.Service != observed.Service || !targetMatches || !request.Release && !observed.Pending {
+		if installed != nil {
+			observed.Receipt = receipt
 			return observed
 		}
 		s.setEnrolledReceipt(receipt)
@@ -91,6 +107,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		return s.enrolledObservation(running)
 	}
 	receipt.Status = "draining"
+	receipt.FailureReason = ""
 	s.setEnrolledReceipt(receipt)
 	if s.persistCurrentState() != nil {
 		return nil
