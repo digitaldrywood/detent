@@ -234,10 +234,13 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 			}
 			defer cancel()
 			done := make(chan error, 1)
-			go func() { done <- probeBackendSignIn(ctx, backend) }()
+			go func() {
+				defer listener.Close()
+				done <- probeBackendSignIn(ctx, backend)
+			}()
 			connection, err := listener.Accept()
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("probe exited before login readiness: accept=%v probe=%v", err, <-done)
 			}
 			defer connection.Close()
 			if !test.deadline {
