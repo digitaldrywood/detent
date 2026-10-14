@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -121,6 +122,8 @@ func TestMCPKeyIssueContract(t *testing.T) {
 			for _, kind := range []string{"personal", "service"} {
 				t.Run(kind, func(t *testing.T) {
 					body := issueorigin.Stamp(issueContractTestSections, issueorigin.Origin{Kind: "worker", Fingerprint: "key-contract-" + kind})
+					body = strings.Repeat("x", 42917-len(body)-1) + "\n" + body
+					originalBody := body
 					key, err := f.service.createHostedAPIKeyFor(t.Context(), issuer, hostedKeyRequest{Kind: kind, Name: "contract-" + kind, Scope: apikey.ScopeWrite, NeverExpires: true, ProjectAccess: hostedProjectsAll})
 					if err != nil || key.Kind != kind {
 						t.Fatalf("create key=%+v error=%v", key, err)
@@ -147,9 +150,11 @@ func TestMCPKeyIssueContract(t *testing.T) {
 						}
 					}
 					checkClaimable(false)
+					body = strings.Replace(body, "Complete the requested work.", "Complete the corrected work.", 1)
+					expectedRevision := fmt.Sprint(issue.Revision)
 					call := func(requestID string) *httptest.ResponseRecorder {
 						t.Helper()
-						payload := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.EditItem, "arguments": map[string]any{"project_id": f.project, "identifier": issue.WorkItemID, "expected_revision": fmt.Sprint(issue.Revision), "body": body, "request_id": requestID}, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "key-test", "version": "1"}}}}
+						payload := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.EditItem, "arguments": map[string]any{"project_id": f.project, "identifier": issue.WorkItemID, "expected_revision": expectedRevision, "body": body, "request_id": requestID}, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "key-test", "version": "1"}}}}
 						path := "/api/v2/organizations/org_security/mcp"
 						if deployment == "dedicated" {
 							return performHubWorkCall(t, f.service, path, key.Token, operatortool.EditItem, payload)
@@ -184,6 +189,9 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					var envelope struct {
 						Result struct {
 							IsError bool `json:"isError"`
+							Content struct {
+								Data json.RawMessage `json:"data"`
+							} `json:"structuredContent"`
 						} `json:"result"`
 					}
 					decodeHubResponse(t, response, &envelope)
@@ -194,10 +202,41 @@ func TestMCPKeyIssueContract(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					if issue.Body != body || issue.Revision != 2 {
+						t.Fatalf("large correction body bytes=%d revision=%d", len(issue.Body), issue.Revision)
+					}
+					if deployment == "shared entry" {
+						decodeHubResponse(t, response, &envelope.Result.Content)
+					}
+					receipt := string(envelope.Result.Content.Data)
+					replay := call("confirm")
+					requireNativeStatus(t, replay, http.StatusOK)
+					decodeHubResponse(t, replay, &envelope)
+					if deployment == "shared entry" {
+						decodeHubResponse(t, replay, &envelope.Result.Content)
+					}
+					if envelope.Result.IsError || receipt == "" || string(envelope.Result.Content.Data) != receipt {
+						t.Fatal("large correction replay changed its receipt")
+					}
 					want := kind == "personal"
 					checkClaimable(want)
 					if want && len(issue.IssueContract.ConfirmedSections) != 3 || !want && len(issue.IssueContract.ConfirmedSections) != 0 {
 						t.Fatalf("confirmation=%+v", issue.IssueContract)
+					}
+					if want {
+						for section, text := range map[string]string{"acceptance criteria": "Complete the corrected work.", "must not break": "Existing behavior.", "how we know it worked": "Run the project checks."} {
+							if issue.IssueContract.ConfirmedSections[section] != fmt.Sprintf("%x", sha256.Sum256([]byte(text))) {
+								t.Fatalf("confirmation does not match supplied %s section", section)
+							}
+						}
+					}
+					var original tracker.NativeIssue
+					raw, err = f.service.readVersion(t.Context(), scope, string(issue.WorkItemID), "", 1)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(raw, &original); err != nil || original.Body != originalBody {
+						t.Fatalf("original large issue history changed: %v", err)
 					}
 					var actorJSON string
 					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT actor_json FROM collaboration_events WHERE work_item_id=? AND type='issue.edited' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&actorJSON); err != nil {
