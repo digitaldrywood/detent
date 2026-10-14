@@ -163,10 +163,37 @@ test("an unavailable findings read differs from an empty detector result", async
     }),
   );
   await page.getByRole("button", { name: "Refresh diagnostics" }).click();
-  await expect(
-    page.getByText("Diagnostics are temporarily unavailable.", { exact: true }),
-  ).toBeVisible();
+  const refreshError = attention.getByText(
+    "Unable to refresh findings. Any findings below are from the last successful read.",
+    { exact: true },
+  );
+  await expect(refreshError).toBeVisible();
+  await expect(attention).toContainText("No open findings.");
+  await expect(attention).not.toContainText("Findings are unavailable");
+  const diagnosticsError = page.getByText(
+    "Diagnostics are temporarily unavailable.",
+    { exact: true },
+  );
+  await expect(diagnosticsError).not.toBeVisible();
+
+  await page.reload();
+  await expect(diagnosticsError).toBeVisible();
   await expect(attention).toContainText("Findings are unavailable");
+  await expect(attention).not.toContainText("No open findings.");
+
+  await page.unroute("**/api/v2/organizations/*/diagnostics?*");
+  await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
+    route.fulfill({ json: { ...fixture, findings: [] } }),
+  );
+  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings?*");
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) =>
+    route.fulfill({ json: { ...healthFixture, items: [] } }),
+  );
+  await page.getByRole("button", { name: "Refresh diagnostics" }).click();
+  await expect(attention).toContainText("No open findings.");
+  await expect(refreshError).not.toBeVisible();
+  await expect(diagnosticsError).not.toBeVisible();
+  await expect(attention).not.toContainText("Findings are unavailable");
 });
 
 for (const theme of ["light", "dark"]) {
