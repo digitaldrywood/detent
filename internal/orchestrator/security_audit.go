@@ -56,6 +56,12 @@ func (o *Orchestrator) securityAuditEvaluation(ctx context.Context, issue connec
 	if !evaluation.Allowed && runningAudit() {
 		return securityaudit.Evaluation{Running: true}
 	}
+	if evaluation.Reason == securityaudit.ReasonFailed {
+		if !o.clockNow().Before(run.CompletedAt.Add(o.retryDelay(run.Attempt, false))) {
+			return securityaudit.Evaluation{RunID: run.ID, Reason: securityaudit.ReasonMissing}
+		}
+		return evaluation
+	}
 	if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings && run.Attempt < cfg.MaxAttempts {
 		return securityaudit.Evaluation{RunID: run.ID, Reason: securityaudit.ReasonMissing}
 	}
