@@ -98,7 +98,9 @@ func TestActivityTypicalDurations(t *testing.T) {
 				for _, stage := range reports {
 					if stage.Stage == typical.Stage {
 						found = true
-						if !reflect.DeepEqual(typical.AnalyticsDuration, stage.Duration) {
+						reported := stage.Duration
+						reported.Samples = nil
+						if !reflect.DeepEqual(typical.AnalyticsDuration, reported) {
 							t.Fatalf("activity=%+v Reports=%+v", typical, stage)
 						}
 					}

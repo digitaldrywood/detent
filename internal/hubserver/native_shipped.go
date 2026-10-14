@@ -53,6 +53,9 @@ WHERE b.organization_id=? AND b.project_id=? AND b.archived IN (0,1) AND b.termi
 		statement += " AND " + filter
 		args = append(args, filterArgs...)
 	}
+	issues, issueArgs := reportsIssueClause(ctx, "b.work_item_id")
+	statement += issues
+	args = append(args, issueArgs...)
 	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return out, fmt.Errorf("read closed population: %w", err)
@@ -173,8 +176,17 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id IN (SELECT value
 func readProjectSpend(ctx context.Context, q nativeQueryer, scope nativeScope, from, to time.Time) (float64, int, error) {
 	var cost float64
 	var rows int
-	if err := q.QueryRowContext(ctx, `SELECT coalesce(sum(cost_estimate),0),count(*) FROM attempt_usage WHERE organization_id=? AND period>=? AND period<? AND project_id=?`,
-		scope.organization, from.UTC().Format(usagePeriodLayout), to.UTC().Format(usagePeriodLayout), scope.project).Scan(&cost, &rows); err != nil {
+	statement := `SELECT coalesce(sum(cost_estimate),0),count(*) FROM attempt_usage WHERE organization_id=? AND period>=? AND period<? AND project_id=?`
+	args := []any{scope.organization, from.UTC().Format(usagePeriodLayout), to.UTC().Format(usagePeriodLayout), scope.project}
+	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
+	if err != nil {
+		return 0, 0, err
+	}
+	if scoped != "" {
+		statement += ` AND attempt_id IN (SELECT a.id FROM native_attempts a WHERE a.organization_id=? AND a.project_id=?` + scoped + `)`
+		args = append(append(args, scope.organization, scope.project), scopedArgs...)
+	}
+	if err := q.QueryRowContext(ctx, statement, args...).Scan(&cost, &rows); err != nil {
 		return 0, 0, fmt.Errorf("read project spend: %w", err)
 	}
 	return cost, rows, nil

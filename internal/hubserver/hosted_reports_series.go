@@ -177,6 +177,23 @@ func reportsSpendOutcomes(spend []reportsSpend, attempts []nativeAnalyticsAttemp
 
 const reportClassTopIssues = 3
 
+// reportClassTopItems is the issues a class hit most often, most first.
+func reportClassTopItems(counts map[string]int) []string {
+	items := make([]string, 0, len(counts))
+	for item := range counts {
+		if item != "" {
+			items = append(items, item)
+		}
+	}
+	slices.SortFunc(items, func(a, b string) int {
+		if counts[a] != counts[b] {
+			return counts[b] - counts[a]
+		}
+		return strings.Compare(a, b)
+	})
+	return items[:min(len(items), reportClassTopIssues)]
+}
+
 func reportClassDetails(rework, failures []reportClassTotal, returns []qualityReturn, failed []nativeFailure) {
 	type event struct {
 		class, item string
@@ -198,19 +215,8 @@ func reportClassDetails(rework, failures []reportClassTotal, returns []qualityRe
 					totals[i].LastSeen = &at
 				}
 			}
-			items := make([]string, 0, len(counts))
-			for item := range counts {
-				if item != "" {
-					items = append(items, item)
-				}
-			}
-			slices.SortFunc(items, func(a, b string) int {
-				if counts[a] != counts[b] {
-					return counts[b] - counts[a]
-				}
-				return strings.Compare(a, b)
-			})
-			totals[i].WorkItems = items[:min(len(items), reportClassTopIssues)]
+			totals[i].itemCounts = counts
+			totals[i].WorkItems = reportClassTopItems(counts)
 		}
 	}
 	reworkEvents := make([]event, 0, len(returns))

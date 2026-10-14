@@ -162,7 +162,7 @@ describe("cache bounds", () => {
 
 describe("Reports read", () => {
   function ReportsProbe({ api, range }: { api: AccountApi; range: "24h" | "7d" }) {
-    const read = useReports(api, "project", range);
+    const read = useReports(api, { projectId: "project", range });
     return <div data-testid="reports">{read.pending ? "skeleton" : String((read.report as unknown as { id: string } | null)?.id)}</div>;
   }
 

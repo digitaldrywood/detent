@@ -248,8 +248,8 @@ func TestReportsRunnerTotals(t *testing.T) {
 	}
 	got := reportsRunnerTotals(attempts, usage)
 	want := []reportsRunner{
-		{RunnerID: "run_sprite", Name: "sprite", Sessions: 1, Succeeded: 1, Duration: analyticsDuration([]float64{60}), Cost: 5},
-		{RunnerID: "run_studio", Name: "studio", Sessions: 2, Succeeded: 1, Duration: analyticsDuration([]float64{120, 240}), Cost: 4},
+		{RunnerID: "run_sprite", Name: "sprite", Sessions: 1, Succeeded: 1, Duration: sampledDuration([]float64{60}), Cost: 5},
+		{RunnerID: "run_studio", Name: "studio", Sessions: 2, Succeeded: 1, Duration: sampledDuration([]float64{120, 240}), Cost: 4},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("runners=%+v want %+v", got, want)

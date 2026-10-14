@@ -1,5 +1,6 @@
 import type { MetricDelta } from "../../components/ui/metric-tile.tsx";
-import type { ReportsRange, ReportsReport } from "../../contracts/reports.ts";
+import type { ReportsFilters, ReportsRange, ReportsReport } from "../../contracts/reports.ts";
+import { PRIORITY_NAMES, priorityValue } from "../../contracts/work.ts";
 import { formatDuration } from "../adapters/usageLimits.ts";
 import { DEFAULT_REPORTS_RANGE } from "./reportsQuery.ts";
 import { formatCount, formatDayShort, formatHourShort, formatUsd } from "../usage/usageFormat.ts";
@@ -20,9 +21,33 @@ export const REPORT_RANGES: readonly { value: ReportsRange; label: string; long:
   { value: "90d", label: "90d", long: "Last 90 days", prior: "prior 90d" },
 ];
 export const DEFAULT_RANGE: ReportsRange = DEFAULT_REPORTS_RANGE;
+export const CUSTOM_RANGE = { value: "custom", label: "Custom", long: "Custom range", prior: "prior period" } as const;
+export const ALL_PROJECTS = "all";
+/** The longest custom range the Hub reads, in days. */
+export const MAX_CUSTOM_DAYS = 90;
+
+/** The filter chips, in the order the row shows them, with their query-string names. */
+export const REPORT_FILTERS = [
+  { key: "labels", label: "Label", param: "labels" },
+  { key: "priorities", label: "Priority", param: "priorities" },
+  { key: "types", label: "Type", param: "types" },
+  { key: "filedBy", label: "Filed by", param: "filed_by" },
+  { key: "runners", label: "Runner", param: "runners" },
+  { key: "models", label: "Model", param: "models" },
+  { key: "stages", label: "Stage", param: "stages" },
+] as const;
+export type ReportFilterKey = (typeof REPORT_FILTERS)[number]["key"];
+
+export const NO_FILTERS: ReportsFilters = { labels: [], priorities: [], types: [], filedBy: [], runners: [], models: [], stages: [] };
 
 export interface ReportsSearch {
-  readonly range: ReportsRange;
+  readonly range: ReportsRange | typeof CUSTOM_RANGE.value;
+  /** A custom range's first and last UTC days, YYYY-MM-DD. */
+  readonly from: string | null;
+  readonly to: string | null;
+  /** `all` reads every project the viewer can read; otherwise the sidebar's project. */
+  readonly project: typeof ALL_PROJECTS | null;
+  readonly filters: ReportsFilters;
   readonly compare: boolean;
   readonly clock: "todo" | "created";
   readonly group: "stage" | "model" | "runner";
@@ -38,9 +63,44 @@ function pick<T extends string>(value: unknown, allowed: readonly T[], fallback:
   return allowed.includes(value as T) ? (value as T) : fallback;
 }
 
+const DAY_MS = 86_400_000;
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function readDay(value: unknown): string | null {
+  return typeof value === "string" && DAY_PATTERN.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) ? value : null;
+}
+
+/** One filter's values from repeated query parameters; a value may hold a comma. */
+function readList(value: unknown): readonly string[] {
+  const values = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  return [...new Set(values.map((item) => String(item).trim()).filter((item) => item.length > 0))].toSorted();
+}
+
+/** Whole UTC days from `from` through `to`, or null when the range is not one the Hub reads. */
+export function customRangeDays(from: string, to: string): number | null {
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS + 1;
+  return Number.isFinite(days) && days >= 1 && days <= MAX_CUSTOM_DAYS ? days : null;
+}
+
+export function parseReportsFilters(search: Readonly<Record<string, unknown>>): ReportsFilters {
+  const filters = Object.fromEntries(REPORT_FILTERS.map((filter) => [filter.key, readList(search[filter.param])])) as Record<ReportFilterKey, readonly string[]>;
+  const priorities = filters.priorities.flatMap((name) => {
+    const level = priorityValue(name);
+    return level === null ? [] : [PRIORITY_NAMES[level]!];
+  });
+  return { ...filters, priorities: [...new Set(priorities)].toSorted() };
+}
+
 export function parseReportsSearch(search: Readonly<Record<string, unknown>>): ReportsSearch {
+  const from = readDay(search.from);
+  const to = readDay(search.to);
+  const custom = from !== null && to !== null && customRangeDays(from, to) !== null;
   return {
-    range: pick(search.range, REPORT_RANGES.map((range) => range.value), DEFAULT_RANGE),
+    range: custom ? CUSTOM_RANGE.value : pick(search.range, REPORT_RANGES.map((range) => range.value), DEFAULT_RANGE),
+    from: custom ? from : null,
+    to: custom ? to : null,
+    project: search.project === ALL_PROJECTS ? ALL_PROJECTS : null,
+    filters: parseReportsFilters(search),
     compare: search.compare !== "off",
     clock: pick(search.clock, ["todo", "created"], "todo"),
     group: pick(search.group, ["stage", "model", "runner"], "stage"),
@@ -49,10 +109,18 @@ export function parseReportsSearch(search: Readonly<Record<string, unknown>>): R
   };
 }
 
-/** The query string for a view: defaults are left out so a plain link stays plain. */
-export function reportsSearchParams(search: ReportsSearch): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (search.range !== DEFAULT_RANGE) out.range = search.range;
+/** The query string for a view: defaults are left out so a plain link stays plain, and each filter value is its own parameter. */
+export function reportsSearchParams(search: ReportsSearch): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  if (search.project !== null) out.project = search.project;
+  if (search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null) {
+    out.from = search.from;
+    out.to = search.to;
+  } else if (search.range !== DEFAULT_RANGE && search.range !== CUSTOM_RANGE.value) out.range = search.range;
+  for (const filter of REPORT_FILTERS) {
+    const values = search.filters[filter.key];
+    if (values.length > 0) out[filter.param] = [...new Set(values)].toSorted();
+  }
   if (!search.compare) out.compare = "off";
   if (search.clock !== "todo") out.clock = search.clock;
   if (search.group !== "stage") out.group = search.group;
@@ -61,9 +129,24 @@ export function reportsSearchParams(search: ReportsSearch): Record<string, strin
   return out;
 }
 
-export function rangeOption(range: ReportsRange) {
+export function rangeOption(range: ReportsSearch["range"]) {
+  if (range === CUSTOM_RANGE.value) return CUSTOM_RANGE;
   return REPORT_RANGES.find((option) => option.value === range) ?? REPORT_RANGES[1]!;
 }
+
+/** The filters as the Hub reads them: priorities by level, every other value as shown. */
+export function reportsQueryFilters(filters: ReportsFilters): ReportsFilters {
+  return { ...filters, priorities: filters.priorities.map((name) => String(priorityValue(name))) };
+}
+
+export const PRIORITY_OPTIONS = PRIORITY_NAMES.map((name) => ({ value: name, label: name }));
+export const TYPE_OPTIONS = [
+  { value: "bug", label: "Bug" },
+  { value: "change_request", label: "Change request" },
+] as const;
+
+/** True when the report can be compared with the period before it. */
+export const priorRecorded = (report: ReportsReport) => report.prior_recorded !== false;
 
 export const duration = (seconds: number) => formatDuration(seconds * 1000);
 
@@ -114,8 +197,7 @@ export const percentText = (value: number) => `${Math.round(value)}%`;
 
 export type SeriesBucket = NonNullable<ReportsReport["series"]>[number];
 
-const DAY = 86_400_000;
-const DAILY_SPAN = 6 * DAY;
+const DAILY_SPAN = 6 * DAY_MS;
 
 /** The report's buckets at display grain: the Hub's series, or its throughput rolled up to UTC calendar days. */
 export function reportBuckets(report: ReportsReport): readonly SeriesBucket[] {
@@ -123,8 +205,8 @@ export function reportBuckets(report: ReportsReport): readonly SeriesBucket[] {
   const from = Date.parse(report.analytics.window.from);
   const to = Date.parse(report.analytics.window.to);
   const daily = to - from >= DAILY_SPAN;
-  const origin = daily ? Math.floor(from / DAY) * DAY : from;
-  const step = daily ? DAY : 3_600_000;
+  const origin = daily ? Math.floor(from / DAY_MS) * DAY_MS : from;
+  const step = daily ? DAY_MS : 3_600_000;
   const empty = { count: 0, seconds: 0, p50_seconds: 0, p90_seconds: 0 };
   const buckets = new Map<number, SeriesBucket>();
   for (const bucket of report.throughput) {
