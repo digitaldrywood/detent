@@ -514,6 +514,9 @@ func (c *conversationService) setControlDelivery(ctx context.Context, tx *sql.Tx
 // current owner and returns their envelopes in acceptance order. Controls
 // already sending to this owner are returned again without new events.
 func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, record *conversationRecord, after int64, now time.Time) (controls []conversationControl, changed bool, err error) {
+	if conversationBetweenTurns(record.Execution) {
+		return []conversationControl{}, false, nil
+	}
 	owner := record.Execution.Owner
 	// A queued control has not been handed to this owner whatever its seq
 	// is, so a retry that re-queues an older message still reaches a worker
