@@ -47,6 +47,12 @@ func directGoValidation(validation string) bool {
 
 func reusableGoValidationFlags(args []string) bool {
 	for _, arg := range args {
+		if strings.ContainsAny(arg, "\"'") {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			arg = "-" + strings.TrimLeft(arg, "-")
+		}
 		for _, prefix := range []string{"-exec", "-toolexec", "-C", "-modfile", "-overlay", "-compiler", "-pkgdir", "-ldflags", "-vettool", "-asmflags", "-gcflags", "-gccgoflags", "-pgo", "-linkshared", "-args"} {
 			if strings.HasPrefix(arg, prefix) {
 				return false
