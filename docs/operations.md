@@ -239,10 +239,11 @@ go tool pprof -diff_base /path/to/older/cpu.pprof /path/to/newer/cpu.pprof
 Workers use the host toolchain caches, including Go's native build and module
 caches; no per-project cache choice exists (INV-12). The existing reaper trim
 expires old Go build entries using `global.cache.max_age` while preserving
-recent outputs even above the `global.cache.max_bytes` admission target. Native
-Cloud runner capacity stops new work when the latest completed sweep reaches
-that target or the cache/workspace volume lacks its disk reserve, and resumes
-when those observations recover. Active jobs retain their leases and files.
+recent outputs even above the `global.cache.max_bytes` reporting target. Native
+Cloud runner capacity stops new work when a cache or workspace volume lacks
+its disk reserve or storage cannot be observed, and resumes when those
+observations recover. Retained cache size does not stop claims while physical
+free space is sufficient. Active jobs retain their leases and files.
 `detent doctor` reports the native
 paths, current sizes, and last completed reaper trim per project, and warns about
 remaining Detent-owned cache roots without modifying them.
