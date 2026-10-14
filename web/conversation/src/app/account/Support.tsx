@@ -16,7 +16,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { useAccountBootstrap } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
 import { newKey } from "./idempotency.ts";
-import { withoutBasePath } from "../../runtime/basePath.ts";
+import { routerBasePath, withoutBasePath } from "../../runtime/basePath.ts";
 import { usePageTitle } from "../pageTitle.ts";
 
 /**
@@ -269,7 +269,7 @@ export function SupportRoute(): React.ReactElement {
     <SupportCard
       organization={
         supportOrganization({
-          pathname: withoutBasePath(globalThis.location?.pathname ?? ""),
+          pathname: withoutBasePath(globalThis.location?.pathname ?? "", routerBasePath()),
           search: globalThis.location?.search ?? "",
         }) ??
         bootstrap?.organization.id ??

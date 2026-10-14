@@ -24,7 +24,7 @@ func TestRunnerProviderReports(t *testing.T) {
 		file, missing, fail  bool
 	}{
 		{name: "default and refresh", account: "macbook-pro-m1", alias: "macbook-pro-m1"},
-		{name: "normalized instance", account: "Cory's MacBook", alias: "cory-s-macbook"},
+		{name: "normalized instance", account: "Owner's MacBook", alias: "owner-s-macbook"},
 		{name: "bounded instance alias", account: strings.Repeat("a", 80), alias: strings.Repeat("a", 64)},
 		{name: "explicit file precedence", file: true},
 		{name: "explicit missing file does not fall back", file: true, missing: true},

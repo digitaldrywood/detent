@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"slices"
 	"strconv"
@@ -14,7 +15,9 @@ import (
 )
 
 func (d *database) hostedPlanUsage(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := d.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return HostedEntitlement{}, err
 	}

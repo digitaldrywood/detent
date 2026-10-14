@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -52,7 +53,7 @@ func reviewThreadsPage(next string, nodes ...string) string {
 func reviewThreadNode(id string, resolved bool, author, typename, body string, replies ...string) string {
 	comments := []any{map[string]any{"body": body, "author": map[string]any{"__typename": typename, "login": author}}}
 	for _, reply := range replies {
-		comments = append(comments, map[string]any{"body": reply, "author": map[string]any{"__typename": "User", "login": "corylanou"}})
+		comments = append(comments, map[string]any{"body": reply, "author": map[string]any{"__typename": "User", "login": "example-user"}})
 	}
 	encoded, _ := json.Marshal(map[string]any{"id": id, "isResolved": resolved, "path": "web/app.ts", "line": 7, "comments": map[string]any{"nodes": comments}})
 	return string(encoded)
@@ -64,6 +65,10 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 	surfacedEarlier := "Detent surfaced this conversation to Rework.\n\n<!-- detent:surfaced " + earlier + " -->"
 	surfacedNow := "<!-- detent:surfaced " + head + " -->"
 	conversation := refuse(LandRefusalProtected, ReviewConversationsRefusalText+" GitHub refused the merge")
+	overflowPages := make([]string, landingReviewThreadPages)
+	for i := range overflowPages {
+		overflowPages[i] = reviewThreadsPage(strconv.Itoa(i))
+	}
 	for _, test := range []struct {
 		name          string
 		refusal       error
@@ -73,6 +78,45 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 		wantCursors   int
 		wantRework    bool
 	}{
+		{
+			name:          "preflight uses the existing actionable bot refusal and surfacing owner",
+			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "example-bot", "Bot", "P2 finding"))}},
+			wantReason:    []string{ReviewConversationsRefusalText, "P2 finding"},
+			wantMutations: []string{"surface:T1"},
+			wantCursors:   1,
+			wantRework:    true,
+		},
+		{
+			name:        "preflight preserves a human finding without mutation",
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "example-user", "User", "Human finding"))}},
+			wantReason:  []string{ReviewConversationsRefusalText, "Human finding"},
+			wantCursors: 1,
+			wantRework:  true,
+		},
+		{
+			name:        "a missing pagination cursor never approves a partial read",
+			refusal:     conversation,
+			client:      &reviewThreadClient{pages: []string{strings.Replace(reviewThreadsPage(""), `"hasNextPage":false`, `"hasNextPage":true`, 1)}},
+			wantReason:  []string{"did not advance its pagination cursor"},
+			wantCursors: 1,
+			wantRework:  true,
+		},
+		{
+			name:        "a repeated pagination cursor never approves a partial read",
+			refusal:     conversation,
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("c1"), reviewThreadsPage("c1")}},
+			wantReason:  []string{"did not advance its pagination cursor"},
+			wantCursors: 2,
+			wantRework:  true,
+		},
+		{
+			name:        "the pagination limit never approves a partial read",
+			refusal:     conversation,
+			client:      &reviewThreadClient{pages: overflowPages},
+			wantReason:  []string{"exceeded the pagination limit"},
+			wantCursors: landingReviewThreadPages,
+			wantRework:  true,
+		},
 		{
 			name:    "other protected refusals pass through untouched",
 			refusal: refuse(LandRefusalProtected, "required reviews"),
@@ -122,8 +166,8 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 		{
 			name:        "human conversations are surfaced in the refusal and never resolved",
 			refusal:     conversation,
-			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "corylanou", "User", "Please rename this", surfacedEarlier))}},
-			wantReason:  []string{"corylanou on web/app.ts:7: Please rename this"},
+			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "example-user", "User", "Please rename this", surfacedEarlier))}},
+			wantReason:  []string{"example-user on web/app.ts:7: Please rename this"},
 			wantCursors: 1,
 			wantRework:  true,
 		},

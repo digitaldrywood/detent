@@ -23,9 +23,11 @@ type operatorChatStore struct {
 }
 
 func (store operatorChatStore) Load(ctx context.Context, id string, now time.Time, ttl time.Duration) (chat.SessionState, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	state := chat.SessionState{ID: id}
 	var identity, lastUsed string
-	err := store.database.db.QueryRowContext(ctx, `SELECT identity_json, client, last_used_at FROM operator_chat_sessions WHERE connection_id = ? AND last_used_at >= ?`, id, now.Add(-ttl).UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&identity, &state.Client, &lastUsed)
+	err := store.database.reader.QueryRowContext(ctx, `SELECT identity_json, client, last_used_at FROM operator_chat_sessions WHERE connection_id = ? AND last_used_at >= ?`, id, now.Add(-ttl).UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&identity, &state.Client, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state, false, nil
 	}

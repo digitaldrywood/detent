@@ -215,8 +215,13 @@ Repeat diagnostics only to verify changed behavior or resolve a concrete remaini
 risk. Ordinary submission, completion, admission, and merge do not wait for a
 coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
 full suite validates pinned `develop` commits and every release branch update.
-Only green release branch heads receive stable tags.
-A new validated release deploys staging and passes its smoke before deploying production.
+Every release starts by cutting and freezing a `release/vX.Y` branch from
+`develop`. Fixes land on `develop` first, then reach the release branch through
+reviewed `git cherry-pick -x` PRs. Only the release branch's green full suite
+permits a version tag. That tag deploys staging and passes its smoke before
+production. Never use an operator develop prerelease or source-gate-only release
+path. Follow [the release workflow](docs/branching.md#release-branches), including
+for urgent recovery; ordinary develop landing remains independent.
 
 Other projects using Detent choose their own validation commands, required
 checks, workflow triggers, and release policies. Do not introduce a product-wide

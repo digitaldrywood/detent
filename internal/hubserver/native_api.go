@@ -166,6 +166,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/source-intake", s.intakeLinkedIssue, worker)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/verification", s.verifyNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)
 	e.POST(nativeBase+"/work-items/:item/comments", s.createNativeComment, write)
@@ -245,13 +246,15 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireAPIScope(roles...)(func(c echo.Context) error {
+			readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+			defer cancelRead()
 			credential, ok := c.Get("hub_api_credential").(apiCredential)
 			if !ok {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 			if c.Path() == nativeOrganizationIssuePath {
-				err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+				err := s.database.auth().QueryRowContext(readCtx, "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
 				if err != nil {
 					return s.nativeAPIError(c, err)
 				}
@@ -273,6 +276,9 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						scope.action = operatortool.EditComment
 					case "POST " + nativeBase + "/work-items/:item/workflow":
 						scope.action = operatortool.MoveItem
+					case "POST " + nativeBase + "/work-items/:item/test-items":
+					case "POST " + nativeBase + "/work-items/:item/verification":
+						scope.action = operatortool.VerifyFix
 					case "POST " + attachmentMetadataBase, "POST " + attachmentMetadataBase + "/check":
 						scope.action = operatortool.UploadAttachment
 					case "POST " + attachmentMetadataBase + "/:attachment/reference":
@@ -282,10 +288,10 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
 					}
 				}
-				if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), scope, write); err != nil {
+				if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {
 					return s.nativeAPIError(c, err)
 				}
-				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+				if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
@@ -522,6 +528,8 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	return json.RawMessage(response), nil
 }
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	var query string
 	path := c.Path()
 	switch {
@@ -535,7 +543,7 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 		return nil
 	}
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), query, c.Param("id")).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, query, c.Param("id")).Scan(&count); err != nil {
 		return fmt.Errorf("check compatibility resource: %w", err)
 	}
 	if count != 0 {
@@ -571,6 +579,8 @@ func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope native
 // External-read commands consult the same receipt before fetching a provider.
 // Current application authority is rechecked even when returning a replay.
 func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -578,7 +588,7 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	if err != nil {
 		return nil, false, err
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, false, err
 	}

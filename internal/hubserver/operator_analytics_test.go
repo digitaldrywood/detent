@@ -52,6 +52,9 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, now.Add(-2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	if err := rebuildAnalyticsRollups(t.Context(), tx, scope, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +118,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if err := json.Unmarshal(raw, &report); err != nil {
 					t.Fatal(err)
 				}
-				if report.Requests != nil {
+				if report.Requests != nil || report.RouteLatency != nil {
 					t.Fatalf("member received tenant-wide traffic: %s", raw)
 				}
 				want := 1
@@ -175,7 +178,32 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if string(stdio) != string(raw) {
 					t.Fatalf("stdio/HTTP application divergence:\n%s\n%s", stdio, raw)
 				}
-				for _, args := range []map[string]any{{"limit": 201}, {"window": "25h"}, {"from": "bad"}, {"bucket": "1ns"}} {
+				if name == operatortool.TimeSeries && grant != "github" {
+					for _, interval := range []struct {
+						from, to     time.Time
+						queueSeconds float64
+					}{
+						{now.Add(-6 * time.Minute), now.Add(-3 * time.Minute), 180},
+						{now.Add(-49 * time.Hour), now.Add(-48 * time.Hour), 0},
+					} {
+						response, history := call(user, name, map[string]any{"project_id": f.project, "from": interval.from.Format(time.RFC3339Nano), "to": interval.to.Format(time.RFC3339Nano), "bucket": "1m"})
+						var report nativeAnalyticsReport
+						if err := json.Unmarshal(history, &report); err != nil || response.Code != http.StatusOK || len(report.Projects) != 1 {
+							t.Fatalf("historical read failed: %s, %v", response.Body.String(), err)
+						}
+						var queueSeconds float64
+						for _, bucket := range report.Projects[0].Digest {
+							if bucket.From.Before(interval.from) || bucket.To.After(interval.to) {
+								t.Fatalf("bucket outside requested interval: %+v", bucket)
+							}
+							queueSeconds += bucket.QueueSeconds
+						}
+						if queueSeconds != interval.queueSeconds || !report.Window.From.Equal(interval.from) || !report.Window.To.Equal(interval.to) {
+							t.Fatalf("historical queue read: %s", history)
+						}
+					}
+				}
+				for _, args := range []map[string]any{{"from": now.Add(-time.Hour).Format(time.RFC3339Nano), "to": now.Add(time.Hour).Format(time.RFC3339Nano)}, {"from": now.Add(-91 * 24 * time.Hour).Format(time.RFC3339Nano), "to": now.Format(time.RFC3339Nano)}, {"from": now.Add(-time.Hour).Format(time.RFC3339Nano), "to": now.Add(-2 * time.Hour).Format(time.RFC3339Nano)}, {"limit": 201}, {"window": "25h"}, {"from": "bad"}, {"bucket": "1ns"}} {
 					response, raw := call(user, name, args)
 					if len(raw) != 0 || !strings.Contains(response.Body.String(), `"isError":true`) {
 						t.Fatalf("invalid window accepted: %s", response.Body.String())
@@ -213,6 +241,15 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	var report nativeAnalyticsReport
 	if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.Requests == nil || len(report.Requests.Callers) != 1 || report.Requests.Callers[0].Caller != "runner_report" {
 		t.Fatalf("admin MCP traffic: %s err=%v", response.Body.String(), err)
+	}
+	response, raw = call(owner, operatortool.TimeSeries, map[string]any{"window": "2h", "bucket": "1h"})
+	report = nativeAnalyticsReport{}
+	if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.RouteLatency == nil {
+		t.Fatalf("admin MCP route latency: %s err=%v", response.Body.String(), err)
+	}
+	recorded := slices.IndexFunc(report.RouteLatency.Buckets, func(bucket routeLatencyBucket) bool { return bucket.Route == "GET /items/:item" })
+	if recorded < 0 || report.RouteLatency.Buckets[recorded].StatusClass != "2xx" || report.RouteLatency.Buckets[recorded].Count != 1 || report.RouteLatency.Buckets[recorded].P95 != 10 {
+		t.Fatalf("admin MCP route latency buckets: %+v", report.RouteLatency.Buckets)
 	}
 	t.Run("analytics reads beside a held writer", func(t *testing.T) {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())
@@ -473,6 +510,9 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 				if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions (id,change_id,number,record_json) VALUES (?,?,1,json_object('head_sha',?))`, versionID, changeID, headSHA); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if err := rebuildAnalyticsRollups(t.Context(), tx, nativeScope{organization: "org_security", project: f.project}, f.service.config.now()); err != nil {
+				t.Fatal(err)
 			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)

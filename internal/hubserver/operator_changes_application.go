@@ -26,14 +26,14 @@ func (a hubChangeApplication) authorized(ctx context.Context, args operatortool.
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
 		return scope, operatortool.ErrAccessDenied
 	}
-	if err := a.service.requireHostedProject(ctx, a.service.database.db, scope, write); err != nil {
+	if err := a.service.requireHostedProject(ctx, a.service.database.reader, scope, write); err != nil {
 		return scope, operatortool.ErrAccessDenied
 	}
 	if err := a.service.database.authorizeNativeProject(ctx, scope); err != nil {
 		return scope, operatortool.ErrAccessDenied
 	}
 	if args.ItemID != "" {
-		if _, _, err := readNativeIssue(ctx, a.service.database.db, scope, args.ItemID); err != nil {
+		if _, _, err := readNativeIssue(ctx, a.service.database.reader, scope, args.ItemID); err != nil {
 			return scope, operatortool.ErrAccessDenied
 		}
 	}
@@ -53,6 +53,8 @@ func (a hubChangeApplication) result(scope nativeScope, args operatortool.Change
 }
 
 func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (value operatortool.ChangeResult, resultErr error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	defer func() {
 		if resultErr != nil {
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
@@ -114,7 +116,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		}
 		return result, readErr
 	case operatortool.GetChange, operatortool.GetChangeVersion:
-		tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return result, fmt.Errorf("begin snapshot: %w", err)
 		}
@@ -136,7 +138,7 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		}
 		return result, nil
 	case operatortool.GetChangeReviewPolicy:
-		policy, err := readChangePolicy(ctx, s.database.db, scope)
+		policy, err := readChangePolicy(ctx, s.database.reader, scope)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = &operatortool.RequestError{Code: "not_found", Message: "No approved Change review policy exists for this project"}
 		}
@@ -288,7 +290,9 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return result, err
 		}
 		result.Version = &version
-		tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelRead()
+		tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return result, err
 		}

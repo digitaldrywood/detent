@@ -3,8 +3,9 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import React from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useParams, useRouteContext, useSearch } from "@tanstack/react-router";
 
+import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import {
   Collapsible,
@@ -25,18 +26,16 @@ import {
   turnPreferences,
 } from "../../contracts/index.ts";
 import type {
-  ChangeDetail,
-  CollaborationEvent,
-  NativeAttempt,
-  NativeComment,
+  IssuePickerPage,
   NativeIssue,
   NativeLabel,
-  NativeProject,
+  ReportContext,
 } from "../../contracts/work.ts";
 import { priorityValue } from "../../contracts/work.ts";
 import type { ConversationDetail } from "../../runtime/state/conversationState.ts";
 import { isStreaming } from "../../runtime/state/conversationState.ts";
-import { ConversationView, useShell } from "../App.tsx";
+import { useShell } from "../App.tsx";
+import { ConversationView } from "../ChatRoutes.tsx";
 import { newCommandKey, useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { ChatWorkspace, useWorkspacePanel } from "../components/ChatWorkspace.tsx";
@@ -57,6 +56,7 @@ import {
 import { IssueResources, type ResourceRow } from "./components/IssueResources.tsx";
 import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics.tsx";
 import { SourceRecoveryControls } from "./components/SourceRecoveryControls.tsx";
+import { VerificationControls, type VerificationResult } from "./components/VerificationControls.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
@@ -64,71 +64,23 @@ import type { WorkItemView } from "./lib/model.ts";
 import { useRunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
+import { invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
+import { issueKey, readIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
 
-interface IssueData {
-  readonly attemptsAvailable?: boolean;
-  readonly historyAvailable?: boolean;
-  readonly issue: NativeIssue;
-  readonly project: NativeProject;
-  readonly attempts: readonly NativeAttempt[];
-  readonly history: readonly CollaborationEvent[];
-  readonly comments: readonly NativeComment[];
-  readonly change: ChangeDetail | null;
-  readonly changes: readonly {
-    readonly record: { readonly change_id: string; readonly title: string };
-    readonly detail: ChangeDetail | null;
-  }[];
-}
+export { selectChangeId };
 
 /** Keep every linked change visible, including one whose detail read failed. */
 export function changeResourceRows(
   changes: IssueData["changes"],
   onOpen: (changeId: string) => void,
 ): ResourceRow[] {
-  return changes.map(({ record, detail }) => ({
+  return changes.map(({ record, detail, pending }) => ({
     key: record.change_id,
     icon: "diff" as const,
     label: record.title,
-    detail: detail?.summary.status.replaceAll("_", " ") ?? "unavailable",
+    detail: detail?.summary.status.replaceAll("_", " ") ?? (pending === true ? "" : "unavailable"),
     onOpen: () => onOpen(record.change_id),
   }));
-}
-
-/**
- * Reads one issue and everything the page shows about it.
- *
- * Six requests, because the hub has no issue-detail projection: the item, its
- * project (for the workflow), its attempts, its history, its comments, and —
- * only when it has one — its change. They are issued together rather than in
- * sequence, so the page paints once.
- */
-/**
- * The change the page opens: the one the link named when the issue has it,
- * otherwise the latest. A link to a specific change (the hub's old
- * `/projects/:project/issues/:item/changes/:change` page) keeps pointing at
- * that change rather than whatever was published after it.
- */
-export function selectChangeId(
-  changes: readonly { readonly change_id: string }[],
-  requested: string | null | undefined,
-): string | null {
-  if (requested !== undefined && requested !== null && requested.length > 0) {
-    if (changes.some((change) => change.change_id === requested)) return requested;
-  }
-  return changes.at(-1)?.change_id ?? null;
-}
-
-async function allIssueRecords<T>(read: (cursor?: string) => Promise<{ readonly items: readonly T[]; readonly next_cursor?: string | null }>): Promise<readonly T[]> {
-  const result: T[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await read(cursor);
-    result.push(...page.items);
-    const next = page.next_cursor ?? undefined;
-    if (next !== undefined && next === cursor) throw new Error("Issue history cursor did not advance");
-    cursor = next;
-  } while (cursor !== undefined);
-  return result;
 }
 
 export function useIssue(
@@ -143,71 +95,19 @@ export function useIssue(
   /** Applies an optimistic or answered issue without a round trip. */
   apply: React.Dispatch<React.SetStateAction<IssueData | null>>;
 } {
-  const [data, setData] = React.useState<IssueData | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const key = issueKey(http, workItemId, requestedChange);
+  const query = useQuery(key, readIssue(http, workItemId, requestedChange));
+  const data = query.data ?? null;
   const current = React.useRef(data);
   current.current = data;
-  const requestReload = React.useRef<() => void>(() => undefined);
-  const reload = React.useCallback(() => requestReload.current(), []);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    let reading = false;
-    let pending = false;
-    const read = () => {
-      if (reading) {
-        pending = true;
-        return;
-      }
-      reading = true;
-      setError(null);
-      if (current.current?.issue.work_item_id !== workItemId) setLoading(true);
-      void (async () => {
-        try {
-          const issue = await http.getWorkItemById(workItemId);
-          const projectId = issue.project_id;
-          const [project, attempts, history, comments, changes] = await Promise.all([
-            http.getProject(projectId),
-            allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)).catch(() => null),
-            allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })).catch(() => null),
-            allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
-              .catch(() => []),
-            http.listChanges(projectId, workItemId).catch(() => []),
-          ]);
-          const details = await Promise.all(
-            changes.map(async (record) => ({
-              record,
-              detail: await http.getChange(projectId, workItemId, record.change_id).catch(() => null),
-            })),
-          );
-          const selected = selectChangeId(changes, requestedChange);
-          const change = details.find((entry) => entry.record.change_id === selected)?.detail ?? null;
-          if (cancelled) return;
-          setData({ issue, project, attempts: attempts ?? [], history: history ?? [], attemptsAvailable: attempts !== null, historyAvailable: history !== null, comments, change, changes: details });
-          setError(null);
-        } catch (cause) {
-          if (cancelled) return;
-          if (cause instanceof WorkApiError && [401, 403, 404].includes(cause.status)) setData(null);
-          setError(cause instanceof Error ? cause.message : String(cause));
-        } finally {
-          reading = false;
-          if (!cancelled) {
-            setLoading(false);
-            if (pending) {
-              pending = false;
-              read();
-            }
-          }
-        }
-      })();
-    };
-    requestReload.current = read;
-    read();
-    return () => {
-      cancelled = true;
-    };
-  }, [http, workItemId, requestedChange]);
+  const refresh = query.refresh;
+  const reload = React.useCallback(() => void refresh(), [refresh]);
+  const latestKey = React.useRef(key);
+  latestKey.current = key;
+  const apply = React.useCallback<React.Dispatch<React.SetStateAction<IssueData | null>>>((action) => {
+    setQueryData<IssueData | null>(latestKey.current, (previous) =>
+      typeof action === "function" ? action(previous ?? null) : action);
+  }, []);
 
   const projectId = data?.issue.work_item_id === workItemId ? data.issue.project_id : null;
   React.useEffect(() => {
@@ -220,7 +120,7 @@ export function useIssue(
       const seen = previous;
       previous = next;
       const loaded = current.current?.history.at(-1)?.aggregate_sequence ?? "0";
-      if (next > (seen ?? BigInt(loaded))) reload();
+      if (next > (seen ?? BigInt(loaded))) invalidateQueries(["issue", workItemId]);
     };
     const onError = () => {
       if (source.readyState === 2) reload();
@@ -234,12 +134,13 @@ export function useIssue(
     };
   }, [http, projectId, workItemId, reload]);
 
+  const error = query.error === null || query.error === undefined ? null : query.error instanceof Error ? query.error.message : String(query.error);
   return {
     data: data?.issue.work_item_id === workItemId ? data : null,
     error,
-    loading,
+    loading: query.pending,
     reload,
-    apply: setData,
+    apply,
   };
 }
 
@@ -254,6 +155,15 @@ export function useIssue(
  * alone rather than taking the page down, which is the same rule the board
  * follows for a filter it cannot populate.
  */
+function toCandidates(page: IssuePickerPage): readonly RelatedCandidate[] {
+  return page.items.map((issue) => ({
+    id: issue.work_item_id,
+    label: issue.title,
+    detail: issue.state,
+    category: issue.terminal ? "completed" : "unstarted",
+  }));
+}
+
 function useIssueOptions(
   http: WorkHttp,
   members: () => Promise<readonly MemberOption[]>,
@@ -263,38 +173,43 @@ function useIssueOptions(
   labels: readonly NativeLabel[];
   candidates: readonly RelatedCandidate[];
   members: readonly MemberOption[];
+  search: (query: string) => void;
 } {
-  const [labels, setLabels] = React.useState<readonly NativeLabel[]>([]);
-  const [candidates, setCandidates] = React.useState<readonly RelatedCandidate[]>([]);
-  const [people, setPeople] = React.useState<readonly MemberOption[]>([]);
-
-  React.useEffect(() => {
-    if (projectId === null) return;
-    let cancelled = false;
-    void (async () => {
-      const [catalogue, page, roster] = await Promise.all([
-        http.listLabels(projectId).then((list) => list.items).catch(() => []),
-        http.listWorkItems({ projectId, limit: 100 }).then((result) => result.items).catch(() => []),
-        members().catch(() => []),
+  const scope = scopeOf(http);
+  const base = useQuery(
+    projectId === null ? null : ["issue-options", projectId, scope],
+    async () => {
+      const [labels, candidates, roster] = await Promise.all([
+        http.listLabels(projectId!).then((list) => list.items).catch(() => [] as readonly NativeLabel[]),
+        http.listIssuePicker({ projectId: projectId!, limit: 100 }).then(toCandidates).catch(() => [] as readonly RelatedCandidate[]),
+        members().catch(() => [] as readonly MemberOption[]),
       ]);
-      if (cancelled) return;
-      setLabels(catalogue);
-      setPeople(roster);
-      setCandidates(
-        page.map((issue) => ({
-          id: issue.work_item_id,
-          label: issue.title,
-          detail: issue.state,
-          category: issue.terminal ? "completed" : "unstarted",
-        })),
-      );
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [http, members, projectId, nonce]);
-
-  return { labels, candidates, members: people };
+      return { labels, candidates, members: roster };
+    },
+    { staleTime: 30_000 },
+  );
+  const refreshOptions = base.refresh;
+  React.useEffect(() => {
+    if (nonce > 0) void refreshOptions();
+  }, [nonce, refreshOptions]);
+  const [query, setQuery] = React.useState("");
+  const [debounced, setDebounced] = React.useState("");
+  React.useEffect(() => {
+    const timer = setTimeout(() => setDebounced(query.trim()), 200);
+    return () => clearTimeout(timer);
+  }, [query]);
+  const searched = useQuery(
+    projectId === null || debounced === "" ? null : ["issue-picker", projectId, scope, debounced, nonce],
+    (signal) => http.listIssuePicker({ projectId: projectId!, q: debounced, limit: 100, signal }).then(toCandidates),
+    { staleTime: 30_000, keepPreviousIn: JSON.stringify([scope, projectId]) },
+  );
+  const initial = base.data?.candidates ?? [];
+  const candidates = React.useMemo(() => {
+    if (query.trim() === "" || searched.data === undefined) return initial;
+    const seen = new Set(searched.data.map((candidate) => candidate.id));
+    return [...searched.data, ...initial.filter((candidate) => !seen.has(candidate.id))];
+  }, [initial, query, searched.data]);
+  return { labels: base.data?.labels ?? [], candidates, members: base.data?.members ?? [], search: setQuery };
 }
 
 /** Everything the page needs from the linked conversation, or nothing. */
@@ -313,7 +228,9 @@ interface ConversationBridge {
 }
 
 export function IssuePage(): React.ReactElement {
-  const { workItemId } = useParams({ from: "/work/i/$workItemId" });
+  const params = useParams({ strict: false }) as { workItemId?: string };
+ const context = useRouteContext({ strict: false }) as { resolvedWorkItemId?: string };
+ const workItemId = context.resolvedWorkItemId ?? params.workItemId ?? "";
   const shell = useShell();
   const http = useWorkHttp();
   const search = useSearch({ strict: false }) as { change?: string };
@@ -497,6 +414,10 @@ function IssueSurface({
       ? null
       : (client.bootstrap.projects.find((candidate) => candidate.id === projectId) ?? null);
   const canWrite = project?.can_write !== false;
+  const role = account?.actor.role;
+  const canVerify = data !== null && data.project.profile === "native" && data.issue.verification?.state === "pending" &&
+    (data.issue.actor.kind === "human" && data.issue.actor.principal_id === client.bootstrap.actor.principal_id ||
+      canWrite && (role === "member" || role === "admin" || role === "owner"));
   const ask = useIssueAsk(projectId, workItemId);
 
   const item = React.useMemo<WorkItemView | null>(() => {
@@ -675,6 +596,21 @@ function IssueSurface({
           key: newWorkKey("archive"), expectedRevision: revision, archived: !item.archived }),
         item.archived ? "restore this issue" : "archive this issue",
       )}
+      canVerify={canVerify}
+      onVerify={(result, comment) =>
+        void mutate(
+          (revision) =>
+            http.verifyFix({
+              projectId,
+              itemId: workItemId,
+              key: newWorkKey("verify"),
+              expectedRevision: revision,
+              result,
+              ...(comment === undefined ? {} : { comment }),
+            }),
+          "record the verification",
+        )
+      }
       onMove={(state) =>
         void mutate(
           (revision) =>
@@ -759,6 +695,7 @@ function IssueSurface({
       }}
       labelCatalogue={options.labels}
       relatedCandidates={options.candidates}
+      onRelatedQuery={options.search}
       members={options.members}
       viewer={viewer}
       // The invitation flow is the organization settings section, which only
@@ -798,6 +735,8 @@ interface IssueBodyProps {
   readonly viewerPrincipalId: string;
   readonly preferenceChoices: PreferenceChoices | undefined;
   readonly onArchive: () => void;
+  readonly canVerify: boolean;
+  readonly onVerify: (result: VerificationResult, comment?: string) => void;
   readonly onMove: (state: string) => void;
   readonly onPriority: (name: string | null) => void;
   readonly onLabels: (labels: readonly string[]) => void;
@@ -805,6 +744,7 @@ interface IssueBodyProps {
   readonly onRelation: (relatedWorkItemId: string, operation: "add" | "remove") => void;
   readonly labelCatalogue: readonly NativeLabel[];
   readonly relatedCandidates: readonly RelatedCandidate[];
+  readonly onRelatedQuery?: (query: string) => void;
   readonly members: readonly MemberOption[];
   readonly viewer: MemberOption | null;
   readonly onInvite: (() => void) | null;
@@ -814,6 +754,33 @@ interface IssueBodyProps {
   readonly onOpenConversationPage: () => void;
   /** Opens any Change Request linked to this issue. */
   readonly onOpenChange: (changeId: string) => void;
+}
+
+const REPORT_CONTEXT_FIELDS = [
+  ["url", "URL"],
+  ["app_build", "App build"],
+  ["browser", "Browser"],
+  ["os", "OS"],
+  ["viewport", "Viewport"],
+  ["captured_at", "Captured"],
+] as const satisfies readonly (readonly [keyof ReportContext, string])[];
+
+function ReportContextBlock({ context }: { readonly context: ReportContext }): React.ReactElement | null {
+  const rows = REPORT_CONTEXT_FIELDS.flatMap(([key, label]) => context[key] === undefined || context[key] === "" ? [] : [{ label, value: context[key] }]);
+  if (rows.length === 0) return null;
+  return (
+    <section className="rounded-[var(--radius)] border border-border bg-card px-4 py-3" data-testid="issue-report-context" aria-labelledby="issue-report-context-title">
+      <h2 id="issue-report-context-title" className="text-[13px] text-muted-foreground">Report context</h2>
+      <dl className="mt-1.5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px]">
+        {rows.map((row) => (
+          <React.Fragment key={row.label}>
+            <dt className="text-muted-foreground">{row.label}</dt>
+            <dd className="min-w-0 break-words">{row.value}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
+    </section>
+  );
 }
 
 /**
@@ -1051,6 +1018,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       attempts={attempts}
       related={related}
       relatedCandidates={props.relatedCandidates}
+      onRelatedQuery={props.onRelatedQuery}
       onAddRelated={(id) => props.onRelation(id, "add")}
       onOpenPullRequest={
         panel !== null && panel.pullRequestAvailable ? panel.openPullRequest : null
@@ -1073,9 +1041,17 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             <p className="font-mono text-muted-foreground text-xs" data-testid="issue-identifier">
               {item.projectName} {issueNumber(item.identifier, item.number)}{item.archived ? " · Archived" : ""}
             </p>
-            <h1 className="mt-1.5 text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
-              {item.title}
-            </h1>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <h1 className="text-balance font-semibold text-2xl leading-tight tracking-[-0.01em]">
+                {item.title}
+              </h1>
+              {item.type === undefined ? null : (
+                <Badge variant="secondary" size="sm">{item.type === "bug" ? "Bug" : "Change request"}</Badge>
+              )}
+            </div>
+            {props.canVerify ? (
+              <VerificationControls key={data.issue.revision} projectId={data.project.project_id} saving={props.saving} onVerify={props.onVerify} />
+            ) : null}
             {props.canWrite && data.project.profile === "native" ? (
               <Button size="sm" variant="outline" className="mt-3" data-testid="issue-archive"
                 disabled={props.saving || data.attempts.some((attempt) => attempt.status === "running")}
@@ -1160,6 +1136,8 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
               </button>
             ) : null}
           </div>
+
+          {data.issue.report_context === undefined ? null : <ReportContextBlock context={data.issue.report_context} />}
 
           {/* §19.6: sub-issue creation is not in this slice, and §16 says a
               feature stays present with its reason rather than disappearing. */}

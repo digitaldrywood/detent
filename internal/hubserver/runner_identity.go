@@ -89,11 +89,13 @@ func readRunnerProjects(ctx context.Context, query nativeQueryer, tokenID string
 }
 
 func (s *Service) getRunnerIdentity(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	credential, err := authenticatedRunner(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	credential.Runner.ProjectIDs, err = readRunnerProjects(c.Request().Context(), s.database.db, credential.ID)
+	credential.Runner.ProjectIDs, err = readRunnerProjects(ctx, s.database.reader, credential.ID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

@@ -1,9 +1,9 @@
 {
   "id": "mem_admin",
-  "user_id": "user_dana",
-  "email": "dana@threefold.solutions",
+  "user_id": "user_member",
+  "email": "member@example.com",
   "never_signed_in": false,
   "role": "member",
   "status": "active",
-  "grants": [{ "project_id": "proj_parable", "write": true, "runner": true }]
+  "grants": [{ "project_id": "proj_example_project", "write": true, "runner": true }]
 }

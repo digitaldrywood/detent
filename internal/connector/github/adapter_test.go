@@ -1663,26 +1663,26 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_370","content":{"__typename":"Issue","id":"I_370","number":370,"title":"Linked PR issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/370","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":375,"url":"https://github.com/digitaldrywood/detent/pull/375","state":"CLOSED","repository":{"nameWithOwner":"digitaldrywood/detent"}},{"number":376,"url":"https://github.com/corylanou/detent/pull/376","state":"OPEN","repository":{"nameWithOwner":"corylanou/detent"}}]}},"statusValue":{"name":"Reviewing"},"priorityValue":null}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_370","content":{"__typename":"Issue","id":"I_370","number":370,"title":"Linked PR issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/370","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":375,"url":"https://github.com/digitaldrywood/detent/pull/375","state":"CLOSED","repository":{"nameWithOwner":"digitaldrywood/detent"}},{"number":376,"url":"https://github.com/example-user/detent/pull/376","state":"OPEN","repository":{"nameWithOwner":"example-user/detent"}}]}},"statusValue":{"name":"Reviewing"},"priorityValue":null}]}}}}`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/corylanou/detent/pulls/376",
-			body:   `{"number":376,"html_url":"https://github.com/corylanou/detent/pull/376","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_370-e71678a9ca7e","sha":"sha-376"}}`,
+			path:   "/repos/example-user/detent/pulls/376",
+			body:   `{"number":376,"html_url":"https://github.com/example-user/detent/pull/376","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_370-e71678a9ca7e","sha":"sha-376"}}`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/corylanou/detent/commits/sha-376/check-runs?per_page=100",
+			path:   "/repos/example-user/detent/commits/sha-376/check-runs?per_page=100",
 			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/corylanou/detent/commits/sha-376/statuses?per_page=100",
+			path:   "/repos/example-user/detent/commits/sha-376/statuses?per_page=100",
 			body:   `[]`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/corylanou/detent/pulls/376/reviews?per_page=100",
+			path:   "/repos/example-user/detent/pulls/376/reviews?per_page=100",
 			body:   `[{"body":"No blocking findings.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-376","submitted_at":"2026-06-05T11:00:00Z"}]`,
 		},
 	})
@@ -1707,11 +1707,11 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 		t.Fatal("PullRequest = nil, want linked PR")
 		return
 	}
-	if pr.Number != 376 || pr.URL != "https://github.com/corylanou/detent/pull/376" || pr.State != "OPEN" || pr.BranchName != "detent/detent-digitaldrywood_detent_370-e71678a9ca7e" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
+	if pr.Number != 376 || pr.URL != "https://github.com/example-user/detent/pull/376" || pr.State != "OPEN" || pr.BranchName != "detent/detent-digitaldrywood_detent_370-e71678a9ca7e" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("PullRequest = %#v, want linked PR 376 with hydrated status", pr)
 	}
-	if got[0].PRRepository != "corylanou/detent" {
-		t.Fatalf("PRRepository = %q, want corylanou/detent", got[0].PRRepository)
+	if got[0].PRRepository != "example-user/detent" {
+		t.Fatalf("PRRepository = %q, want example-user/detent", got[0].PRRepository)
 	}
 
 	requests := server.requests()
@@ -4648,7 +4648,7 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"- [ ] #251","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo","updatedAt":"2026-06-02T16:00:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"Issue","id":"I_tracked_parent","number":259,"title":"Epic: Tracked parent","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/259","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_tracked_parent","project":{"id":"PVT_1"},"statusValue":{"name":"In Progress","updatedAt":"2026-06-02T16:01:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}}}}`,
+		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"- [ ] #251","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"author":{"login":"example-user"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo","updatedAt":"2026-06-02T16:00:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"Issue","id":"I_tracked_parent","number":259,"title":"Epic: Tracked parent","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/259","createdAt":null,"updatedAt":null,"author":{"login":"example-user"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_tracked_parent","project":{"id":"PVT_1"},"statusValue":{"name":"In Progress","updatedAt":"2026-06-02T16:01:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}}}}`,
 	}})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})

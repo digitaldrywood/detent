@@ -13,11 +13,14 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 const maxAPIRequestBodyBytes = 1 << 20
+
+const maxChangeVersionRequestBytes = 28 << 20
 
 // maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
 // larger than every other: a stored attempt diff carries the patches
@@ -36,6 +39,8 @@ const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	e.Pre(s.timeWriterUse)
+	e.Pre(s.serverTiming)
+	e.JSONSerializer = timedJSONSerializer{}
 	if s.config.CredentialMaintenance {
 		s.registerCredentialMaintenanceRoutes(e)
 		return
@@ -110,19 +115,44 @@ func decodeAPIJSON(c echo.Context, target any) error {
 
 // apiRequestBodyLimit is how many bytes this route's body may carry.
 func apiRequestBodyLimit(c echo.Context) int64 {
-	if c.Path() == changeBase+"/:change/versions" {
-		return 28 << 20
+	if c.Path() == nativeBase+"/conversations/:conversation/actions" {
+		return 4 * coordinatorWorkflowArgumentBytes
+	}
+	if limit := SharedEntryRequestBodyLimit(c.Request().Method, c.Path()); limit > cloudassert.MaxBodyBytes {
+		return limit
 	}
 	if c.Path() == nativeBase+"/work-items/:item/source-intake" || c.Path() == nativeBase+"/onboarding/issue-intake/result" {
 		return 64 << 20
-	}
-	if c.Path() == nativeBase+"/attempts/:attempt/diff" || c.Path() == nativeBase+"/attempts/:attempt/diff/check" {
-		return maxAttemptDiffRequestBytes
 	}
 	if c.Path() == nativeBase+"/workspaces/:workspace/worker/action-runs" {
 		return maxActionRunReportBytes
 	}
 	return maxAPIRequestBodyBytes
+}
+
+func SharedEntryRequestBodyLimit(method, path string) int64 {
+	if method != http.MethodPost {
+		return cloudassert.MaxBodyBytes
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) > 2 && parts[0] == "organizations" {
+		parts = parts[2:]
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return cloudassert.MaxBodyBytes
+		}
+	}
+	if len(parts) < 6 || parts[0] != "api" || parts[1] != "v2" || parts[2] != "organizations" || parts[4] != "projects" {
+		return cloudassert.MaxBodyBytes
+	}
+	if len(parts) == 11 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" {
+		return maxChangeVersionRequestBytes
+	}
+	if (len(parts) == 9 && parts[8] == "diff" || len(parts) == 10 && parts[8] == "diff" && parts[9] == "check") && parts[6] == "attempts" {
+		return maxAttemptDiffRequestBytes
+	}
+	return cloudassert.MaxBodyBytes
 }
 
 func invalidAPIRequest(c echo.Context, err error) error {
@@ -143,7 +173,7 @@ func invalidAPIRequest(c echo.Context, err error) error {
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {
-	s.config.Logger.Error(message, "error", err)
+	s.config.Logger.Error(message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
 	return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: code, Message: message})
 }
 

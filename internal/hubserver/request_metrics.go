@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -105,6 +106,8 @@ type tenantRequestMetrics struct {
 	flushMu      sync.Mutex
 	pending      map[requestMetricKey]requestLatency
 	runners      map[string]*runnerRequestWindow
+	routesOnce   sync.Once
+	routes       map[string]bool
 }
 
 func openRequestMetrics(ctx context.Context, path string, organization tracker.OrganizationID) (*tenantRequestMetrics, error) {
@@ -200,6 +203,9 @@ func (m *tenantRequestMetrics) write(ctx context.Context, now time.Time, pending
 			return err
 		}
 	}
+	if err := writeRequestHours(ctx, tx, now, pending); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -264,6 +270,8 @@ func runnerRequestExempt(method, route string) bool {
 type runnerRequestBudgetContext struct{}
 
 func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	m := s.requestMetrics
 	if m == nil || credential.Runner.RunnerID == "" {
 		return nil
@@ -273,7 +281,7 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 		return nil
 	}
 	var capacity int
-	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT min(r.capacity_limit,r.reported_capacity,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,r.reported_capacity,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	projects := make([]string, 0, len(credential.Runner.ProjectIDs))
@@ -374,10 +382,6 @@ func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
 				kind, caller = "browser", session.Identity.Subject
 			}
 		}
-		route := c.Path()
-		if route == "" {
-			route = "<unmatched>"
-		}
 		status := c.Response().Status
 		if err != nil {
 			status = 500
@@ -386,7 +390,34 @@ func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
 				status = failure.Code
 			}
 		}
-		s.requestMetrics.record(s.config.now(), c.Request().Method+" "+route, kind, caller, status, time.Since(start))
+		s.requestMetrics.record(s.config.now(), metricRoute(s.requestMetrics.knownRoutes(s.echo), c.Request().Method, c.Path()), kind, caller, status, time.Since(start))
 		return err
 	}
+}
+
+const unmatchedMetricRoute = "<unmatched>"
+
+var metricMethods = map[string]bool{http.MethodGet: true, http.MethodHead: true, http.MethodPost: true, http.MethodPut: true, http.MethodPatch: true, http.MethodDelete: true, http.MethodOptions: true, http.MethodConnect: true, http.MethodTrace: true}
+
+// metricRoute keys a request by method and registered route template. Unknown
+// methods and paths that match no registered route collapse to constants, so
+// clients cannot grow the metrics store with arbitrary keys.
+func metricRoute(routes map[string]bool, method, path string) string {
+	if !metricMethods[method] {
+		method = "OTHER"
+	}
+	if !routes[method+" "+path] {
+		path = unmatchedMetricRoute
+	}
+	return method + " " + path
+}
+
+func (m *tenantRequestMetrics) knownRoutes(e *echo.Echo) map[string]bool {
+	m.routesOnce.Do(func() {
+		m.routes = make(map[string]bool)
+		for _, route := range e.Routes() {
+			m.routes[route.Method+" "+route.Path] = true
+		}
+	})
+	return m.routes
 }

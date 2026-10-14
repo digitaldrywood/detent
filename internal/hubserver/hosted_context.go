@@ -95,6 +95,8 @@ func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Def
 }
 
 func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	defer func() {
 		if resultErr == nil {
 			return
@@ -136,7 +138,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 				return result, operatortool.ErrAccessDenied
 			}
 		} else if credential.HostedKeyScope != "" {
-			if err := s.database.db.QueryRowContext(ctx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
+			if err := s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
 				return result, err
 			}
 		}
@@ -208,6 +210,8 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 }
 
 func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeScope, workspace, item string) (hostedEventObservation, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	observation := hostedEventObservation{}
 	if err := s.requireHostedProject(ctx, s.database.auth(), scope, false); err != nil {
 		return observation, operatortool.ErrAccessDenied
@@ -240,6 +244,8 @@ func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeSc
 }
 
 func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if credential.Hosted == nil || !s.hostedAllRunnerGrants(ctx, credential) {
 		return false
 	}
@@ -249,6 +255,6 @@ func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredenti
 	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
 	args = append([]any{s.config.Hosted.OrganizationID}, args...)
 	var missing int
-	err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND NOT ("+condition+")", args...).Scan(&missing)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND NOT ("+condition+")", args...).Scan(&missing)
 	return err == nil && missing == 0
 }

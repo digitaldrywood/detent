@@ -31,10 +31,13 @@ const (
 )
 
 type Service struct {
+	activityDurations       activityDurationCache
 	issuePages              nativeIssuePageCache
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64
+	readerWaits             atomic.Int64
+	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map
@@ -44,6 +47,7 @@ type Service struct {
 	administration          *operatoradmin.Executor
 	billing                 *hostedBillingWorker
 	healthDetector          *healthDetector
+	issueMailer             *issueMailer
 	hostedMutationMu        sync.Mutex
 	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
@@ -217,6 +221,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	}
 	service.startHostedBilling()
 	service.startHealthDetector()
+	service.startIssueMailer()
 	return service, nil
 }
 
@@ -429,6 +434,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		reconcileErr := s.stopGitHubReconciliation()
 		s.stopHostedBilling()
 		s.stopHealthDetector()
+		s.stopIssueMailer()
 		if s.outbox != nil {
 			s.outbox.stop()
 		}
@@ -452,11 +458,25 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
+	lastOptimize := s.config.now()
+	var lastAnalyticsRetry time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			now := s.config.now()
+			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour
+			s.maintainAnalyticsRollups(ctx, now, retryAnalytics)
+			if retryAnalytics {
+				lastAnalyticsRetry = now
+			}
+			if now.Sub(lastOptimize) >= time.Hour {
+				if err := s.database.optimize(ctx, "PRAGMA optimize"); err != nil && !errors.Is(err, context.Canceled) {
+					s.config.Logger.Warn("optimize hub database", "error", err)
+				}
+				lastOptimize = now
+			}
 			s.maintainGitHubWebhooks(ctx)
 			if err := s.maintainGitHubBatches(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Error("process GitHub intake batches", "error", err)

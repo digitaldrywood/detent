@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/readableurl"
 )
 
 const hostedSharedClaimsKey = "hosted_shared_claims"
@@ -82,11 +83,12 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		if !cloudassert.CanonicalPath(request.URL) {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
-		body, err := io.ReadAll(io.LimitReader(request.Body, cloudassert.MaxBodyBytes+1))
+		limit := SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
+		body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, apiErrorResponse{Code: "invalid_request", Message: "Request body could not be read"})
 		}
-		if len(body) > cloudassert.MaxBodyBytes {
+		if int64(len(body)) > limit {
 			return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 		}
 		request.Body = io.NopCloser(bytes.NewReader(body))
@@ -116,12 +118,20 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			request.URL.Path, request.URL.RawPath = path, ""
 		case strings.HasPrefix(path, "/api/v2/organizations/"+organization+"/"):
+		case claims.OrganizationSlug != "" && len(strings.Split(strings.Trim(path, "/"), "/")) >= 2 && readableurl.Validate(strings.Split(strings.Trim(path, "/"), "/")[0]) == nil:
+			first := strings.Split(strings.Trim(path, "/"), "/")[0]
+			path = strings.TrimPrefix(path, "/"+first)
+			request.URL.Path, request.URL.RawPath = path, ""
+			c.Set("readable_organization_slug", first)
 		default:
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
+			return s.nativeAPIError(c, err)
 		}
 		c.Set(hostedSharedClaimsKey, claims)
 		if claims.Kind == cloudassert.KindKey {
@@ -215,6 +225,7 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/github/webhook", s.hostedGitHubWebhook)
 	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
+	e.POST("/internal/v1/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.POST("/internal/v1/health", s.hostedSharedHealth)
 	e.POST("/internal/v1/platform/members", s.platformTenantMembers)
 	e.POST("/internal/v1/platform/runners", s.platformTenantRunners)
@@ -246,9 +257,12 @@ type hostedSharedBillingQuery struct {
 }
 
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := s.database.hostedEntitlement(c.Request().Context(), s.database.db, s.config.now())
+	entitlement, err := s.database.hostedEntitlement(readCtx, s.database.reader, s.config.now())
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
@@ -260,7 +274,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 	}
 	if cfg != nil {
 		result.Enabled, result.AccountID, result.Mode = true, cfg.AccountID, cfg.mode()
-		binding, err := s.database.hostedBillingBinding(c.Request().Context(), cfg)
+		binding, err := s.database.hostedBillingBinding(ctx, cfg)
 		if err != nil && !errors.Is(err, errHostedBillingUnbound) {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
@@ -271,18 +285,20 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		}
 		if query.Reconcile && binding.CustomerID != "" && s.billing != nil {
 			s.billing.mu.Lock()
-			reconcileErr := s.billing.reconcile(c.Request().Context())
+			reconcileErr := s.billing.reconcile(ctx)
 			s.billing.mu.Unlock()
 			if reconcileErr != nil {
 				return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
 			}
 		}
+		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelCheckout()
 		var raw string
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+		if err := s.database.reader.QueryRowContext(checkoutCtx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
 			var checkout hostedCheckout
 			result.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
 		}
-		state, err := s.database.readHostedBilling(c.Request().Context())
+		state, err := s.database.readHostedBilling(ctx)
 		if err != nil {
 			return s.internalAPIError(c, "billing_unavailable", "Billing binding is unavailable", err)
 		}
@@ -342,11 +358,13 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
 	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	s.hostedMutationMu.Lock()
 	defer s.hostedMutationMu.Unlock()
 	var members int
 	var owner string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
 	}
 	if members != 0 {

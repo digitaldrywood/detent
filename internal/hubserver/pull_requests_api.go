@@ -195,7 +195,7 @@ FROM pull_requests WHERE repository_id = ? AND url = ?`, repositoryID, url).Scan
 // project has a connector and the change names a pull request, the projection.
 func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, item string, change tracker.ChangeRequest,
 	connector *pullRequestConnector, repositoryID int64, now time.Time) (pullRequestView, error) {
-	detail, err := readChangeDetail(ctx, s.database.db, scope, item, change.ID, now)
+	detail, err := readChangeDetail(ctx, s.database.reader, scope, item, change.ID, now)
 	if err != nil {
 		return pullRequestView{}, err
 	}
@@ -244,7 +244,7 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 	if connector == nil || current == nil || current.External == nil {
 		return view, nil
 	}
-	summary, fetched, found, err := readConnectorPullRequest(ctx, s.database.db, repositoryID, current.External.URL)
+	summary, fetched, found, err := readConnectorPullRequest(ctx, s.database.reader, repositoryID, current.External.URL)
 	if err != nil {
 		return view, err
 	}
@@ -328,7 +328,9 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 }
 
 func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	if _, _, err := readNativeIssue(readCtx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
 	now := s.config.now()
@@ -340,11 +342,11 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
 		return nil, pullRequestRefreshLimited()
 	}
-	connector, repositoryID, err := projectConnector(ctx, s.database.db, scope)
+	connector, repositoryID, err := projectConnector(readCtx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
-	changes, err := changeRows[tracker.ChangeRequest](ctx, s.database.db, `SELECT c.record_json FROM change_requests c
+	changes, err := changeRows[tracker.ChangeRequest](readCtx, s.database.reader, `SELECT c.record_json FROM change_requests c
 JOIN change_issue_links l ON l.change_id = c.id
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
 	if err != nil {

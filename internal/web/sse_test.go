@@ -672,7 +672,7 @@ func testSSESnapshotData(projectID string) templates.DashboardData {
 			Project: telemetry.Project{
 				ID:          projectID,
 				DisplayName: "Detent",
-				URL:         "https://github.com/digitaldrywood/detent/issues",
+				URL:         "https://github.com/example-org/example-project/issues",
 			},
 			Instance: telemetry.Instance{
 				Name:                    "dogfood",
@@ -708,7 +708,7 @@ func testSSESnapshotData(projectID string) templates.DashboardData {
 				Project: telemetry.Project{
 					ID:          projectID,
 					DisplayName: "Detent",
-					URL:         "https://github.com/digitaldrywood/detent/issues",
+					URL:         "https://github.com/example-org/example-project/issues",
 				},
 				Counts: data.Snapshot.Counts,
 				Refresh: telemetry.Refresh{

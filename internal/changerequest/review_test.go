@@ -21,6 +21,20 @@ func reviewFixture() (tracker.ChangeDetail, time.Time) {
 
 func TestSummarizeVersionReview(t *testing.T) {
 	t.Parallel()
+	sourcePass := tracker.ChangeReview{VersionID: "v1", Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass", SessionID: 42}}
+	sourceRework := tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework", SessionID: 42}}
+	sourceWait := tracker.ChangeReview{VersionID: "v1", Decision: "commented", ImplementationReview: &gate.ValidatorResult{Verdict: "wait", SessionID: 42}}
+	acceptancePass := tracker.ChangeReview{VersionID: "v1", Decision: "approved", Validator: &gate.ValidatorResult{Verdict: "pass", SessionID: 43}}
+	stages := func(mode string, validator bool, reviews ...tracker.ChangeReview) func(*tracker.ChangeDetail, *time.Time) {
+		return func(d *tracker.ChangeDetail, now *time.Time) {
+			d.Versions[0].Policy.Gates.AutomatedReview = mode
+			d.Versions[0].Policy.Gates.Validator = validator
+			for _, review := range reviews {
+				review.CreatedAt = *now
+				d.Reviews = append(d.Reviews, review)
+			}
+		}
+	}
 	for _, test := range []struct {
 		name   string
 		edit   func(*tracker.ChangeDetail, *time.Time)
@@ -29,6 +43,21 @@ func TestSummarizeVersionReview(t *testing.T) {
 		status string
 	}{
 		{"reviewed", func(_ *tracker.ChangeDetail, _ *time.Time) {}, "approved", "success", "reviewed"},
+		{"required source acceptance only", stages(gate.AutomatedReviewRequired, true, acceptancePass), "approved", "success", "needs_evidence"},
+		{"required source reversed retained acceptance", stages(gate.AutomatedReviewRequired, true, acceptancePass, sourcePass), "approved", "success", "needs_evidence"},
+		{"required source then fresh acceptance", stages(gate.AutomatedReviewRequired, true, sourcePass, acceptancePass), "approved", "success", "reviewed"},
+		{"retained acceptance then source then fresh acceptance", stages(gate.AutomatedReviewRequired, true, acceptancePass, sourcePass, acceptancePass), "approved", "success", "reviewed"},
+		{"source rerun needs fresh acceptance", stages(gate.AutomatedReviewRequired, true, sourcePass, acceptancePass, sourcePass), "approved", "success", "needs_evidence"},
+		{"source rework invalidates acceptance", stages(gate.AutomatedReviewRequired, true, sourcePass, acceptancePass, sourceRework), "approved", "success", "needs_evidence"},
+		{"source wait invalidates acceptance", stages(gate.AutomatedReviewRequired, true, sourcePass, acceptancePass, sourceWait), "approved", "success", "needs_evidence"},
+		{"source rework recovery needs fresh acceptance", stages(gate.AutomatedReviewRequired, true, sourcePass, acceptancePass, sourceRework, sourcePass), "approved", "success", "needs_evidence"},
+		{"source wait recovery needs fresh acceptance", stages(gate.AutomatedReviewRequired, true, sourcePass, acceptancePass, sourceWait, sourcePass), "approved", "success", "needs_evidence"},
+		{"source wait recovery then fresh acceptance", stages(gate.AutomatedReviewRequired, true, sourceWait, sourcePass, acceptancePass), "approved", "success", "reviewed"},
+		{"source rework recovery then fresh acceptance", stages(gate.AutomatedReviewRequired, true, sourceRework, sourcePass, acceptancePass), "approved", "success", "reviewed"},
+		{"optional source preserves acceptance", stages(gate.AutomatedReviewOptional, true, acceptancePass, sourcePass), "approved", "success", "reviewed"},
+		{"optional source acceptance only", stages(gate.AutomatedReviewOptional, true, acceptancePass), "approved", "success", "reviewed"},
+		{"required source disabled acceptance", stages(gate.AutomatedReviewRequired, false, sourcePass), "approved", "success", "reviewed"},
+		{"required source disabled acceptance wait", stages(gate.AutomatedReviewRequired, false, sourceWait), "approved", "success", "needs_evidence"},
 		{"validator missing", func(d *tracker.ChangeDetail, _ *time.Time) {
 			d.Versions[0].Policy.Gates.Validator = true
 		}, "approved", "success", "needs_evidence"},

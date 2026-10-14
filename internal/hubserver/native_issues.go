@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -24,18 +24,41 @@ import (
 )
 
 func (s *Service) nativeIssueResponse(issue tracker.NativeIssue) tracker.NativeIssue {
-	issue.WebURL = ""
-	if s.config.Hosted != nil {
-		issue.WebURL = s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(string(issue.WorkItemID)))
+	if s.config.Hosted != nil && strings.HasPrefix(issue.WebURL, "/") {
+		issue.WebURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + issue.WebURL
+	}
+	if s.config.Hosted == nil {
+		issue.WebURL = ""
 	}
 	return issue
 }
 
-func (s *Service) nativeIssueJSON(body json.RawMessage) (json.RawMessage, error) {
+func (s *Service) nativeIssueJSON(ctx context.Context, body json.RawMessage) (json.RawMessage, error) {
+	var challenge duplicateChallenge
+	if err := json.Unmarshal(body, &challenge); err != nil {
+		return nil, err
+	}
+	if challenge.ChallengeToken != "" {
+		for i := range challenge.PossibleDuplicates {
+			match := &challenge.PossibleDuplicates[i]
+			path, err := readIssueBrowserPath(ctx, s.database.reader, string(match.WorkItemID))
+			if err != nil {
+				return nil, err
+			}
+			issue := tracker.NativeIssue{WebURL: path}
+			match.WebURL = s.nativeIssueResponse(issue).WebURL
+		}
+		return json.Marshal(challenge)
+	}
 	var issue tracker.NativeIssue
 	if err := json.Unmarshal(body, &issue); err != nil {
 		return nil, err
 	}
+	path, err := readIssueBrowserPath(ctx, s.database.db, string(issue.WorkItemID))
+	if err != nil {
+		return nil, err
+	}
+	issue.WebURL = path
 	return json.Marshal(s.nativeIssueResponse(issue))
 }
 
@@ -44,7 +67,13 @@ func (s *Service) executeNativeIssueMutation(ctx context.Context, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	return s.nativeIssueJSON(result)
+	return s.nativeIssueJSON(ctx, result)
+}
+
+func nativeActorDisplayName(principal, organization string) string {
+	return `COALESCE((SELECT COALESCE(
+ (SELECT m.email FROM hosted_members m JOIN hosted_tenant h ON h.organization_id = ` + organization + ` WHERE m.principal_id = t.id), t.name)
+ FROM api_tokens t WHERE t.id = ` + principal + `), '')`
 }
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
@@ -54,19 +83,19 @@ func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
-	var labels, assignees, actor, created, updated, activity, externalID, contractJSON string
+	var labels, assignees, actor, displayName, created, updated, activity, externalID, contractJSON string
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
-	var repositoryOwner, repositoryName, importedURL string
+	var repositoryOwner, repositoryName, importedURL, organizationSlug, projectSlug string
 	var sourceNumber int
-	var provenance, closedAt, listChange, pullRequest sql.NullString
+	var provenance, closedAt, listChange, pullRequest, issueType, reportContext, verificationState, verifiedBy, verifiedAt sql.NullString
 	var priority sql.NullInt64
 	bodyColumn := "i.body"
 	if compact {
 		bodyColumn = "''"
 	}
-	err := query.QueryRowContext(ctx, `SELECT i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
- i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
- i.actor_json, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
+	err := query.QueryRowContext(ctx, `SELECT o.slug, p.slug, i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
+ i.issue_type, i.report_context_json, i.verification_state, i.verified_by_json, i.verified_at, i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
+ i.actor_json, `+nativeActorDisplayName("json_extract(i.actor_json, '$.principal_id')", "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
@@ -83,17 +112,40 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  AND json_extract(v.record_json, '$.external.provider') = 'github'
  AND COALESCE(json_extract(v.record_json, '$.external.url'), '') <> ''
  ORDER BY c.rowid DESC, v.number DESC LIMIT 1)
-FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.organization, scope.project, id).Scan(
-		&internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
-		&issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
+		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
+		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
 		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
 	if err != nil {
 		return issue, 0, err
+	}
+	issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, issue.Number)
+	issue.Type = issueType.String
+	if reportContext.Valid && !compact {
+		if err := json.Unmarshal([]byte(reportContext.String), &issue.ReportContext); err != nil {
+			return issue, 0, err
+		}
+	}
+	if verificationState.Valid {
+		issue.Verification = &tracker.NativeVerification{State: verificationState.String}
+		if verifiedBy.Valid {
+			issue.Verification.VerifiedBy = &tracker.Actor{}
+			if err := json.Unmarshal([]byte(verifiedBy.String), issue.Verification.VerifiedBy); err != nil {
+				return issue, 0, err
+			}
+		}
+		if verifiedAt.Valid {
+			at, err := parseTimeValue(verifiedAt.String)
+			if err != nil {
+				return issue, 0, err
+			}
+			issue.Verification.VerifiedAt = &at
+		}
 	}
 	issue.IssueContract = &issuecontract.State{}
 	if err := json.Unmarshal([]byte(contractJSON), issue.IssueContract); err != nil {
@@ -117,6 +169,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err := json.Unmarshal([]byte(actor), &issue.Actor); err != nil {
 		return issue, 0, err
 	}
+	issue.Actor.DisplayName = displayName
 	if provenance.Valid {
 		if err := json.Unmarshal([]byte(provenance.String), &issue.Provenance); err != nil {
 			return issue, 0, err
@@ -202,7 +255,8 @@ ORDER BY i.native_id`, args...)
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	scope := nativeRequestScope(c)
 	if view := c.QueryParam("view"); view != "" {
 		if view != "recovery" || len(c.QueryParams()) != 1 || len(c.QueryParams()["view"]) != 1 {
@@ -303,10 +357,59 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	var challenge duplicateChallenge
+	if err := json.Unmarshal(result, &challenge); err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if challenge.ChallengeToken != "" {
+		return c.JSON(http.StatusConflict, struct {
+			apiErrorResponse
+			duplicateChallenge
+		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
+	}
 	return c.JSONBlob(http.StatusOK, result)
 }
 
+func validateNativeIssueType(value string, required bool) error {
+	if value == "" && !required || value == "bug" || value == "change_request" {
+		return nil
+	}
+	return &nativeError{Code: "invalid_request", Message: "type must be bug or change_request", status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
+func validateNativeReportContext(report *tracker.ReportContext) error {
+	if report == nil || report.Validate() == nil {
+		return nil
+	}
+	return &nativeError{Code: "invalid_request", Message: tracker.ErrInvalidReportContext.Error(), status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
+func reporterSectionsMissing(missing []string, report *tracker.ReportContext) []string {
+	if !report.DescribesEnvironment() {
+		return missing
+	}
+	return slices.DeleteFunc(missing, func(section string) bool {
+		return strings.EqualFold(strings.TrimSuffix(strings.TrimSpace(section), ":"), "environment")
+	})
+}
+
 func validateNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue) (tracker.NativeProject, error) {
+	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
+		return tracker.NativeProject{}, err
+	}
+	if err := validateNativeReportContext(request.ReportContext); err != nil {
+		return tracker.NativeProject{}, err
+	}
+	if scope.credential.HostedRole == "reporter" {
+		contracts, err := nativeReporterContracts(ctx, tx, scope)
+		if err != nil {
+			return tracker.NativeProject{}, err
+		}
+		contract := config.IssueContract{Sections: contracts[request.Type]}
+		if missing := reporterSectionsMissing(contract.Evaluate(connector.Issue{Description: request.Body}).Missing, request.ReportContext); len(missing) > 0 {
+			return tracker.NativeProject{}, &nativeError{Code: "invalid_request", Message: "Add or complete these required Reporter sections: " + strings.Join(missing, ", "), status: http.StatusUnprocessableEntity, publicMessage: true}
+		}
+	}
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
 		return tracker.NativeProject{}, err
 	}
@@ -379,7 +482,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return tracker.NativeIssue{}, nativeInvalid("Workflow state does not exist")
 	}
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
-		Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
+		Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
 		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
 	issue.Blockers = []tracker.NativeDependency{}
 	issue.IgnoreDependencies = !project.RequireDependencies
@@ -438,7 +541,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
 	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)
-	if issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
+	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 		if !issue.IssueContract.Exempt {
 			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
@@ -450,8 +553,15 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_number, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at, issue_contract_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, importedURL, sourceNumber, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now), contractJSON)
+	var reportContext sql.NullString
+	if issue.ReportContext != nil {
+		if reportContext.String, err = marshalNative(issue.ReportContext); err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		reportContext.Valid = true
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_number, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at, issue_contract_json, issue_type, report_context_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, importedURL, sourceNumber, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now), contractJSON, issue.Type, reportContext)
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -532,6 +642,37 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 	}
 	issue.Revision++
 	issue.UpdatedAt = now
+	if eventType == "workflow.transitioned" && data.FromState != issue.State {
+		awaitsFiler := issue.Profile == "native" && nativeDoneState(issue.State) && nativeHumanFiled(issue)
+		if awaitsFiler {
+			workspace, err := nativeWorkspaceItem(ctx, tx, scope, issue.WorkItemID)
+			if err != nil {
+				return issue, err
+			}
+			awaitsFiler = !workspace
+		}
+		switch {
+		case awaitsFiler:
+			issue.Verification = &tracker.NativeVerification{State: tracker.VerificationPending}
+			data.Verification = tracker.VerificationPending
+		case nativeDoneState(data.FromState) && !nativeDoneState(issue.State):
+			issue.Verification = nil
+		}
+	}
+	verificationState, verifiedBy, verifiedAt := any(nil), any(nil), any(nil)
+	if issue.Verification != nil {
+		verificationState = issue.Verification.State
+		if issue.Verification.VerifiedBy != nil {
+			raw, err := marshalNative(issue.Verification.VerifiedBy)
+			if err != nil {
+				return issue, err
+			}
+			verifiedBy = raw
+		}
+		if issue.Verification.VerifiedAt != nil {
+			verifiedAt = formatHubTime(*issue.Verification.VerifiedAt)
+		}
+	}
 	labels, err := marshalNative(issue.Labels)
 	if err != nil {
 		return issue, err
@@ -544,9 +685,9 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 	if err != nil {
 		return issue, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE issues SET issue_contract_json = ?, title = ?, body = ?, labels_json = ?, assignees_json = ?, revision = ?, updated_at = ?, native_updated_at = ?, archived = ?,
+	_, err = tx.ExecContext(ctx, `UPDATE issues SET issue_type = NULLIF(?, ''), verification_state = ?, verified_by_json = ?, verified_at = ?, issue_contract_json = ?, title = ?, body = ?, labels_json = ?, assignees_json = ?, revision = ?, updated_at = ?, native_updated_at = ?, archived = ?,
 workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = ?)
-WHERE organization_id = ? AND project_id = ? AND native_id = ?`, contractJSON, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), issue.Archived, scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
+WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Type, verificationState, verifiedBy, verifiedAt, contractJSON, issue.Title, issue.Body, labels, assignees, issue.Revision, formatHubTime(now), formatHubTime(now), issue.Archived, scope.project, issue.State, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return issue, err
 	}
@@ -570,6 +711,21 @@ WHERE organization_id = ? AND project_id = ? AND native_id = ?`, contractJSON, i
 	}
 	err = recordNativeChange(ctx, tx, scope, issue, string(issue.WorkItemID), issue.Revision, eventType, data, now)
 	return issue, err
+}
+
+func nativeDoneState(state string) bool {
+	return strings.EqualFold(state, "Done")
+}
+
+func nativeWorkspaceItem(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID) (bool, error) {
+	var found bool
+	err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM workspace_items WHERE work_item_id = ? AND organization_id = ? AND project_id = ?)", item, scope.organization, scope.project).Scan(&found)
+	return found, err
+}
+
+func nativeHumanFiled(issue tracker.NativeIssue) bool {
+	_, machineOrigin := issueorigin.Parse(issue.Body)
+	return issue.Actor.Kind == "human" && issue.Actor.PrincipalID != "" && issue.Provenance == nil && !machineOrigin
 }
 
 func (s *Service) updateNativeIssue(c echo.Context) error {

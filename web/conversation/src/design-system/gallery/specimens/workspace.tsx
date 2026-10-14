@@ -353,7 +353,7 @@ function UsageSpecimen({ empty, error }: { readonly empty?: boolean; readonly er
       merged={merged}
       isPending={false}
       errorMessage={error ?? null}
-      scope="Threefold"
+      scope="Example Organization"
       preferences={preferences}
       onPreferencesChange={setPreferences}
       onRefresh={async () => undefined}

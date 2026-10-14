@@ -51,6 +51,8 @@ func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecor
 }
 
 func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var session auth.Session
 	var encoded, expiry string
 	err := s.database.auth().QueryRowContext(ctx, "SELECT email,identity_json,expires_at FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&session.Email, &encoded, &expiry)
@@ -137,6 +139,8 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 // so the tenant does not call the provider on the request path; membership
 // removal reaches the tenant through the entry's revocation of the binding.
 func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Session, hash, role string) (apiCredential, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if !auth.ValidOrganizationRole(role) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -180,6 +184,8 @@ func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Sess
 }
 
 func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -412,6 +418,11 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 			case operatortool.MoveItem:
 				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
 				if err != nil || scope.actionTarget != "Cancelled" || issue.Actor.PrincipalID != scope.actor().PrincipalID {
+					return operatortool.ErrAccessDenied
+				}
+			case operatortool.VerifyFix:
+				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
+				if err != nil || issue.Actor.PrincipalID != scope.actor().PrincipalID {
 					return operatortool.ErrAccessDenied
 				}
 			case operatortool.EditComment:

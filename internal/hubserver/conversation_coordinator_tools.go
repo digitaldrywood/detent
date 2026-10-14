@@ -22,16 +22,17 @@ import (
 
 // Bounds for coordinator tool arguments and results.
 const (
-	coordinatorToolArgumentBytes  = 16 << 10
-	coordinatorToolResultBytes    = 64 << 10
-	coordinatorAttentionDefault   = 20
-	coordinatorAttentionMax       = 50
-	coordinatorAttentionScan      = 500
-	coordinatorIssueBodyRunes     = 4000
-	coordinatorCommentRunes       = 1000
-	coordinatorCommentCount       = 5
-	coordinatorProposalTitleBytes = 500
-	coordinatorProposalBodyRunes  = 4000
+	coordinatorToolArgumentBytes     = 16 << 10
+	coordinatorWorkflowArgumentBytes = 6*(128<<10) + coordinatorToolArgumentBytes
+	coordinatorToolResultBytes       = 64 << 10
+	coordinatorAttentionDefault      = 20
+	coordinatorAttentionMax          = 50
+	coordinatorAttentionScan         = 500
+	coordinatorIssueBodyRunes        = 4000
+	coordinatorCommentRunes          = 1000
+	coordinatorCommentCount          = 5
+	coordinatorProposalTitleBytes    = 500
+	coordinatorProposalBodyRunes     = 4000
 )
 
 const (
@@ -77,7 +78,7 @@ func (t *coordinatorToolset) tools() []runner.AgentTool {
 		coordinatorTool(coordinatorToolProposeIssue,
 			"Propose a new issue for the user to confirm. This never creates the issue; it prepares a card the user can accept in the app.",
 			`{"type":"object","required":["title","objective"],"properties":{"title":{"type":"string","maxLength":500},"objective":{"type":"string","maxLength":4000,"description":"What the issue should achieve, in Markdown"},"project_id":{"type":"string","description":"Target project; defaults to this conversation's project"}},"additionalProperties":false}`),
-	}, append(append(append(append(append(coordinatorActionTools(), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...)...)
+	}, append(append(append(append(append(append(coordinatorActionTools(), coordinatorWorkflowTools()...), coordinatorSlashActionTools()...), coordinatorSpriteTools()...), coordinatorRunnerTools()...), coordinatorScreenTools()...), coordinatorSettingsTools()...)...)
 }
 
 // handle runs one tool call. Errors are returned to the model as
@@ -86,10 +87,10 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	t.state.endTextSegment(ctx)
 	result, err := t.execute(ctx, call)
 	if err != nil {
-		if call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+		if coordinatorWorkflowTool(call.Name) || call.Name == "get_runners" || call.Name == "set_runner_tier" || coordinatorSpriteTool(call.Name) || call.Name == "get_project_integration" || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
 			err = coordinatorActionError(err)
 		}
-		if call.Name == "set_runner_tier" || coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
+		if coordinatorWorkflowMutation(call.Name) || call.Name == "set_runner_tier" || coordinatorSpriteMutation(call.Name) || call.Name == "update_project_integration" || call.Name == "move_item" || call.Name == "edit_item" || call.Name == "add_comment" || call.Name == string(chat.ActionIssueSplit) || call.Name == string(chat.ActionArchiveItems) {
 			if postErr := t.postActionRefusal(ctx, call.Name, err); postErr != nil {
 				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
 			}
@@ -98,7 +99,7 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 		return coordinatorToolError(err), nil
 	}
 	if !coordinatorScreenRead(call.Name) {
-		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.db, t.state.conversationID)
+		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
 		if readErr != nil {
 			return coordinatorToolError(readErr), nil
 		}
@@ -118,8 +119,12 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 	if err != nil {
 		return coordinatorToolError(fmt.Errorf("encode %s result: %w", call.Name, err)), nil
 	}
-	if len(encoded) > coordinatorToolResultBytes {
-		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, coordinatorToolResultBytes)), nil
+	limit := coordinatorToolResultBytes
+	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
+		limit = coordinatorWorkflowArgumentBytes
+	}
+	if len(encoded) > limit {
+		return coordinatorToolError(fmt.Errorf("%s result exceeds %d bytes; narrow the request", call.Name, limit)), nil
 	}
 	return runner.AgentToolResult{Content: string(encoded), Success: true}, nil
 }
@@ -138,7 +143,7 @@ func coordinatorToolError(err error) runner.AgentToolResult {
 }
 
 func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolCall) (any, error) {
-	record, err := t.coordinator.readConversation(ctx, t.coordinator.service.store.db, t.state.conversationID)
+	record, err := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +155,7 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 		if authErr != nil {
 			return nil, authErr
 		}
-		if err := t.coordinator.service.authorizeRead(actorCtx, t.coordinator.service.store.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
+		if err := t.coordinator.service.authorizeRead(actorCtx, t.coordinator.service.store.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record); err != nil {
 			return nil, err
 		}
 		record.OwnerPrincipalID = credential.ID
@@ -170,6 +175,9 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 	}
 	if coordinatorSettingsTool(call.Name) {
 		return t.settingsTool(ctx, record, call)
+	}
+	if coordinatorWorkflowTool(call.Name) {
+		return t.workflowTool(ctx, record, call)
 	}
 	switch call.Name {
 	case "read_skill":
@@ -240,11 +248,15 @@ func (t *coordinatorToolset) execute(ctx context.Context, call runner.AgentToolC
 }
 
 func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
+	return decodeCoordinatorArgumentsWithLimit(raw, target, coordinatorToolArgumentBytes)
+}
+
+func decodeCoordinatorArgumentsWithLimit(raw json.RawMessage, target any, limit int) error {
 	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
 		raw = json.RawMessage(`{}`)
 	}
-	if len(raw) > coordinatorToolArgumentBytes {
-		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, coordinatorToolArgumentBytes)
+	if len(raw) > limit {
+		return fmt.Errorf("%w: payload exceeds %d bytes", errCoordinatorToolArguments, limit)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -265,7 +277,9 @@ func decodeCoordinatorArguments(raw json.RawMessage, target any) error {
 // The conversation's own project is not assumed: a grant withdrawn after the
 // conversation started is honored on the next tool call.
 func (t *coordinatorToolset) readableProjects(ctx context.Context, record conversationRecord) ([]tracker.ProjectID, error) {
-	db := t.coordinator.service.store.db
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	db := t.coordinator.service.store.reader
 	query := `SELECT g.project_id FROM hosted_project_grants g JOIN hosted_members m ON m.user_id = g.user_id
 WHERE m.user_id = ? AND m.active = 1 AND g.organization_id = ?`
 	args := []any{record.OwnerSubject, record.OrganizationID}
@@ -357,6 +371,8 @@ type coordinatorAttention struct {
 // order: a pending question, a live lease, no workflow state (unavailable),
 // a non-terminal dependency or blocked state, a review state.
 func (t *coordinatorToolset) listAttention(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, scope string, limit int) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	switch scope {
 	case "", "project":
 		scope = "project"
@@ -384,7 +400,7 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	if err != nil {
 		return nil, err
 	}
-	db := t.coordinator.service.store.db
+	db := t.coordinator.service.store.reader
 	now, err := t.coordinator.service.server.database.currentTime()
 	if err != nil {
 		return nil, err
@@ -400,8 +416,8 @@ func (t *coordinatorToolset) listAttention(ctx context.Context, record conversat
 	rows, err := db.QueryContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, COALESCE(ws.detent_state, ''), i.workflow_state_id IS NULL, i.native_updated_at,
  COALESCE((SELECT group_concat(b.native_id, ' ') FROM issue_dependencies d JOIN issues b ON b.id = d.blocker_issue_id LEFT JOIN workflow_states bs ON bs.id = b.workflow_state_id
    WHERE d.dependent_issue_id = i.id AND COALESCE(bs.terminal, 0) = 0
-    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM json_each(?))), '')
-FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
+    AND b.organization_id = i.organization_id AND b.project_id IN (SELECT value FROM json_each(?))), ''),o.slug,p.slug
+FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?)) AND COALESCE(ws.terminal, 0) = 0
 ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.OrganizationID, projectJSON, coordinatorAttentionScan+1)
 	if err != nil {
@@ -413,8 +429,8 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 	for rows.Next() {
 		var item coordinatorAttentionItem
 		var unmapped bool
-		var blockers string
-		if err := rows.Scan(&item.WorkItemID, &item.ProjectID, &item.Number, &item.Title, &item.State, &unmapped, &item.UpdatedAt, &blockers); err != nil {
+		var blockers, orgSlug, projectSlug string
+		if err := rows.Scan(&item.WorkItemID, &item.ProjectID, &item.Number, &item.Title, &item.State, &unmapped, &item.UpdatedAt, &blockers, &orgSlug, &projectSlug); err != nil {
 			return nil, fmt.Errorf("list issues: %w", err)
 		}
 		scanned++
@@ -422,7 +438,7 @@ ORDER BY i.native_updated_at DESC, i.native_id LIMIT ?`, readableJSON, record.Or
 			result.Truncated = true
 			break
 		}
-		item.URL = "/work/i/" + item.WorkItemID
+		item.URL = issueBrowserPath(orgSlug, projectSlug, int(item.Number))
 		item.Title = boundRunes(item.Title, coordinatorToolSummaryRunes)
 		state := strings.ToLower(item.State)
 		var group *[]coordinatorAttentionItem
@@ -547,7 +563,7 @@ func (t *coordinatorToolset) resolveIssueReference(ctx context.Context, record c
 		return reference, nil
 	}
 	s := t.coordinator.service.server
-	issue, err := s.resolveOperatorNativeItem(ctx, s.database.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
+	issue, err := s.resolveOperatorNativeItem(ctx, s.database.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, reference)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, explain.ErrNotFound) {
 		return "", fmt.Errorf("no issue %s in this project", "#"+strings.TrimPrefix(reference, "#"))
 	}
@@ -570,7 +586,7 @@ func (t *coordinatorToolset) explainIssue(ctx context.Context, record conversati
 	if err != nil {
 		return nil, err
 	}
-	db := t.coordinator.service.store.db
+	db := t.coordinator.service.store.reader
 	issue := coordinatorIssue{Comments: []coordinatorComment{}}
 	err = db.QueryRowContext(ctx, `SELECT i.native_id, i.project_id, COALESCE(i.number, 0), i.title, i.body, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), i.native_updated_at
 FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -583,7 +599,12 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 		return nil, fmt.Errorf("read issue: %w", err)
 	}
 	issue.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
-	issue.URL = "/work/i/" + issue.WorkItemID
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	issue.URL, err = readIssueBrowserPath(readCtx, t.coordinator.service.server.database.reader, issue.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
 	now, err := t.coordinator.service.server.database.currentTime()
 	if err != nil {
 		return nil, err

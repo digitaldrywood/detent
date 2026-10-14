@@ -39,7 +39,7 @@ func (e hubProjectExecutor) monthlyUsageCosts(ctx context.Context, arguments jso
 		projects = nil
 	} else {
 		scope.project = tracker.ProjectID(request.ProjectID)
-		if err := e.service.requireHostedProject(ctx, e.service.database.db, scope, false); err != nil {
+		if err := e.service.requireHostedProject(ctx, e.service.database.reader, scope, false); err != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
 		if err := e.service.database.authorizeNativeProject(ctx, scope); err != nil {

@@ -278,7 +278,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 				responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(archived.WorkItemID)+"/restore", archiveRequest(archived, "restore-race"))
 				return
 			}
-			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "Contender", State: "Todo"})
+			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "allocationfixture" + strconv.Itoa(index) + "x", State: "Todo"})
 		})
 	}
 	group.Wait()

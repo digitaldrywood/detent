@@ -20,6 +20,9 @@ import {
   IssueAskPanel,
   useIssueAsk,
 } from "../../src/app/work/IssueAsk.tsx";
+import { FindingAskWorkspace } from "../../src/app/diagnostics/FindingAsk.tsx";
+import { BootstrapProject } from "../../src/contracts/conversation.ts";
+import * as Schema from "effect/Schema";
 
 const mock = vi.hoisted(() => ({
   create: vi.fn(),
@@ -41,8 +44,12 @@ vi.mock("../../src/app/client.ts", async (original) => ({
 vi.mock("../../src/app/components/ChatWorkspace.tsx", () => ({
   useWorkspacePanel: () => ({ openAsk: mock.open }),
 }));
+vi.mock("../../src/app/adapters/surfaces.ts", () => ({ useIssueSurfaces: () => ({}) }));
+vi.mock("../../src/app/components/RightPanel.tsx", () => ({
+  useRightPanelWorkspace: ({ ask }: { ask: React.ReactNode }) => ({ panel: ask, layoutControls: null, openAsk: mock.open }),
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mock.navigate }));
-vi.mock("../../src/app/App.tsx", () => ({
+vi.mock("../../src/app/ChatRoutes.tsx", () => ({
   ConversationView: ({ conversationId }: { conversationId: string }) => (
     <div data-testid="selected-chat">{conversationId}</div>
   ),
@@ -187,4 +194,40 @@ it("restores suggestions for a fresh question while keeping prior threads select
   ).toHaveLength(3);
   fireEvent.change(picker, { target: { value: "conv_old" } });
   await waitFor(() => expect(screen.getByTestId("selected-chat").textContent).toBe("conv_old"));
+});
+
+it.each([false, true])("sends finding evidence only while attached (removed=%s)", async (removed) => {
+  const project = Schema.decodeUnknownSync(BootstrapProject)({ id: "prj_example", name: "Example project", can_write: true });
+  const finding = {
+    id: "finding_no_landing", class: "flow", severity: "attention",
+    summary: "No work has landed for thirty minutes despite candidates and a free slot.",
+    next_action: "Check scheduler admission and landing evidence.",
+    when: "2026-10-07T10:00:00Z", subject: { kind: "project", project_id: project.id },
+  } as const;
+  render(<FindingAskWorkspace finding={finding} project={project} focusRequest={1}>{() => null}</FindingAskWorkspace>);
+  const panel = screen.getByRole("region", { name: "Ask about this finding" });
+  for (const name of ["What is causing this?", "What should I check?", "How do I fix it?"]) {
+    expect(within(panel).getByRole("button", { name })).toBeTruthy();
+  }
+  expect(mock.open).toHaveBeenCalledOnce();
+  if (removed) fireEvent.click(within(panel).getByRole("button", { name: `Remove Example project ${finding.summary} context` }));
+  fireEvent.click(within(panel).getByRole("button", { name: "What is causing this?" }));
+  await waitFor(() => expect(mock.create).toHaveBeenCalledOnce());
+  const sent = mock.create.mock.calls[0]![0];
+  expect(sent.projectId).toBe("prj_example");
+  expect(sent.subjectWorkItemId).toBeUndefined();
+  if (removed) {
+    expect(sent.firstMessage.text).toBe("What is causing this?");
+    await waitFor(() => expect(mock.navigate).toHaveBeenCalled());
+  } else {
+    await screen.findByTestId("selected-chat");
+    expect(JSON.parse(sent.firstMessage.text.split("Attached diagnostic finding (data):\n")[1])).toEqual({
+      finding_id: "finding_no_landing", class: "flow", severity: "attention",
+      summary: "No work has landed for thirty minutes despite candidates and a free slot.",
+      next_action: "Check scheduler admission and landing evidence.",
+      time: "2026-10-07T10:00:00Z", resolved_at: null,
+      project: { id: "prj_example", name: "Example project" }, subject: { kind: "project", project_id: "prj_example" },
+    });
+  }
+  expect(mock.list).not.toHaveBeenCalled();
 });

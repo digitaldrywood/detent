@@ -14,6 +14,21 @@ func TestFileIssueArguments(t *testing.T) {
 		valid        bool
 	}{
 		{"ordinary", `"title":"Title","description":"Body"`, true},
+		{"bug type", `"title":"Title","type":"bug"`, true},
+		{"change request type", `"title":"Title","type":"change_request"`, true},
+		{"unknown type", `"title":"Title","type":"question"`, false},
+		{"null type", `"title":"Title","type":null`, false},
+		{"report context full", `"title":"Title","report_context":{"url":"https://app.example.test/x","app_build":"v1","browser":"Chrome 130","os":"macOS 15","viewport":"1440x900","captured_at":"2026-10-13T12:00:00Z"}`, true},
+		{"report context partial", `"title":"Title","report_context":{"browser":"Chrome 130"}`, true},
+		{"report context bounded url", `"title":"Title","report_context":{"url":"` + strings.Repeat("u", 2048) + `"}`, true},
+		{"report context oversized url", `"title":"Title","report_context":{"url":"` + strings.Repeat("secret", 342) + `"}`, false},
+		{"report context oversized field", `"title":"Title","report_context":{"browser":"` + strings.Repeat("secret", 43) + `"}`, false},
+		{"report context unknown key", `"title":"Title","report_context":{"browser":"Chrome","cookies":"secret"}`, false},
+		{"report context control character", `"title":"Title","report_context":{"os":"secret\nline"}`, false},
+		{"report context bidi override", `"title":"Title","report_context":{"browser":"Chrome \u202Esecret"}`, false},
+		{"report context non-string", `"title":"Title","report_context":{"viewport":1440}`, false},
+		{"report context not object", `"title":"Title","report_context":"secret"`, false},
+		{"null context", `"title":"Title","report_context":null`, false},
 		{"linked only", `"github_issue_url":"github.com/owner/repo/issues/1"`, true},
 		{"linked priority", `"github_issue_url":"github.com/owner/repo/issues/1","priority":4`, true},
 		{"native empty body", `"title":"Title"`, true},
@@ -33,6 +48,10 @@ func TestFileIssueArguments(t *testing.T) {
 			_, err := DecodeFileIssue(json.RawMessage(`{"project_id":"project",` + tt.fields + `}`))
 			if (err == nil) != tt.valid {
 				t.Fatalf("valid=%t error=%v", tt.valid, err)
+			}
+			var refusal *RequestError
+			if !tt.valid && strings.HasPrefix(tt.name, "report context") && (!errors.As(err, &refusal) || refusal.Code != "invalid_request" || strings.Contains(refusal.Message, "secret")) {
+				t.Fatalf("report_context refusal=%v", err)
 			}
 		})
 	}
@@ -55,6 +74,13 @@ func TestWorkArgumentsDirectCallBounds(t *testing.T) {
 		{"field from another command", AddComment, `"body":"hello","labels":[]`, false},
 		{"null comment", AddComment, `"body":null`, false},
 		{"oversized comment", AddComment, `"body":"` + strings.Repeat("x", 32769) + `"`, false},
+		{"verified fix", VerifyFix, `"result":"verified"`, true},
+		{"not fixed with comment", VerifyFix, `"result":"not_fixed","comment":"Still broken","expected_revision":"3"`, true},
+		{"not fixed needs a comment", VerifyFix, `"result":"not_fixed"`, false},
+		{"not fixed blank comment", VerifyFix, `"result":"not_fixed","comment":"  "`, false},
+		{"unknown verification result", VerifyFix, `"result":"maybe"`, false},
+		{"type-only edit", EditItem, `"type":"change_request","expected_revision":"1"`, true},
+		{"invalid type edit", EditItem, `"type":"question","expected_revision":"1"`, false},
 		{"empty edit", EditItem, `"expected_revision":"1"`, false},
 		{"revision required", EditItem, `"title":"title"`, false},
 		{"zero revision", EditItem, `"title":"title","expected_revision":"0"`, false},

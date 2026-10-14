@@ -45,6 +45,7 @@ func (s *Service) registerHostedUsageRoutes(e *echo.Echo) {
 	e.GET("/api/v2/organizations/:organization/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/reports", s.hostedReports, s.usageSessionOnly, s.operatorAuthority)
+	e.GET("/api/v2/organizations/:organization/reports/options", s.hostedReportOptions, s.usageSessionOnly, s.operatorAuthority)
 }
 
 // usageSessionOnly refuses a bearer credential on the session-authenticated
@@ -76,6 +77,8 @@ func (s *Service) usageCredentialError(c echo.Context, err error) error {
 // usageReadableProjects lists the projects the hosted member holds a grant
 // for, which is what the report is filtered to.
 func (s *Service) usageReadableProjects(ctx context.Context, credential apiCredential) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
 WHERE g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
@@ -283,7 +286,9 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 // every runner that shares it. Periods are compared as fixed-width UTC
 // timestamps in the stored T format, not as dates.
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
-	return readUsageRows(ctx, s.database.db, s.config.Hosted.OrganizationID, window, projects, int(^uint(0)>>1))
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	return readUsageRows(ctx, s.database.reader, s.config.Hosted.OrganizationID, window, projects, int(^uint(0)>>1))
 }
 
 func readUsageRows(ctx context.Context, database nativeQueryer, organization string, window usageWindow, projects []string, limit int) ([]usageRow, error) {
@@ -294,6 +299,10 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	if err != nil {
 		return nil, fmt.Errorf("encode readable projects: %w", err)
 	}
+	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
+	if err != nil {
+		return nil, err
+	}
 	query := `SELECT u.attempt_id, u.period, u.provider, u.model, u.input, u.cached_input, u.output, u.cost_estimate, u.currency,
  coalesce(r.id, ''), coalesce(r.display_name, ''), coalesce(a.started_at, ''), coalesce(a.updated_at, '')
 FROM attempt_usage u
@@ -301,10 +310,10 @@ LEFT JOIN native_attempts a ON a.id = u.attempt_id
 LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
- AND u.project_id IN (SELECT value FROM json_each(?))
+ AND u.project_id IN (SELECT value FROM json_each(?))` + scoped + `
 ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ? OFFSET ?`
-	result, err := queryAnalyticsRows(ctx, database, query,
-		organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded, limit, analyticsPopulationOffset(ctx, "usage"))
+	args := append([]any{organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded}, scopedArgs...)
+	result, err := queryAnalyticsRows(ctx, database, query, append(args, limit, analyticsPopulationOffset(ctx, "usage"))...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)
 	}
@@ -391,8 +400,10 @@ func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error
 // usageRunnerCapacity is each runner's display name and how many concurrent
 // leases it is allowed, which is what capacity_used is a fraction of.
 func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCapacity, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	capacity := map[string]runnerCapacity{}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id",
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id",
 		tracker.OrganizationID(s.config.Hosted.OrganizationID))
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
@@ -410,7 +421,7 @@ func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCap
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	for _, id := range ids {
-		runner, err := readRunnerWithClock(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
+		runner, err := readRunnerWithClock(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", id, err)
 		}

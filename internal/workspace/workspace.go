@@ -168,7 +168,7 @@ type DeliverableState struct {
 }
 
 type ReworkPreparer interface {
-	PrepareRework(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+	PrepareRework(context.Context, Info, Issue, MergePrepareOptions, func(context.Context) error) (MergePrepareResult, error)
 	VerifyReworkRecovery(context.Context, Info, Issue, string, string, RecoveryState) (bool, error)
 }
 
@@ -250,7 +250,6 @@ type Issue struct {
 	Checkpoint              *CheckpointRef
 	Landing                 *LandOptions
 	NativeRework            bool
-	CheckpointQuiescent     bool
 	FreshCheckout           bool
 	ProjectID               string
 	ID                      string

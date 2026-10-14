@@ -116,6 +116,8 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 // commit to anybody, and a commit's author line is permanent in the
 // repository's history in a way a relay audit row is not.
 func (s *Service) relayActor(ctx context.Context, connection *relayConnection, principal relayPrincipal) workspacesession.Actor {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	actor := workspacesession.Actor{
 		PrincipalID: principal.principalID, Subject: principal.subject, ConnectionID: connection.id,
 	}
@@ -136,7 +138,7 @@ func (s *Service) relayActor(ctx context.Context, connection *relayConnection, p
 	// person being stood in for would put a name in the repository's history
 	// that never typed it.
 	var email string
-	err := s.database.db.QueryRowContext(ctx,
+	err := s.database.reader.QueryRowContext(ctx,
 		"SELECT email FROM hosted_members WHERE user_id = ? AND active = 1", principal.subject).Scan(&email)
 	switch {
 	case err == nil:
@@ -316,17 +318,17 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 	}
 	current := scope
 	current.credential = principal.credential
-	if err := w.server.requireHostedProject(ctx, w.server.database.db, current, false); err != nil {
+	if err := w.server.requireHostedProject(ctx, w.server.database.reader, current, false); err != nil {
 		return err
 	}
-	live, err := readWorkspaceByID(ctx, w.server.database.db, record.ID)
+	live, err := readWorkspaceByID(ctx, w.server.database.reader, record.ID)
 	if err != nil {
 		return err
 	}
 	if workspacesession.Terminal(live.State) {
 		return errors.New("the workspace has ended")
 	}
-	if _, _, err := readNativeIssue(ctx, w.server.database.db, current, live.SubjectWorkItemID); err != nil {
+	if _, _, err := readNativeIssue(ctx, w.server.database.reader, current, live.SubjectWorkItemID); err != nil {
 		return err
 	}
 	return nil
@@ -344,7 +346,9 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 // session was revoked, the membership row was deactivated, the grant was
 // withdrawn, the workspace ended, or the runner lost its lease.
 func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record workspaceRecord, connection *relayConnection) error {
-	live, err := readWorkspaceByID(ctx, w.server.database.db, record.ID)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	live, err := readWorkspaceByID(ctx, w.server.database.reader, record.ID)
 	if err != nil {
 		return fmt.Errorf("read workspace: %w", err)
 	}
@@ -355,7 +359,7 @@ func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record w
 		var fencing tracker.FencingToken
 		var expires string
 		var released sql.NullString
-		err := w.server.database.db.QueryRowContext(ctx,
+		err := w.server.database.reader.QueryRowContext(ctx,
 			"SELECT fencing_token, expires_at, released_at FROM leases WHERE lease_id = ?",
 			live.LeaseID).Scan(&fencing, &expires, &released)
 		if err != nil {
@@ -379,7 +383,7 @@ func (w *workspaceService) revalidatePersonLocally(ctx context.Context, record w
 		return nil
 	}
 	var active int
-	err = w.server.database.db.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s
+	err = w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_sessions s
 JOIN hosted_members m ON m.user_id = ? AND m.active = 1
 WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > julianday(?)`,
 		connection.subject, connection.sessionHash, formatHubTime(w.now())).Scan(&active)
@@ -390,7 +394,7 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		return errors.New("the hosted session or membership is no longer active")
 	}
 	var granted int
-	err = w.server.database.db.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
+	err = w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
 JOIN hosted_members m ON m.user_id = g.user_id AND m.active = 1
 WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?`,
 		connection.subject, live.OrganizationID, live.ProjectID).Scan(&granted)
@@ -428,6 +432,8 @@ WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?`,
 // It answers "" when the frame may be forwarded and a relay error code
 // otherwise.
 func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if frame.Channel != workspacesession.ChannelTerminal {
 		return ""
 	}
@@ -490,7 +496,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		return workspacesession.CodeForbidden
 	}
 	var count int
-	err := w.server.database.db.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
+	err := w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
 JOIN hosted_members m ON m.user_id = g.user_id AND m.active = 1
 WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?
  AND g.can_write = 1 AND g.manage_runner = 1 AND m.role != 'viewer'`,
@@ -542,6 +548,8 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 // question asked per frame because a grant can be withdrawn under a live
 // socket.
 func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	gitWrite := frame.Channel == workspacesession.ChannelGit && workspacesession.GitWriteRequest(frame.Type)
 	execRun := frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun
 	if !gitWrite && !execRun {
@@ -569,7 +577,7 @@ func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspac
 		return ""
 	}
 	var count int
-	err := w.server.database.db.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
+	err := w.server.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM hosted_project_grants g
 JOIN hosted_members m ON m.user_id = g.user_id AND m.active = 1
 WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ? AND g.can_write = 1 AND m.role != 'viewer'`,
 		connection.subject, record.OrganizationID, record.ProjectID).Scan(&count)

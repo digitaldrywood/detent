@@ -128,7 +128,7 @@ func SnapshotForScenario(id string, variant string) telemetry.Snapshot {
 		}
 	}
 	if variant == "terminal" {
-		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
+		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "example-org/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
 	}
 	if id != "" && id != demoPrimaryProjectID && variant == "project-empty" {
 		snapshot.Projects = demoProjectSnapshots(ProjectsForVariant("project-empty"))
@@ -142,8 +142,8 @@ func demoAdmissionProposals(count int) []telemetry.AdmissionProposal {
 			ID:              "admission-1586",
 			ProjectID:       demoPrimaryProjectID,
 			IssueID:         "1586",
-			IssueIdentifier: "digitaldrywood/detent#1586",
-			IssueURL:        "https://github.com/digitaldrywood/detent/issues/1586",
+			IssueIdentifier: "example-org/example-project#1586",
+			IssueURL:        "https://github.com/example-org/example-project/issues/1586",
 			Confidence:      0.88,
 			CreatedAt:       demoBaseTime.Add(-26 * time.Hour),
 			ExpiresAt:       demoBaseTime.Add(46 * time.Hour),
@@ -152,8 +152,8 @@ func demoAdmissionProposals(count int) []telemetry.AdmissionProposal {
 			ID:              "admission-241",
 			ProjectID:       "docs-site",
 			IssueID:         "241",
-			IssueIdentifier: "digitaldrywood/docs-site#241",
-			IssueURL:        "https://github.com/digitaldrywood/docs-site/issues/241",
+			IssueIdentifier: "example-org/docs-site#241",
+			IssueURL:        "https://github.com/example-org/docs-site/issues/241",
 			Confidence:      0.82,
 			CreatedAt:       demoBaseTime.Add(-3 * time.Hour),
 			ExpiresAt:       demoBaseTime.Add(69 * time.Hour),
@@ -162,8 +162,8 @@ func demoAdmissionProposals(count int) []telemetry.AdmissionProposal {
 			ID:              "admission-1594",
 			ProjectID:       demoPrimaryProjectID,
 			IssueID:         "1594",
-			IssueIdentifier: "digitaldrywood/detent#1594",
-			IssueURL:        "https://github.com/digitaldrywood/detent/issues/1594",
+			IssueIdentifier: "example-org/example-project#1594",
+			IssueURL:        "https://github.com/example-org/example-project/issues/1594",
 			Confidence:      0.79,
 			CreatedAt:       demoBaseTime.Add(-90 * time.Minute),
 			ExpiresAt:       demoBaseTime.Add(70*time.Hour + 30*time.Minute),
@@ -194,24 +194,24 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			{
 				At:      now.Add(-3 * time.Minute),
 				Event:   "workspace_reap_succeeded",
-				Message: "workspace cleanup succeeded for digitaldrywood/mobile-client#5243 reason=cancelled worktrees=1 branches=1 processes=0",
+				Message: "workspace cleanup succeeded for example-org/mobile-client#5243 reason=cancelled worktrees=1 branches=1 processes=0",
 			},
 		},
 		BoardIssues: []telemetry.Issue{
-			demoIssue(demoPrimaryProjectID, "demo-backlog", "digitaldrywood/detent-core#5250", "Backlog observability fixture intake", "Backlog", 72),
-			demoIssue(demoPrimaryProjectID, "demo-todo", "digitaldrywood/detent-core#5251", "Add screenshot manifest smoke test", "Todo", 9),
-			demoIssue("agent-lab", "agent-lab-todo", "digitaldrywood/agent-lab#111", "Try secondary runner routing", "Todo", 11),
+			demoIssue(demoPrimaryProjectID, "demo-backlog", "example-org/detent-core#5250", "Backlog observability fixture intake", "Backlog", 72),
+			demoIssue(demoPrimaryProjectID, "demo-todo", "example-org/detent-core#5251", "Add screenshot manifest smoke test", "Todo", 9),
+			demoIssue("agent-lab", "agent-lab-todo", "example-org/agent-lab#111", "Try secondary runner routing", "Todo", 11),
 		},
 		Pipeline: []telemetry.Issue{
-			demoPipelineIssue(demoPrimaryProjectID, "demo-review", "digitaldrywood/detent-core#5290", "Review deterministic chart colors", "Human Review", 5290, "success", "clean", 2),
-			demoPipelineIssue(demoPrimaryProjectID, "demo-rework", "digitaldrywood/detent-core#5291", "Address visual diff finding", "Rework", 5291, "failure", "dirty", 12),
-			demoPipelineIssue("release-train", "demo-merging", "digitaldrywood/release-train#5292", "Merge release readiness bundle", "Merging", 5292, "pending", "clean", 1),
-			demoPipelineIssue(demoPrimaryProjectID, "demo-done-pr", "digitaldrywood/detent-core#5293", "Ship completed PR lane fixture", "Done", 5293, "success", "clean", 24),
+			demoPipelineIssue(demoPrimaryProjectID, "demo-review", "example-org/detent-core#5290", "Review deterministic chart colors", "Human Review", 5290, "success", "clean", 2),
+			demoPipelineIssue(demoPrimaryProjectID, "demo-rework", "example-org/detent-core#5291", "Address visual diff finding", "Rework", 5291, "failure", "dirty", 12),
+			demoPipelineIssue("release-train", "demo-merging", "example-org/release-train#5292", "Merge release readiness bundle", "Merging", 5292, "pending", "clean", 1),
+			demoPipelineIssue(demoPrimaryProjectID, "demo-done-pr", "example-org/detent-core#5293", "Ship completed PR lane fixture", "Done", 5293, "success", "clean", 24),
 		},
 		Running: []telemetry.Running{
 			{
 				Issue: demoIssueWithRuntimeIdentity(
-					demoIssue(demoPrimaryProjectID, "demo-running-core", "digitaldrywood/detent-core#5260", "Implement page-addressable screenshot scenarios", "In Progress", 1),
+					demoIssue(demoPrimaryProjectID, "demo-running-core", "example-org/detent-core#5260", "Implement page-addressable screenshot scenarios", "In Progress", 1),
 					agentidentity.Configured("codex-high", "codex", "high", "code", "gpt-5.5", "", "", "", now.Add(-34*time.Minute)).
 						Merge(agentidentity.RuntimeUpdate("gpt-5.6-sol", "openai", "xhigh", "priority", now.Add(-33*time.Minute))),
 				),
@@ -238,7 +238,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			},
 			{
 				Issue: demoIssueWithRuntimeIdentity(
-					demoIssue("docs-site", "demo-running-docs", "digitaldrywood/docs-site#5261", "Write direct loading documentation examples", "In Progress", 2),
+					demoIssue("docs-site", "demo-running-docs", "example-org/docs-site#5261", "Write direct loading documentation examples", "In Progress", 2),
 					agentidentity.Configured("claude-local", "claude_code", "local", "code", "fable", "ollama", "", "", now.Add(-18*time.Minute)).
 						Merge(agentidentity.RuntimeUpdate("qwen3-coder", "", "", "", now.Add(-17*time.Minute))),
 				),
@@ -260,7 +260,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 				Tokens:          telemetry.Tokens{Input: 15200, CachedInput: 9100, Output: 6250, ReasoningOutput: 1500, Total: 21450, RuntimeSeconds: 1080, ModelContextWindow: demoInt64Ptr(32000)},
 			},
 			{
-				Issue:           demoIssue("infra-platform", "demo-running-infra", "digitaldrywood/infra-platform#5262", "Verify isolated runtime paths on ephemeral ports", "In Progress", 3),
+				Issue:           demoIssue("infra-platform", "demo-running-infra", "example-org/infra-platform#5262", "Verify isolated runtime paths on ephemeral ports", "In Progress", 3),
 				DetentSessionID: 5262,
 				WorkerHost:      "demo-worker-c",
 				ProcessIdentity: "pid-5262",
@@ -280,19 +280,19 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			},
 		},
 		Queue: []telemetry.Queued{
-			demoQueued("docs-site", "demo-queued-docs", "digitaldrywood/docs-site#5270", "Capture reports screenshots", 1, now.Add(6*time.Minute), "waiting for weighted fair share slot"),
-			demoQueued("billing-api", "demo-queued-billing", "digitaldrywood/billing-api#5271", "Add budget refusal screenshot fixture", 2, now.Add(14*time.Minute), "previous attempt exceeded budget cap"),
-			demoQueued("mobile-client", "demo-queued-mobile", "digitaldrywood/mobile-client#5272", "Exercise compact lane overflow on mobile", 3, now.Add(28*time.Minute), "project paused until release train clears"),
+			demoQueued("docs-site", "demo-queued-docs", "example-org/docs-site#5270", "Capture reports screenshots", 1, now.Add(6*time.Minute), "waiting for weighted fair share slot"),
+			demoQueued("billing-api", "demo-queued-billing", "example-org/billing-api#5271", "Add budget refusal screenshot fixture", 2, now.Add(14*time.Minute), "previous attempt exceeded budget cap"),
+			demoQueued("mobile-client", "demo-queued-mobile", "example-org/mobile-client#5272", "Exercise compact lane overflow on mobile", 3, now.Add(28*time.Minute), "project paused until release train clears"),
 		},
 		Blocked: []telemetry.Blocked{
-			demoBlocked("billing-api", "demo-blocked-billing", "digitaldrywood/billing-api#5280", "Dependency issue waiting on ledger migration", "Depends on digitaldrywood/billing-api#5200", "Todo", 10, telemetry.BlockedSourceDependency),
-			demoBlocked(demoPrimaryProjectID, "demo-blocked-hook", "digitaldrywood/detent-core#5281", "Workspace hook error needs operator input", "after_create hook exited 2", "operator", 5),
+			demoBlocked("billing-api", "demo-blocked-billing", "example-org/billing-api#5280", "Dependency issue waiting on ledger migration", "Depends on example-org/billing-api#5200", "Todo", 10, telemetry.BlockedSourceDependency),
+			demoBlocked(demoPrimaryProjectID, "demo-blocked-hook", "example-org/detent-core#5281", "Workspace hook error needs operator input", "after_create hook exited 2", "operator", 5),
 		},
 		Completed: []telemetry.Completed{
-			demoCompleted(demoPrimaryProjectID, "demo-complete-core", "digitaldrywood/detent-core#5240", "Complete dashboard density pass", "Done", 91, "gpt-5-codex", 64000),
-			demoCompleted("docs-site", "demo-complete-docs", "digitaldrywood/docs-site#5241", "Publish screenshot capture guide", "Human Review", 57, "gpt-5-codex", 38000),
-			demoCompleted("release-train", "demo-complete-release", "digitaldrywood/release-train#5242", "Prepare release note bundle", "Merging", 73, "gpt-5", 52000),
-			demoCompleted("mobile-client", "demo-complete-mobile", "digitaldrywood/mobile-client#5243", "Cancel stale mobile board experiment", "Cancelled", 11, "gpt-5-mini", 9000),
+			demoCompleted(demoPrimaryProjectID, "demo-complete-core", "example-org/detent-core#5240", "Complete dashboard density pass", "Done", 91, "gpt-5-codex", 64000),
+			demoCompleted("docs-site", "demo-complete-docs", "example-org/docs-site#5241", "Publish screenshot capture guide", "Human Review", 57, "gpt-5-codex", 38000),
+			demoCompleted("release-train", "demo-complete-release", "example-org/release-train#5242", "Prepare release note bundle", "Merging", 73, "gpt-5", 52000),
+			demoCompleted("mobile-client", "demo-complete-mobile", "example-org/mobile-client#5243", "Cancel stale mobile board experiment", "Cancelled", 11, "gpt-5-mini", 9000),
 		},
 		Budget: telemetry.Budget{
 			Enabled:           true,
@@ -328,12 +328,12 @@ func demoHealthySnapshot() telemetry.Snapshot {
 		snapshot.Running[i].LeaseRenewedAt = &leaseRenewed
 		snapshot.Running[i].LeaseExpiresAt = &leaseExpires
 	}
-	snapshot.Running[0].AuthorID = "corylanou"
+	snapshot.Running[0].AuthorID = "example-user"
 	snapshot.Running[0].Origin = "unknown"
 	snapshot.BoardIssues[0].Origin = "unknown"
-	snapshot.BoardIssues[1].AuthorID = "corylanou"
+	snapshot.BoardIssues[1].AuthorID = "example-user"
 	snapshot.BoardIssues[1].Origin = "human"
-	snapshot.BoardIssues[1].OriginActor = "corylanou"
+	snapshot.BoardIssues[1].OriginActor = "example-user"
 	return snapshot
 }
 
@@ -496,7 +496,7 @@ func demoBoardDispatchFaultSnapshot() telemetry.Snapshot {
 	snapshot.DispatchStalls = nil
 	snapshot.SchedulerDecisions = make([]telemetry.SchedulerDecision, 0, stall.CandidateCount)
 	for number := 5301; number <= 5304; number++ {
-		identifier := "digitaldrywood/detent-core#" + strconv.Itoa(number)
+		identifier := "example-org/detent-core#" + strconv.Itoa(number)
 		snapshot.SchedulerDecisions = append(snapshot.SchedulerDecisions, telemetry.SchedulerDecision{
 			ProjectID:  demoPrimaryProjectID,
 			IssueID:    "demo-dispatch-fault-" + strconv.Itoa(number),
@@ -518,7 +518,7 @@ func demoBoardStalenessWarningsSnapshot(count int) telemetry.Snapshot {
 	reasons := []string{"already_running", "blocked_by_dependency", "global_capacity_full"}
 	for index := range count {
 		number := 1573 - index
-		identifier := "digitaldrywood/detent#" + strconv.Itoa(number)
+		identifier := "example-org/example-project#" + strconv.Itoa(number)
 		reason := reasons[index%len(reasons)]
 		snapshot.StalenessWarnings = append(snapshot.StalenessWarnings, telemetry.StalenessWarning{
 			ID:         "demo-repeated-decision-" + strconv.Itoa(index+1),
@@ -527,7 +527,7 @@ func demoBoardStalenessWarningsSnapshot(count int) telemetry.Snapshot {
 			Kind:       "repeated_decision",
 			IssueID:    "demo-warning-" + strconv.Itoa(index+1),
 			Identifier: identifier,
-			IssueURL:   "https://github.com/digitaldrywood/detent/issues/" + strconv.Itoa(number),
+			IssueURL:   "https://github.com/example-org/example-project/issues/" + strconv.Itoa(number),
 			Reason:     reason,
 			Detail:     "scheduler returned " + reason + " repeatedly",
 			AgeSeconds: int64((index + 1) * 120),
@@ -560,8 +560,8 @@ func demoRecentCompletionsSnapshot() telemetry.Snapshot {
 			AttemptID:          6101,
 			ProjectID:          demoPrimaryProjectID,
 			IssueID:            "recent-done-1",
-			Identifier:         "digitaldrywood/detent-core#6101",
-			IssueURL:           demoIssueURL("digitaldrywood/detent-core#6101"),
+			Identifier:         "example-org/detent-core#6101",
+			IssueURL:           demoIssueURL("example-org/detent-core#6101"),
 			Status:             "terminal",
 			CompletedAt:        &completedToday,
 			TerminalState:      "success",
@@ -573,8 +573,8 @@ func demoRecentCompletionsSnapshot() telemetry.Snapshot {
 			AttemptID:          6100,
 			ProjectID:          demoPrimaryProjectID,
 			IssueID:            "recent-done-2",
-			Identifier:         "digitaldrywood/detent-core#6100",
-			IssueURL:           demoIssueURL("digitaldrywood/detent-core#6100"),
+			Identifier:         "example-org/detent-core#6100",
+			IssueURL:           demoIssueURL("example-org/detent-core#6100"),
 			Status:             "terminal",
 			CompletedAt:        &completedYesterday,
 			TerminalState:      "success",
@@ -628,8 +628,8 @@ func demoOverloadedSnapshot() telemetry.Snapshot {
 	now := snapshot.GeneratedAt
 	dayMax := 42.0
 	snapshot.Queue = append(snapshot.Queue,
-		demoQueued(demoPrimaryProjectID, "demo-queued-overload-1", "digitaldrywood/detent-core#5273", "Retry overloaded visual comparison job", 4, now.Add(38*time.Minute), "secondary rate limit in effect"),
-		demoQueued("infra-platform", "demo-queued-overload-2", "digitaldrywood/infra-platform#5274", "Re-run isolated port smoke test", 5, now.Add(50*time.Minute), "rate-limit retry budget is low"),
+		demoQueued(demoPrimaryProjectID, "demo-queued-overload-1", "example-org/detent-core#5273", "Retry overloaded visual comparison job", 4, now.Add(38*time.Minute), "secondary rate limit in effect"),
+		demoQueued("infra-platform", "demo-queued-overload-2", "example-org/infra-platform#5274", "Re-run isolated port smoke test", 5, now.Add(50*time.Minute), "rate-limit retry budget is low"),
 	)
 	snapshot.Counts.Queue = len(snapshot.Queue)
 	snapshot.Budget.CurrentSpendUSD = 39.85
@@ -771,12 +771,12 @@ func demoBoardDegradedHealthBannersSnapshot() telemetry.Snapshot {
 			ProjectID: demoPrimaryProjectID, Class: "runner_error:b6c174a86dfb", Count: 5, AttemptCount: 5, DistinctItemCount: 1,
 			Cause: "provider usage limit reached", RepresentativeError: "You've hit your limit. Try again after the provider reset.",
 			BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", EligibleCandidateCount: &eligibleCandidates,
-			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-blocked", Identifier: "digitaldrywood/detent-core#5280", IssueURL: "https://github.com/digitaldrywood/detent-core/issues/5280", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true}},
+			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-blocked", Identifier: "example-org/detent-core#5280", IssueURL: "https://github.com/example-org/detent-core/issues/5280", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true}},
 			BackendOutage: &capacityOutage, WindowSeconds: 3600, ResumeAt: now.Add(12 * time.Minute),
 		},
 		{
 			ProjectID: "docs-site", Class: "runner_error:opaque123", Count: 3, AttemptCount: 3, DistinctItemCount: 2, Cause: "runner failed",
-			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-docs-1", Identifier: "digitaldrywood/docs-site#901", AttemptCount: 2}, {IssueID: "demo-docs-2", Identifier: "digitaldrywood/docs-site#902", AttemptCount: 1}},
+			Items:         []telemetry.FailureBreakerItem{{IssueID: "demo-docs-1", Identifier: "example-org/docs-site#901", AttemptCount: 2}, {IssueID: "demo-docs-2", Identifier: "example-org/docs-site#902", AttemptCount: 1}},
 			WindowSeconds: 3600, ResumeAt: now.Add(18 * time.Minute),
 		},
 	}
@@ -820,8 +820,8 @@ func demoBudgetRefusalsSnapshot() telemetry.Snapshot {
 	snapshot.Budget.ProjectedSpendUSD = 47.35
 	snapshot.Budget.PerDayMaxUSD = &capValue
 	snapshot.Budget.Refusals = []telemetry.BudgetRefusal{
-		{IssueID: "demo-refusal-1", Identifier: "digitaldrywood/billing-api#5310", Code: "daily_cap_exceeded", Message: "Projected spend would exceed the daily cap.", CurrentSpendUSD: 41.15, ProjectedCostUSD: 6.2, MaxUSD: &capValue, RefusedAt: now.Add(-18 * time.Minute), ResetAt: demoTimePtr(now.Truncate(24 * time.Hour).Add(24 * time.Hour))},
-		{IssueID: "demo-refusal-2", Identifier: "digitaldrywood/billing-api#5311", Code: "per_issue_max_usd", Message: "Projected spend would exceed the per-issue cap.", CurrentSpendUSD: 41.15, ProjectedCostUSD: 6.2, MaxUSD: &capValue, RefusedAt: now.Add(-35 * time.Minute), HardHold: true},
+		{IssueID: "demo-refusal-1", Identifier: "example-org/billing-api#5310", Code: "daily_cap_exceeded", Message: "Projected spend would exceed the daily cap.", CurrentSpendUSD: 41.15, ProjectedCostUSD: 6.2, MaxUSD: &capValue, RefusedAt: now.Add(-18 * time.Minute), ResetAt: demoTimePtr(now.Truncate(24 * time.Hour).Add(24 * time.Hour))},
+		{IssueID: "demo-refusal-2", Identifier: "example-org/billing-api#5311", Code: "per_issue_max_usd", Message: "Projected spend would exceed the per-issue cap.", CurrentSpendUSD: 41.15, ProjectedCostUSD: 6.2, MaxUSD: &capValue, RefusedAt: now.Add(-35 * time.Minute), HardHold: true},
 	}
 	return snapshot
 }
@@ -829,8 +829,8 @@ func demoBudgetRefusalsSnapshot() telemetry.Snapshot {
 func demoBlockedHeavySnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	snapshot.Blocked = append(snapshot.Blocked,
-		demoBlocked("billing-api", "demo-blocked-human", "digitaldrywood/billing-api#5282", "Human approval required for billing migration", "waiting for operator approval", "human-review", 18),
-		demoBlocked("infra-platform", "demo-blocked-stale", "digitaldrywood/infra-platform#5283", "Stale lease after workspace hook timeout", "lease expired before worker heartbeat", "reclaim", 20),
+		demoBlocked("billing-api", "demo-blocked-human", "example-org/billing-api#5282", "Human approval required for billing migration", "waiting for operator approval", "human-review", 18),
+		demoBlocked("infra-platform", "demo-blocked-stale", "example-org/infra-platform#5283", "Stale lease after workspace hook timeout", "lease expired before worker heartbeat", "reclaim", 20),
 	)
 	snapshot.Counts.Blocked = len(snapshot.Blocked)
 	return snapshot
@@ -839,7 +839,7 @@ func demoBlockedHeavySnapshot() telemetry.Snapshot {
 func demoLongContentSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	if len(snapshot.Running) > 0 {
-		identifier := "digitaldrywood/creswoodcorners-phone#66"
+		identifier := "example-org/creswoodcorners-phone#66"
 		snapshot.Running[0].Identifier = identifier
 		snapshot.Running[0].URL = demoIssueURL(identifier)
 		snapshot.Running[0].Title = "Implement page-addressable screenshot scenarios with very long deterministic fixture names, wide workspace paths, detailed token accounting, and browser-friendly waiting selectors"
@@ -861,15 +861,15 @@ func demoLongContentSnapshot() telemetry.Snapshot {
 }
 
 func demoBoardCardIdentitySnapshot() telemetry.Snapshot {
-	const projectID = "digitaldrywood-release-train-platform"
+	const projectID = "example-org-release-train-platform"
 	snapshot := demoHealthySnapshot()
 	project := snapshot.Projects[0]
 	project.Project.ID = projectID
-	project.Project.DisplayName = "Digital Drywood Release Train Platform"
+	project.Project.DisplayName = "Example Release Train Platform"
 	snapshot.Projects = append(snapshot.Projects, project)
 	running := &snapshot.Running[0]
 	running.ProjectID = projectID
-	running.Identifier = "digitaldrywood/release-train-platform#5260"
+	running.Identifier = "example-org/release-train-platform#5260"
 	running.URL = demoIssueURL(running.Identifier)
 	running.Title = "Keep project, issue, and pull request identity visible with maximal metadata"
 	running.RuntimeIdentity.ResolvedModel = agentidentity.NewValue("provider/long-model-identifier-release-2026-09", agentidentity.ProvenanceConfigured)
@@ -894,11 +894,11 @@ func demoBoardCardIdentitySnapshot() telemetry.Snapshot {
 	running.Metadata = map[string]string{"hub_sync_status": "error"}
 	for i := range 8 {
 		running.BlockedBy = append(running.BlockedBy, telemetry.BlockedRef{
-			Identifier: fmt.Sprintf("digitaldrywood/release-integration-platform-component-%d#%d", i+1, 590+i),
+			Identifier: fmt.Sprintf("example-org/release-integration-platform-component-%d#%d", i+1, 590+i),
 			State:      "In Progress",
 		})
 	}
-	running.BlockedBy = append(running.BlockedBy, telemetry.BlockedRef{Identifier: "digitaldrywood/release-integration-platform-completed#589", State: "Done"})
+	running.BlockedBy = append(running.BlockedBy, telemetry.BlockedRef{Identifier: "example-org/release-integration-platform-completed#589", State: "Done"})
 	for i := range snapshot.BoardIssues {
 		issue := &snapshot.BoardIssues[i]
 		if issue.State == "Human Review" {
@@ -914,7 +914,7 @@ func demoDenseSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	for i := range 12 {
 		state := []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework"}[i%6]
-		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, fmt.Sprintf("demo-dense-%02d", i), fmt.Sprintf("digitaldrywood/detent-core#54%02d", i), fmt.Sprintf("Dense lane card %02d exercises compact chips and overflow", i+1), state, i+1))
+		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, fmt.Sprintf("demo-dense-%02d", i), fmt.Sprintf("example-org/detent-core#54%02d", i), fmt.Sprintf("Dense lane card %02d exercises compact chips and overflow", i+1), state, i+1))
 	}
 	return snapshot
 }
@@ -929,7 +929,7 @@ func demoHotPathSnapshot() telemetry.Snapshot {
 
 func demoTrackerRefreshGapSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
-	completed := demoCompleted(demoPrimaryProjectID, "demo-tracker-refresh-gap", "digitaldrywood/detent-core#5294", "Keep completed implementation visible during tracker refresh", "completed", 3, "gpt-5-codex", 41000)
+	completed := demoCompleted(demoPrimaryProjectID, "demo-tracker-refresh-gap", "example-org/detent-core#5294", "Keep completed implementation visible during tracker refresh", "completed", 3, "gpt-5-codex", 41000)
 	completed.PullRequest = &telemetry.PullRequest{
 		Number:             5294,
 		URL:                demoPRURL(completed.Identifier, 5294),
@@ -957,7 +957,7 @@ func demoExternalLaneTimerSnapshot() telemetry.Snapshot {
 	now := snapshot.GeneratedAt
 	enteredAt := now.Add(-111 * time.Minute)
 	recentUpdate := now.Add(-2 * time.Minute)
-	issue := demoIssue(demoPrimaryProjectID, "demo-external-lane-timer", "digitaldrywood/detent-core#1162", "Externally moved Blocked lane timer", "Blocked", 0)
+	issue := demoIssue(demoPrimaryProjectID, "demo-external-lane-timer", "example-org/detent-core#1162", "Externally moved Blocked lane timer", "Blocked", 0)
 	issue.CurrentLaneEnteredAt = &enteredAt
 	issue.CurrentLaneAgeSeconds = int64(now.Sub(enteredAt) / time.Second)
 	issue.StageUpdatedAt = &recentUpdate
@@ -1019,7 +1019,7 @@ func demoPipelineIssue(projectID string, id string, identifier string, title str
 			Position:                    2,
 			Depth:                       6,
 			EstimatedTimeToMergeSeconds: 720,
-			URL:                         "https://github.com/digitaldrywood/release-train/queue/main",
+			URL:                         "https://github.com/example-org/release-train/queue/main",
 		}
 	}
 	if state == "Done" {
@@ -1090,7 +1090,7 @@ func demoCompleted(projectID string, id string, identifier string, title string,
 func demoIssueURL(identifier string) string {
 	repo, number, ok := strings.Cut(identifier, "#")
 	if !ok {
-		return "https://github.test/digitaldrywood/detent/issues/0"
+		return "https://github.test/example-org/example-project/issues/0"
 	}
 	return "https://github.test/" + repo + "/issues/" + number
 }
@@ -1098,7 +1098,7 @@ func demoIssueURL(identifier string) string {
 func demoPRURL(identifier string, number int) string {
 	repo, _, ok := strings.Cut(identifier, "#")
 	if !ok {
-		repo = "digitaldrywood/detent"
+		repo = "example-org/example-project"
 	}
 	return fmt.Sprintf("https://github.test/%s/pull/%d", repo, number)
 }
@@ -1123,7 +1123,7 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 				BoardLoad: counts.Load, BoardTodo: counts.Todo, BoardBlocked: counts.Blocked, BoardWaiting: counts.Waiting,
 				BoardWorkloadIncomplete: !telemetry.BoardWorkloadCompleteForProject(snapshot, project.Project.ID),
 			}
-			if variant == "board-counts-paused-complete" && item.ID == "parable" {
+			if variant == "board-counts-paused-complete" && item.ID == "example-project" {
 				item.Paused = true
 				item.PauseReason = "Operator maintenance"
 			}
@@ -1137,14 +1137,14 @@ func ProjectsForVariant(variant string) []templates.ProjectSmallMultiple {
 		return nil
 	}
 	projects := []templates.ProjectSmallMultiple{
-		demoProject(demoPrimaryProjectID, demoPrimaryProjectName, "https://github.test/digitaldrywood/detent-core", false, 1, 1, 1, 2, 101730, 18.72, now),
-		demoProject("docs-site", "docs-site", "https://github.test/digitaldrywood/docs-site", false, 1, 1, 0, 1, 59450, 6.1, now),
-		demoProject("billing-api", "billing-api", "https://github.test/digitaldrywood/billing-api", false, 0, 1, 1, 0, 48600, 9.4, now),
-		demoProject("mobile-client", "mobile-client", "https://github.test/digitaldrywood/mobile-client", true, 0, 1, 0, 1, 22000, 2.2, now),
-		demoProject("infra-platform", "infra-platform", "https://github.test/digitaldrywood/infra-platform", false, 1, 0, 0, 0, 29200, 4.7, now),
-		demoProject("release-train", "release-train", "https://github.test/digitaldrywood/release-train", false, 0, 0, 0, 1, 52000, 5.8, now),
-		demoProject("observability-console", "observability-console-with-long-name", "https://github.test/digitaldrywood/observability-console", false, 0, 0, 0, 0, 17000, 1.8, now),
-		demoProject("agent-lab", "agent-lab", "https://github.test/digitaldrywood/agent-lab", false, 0, 0, 0, 0, 0, 0, now),
+		demoProject(demoPrimaryProjectID, demoPrimaryProjectName, "https://github.test/example-org/detent-core", false, 1, 1, 1, 2, 101730, 18.72, now),
+		demoProject("docs-site", "docs-site", "https://github.test/example-org/docs-site", false, 1, 1, 0, 1, 59450, 6.1, now),
+		demoProject("billing-api", "billing-api", "https://github.test/example-org/billing-api", false, 0, 1, 1, 0, 48600, 9.4, now),
+		demoProject("mobile-client", "mobile-client", "https://github.test/example-org/mobile-client", true, 0, 1, 0, 1, 22000, 2.2, now),
+		demoProject("infra-platform", "infra-platform", "https://github.test/example-org/infra-platform", false, 1, 0, 0, 0, 29200, 4.7, now),
+		demoProject("release-train", "release-train", "https://github.test/example-org/release-train", false, 0, 0, 0, 1, 52000, 5.8, now),
+		demoProject("observability-console", "observability-console-with-long-name", "https://github.test/example-org/observability-console", false, 0, 0, 0, 0, 17000, 1.8, now),
+		demoProject("agent-lab", "agent-lab", "https://github.test/example-org/agent-lab", false, 0, 0, 0, 0, 0, 0, now),
 	}
 	workloads := map[string]telemetry.BoardWorkloadCounts{
 		demoPrimaryProjectID: {Load: 4, Todo: 1, Active: 3, Blocked: 1},
@@ -1338,8 +1338,8 @@ func demoCycleTime(now time.Time) telemetry.CycleTimeReport {
 			{Label: "8h-1d", MinSeconds: int64(8 * time.Hour / time.Second), MaxSeconds: int64(24 * time.Hour / time.Second), Count: 4},
 		},
 		Issues: []telemetry.CycleTimeIssue{
-			{Key: "digitaldrywood/detent-core#5240", StartedAt: now.Add(-9 * time.Hour), CompletedAt: now.Add(-2 * time.Hour), DurationSeconds: int64(7 * time.Hour / time.Second), Sessions: 1},
-			{Key: "digitaldrywood/docs-site#5241", StartedAt: now.Add(-13 * time.Hour), CompletedAt: now.Add(-5 * time.Hour), DurationSeconds: int64(8 * time.Hour / time.Second), Sessions: 2},
+			{Key: "example-org/detent-core#5240", StartedAt: now.Add(-9 * time.Hour), CompletedAt: now.Add(-2 * time.Hour), DurationSeconds: int64(7 * time.Hour / time.Second), Sessions: 1},
+			{Key: "example-org/docs-site#5241", StartedAt: now.Add(-13 * time.Hour), CompletedAt: now.Add(-5 * time.Hour), DurationSeconds: int64(8 * time.Hour / time.Second), Sessions: 2},
 		},
 	}
 }
@@ -1356,10 +1356,10 @@ func demoWorkflowMetrics(now time.Time) telemetry.WorkflowMetrics {
 		ActiveBottleneck: telemetry.WorkflowBottleneck{
 			Kind:       "lane_age",
 			Label:      "Human Review is slowest",
-			Detail:     "digitaldrywood/detent-core#5281 has waited longest in Human Review.",
+			Detail:     "example-org/detent-core#5281 has waited longest in Human Review.",
 			ProjectID:  demoPrimaryProjectID,
 			IssueID:    "demo-blocked-hook",
-			Identifier: "digitaldrywood/detent-core#5281",
+			Identifier: "example-org/detent-core#5281",
 			Seconds:    int64(5 * time.Hour / time.Second),
 			Count:      1,
 		},
@@ -1538,7 +1538,7 @@ func UsageEvents() []store.UsageEvent {
 			events = append(events, store.UsageEvent{
 				ProjectID:         projectID,
 				IssueID:           fmt.Sprintf("usage-%s-%02d", projectID, day),
-				Identifier:        fmt.Sprintf("digitaldrywood/%s#%d", demoUsageRepo(projectID), 5200+day*10+i),
+				Identifier:        fmt.Sprintf("example-org/%s#%d", demoUsageRepo(projectID), 5200+day*10+i),
 				PRNumber:          &pr,
 				Model:             models[(day+i)%len(models)],
 				InputTokens:       tokens * 7 / 10,

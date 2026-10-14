@@ -239,7 +239,7 @@ describe("runner rows", () => {
     renderSection();
     const rows = screen.getAllByTestId("host-card");
     expect(rows).toHaveLength(FLEET.runners.length);
-    expect(within(rows[0]!).getByRole("heading", { name: "Michael's MacBook Pro" })).toBeTruthy();
+    expect(within(rows[0]!).getByRole("heading", { name: "Example laptop" })).toBeTruthy();
     expect(rows[0]!.textContent).toContain("1 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("0 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("Can’t take work");
@@ -345,7 +345,7 @@ describe("runner details", () => {
   it("round-trips allowed project IDs, including unreadable projects", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
     expect((within(sheet).getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).checked).toBe(true);
     expect((within(sheet).getByRole("checkbox", { name: "prj_unknown" }) as HTMLInputElement).checked).toBe(true);
@@ -357,7 +357,7 @@ describe("runner details", () => {
     const save = vi.fn().mockResolvedValue(undefined);
     const runner = { ...RUNNER, editable: true, can_edit_projects: false, routing: { ...ROUTING, state: "draining" } };
     render(<RunnersSectionView fleet={{ ...FLEET, editable: false, runners: [runner] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     expect((screen.getByRole("checkbox", { name: "Known project" }) as HTMLInputElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: "Active Takes new work" }));
     fireEvent.click(screen.getByRole("button", { name: "Decrease jobs at once" }));
@@ -368,7 +368,7 @@ describe("runner details", () => {
   it("edits allowed projects and lets unknown projects be reselected", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
     expect((within(sheet).getByRole("checkbox", { name: "Second project" }) as HTMLInputElement).checked).toBe(false);
     fireEvent.click(within(sheet).getByRole("checkbox", { name: "Second project" }));
@@ -388,7 +388,7 @@ describe("runner details", () => {
   it("serializes edited hours and chips and clears deadlines for always available", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     fireEvent.change(screen.getByLabelText("Until 1"), { target: { value: "18:00" } });
     fireEvent.change(screen.getByLabelText("Add tag"), { target: { value: "gpu,linux" } });
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
@@ -397,7 +397,7 @@ describe("runner details", () => {
     })));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     fireEvent.change(screen.getByLabelText("Availability"), { target: { value: "always" } });
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     await waitFor(() => expect(save).toHaveBeenLastCalledWith(RUNNER, expect.objectContaining({
@@ -408,7 +408,7 @@ describe("runner details", () => {
   it.each([false, true])("shows routing and missing grants when this runner is read-only (fleet editable: %s)", (editable) => {
     const reason = 'Project "Second project" lacks a manage_runner grant; ask an owner or admin.';
     render(<RunnersSectionView fleet={{ ...FLEET, editable, runners: [{ ...RUNNER, editable: false, edit_refusal_reason: reason }] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
     expect(sheet.querySelector('[data-slot="sheet-footer"]')).toBeNull();
@@ -430,7 +430,7 @@ describe("runner details", () => {
       prj_unknown: { status: "ready" },
     } };
     render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} projects={PROJECTS} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
     expect(within(sheet).getByText("Checkout unavailable")).toBeTruthy();
     expect(within(sheet).getByText("Cannot clone https://github.com/acme/orders.git")).toBeTruthy();
@@ -441,7 +441,7 @@ describe("runner details", () => {
 
   it("does not invent settings when the fleet omits routing for a viewer", () => {
     render(<RunnersSectionView fleet={{ ...FLEET, editable: false, runners: [{ ...FLEET.runners[0]!, availability: ROUTING.availability }] }} projects={PROJECTS} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
     expect(sheet.querySelectorAll("input, select, textarea")).toHaveLength(0);
     expect(sheet.textContent).toContain("Project access is not reported.");
@@ -460,7 +460,7 @@ describe("runner details", () => {
       rerender(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [fresh] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
     });
     const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} onReloadRunner={reload} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     fireEvent.change(screen.getByLabelText("Jobs at once"), { target: { value: "10" } });
     fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
     const saveError = await screen.findByRole("alert");
@@ -482,7 +482,7 @@ describe("runner details", () => {
       { code: "provider", message: "Provider unavailable", fix_hint: "Sign in", first_seen: "2026-09-10T12:01:00Z" },
     ];
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [{ ...RUNNER, health: "needs_attention", problems }] }} projects={PROJECTS} onSaveRouting={save} />);
-    fireEvent.click(screen.getByRole("button", { name: "Manage Michael's MacBook Pro" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = screen.getByRole("dialog");
     expect(within(sheet).getAllByRole("alert")).toHaveLength(2);
     expect(sheet.textContent).toContain("Last report");

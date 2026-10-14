@@ -51,6 +51,7 @@ export const NativeActorKind = Schema.Literals(["human", "runner", "integration"
 export const NativeActor = Schema.Struct({
   kind: NativeActorKind,
   principal_id: Schema.String,
+  display_name: Schema.optional(Schema.String),
 });
 export type NativeActor = typeof NativeActor.Type;
 
@@ -126,7 +127,28 @@ export const NativeDependency = Schema.Struct({
 });
 export type NativeDependency = typeof NativeDependency.Type;
 
+export const ReportContext = Schema.Struct({
+  url: Schema.optional(Schema.String),
+  app_build: Schema.optional(Schema.String),
+  browser: Schema.optional(Schema.String),
+  os: Schema.optional(Schema.String),
+  viewport: Schema.optional(Schema.String),
+  captured_at: Schema.optional(Schema.String),
+});
+export type ReportContext = typeof ReportContext.Type;
+
+export const NativeVerification = Schema.Struct({
+  state: Schema.Literals(["pending", "verified"]),
+  verified_by: Schema.optional(NativeActor),
+  verified_at: Schema.optional(Schema.String),
+});
+export type NativeVerification = typeof NativeVerification.Type;
+
 export const NativeIssue = Schema.Struct({
+  type: Schema.optional(Schema.Literals(["bug", "change_request"])),
+  /** Where and on what the filer saw the problem. Absent when none was supplied; list and board reads omit it. */
+  report_context: Schema.optional(ReportContext),
+  verification: Schema.optional(NativeVerification),
 	linked_source: Schema.optional(Schema.Struct({
 		url: Schema.String,
 		status: Schema.String,
@@ -173,8 +195,13 @@ export const NativeIssue = Schema.Struct({
 });
 export type NativeIssue = typeof NativeIssue.Type;
 
+export const NativeShippedWindow = Schema.Struct({ window: Schema.String, shipped: Schema.Number, cancelled: Schema.Number });
+export type NativeShippedWindow = typeof NativeShippedWindow.Type;
+
 export const NativeWorkSummary = Schema.Struct({
   completed: Schema.optional(Schema.Number),
+  cancelled: Schema.optional(Schema.Number),
+  shipped_windows: Schema.optional(Schema.Array(NativeShippedWindow)),
   items: Schema.Array(NativeIssue),
   lanes: Schema.Array(Schema.Struct({ state: Schema.String, total: Schema.Number, running: Schema.Number })),
   truncated: Schema.Boolean,
@@ -214,6 +241,24 @@ export const WorkItemPage = Schema.Struct({
   grant_version: Schema.optional(Schema.String),
 });
 export type WorkItemPage = typeof WorkItemPage.Type;
+
+/** One issue-picker row: `fields=picker` on the work item list. */
+export const IssuePickerItem = Schema.Struct({
+  work_item_id: NativeWorkItemId,
+  number: Schema.Number,
+  title: Schema.String,
+  state: Schema.String,
+  terminal: Schema.Boolean,
+  priority: Schema.optional(Schema.Number),
+});
+export type IssuePickerItem = typeof IssuePickerItem.Type;
+
+export const IssuePickerPage = Schema.Struct({
+  items: Schema.Array(IssuePickerItem),
+  next_cursor: Schema.optional(Schema.String),
+  total: Schema.optional(Schema.Number),
+});
+export type IssuePickerPage = typeof IssuePickerPage.Type;
 
 /** Priority as the hub numbers it, in the order the tracker ranks it. */
 export const PRIORITY_NAMES = ["Urgent", "High", "Normal", "Low"] as const;

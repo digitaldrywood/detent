@@ -19,7 +19,7 @@ type scheduledValidationRecord struct {
 
 func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
 	report := request.ScheduledValidation
-	if report == nil || !report.Valid() || request.Title != "" || request.Body != "" || request.State != "" || request.Priority != nil || len(request.Labels) != 0 || len(request.Assignees) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
+	if report == nil || !report.Valid() || request.Type != "" || request.ReportContext != nil || request.Title != "" || request.Body != "" || request.State != "" || request.Priority != nil || len(request.Labels) != 0 || len(request.Assignees) != 0 || request.Provenance != nil || request.GitHubIssueURL != "" {
 		return nil, nativeInvalid("Invalid scheduled validation report")
 	}
 	if scope.credential.Scope == apiScopeWorker {

@@ -18,7 +18,7 @@ import (
 )
 
 func coordinatorSettingsNames() []string {
-	return []string{operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting, operatortool.UpdateProjectModelSelection, "bind_native_repository", "approve_project_policy", "revoke_project_policy", "remove_project_secret", "save_onboarding"}
+	return []string{operatortool.UpdateRunnerCapacity, operatortool.UpdateRunnerRouting, operatortool.UpdateProjectModelSelection, "bind_native_repository", "revoke_project_policy", "remove_project_secret", "save_onboarding"}
 }
 
 func coordinatorSettingsTool(name string) bool {
@@ -85,7 +85,7 @@ func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversa
 	if name != operatortool.UpdateRunnerCapacity && name != operatortool.UpdateRunnerRouting {
 		return nil
 	}
-	r, err := readRunnerWithClock(ctx, s.database.db, record.OrganizationID, target.RunnerID, s.config.now)
+	r, err := readRunnerWithClock(ctx, s.database.reader, record.OrganizationID, target.RunnerID, s.config.now)
 	if err != nil || !r.AllowsProject(record.ProjectID) {
 		return coordinatorSettingsRefusal(name)
 	}

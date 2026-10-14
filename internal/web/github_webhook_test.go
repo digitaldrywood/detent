@@ -37,7 +37,7 @@ func TestGitHubWebhookVerifiesSignatureAndTargetsRefresh(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := `{"repository":{"full_name":"digitaldrywood/detent"},"issue":{"number":666}}`
+	body := `{"repository":{"full_name":"example-org/example-project"},"issue":{"number":666}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issues")
 	req.Header.Set("X-GitHub-Delivery", "delivery-1")
@@ -52,8 +52,8 @@ func TestGitHubWebhookVerifiesSignatureAndTargetsRefresh(t *testing.T) {
 	if refresher.targetCalls != 1 {
 		t.Fatalf("target refresh calls = %d, want 1", refresher.targetCalls)
 	}
-	if refresher.target.Repository != "digitaldrywood/detent" || refresher.target.IssueNumber != 666 {
-		t.Fatalf("target = %#v, want digitaldrywood/detent#666", refresher.target)
+	if refresher.target.Repository != "example-org/example-project" || refresher.target.IssueNumber != 666 {
+		t.Fatalf("target = %#v, want example-org/example-project#666", refresher.target)
 	}
 	if refresher.target.Event != "issues" || refresher.target.DeliveryID != "delivery-1" {
 		t.Fatalf("target event metadata = %#v, want issues delivery-1", refresher.target)
@@ -74,8 +74,8 @@ func TestGitHubWebhookRoutesPerProjectAndParsesCheckSuite(t *testing.T) {
 	deps := testDeps(t)
 	refresher := &targetedRefreshProbe{response: web.RefreshResponse{Queued: true}}
 	deps.Refresher = refresher
-	addWebhookProject(t, deps.Registry, "detent", "digitaldrywood/detent", "$DETENT_WEBHOOK_SECRET")
-	addWebhookProject(t, deps.Registry, "other", "digitaldrywood/other", "other-secret")
+	addWebhookProject(t, deps.Registry, "detent", "example-org/example-project", "$DETENT_WEBHOOK_SECRET")
+	addWebhookProject(t, deps.Registry, "other", "example-org/other", "other-secret")
 	server, err := web.NewServer(web.Config{
 		LookupEnv: func(key string) string {
 			if key == "DETENT_WEBHOOK_SECRET" {
@@ -88,7 +88,7 @@ func TestGitHubWebhookRoutesPerProjectAndParsesCheckSuite(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := `{"repository":{"full_name":"digitaldrywood/detent"},"check_suite":{"head_sha":"abc123","head_branch":"detent/digitaldrywood_detent_1133-feature","pull_requests":[{"number":1134}]}}`
+	body := `{"repository":{"full_name":"example-org/example-project"},"check_suite":{"head_sha":"abc123","head_branch":"detent/example-org_detent_1133-feature","pull_requests":[{"number":1134}]}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "check_suite")
 	req.Header.Set("X-GitHub-Delivery", "delivery-suite")
@@ -106,7 +106,7 @@ func TestGitHubWebhookRoutesPerProjectAndParsesCheckSuite(t *testing.T) {
 	if len(refresher.target.ProjectIDs) != 1 || refresher.target.ProjectIDs[0] != "detent" {
 		t.Fatalf("target project IDs = %#v, want [detent]", refresher.target.ProjectIDs)
 	}
-	if refresher.target.PullRequestNumber != 1134 || refresher.target.SHA != "abc123" || refresher.target.Branch != "detent/digitaldrywood_detent_1133-feature" {
+	if refresher.target.PullRequestNumber != 1134 || refresher.target.SHA != "abc123" || refresher.target.Branch != "detent/example-org_detent_1133-feature" {
 		t.Fatalf("check suite target = %#v, want PR 1134 at abc123", refresher.target)
 	}
 }
@@ -124,7 +124,7 @@ func TestGitHubWebhookParsesCheckRunBranchWithoutPullRequest(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := `{"repository":{"full_name":"digitaldrywood/detent"},"check_run":{"head_sha":"abc123","pull_requests":[],"check_suite":{"head_branch":"detent/digitaldrywood_detent_1133-feature"}}}`
+	body := `{"repository":{"full_name":"example-org/example-project"},"check_run":{"head_sha":"abc123","pull_requests":[],"check_suite":{"head_branch":"detent/example-org_detent_1133-feature"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "check_run")
 	req.Header.Set("X-Hub-Signature-256", githubWebhookSignature("webhook-secret", []byte(body)))
@@ -138,7 +138,7 @@ func TestGitHubWebhookParsesCheckRunBranchWithoutPullRequest(t *testing.T) {
 	if refresher.targetCalls != 1 {
 		t.Fatalf("target refresh calls = %d, want 1", refresher.targetCalls)
 	}
-	if refresher.target.PullRequestNumber != 0 || refresher.target.SHA != "abc123" || refresher.target.Branch != "detent/digitaldrywood_detent_1133-feature" {
+	if refresher.target.PullRequestNumber != 0 || refresher.target.SHA != "abc123" || refresher.target.Branch != "detent/example-org_detent_1133-feature" {
 		t.Fatalf("check run target = %#v, want branch-only target at abc123", refresher.target)
 	}
 }
@@ -149,13 +149,13 @@ func TestGitHubWebhookDoesNotFallbackForUnknownRepository(t *testing.T) {
 	deps := testDeps(t)
 	refresher := &targetedRefreshProbe{}
 	deps.Refresher = refresher
-	addWebhookProject(t, deps.Registry, "detent", "digitaldrywood/detent", "detent-secret")
+	addWebhookProject(t, deps.Registry, "detent", "example-org/example-project", "detent-secret")
 	server, err := web.NewServer(web.Config{}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := `{"repository":{"full_name":"digitaldrywood/unknown"},"issue":{"number":1133}}`
+	body := `{"repository":{"full_name":"example-org/unknown"},"issue":{"number":1133}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issues")
 	req.Header.Set("X-Hub-Signature-256", githubWebhookSignature("detent-secret", []byte(body)))
@@ -184,7 +184,7 @@ func TestGitHubWebhookIgnoresUnrelatedEvent(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := `{"repository":{"full_name":"digitaldrywood/detent"},"ref":"refs/heads/main"}`
+	body := `{"repository":{"full_name":"example-org/example-project"},"ref":"refs/heads/main"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-Hub-Signature-256", githubWebhookSignature("webhook-secret", []byte(body)))
@@ -213,7 +213,7 @@ func TestGitHubWebhookRejectsInvalidSignature(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := `{"repository":{"full_name":"digitaldrywood/detent"},"issue":{"number":666}}`
+	body := `{"repository":{"full_name":"example-org/example-project"},"issue":{"number":666}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/webhooks/github", strings.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issues")
 	req.Header.Set("X-Hub-Signature-256", "sha256=bad")

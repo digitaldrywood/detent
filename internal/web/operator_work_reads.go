@@ -103,6 +103,9 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 	if err != nil {
 		return operatortool.Result{}, err
 	}
+	if name == operatortool.WorkList && request.CreatedBy == "me" {
+		return operatortool.Result{}, operatortool.ErrInvalidArguments
+	}
 	var client *hubclient.NativeClient
 	if source, ok := tracked.Connector().(nativeClientSource); ok {
 		client = source.NativeClient()
@@ -117,7 +120,7 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
 	if name == operatortool.WorkList {
-		if request.Fingerprint != "" || request.Open != nil || request.Cursor != "" || request.Archived != "" || request.Assignee != "" || len(request.Assignees) != 0 || request.Priority != nil || len(request.Priorities) != 0 || len(request.Include) != 0 {
+		if request.Type != "" || request.Verification != "" || request.CreatedBy != "" || request.CreatedAfter != "" || request.CreatedBefore != "" || request.UpdatedAfter != "" || request.Fingerprint != "" || request.Open != nil || request.Cursor != "" || request.Archived != "" || request.Assignee != "" || len(request.Assignees) != 0 || request.Priority != nil || len(request.Priorities) != 0 || len(request.Include) != 0 {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		issues := scopedWorkIssues(snapshot, request.ProjectID)

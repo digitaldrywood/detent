@@ -100,7 +100,7 @@ func TestHealthViewVerdicts(t *testing.T) {
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				StalenessWarnings: []telemetry.StalenessWarning{{
-					ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "digitaldrywood/detent#1960",
+					ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "example-org/example-project#1960",
 				}},
 			},
 			wantKind:    primitives.KindErr,
@@ -235,7 +235,7 @@ func TestHealthViewVerdicts(t *testing.T) {
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				StrandedActiveIssues: []telemetry.StrandedIssue{{
-					ProjectID: "detent", Identifier: "digitaldrywood/detent#1606", DurationSeconds: 900,
+					ProjectID: "detent", Identifier: "example-org/example-project#1606", DurationSeconds: 900,
 				}},
 			},
 			wantKind:    primitives.KindErr,
@@ -321,7 +321,7 @@ func TestHealthRowsIncludeOnlyFaultStaleness(t *testing.T) {
 		{
 			name: "fault",
 			warning: telemetry.StalenessWarning{
-				ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "digitaldrywood/detent#1960", IssueURL: "https://github.com/digitaldrywood/detent/issues/1960", Detail: "operator action required",
+				ID: "fault", Class: observability.ClassFault, ProjectID: "detent", Identifier: "example-org/example-project#1960", IssueURL: "https://github.com/example-org/example-project/issues/1960", Detail: "operator action required",
 			},
 			want: true,
 		},
@@ -435,14 +435,14 @@ func TestHealthCopyPayload(t *testing.T) {
 				Detail:    "2 warnings need operator attention.",
 				CheckedAt: checkedAt,
 				Rows: []healthRow{
-					{Component: "Fleet staleness · detent", Kind: primitives.KindWarn, Status: "Stale", Detail: "digitaldrywood/detent#1651 · repeated decision · 1h21m", Resets: "on progress"},
-					{Component: "Fleet staleness · detent", Kind: primitives.KindWarn, Status: "Reminder due", Detail: "digitaldrywood/detent#1650 · waiting for operator", Resets: "on progress"},
+					{Component: "Fleet staleness · detent", Kind: primitives.KindWarn, Status: "Stale", Detail: "example-org/example-project#1651 · repeated decision · 1h21m", Resets: "on progress"},
+					{Component: "Fleet staleness · detent", Kind: primitives.KindWarn, Status: "Reminder due", Detail: "example-org/example-project#1650 · waiting for operator", Resets: "on progress"},
 				},
 			},
 			want: "Detent health — 2 signals — checked 2026-08-08T03:21:52Z\n" +
 				"Fleet work is stale. 2 warnings need operator attention.\n\n" +
-				"[WARN] Fleet staleness · detent | Stale | digitaldrywood/detent#1651 · repeated decision · 1h21m | resets on progress\n" +
-				"[WARN] Fleet staleness · detent | Reminder due | digitaldrywood/detent#1650 · waiting for operator | resets on progress",
+				"[WARN] Fleet staleness · detent | Stale | example-org/example-project#1651 · repeated decision · 1h21m | resets on progress\n" +
+				"[WARN] Fleet staleness · detent | Reminder due | example-org/example-project#1650 · waiting for operator | resets on progress",
 		},
 		{
 			name: "mixed warning healthy and quota rows",
@@ -492,9 +492,9 @@ func TestHealthStrandedActiveRowsGroupByProject(t *testing.T) {
 	t.Parallel()
 
 	rows := healthStrandedActiveRows([]telemetry.StrandedIssue{
-		{ProjectID: "pyroapex", Identifier: "digitaldrywood/pyroapex#10", DurationSeconds: 1200},
-		{ProjectID: "detent", Identifier: "digitaldrywood/detent#1607", DurationSeconds: 720, LastRefusalReason: "budget cooldown"},
-		{ProjectID: "detent", Identifier: "digitaldrywood/detent#1606", DurationSeconds: 900, LastRefusalReason: "priority reservation"},
+		{ProjectID: "pyroapex", Identifier: "example-org/pyroapex#10", DurationSeconds: 1200},
+		{ProjectID: "detent", Identifier: "example-org/example-project#1607", DurationSeconds: 720, LastRefusalReason: "budget cooldown"},
+		{ProjectID: "detent", Identifier: "example-org/example-project#1606", DurationSeconds: 900, LastRefusalReason: "priority reservation"},
 	})
 
 	if len(rows) != 2 {
@@ -503,7 +503,7 @@ func TestHealthStrandedActiveRowsGroupByProject(t *testing.T) {
 	if rows[0].Component != "Active work · detent" || rows[0].Status != "No live worker" {
 		t.Fatalf("detent row = %#v", rows[0])
 	}
-	for _, want := range []string{"digitaldrywood/detent#1606", "15m", "priority reservation", "digitaldrywood/detent#1607", "12m", "budget cooldown"} {
+	for _, want := range []string{"example-org/example-project#1606", "15m", "priority reservation", "example-org/example-project#1607", "12m", "budget cooldown"} {
 		if !strings.Contains(rows[0].Detail, want) {
 			t.Fatalf("detent detail = %q, want %q", rows[0].Detail, want)
 		}
@@ -518,9 +518,9 @@ func TestHealthAdmissionProposalRowsGroupByProject(t *testing.T) {
 
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	rows := healthAdmissionProposalRows([]telemetry.AdmissionProposal{
-		{ProjectID: "docs", IssueIdentifier: "digitaldrywood/docs#20", Confidence: 0.91, CreatedAt: now.Add(-30 * time.Minute), ExpiresAt: now.Add(90 * time.Minute)},
-		{ProjectID: "detent", IssueIdentifier: "digitaldrywood/detent#1587", Confidence: 0.76, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(22 * time.Hour)},
-		{ProjectID: "detent", IssueIdentifier: "digitaldrywood/detent#1586", Confidence: 0.88, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(23 * time.Hour)},
+		{ProjectID: "docs", IssueIdentifier: "example-org/docs#20", Confidence: 0.91, CreatedAt: now.Add(-30 * time.Minute), ExpiresAt: now.Add(90 * time.Minute)},
+		{ProjectID: "detent", IssueIdentifier: "example-org/example-project#1587", Confidence: 0.76, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(22 * time.Hour)},
+		{ProjectID: "detent", IssueIdentifier: "example-org/example-project#1586", Confidence: 0.88, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(23 * time.Hour)},
 	}, now)
 
 	if len(rows) != 2 {
@@ -530,8 +530,8 @@ func TestHealthAdmissionProposalRowsGroupByProject(t *testing.T) {
 		t.Fatalf("detent row = %#v", rows[0])
 	}
 	for _, want := range []string{
-		"digitaldrywood/detent#1586 · 88% confidence · age 1h 0m · expires in 23h 0m",
-		"digitaldrywood/detent#1587 · 76% confidence · age 2h 0m · expires in 22h 0m",
+		"example-org/example-project#1586 · 88% confidence · age 1h 0m · expires in 23h 0m",
+		"example-org/example-project#1587 · 76% confidence · age 2h 0m · expires in 22h 0m",
 	} {
 		if !strings.Contains(rows[0].Detail, want) {
 			t.Fatalf("detent detail = %q, want %q", rows[0].Detail, want)

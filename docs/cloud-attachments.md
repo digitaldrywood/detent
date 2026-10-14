@@ -176,7 +176,10 @@ JPEG, GIF and WebP by magic bytes. Entry checks the 16-megapixel limit before
 decoding and re-encodes the pixels to remove EXIF/GPS and trailing polyglot
 content. JPEG and PNG retain their format; GIF and WebP become PNG (the decoded
 frame, without animation). The normalized file also must fit the size cap.
-PDF, UTF-8 plain text, Markdown, CSV and valid JSON are downloads. SVG, HTML,
+PDF, UTF-8 plain text, Markdown, CSV and valid JSON are downloads. Browser
+console logs (`.log`) are stored as UTF-8 plain text. Network HAR exports are
+stored as `application/har+json` when declared that way or when a `.har` file is
+uploaded as JSON, plain text or without a type, and must be valid JSON. SVG, HTML,
 binary text mismatches and malformed images are refused. Metadata records the
 stored content type, bytes, SHA-256, dimensions, original sanitized filename,
 project, uploader, creation time, work item/comment references and deletion

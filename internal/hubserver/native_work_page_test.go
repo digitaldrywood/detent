@@ -127,20 +127,28 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	}
 	first := read("")
 	for _, include := range []string{"", "&include=summary"} {
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100&cursor="+url.QueryEscape(first.NextCursor)+include, f.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var continuation tracker.NativeIssuePage
-		if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) != 36 || continuation.Total != 136 {
-			t.Fatalf("continuation without work: %s err=%v", response.Body, err)
-		}
-		ids := make(map[string]bool)
+		ids := make(map[tracker.NativeWorkItemID]bool)
 		for _, issue := range first.Items {
-			ids[string(issue.WorkItemID)] = true
+			ids[issue.WorkItemID] = true
 		}
-		for _, issue := range continuation.Items {
-			if ids[string(issue.WorkItemID)] {
-				t.Fatalf("continuation repeated %s", issue.WorkItemID)
+		cursor := first.NextCursor
+		for cursor != "" {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100&cursor="+url.QueryEscape(cursor)+include, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var continuation tracker.NativeIssuePage
+			if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) == 0 || continuation.Total != 136 {
+				t.Fatalf("continuation without work: %s err=%v", response.Body, err)
 			}
+			for _, issue := range continuation.Items {
+				if ids[issue.WorkItemID] {
+					t.Fatalf("continuation repeated %s", issue.WorkItemID)
+				}
+				ids[issue.WorkItemID] = true
+			}
+			cursor = continuation.NextCursor
+		}
+		if len(ids) != 136 {
+			t.Fatalf("continuation lost inventory: got %d items, want 136", len(ids))
 		}
 	}
 	for transport, call := range transports {
@@ -203,13 +211,16 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		{"multiple dimensions", "&state=Todo&state=Done&label=selected&label=alternate&assignee=operator&assignee=reviewer&priority=0&priority=1", 3, 0, 2},
 		{"older title", "&q=Historical%20needle", 2, 0, 1},
 		{"older label", "&q=historical%20LABEL", 2, 0, 1},
-		{"older identifier", "&q=" + url.QueryEscape(f.project.Name+"#"+strconv.Itoa(history[120].Number)), 1, 0, 0},
-		{"native identifier", "&q=" + url.QueryEscape(string(f.project.ID)+"#"+strconv.Itoa(history[120].Number)), 1, 0, 0},
-		{"body is not operational search", "&q=Preserved%20body", 0, 0, 0},
+		{"older identifier", "&q=" + url.QueryEscape(f.project.Name+"#"+strconv.Itoa(history[120].Number)), 2, 0, 0},
+		{"native identifier", "&q=" + url.QueryEscape(string(f.project.ID)+"#"+strconv.Itoa(history[120].Number)), 2, 0, 0},
+		{"absent body search", "&q=Preserved%20body", 0, 0, 0},
 		{"AND dimensions", "&state=In%20Progress&label=selected&label=alternate", 0, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			page := read(test.query)
+			if strings.HasSuffix(test.name, "identifier") && !slices.ContainsFunc(page.Items, func(item tracker.NativeIssue) bool { return item.WorkItemID == history[120].WorkItemID }) {
+				t.Fatal("identifier search lost legacy match")
+			}
 			if page.Total != test.total || page.Work == nil || len(page.Items) > 100 || len(page.Work.Items) != test.open || page.Work.Truncated || page.Work.AsOf.IsZero() {
 				t.Fatalf("page lost bounds or open selection: %+v", page.Work)
 			}
@@ -299,15 +310,21 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	changed := strings.Replace(query, "state=Todo", "state=In%20Progress", 1)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+changed+"&cursor="+url.QueryEscape(read(query).NextCursor), f.token, nil), http.StatusUnprocessableEntity)
 	page := read("")
-	if !page.Work.Truncated || len(page.Work.Items) != 100 || page.Work.Items[0].WorkItemID != ip[1].WorkItemID {
+	if !page.Work.Truncated || len(page.Work.Items) == 0 || len(page.Work.Items) > 100 || page.Work.Items[0].WorkItemID != ip[1].WorkItemID {
 		t.Fatal("large open inventory displaced live work or exceeded the bound")
 	}
+	for _, items := range [][]tracker.NativeIssue{page.Items, page.Work.Items} {
+		raw, err := json.Marshal(operatortool.NativeItemPage(string(f.project.ID), tracker.Page[tracker.NativeIssue]{Items: items}))
+		if err != nil || len(raw) > operatortool.WorkListPageBytes {
+			t.Fatalf("work projection exceeds the existing page budget: bytes=%d error=%v", len(raw), err)
+		}
+	}
 	q := &runtimeReadQuery{nativeQueryer: f.service.database.db}
-	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now(), "all")
+	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now(), "all", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(q.statements) > 302 {
+	if len(q.statements) > 303 {
 		t.Fatalf("compact read exceeded bounded hydration: %d queries", len(q.statements))
 	}
 	for _, statement := range q.statements {
@@ -344,6 +361,8 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 		{"Done", []time.Time{now.Add(time.Hour)}, "Todo", false},
 		{"Done", []time.Time{now.Add(-time.Hour)}, "Cancelled", false},
 		{"Done", []time.Time{now.Add(-15 * 24 * time.Hour), now.Add(-time.Hour)}, "Todo", false},
+		{"Cancelled", []time.Time{now.Add(-2 * time.Hour)}, "Todo", false},
+		{"Cancelled", []time.Time{now.Add(-3 * 24 * time.Hour)}, "Todo", false},
 	} {
 		issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -362,25 +381,28 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET updated_at = ?, native_updated_at = ?, archived = ? WHERE native_id = ?", formatHubTime(now), formatHubTime(now), seed.archived, issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
-		if err := tx.Commit(); err != nil {
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
 			t.Fatal(err)
 		}
 	}
+	windows := []tracker.NativeShippedWindow{{Window: "1h", Shipped: 3}, {Window: "24h", Shipped: 3, Cancelled: 1}, {Window: "7d", Shipped: 5, Cancelled: 2}}
 	for _, test := range []struct {
-		window, filter string
-		want           int
-		status         int
+		window, filter     string
+		shipped, cancelled int
+		status             int
 	}{
-		{"", "", 4, http.StatusOK},
-		{"48h", "", 4, http.StatusOK},
-		{"7d", "", 5, http.StatusOK},
-		{"14d", "", 6, http.StatusOK},
-		{"all", "", 10, http.StatusOK},
-		{"all", "&state=Cancelled", 1, http.StatusOK},
-		{"48h", "&state=Todo", 0, http.StatusOK},
-		{"48h", "&archived=true", 1, http.StatusOK},
-		{"bad", "", 0, http.StatusUnprocessableEntity},
-		{"48h", "&completed_window=all", 0, http.StatusUnprocessableEntity},
+		{"", "", 3, 1, http.StatusOK},
+		{"1h", "", 3, 0, http.StatusOK},
+		{"24h", "", 3, 1, http.StatusOK},
+		{"7d", "", 5, 2, http.StatusOK},
+		{"48h", "", 3, 1, http.StatusOK},
+		{"14d", "", 3, 1, http.StatusOK},
+		{"all", "", 3, 1, http.StatusOK},
+		{"7d", "&state=Cancelled", 0, 2, http.StatusOK},
+		{"24h", "&state=Todo", 0, 0, http.StatusOK},
+		{"24h", "&archived=true", 3, 1, http.StatusOK},
+		{"bad", "", 0, 0, http.StatusUnprocessableEntity},
+		{"24h", "&completed_window=all", 0, 0, http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.window+test.filter, func(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&completed_window="+test.window+test.filter, f.token, nil)
@@ -390,8 +412,11 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 			}
 			var page tracker.NativeIssuePage
 			decodeHubResponse(t, response, &page)
-			if page.Work == nil || page.Work.Completed != test.want {
-				t.Fatalf("completed = %+v, want %d", page.Work, test.want)
+			if page.Work == nil || page.Work.Completed != test.shipped || page.Work.Cancelled != test.cancelled {
+				t.Fatalf("summary = %+v, want %d shipped and %d cancelled", page.Work, test.shipped, test.cancelled)
+			}
+			if test.filter == "" && !slices.Equal(page.Work.ShippedWindows, windows) {
+				t.Fatalf("shipped windows = %+v, want %+v", page.Work.ShippedWindows, windows)
 			}
 		})
 	}

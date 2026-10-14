@@ -34,24 +34,36 @@ func CommandCatalog() []Definition {
 }
 
 type FileIssueArguments struct {
-	ProjectID      string   `json:"project_id"`
-	GitHubIssueURL string   `json:"github_issue_url,omitempty"`
-	Title          string   `json:"title,omitempty"`
-	Description    string   `json:"description,omitempty"`
-	State          string   `json:"state,omitempty"`
-	Labels         []string `json:"labels,omitempty"`
-	Priority       *int     `json:"priority,omitempty"`
+	ChallengeToken string                 `json:"challenge_token,omitempty"`
+	NotDuplicateOf []int                  `json:"not_duplicate_of,omitempty"`
+	ProjectID      string                 `json:"project_id"`
+	GitHubIssueURL string                 `json:"github_issue_url,omitempty"`
+	Type           string                 `json:"type,omitempty"`
+	ReportContext  *tracker.ReportContext `json:"report_context,omitempty"`
+	Title          string                 `json:"title,omitempty"`
+	Description    string                 `json:"description,omitempty"`
+	State          string                 `json:"state,omitempty"`
+	Labels         []string               `json:"labels,omitempty"`
+	Priority       *int                   `json:"priority,omitempty"`
 }
 
 func fileIssueDefinition() Definition {
-	return Definition{Name: FileIssue, Description: "Create an issue through the dashboard command. Native descriptions may be empty. Native projects may link a permitted github_issue_url without title or description. Priority ranks 1–4 map to native priorities 0–3. Embed upload_attachment reference in description to attach a file.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","request_id"],"anyOf":[{"required":["title"],"properties":{"title":{"minLength":1}}},{"required":["github_issue_url"]}],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","minLength":1,"maxLength":128},"github_issue_url":{"type":"string","minLength":1,"maxLength":2048},"title":{"type":"string","maxLength":500},"description":{"type":"string","maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: toolset(FileIssue)}
+	return Definition{Name: FileIssue, Description: "Create an issue through the dashboard command. Native filing may return possible_duplicates and a challenge_token without creating an issue. Ask the filer to choose: if this is the same problem, call add_comment on the existing work_item_id with occurrence details and any screenshot attachment references; if this is new, repeat file_issue with the same request_id and content, the challenge_token, and not_duplicate_of containing the challenged issue numbers to link as related. Challenge tokens expire after one hour; after expiry, begin a new filing with a new request_id. A completed request replay returns its original result. Native descriptions may be empty for non-Reporters. Type is bug or change_request and is required for Reporters, who file into Triage. Reporter descriptions require nonempty sections. Bug template: ## Steps to reproduce, ## Expected, ## Actual, ## Where (screen or URL), ## Environment (browser/OS and app build; use available context). Change request template: ## Current behavior, ## Desired behavior, ## Why. Call work_config for effective reporter_templates; a project WORKFLOW Reporter Contract may override headings. Engineering issue sections are required when promoted from Triage into executable work. Native projects may link a permitted github_issue_url without title or description. Priority ranks 1–4 map to native priorities 0–3. Embed upload_attachment reference in description to attach a file. When filing a bug from a browser, fill report_context with the page url, app_build, browser, os, viewport and captured_at the tester can see; browser and app_build satisfy the bug Environment section. When the tester has a network HAR export (.har), upload it with detent attach or the REST attachment upload API, since upload_attachment accepts only about 44 KB; use upload_attachment only for small console log exports (.log). Embed each attachment reference in the description.", InputSchema: json.RawMessage(`{"type":"object","required":["project_id","request_id"],"anyOf":[{"required":["title"],"properties":{"title":{"minLength":1}}},{"required":["github_issue_url"]}],"properties":{"project_id":{"type":"string","minLength":1,"maxLength":256},"request_id":{"type":"string","minLength":1,"maxLength":128},"github_issue_url":{"type":"string","minLength":1,"maxLength":2048},"type":{"type":"string","enum":["bug","change_request"]},"report_context":{"type":"object","properties":{"url":{"type":"string","maxLength":2048},"app_build":{"type":"string","maxLength":256},"browser":{"type":"string","maxLength":256},"os":{"type":"string","maxLength":256},"viewport":{"type":"string","maxLength":256},"captured_at":{"type":"string","maxLength":256}},"additionalProperties":false},"title":{"type":"string","maxLength":500},"description":{"type":"string","maxLength":32768},"state":{"type":"string","maxLength":256},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":1,"maximum":4},"challenge_token":{"type":"string","minLength":1,"maxLength":128},"not_duplicate_of":{"type":"array","minItems":1,"maxItems":5,"uniqueItems":true,"items":{"type":"integer","minimum":1}}},"additionalProperties":false}`), Annotations: Annotations{Idempotent: true, OpenWorld: true}, Meta: toolset(FileIssue)}
 }
 
 func DecodeFileIssue(raw json.RawMessage) (FileIssueArguments, error) {
 	var request FileIssueArguments
 	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil && fields["report_context"] != nil {
+		if _, err := tracker.DecodeReportContext(fields["report_context"]); err != nil {
+			return request, invalidArgument("report_context", "accepts only url, app_build, browser, os, viewport and captured_at as bounded single-line strings")
+		}
+	}
 	if DecodeArguments(raw, &request) != nil || json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return request, ErrInvalidArguments
+	}
+	if request.ReportContext != nil {
+		request.ReportContext = request.ReportContext.Normalized()
 	}
 	for _, value := range fields {
 		if string(value) == "null" {
@@ -67,8 +79,19 @@ func DecodeFileIssue(raw json.RawMessage) (FileIssueArguments, error) {
 	if fields["github_issue_url"] != nil && strings.TrimSpace(request.GitHubIssueURL) == "" || request.Priority != nil && (*request.Priority < 1 || *request.Priority > 4) {
 		return request, ErrInvalidArguments
 	}
+	if fields["type"] != nil && request.Type != "bug" && request.Type != "change_request" {
+		return request, invalidArgument("type", "must be bug or change_request")
+	}
 	if request.GitHubIssueURL != "" {
 		if _, _, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL); err != nil {
+			return request, ErrInvalidArguments
+		}
+	}
+	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
+		return request, ErrInvalidArguments
+	}
+	for _, number := range request.NotDuplicateOf {
+		if number <= 0 {
 			return request, ErrInvalidArguments
 		}
 	}

@@ -20,15 +20,20 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 		otherProject   bool
 		state          string
 		scheduledFirst bool
+		disabled       bool
 	}{
-		{"test failure", "Gate failed:\n--- FAIL: TestHostedChangePolicyJourney (0.03s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.04s", "Another worker found:\n--- FAIL: TestHostedChangePolicyJourney (0.08s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.09s", false, "Todo", false},
-		{"migration collision", "panic: goose: duplicate version 20261006023000 detected:\nsprite_placement.sql", "Gate blocked by duplicate migration version 20261006023000: github_references.go and sprite_placement.sql", false, "Todo", false},
-		{"compiler diagnostic", "internal/hub/pool.go:23:4: undefined: capacity", "internal/hub/pool.go:31:2: undefined: capacity", false, "Todo", false},
-		{"scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", false, "Todo", true},
-		{"other project policy", "goose: duplicate version 20261006023000 detected:", "duplicate migration version 20261006023000", true, "Backlog", false},
+		{"test failure", "Gate failed:\n--- FAIL: TestHostedChangePolicyJourney (0.03s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.04s", "Another worker found:\n--- FAIL: TestHostedChangePolicyJourney (0.08s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.09s", false, "Todo", false, false},
+		{"migration collision", "panic: goose: duplicate version 20261006023000 detected:\nsprite_placement.sql", "Gate blocked by duplicate migration version 20261006023000: github_references.go and sprite_placement.sql", false, "Todo", false, false},
+		{"compiler diagnostic", "internal/hub/pool.go:23:4: undefined: capacity", "internal/hub/pool.go:31:2: undefined: capacity", false, "Todo", false, false},
+		{"scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", false, "Todo", true, false},
+		{"other project policy", "goose: duplicate version 20261006023000 detected:", "duplicate migration version 20261006023000", true, "Backlog", false, false},
+		{"disabled challenge", "internal/example/check.go:23:4: undefined: capacity", "internal/example/check.go:31:2: undefined: capacity", false, "Todo", false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", !test.disabled, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
 			states := append(f.project.States, tracker.NativeState{Name: "Backlog"})
 			raw, err := json.Marshal(states)
 			if err != nil {
@@ -51,6 +56,9 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", !test.disabled, project); err != nil {
+				t.Fatal(err)
 			}
 			credential, _, err := f.service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
 			if err != nil {
@@ -146,7 +154,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if comments != 2 {
 				t.Fatalf("terminal report added an occurrence: %d", comments)
 			}
-			closed.PublicationReused = false
+			response = performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items/"+string(owner.WorkItemID), testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var historicalBefore tracker.NativeIssue
+			decodeHubResponse(t, response, &historicalBefore)
 			origin.Source = "new-scheduled-run"
 			request = tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-scheduled-occurrence"}, Title: "Recurring scheduled failure", Body: issueorigin.Stamp(test.second, origin), State: "Todo", Priority: new(1)}
 			var current tracker.NativeIssue
@@ -193,8 +204,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var historical tracker.NativeIssue
 			decodeHubResponse(t, response, &historical)
-			if !reflect.DeepEqual(historical, closed) {
-				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, closed)
+			if !reflect.DeepEqual(historical, historicalBefore) {
+				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, historicalBefore)
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", owner.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)

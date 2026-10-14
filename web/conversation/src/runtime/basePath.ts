@@ -43,7 +43,7 @@ export function withoutBasePath(pathname: string, prefix: string = basePath()): 
 }
 
 export function routerBasePath(prefix: string = basePath()): string {
-  return prefix === "" ? "/" : prefix;
+  return normalizeBasePath(readMeta("detent-router-base", globalThis.document)) || (prefix === "" ? "/" : prefix);
 }
 
 export function signInPath(): string {

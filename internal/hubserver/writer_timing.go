@@ -46,6 +46,16 @@ func (t *writerTiming) add(start time.Time) {
 // transaction's and auto-commit statement's hold time against the request
 // context that started it.
 func openTimedWriter(dsn string) (*sql.DB, error) {
+	return openTimedDB(dsn, true)
+}
+
+// openTimedReader opens a reader pool whose statements count toward the
+// request's db span but never toward writer hold time.
+func openTimedReader(dsn string) (*sql.DB, error) {
+	return openTimedDB(dsn, false)
+}
+
+func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
 	probe, err := sql.Open("sqlite", "")
 	if err != nil {
 		return nil, err
@@ -54,12 +64,13 @@ func openTimedWriter(dsn string) (*sql.DB, error) {
 	if err := probe.Close(); err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(timedConnector{dsn: dsn, driver: base}), nil
+	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer}), nil
 }
 
 type timedConnector struct {
 	driver driver.Driver
 	dsn    string
+	writer bool
 }
 
 func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
@@ -67,14 +78,15 @@ func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &timedConn{Conn: conn}, nil
+	return &timedConn{Conn: conn, writer: c.writer}, nil
 }
 
 func (c timedConnector) Driver() driver.Driver { return c.driver }
 
 type timedConn struct {
 	driver.Conn
-	inTx bool
+	inTx   bool
+	writer bool
 }
 
 type timedTx struct {
@@ -110,7 +122,11 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 		return nil, err
 	}
 	c.inTx = true
-	return &timedTx{Tx: tx, conn: c, timing: writerTimingFrom(ctx), start: start}, nil
+	var timing *writerTiming
+	if c.writer {
+		timing = writerTimingFrom(ctx)
+	}
+	return &timedTx{Tx: tx, conn: c, timing: timing, start: start}, nil
 }
 
 func (c *timedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -125,20 +141,28 @@ func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver
 	if !ok {
 		return nil, driver.ErrSkip
 	}
-	if c.inTx {
-		return execer.ExecContext(ctx, query, args)
-	}
 	start := time.Now()
 	result, err := execer.ExecContext(ctx, query, args)
-	writerTimingFrom(ctx).add(start)
+	requestTimingFrom(ctx).statement(start, query, args)
+	if c.writer && !c.inTx {
+		writerTimingFrom(ctx).add(start)
+	}
 	return result, err
 }
 
 func (c *timedConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if queryer, ok := c.Conn.(driver.QueryerContext); ok {
-		return queryer.QueryContext(ctx, query, args)
+	queryer, ok := c.Conn.(driver.QueryerContext)
+	if !ok {
+		return nil, driver.ErrSkip
 	}
-	return nil, driver.ErrSkip
+	timing := requestTimingFrom(ctx)
+	start := time.Now()
+	rows, err := queryer.QueryContext(ctx, query, args)
+	timing.statement(start, query, args)
+	if err != nil || timing == nil {
+		return rows, err
+	}
+	return &timedRows{Rows: rows, timing: timing}, nil
 }
 
 func (c *timedConn) Ping(ctx context.Context) error {
@@ -209,8 +233,11 @@ func (s *Service) logWriterWaits() {
 	}
 	stats := s.database.db.Stats()
 	waits, waited := stats.WaitCount-s.writerWaits.Swap(stats.WaitCount), stats.WaitDuration-time.Duration(s.writerWaited.Swap(int64(stats.WaitDuration)))
+	reader := s.database.reader.Stats()
+	readerWaits, readerWaited := reader.WaitCount-s.readerWaits.Swap(reader.WaitCount), reader.WaitDuration-time.Duration(s.readerWaited.Swap(int64(reader.WaitDuration)))
 	if last == 0 {
 		return
 	}
-	s.config.Logger.Info("hub writer waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "interval_s", (now-last)/int64(time.Second))
+	s.config.Logger.Info("hub writer waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "interval_s", (now-last)/int64(time.Second),
+		"reader_waits", readerWaits, "reader_wait_ms", readerWaited.Milliseconds(), "reader_in_use", reader.InUse, "reader_max", reader.MaxOpenConnections)
 }

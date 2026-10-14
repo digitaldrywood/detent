@@ -157,6 +157,15 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	call, err = e.service.normalizeToolReferences(ctx, call)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if err == nil && len(result.Content) > 0 && e.service.config.Hosted != nil {
+			result, err = e.service.canonicalToolResult(ctx, result)
+		}
+	}()
 	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
@@ -485,6 +494,8 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (s *Service) billingRequestBinding(ctx context.Context, name string, request billingActionRequest) (string, string, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
 		return s.billingActionBinding(request.Price), "", nil
 	}
@@ -510,7 +521,7 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 		Pack                                                        HostedCreditPack
 	}{Account: cfg.AccountID, Mode: cfg.mode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
-		if err := s.database.db.QueryRowContext(ctx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
 			return "", "", err
 		}
 		if *request.Enabled {

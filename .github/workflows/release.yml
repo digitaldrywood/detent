@@ -5,11 +5,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      operator_landed:
-        description: Publish a signed operator prerelease from develop and deploy Cloud
-        type: boolean
-        default: false
 
 permissions:
   checks: read
@@ -22,8 +17,8 @@ concurrency:
 
 jobs:
   source:
-    name: Verify operator-landed source
-    if: (startsWith(github.ref, 'refs/tags/v') && !inputs.operator_landed) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/develop' && inputs.operator_landed)
+    name: Verify release source
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -33,27 +28,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Verify source belongs to develop or its release series
+      - name: Verify source belongs to its release series
         run: |
-          git fetch --no-tags origin develop:refs/remotes/origin/develop
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/develop; then
-            [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-            branch="release/v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-            git fetch --no-tags origin "$branch:refs/remotes/origin/$branch"
-            git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"
-          fi
-      - uses: ./.github/actions/prepare-conversation
-        if: inputs.operator_landed
-      - uses: actions/setup-go@v6
-        if: inputs.operator_landed
-        with:
-          go-version: '1.26.6'
-          cache: true
-      - name: Validate operator-landed source
-        if: inputs.operator_landed
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: make check-land
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          branch="release/v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          git fetch --no-tags origin "$branch:refs/remotes/origin/$branch"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"
 
   release:
     name: GoReleaser
@@ -80,12 +61,11 @@ jobs:
           go-version: '1.26.9'
           cache: true
 
-      - name: Bind exact-commit check or local-gate status provenance
+      - name: Verify release-branch full-suite provenance
         id: provenance
         env:
           GH_TOKEN: ${{ github.token }}
           TMPDIR: ${{ runner.temp }}
-          OPERATOR_LANDED: ${{ inputs.operator_landed == true }}
           DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
         run: |
           set -euo pipefail
@@ -96,7 +76,7 @@ jobs:
           default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
           default_branch_ref="refs/heads/$default_branch"
           if [ -z "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" ]; then
-            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks."
+            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks"
             exit 1
           fi
           gh api -H "Accept: application/vnd.github+json" \
@@ -105,17 +85,8 @@ jobs:
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status?per_page=100" > "$statuses"
           scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
           release_tag="$GITHUB_REF_NAME"
-          if [ "$OPERATOR_LANDED" = true ]; then
-            latest="$(bash scripts/resolve-release-tag.sh)"
-            jobs="$RUNNER_TEMP/detent-release-jobs.json"
-            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs"
-            check_url="$(jq -er '[.[] | select(.name == "Verify operator-landed source" and .conclusion == "success")] | if length == 1 then .[0].check_run_url else error("operator source check is missing or ambiguous") end' "$jobs")"
-            check_id="${check_url##*/}"
-            release_tag="$(bash scripts/prepare-operator-release.sh "$GITHUB_SHA" "$latest" "$check_runs" "$check_id" "$GITHUB_RUN_NUMBER")"
-            DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON='["Verify operator-landed source"]'
-          else
-            git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
-          fi
+          git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci"] | unique else error("release requirements must be a JSON array") end' <<< "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON")"
           test "$(git cat-file -t "refs/tags/$release_tag")" = tag
           git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
           go run ./tools/releaseprovenance \
@@ -129,9 +100,6 @@ jobs:
             -github-rulesets "$rulesets" \
             -required-check-names-json "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" \
             -output tmp/detent_release_provenance.json
-          if [ "$OPERATOR_LANDED" = true ]; then
-            git push origin "refs/tags/$release_tag"
-          fi
           echo "version=$release_tag" >> "$GITHUB_OUTPUT"
 
       - name: Install minisign

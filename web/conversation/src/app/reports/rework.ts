@@ -1,53 +1,30 @@
-import type { ReportsReport } from "../../contracts/reports.ts";
+/** Chart groups for the Hub's rework classes: issue causes in amber shades, infrastructure in blue. */
+export const REWORK_GROUPS = [
+  { id: "review", label: "Review findings", color: "var(--warning)" },
+  { id: "gate", label: "Gate failed", color: "color-mix(in oklab, var(--warning) 70%, var(--background))" },
+  { id: "conflict", label: "Conflict on landing", color: "color-mix(in oklab, var(--warning) 42%, var(--background))" },
+  { id: "refused", label: "Landing refused", color: "var(--info)" },
+  { id: "other", label: "Other", color: "var(--muted-foreground)" },
+] as const;
+export type ReworkGroup = (typeof REWORK_GROUPS)[number]["id"];
 
-type Cause =
-  ReportsReport["analytics"]["lane_residence"]["rework_causes"][number];
-const LABELS = [
-  "Conflict on landing",
-  "Review transition",
-  "Permission wait",
-  "Lifetime limit",
-  "Terminal attempt without work product",
-];
+const CLASS_GROUPS: Readonly<Record<string, ReworkGroup>> = {
+  "Review findings to address": "review",
+  "Gate failed before landing": "gate",
+  "Conflict on landing": "conflict",
+  "Landing refused: protected base": "refused",
+  "Base moved after validation": "refused",
+};
 
-function labelFor(cause: Cause): string {
-  const reason = cause.reason_detail.toLowerCase().replaceAll("_", " ");
-  if (cause.from_state === "Merging" && reason.includes("conflict"))
-    return LABELS[0]!;
-  if (
-    cause.from_state === "Human Review" ||
-    reason.includes("review transition")
-  )
-    return LABELS[1]!;
-  if (/permission.*(wait|denied|required)/.test(reason)) return LABELS[2]!;
-  if (/lifetime.*limit/.test(reason)) return LABELS[3]!;
-  if (/terminal.*(without|no).*work product/.test(reason)) return LABELS[4]!;
-  return cause.reason_detail || "Cause not recorded";
+/** The chart group a rework class belongs to; an unnamed infrastructure class joins the blue group. */
+export function reworkGroupOf(label: string, kind: string): (typeof REWORK_GROUPS)[number] {
+  const id = CLASS_GROUPS[label] ?? (kind === "infrastructure" ? "refused" : "other");
+  return REWORK_GROUPS.find((group) => group.id === id)!;
 }
 
-export function reworkByCause(
-  causes: readonly Cause[],
-): readonly { label: string; count: number; details: string }[] {
-  const grouped = new Map<
-    string,
-    { label: string; count: number; details: string[] }
-  >();
-  for (const cause of causes) {
-    const label = labelFor(cause);
-    const row = grouped.get(label) ?? { label, count: 0, details: [] };
-    row.count += cause.count;
-    row.details.push(
-      `${cause.from_state}: ${cause.reason_detail || "Not recorded"}`,
-    );
-    grouped.set(label, row);
-  }
-  return [...grouped.values()]
-    .toSorted((a, b) => {
-      const order = (label: string) => {
-        const index = LABELS.indexOf(label);
-        return index < 0 ? LABELS.length : index;
-      };
-      return order(a.label) - order(b.label) || a.label.localeCompare(b.label);
-    })
-    .map((row) => ({ ...row, details: row.details.join("; ") }));
+/** Folds one bucket's class counts into the chart groups. */
+export function reworkByGroup(classes: Readonly<Record<string, number>>, kinds: Readonly<Record<string, string>>): Readonly<Record<ReworkGroup, number>> {
+  const out: Record<ReworkGroup, number> = { review: 0, gate: 0, conflict: 0, refused: 0, other: 0 };
+  for (const [label, count] of Object.entries(classes)) out[reworkGroupOf(label, kinds[label] ?? "unknown").id] += count;
+  return out;
 }

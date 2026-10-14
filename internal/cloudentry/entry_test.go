@@ -53,6 +53,9 @@ type fakeProvider struct {
 	membershipLists int
 	refreshes       int
 	refreshDelay    time.Duration
+	sharedSessions  bool
+	lastSession     string
+	refreshOrg      string
 	keysDown        bool
 	access          map[string]fakeAccess
 	refresh         map[string]string
@@ -122,7 +125,7 @@ func (p *fakeProvider) VerifyAccess(_ context.Context, token string) (auth.Hoste
 	return issued.access, nil
 }
 
-func (p *fakeProvider) RefreshAccess(_ context.Context, token string) (auth.HostedAccess, auth.HostedTokens, error) {
+func (p *fakeProvider) RefreshAccess(_ context.Context, token, organization string) (auth.HostedAccess, auth.HostedTokens, error) {
 	p.mu.Lock()
 	p.refreshes++
 	delay := p.refreshDelay
@@ -135,6 +138,13 @@ func (p *fakeProvider) RefreshAccess(_ context.Context, token string) (auth.Host
 	session, active := p.sessions[sessionID]
 	if !ok || !active {
 		return auth.HostedAccess{}, auth.HostedTokens{}, &auth.HostedIdentityError{Reason: auth.HostedReasonProviderRejected, Status: http.StatusBadRequest}
+	}
+	if organization != "" {
+		session.OrganizationID = organization
+		p.sessions[sessionID] = session
+	}
+	if p.refreshOrg != "" {
+		session.OrganizationID = p.refreshOrg
 	}
 	tokens := p.issueLocked(session)
 	return p.access[tokens.AccessToken].access, tokens, nil
@@ -187,6 +197,11 @@ func (p *fakeProvider) Exchange(_ context.Context, code, _, _ string) (auth.Iden
 	p.sequence++
 	now := time.Now().UTC().Truncate(time.Second)
 	hosted := auth.HostedIdentity{Subject: user, OrganizationID: organization, SessionID: "session_" + user + "_" + string(rune('a'+p.sequence)), CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour)}
+	if p.sharedSessions {
+		hosted = p.sessions[p.lastSession]
+		hosted.OrganizationID = organization
+	}
+	p.lastSession = hosted.SessionID
 	p.sessions[hosted.SessionID] = hosted
 	return auth.Identity{Subject: user, Email: email, EmailVerified: true, Hosted: &hosted, Tokens: p.issueLocked(hosted)}, nil
 }
@@ -1469,5 +1484,29 @@ func assertEntryFallback(t *testing.T, browser *browser, body string) {
 		if response, content := browser.get(asset); response.StatusCode != http.StatusOK || len(content) == 0 {
 			t.Fatalf("entry fallback asset %s = %d", asset, response.StatusCode)
 		}
+	}
+}
+
+func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	for _, test := range []struct {
+		name, target, cache string
+	}{
+		{name: "tenant static asset", target: "/organizations/org_alpha/static/fonts/Geist-Variable.woff2", cache: "no-cache"},
+		{name: "tenant page", target: "/organizations/org_alpha/organization", cache: "no-store"},
+		{name: "missing tenant static asset", target: "/organizations/org_alpha/static/fonts/absent.woff2", cache: "no-store"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, _ := alice.get(test.target)
+			if got := response.Header.Get("Cache-Control"); got != test.cache {
+				t.Fatalf("GET %s Cache-Control = %q (status %d), want %q", test.target, got, response.StatusCode, test.cache)
+			}
+			if policy := response.Header.Get("Content-Security-Policy"); policy != contentSecurity {
+				t.Fatalf("GET %s content security = %q", test.target, policy)
+			}
+		})
 	}
 }

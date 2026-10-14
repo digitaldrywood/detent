@@ -49,6 +49,7 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  * redirect through `/auth/oidc/start` rather than a state change here.
  */
 export const BootstrapOrganization = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   public_url: Schema.String,
@@ -87,7 +88,14 @@ export type WorkflowState = typeof WorkflowState.Type;
  * own `BootstrapProject` fields (`labels`, `priorities`, `coordinator`) stay
  * optional here so one payload satisfies both schemas.
  */
+export const ReporterTemplates = Schema.Struct({
+  bug: Schema.Array(Schema.String),
+  change_request: Schema.Array(Schema.String),
+});
+export type ReporterTemplates = typeof ReporterTemplates.Type;
+
 export const AccountProject = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   profile: Schema.String,
@@ -169,6 +177,7 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  */
 export const AccountBootstrap = Schema.Struct({
   organization: Schema.Struct({
+    slug: Schema.optional(Schema.String),
     id: Schema.String,
     name: Schema.String,
     public_url: Schema.optional(Schema.String),
@@ -264,6 +273,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),
   archive_cancelled_after_days: Schema.NullOr(Schema.Number),
   workflow_source: Schema.optional(Schema.String),

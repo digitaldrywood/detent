@@ -16,6 +16,7 @@ func TestCriterionEvidence(t *testing.T) {
 		findings   int
 		receiptIDs []string
 		edit       func(*ValidatorResult)
+		tree       *string
 	}{
 		{name: "missing map", gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "named tests", entries: []CriterionEvidence{
@@ -33,11 +34,39 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "wrong head", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "old", TreeSHA: "tree", Behavior: "Malformed input returns an error"}}, commands: []CommandResult{{Command: "make check", HeadSHA: "old", TreeSHA: "tree"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "wrong tree", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "head", TreeSHA: "other", Behavior: "Malformed input returns an error"}}, commands: []CommandResult{{Command: "make check", HeadSHA: "head", TreeSHA: "other"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "multiple bound receipts", receiptIDs: []string{"timing_app", "timing_browser"}, gaps: []string{"Return valid input"}},
+		{name: "copied receipt head typo", receiptIDs: []string{"timing_26cbfc84de51aae37078d2e3e5c4f5ed"}, tree: new("7c0cf6c077149f9d6057ca0b18260d117866efa6"), edit: func(r *ValidatorResult) {
+			r.HeadSHA = "2c5b9460fc991683634196fd8e4fb9d62b99d39c"
+			r.Commands = []CommandResult{{ReceiptID: "timing_26cbfc84de51aae37078d2e3e5c4f5ed", Command: "make check-land", ExitCode: 0, DurationNS: 188051296208, HeadSHA: r.HeadSHA, TreeSHA: "7c0cf6c077149f9d6057ca0b18260d117866efa6"}}
+			r.CriteriaEvidence[0].Reference = "make check-land"
+			r.CriteriaEvidence[0].HeadSHA = "2c5b9460fc991683196fd8e4fb9d62b99d39c"
+			r.CriteriaEvidence[0].TreeSHA = "7c0cf6c077149f9d6057ca0b18260d117866efa6"
+		}, gaps: []string{"Return valid input"}},
+		{name: "omitted receipt source identity", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].HeadSHA = ""
+			r.CriteriaEvidence[0].TreeSHA = ""
+		}, gaps: []string{"Return valid input"}},
+		{name: "copied receipt tree typo", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].TreeSHA = "typo" }, gaps: []string{"Return valid input"}},
+		{name: "missing reviewed head", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.HeadSHA = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "unknown reviewed head", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.HeadSHA = "unknown" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "host receipts supply missing finalization tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].HeadSHA = "typo"
+			r.CriteriaEvidence[0].TreeSHA = "typo"
+		}, gaps: []string{"Return valid input"}},
+		{name: "missing trustworthy tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) {
+			for i := range r.Commands {
+				r.Commands[i].TreeSHA = ""
+			}
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "inconsistent trees without finalization", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) { r.Commands[1].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "foreign head without finalization", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new(""), edit: func(r *ValidatorResult) { r.Commands[1].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "unknown expected tree", receiptIDs: []string{"timing_app", "timing_browser"}, tree: new("unknown"), gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "missing selected receipt", receiptIDs: []string{"timing_app", "missing"}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "duplicate selected receipt", receiptIDs: []string{"timing_app", "timing_app"}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "empty selected receipt", receiptIDs: []string{"timing_app", ""}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "blank selected receipt", receiptIDs: []string{"timing_app", " "}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "ambiguous receipt ID", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands = append(r.Commands, r.Commands[0]) }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "failed selected receipt", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].ExitCode = 1 }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "empty selected command", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].Command = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "selected receipt wrong head", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "selected receipt wrong tree", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.Commands[1].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "receipt IDs retain expected tree binding", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) {
@@ -47,9 +76,17 @@ func TestCriterionEvidence(t *testing.T) {
 			}
 		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "receipt IDs require behavior", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Behavior = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "receipt IDs require reference", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Reference = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "explicit not verified preserves gap", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Kind = EvidenceNotVerified }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "receipt IDs reject restated implementation", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].RestatesImplementation = true }, gaps: []string{"Reject invalid input", "Return valid input"}, findings: 1},
 		{name: "invalid ID cannot fall back to exact command", receiptIDs: []string{"missing"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].Reference = r.Commands[0].Command }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "legacy combined command is not split", receiptIDs: []string{"timing_app", "timing_browser"}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].ReceiptIDs = nil }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "legacy receipt requires copied identity", receiptIDs: []string{"timing_app"}, edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].ReceiptIDs = nil
+			r.CriteriaEvidence[0].Reference = r.Commands[0].Command
+			r.CriteriaEvidence[0].HeadSHA = ""
+			r.CriteriaEvidence[0].TreeSHA = ""
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 
 		{name: "observed attachment", edit: func(r *ValidatorResult) {
 			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "invalid-input.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "The capture shows the error beside the invalid field"}}
@@ -71,9 +108,20 @@ func TestCriterionEvidence(t *testing.T) {
 			if test.edit != nil {
 				test.edit(&result)
 			}
-			NormalizeCriterionEvidence(&result, []string{"Reject invalid input", "Return valid input"}, "tree")
+			tree := "tree"
+			if test.tree != nil {
+				tree = *test.tree
+			}
+			NormalizeCriterionEvidence(&result, []string{"Reject invalid input", "Return valid input"}, tree)
 			if len(result.CriteriaEvidence) != 2 || result.CriteriaEvidence[0].Criterion != "Reject invalid input" || result.CriteriaEvidence[1].Criterion != "Return valid input" || !reflect.DeepEqual(result.NotVerified, test.gaps) || len(result.Findings) != test.findings {
 				t.Fatalf("normalized evidence = %+v", result)
+			}
+			wantTree := tree
+			if wantTree == "" {
+				wantTree = "tree"
+			}
+			if entry := result.CriteriaEvidence[0]; entry.Kind == EvidenceReceipt && (entry.HeadSHA != result.HeadSHA || entry.TreeSHA != wantTree) {
+				t.Fatalf("normalized receipt identity = %+v, want head %q and tree %q", entry, result.HeadSHA, wantTree)
 			}
 		})
 	}

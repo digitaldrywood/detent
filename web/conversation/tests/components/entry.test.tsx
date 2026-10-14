@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 const listing = {
-  email: "dana@example.test",
+  email: "member@example.test",
   csrf: "csrf-token",
   organizations: [{ id: "org_a", name: "Alpha", url: "/organizations/org_a/organization" }],
   pending: [{ id: "org_b", name: "Beta", url: "/organizations/org_b/provisioning", state: "failed" }],
@@ -59,11 +59,12 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
     createOrganization: vi.fn(async () => ({ next: "/organizations/org_new/provisioning" })),
     resume: vi.fn(async () => ({ next: "/organizations/org_b/provisioning" })),
     platformTenant: vi.fn(async () => { throw new Error("Tenant not requested"); }),
+    adjustPlatformAICredits: vi.fn(async () => ({ organization_id: "org_alpha", balance_micros: 0 })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
     platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => ({ email: "", csrf: "", can_support: false, organizations: [], unavailable: [] })),
     platformAllowlist: vi.fn(async () => ({ self_service: false, allowed_emails: [], allowed_domains: [], source: { file: "", keys: [] } })),
-    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
+    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@example.com", role: "admin" } })),
     changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
     platformAudit: vi.fn(async () => ({ rows: [], events: [], tenants: [], next_cursor: "" })),
     platformHealth: vi.fn(async () => ({ registry: { ok: true } })),
@@ -89,7 +90,7 @@ describe("organization chooser", () => {
     expect(screen.getByRole("link", { name: "Beta" }).getAttribute("href")).toBe("/organizations/org_b/provisioning");
     expect(screen.getByRole("link", { name: "Create organization" }).getAttribute("href")).toBe("/organizations/new");
     expect(screen.getByText("You belong to 1 organization. 1 is being set up.")).toBeTruthy();
-    expect(screen.getByText("Signed in as dana@example.test")).toBeTruthy();
+    expect(screen.getByText("Signed in as member@example.test")).toBeTruthy();
     const signOut = screen.getByRole("button", { name: "Sign out" }).closest("form");
     expect(signOut?.getAttribute("action")).toBe("/logout");
     expect((signOut?.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("csrf-token");

@@ -397,3 +397,34 @@ func (r nativeWebTransport) RoundTrip(request *http.Request) (*http.Response, er
 	r.handler.ServeHTTP(response, request)
 	return response.Result(), nil
 }
+
+func TestNativeWorkListProxiesOnlyExplicitCreators(t *testing.T) {
+	t.Parallel()
+	server, fixture := newNativeWebServer(t)
+	for _, tt := range []struct {
+		name, args string
+		status     int
+		createdBy  string
+	}{
+		{"me is refused before the Hub sees it", `{"project_id":"native","created_by":"me"}`, 400, ""},
+		{"explicit principal proxies through", `{"project_id":"native","created_by":"hosted_alice"}`, 200, "hosted_alice"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture.mu.Lock()
+			fixture.last = nil
+			fixture.mu.Unlock()
+			res := performJSON(t, server.Handler(), http.MethodPost, "/api/v1/operator-tools/work_list", tt.args, map[string]string{"Authorization": "Bearer " + fixture.keys["readnative"]})
+			if res.Code != tt.status {
+				t.Fatalf("status %d, want %d: %s", res.Code, tt.status, res.Body)
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if tt.createdBy == "" && fixture.last != nil {
+				t.Fatalf("request reached the Hub: %v", fixture.last)
+			}
+			if tt.createdBy != "" && fixture.last["created_by"] != tt.createdBy {
+				t.Fatalf("proxied created_by=%q, want %q", fixture.last["created_by"], tt.createdBy)
+			}
+		})
+	}
+}

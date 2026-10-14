@@ -60,7 +60,9 @@ func runnerUpdateConflict(revision int64, message string) error {
 }
 
 func (s *Service) readRunnerUpdate(ctx context.Context, scope nativeScope, resource string) (any, error) {
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

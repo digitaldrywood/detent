@@ -184,23 +184,57 @@ const OWNER_ACCOUNT = {
   account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 };
 
+describe("issue notification preference", () => {
+  it.each([false, true])("loads the saved preference (%s) and persists a toggle", async (enabled) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("issue-notification-preference")) {
+        return new Response(JSON.stringify({ enabled: init?.method === "PUT" ? !enabled : enabled }));
+      }
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Notify me about issues I filed or commented on" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(enabled)));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(!enabled)));
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("issue-notification-preference") && init?.method === "PUT" && init.body === JSON.stringify({ enabled: !enabled }) && (init.headers as Record<string, string>)["X-CSRF-Token"] === accountFixture.csrf_token)).toBe(true);
+  });
+
+  it("keeps the saved preference and shows a failed save", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("issue-notification-preference")) {
+        return init?.method === "PUT"
+          ? new Response(JSON.stringify({ code: "unavailable", message: "Notification preference could not be saved" }), { status: 503 })
+          : new Response(JSON.stringify({ enabled: true }));
+      }
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Notify me about issues I filed or commented on" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(toggle);
+    await screen.findByText("Notification preference could not be saved");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
 describe("MCP setup", () => {
   const account = accountFixture as unknown as AccountBootstrap;
 
   it.each([
-    ["dedicated", "", "https://threefold.detent.cloud/", "https://threefold.detent.cloud/mcp"],
-    ["shared origin", "/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["shared entry", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["shared trailing slash", "/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["mounted public URL without runtime mount", "", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["another organization's URL", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
-    ["another organization's URL without runtime mount", "", "https://app.detent.cloud/organizations/org_parable", null],
-    ["another organization's mount", "/organizations/org_parable", "https://app.detent.cloud", null],
-    ["conflicting public path", "/organizations/org_threefold", "https://app.detent.cloud/projects/proj_parable", null],
-    ["HTTP", "", "http://threefold.detent.cloud", null],
-    ["credentials in URL", "/organizations/org_threefold", "https://user:secret@threefold.detent.cloud", null],
-    ["query credential", "/organizations/org_threefold", "https://threefold.detent.cloud?token=secret", null],
-    ["fragment", "/organizations/org_threefold", "https://threefold.detent.cloud#secret", null],
+    ["dedicated", "", "https://organization.example.com/", "https://organization.example.com/mcp"],
+    ["shared origin", "/organizations/org_example", "https://app.example.org", "https://app.example.org/organizations/org_example/mcp"],
+    ["shared entry", "/organizations/org_example", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
+    ["shared trailing slash", "/organizations/org_example/", "https://app.example.org/organizations/org_example/", "https://app.example.org/organizations/org_example/mcp"],
+    ["mounted public URL without runtime mount", "", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
+    ["another organization's URL", "/organizations/org_example", "https://app.example.org/organizations/org_secondary_example", null],
+    ["another organization's URL without runtime mount", "", "https://app.example.org/organizations/org_secondary_example", null],
+    ["another organization's mount", "/organizations/org_secondary_example", "https://app.example.org", null],
+    ["conflicting public path", "/organizations/org_example", "https://app.example.org/projects/proj_example_project", null],
+    ["HTTP", "", "http://organization.example.com", null],
+    ["credentials in URL", "/organizations/org_example", "https://user:secret@organization.example.com", null],
+    ["query credential", "/organizations/org_example", "https://organization.example.com?token=secret", null],
+    ["fragment", "/organizations/org_example", "https://organization.example.com#secret", null],
     ["malformed", "", "not a URL", null],
   ])("uses only a safe canonical %s organization endpoint", (_name, mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
@@ -209,16 +243,16 @@ describe("MCP setup", () => {
   });
 
   it("matches the active organization's identity rather than another directory entry", () => {
-    expect(organizationMCPEndpoint({ ...account, organizations: [...account.organizations].reverse() })).toBe("https://threefold.detent.cloud/mcp");
+    expect(organizationMCPEndpoint({ ...account, organizations: [...account.organizations].reverse() })).toBe("https://organization.example.com/mcp");
     expect(organizationMCPEndpoint({ ...account, organization: { id: "org_unknown", name: "Unknown" } })).toBeNull();
     expect(organizationMCPEndpoint(null)).toBeNull();
   });
 
   it.each([
-    ["", "https://threefold.detent.cloud", "https://threefold.detent.cloud/mcp"],
-    ["/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
+    ["", "https://organization.example.com", "https://organization.example.com/mcp"],
+    ["/organizations/org_example", "https://app.example.org", "https://app.example.org/organizations/org_example/mcp"],
+    ["/organizations/org_example", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
+    ["/organizations/org_example", "https://app.example.org/organizations/org_secondary_example", null],
   ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples using shared key metadata", async (mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -231,7 +265,7 @@ describe("MCP setup", () => {
       csrf_token: "private-csrf-credential",
       token: "private-api-credential",
     };
-    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     if (mount) {
       await screen.findByText("Manage your keys in account settings");
       expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
@@ -410,7 +444,7 @@ describe("MCP setup", () => {
   it("offers manual copying when clipboard access fails", async () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     vi.spyOn(console, "error").mockImplementation(() => {});
-    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Copy MCP endpoint" })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
     await waitFor(() => expect(screen.getByRole("status", { name: "MCP endpoint copy status" }).textContent).toContain("Select the text"));
@@ -638,7 +672,7 @@ describe("the rows a section is built from", () => {
   it("draws the grouped card with its heading and its header action", () => {
     render(
       <SettingsSection title="Projects" headerAction={<button type="button">New project</button>}>
-        <SettingsRow title="parable" description="native · 5 workflow states" status="Set up" />
+        <SettingsRow title="example-project" description="native · 5 workflow states" status="Set up" />
       </SettingsSection>,
     );
     expect(screen.getByRole("heading", { name: "Projects" })).toBeTruthy();

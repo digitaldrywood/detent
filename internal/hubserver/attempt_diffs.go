@@ -387,17 +387,19 @@ func (s *Service) getAttemptDiff(c echo.Context) error {
 }
 
 func (s *Service) readAttemptDiff(ctx context.Context, scope nativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
-	record, err := readAttemptDiffGeneration(ctx, s.database.db, scope, attemptID, source, seq)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	record, err := readAttemptDiffGeneration(ctx, s.database.reader, scope, attemptID, source, seq)
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}
 	if item != "" && record.WorkItemID != item {
 		return tracker.AttemptDiff{}, nativeNotFound()
 	}
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, record.WorkItemID); err != nil {
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, record.WorkItemID); err != nil {
 		return tracker.AttemptDiff{}, err
 	}
-	files, err := readAttemptDiffFiles(ctx, s.database.db, record.ID)
+	files, err := readAttemptDiffFiles(ctx, s.database.reader, record.ID)
 	if err != nil {
 		return tracker.AttemptDiff{}, err
 	}
@@ -429,11 +431,13 @@ func (s *Service) getWorkItemDiff(c echo.Context) error {
 }
 
 func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item, source string) (tracker.WorkItemDiff, error) {
-	issue, _, err := readNativeIssue(ctx, s.database.db, scope, item)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
 	if err != nil {
 		return tracker.WorkItemDiff{}, err
 	}
-	record, err := readWorkItemDiffGeneration(ctx, s.database.db, scope, string(issue.WorkItemID), source)
+	record, err := readWorkItemDiffGeneration(ctx, s.database.reader, scope, string(issue.WorkItemID), source)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tracker.WorkItemDiff{}, nil
 	}

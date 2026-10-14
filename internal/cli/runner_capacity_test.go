@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -326,4 +328,75 @@ func capacityConfigContent(t *testing.T, cfg globalconfig.Config) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+func TestRunnerStorageConstraint(t *testing.T) {
+	for _, tt := range []struct {
+		name                     string
+		bytes                    int
+		cacheFree, workspaceFree uint64
+		probeError               bool
+		want                     string
+	}{
+		{name: "below target", bytes: 100, cacheFree: 50 << 30, workspaceFree: 50 << 30},
+		{name: "recent cache growth", bytes: 2048, cacheFree: 50 << 30, workspaceFree: 50 << 30},
+		{name: "cache disk pressure", bytes: 100, cacheFree: 1 << 30, workspaceFree: 50 << 30, want: "reserve"},
+		{name: "workspace disk pressure", bytes: 100, cacheFree: 50 << 30, workspaceFree: 1 << 30, want: "reserve"},
+		{name: "disk observation failed", bytes: 100, probeError: true, want: "unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root, workspace := t.TempDir(), t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			entry := filepath.Join(root, "00", strings.Repeat("0", 64)+"-d")
+			contents := []byte(strings.Repeat("x", tt.bytes))
+			if err := os.WriteFile(entry, contents, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+			if err := os.Chtimes(entry, now, now); err != nil {
+				t.Fatal(err)
+			}
+			policy := toolcache.Policy{MaxBytes: 1024}
+			if _, err := toolcache.TrimWithReport(t.Context(), root, policy, now); err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Config{WorkspaceRoot: workspace}
+			cfg.Global.Cache = policy
+			paths := toolcache.Paths{Build: root}
+			probe := func(path string) (uint64, uint64, error) {
+				if tt.probeError {
+					return 0, 0, errors.New("unavailable")
+				}
+				free := tt.cacheFree
+				if path == workspace {
+					free = tt.workspaceFree
+				}
+				return free, 1 << 40, nil
+			}
+			got := runnerStorageConstraintForPaths(cfg, paths, probe)
+			if (tt.want == "" && got != "") || (tt.want != "" && !strings.Contains(got, tt.want)) {
+				t.Fatalf("constraint=%q want %q", got, tt.want)
+			}
+			retained, err := os.ReadFile(entry)
+			if err != nil || string(retained) != string(contents) {
+				t.Fatalf("recent output was changed: %v", err)
+			}
+			if tt.name == "recent cache growth" {
+				if _, err := toolcache.TrimWithReport(t.Context(), root, policy, now.Add(49*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(entry); !os.IsNotExist(err) {
+					t.Fatalf("old output was not safely expired: %v", err)
+				}
+				if got := runnerStorageConstraintForPaths(cfg, paths, probe); got != "" {
+					t.Fatalf("capacity did not recover after safe expiry: %s", got)
+				}
+			}
+		})
+	}
 }

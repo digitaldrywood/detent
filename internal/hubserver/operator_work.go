@@ -48,7 +48,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
-		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem:
+		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem, operatortool.VerifyFix:
 			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
@@ -175,7 +175,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			if definition.Annotations.ReadOnly {
 				resolve = e.service.resolveOperatorNativeReadItem
 			}
-			item, resolveErr := resolve(ctx, e.service.database.db, scope, request.Identifier)
+			item, resolveErr := resolve(ctx, e.service.database.reader, scope, request.Identifier)
 			if resolveErr != nil {
 				if definition.Annotations.ReadOnly {
 					return operatortool.Result{}, safeWorkReadError(resolveErr)
@@ -188,7 +188,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
 			}
 			if request.Related != "" && !strings.HasPrefix(request.Related, "wi_") {
-				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Related)
+				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Related)
 				if resolveErr != nil {
 					return operatortool.Result{}, hubSafeChangeError(resolveErr)
 				}
@@ -226,7 +226,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			priority = &level
 		}
-		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
+		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, ChallengeToken: create.ChallengeToken, NotDuplicateOf: create.NotDuplicateOf, Type: create.Type, ReportContext: create.ReportContext, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
 	} else if operatortool.IsWorkTool(call.Name) {
 		metadata.ResourceID = request.Identifier
 		if definition.Annotations.ReadOnly {

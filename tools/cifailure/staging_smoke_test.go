@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -194,8 +195,19 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 		gaps, failure, emptyFixtures, automaticIntake bool
 		readFailure                                   string
 		unconfirmed                                   bool
+		triageFirst                                   bool
+		challenge                                     string
 	}{
 		{name: "approved policy"},
+		{name: "prior smoke duplicate", challenge: "valid"},
+		{name: "dependency duplicate", challenge: "dependency"},
+		{name: "live dependency duplicate", challenge: "live dependency", failure: true},
+		{name: "missing duplicate token", challenge: "missing token", failure: true},
+		{name: "invalid duplicate number", challenge: "invalid number", failure: true},
+		{name: "unrelated duplicate", challenge: "unrelated", failure: true},
+		{name: "confirmation refused", challenge: "refused", failure: true},
+		{name: "confirmation still challenged", challenge: "repeated", failure: true},
+		{name: "reserved Triage first", triageFirst: true},
 		{name: "service smoke key", unconfirmed: true, failure: true},
 		{name: "automatic native intake", automaticIntake: true},
 		{name: "unprovisioned fixtures", emptyFixtures: true},
@@ -217,6 +229,7 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			integrationRevision := int64(1)
 			archived := false
 			calls := map[string]int{}
+			var filing map[string]any
 			m := &cloudMCP{endpoint: "https://example.test/mcp", diagnostic: true, tools: map[string]operatortool.Definition{}}
 			for _, definition := range operatortool.Registry() {
 				if slices.Contains(smokeWrites, definition.Name) || slices.Contains(fixtureReads, definition.Name) || slices.Contains([]string{"list_projects", "get_project_integration", operatortool.WorkList, operatortool.WorkItem, operatortool.RunnerFleet, operatortool.GetRunnerRouting, operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata}, definition.Name) {
@@ -243,12 +256,69 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				isError := false
 				switch name {
 				case "list_projects":
-					result["data"] = map[string]any{"projects": []map[string]any{{"project_id": "prj_smoke", "organization_id": "org_smoke", "profile": "native", "states": []map[string]any{{"name": "Backlog", "transitions": []string{"Blocked"}}, {"name": "Blocked", "transitions": []string{"Cancelled"}}, {"name": "Cancelled", "terminal": true}}}}}
+					states := []map[string]any{{"name": "Backlog", "transitions": []string{"Blocked"}}, {"name": "Blocked", "transitions": []string{"Cancelled"}}, {"name": "Cancelled", "terminal": true}, {"name": "Done", "terminal": true}}
+					if test.triageFirst {
+						states = append([]map[string]any{{"name": "Triage", "transitions": []string{"Backlog", "Cancelled"}}}, states...)
+					}
+					result["data"] = map[string]any{"projects": []map[string]any{{"project_id": "prj_smoke", "organization_id": "org_smoke", "profile": "native", "states": states}}}
 				case operatortool.WorkList:
 					result["data"] = map[string]any{"items": []map[string]any{{"work_item_id": "wi_dependency"}}}
+					if test.challenge == "dependency" || test.challenge == "live dependency" {
+						result = map[string]any{}
+					}
 				case operatortool.FileIssue:
+					if args["state"] == "Triage" {
+						t.Logf("ordinary file_issue request: %v; valid direct-create transition is Backlog -> Blocked", args)
+						isError = true
+						result = map[string]any{"code": "invalid_request", "message": "Triage is reserved for linked GitHub issue intake"}
+						break
+					}
+					if args["project_id"] != "prj_smoke" || args["state"] != "Backlog" {
+						t.Fatalf("wrong direct-create scope or state: %v", args)
+					}
+					if test.challenge != "" && calls[name] <= 2 {
+						if calls[name] == 1 {
+							filing = args
+						} else {
+							if args["challenge_token"] != "dup_fixture" || !reflect.DeepEqual(args["not_duplicate_of"], []any{float64(77), float64(78)}) {
+								t.Fatalf("wrong duplicate confirmation: %v", args)
+							}
+							delete(args, "challenge_token")
+							delete(args, "not_duplicate_of")
+							if !reflect.DeepEqual(args, filing) || args["request_id"] == "" {
+								t.Fatalf("confirmation changed request identity or content: %v != %v", args, filing)
+							}
+							if test.challenge == "refused" {
+								isError = true
+								result = map[string]any{"code": "access_denied", "message": "confirmation denied"}
+								break
+							}
+						}
+						if calls[name] == 1 || test.challenge == "repeated" {
+							token, title, number := "dup_fixture", "MCP staging smoke edited prior-run", 77
+							switch test.challenge {
+							case "missing token":
+								token = ""
+							case "invalid number":
+								number = 0
+							case "unrelated":
+								title = "Customer production incident"
+							case "dependency", "live dependency":
+								title = "MCP smoke dependency"
+							}
+							state := "Done"
+							if test.challenge == "live dependency" {
+								state = "Backlog"
+							}
+							result = map[string]any{"resource_id": "", "data": map[string]any{"challenge_token": token, "possible_duplicates": []map[string]any{{"number": number, "title": title, "state": state, "work_item_id": "wi_prior_smoke"}, {"number": 78, "title": title, "state": "Done", "work_item_id": "wi_older_smoke"}}}}
+							break
+						}
+					}
 					revision = 1
 					result = map[string]any{"resource_id": "wi_smoke", "revision": "1"}
+					if (test.challenge == "dependency" || test.challenge == "live dependency") && calls[name] == 2 {
+						result["resource_id"] = "wi_dependency"
+					}
 				case operatortool.AddComment:
 					commentRevision = 1
 					result = map[string]any{"comment_id": "cmt_smoke", "revision": "1"}
@@ -270,6 +340,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 					revision++
 					result["revision"] = strconv.FormatInt(revision, 10)
 				case operatortool.EditItem, operatortool.SetDependency, operatortool.MoveItem, operatortool.ArchiveItem, operatortool.RestoreItem:
+					if name == operatortool.MoveItem && calls[name] == 1 && args["target_state"] != "Blocked" {
+						t.Fatalf("wrong smoke transition: %v", args)
+					}
 					if args["expected_revision"] != strconv.FormatInt(revision, 10) {
 						t.Fatalf("%s stale/wrong wire revision: %v, current=%d", name, args, revision)
 					}
@@ -430,6 +503,9 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 			s := &mcpSmoke{mcp: m, output: &output, fixtures: map[string]any{}, called: map[string]bool{}, prefix: "test"}
 			if err := s.run(t.Context()); test.failure {
 				failedTool := "get_project_policy"
+				if test.challenge != "" {
+					failedTool = operatortool.FileIssue
+				}
 				if test.readFailure != "" {
 					failedTool = test.readFailure
 				}
@@ -438,6 +514,16 @@ func TestStagingSmokeWriteCycle(t *testing.T) {
 				}
 				if err == nil || !strings.Contains(err.Error(), failedTool) {
 					t.Fatalf("unexpected smoke verdict: %v", err)
+				}
+				if test.challenge != "" {
+					wantCalls := 1
+					if test.challenge == "refused" || test.challenge == "repeated" {
+						wantCalls = 2
+					}
+					if calls[operatortool.FileIssue] != wantCalls || calls[operatortool.EditItem] != 0 {
+						t.Fatalf("unsafe duplicate continuation: %v", calls)
+					}
+					return
 				}
 			} else if err != nil {
 				t.Fatal(err, output.String())

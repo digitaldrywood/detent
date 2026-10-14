@@ -24,10 +24,12 @@ if name == "make":
         if "build" in args:
             Path("browser-build-args").write_text(json.dumps(args))
             sys.exit(0)
-        os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
-    if "test" not in args and "test-race" not in args:
+        if "check-app" not in args:
+            os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
+    elif "test" not in args and "test-race" not in args:
         sys.exit(0)
-    os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
+    else:
+        os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
 if name == "python3":
     if args[:1] == ["-m"]:
         sys.exit(0)
@@ -35,9 +37,7 @@ if name == "python3":
 if name == "playwright":
     with open("browser-args", "a") as output:
         output.write(json.dumps(args) + "\n")
-    if args[0] == "test" and os.environ.get("PROBE_FAILURE") == "browser":
-        sys.exit("deliberate tests/visual/cloud-reports.spec.js failure")
-    sys.exit(0)
+    sys.exit("browser journeys must not run in the source gate")
 if name == "git":
     if args[0] == "merge-base":
         print("base")
@@ -57,7 +57,10 @@ if args[:1] == ["list"]:
     sys.exit(0)
 if args[:2] == ["tool", "cover"] or "./tools/covermerge" in args:
     sys.exit(0)
-if name == "lint":
+if name == "make":
+    stage = "app"
+    budget = int(os.environ["GOMAXPROCS"])
+elif name == "lint":
     stage = "lint"
     budget = int(next(arg.split("=")[1] for arg in args if arg.startswith("--concurrency=")))
 elif args[0] in ("build", "vet", "test"):
@@ -98,38 +101,40 @@ class LandingGateTest(unittest.TestCase):
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
-        cases = [("check-land", budget, failure) for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"))]
-        cases += [(target, 4, "") for target in ("test", "test-fast", "test-race", "test-cover")]
-        cases += [("check-land", 4, "browser"), ("check-land", 4, "browser-pass")]
-        for target, budget, failure in cases:
-            with self.subTest(target=target, budget=budget, failure=failure), tempfile.TemporaryDirectory(dir=scratch) as directory:
+        cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
+        cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
+        shared_ui = "web/conversation/src/app/App.tsx"
+        cases += [("check-land", 4, "", path) for path in (shared_ui, "web/conversation/src/app/main.tsx", "web/conversation/src/app/router.tsx", "web/conversation/src/components/ui/button.tsx", "tests/visual/cloud-reports.spec.js")]
+        cases += [("check-land", 4, failure, shared_ui) for failure in ("app", "lint", "unit-short")]
+        for target, budget, failure, changed in cases:
+            with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/affected_browser.py", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
                     shutil.copy2(ROOT / name, root / name)
                 for name in ("go", "git", "lint"):
                     path = root / name
                     path.write_text(TOOL)
                     path.chmod(0o700)
-                browser = failure in ("browser", "browser-pass")
-                if failure == "browser-pass":
+                app_changed = changed.startswith("web/conversation/")
+                if app_changed:
                     (root / "app-changed").touch()
-                if browser:
-                    for name in ("make", "node_modules/.bin/playwright"):
-                        path = root / name
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_text(TOOL)
-                        path.chmod(0o700)
+                (root / "tests/visual").mkdir(parents=True)
+                (root / "tests/visual/cloud-reports.spec.js").touch()
+                for name in ("make", "node_modules/.bin/playwright"):
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(TOOL)
+                    path.chmod(0o700)
                 env = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
                 env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable)
-                if browser:
-                    env["PROBE_CHANGED"] = "web/conversation/src/app/reports/ReportsPage.tsx"
-                failed = bool(failure) and failure != "browser-pass"
+                env["PROBE_CHANGED"] = changed
+                failed = bool(failure)
                 result = subprocess.run([env["PROBE_MAKE"], target, f"TEST_PROCS={budget}", f"GOLANGCI_LINT={root / 'lint'}"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
                 events = [json.loads(line) for line in (root / "trace").read_text().splitlines()]
                 tests = [event for event in events if event["action"] == "start" and event["stage"] in ("unit-short", "invariants")]
-                if failure not in ("docs", "sqlc"):
+                if failure not in ("app", "docs", "sqlc"):
                     self.assertTrue(tests)
                 for event in tests:
                     self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover"), event)
@@ -137,6 +142,14 @@ class LandingGateTest(unittest.TestCase):
                     continue
                 self.assertEqual("Landing checks passed." in result.stdout, not failed)
                 starts = [event["stage"] for event in events if event["action"] == "start"]
+                self.assertFalse((root / "browser-args").exists())
+                self.assertFalse((root / "browser-build-args").exists())
+                if app_changed:
+                    self.assertEqual(starts.pop(0), "app")
+                if failure == "app":
+                    self.assertEqual(starts, [])
+                    self.assertIn("deliberate app failure", result.stderr)
+                    continue
                 self.assertEqual(starts.count("docs"), 1)
                 if failure in ("docs", "sqlc"):
                     self.assertFalse(set(starts) & {"lint", "vet", "build", "unit-short"})
@@ -154,32 +167,19 @@ class LandingGateTest(unittest.TestCase):
                         del active[event["stage"]]
                 self.assertFalse(active)
                 self.assertEqual(set(starts[2:6]), {"lint", "vet", "build", "unit-short"})
-                if browser:
-                    self.assertEqual(starts[6:], ["invariant-manifest", "invariants", "migrations", "compile", "compile", "compile"])
-                    args = [json.loads(line) for line in (root / "browser-args").read_text().splitlines()]
-                    self.assertEqual(args[-1], ["test", "--workers=4", "--retries=0", "tests/visual/cloud-reports.spec.js"])
-                    self.assertIn("tests/visual/cloud-reports.spec.js", result.stdout + result.stderr)
-                    self.assertIn("Affected browser specs finished:", result.stdout)
-                    build_args = json.loads((root / "browser-build-args").read_text())
-                    self.assertEqual(build_args, (["-o", "app"] if failure == "browser-pass" else []) + ["build", "TEST_PROCS=4"])
+                tail = ["invariant-manifest", "invariants", "migrations"]
+                if failure in tail:
+                    tail = tail[:tail.index(failure) + 1]
                 elif failure:
-                    self.assertNotIn("invariants", starts)
-                else:
-                    self.assertEqual(starts[6:], ["invariant-manifest", "invariants", "migrations"])
-                    self.assertFalse((root / "browser-args").exists())
-                    self.assertIn("UI sources unchanged; skipping browser specs.", result.stdout)
+                    tail = []
+                self.assertEqual(starts[6:], tail)
                 self.assertNotIn("npm", result.stdout)
                 self.assertNotIn("nilaway", result.stdout)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
                 expected_scopes = {"generated", "lint", "vet", "build", "unit-short"}
-                if not failed or browser:
-                    expected_scopes.update(("invariant-manifest", "invariants", "migrations"))
-                elif failure == "invariant-manifest":
-                    expected_scopes.add("invariant-manifest")
-                if browser:
-                    expected_scopes.add("browser")
-                if failure == "browser-pass":
+                expected_scopes.update(tail)
+                if app_changed:
                     expected_scopes.add("app")
                 self.assertEqual({item["scope"] for item in evidence}, expected_scopes)
                 self.assertEqual(sum(item["exit_code"] != 0 for item in evidence), int(failed))

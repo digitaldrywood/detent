@@ -17,18 +17,20 @@ import (
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	e.GET("/", s.hostedLanding)
 	e.GET("/login", s.appShell)
 	e.GET("/auth/oidc/start", s.startHostedLogin)
 	e.GET("/auth/oidc/callback", s.completeHostedLogin)
 	e.GET("/invite", s.startHostedInvitation)
+	e.GET("/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.POST("/logout", s.logoutHosted)
 	e.POST("/support/start", s.startHostedSupport)
 	e.GET("/support", s.hostedSupportPage)
@@ -168,15 +170,18 @@ func (s *Service) hostedHome(c echo.Context) error {
 }
 
 func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data *templates.HostedPageData) error {
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	identity := credential.Hosted
 	if identity.SupportActor != "" {
 		data.SupportActor, data.SupportReason = identity.SupportActor, identity.SupportReason
 		data.SupportExpiry = identity.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT name FROM organizations WHERE id = ?", s.config.Hosted.OrganizationID).Scan(&data.OrganizationName); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT name FROM organizations WHERE id = ?", s.config.Hosted.OrganizationID).Scan(&data.OrganizationName); err != nil {
 		return err
 	}
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return err
 	}
@@ -199,7 +204,7 @@ func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data 
 	if !data.CanManage {
 		return nil
 	}
-	members, err := s.config.Hosted.Provider.Memberships(c.Request().Context(), "", identity.OrganizationID)
+	members, err := s.config.Hosted.Provider.Memberships(ctx, "", identity.OrganizationID)
 	if err != nil {
 		return err
 	}
@@ -223,7 +228,10 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	workspaceID := c.QueryParam("workspace")
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
-		if _, _, err := readNativeIssue(c.Request().Context(), s.database.db, initialScope, workItemID); err != nil {
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		_, _, err := readNativeIssue(readCtx, s.database.reader, initialScope, workItemID)
+		cancelRead()
+		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
@@ -276,21 +284,26 @@ func (s *Service) hostedEvents(c echo.Context) error {
 			return nil
 		}
 		if board {
-			tx, err := s.database.reader.BeginTx(c.Request().Context(), &sql.TxOptions{ReadOnly: true})
+			readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+			tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 			if err != nil {
+				cancelRead()
 				return nil
 			}
-			frame, err := readNativeBoardFrame(c.Request().Context(), tx, scope, boardSequence)
+			frame, err := readNativeBoardFrame(readCtx, tx, scope, boardSequence)
 			if err == nil {
-				frame.Work, err = readNativeBoardSummary(c.Request().Context(), tx, scope, c.QueryParams(), s.config.now())
+				frame.Work, err = readNativeBoardSummary(readCtx, tx, scope, c.QueryParams(), s.config.now())
 			}
 			if err != nil {
 				_ = tx.Rollback()
+				cancelRead()
 				return nil
 			}
 			if err := tx.Commit(); err != nil {
+				cancelRead()
 				return nil
 			}
+			cancelRead()
 			for i := range frame.Deltas {
 				if frame.Deltas[i].Current != nil {
 					frame.Deltas[i].Current.Issue = s.nativeIssueResponse(frame.Deltas[i].Current.Issue)
@@ -423,9 +436,11 @@ type hostedCostDrivers struct {
 }
 
 func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntitlement) (hostedCostDrivers, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	d := s.database
 	result := hostedCostDrivers{WindowEndsAt: entitlement.WindowEndsAt}
-	if err := d.db.QueryRowContext(ctx, `SELECT coalesce(sum(CASE WHEN i.archived=0 THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN i.archived=1 THEN 1 ELSE 0 END),0) FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.organization_id=? AND p.profile='native'`, d.hostedOrganization).Scan(&result.ActiveIssues, &result.ArchivedIssues); err != nil {
+	if err := d.reader.QueryRowContext(ctx, `SELECT coalesce(sum(CASE WHEN i.archived=0 THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN i.archived=1 THEN 1 ELSE 0 END),0) FROM issues i JOIN projects p ON p.id=i.project_id WHERE i.organization_id=? AND p.profile='native'`, d.hostedOrganization).Scan(&result.ActiveIssues, &result.ArchivedIssues); err != nil {
 		return result, err
 	}
 	for _, file := range []struct {
@@ -451,7 +466,7 @@ func (s *Service) hostedCostDrivers(ctx context.Context, entitlement HostedEntit
 		}
 	}
 	var artifacts int64
-	if err := d.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage WHERE observed_at > 0").Scan(&artifacts); err != nil {
+	if err := d.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_artifact_usage WHERE observed_at > 0").Scan(&artifacts); err != nil {
 		return result, err
 	}
 	if artifacts > 0 {
@@ -483,8 +498,10 @@ type hostedAccountSetup struct {
 }
 
 func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Session) (hostedAccountSetup, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var members int
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil {
 		return hostedAccountSetup{}, err
 	}
 	staff := s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == ""

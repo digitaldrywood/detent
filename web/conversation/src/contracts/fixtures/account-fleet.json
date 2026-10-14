@@ -5,8 +5,8 @@
       "editable": false,
       "can_convert_scope": false,
       "machine_id": "machine_macbook",
-      "display_name": "Michael's MacBook Pro",
-      "hostname": "michaels-macbook-pro.local",
+      "display_name": "Example laptop",
+      "hostname": "laptop.example.com",
       "health": "healthy",
       "connection_health": "online",
       "problems": [],
@@ -22,7 +22,7 @@
         {
           "provider": "codex",
           "backend": "codex",
-          "account_alias": "michael@threefold.solutions",
+          "account_alias": "owner@example.com",
           "models": [
             "gpt-6-astra",
             "gpt-5.6-sol"
@@ -37,7 +37,7 @@
         {
           "provider": "claude",
           "backend": "claude_code",
-          "account_alias": "threefold-max",
+          "account_alias": "example-max",
           "models": [
             "claude-fable-5-1",
             "claude-opus-5"
@@ -61,7 +61,7 @@
           "lease_id": "lease_7c1",
           "work_item_id": "wi_2093",
           "title": "connections: custom alerts from segment membership",
-          "project_id": "proj_parable",
+          "project_id": "proj_example_project",
           "expires_at": "2026-09-10T12:09:31Z"
         }
       ],
@@ -145,7 +145,7 @@
     "currency": "USD",
     "by_project": [
       {
-        "project_id": "proj_parable",
+        "project_id": "proj_example_project",
         "amount": 58.31
       },
       {

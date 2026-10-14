@@ -29,6 +29,10 @@ AND operation NOT LIKE '%/conversations' AND instr(operation, '/conversations/')
 AND julianday(created_at)<julianday(?) LIMIT ?)`, formatHubTime(now.Add(-commandReceiptRetention)), commandReceiptPruneBatch); err != nil {
 		return fmt.Errorf("expire command receipts: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM native_duplicate_challenges WHERE rowid IN (
+SELECT rowid FROM native_duplicate_challenges WHERE consumed_at IS NOT NULL OR julianday(created_at)<=julianday(?) LIMIT ?)`, formatHubTime(now.Add(-duplicateChallengeLifetime)), commandReceiptPruneBatch); err != nil {
+		return fmt.Errorf("expire duplicate challenges: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE attachments SET deleted_at=? WHERE deleted_at IS NULL AND work_item_id IS NULL AND julianday(created_at)<=julianday(?)", formatHubTime(now), formatHubTime(now.Add(-attachment.OrphanTTL))); err != nil {
 		return err
 	}

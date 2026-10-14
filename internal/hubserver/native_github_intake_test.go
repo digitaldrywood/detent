@@ -128,7 +128,7 @@ func TestNativeGitHubWebhookIntake(t *testing.T) {
 			if err := json.Unmarshal([]byte(raw), &desired); err != nil {
 				t.Fatal(err)
 			}
-			if desired.Body != "Tracked in Detent: https://cloud.example/work/i/"+id || desired.CloseSource {
+			if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/1" || desired.CloseSource {
 				t.Fatalf("linkback = %+v", desired)
 			}
 			item, found, err := f.service.claimOutbox(t.Context())

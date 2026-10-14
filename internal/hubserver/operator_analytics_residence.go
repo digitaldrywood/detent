@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"time"
 
@@ -42,6 +43,13 @@ type analyticsResidenceTimeline struct {
 }
 
 func projectNativeAnalyticsResidence(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
+	if _, projected := q.(analyticsRollupReader); projected && analyticsPopulationOffset(ctx, "residence_events") == 0 {
+		return projectAnalyticsResidenceRollups(ctx, q, scope, r, out)
+	}
+	return projectNativeAnalyticsResidenceHistory(ctx, q, scope, r, out)
+}
+
+func projectNativeAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
 	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, out.Window)
 	if err != nil {
 		return err
@@ -79,6 +87,10 @@ func projectNativeAnalyticsResidence(ctx context.Context, q nativeQueryer, scope
 			continue
 		}
 		item := operatortool.AnalyticsAging{WorkItemID: timeline.issue.id, Lane: timeline.state, EnteredAt: timeline.entered, Hours: out.Window.To.Sub(timeline.entered).Hours()}
+		if timeline.started != nil {
+			since := out.Window.To.Sub(*timeline.started).Hours()
+			item.SinceTodoHours = &since
+		}
 		for _, lane := range residence.Lanes {
 			if lane.Lane == item.Lane {
 				hours := lane.P90Seconds / 3600
@@ -137,6 +149,7 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 	if err := rows.Err(); err != nil {
 		return nil, nil, false, err
 	}
+	issueFilter, issueArgs := reportsIssueClause(ctx, "i.native_id")
 	rows, err = queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT i.native_id,i.created_at,coalesce(
 (SELECT json_extract(e.data_json,'$.from_state') FROM collaboration_events e
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'
@@ -145,8 +158,8 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
  ) THEN ws.detent_state END,'')
 FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?)
-AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))
-ORDER BY i.native_id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From))
+AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))`+issueFilter+`
+ORDER BY i.native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -357,7 +370,7 @@ func summarizeAnalyticsResidence(timelines []analyticsResidenceTimeline, states 
 		items = append(items, item)
 	}
 	for lane, values := range lanes {
-		summary.Lanes = append(summary.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, states), AnalyticsDuration: analyticsDuration(values)})
+		summary.Lanes = append(summary.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, states), AnalyticsDuration: sampledDuration(values)})
 	}
 	sort.Slice(summary.Lanes, func(i, j int) bool { return summary.Lanes[i].Lane < summary.Lanes[j].Lane })
 	for _, cause := range causes {
@@ -370,9 +383,19 @@ func summarizeAnalyticsResidence(timelines []analyticsResidenceTimeline, states 
 		}
 		return a.ReasonDetail < b.ReasonDetail
 	})
-	summary.SystemTotal, summary.HeldTotal = analyticsDuration(system), analyticsDuration(held)
-	summary.LeadTotal, summary.QueueTotal = analyticsDuration(lead), analyticsDuration(queue)
+	summary.SystemTotal, summary.HeldTotal = sampledDuration(system), sampledDuration(held)
+	summary.LeadTotal, summary.QueueTotal = sampledDuration(lead), sampledDuration(queue)
 	return summary, items
+}
+
+// sampledDuration is analyticsDuration keeping its sorted samples, so that
+// durations read for several projects combine exactly.
+func sampledDuration(values []float64) operatortool.AnalyticsDuration {
+	out := analyticsDuration(values)
+	if len(values) > 0 {
+		out.Samples = slices.Clone(values)
+	}
+	return out
 }
 
 func analyticsDuration(values []float64) operatortool.AnalyticsDuration {

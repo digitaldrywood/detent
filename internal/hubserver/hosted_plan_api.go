@@ -69,6 +69,8 @@ func (s *Service) hostedPlanReport(c echo.Context) error {
 }
 
 func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitlementReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var report hostedEntitlementReport
 	if d.plans() == nil {
 		return report, nativeNotFound()
@@ -77,17 +79,17 @@ func (d *database) hostedEntitlementReport(ctx context.Context) (hostedEntitleme
 	if err != nil {
 		return report, err
 	}
-	entitlement, err := d.hostedEntitlement(ctx, d.db, now)
+	entitlement, err := d.hostedEntitlement(ctx, d.reader, now)
 	if err != nil {
 		return report, err
 	}
 	report = hostedEntitlementReport{OrganizationID: entitlement.OrganizationID, Base: entitlement.Base, EffectiveBase: entitlement.EffectiveBase, Source: entitlement.Source, Revision: entitlement.Revision, Features: entitlement.Features, Grants: []hostedGrantRecord{}, GrantHistory: []hostedGrantRecord{}, Plans: []HostedPlan{}}
-	report.Plans, err = d.readHostedPlans(ctx, d.db)
+	report.Plans, err = d.readHostedPlans(ctx, d.reader)
 	if err != nil {
 		return report, err
 	}
 	granted := make(map[string]hostedGrantRecord)
-	audits, err := d.db.QueryContext(ctx, "SELECT actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant'")
+	audits, err := d.reader.QueryContext(ctx, "SELECT actor_id,reason,recorded_at,record_json FROM hosted_plan_audit WHERE action = 'grant'")
 	if err != nil {
 		return report, err
 	}

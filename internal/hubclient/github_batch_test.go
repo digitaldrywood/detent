@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,49 @@ func TestRunnerGitHubBatchReportsOneBoundedStep(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunnerGitHubBatchRunsOutsideHeartbeatOneAtATime(t *testing.T) {
+	t.Parallel()
+	var reports atomic.Int32
+	httpClient := &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		reports.Add(1)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+	})}
+	client, err := New(Config{URL: "https://hub.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: httpClient})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int32
+	release := make(chan struct{})
+	scheduler := &Scheduler{githubIntake: func(context.Context, string) (tracker.GitHubIssueSnapshot, error) {
+		reads.Add(1)
+		<-release
+		return intakeSnapshot(), nil
+	}}
+	task := tracker.GitHubBatchTask{ProjectID: "prj_test", BatchID: "intake_test", Revision: 1, Item: &tracker.GitHubIssuePreview{Number: 12, URL: "https://github.com/example-org/example-project/issues/12"}}
+
+	done := scheduler.startGitHubBatch(t.Context(), native, task)
+	if done == nil {
+		t.Fatal("first offer did not start the intake")
+	}
+	if again := scheduler.startGitHubBatch(t.Context(), native, task); again != nil {
+		t.Fatal("repeated offer started a second intake")
+	}
+	close(release)
+	<-done
+	if reads.Load() != 1 || reports.Load() != 1 {
+		t.Fatalf("reads=%d reports=%d", reads.Load(), reports.Load())
+	}
+	next := scheduler.startGitHubBatch(t.Context(), native, task)
+	if next == nil {
+		t.Fatal("lane did not free after the intake finished")
+	}
+	<-next
 }
 
 func TestRunnerGitHubBatchContinuesPagesWithoutHeartbeat(t *testing.T) {

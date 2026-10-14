@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -17,6 +19,7 @@ import (
 type nativeOrganization struct {
 	ID    tracker.OrganizationID `json:"organization_id"`
 	Name  string                 `json:"name"`
+	Slug  string                 `json:"slug"`
 	Local bool                   `json:"local"`
 }
 
@@ -40,6 +43,8 @@ type nativeCapabilitiesResponse struct {
 }
 
 func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitiesResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var serverID string
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM hub_identity").Scan(&serverID); err != nil {
 		return nativeCapabilitiesResponse{}, err
@@ -58,7 +63,9 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
-	rows, err := s.database.db.QueryContext(c.Request().Context(), "SELECT id, name, local FROM organizations ORDER BY id")
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local FROM organizations ORDER BY id")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -66,7 +73,7 @@ func (s *Service) nativeOrganizations(c echo.Context) error {
 	result := tracker.Page[nativeOrganization]{Items: []nativeOrganization{}}
 	for rows.Next() {
 		var organization nativeOrganization
-		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Local); err != nil {
+		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		result.Items = append(result.Items, organization)
@@ -149,6 +156,9 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 				return nil, err
 			}
 		}
+		if err := tx.QueryRowContext(ctx, "SELECT slug FROM projects WHERE id=?", project.ID).Scan(&project.Slug); err != nil {
+			return nil, err
+		}
 		return project, nil
 	}
 }
@@ -186,7 +196,7 @@ type nativeQueryer interface {
 func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeScope) (tracker.NativeProject, error) {
 	var project tracker.NativeProject
 	var states string
-	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT id, organization_id, name, slug, profile, states_json, require_dependencies, workflow_markdown FROM projects WHERE deleted_at IS NULL AND organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&project.ID, &project.OrganizationID, &project.Name, &project.Slug, &project.Profile, &states, &project.RequireDependencies, &project.WorkflowMarkdown); err != nil {
 		return project, err
 	}
 	if err := json.Unmarshal([]byte(states), &project.States); err != nil {
@@ -216,11 +226,20 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 }
 
 func (s *Service) getNativeProject(c echo.Context) error {
-	project, err := readNativeProject(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	project, err := readNativeProject(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, project)
+	templates, err := nativeReporterContracts(ctx, s.database.reader, nativeRequestScope(c))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, struct {
+		tracker.NativeProject
+		ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
+	}{project, templates})
 }
 
 func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {
@@ -250,6 +269,9 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if err != nil {
 		return err
 	}
+	if reflect.DeepEqual(project.States, states) {
+		return nil
+	}
 	var occupied int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id
 WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=w.detent_state)`, scope.project, encoded).Scan(&occupied); err != nil {
@@ -260,7 +282,8 @@ WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_ext
 	}
 	for _, state := range states {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at
+WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
 			return err
 		}
 	}

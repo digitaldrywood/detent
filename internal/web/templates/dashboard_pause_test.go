@@ -15,7 +15,7 @@ func TestProjectOverviewSnapshotsDisplayPauseDetails(t *testing.T) {
 		ProjectName:        "Detent",
 		ProjectPaused:      true,
 		ProjectPauseReason: "release hold",
-		ProjectPauseIssue:  "digitaldrywood/detent#1499",
+		ProjectPauseIssue:  "example-org/example-project#1499",
 	}
 
 	tests := []struct {
@@ -33,7 +33,7 @@ func TestProjectOverviewSnapshotsDisplayPauseDetails(t *testing.T) {
 			for _, want := range []string{
 				"Detent is paused.",
 				"Reason: release hold",
-				"Until issue closes: digitaldrywood/detent#1499",
+				"Until issue closes: example-org/example-project#1499",
 				"Evaluation: pending",
 			} {
 				if !strings.Contains(html, want) {
@@ -57,7 +57,7 @@ func TestProjectSmallMultipleCardDisplaysPauseEvaluation(t *testing.T) {
 			project: ProjectSmallMultiple{
 				ID:                 "video",
 				Paused:             true,
-				PauseIssue:         "digitaldrywood/video-studio#147",
+				PauseIssue:         "example-org/video-studio#147",
 				PauseExitEvaluated: true,
 				PauseExitEvaluable: true,
 				PauseExitResolver:  "video-studio",
@@ -69,7 +69,7 @@ func TestProjectSmallMultipleCardDisplaysPauseEvaluation(t *testing.T) {
 			project: ProjectSmallMultiple{
 				ID:                 "video",
 				Paused:             true,
-				PauseIssue:         "digitaldrywood/video-studio#147",
+				PauseIssue:         "example-org/video-studio#147",
 				PauseExitEvaluated: true,
 				PauseExitError:     "resolver unavailable",
 			},

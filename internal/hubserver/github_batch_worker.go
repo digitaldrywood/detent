@@ -12,10 +12,12 @@ import (
 )
 
 func (s *Service) maintainGitHubBatches(ctx context.Context) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if s.config.ImportBackend == nil {
 		return nil
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT p.organization_id,p.id FROM onboarding_issue_intake b JOIN projects p ON p.id=b.project_id
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.organization_id,p.id FROM onboarding_issue_intake b JOIN projects p ON p.id=b.project_id
  WHERE p.deleted_at IS NULL AND json_extract(b.request_json,'$.hub_owned')=1 AND json_extract(b.request_json,'$.status') IN ('discovering','importing')`)
 	if err != nil {
 		return err
@@ -44,6 +46,7 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 func (s *Service) advanceGitHubBatch(ctx context.Context, scope nativeScope) error {
 	ctx = s.linkedSourceContext(ctx)
 	for {
+		// Each iteration reads back the batch state written by the previous iteration.
 		batch, err := readGitHubBatch(ctx, s.database.db, scope)
 		if err != nil || batch == nil {
 			return err
@@ -51,7 +54,9 @@ func (s *Service) advanceGitHubBatch(ctx context.Context, scope nativeScope) err
 		if !batch.HubOwned || !batchHasPending(batch) {
 			return nil
 		}
-		integration, err := readProjectIntegration(ctx, s.database.db, scope)
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		integration, err := readProjectIntegration(readCtx, s.database.reader, scope)
+		cancelRead()
 		if err != nil {
 			return err
 		}

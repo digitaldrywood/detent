@@ -25,6 +25,7 @@ import {
   OIDC_SIGN_UP,
 } from "../../src/app/account/Login.tsx";
 import {
+  CreateOrganizationCard,
   InviteForm,
   MembersTable,
   OrganizationSwitcher,
@@ -245,11 +246,11 @@ if (typeof globalThis.PointerEvent === "undefined") {
 const MEMBERS: Member[] = [
   {
     id: "mem_owner",
-    user_id: "user_michael",
-    email: "michael@threefold.solutions",
+    user_id: "user_owner",
+    email: "owner@example.com",
     role: "owner",
     status: "active",
-    grants: [{ project_id: "proj_parable", write: true, runner: true }],
+    grants: [{ project_id: "proj_example_project", write: true, runner: true }],
   },
   {
     id: "mem_viewer",
@@ -261,7 +262,7 @@ const MEMBERS: Member[] = [
   },
 ];
 
-const PROJECTS = [{ id: "proj_parable", name: "parable", can_write: true, can_manage_runners: true }];
+const PROJECTS = [{ id: "proj_example_project", name: "example-project", can_write: true, can_manage_runners: true }];
 
 function renderMembers(overrides: Partial<React.ComponentProps<typeof MembersTable>> = {}) {
   const onRoleChange = vi.fn();
@@ -354,14 +355,14 @@ describe("the members table", () => {
   it("offers a role control and a removal for a manager", () => {
     renderMembers();
     expect(
-      screen.getByLabelText("Role for michael@threefold.solutions"),
+      screen.getByLabelText("Role for owner@example.com"),
     ).toBeInstanceOf(HTMLSelectElement);
     expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
   });
 
   it("shows a viewer the roles and none of the controls (§10.11)", () => {
     renderMembers({ canManage: false });
-    expect(screen.queryByLabelText("Role for michael@threefold.solutions")).toBeNull();
+    expect(screen.queryByLabelText("Role for owner@example.com")).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(screen.getAllByText("owner")).not.toHaveLength(0);
   });
@@ -371,21 +372,21 @@ describe("the members table", () => {
     const select = screen.getByLabelText("Role for sam@example.test") as HTMLSelectElement;
     const owner = within(select).getByRole("option", { name: "Owner" }) as HTMLOptionElement;
     expect(owner.disabled).toBe(true);
-    const access = screen.getByLabelText("Access to parable for sam@example.test") as HTMLSelectElement;
+    const access = screen.getByLabelText("Access to example-project for sam@example.test") as HTMLSelectElement;
     expect((within(access).getByRole("option", { name: "Write" }) as HTMLOptionElement).disabled).toBe(true);
-    expect(screen.getByLabelText("Runner management on parable for sam@example.test").getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByLabelText("Runner management on example-project for sam@example.test").getAttribute("aria-disabled")).toBe("true");
   });
 
   it("distinguishes read-only access from no access", () => {
     const { onGrantChange } = renderMembers();
-    fireEvent.change(screen.getByLabelText("Access to parable for sam@example.test"), { target: { value: "read" } });
-    expect(onGrantChange).toHaveBeenCalledWith(MEMBERS[1], "proj_parable", {
-      project_id: "proj_parable",
+    fireEvent.change(screen.getByLabelText("Access to example-project for sam@example.test"), { target: { value: "read" } });
+    expect(onGrantChange).toHaveBeenCalledWith(MEMBERS[1], "proj_example_project", {
+      project_id: "proj_example_project",
       write: false,
       runner: false,
     });
-    fireEvent.change(screen.getByLabelText("Access to parable for sam@example.test"), { target: { value: "none" } });
-    expect(onGrantChange).toHaveBeenLastCalledWith(MEMBERS[1], "proj_parable", null);
+    fireEvent.change(screen.getByLabelText("Access to example-project for sam@example.test"), { target: { value: "none" } });
+    expect(onGrantChange).toHaveBeenLastCalledWith(MEMBERS[1], "proj_example_project", null);
   });
 
   it("surfaces a per-member refusal next to that member", () => {
@@ -398,6 +399,11 @@ describe("the members table", () => {
 });
 
 describe("the organization's own rules", () => {
+  it("offers a neutral organization-name placeholder", () => {
+    render(<CreateOrganizationCard onCreate={vi.fn()} />);
+    expect(screen.getByRole("textbox", { name: "Organization name" }).getAttribute("placeholder")).toBe("Your company name");
+  });
+
   it("labels an absent grant as no access", () => {
     renderMembers({ canManage: false });
     const viewer = screen.getByRole("row", { name: /sam@example.test/ });
@@ -445,14 +451,14 @@ describe("the organization's own rules", () => {
     const onExit = vi.fn();
     render(
       <SupportBanner
-        actor="support@detent.dev"
+        actor="support@example.com"
         reason="ticket 4471"
         expiresAt="2026-09-10T22:30:00Z"
         onExit={onExit}
       />,
     );
     const banner = screen.getByRole("alert");
-    expect(banner.textContent).toContain("support@detent.dev");
+    expect(banner.textContent).toContain("support@example.com");
     expect(banner.textContent).toContain("ticket 4471");
     fireEvent.click(screen.getByRole("button", { name: "Exit support session" }));
     expect(onExit).toHaveBeenCalled();
@@ -464,13 +470,13 @@ describe("the organization's own rules", () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rae@example.test" } });
     fireEvent.change(screen.getByLabelText("Role"), { target: { value: "reporter" } });
     expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
-    const access = screen.getByLabelText("Access to parable for invitation");
+    const access = screen.getByLabelText("Access to example-project for invitation");
     expect((access as HTMLSelectElement).value).toBe("none");
     fireEvent.change(access, { target: { value: "read" } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Send invitation" }));
     });
-    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "reporter", grants: [{ project_id: "proj_parable", write: false, runner: false }] });
+    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "reporter", grants: [{ project_id: "proj_example_project", write: false, runner: false }] });
     expect((access as HTMLSelectElement).value).toBe(success ? "none" : "read");
     expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe(success ? "" : "rae@example.test");
     expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "reporter");
@@ -601,10 +607,10 @@ describe("the project settings", () => {
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
     expect(screen.getByText("Rework · Dispatchable")).toBeTruthy();
-    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/parable", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
+    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/example-project", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
-    expect(screen.getByText(/Controlled by acme\/parable: detent.yaml at revision abc123/)).toBeTruthy();
+    expect(screen.getByText(/Controlled by acme\/example-project: detent.yaml at revision abc123/)).toBeTruthy();
   });
 
   it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {
@@ -689,7 +695,7 @@ describe("the register command", () => {
   it.each([
     { value: "plain", want: "plain" },
     { value: "two words", want: "'two words'" },
-    { value: "Cory's Mac", want: "'Cory'\\''s Mac'" },
+    { value: "Owner's Mac", want: "'Owner'\\''s Mac'" },
     { value: "$(rm -rf /)", want: "'$(rm -rf /)'" },
     { value: "", want: "''" },
   ])("quotes $value for the shell", ({ value, want }) => {

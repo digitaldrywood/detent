@@ -97,7 +97,7 @@ for (const theme of ["light", "dark"]) {
 test("findings open issue Diagnostics, Fleet, and the Diagnostics page", async ({ page }) => {
   const { sidebar } = await installFindings(page);
   await sidebar.getByTestId("finding-hf_item").click();
-  await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}\\?tab=diagnostics$`));
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2\?tab=diagnostics$/);
   await expect(page.getByRole("tab", { name: "Diagnostics", exact: true })).toHaveAttribute("aria-selected", "true");
   await sidebar.getByTestId("finding-hf_project").click();
   await expect(page).toHaveURL(/\/diagnostics$/);

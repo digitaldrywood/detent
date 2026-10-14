@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -53,6 +54,32 @@ coalesce(json_extract(m.capabilities_json, '$.native_admission.' || r.id), '{}')
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.id = ? AND r.organization_id = ?`, r.RunnerID, r.OrganizationID).Scan(&raw, &configurationRaw, &admissionRaw); err != nil {
 		return err
 	}
+	return applyRunnerPolicyObservations(r, raw, configurationRaw, admissionRaw, func(project tracker.ProjectID, id string) (string, policy.Approval, bool, error) {
+		scope := string(r.OrganizationID) + "/" + string(project)
+		if id == "" {
+			err := q.QueryRowContext(ctx, "SELECT policy_id FROM project_observed_policies WHERE scope = ? AND runner_id = ?", scope, r.RunnerID).Scan(&id)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return "", policy.Approval{}, false, err
+			}
+		}
+		if id == "" {
+			return "", policy.Approval{}, false, nil
+		}
+		approved, err := readProjectPolicy(ctx, q, scope)
+		var refusal *nativeError
+		if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
+			return "", approved, false, err
+		}
+		err = nil
+		matches := false
+		if approved.Policy.ID != "" {
+			matches, err = approvedPolicyRevisionMatches(ctx, q, scope, id, approved.Policy)
+		}
+		return id, approved, matches, err
+	})
+}
+
+func applyRunnerPolicyObservations(r *runnerauth.Runner, raw, configurationRaw, admissionRaw string, observe func(tracker.ProjectID, string) (string, policy.Approval, bool, error)) error {
 	var previous []runnerauth.Problem
 	var configurations map[string]runnerauth.ProjectConfiguration
 	var admissions map[string]tracker.NativeAdmissionObservation
@@ -78,31 +105,16 @@ FROM runner_identities r JOIN machines m ON m.id = r.machine_id WHERE r.id = ? A
 		projects = slices.Compact(projects)
 	}
 	for _, projectID := range projects {
-		scope := string(r.OrganizationID) + "/" + string(projectID)
 		id := admissions[string(projectID)].Context.PolicyID
 		if effective := configurations[string(projectID)].EffectivePolicy; effective != nil {
 			id = effective.ID
 		}
-		if id == "" {
-			err := q.QueryRowContext(ctx, "SELECT policy_id FROM project_observed_policies WHERE scope = ? AND runner_id = ?", scope, r.RunnerID).Scan(&id)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
+		id, approved, matches, err := observe(projectID, id)
+		if err != nil {
+			return err
 		}
 		if id == "" {
 			continue
-		}
-		approved, err := readProjectPolicy(ctx, q, scope)
-		var refusal *nativeError
-		if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
-			return err
-		}
-		matches := false
-		if approved.Policy.ID != "" {
-			matches, err = approvedPolicyRevisionMatches(ctx, q, scope, id, approved.Policy)
-			if err != nil {
-				return err
-			}
 		}
 		if matches {
 			continue

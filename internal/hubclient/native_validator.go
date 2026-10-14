@@ -40,10 +40,16 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 		if version.HeadSHA != e.lastDiff.HeadSHA || version.BaseSHA != e.lastDiff.BaseSHA || version.PolicyID != e.data.PolicyID {
 			return runner.NativeValidation{}, errors.New("native validator version differs from the published source")
 		}
+		var discussion runner.NativeReviewDiscussion
 		if implementationReview {
 			if version.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired {
 				return runner.NativeValidation{}, nil
 			}
+			recovery, err := e.claim.source.client.Recovery(ctx, e.claim.lease.WorkItemID)
+			if err != nil {
+				return runner.NativeValidation{}, err
+			}
+			discussion = runner.NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, version.ID)
 			var latest *tracker.ChangeReview
 			for i := range detail.Reviews {
 				review := &detail.Reviews[i]
@@ -51,7 +57,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 					latest = review
 				}
 			}
-			if latest != nil && latest.Decision == "approved" {
+			if latest != nil && latest.Decision == "approved" && !discussion.HumanFeedbackSince(latest.CreatedAt) {
 				return runner.NativeValidation{}, nil
 			}
 		} else if !version.Policy.Gates.Validator || detail.Summary.Status == "reviewed" {
@@ -90,7 +96,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 				}
 			}
 		}
-		return runner.NativeValidation{Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
+		return runner.NativeValidation{Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
 }
@@ -127,11 +133,15 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	if err != nil {
 		return err
 	}
+	e.change.ImplementationReview = &result
+	e.change.Reviewed = false
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
 	if err != nil {
+		if result.Verdict == gate.ValidatorVerdictRework {
+			return nil
+		}
 		return err
 	}
-	e.change.ImplementationReview = &result
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
 	return nil
 }

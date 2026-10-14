@@ -86,6 +86,17 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 }
 
 func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAnalyticsReport) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	defer tx.Rollback()
+	return s.readHostedDiagnosticsFrom(ctx, analytics, analyticsRollupReader{tx})
+}
+
+func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer) (diagnosticsReport, error) {
 	w := analytics.Window
 	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}}
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
@@ -104,11 +115,6 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 	values := map[string]map[string]bool{}
 	var planning, validation int
 	var waits []float64
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return out, err
-	}
-	defer tx.Rollback()
 	for _, p := range analytics.Projects {
 		out.Partial = out.Partial || p.Partial || p.Landings.NextOffset != nil
 		attempts += p.AttemptsObserved
@@ -128,21 +134,50 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 			}
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
-		var projectReady int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1).Scan(&projectReady); err != nil {
-			return out, err
-		}
-		out.Partial = out.Partial || projectReady > maxAnalyticsPopulation
-		ready += min(projectReady, maxAnalyticsPopulation)
-		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, tx, scope, w)
+		q, err := analyticsProjectReader(ctx, reader, scope)
 		if err != nil {
 			return out, err
 		}
-		out.Partial = out.Partial || clipped
-		for _, issue := range issues {
-			for _, event := range issue.events {
-				if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
-					transitions++
+		var projectReady int
+		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+			projectReady, err = readAnalyticsCounter(ctx, q, scope, "ready", w.From, w.To)
+			if err != nil {
+				return out, err
+			}
+		} else {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1).Scan(&projectReady); err != nil {
+				return out, err
+			}
+		}
+		out.Partial = out.Partial || projectReady > maxAnalyticsPopulation
+		ready += min(projectReady, maxAnalyticsPopulation)
+		if _, projected := q.(analyticsRollupReader); projected {
+			observed, partial, err := readDiagnosticsResidenceRollups(ctx, q, scope, &out)
+			if err != nil {
+				return out, err
+			}
+			transitions += observed
+			out.Partial = out.Partial || partial
+		} else {
+			states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, w)
+			if err != nil {
+				return out, err
+			}
+			out.Partial = out.Partial || clipped
+			for _, issue := range issues {
+				for _, event := range issue.events {
+					if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
+						transitions++
+					}
+				}
+			}
+			for i := range out.Capacity {
+				at := minTime(out.Capacity[i].Hour.Add(time.Hour), w.To)
+				depth := diagnosticsTodoDepth(issues, states, clipped, at)
+				if depth == nil {
+					out.Capacity[i].Todo = nil
+				} else if out.Capacity[i].Todo != nil {
+					*out.Capacity[i].Todo += *depth
 				}
 			}
 		}
@@ -154,7 +189,7 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 				validation += phase.Count
 			}
 		}
-		configuration, err := diagnosticsPolicyValues(ctx, tx, scope)
+		configuration, err := diagnosticsPolicyValues(ctx, q, scope)
 		if err != nil {
 			return out, err
 		}
@@ -164,36 +199,27 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 			}
 			values[name][value] = true
 		}
-		for i := range out.Capacity {
-			at := minTime(out.Capacity[i].Hour.Add(time.Hour), w.To)
-			depth := diagnosticsTodoDepth(issues, states, clipped, at)
-			if depth == nil {
-				out.Capacity[i].Todo = nil
-			} else if out.Capacity[i].Todo != nil {
-				*out.Capacity[i].Todo += *depth
-			}
-		}
-		if err := diagnosticsLeaseCapacity(ctx, tx, scope, &out); err != nil {
+		if err := diagnosticsLeaseCapacity(ctx, q, scope, &out); err != nil {
 			return out, err
 		}
 		var entered int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND json_extract(data_json,'$.to_state')='Merging' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)).Scan(&entered); err != nil {
-			return out, err
-		}
-		out.MergeEntered += entered
-		for _, l := range p.Landings.Items {
-			var at sql.NullString
-			if err := tx.QueryRowContext(ctx, `SELECT max(recorded_at) FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND json_extract(data_json,'$.to_state')='Merging' AND julianday(recorded_at)<=julianday(?)`, scope.organization, scope.project, l.WorkItemID, formatHubTime(l.Landing.LandedAt)).Scan(&at); err != nil {
+		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+			entered, err = readAnalyticsCounter(ctx, q, scope, "merge_entered", w.From, w.To)
+			if err != nil {
 				return out, err
 			}
-			if at.Valid {
-				start, err := parseTimeValue(at.String)
-				if err != nil {
-					return out, err
-				}
-				waits = append(waits, l.Landing.LandedAt.Sub(start).Seconds())
+		} else {
+			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND json_extract(data_json,'$.to_state')='Merging' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)).Scan(&entered); err != nil {
+				return out, err
 			}
 		}
+		out.MergeEntered += entered
+		projectWaits, err := diagnosticsMergeWaits(ctx, q, scope, p.Landings.Items)
+		if err != nil {
+			return out, err
+		}
+		waits = append(waits, projectWaits...)
+
 	}
 	out.Claimed = &claims
 	if ready > 0 {
@@ -260,7 +286,43 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 		}
 		out.Configuration = append(out.Configuration, row)
 	}
-	return out, tx.Commit()
+	return out, nil
+}
+
+func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeScope, landings []nativeAnalyticsLanding) ([]float64, error) {
+	encoded, err := marshalNative(landings)
+	if err != nil {
+		return nil, err
+	}
+	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at)
+FROM json_each(?) l JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id')
+AND e.type='workflow.transitioned' AND json_extract(e.data_json,'$.to_state')='Merging'
+AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) GROUP BY l.key ORDER BY l.key`
+	if _, projected := q.(analyticsRollupReader); projected {
+		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT json_extract(e.data_json,'$.At') FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND json_extract(e.data_json,'$.ID')=json_extract(l.value,'$.work_item_id') AND julianday(json_extract(e.data_json,'$.At'))<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY json_extract(e.data_json,'$.AtNS') DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered FROM waits WHERE entered IS NOT NULL ORDER BY key`
+	}
+	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var waits []float64
+	for rows.Next() {
+		var landed, entered string
+		if err := rows.Scan(&landed, &entered); err != nil {
+			return nil, err
+		}
+		finish, err := parseTimeValue(landed)
+		if err != nil {
+			return nil, err
+		}
+		start, err := parseTimeValue(entered)
+		if err != nil {
+			return nil, err
+		}
+		waits = append(waits, finish.Sub(start).Seconds())
+	}
+	return waits, rows.Err()
 }
 
 func diagnosticsTodoDepth(issues []analyticsResidenceIssue, states map[string]tracker.NativeState, clipped bool, at time.Time) *int {
@@ -315,6 +377,36 @@ func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeS
 }
 
 func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
+	if _, rolledUp := q.(analyticsRollupReader); rolledUp && out.From.Equal(out.From.Truncate(time.Hour)) {
+		rows, err := q.QueryContext(ctx, `SELECT hour,sum(value) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<? GROUP BY hour`, scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix())
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var hour int64
+			var slots float64
+			if err := rows.Scan(&hour, &slots); err != nil {
+				return errors.Join(err, rows.Close())
+			}
+			i := int(time.Unix(hour, 0).Sub(out.From) / time.Hour)
+			if i >= 0 && i < len(out.Capacity) {
+				out.Capacity[i].Slots += slots
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return err
+		}
+		if !out.To.Equal(out.To.Truncate(time.Hour)) && len(out.Capacity) > 0 {
+			edge := diagnosticsReport{From: out.To.Truncate(time.Hour), To: out.To, Capacity: out.Capacity[len(out.Capacity)-1:]}
+			return diagnosticsLeaseCapacityFrom(ctx, q, scope, &edge)
+		}
+		return nil
+	}
+	return diagnosticsLeaseCapacityFrom(ctx, q, scope, out)
+}
+
+func diagnosticsLeaseCapacityFrom(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
 	rows, err := q.QueryContext(ctx, `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND i.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`, scope.organization, scope.project, formatHubTime(out.To), formatHubTime(out.From))
 	if err != nil {
 		return err

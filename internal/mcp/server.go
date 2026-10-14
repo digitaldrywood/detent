@@ -649,7 +649,8 @@ func (s *session) toolFailure(ctx context.Context, version, name string, id json
 	}
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
-	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) {
+	var allowance *operatortool.AllowanceError
+	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) && !errors.As(err, &allowance) {
 		correlation := uuid.NewString()
 		identity := operatortool.ConnectionIdentity(ctx)
 		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "organization_id", identity.OrganizationID, "principal_id", identity.PrincipalID, "request_id", string(id), "error", fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), err), "error_class", ErrorClass(err))
@@ -663,6 +664,7 @@ func ErrorClass(err error) string { return logging.ErrorClass(err) }
 func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
+	var allowance *operatortool.AllowanceError
 	var detail any
 	switch {
 	case errors.Is(err, operatortool.ErrResultTooLarge):
@@ -676,6 +678,8 @@ func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 		detail = conflict
 	case errors.As(err, &request):
 		detail = request
+	case errors.As(err, &allowance):
+		detail = allowance
 	}
 	if detail != nil {
 		if result, encodeErr := operatortool.EncodeResult(detail); encodeErr == nil {

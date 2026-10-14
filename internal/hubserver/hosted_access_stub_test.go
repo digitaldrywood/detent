@@ -10,7 +10,7 @@ func (*hostedLoginProvider) VerifyAccess(context.Context, string) (auth.HostedAc
 	return auth.HostedAccess{}, auth.ErrHostedIdentity
 }
 
-func (*hostedLoginProvider) RefreshAccess(context.Context, string) (auth.HostedAccess, auth.HostedTokens, error) {
+func (*hostedLoginProvider) RefreshAccess(context.Context, string, string) (auth.HostedAccess, auth.HostedTokens, error) {
 	return auth.HostedAccess{}, auth.HostedTokens{}, auth.ErrHostedIdentity
 }
 
@@ -18,7 +18,7 @@ func (*browserHostedProvider) VerifyAccess(context.Context, string) (auth.Hosted
 	return auth.HostedAccess{}, auth.ErrHostedIdentity
 }
 
-func (*browserHostedProvider) RefreshAccess(context.Context, string) (auth.HostedAccess, auth.HostedTokens, error) {
+func (*browserHostedProvider) RefreshAccess(context.Context, string, string) (auth.HostedAccess, auth.HostedTokens, error) {
 	return auth.HostedAccess{}, auth.HostedTokens{}, auth.ErrHostedIdentity
 }
 
@@ -26,6 +26,6 @@ func (*hostedSecurityProvider) VerifyAccess(context.Context, string) (auth.Hoste
 	return auth.HostedAccess{}, auth.ErrHostedIdentity
 }
 
-func (*hostedSecurityProvider) RefreshAccess(context.Context, string) (auth.HostedAccess, auth.HostedTokens, error) {
+func (*hostedSecurityProvider) RefreshAccess(context.Context, string, string) (auth.HostedAccess, auth.HostedTokens, error) {
 	return auth.HostedAccess{}, auth.HostedTokens{}, auth.ErrHostedIdentity
 }

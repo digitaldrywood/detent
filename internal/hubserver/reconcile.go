@@ -202,7 +202,9 @@ func (s *Service) stopGitHubReconciliation() error {
 }
 
 func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := d.reader.QueryContext(ctx, `
 		SELECT r.id, r.github_node_id, r.github_database_id, r.github_owner, r.github_name, r.reconcile_cursor, p.profile, p.github_repository_enabled
 		FROM repositories r JOIN projects p ON p.repository_id = r.id
 		WHERE p.profile = 'github_compatible' OR p.github_repository_enabled = 1
@@ -251,7 +253,9 @@ func (d *database) reconcileTargets(ctx context.Context) ([]reconcileTarget, err
 }
 
 func (d *database) pendingHydrationRequests(ctx context.Context, repositoryID int64) ([]HydrationRequest, *time.Time, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := d.reader.QueryContext(ctx, `
 		SELECT id, object_kind, object_key, github_node_id, github_number, head_sha, request_count, requested_source_updated_at
 		FROM github_hydration_requests
 		WHERE repository_id = ? AND status = 'pending'

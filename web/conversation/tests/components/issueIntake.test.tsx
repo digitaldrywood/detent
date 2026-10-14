@@ -72,3 +72,28 @@ it("closes only completed open source issues after an explicit opt-in", async ()
   expect(mocks.command.mock.calls[0]?.[1]).toEqual({ action: "close_source", revision: 2 });
   expect(screen.queryByRole("button", { name: "Close source issues" })).toBeNull();
 });
+
+it("routes Detent lane labels safely, lets the operator remap them, or ignores them", async () => {
+  const data = preview();
+  data.batch.page.issues[0]!.labels = ["bug", "detent:todo"];
+  data.batch.page.issues[1]!.labels = ["detent:backlog"];
+  mocks.read.mockResolvedValue(data); mocks.command.mockResolvedValue(data); mount(); await screen.findByText(/2 matching issues/);
+  fireEvent.click(screen.getByRole("button", { name: "Select previewed" }));
+  expect((screen.getByLabelText("Lane for detent:todo") as HTMLSelectElement).value).toBe("Backlog");
+  expect((screen.getByLabelText("Lane for detent:backlog") as HTMLSelectElement).value).toBe("Backlog");
+  expect([...(screen.getByLabelText("Lane for detent:todo") as HTMLSelectElement).options].map(option => option.value)).not.toContain("Todo");
+  fireEvent.click(screen.getByRole("button", { name: "Import selected issues" }));
+  await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(1));
+  expect(mocks.command.mock.calls[0]?.[1]).toMatchObject({ allow_dispatch: false, ignore_lane_labels: false, label_lanes: { "detent:todo": "Backlog", "detent:backlog": "Backlog" } });
+
+  fireEvent.change(screen.getByLabelText("Import destination lane"), { target: { value: "Todo" } });
+  fireEvent.click(screen.getByLabelText("Authorize dispatch of selected issues"));
+  expect((screen.getByLabelText("Lane for detent:todo") as HTMLSelectElement).value).toBe("Todo");
+  fireEvent.click(screen.getByLabelText("Ignore lane labels"));
+  expect(screen.queryByLabelText("Lane for detent:todo")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Import selected issues" }));
+  await waitFor(() => expect(mocks.command).toHaveBeenCalledTimes(2));
+  const ignored = mocks.command.mock.calls[1]?.[1];
+  expect(ignored).toMatchObject({ destination: "Todo", allow_dispatch: true, ignore_lane_labels: true });
+  expect(ignored).not.toHaveProperty("label_lanes");
+});

@@ -36,7 +36,7 @@ var smokeSkipped = strings.Fields(`
  member_remove member_role member_grant credential_create credential_rotate credential_revoke credential_grant support_start
  platform_adjust_ai_credits platform_change_entitlement
  refresh capacity_clear tracker_availability_clear forge_availability_clear failure_breaker_canary update_apply
- mark_urgent_runner_update issue_progress_credit acknowledge_staleness_warnings recover_work_attempt transfer_item
+ mark_urgent_runner_update issue_progress_credit acknowledge_staleness_warnings recover_work_attempt transfer_item verify_fix
  create_runner_enrollment revoke_runner_enrollment revoke_runner_identity
  update_runner_capacity update_runner_routing update_runner_host update_fleet_runner update_fleet_host
  create_workspace delete_workspace create_conversation post_conversation_command link_conversation patch_conversation
@@ -186,7 +186,9 @@ func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (
 		return nil, fmt.Errorf("%s schema: %w", name, err)
 	}
 	if _, accepts := schema.Properties["request_id"]; accepts {
-		args["request_id"] = fmt.Sprintf("%s-%d", s.prefix, s.sequence)
+		if _, supplied := args["request_id"]; !supplied {
+			args["request_id"] = fmt.Sprintf("%s-%d", s.prefix, s.sequence)
+		}
 	}
 	var payload any
 	err := s.mcp.call(ctx, name, args, &payload)
@@ -424,6 +426,43 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	if err != nil {
 		return nil, previous, err
 	}
+	if name == operatortool.FileIssue {
+		if data, ok := result["data"].(map[string]any); ok && data["possible_duplicates"] != nil {
+			var challenge struct {
+				Token   string `json:"challenge_token"`
+				Matches []struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					State  string `json:"state"`
+				} `json:"possible_duplicates"`
+			}
+			raw, encodeErr := json.Marshal(data)
+			if encodeErr != nil {
+				return nil, previous, fmt.Errorf("file_issue: duplicate challenge: %w", encodeErr)
+			}
+			if err := json.Unmarshal(raw, &challenge); err != nil || challenge.Token == "" || len(challenge.Matches) == 0 {
+				return nil, previous, errors.New("file_issue: invalid duplicate challenge")
+			}
+			numbers := make([]int, 0, len(challenge.Matches))
+			for _, match := range challenge.Matches {
+				synthetic := strings.HasPrefix(match.Title, "MCP staging smoke ")
+				if args["title"] == "MCP smoke dependency" {
+					synthetic = match.Title == "MCP smoke dependency" && slices.ContainsFunc(s.states, func(state tracker.NativeState) bool {
+						return state.Name == match.State && state.Terminal
+					})
+				}
+				if match.Number <= 0 || !synthetic {
+					return nil, previous, errors.New("file_issue: duplicate challenge is not limited to disposable smoke fixtures")
+				}
+				numbers = append(numbers, match.Number)
+			}
+			args["challenge_token"], args["not_duplicate_of"] = challenge.Token, numbers
+			result, err = s.call(ctx, name, args)
+			if err != nil {
+				return nil, previous, err
+			}
+		}
+	}
 	if _, refused := result["expected_refusal"]; refused {
 		return result, previous, nil
 	}
@@ -463,7 +502,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 	s.fixtures["organization_id"] = string(project.OrganizationID)
 	first, second := "", ""
 	for _, from := range s.states {
-		if from.Dispatchable || from.Terminal || from.OperatorOnly {
+		if from.Name == "Triage" || from.Dispatchable || from.Terminal || from.OperatorOnly {
 			continue
 		}
 		for _, to := range s.states {

@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -304,7 +305,7 @@ func (s *Service) routes() {
 	s.registerKeyMCP()
 	e := s.echo
 	e.Pre(s.boundary)
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	e.GET("/health", s.health)
 	e.GET("/", s.home)
 	e.GET("/auth/oidc/start", s.startLogin)
@@ -342,7 +343,11 @@ func (s *Service) routes() {
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
+	e.GET("/api/cloud/organizations/:organization/slug", s.organizationSlug)
+	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
+	e.Any("/*", s.readableProxy)
 	e.Any("/organizations/:organization", s.proxy)
+	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }

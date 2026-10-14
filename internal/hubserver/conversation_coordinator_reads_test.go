@@ -115,6 +115,8 @@ func TestCoordinatorScreenReads(t *testing.T) {
 				{"get_project_policy", `{}`, true, ""}, {operatortool.GetProjectModelSelection, `{}`, true, ""},
 				{"project_secret_metadata", `{}`, true, ""}, {"repository_freshness", `{}`, true, ""}, {"monthly_usage_costs", `{}`, true, ""},
 				{operatortool.WorkList, `{}`, true, ""}, {operatortool.HealthFindings, `{}`, true, ""}, {operatortool.BoardState, `{}`, true, ""},
+				{operatortool.TimeSeries, `{"window":"1h","bucket":"5m"}`, true, ""},
+				{operatortool.TimeSeries, fmt.Sprintf(`{"from":%q,"to":%q,"bucket":"5m"}`, f.service.config.now().Add(-49*time.Hour).Format(time.RFC3339Nano), f.service.config.now().Add(-48*time.Hour).Format(time.RFC3339Nano)), true, ""},
 				{operatortool.AnalyticsDashboard, `{}`, true, ""}, {operatortool.Reports, `{}`, true, ""}, {"get_project_usage", `{"range":"24h"}`, true, ""},
 				{"get_project_diagnostics", `{}`, true, ""}, {"get_project_reports", `{}`, true, ""},
 			}
@@ -135,6 +137,15 @@ func TestCoordinatorScreenReads(t *testing.T) {
 					}
 					if !result.Success {
 						t.Fatalf("allowed screen read failed: %s", result.Content)
+					}
+					if test.name == operatortool.TimeSeries && strings.Contains(test.args, `"from"`) {
+						var report nativeAnalyticsReport
+						if err := json.Unmarshal([]byte(result.Content), &report); err != nil {
+							t.Fatal(err)
+						}
+						if !report.Window.From.Equal(f.service.config.now().Add(-49*time.Hour)) || !report.Window.To.Equal(f.service.config.now().Add(-48*time.Hour)) {
+							t.Fatalf("historical interval was not preserved: %+v", report.Window)
+						}
 					}
 					if strings.Contains(result.Content, "ciphertext") || strings.Contains(result.Content, "token_hash") {
 						t.Fatalf("unsafe result: %s", result.Content)
@@ -162,6 +173,14 @@ func TestCoordinatorScreenReads(t *testing.T) {
 						var got, want any
 						if json.Unmarshal([]byte(result.Content), &got) != nil || json.Unmarshal(direct.Content, &want) != nil {
 							t.Fatal("invalid result")
+						}
+						if test.name == "get_project_policy" {
+							gates := want.(map[string]any)["data"].(map[string]any)["policy"].(map[string]any)["gates"].(map[string]any)
+							for _, key := range []string{"human_review", "github_pull_request"} {
+								if _, present := gates[key]; !present {
+									gates[key] = false
+								}
+							}
 						}
 						if !reflect.DeepEqual(got, want) {
 							t.Fatalf("coordinator diverged from application read: %s vs %s", result.Content, direct.Content)

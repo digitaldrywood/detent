@@ -36,12 +36,24 @@ const authConnections = 4
 // ordinary reads share.
 const claimReaderConnections = 2
 
+// readerCachePragma gives each main reader an 8 MB page cache, bounding the
+// pool at 256 MB per tenant. The auth and claim pools keep SQLite's 2 MB
+// default; mmap pages are shared through the OS page cache.
+const readerCachePragma = "cache_size(-8000)"
+
+// readerConnectionLifetime cycles reader connections so they load the
+// statistics the hourly PRAGMA optimize writes on the writer.
+const readerConnectionLifetime = time.Hour
+
 type database struct {
+	analyticsRetryMu       sync.Mutex
+	analyticsRetryCursor   string
 	linkedSourceBase       string
 	db                     *sql.DB
 	reader                 *sql.DB
 	authReader             *sql.DB
 	claimReader            *sql.DB
+	analytics              analyticsStatements
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -125,6 +137,10 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, store.Close())
 	}
 	store.schemaVersion = version
+	store.analytics = prepareAnalyticsStatements(ctx, db, cfg.Logger)
+	if err := store.optimize(ctx, "PRAGMA optimize=0x10002"); err != nil {
+		cfg.Logger.Warn("optimize hub database at startup", "error", err)
+	}
 	if cfg.CredentialMaintenance {
 		var bound int
 		if err := db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_tenant").Scan(&bound); err != nil || bound != 1 {
@@ -283,43 +299,51 @@ func writerSynchronousMode(hosted bool) (int, string) {
 	return 2, "FULL"
 }
 
-func sqliteReaderDSN(path string, busyTimeout time.Duration) string {
+func sqliteReaderDSN(path string, busyTimeout time.Duration, pragmas ...string) string {
 	databaseURL := sqliteFileURL(path)
 	query := databaseURL.Query()
 	query.Add("mode", "ro")
 	query.Add("_pragma", fmt.Sprintf("busy_timeout(%d)", busyTimeoutMillis(busyTimeout)))
 	query.Add("_pragma", "query_only(1)")
+	query.Add("_pragma", "mmap_size(268435456)")
+	query.Add("_pragma", "temp_store(MEMORY)")
+	for _, pragma := range pragmas {
+		query.Add("_pragma", pragma)
+	}
 	databaseURL.RawQuery = query.Encode()
 	return databaseURL.String()
 }
 
 func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) error {
-	reader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	reader, err := openTimedReader(sqliteReaderDSN(d.path, busyTimeout, readerCachePragma))
 	if err != nil {
 		return fmt.Errorf("open hub database reader: %w", err)
 	}
 	reader.SetMaxOpenConns(readerConnections)
 	reader.SetMaxIdleConns(readerConnections)
+	reader.SetConnMaxLifetime(readerConnectionLifetime)
 	d.reader = reader
 	if err := reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub database reader: %w", err)
 	}
-	authReader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	authReader, err := openTimedReader(sqliteReaderDSN(d.path, busyTimeout))
 	if err != nil {
 		return fmt.Errorf("open hub database authentication reader: %w", err)
 	}
 	authReader.SetMaxOpenConns(authConnections)
 	authReader.SetMaxIdleConns(authConnections)
+	authReader.SetConnMaxLifetime(readerConnectionLifetime)
 	d.authReader = authReader
 	if err := authReader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub database authentication reader: %w", err)
 	}
-	claimReader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	claimReader, err := openTimedReader(sqliteReaderDSN(d.path, busyTimeout))
 	if err != nil {
 		return fmt.Errorf("open hub claim reader: %w", err)
 	}
 	claimReader.SetMaxOpenConns(claimReaderConnections)
 	claimReader.SetMaxIdleConns(claimReaderConnections)
+	claimReader.SetConnMaxLifetime(readerConnectionLifetime)
 	d.claimReader = claimReader
 	if err := claimReader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub claim reader: %w", err)
@@ -428,6 +452,8 @@ func (d *database) verifyIdentity(ctx context.Context) error {
 }
 
 func (d *database) health(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if err := d.reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping hub database: %w", err)
 	}
@@ -456,7 +482,7 @@ func (d *database) Close() error {
 		if d.claimReader != nil {
 			claimReaderErr = d.claimReader.Close()
 		}
-		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.db.Close(), d.lock.Close())
+		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.analytics.close(), d.db.Close(), d.lock.Close())
 	})
 	return d.closeErr
 }
@@ -470,4 +496,13 @@ func busyTimeoutMillis(timeout time.Duration) int64 {
 		return 1
 	}
 	return milliseconds
+}
+
+func (d *database) optimize(ctx context.Context, statement string) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if _, err := d.db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("optimize hub sqlite: %w", err)
+	}
+	return nil
 }

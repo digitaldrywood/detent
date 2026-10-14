@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -56,8 +57,10 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 }
 
 func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope nativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	scope.project = tracker.ProjectID(args.ProjectID)
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
 	}

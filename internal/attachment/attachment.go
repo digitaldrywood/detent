@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 )
 
 const MaxBytes = conversation.MaxAttachmentBytes
+const HARMediaType = "application/har+json"
 const MaxPixels = 16000000
 const OrphanTTL = conversation.AttachmentTTL
 
@@ -79,7 +81,7 @@ func (m Metadata) Validate() error {
 		if m.Width <= 0 || m.Height <= 0 || m.Width > MaxPixels || m.Height > MaxPixels || int64(m.Width)*int64(m.Height) > MaxPixels {
 			return ErrInvalid
 		}
-	case "application/pdf", "text/plain", "text/markdown", "text/csv", "application/json":
+	case "application/pdf", "text/plain", "text/markdown", "text/csv", "application/json", HARMediaType:
 		if m.Width != 0 || m.Height != 0 {
 			return ErrInvalid
 		}
@@ -133,7 +135,7 @@ func Prepare(reader io.Reader, name, declared, scratch string) (upload *Upload, 
 	if err != nil {
 		return nil, err
 	}
-	media, err := Sniff(declared, content)
+	media, err := Sniff(declaredMedia(name, declared), content)
 	if err != nil {
 		return nil, err
 	}
@@ -181,8 +183,28 @@ func Prepare(reader io.Reader, name, declared, scratch string) (upload *Upload, 
 	return u, nil
 }
 
+func declaredMedia(name, declared string) string {
+	media := conversation.NormalizeMediaType(declared)
+	if media != "" && media != "application/octet-stream" && media != "application/json" && media != "text/plain" {
+		return declared
+	}
+	switch extension := strings.ToLower(filepath.Ext(name)); {
+	case extension == ".har":
+		return HARMediaType
+	case extension == ".log" && media != "application/json":
+		return "text/plain"
+	}
+	return declared
+}
+
 func Sniff(declared string, content []byte) (string, error) {
 	media := conversation.NormalizeMediaType(declared)
+	if media == HARMediaType {
+		if _, err := conversation.SniffAttachment("application/json", content); err != nil {
+			return "", ErrInvalid
+		}
+		return HARMediaType, nil
+	}
 	detected := conversation.NormalizeMediaType(http.DetectContentType(content))
 	if detected == "application/pdf" && (media == "" || media == "application/pdf") {
 		return "application/pdf", nil

@@ -33,6 +33,7 @@ import {
   SlackIntegrationStatus,
   SpritePool,
   ProjectsResponse,
+  ReporterTemplates,
   OrganizationProjectRank,
   type ProjectGrant,
   RunnerEnrollment,
@@ -44,7 +45,7 @@ import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
 import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
 import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
-import { ReportsReport, type ReportsRange } from "../../contracts/reports.ts";
+import { ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
@@ -112,6 +113,27 @@ function failure(status: number, body: unknown): AccountError {
   });
 }
 
+const REPORT_FILTER_PARAMS = [
+  ["labels", "labels"],
+  ["priorities", "priorities"],
+  ["types", "types"],
+  ["filedBy", "filed_by"],
+  ["runners", "runners"],
+  ["models", "models"],
+  ["stages", "stages"],
+] as const satisfies readonly (readonly [keyof ReportsFilters, string])[];
+
+/** The Reports query string: a project or `all`, a preset or custom range, and each filter value as its own parameter. */
+export function reportsQuery(project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters): string {
+  const pairs: [string, string][] = [["project", project]];
+  if (typeof range === "string") pairs.push(["range", range]);
+  else pairs.push(["from", range.from], ["to", range.to]);
+  for (const [key, param] of REPORT_FILTER_PARAMS) {
+    for (const value of filters?.[key] ?? []) pairs.push([param, value]);
+  }
+  return pairs.map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join("&");
+}
+
 /** A decoder that accepts a 204 with no body. */
 const Empty = Schema.Struct({});
 
@@ -124,6 +146,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     method: string,
     path: string,
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<A> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
@@ -134,6 +157,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         method,
         credentials: "same-origin",
         headers,
+        signal,
         ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
       });
     } catch (cause) {
@@ -172,6 +196,8 @@ export function makeAccountApi(options: AccountApiOptions) {
   const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
   const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
+    saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
     personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
     keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
     createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
@@ -185,6 +211,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     saveKeyPolicy: (policy: PersonalKeyPolicy) => send(KeyPolicy, "PUT", `${cloudOrganization}/key-policy`, { personal_keys: policy }),
     blockMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/block`, {}),
     approveMemberKey: (id: string) => send(null, "PUT", `${cloudOrganization}/external-keys/${encodeURIComponent(id)}/approve`, {}),
+    slug: (projectId?: string, shared = false) => send(Schema.Struct({ slug: Schema.String }), "GET", projectId === undefined ? (shared ? `/api/cloud/organizations/${encodeURIComponent(base.split("/").at(-1) ?? "")}/slug` : `${base}/slug`) : `${project(projectId)}/slug`),
+    saveSlug: (slug: string, expectedSlug: string, projectId?: string, shared = false) => send(Schema.Struct({ slug: Schema.String }), "PUT", projectId === undefined ? (shared ? `/api/cloud/organizations/${encodeURIComponent(base.split("/").at(-1) ?? "")}/slug` : `${base}/slug`) : `${project(projectId)}/slug`, { slug, expected_slug: expectedSlug }),
     apiKeys: () => send(OperatorAPIKeys, "GET", `${base}/api-keys`),
     createAPIKey: (input: { name: string; scope: string; expires_days: number; never_expires?: boolean; project_access?: "all" | "selected"; project_ids?: readonly string[] }) =>
       send(CreatedOperatorAPIKey, "POST", `${base}/api-keys`, input),
@@ -326,6 +354,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       intake?: string;
       projection: string;
       repositoryEnabled: boolean;
+      duplicateChallenge?: boolean;
       archiveCompletedAfterDays?: number | null;
       archiveCancelledAfterDays?: number | null;
       states?: readonly WorkflowState[];
@@ -336,6 +365,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         ...(input.intake !== undefined ? { intake: input.intake } : {}),
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.duplicateChallenge !== undefined ? { duplicate_challenge: input.duplicateChallenge } : {}),
         ...(input.archiveCompletedAfterDays !== undefined ? { archive_completed_after_days: input.archiveCompletedAfterDays } : {}),
         ...(input.archiveCancelledAfterDays !== undefined ? { archive_cancelled_after_days: input.archiveCancelledAfterDays } : {}),
         ...(input.states !== undefined ? { states: input.states } : {}),
@@ -390,8 +420,11 @@ export function makeAccountApi(options: AccountApiOptions) {
         },
         idempotency_key: input.key,
       }),
+    reporterTemplates: (projectId: string) =>
+      send(Schema.Struct({ reporter_templates: ReporterTemplates }), "GET", project(projectId)),
     createFirstIssue: (input: {
       projectId: string;
+      type?: "bug" | "change_request";
 	  githubIssueUrl?: string;
       title: string;
       body: string;
@@ -400,6 +433,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
 	    github_issue_url: input.githubIssueUrl,
+        type: input.type,
         title: input.title,
         body: input.body,
         state: input.state,
@@ -500,16 +534,19 @@ export function makeAccountApi(options: AccountApiOptions) {
       ),
 
     // --- Fleet, plan and billing --------------------------------------------
-    activity: (filters: ActivityFilters = {}) => {
+    activity: (filters: ActivityFilters = {}, signal?: AbortSignal) => {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(filters)) {
         if (value !== undefined) params.set(key, String(value));
       }
-      return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`);
+      return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`, undefined, signal);
     },
-    fleet: () => send(FleetResponse, "GET", `${base}/fleet`),
+    fleet: (signal?: AbortSignal) => send(FleetResponse, "GET", `${base}/fleet`, undefined, signal),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
-    reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),
+    reports: (project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters) =>
+      send(ReportsReport, "GET", `${base}/reports?${reportsQuery(project, range, filters)}`),
+    reportOptions: (project: string, range: ReportsRange | ReportsCustomRange) =>
+      send(ReportsFacets, "GET", `${base}/reports/options?${reportsQuery(project, range)}`),
     healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
       const reads = await Promise.all(projects.map(async (project) => {
         const items: HealthFindingsRead["items"][number][] = [];
@@ -517,9 +554,10 @@ export function makeAccountApi(options: AccountApiOptions) {
         let lastTick: string | null = null;
         do {
           const page = await send(HealthFindingsRead, "GET", `${base}/projects/${encodeURIComponent(project)}/health/findings?state=${options.state ?? "open"}${options.since ? `&since=${encodeURIComponent(options.since)}` : ""}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-          items.push(...page.items.map((finding) => finding.subject.kind === "work_item"
-            ? { ...finding, subject: { ...finding.subject, project_id: project } }
-            : finding));
+          items.push(...page.items.map((finding) => ({
+            ...finding,
+            subject: { ...finding.subject, project_id: finding.subject.project_id ?? project },
+          })));
           lastTick = page.last_tick_at;
           cursor = page.next_cursor ?? "";
         } while (cursor);

@@ -64,10 +64,11 @@ func TestQualityEscapeHistories(t *testing.T) {
 		{Item: "wi_work", Kind: "changes_requested", At: at(5)},
 		{Item: "wi_work", Kind: "changes_requested", At: at(6)},
 		{Item: "wi_other", Kind: "worked", At: at(6)},
+		{Item: "wi_other", Kind: "workflow.transitioned", At: at(7), Data: tracker.CollaborationData{FromState: "Merging", ToState: "Rework", ReasonDetail: "landing refused: base_protected"}},
 		{Item: "wi_work", Kind: "changes_requested", At: at(35)},
 	}, []qualityDiscussion{first, override, first}, w)
-	if got.ReworkedItems != 1 || got.WorkedItems != 2 || got.ReworkPercent == nil || *got.ReworkPercent != 50 || got.Causes["underspecified_issue"] != 1 || got.Causes["missing_criterion"] != 0 {
-		t.Fatalf("dedupe, pre-landing rework or human override = %+v", got)
+	if got.ReworkedItems != 1 || got.WorkedItems != 2 || got.ReworkPercent == nil || *got.ReworkPercent != 50 || got.InfraReturns != 1 || got.Causes["underspecified_issue"] != 1 || got.Causes["missing_criterion"] != 0 {
+		t.Fatalf("dedupe, pre-landing rework, infrastructure return or human override = %+v", got)
 	}
 }
 

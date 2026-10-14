@@ -23,17 +23,30 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
   const [destination, setDestination] = React.useState("");
   const [closeSource, setCloseSource] = React.useState(false);
   const [dispatch, setDispatch] = React.useState(false);
+  const [ignoreLaneLabels, setIgnoreLaneLabels] = React.useState(false);
+  const [laneOverrides, setLaneOverrides] = React.useState<Readonly<Record<string, string>>>({});
   const batch = resource.value?.batch;
   const lanes = resource.value?.lanes ?? [];
   const laneName = destination || lanes.find(lane => !lane.dispatchable && !lane.terminal)?.name || "";
   const lane = lanes.find(lane => lane.name === laneName);
+  const dispatchAuthorized = lane?.dispatchable === true && dispatch;
+  const targetLanes = lanes.filter(item => !item.terminal && (!item.dispatchable || dispatchAuthorized));
+  const sourceLane = (label: string) => lanes.find(item => !item.terminal && [item.name, item.name.replaceAll(" ", "-")].some(name => `detent:${name}`.toLowerCase() === label.toLowerCase()));
+  const laneLabels = [...(batch?.page.issues ?? []).filter(issue => selection.includes(issue.number)).flatMap(issue => issue.labels).filter(label => sourceLane(label) !== undefined)
+    .reduce((counts, label) => counts.set(label, (counts.get(label) ?? 0) + 1), new Map<string, number>())];
+  const labelTarget = (label: string) => {
+    const chosen = laneOverrides[label];
+    if (chosen !== undefined && targetLanes.some(item => item.name === chosen)) return chosen;
+    const source = sourceLane(label);
+    return source !== undefined && targetLanes.some(item => item.name === source.name) ? source.name : laneName;
+  };
   const command = useMutation(async (input: Omit<IntakeCommand, "revision">) => {
     const body = { ...input, revision: batch?.revision ?? 0 };
     const key = await setupKey(`/projects/${projectId}/onboarding/issue-intake`, body);
     const result = await api.commandIssueIntake(projectId, body, key.key);
     retireKey(key.storageKey);
     resource.set(result);
-    if (input.action === "discover") { setSelection([]); setNumbers(""); setCloseSource(false); }
+    if (input.action === "discover") { setSelection([]); setNumbers(""); setCloseSource(false); setLaneOverrides({}); setIgnoreLaneLabels(false); }
     if (input.action === "close_source") setCloseSource(false);
     return result;
   });
@@ -83,8 +96,17 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
         <NativeSelect aria-label="Import destination lane" value={laneName} onValueChange={value => { setDestination(value); setDispatch(false); }} disabled={busy} options={[{ value: "", label: "Select a lane" }, ...lanes.map(item => ({ value: item.name, label: `${item.name}${item.dispatchable ? " (dispatchable)" : ""}` }))]} />
       </label>
       {lane?.dispatchable ? <label className="flex items-center gap-2 text-sm"><Checkbox aria-label="Authorize dispatch of selected issues" checked={dispatch} onCheckedChange={value => setDispatch(value === true)} disabled={busy} />I authorize execution of these selected issues in {laneName}.</label> : null}
+      {laneLabels.length > 0 ? <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3">
+        <p className="text-sm font-medium">Lane labels from GitHub</p>
+        <p className="text-xs text-muted-foreground">These selected issues carry Detent lane labels from the previous board. Choose where each lands, or ignore them.</p>
+        <label className="flex items-center gap-2 text-sm"><Checkbox aria-label="Ignore lane labels" checked={ignoreLaneLabels} onCheckedChange={value => setIgnoreLaneLabels(value === true)} disabled={busy} />Ignore lane labels and import every issue into {laneName || "the selected lane"}</label>
+        {ignoreLaneLabels ? null : laneLabels.map(([label, count]) => <label key={label} className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="min-w-0 break-words">{label} · {count} {count === 1 ? "issue" : "issues"}</span>
+          <NativeSelect aria-label={`Lane for ${label}`} value={labelTarget(label)} onValueChange={value => setLaneOverrides(current => ({ ...current, [label]: value }))} disabled={busy} options={targetLanes.map(item => ({ value: item.name, label: item.name }))} />
+        </label>)}
+      </div> : null}
       <p className="text-sm">Import {selection.length} selected issues into {laneName || "a selected lane"}. Already linked issues will be skipped. {lane?.dispatchable ? "These issues can start execution." : "Move imported issues to a dispatchable lane when you want execution."}</p>
-      <Button disabled={busy || selection.length === 0 || !lane || (lane.dispatchable && !dispatch)} onClick={() => void command.call({ action: "apply", numbers: selection, destination: laneName, allow_dispatch: dispatch })}>Import selected issues</Button>
+      <Button disabled={busy || selection.length === 0 || !lane || (lane.dispatchable && !dispatch)} onClick={() => void command.call({ action: "apply", numbers: selection, destination: laneName, allow_dispatch: dispatch, ...(laneLabels.length > 0 ? { ignore_lane_labels: ignoreLaneLabels, ...(ignoreLaneLabels ? {} : { label_lanes: Object.fromEntries(laneLabels.map(([label]) => [label, labelTarget(label)])) }) } : {}) })}>Import selected issues</Button>
     </> : null}
     {batch && batch.items.length > 0 ? <>
       <p role="status" className="text-sm">{completed} completed · {skipped} skipped · {failed} incomplete · {batch.items.filter(item => item.status === "pending").length} pending · Destination: {batch.destination}</p>

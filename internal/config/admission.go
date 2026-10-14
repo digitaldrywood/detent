@@ -431,6 +431,9 @@ func resolveAdmissionSection(prompt string, section string, kind string, source 
 }
 
 func ValidateWorkflowAdmission(workflow Workflow) error {
+	if _, err := ResolveReporterContracts(workflow.SharedPrompt); err != nil {
+		return err
+	}
 	if _, err := ResolveIssueContract(workflow.SharedPrompt); err != nil {
 		return err
 	}

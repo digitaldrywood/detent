@@ -75,7 +75,7 @@ func (s *Service) requireConversationScope(extra ...apiScope) echo.MiddlewareFun
 			}
 			ctx := c.Request().Context()
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-			if err := s.requireHostedProject(ctx, s.database.db, scope, false); err != nil {
+			if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
 				return s.nativeAPIError(c, err)
 			}
 			if err := s.database.authorizeNativeProject(ctx, scope); err != nil {
@@ -131,6 +131,8 @@ func (s *Service) requireConversationOrganization() echo.MiddlewareFunc {
 }
 
 func (s *Service) authorizeConversationOrganization(ctx context.Context, scope nativeScope) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if scope.credential.Hosted != nil {
 		if string(scope.organization) != s.config.Hosted.OrganizationID {
 			return nativeNotFound()
@@ -144,7 +146,7 @@ func (s *Service) authorizeConversationOrganization(ctx context.Context, scope n
 		query = "SELECT count(*) FROM token_grants WHERE token_id = ? AND organization_id = ?"
 		args = []any{scope.credential.ID, scope.organization}
 	}
-	if err := s.database.db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
 		return fmt.Errorf("authorize conversation organization: %w", err)
 	}
 	if count == 0 {
@@ -593,13 +595,15 @@ func (s *Service) listOrganizationConversations(c echo.Context) error {
 // the organization; every is true when all projects are readable (instance
 // administrators).
 func (s *Service) readableConversationProjects(ctx context.Context, scope nativeScope) (projects []tracker.ProjectID, every bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly {
 		return nil, true, nil
 	}
 	condition, grantArgs := scope.credential.projectGrantSQL("p.organization_id", "p.id")
 	query := strings.Join([]string{"SELECT p.id FROM projects p WHERE p.organization_id=? AND (", condition, ")"}, "")
 	args := append([]any{scope.organization}, grantArgs...)
-	rows, err := s.database.db.QueryContext(ctx, query, args...)
+	rows, err := s.database.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, false, fmt.Errorf("list readable projects: %w", err)
 	}
@@ -723,6 +727,9 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 		default:
 			if err := conversationRequireOwner(record.Execution.Owner, command.Expected); err != nil {
 				return receipt, err
+			}
+			if conversationBetweenTurns(record.Execution) {
+				return receipt, conversationStale("No provider turn is active; send the message after the next turn starts or this attempt finishes")
 			}
 			if err := c.requireQueueCapacity(ctx, tx, record.ID, command.Kind); err != nil {
 				return receipt, err
@@ -1054,7 +1061,7 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 	// member is refused with the contract's forbidden rather than the
 	// hosted mutation guard's opaque not_found, as linkConversation does.
 	fresh := conversationRecord{OrganizationID: scope.organization, ProjectID: scope.project, OwnerPrincipalID: scope.credential.ID, Visibility: conversation.VisibilityPrivate, Status: conversation.StatusActive}
-	if err := service.authorizeWrite(ctx, s.database.db, scope, fresh); err != nil {
+	if err := service.authorizeWrite(ctx, s.database.reader, scope, fresh); err != nil {
 		return nil, err
 	}
 	var record conversationRecord
@@ -1194,11 +1201,11 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 	// Check visibility and write capability before entering the mutation so
 	// that denials carry the contract's codes rather than the generic hosted
 	// mutation denial.
-	preview, err := service.loadConversation(ctx, s.database.db, scope, id)
+	preview, err := service.loadConversation(ctx, s.database.reader, scope, id)
 	if err != nil {
 		return nil, err
 	}
-	if err := service.authorizeWrite(ctx, s.database.db, scope, preview); err != nil {
+	if err := service.authorizeWrite(ctx, s.database.reader, scope, preview); err != nil {
 		return nil, err
 	}
 	// A coordinator turn must not write into the conversation once it is
@@ -1467,14 +1474,16 @@ func (s *Service) readConversationMessages(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, filter conversationListQuery) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	filter.Organization = scope.organization
 	filter.Principal = scope.credential.ID
 	var err error
-	filter.ReadAudience, err = conversationReadAudience(ctx, s.database.db, scope.organization, scope.credential)
+	filter.ReadAudience, err = conversationReadAudience(ctx, s.database.reader, scope.organization, scope.credential)
 	if err != nil {
 		return nil, err
 	}
-	records, next, err := s.conversations.store.listConversations(ctx, s.database.db, filter)
+	records, next, err := s.conversations.store.listConversations(ctx, s.database.reader, filter)
 	if err != nil {
 		return nil, err
 	}

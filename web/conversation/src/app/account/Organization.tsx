@@ -191,7 +191,7 @@ export function CreateOrganizationCard({
           <Input
             id="org-create-name"
             value={name}
-            placeholder="Threefold Solutions"
+            placeholder="Your company name"
             onChange={(event) => setName(event.currentTarget.value)}
             className="flex-1"
           />
@@ -590,6 +590,7 @@ export function OrganizationRoute(): React.ReactElement {
 
   return (
     <SettingsPageContainer>
+      <SlugSettings canManage={bootstrap?.actor.can_manage ?? false} />
       <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
         <h2 className="text-xl font-semibold tracking-[-0.01em]">
           {bootstrap?.organization.name ?? "Organization"}
@@ -792,4 +793,38 @@ export function OrganizationRoute(): React.ReactElement {
       />
     </SettingsPageContainer>
   );
+}
+
+export function SlugSettings({ projectId, canManage }: { readonly projectId?: string; readonly canManage: boolean }): React.ReactElement {
+  const api = useAccountApi();
+  const shared = behindSharedEntry();
+  const [current, setCurrent] = React.useState("");
+  const [draft, setDraft] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    let active = true;
+    void api.slug(projectId, shared).then(({ slug }) => { if (active) { setCurrent(slug); setDraft(slug); } }).catch((error: unknown) => { if (active) setError(String(error)); });
+    return () => { active = false; };
+  }, [api, projectId, shared]);
+  async function save(): Promise<void> {
+    setBusy(true); setError(null);
+    try {
+      await api.saveSlug(draft, current, projectId, shared);
+      window.location.reload();
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  }
+  return <SettingsSection title="URL slug">
+    <p className="text-sm text-muted-foreground">Earlier slugs keep redirecting to the current address.</p>
+    <SettingsRow title={projectId === undefined ? "Organization slug" : "Project slug"}>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <Input aria-label={projectId === undefined ? "Organization slug" : "Project slug"} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!canManage || busy || current === ""} maxLength={80} />
+          {canManage ? <Button size="sm" disabled={busy || current === "" || draft === current} onClick={() => void save()}>{busy ? "Saving…" : "Save slug"}</Button> : null}
+        </div>
+        <ControlError message={error} />
+      </div>
+    </SettingsRow>
+  </SettingsSection>;
 }

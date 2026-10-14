@@ -65,7 +65,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 	projects := operatorProjectPage{Projects: []tracker.NativeProject{}}
 	if request.ProjectID != "" {
 		scope.project = tracker.ProjectID(request.ProjectID)
-		project, err := readNativeProject(ctx, s.database.db, scope)
+		project, err := readNativeProject(ctx, s.database.reader, scope)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("load project: %w", err))
 		}
