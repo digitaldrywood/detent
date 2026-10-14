@@ -170,8 +170,14 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
+	t.Setenv("CGO_ENABLED", "0")
 
 	source := initSourceRepo(t)
+	if err := os.WriteFile(filepath.Join(source, ".gitignore"), []byte("package-data/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".gitignore")
+	runGit(t, source, "commit", "-m", "ignored package data fixture")
 	if runtime.GOOS != "windows" {
 		script, err := os.ReadFile("../../scripts/check-evidence.sh")
 		if err != nil {
@@ -208,14 +214,17 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		failedCommand = "echo failed & exit /b 7"
 	}
 	for _, test := range []struct {
-		name, command, head string
-		exit                int
-		wantErr             bool
-		toolchainKnown      bool
-		probeOnly           bool
+		name, command, head   string
+		exit                  int
+		wantErr               bool
+		toolchainKnown        bool
+		probeOnly             bool
+		unbound, cgo, ignored bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
 		{name: "literal packages and supported flags retain identity", command: "go test ./... -short -count=1", probeOnly: true, toolchainKnown: true},
+		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, toolchainKnown: true, unbound: true, cgo: true},
+		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, toolchainKnown: true, unbound: true, ignored: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
 		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
 		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},
@@ -246,12 +255,32 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		{name: "dirty result", command: "echo changed > untracked.txt", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.cgo {
+				t.Setenv("CGO_ENABLED", "1")
+			}
+			if test.ignored {
+				path := filepath.Join(info.Path, "package-data", "fixture.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := os.Remove(path); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
 			if test.probeOnly {
 				evidence := backend.ReviewCommandEvidence(t.Context(), info, issue, test.command)
 				if evidence.Environment.Known() != test.toolchainKnown {
 					t.Fatalf("command toolchain applicability: got %v, want %v", evidence.Environment.Known(), test.toolchainKnown)
 				}
-				if test.toolchainKnown && evidence.InputsSHA == "" {
+				if test.unbound && evidence.InputsSHA != "" {
+					t.Fatal("unbound package inputs received a reusable identity")
+				}
+				if test.toolchainKnown && !test.unbound && evidence.InputsSHA == "" {
 					t.Fatal("supported literal Go command lost its input identity")
 				}
 				return

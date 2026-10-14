@@ -221,7 +221,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "external Node preload declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "node-preload", wantRuns: 2},
 		{name: "local npm source declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "npm-local", wantRuns: 2},
 		{name: "persistent external Go flags decline reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "persistent-flags", wantRuns: 2},
-		{name: "direct Go launcher replacement requires command", validator: true, verdict: "pass", command: "go build ./...", wrapped: true, changedInput: "relative-go", wantRuns: 1},
+		{name: "direct Go launcher with ignored inputs requires commands", validator: true, verdict: "pass", command: "go build ./...", wrapped: true, changedInput: "relative-go", wantRuns: 2},
 		{name: "relative PATH Go replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "relative-go", wantRuns: 1},
 		{name: "configured shell replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "shell", wantRuns: 1},
 		{name: "selected compiler replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "compiler", wantRuns: 1},
@@ -243,6 +243,14 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
 		{name: "matching wrapped finalization receipt is reused", validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
 		{name: "matching bounded Go flags reuse receipt", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "stable-flags"},
+		{name: "CGO native dependencies require commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "cgo-enabled", wantRuns: 2},
+		{name: "new ignored package fixture requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "ignored-package", wantRuns: 2},
+		{name: "changed generated embed asset requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-embed", wantRuns: 1},
+		{name: "generated embed symlink substitution requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-leaf-link", wantRuns: 1},
+		{name: "external generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "external-generated", wantRuns: 2},
+		{name: "directory at generated file path requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-file-directory", wantRuns: 2},
+		{name: "private generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "private-generated", wantRuns: 2},
+		{name: "gitlink package source requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "gitlink", wantRuns: 2},
 		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
 		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
 		{name: "double dash effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-double-vettool", wantRuns: 2},
@@ -339,7 +347,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					t.Fatal(err)
 				}
 				for name, content := range map[string]string{
-					".gitignore":        "tmp/\nnode_modules/\n",
+					".gitignore":        "tmp/\nnode_modules/\n/static/app/conversation/\n/docs/config.md/\n",
 					".golangci-version": "v2.14.0\n",
 					"main.go":           "package main\nfunc main() {}\n",
 				} {
@@ -389,7 +397,50 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if test.changedInput == "external-generated" || test.changedInput == "private-generated" {
+					outside := t.TempDir()
+					if test.changedInput == "private-generated" {
+						outside = filepath.Join(source, ".git")
+					}
+					if err := os.MkdirAll(filepath.Join(outside, "conversation"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(outside, "conversation", "fixture"), []byte("external fixture"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Join(source, "static"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(outside, filepath.Join(source, "static", "app")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.changedInput == "generated-file-directory" {
+					path := filepath.Join(source, "docs", "config.md", "fixture.key")
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("ignored fixture"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.changedInput == "generated-leaf-link" {
+					path := filepath.Join(source, "static", "app", "conversation")
+					if err := os.MkdirAll(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					for _, name := range []string{"fixture.js", "sibling.js"} {
+						if err := os.WriteFile(filepath.Join(path, name), []byte("same asset"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				runRunnerGit(t, source, "add", ".")
+				if test.changedInput == "gitlink" {
+					head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+					runRunnerGit(t, source, "clone", "--no-hardlinks", source, filepath.Join(source, "package-source"))
+					runRunnerGit(t, source, "update-index", "--add", "--cacheinfo", "160000,"+head+",package-source")
+				}
 				runRunnerGit(t, source, "commit", "-m", "landing fixture")
 				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
 				linter := filepath.Join(source, "tmp", "tools", "golangci-lint", "v2.14.0", "go1.26.9", "golangci-lint")
@@ -420,7 +471,7 @@ if [ "$1" = env ]; then
         if [ -f .git/compiler-flags ]; then flags=$(cat .git/compiler-flags); fi
         if [ -f .git/cgo-flags ]; then cgo_flags=$(cat .git/cgo-flags); fi
         if [ -f .git/prefix-target ]; then target=$(cat .git/prefix-target); fi
-		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
+		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","CGO_ENABLED":"%s","CC":"fixture-cc","CXX":"fixture-cxx","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "${FIXTURE_CGO_ENABLED:-0}" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
     else
         case "$2" in GOHOSTOS) echo linux;; GOHOSTARCH) echo amd64;; GOVERSION) echo "$version";; esac
     fi
@@ -435,6 +486,11 @@ fi
 `
 				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
 					t.Fatal(err)
+				}
+				for _, name := range []string{"fixture-cc", "fixture-cxx"} {
+					if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
 				}
 				npmRoot := filepath.Join(bin, "npm-package")
 				for name, content := range map[string]string{"package.json": `{"name":"npm"}`, "bin/npm-cli.js": "#!/bin/sh\nif [ \"$1\" = config ]; then\n    case \"$3\" in\n        userconfig) printf '%s/.git/npm-userconfig\\n' \"$PWD\";;\n        globalconfig) printf '%s/.git/npm-globalconfig\\n' \"$PWD\";;\n    esac\nfi\n", "lib/cli.js": "first\n"} {
@@ -510,6 +566,9 @@ fi
 					t.Fatal(err)
 				}
 				worktree.local = local
+				if test.changedInput == "cgo-enabled" {
+					t.Setenv("FIXTURE_CGO_ENABLED", "1")
+				}
 				worktree.info.Path = source
 				head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 				worktree.heads = []string{head}
@@ -538,6 +597,26 @@ fi
 				receipt.TimingStage = "finalization"
 				receipt = tracker.PublicGateResult(receipt)
 				switch test.changedInput {
+				case "generated-leaf-link":
+					path := filepath.Join(source, "static", "app", "conversation", "fixture.js")
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("sibling.js", path); err != nil {
+						t.Fatal(err)
+					}
+				case "ignored-package":
+					if err := os.WriteFile(filepath.Join(source, "tmp", "fixture.json"), []byte("machine-local fixture"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "generated-embed":
+					path := filepath.Join(source, "static", "app", "conversation", "fixture.js")
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("replacement asset"), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				case "asset-framing":
 					if err := os.WriteFile(filepath.Join(source, "node_modules", "css-runtime"), []byte("first\n/z-next\n-rw-------\nsecond\n"), 0o600); err != nil {
 						t.Fatal(err)
