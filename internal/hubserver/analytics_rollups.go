@@ -109,7 +109,7 @@ var analyticsEventTable = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+collaboration_
 
 var analyticsSQLKeywords = map[string]bool{"where": true, "join": true, "left": true, "inner": true, "cross": true, "on": true, "order": true, "group": true, "limit": true, "union": true, "except": true, "intersect": true, "having": true, "window": true, "using": true, "natural": true, "indexed": true, "not": true, "outer": true}
 
-const analyticsEventSource = `(SELECT r.organization_id,r.project_id,r.dimension AS id,json_extract(r.data_json,'$.work_item_id') AS work_item_id,json_extract(r.data_json,'$.sequence') AS sequence,json_extract(r.data_json,'$.type') AS type,json_extract(r.data_json,'$.recorded_at') AS recorded_at,e.data_json FROM analytics_hourly_rollups r JOIN collaboration_events e ON e.id=r.dimension WHERE r.metric='event')`
+const analyticsEventSource = `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.json_work_item_id AS work_item_id,r.json_sequence AS sequence,r.json_type AS type,r.json_recorded_at AS recorded_at,e.data_json FROM analytics_hourly_rollups r JOIN collaboration_events e ON e.id=r.dimension WHERE r.metric='event')`
 
 func analyticsRollupStatement(statement string) string {
 	return analyticsEventTable.ReplaceAllStringFunc(analyticsRollupTables.Replace(statement), func(match string) string {
