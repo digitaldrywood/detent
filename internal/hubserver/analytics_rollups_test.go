@@ -79,6 +79,7 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 		if err := f.service.database.commit(t.Context(), tx); err != nil {
 			t.Fatal(err)
 		}
+		drainTestAnalytics(t, f.service)
 		count, err := readAnalyticsCounter(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, "ready", now.Truncate(time.Hour), now.Add(time.Minute))
 		if err != nil || count != 1 {
 			t.Fatalf("incremental count=%d err=%v", count, err)
@@ -103,6 +104,7 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 			if err := f.service.database.commit(t.Context(), tx); err != nil {
 				t.Fatal(err)
 			}
+			drainTestAnalytics(t, f.service)
 			w := operatortool.AnalyticsWindow{From: now.Truncate(time.Hour), To: at.Add(time.Minute), Bucket: time.Hour}
 			var oracle, projected nativeAnalyticsProject
 			oracle, err = readNativeAnalytics(t.Context(), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
@@ -171,6 +173,7 @@ func commitTestAnalytics(t *testing.T, s *Service, write func(*sql.Tx)) {
 	if err := s.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestAnalytics(t, s)
 }
 
 func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
@@ -337,10 +340,25 @@ func TestAnalyticsRollupUsageWrites(t *testing.T) {
 	}
 }
 
+func drainTestAnalytics(t *testing.T, s *Service) {
+	t.Helper()
+	for {
+		more, err := s.database.drainAnalyticsDirty(t.Context(), s.config.now())
+		if err != nil {
+			t.Log(err)
+		}
+		if !more {
+			return
+		}
+	}
+}
+
 func projectTestAnalytics(t *testing.T, s *Service, tx *sql.Tx) {
 	t.Helper()
 	for {
-		s.database.refreshAnalyticsRollups(t.Context(), tx)
+		if err := s.database.projectAnalyticsBatch(t.Context(), tx, s.config.now(), analyticsBackfillBatch); err != nil {
+			t.Fatal(err)
+		}
 		var more bool
 		if err := tx.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&more); err != nil {
 			t.Fatal(err)
@@ -363,16 +381,23 @@ func countTestAnalyticsDirty(t *testing.T, s *Service) int {
 func TestAnalyticsRollupDeferredWork(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
-		for i := range analyticsBackfillBatch + 5 {
-			if _, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "bulk", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	})
-	if got := countTestAnalyticsDirty(t, f.service); got != 5 {
-		t.Fatalf("deferred items=%d want 5 beyond the per-commit limit", got)
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer tx.Rollback()
+	for i := range analyticsBackfillBatch + 5 {
+		if _, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "bulk", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	if got := countTestAnalyticsDirty(t, f.service); got != analyticsBackfillBatch+5 {
+		t.Fatalf("deferred items=%d want all %d left to maintenance", got, analyticsBackfillBatch+5)
+	}
+	drainTestAnalytics(t, f.service)
 	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
 		if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=NOT require_dependencies WHERE organization_id=? AND id=?", scope.organization, scope.project); err != nil {
 			t.Fatal(err)
@@ -447,6 +472,7 @@ func TestAnalyticsRetryRotatesFailedItems(t *testing.T) {
 	for i := range analyticsBackfillBatch + 1 {
 		f.create(t, "retry-"+strconv.Itoa(i))
 	}
+	drainTestAnalytics(t, f.service)
 	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_analytics BEFORE INSERT ON analytics_hourly_rollups BEGIN SELECT RAISE(ABORT,'projection unavailable'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -495,6 +521,7 @@ func TestAnalyticsRollupCompactionPreservesPredecessor(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestAnalytics(t, f.service)
 	w := operatortool.AnalyticsWindow{From: start, To: start.Add(time.Hour), Bucket: time.Hour}
 	before, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
 	if err != nil {
@@ -578,6 +605,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestAnalytics(t, f.service)
 	for _, test := range []struct {
 		name     string
 		from, to time.Time

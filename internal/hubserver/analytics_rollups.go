@@ -157,25 +157,18 @@ func analyticsProjectReader(ctx context.Context, q nativeQueryer, scope nativeSc
 	return rollups.nativeQueryer, nil
 }
 
-func (d *database) refreshAnalyticsRollups(ctx context.Context, tx *sql.Tx) {
+func (d *database) projectAnalyticsBatch(ctx context.Context, tx *sql.Tx, now time.Time, limit int) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM analytics_rollup_dirty WHERE NOT EXISTS(SELECT 1 FROM analytics_rollup_positions p WHERE p.work_item_id=analytics_rollup_dirty.work_item_id)
 AND EXISTS(SELECT 1 FROM issues i JOIN analytics_rollup_backfill b ON b.organization_id=i.organization_id AND b.project_id=i.project_id WHERE i.native_id=analytics_rollup_dirty.work_item_id)`); err != nil {
-		d.logger.ErrorContext(ctx, "Skip analytics items awaiting backfill", "error", err)
-		return
+		return fmt.Errorf("skip analytics items awaiting backfill: %w", err)
 	}
-	if err := projectAnalyticsDirty(ctx, tx, d.analytics, d.now()); err != nil {
-		d.logger.ErrorContext(ctx, "Refresh analytics rollups", "error", err)
-	}
-}
-
-func projectAnalyticsDirty(ctx context.Context, tx *sql.Tx, statements analyticsStatements, now time.Time) error {
-	ids, err := nativePageIDs(ctx, tx, "SELECT work_item_id FROM analytics_rollup_dirty ORDER BY work_item_id LIMIT ?", analyticsBackfillBatch)
+	ids, err := nativePageIDs(ctx, tx, "SELECT work_item_id FROM analytics_rollup_dirty ORDER BY work_item_id LIMIT ?", limit)
 	if err != nil {
 		return fmt.Errorf("list analytics rollup work: %w", err)
 	}
 	var failures error
 	for _, id := range ids {
-		if err := refreshAnalyticsIssueIsolated(ctx, tx, statements, id, now); err != nil {
+		if err := refreshAnalyticsIssueIsolated(ctx, tx, d.analytics, id, now); err != nil {
 			failures = errors.Join(failures, fmt.Errorf("refresh analytics item %s: %w", id, err))
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_rollup_dirty WHERE work_item_id=?", id); err != nil {
@@ -280,7 +273,7 @@ func (d *database) drainAnalyticsDirty(ctx context.Context, now time.Time) (bool
 		return false, fmt.Errorf("begin analytics drain: %w", err)
 	}
 	defer tx.Rollback()
-	failures := projectAnalyticsDirty(ctx, tx, d.analytics, now)
+	failures := d.projectAnalyticsBatch(ctx, tx, now, 1)
 	var more bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&more); err != nil {
 		return false, errors.Join(failures, fmt.Errorf("read analytics rollup work: %w", err))

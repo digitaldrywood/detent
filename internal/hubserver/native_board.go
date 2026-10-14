@@ -26,7 +26,6 @@ func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
 	if readOnly {
 		return tx.Commit()
 	}
-	d.refreshAnalyticsRollups(ctx, tx)
 	if err := refreshNativeBoard(ctx, tx, d.now()); err != nil {
 		return err
 	}
