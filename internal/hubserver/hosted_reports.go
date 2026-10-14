@@ -15,12 +15,14 @@ import (
 )
 
 type reportsCompletion struct {
-	Lanes   []operatortool.AnalyticsLaneDuration `json:"lanes"`
-	Done    int                                  `json:"done"`
-	System  operatortool.AnalyticsDuration       `json:"system"`
-	Lead    operatortool.AnalyticsDuration       `json:"lead"`
-	Working operatortool.AnalyticsDuration       `json:"working"`
-	Partial bool                                 `json:"partial"`
+	Lanes     []operatortool.AnalyticsLaneDuration `json:"lanes"`
+	Done      int                                  `json:"done"`
+	Cancelled int                                  `json:"cancelled"`
+	Cost      float64                              `json:"cost_usd"`
+	System    operatortool.AnalyticsDuration       `json:"system"`
+	Lead      operatortool.AnalyticsDuration       `json:"lead"`
+	Working   operatortool.AnalyticsDuration       `json:"working"`
+	Partial   bool                                 `json:"partial"`
 }
 
 type reportsStage struct {
@@ -141,38 +143,26 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		out.Throughput = append(out.Throughput, reportsBucket{From: b.From, To: b.To})
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
-	historyWindow := w
-	historyWindow.From = w.From.Add(-w.To.Sub(w.From))
 	q, err = analyticsProjectReader(ctx, q, scope)
 	if err != nil {
 		return out, err
 	}
-	if _, projected := q.(analyticsRollupReader); projected {
-		if err := readReportsCompletionRollups(ctx, q, scope, historyWindow, &out); err != nil {
-			return out, err
-		}
-	} else {
-		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, historyWindow)
-		if err != nil {
-			return out, err
-		}
-		timelines := make([]analyticsResidenceTimeline, 0, len(issues))
-		for _, issue := range issues {
-			timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
-		}
-		out.Completion = reportsCompletions(timelines, states, w.From, w.To)
-		out.Previous = reportsCompletions(timelines, states, historyWindow.From, w.From)
-		out.Completion.Partial = out.Completion.Partial || clipped
-		out.Previous.Partial = out.Previous.Partial || clipped
-		for _, timeline := range timelines {
-			for _, done := range timeline.done {
-				if !done.Before(w.From) && done.Before(w.To) {
-					if i := nativeAnalyticsBucketIndex(done, w); i >= 0 {
-						out.Throughput[i].Done++
-					}
-					break
-				}
-			}
+	states, err := analyticsResidenceStates(ctx, q, scope)
+	if err != nil {
+		return out, err
+	}
+	var shipped []nativeShippedIssue
+	out.Completion, shipped, err = readReportsCompletion(ctx, q, scope, states, w.From, w.To)
+	if err != nil {
+		return out, err
+	}
+	out.Previous, _, err = readReportsCompletion(ctx, q, scope, states, w.From.Add(-w.To.Sub(w.From)), w.From)
+	if err != nil {
+		return out, err
+	}
+	for _, issue := range shipped {
+		if i := nativeAnalyticsBucketIndex(issue.ClosedAt, w); i >= 0 {
+			out.Throughput[i].Done++
 		}
 	}
 	rows, err := readUsageRows(ctx, q, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
@@ -330,49 +320,83 @@ func reportFailureClasses(failures []nativeFailure) []reportClassTotal {
 	return classes.result()
 }
 
-func reportsCompletions(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, from, to time.Time) reportsCompletion {
+func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, from, to time.Time) (reportsCompletion, []nativeShippedIssue, error) {
+	population, err := readNativeClosedPopulation(ctx, q, scope, from, to)
+	if err != nil {
+		return reportsCompletion{}, nil, err
+	}
+	ids := population.shippedIDs()
+	out, err := readShippedCompletionTiming(ctx, q, scope, states, ids, to)
+	if err != nil {
+		return out, nil, err
+	}
+	out.Done, out.Cancelled = len(population.Shipped), population.Cancelled
+	out.Cost, err = readNativeShippedSpend(ctx, q, scope, ids, from, to)
+	return out, population.Shipped, err
+}
+
+func readShippedCompletionTiming(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, ids []string, to time.Time) (reportsCompletion, error) {
+	if _, projected := q.(analyticsRollupReader); projected {
+		return readReportsCompletionRollups(ctx, q, scope, states, ids, to)
+	}
+	issues, err := readShippedResidenceIssues(ctx, q, scope, ids, to)
+	if err != nil {
+		return reportsCompletion{}, err
+	}
+	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+	for _, issue := range issues {
+		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, to))
+	}
+	out := reportsCompletions(timelines, states, to)
+	out.Partial = out.Partial || len(issues) != len(ids)
+	return out, nil
+}
+
+func reportsCompletions(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, to time.Time) reportsCompletion {
 	out := reportsCompletion{Lanes: []operatortool.AnalyticsLaneDuration{}}
 	laneValues := map[string][]float64{}
 	var system, lead, working []float64
 	for _, timeline := range timelines {
-		for _, done := range timeline.done {
-			if done.Before(from) || !done.Before(to) {
+		var done time.Time
+		for _, at := range timeline.done {
+			if at.Before(to) {
+				done = at
+			}
+		}
+		if done.IsZero() || timeline.issue.partial || timeline.started == nil {
+			out.Partial = true
+			continue
+		}
+		var controlled, active float64
+		issueLanes := map[string]float64{}
+		for _, span := range timeline.spans {
+			if analyticsResidenceGroup(span.lane, states) == "excluded" {
 				continue
 			}
-			out.Done++
-			if timeline.issue.partial || timeline.started == nil {
-				out.Partial = true
-				break
+			seconds := max(0, minTime(span.to, done).Sub(span.from).Seconds())
+			issueLanes[span.lane] += seconds
+			if analyticsResidenceGroup(span.lane, states) == "system" {
+				controlled += seconds
 			}
-			var controlled, active float64
-			issueLanes := map[string]float64{}
-			for _, span := range timeline.spans {
-				group := analyticsResidenceGroup(span.lane, states)
-				if group == "excluded" {
-					continue
-				}
-				seconds := max(0, minTime(span.to, done).Sub(span.from).Seconds())
-				issueLanes[span.lane] += seconds
-				if group == "system" {
-					controlled += seconds
-				}
-				if span.lane == "In Progress" {
-					active += seconds
-				}
+			if span.lane == "In Progress" {
+				active += seconds
 			}
-			for lane, seconds := range issueLanes {
-				laneValues[lane] = append(laneValues[lane], seconds)
-			}
-			system = append(system, controlled)
-			working = append(working, active)
-			lead = append(lead, done.Sub(timeline.issue.created).Seconds())
-			break
 		}
+		for lane, seconds := range issueLanes {
+			laneValues[lane] = append(laneValues[lane], seconds)
+		}
+		system = append(system, controlled)
+		working = append(working, active)
+		lead = append(lead, done.Sub(timeline.issue.created).Seconds())
 	}
+	return reportsCompletionDurations(out, states, system, lead, working, laneValues)
+}
+
+func reportsCompletionDurations(out reportsCompletion, states map[string]tracker.NativeState, system, lead, working []float64, lanes map[string][]float64) reportsCompletion {
 	out.System = analyticsDuration(system)
 	out.Lead = analyticsDuration(lead)
 	out.Working = analyticsDuration(working)
-	for lane, values := range laneValues {
+	for lane, values := range lanes {
 		out.Lanes = append(out.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, states), AnalyticsDuration: analyticsDuration(values)})
 	}
 	sort.Slice(out.Lanes, func(i, j int) bool { return out.Lanes[i].Lane < out.Lanes[j].Lane })

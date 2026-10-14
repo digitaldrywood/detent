@@ -19,15 +19,14 @@ func readNativeWorkSummary(ctx context.Context, db nativeQueryer, scope nativeSc
 WHERE a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
 AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <= julianday(?) AND julianday(l.expires_at) > julianday(?))`
 	from := query[strings.Index(query, " FROM "):]
-	completed := "COALESCE(ws.terminal, 0) = 1"
-	countArgs := []any{formatHubTime(now), formatHubTime(now)}
+	completed := "COALESCE(ws.terminal, 0) = 1 AND ws.detent_state = ?"
+	countArgs := []any{formatHubTime(now), formatHubTime(now), nativeShippedState}
 	if completedWindow != "all" {
 		window, err := nativeCompletedWindow(completedWindow)
 		if err != nil {
 			return nil, err
 		}
-		entered := nativeTerminalEnteredAt
-		completed += " AND julianday(" + entered + ") BETWEEN julianday(?) AND julianday(?)"
+		completed += " AND julianday(" + nativeTerminalEnteredAt + ") BETWEEN julianday(?) AND julianday(?)"
 		countArgs = append(countArgs, formatHubTime(now.Add(-window)), formatHubTime(now))
 	}
 	statement := "SELECT COALESCE(ws.detent_state, ''), count(*), sum(CASE WHEN COALESCE(ws.terminal, 0) = 0 AND " + live + " THEN 1 ELSE 0 END), sum(CASE WHEN " + completed + " THEN 1 ELSE 0 END)" + from + " GROUP BY ws.detent_state"

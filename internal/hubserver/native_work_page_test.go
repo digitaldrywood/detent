@@ -374,12 +374,12 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 		want           int
 		status         int
 	}{
-		{"", "", 4, http.StatusOK},
-		{"48h", "", 4, http.StatusOK},
-		{"7d", "", 5, http.StatusOK},
-		{"14d", "", 6, http.StatusOK},
-		{"all", "", 10, http.StatusOK},
-		{"all", "&state=Cancelled", 1, http.StatusOK},
+		{"", "", 3, http.StatusOK},
+		{"48h", "", 3, http.StatusOK},
+		{"7d", "", 4, http.StatusOK},
+		{"14d", "", 4, http.StatusOK},
+		{"all", "", 8, http.StatusOK},
+		{"all", "&state=Cancelled", 0, http.StatusOK},
 		{"48h", "&state=Todo", 0, http.StatusOK},
 		{"48h", "&archived=true", 1, http.StatusOK},
 		{"bad", "", 0, http.StatusUnprocessableEntity},
