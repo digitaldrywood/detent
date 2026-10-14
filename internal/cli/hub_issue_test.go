@@ -33,7 +33,7 @@ func TestHubIssueRoutesMutationsToNativeAPI(t *testing.T) {
 					t.Error("missing scoped Hub credential")
 				}
 				w.Header().Set("Content-Type", "application/json")
-				if _, err := io.WriteString(w, `{}`); err != nil {
+				if _, err := io.WriteString(w, `{"work_item_id":"wi_example"}`); err != nil {
 					t.Error(err)
 				}
 			}))
