@@ -1,16 +1,21 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -26,6 +31,7 @@ type reportsCompletion struct {
 	Lead      operatortool.AnalyticsDuration       `json:"lead"`
 	Working   operatortool.AnalyticsDuration       `json:"working"`
 	Partial   bool                                 `json:"partial"`
+	perIssue  []float64
 }
 
 type reportsStage struct {
@@ -62,33 +68,67 @@ type reportsBucket struct {
 }
 
 type hostedReportsReport struct {
-	Pipeline     pipelineReport         `json:"pipeline"`
-	Requests     *requestMetricsReport  `json:"requests,omitempty"`
-	Analytics    nativeAnalyticsProject `json:"analytics"`
-	Completion   reportsCompletion      `json:"completion"`
-	Previous     reportsCompletion      `json:"previous"`
-	Series       []reportsSeriesBucket  `json:"series"`
-	FailedIssues int                    `json:"failed_issues"`
-	Runners      []reportsRunner        `json:"runners"`
-	OpenWork     reportsOpenWork        `json:"open_work"`
-	Prior        reportsPrior           `json:"prior"`
-	Stages       []reportsStage         `json:"stages"`
-	Spend        []reportsSpend         `json:"spend"`
-	Throughput   []reportsBucket        `json:"throughput"`
-	Titles       map[string]string      `json:"titles"`
-	Coverage     []diagnosticsCoverage  `json:"coverage"`
-	Rework       []reportClassTotal     `json:"rework_classes"`
-	Failures     []reportClassTotal     `json:"failure_classes"`
-	Tokens       int64                  `json:"tokens"`
-	Input        int64                  `json:"input"`
-	Cached       int64                  `json:"cached"`
-	Cost         float64                `json:"cost_usd"`
-	FirstTry     *float64               `json:"first_try_percent"`
-	Cancelled    int                    `json:"cancelled"`
-	PriorCost    *float64               `json:"previous_cost_usd,omitempty"`
-	PriorFirst   *float64               `json:"previous_first_try_percent"`
-	PriorFailed  *int                   `json:"previous_failed,omitempty"`
-	Unavailable  []string               `json:"unavailable"`
+	Pipeline      pipelineReport         `json:"pipeline"`
+	Requests      *requestMetricsReport  `json:"requests,omitempty"`
+	Analytics     nativeAnalyticsProject `json:"analytics"`
+	Completion    reportsCompletion      `json:"completion"`
+	Previous      reportsCompletion      `json:"previous"`
+	Series        []reportsSeriesBucket  `json:"series"`
+	FailedIssues  int                    `json:"failed_issues"`
+	Runners       []reportsRunner        `json:"runners"`
+	OpenWork      reportsOpenWork        `json:"open_work"`
+	Prior         reportsPrior           `json:"prior"`
+	Stages        []reportsStage         `json:"stages"`
+	Spend         []reportsSpend         `json:"spend"`
+	Throughput    []reportsBucket        `json:"throughput"`
+	Titles        map[string]string      `json:"titles"`
+	Coverage      []diagnosticsCoverage  `json:"coverage"`
+	Rework        []reportClassTotal     `json:"rework_classes"`
+	Failures      []reportClassTotal     `json:"failure_classes"`
+	Tokens        int64                  `json:"tokens"`
+	Input         int64                  `json:"input"`
+	Cached        int64                  `json:"cached"`
+	Cost          float64                `json:"cost_usd"`
+	FirstTry      *float64               `json:"first_try_percent"`
+	Cancelled     int                    `json:"cancelled"`
+	PriorCost     *float64               `json:"previous_cost_usd,omitempty"`
+	PriorFirst    *float64               `json:"previous_first_try_percent"`
+	PriorFailed   *int                   `json:"previous_failed,omitempty"`
+	Unavailable   []string               `json:"unavailable"`
+	PriorRecorded bool                   `json:"prior_recorded"`
+	firstTry      reportsRatio
+	priorFirst    reportsRatio
+	// firstTryMissing and priorFirstMissing mark a rate that had landings
+	// to measure but could not be computed, as opposed to having none.
+	firstTryMissing   bool
+	priorFirstMissing bool
+}
+
+// reportsRatio is the count behind a percentage, so that the percentages of
+// several projects combine exactly.
+type reportsRatio struct{ part, total int }
+
+const (
+	reportsProjectWorkers  = 4
+	reportsAllProjectsTime = 2 * hubReadTimeout
+)
+
+// reportsReadableProjects is the projects a report may read: the
+// credential's granted projects that also pass the read authorization, all
+// of them for `all` or the one requested.
+func (s *Service) reportsReadableProjects(ctx context.Context, credential apiCredential, project string) ([]string, bool, error) {
+	granted, err := s.usageReadableProjects(ctx, credential)
+	if err != nil {
+		return nil, false, err
+	}
+	if project != reportsAllProjects {
+		return []string{project}, slices.Contains(granted, project), nil
+	}
+	readable := slices.DeleteFunc(granted, func(id string) bool {
+		_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: id})
+		return err != nil
+	})
+	return readable, len(readable) > 0, nil
 }
 
 func (s *Service) hostedReports(c echo.Context) error {
@@ -97,38 +137,144 @@ func (s *Service) hostedReports(c echo.Context) error {
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
-	projects, err := s.usageReadableProjects(ctx, credential)
+	params := c.QueryParams()
+	project := params.Get("project")
+	selected, found, err := s.reportsReadableProjects(ctx, credential, project)
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
-	project := c.QueryParam("project")
-	if !slices.Contains(projects, project) {
+	if !found {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	hours := map[string]int{"24h": 24, "48h": 48, "7d": 168, "30d": 720, "90d": 2160}[c.QueryParam("range")]
-	if hours == 0 {
-		return s.nativeAPIError(c, nativeInvalid("Unsupported report range"))
+	w, err := reportsWindow(params, s.config.now())
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	to := s.config.now().UTC().Truncate(time.Hour)
-	bucket := time.Hour
-	if hours > 720 {
-		bucket = 24 * time.Hour
-	} else if hours > 240 {
-		bucket = 4 * time.Hour
+	filter, err := parseReportsFilter(params)
+	if err != nil {
+		return s.nativeAPIError(c, err)
 	}
-	w := operatortool.AnalyticsWindow{From: reportsWindowStart(to, hours), To: to, Bucket: bucket}
-	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project, Limit: maxAnalyticsPopulation}, w)
-	if err != nil || len(analytics.Projects) != 1 {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
+	compare := params.Get("compare")
+	if compare != "" && compare != "prior" && compare != "off" {
+		return s.nativeAPIError(c, nativeInvalid("compare must be prior or off"))
 	}
-	report, err := s.readHostedReports(ctx, analytics)
-	if err == nil {
-		err = s.reportsPriorQuality(ctx, nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(project)}, analytics.Window, &report.Prior)
+	var report hostedReportsReport
+	if project == reportsAllProjects {
+		report, err = s.readOrganizationReport(ctx, credential, selected, w, filter)
+	} else {
+		var readable bool
+		report, readable, err = s.readProjectReport(ctx, credential, project, w, filter)
+		if err == nil && !readable {
+			err = errors.New("project report not readable")
+		}
 	}
 	if err != nil {
+		s.config.Logger.Warn("read reports", "project", project, "error", err)
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
+	if compare == "off" {
+		report = withoutPriorPeriod(report)
+	}
 	return c.JSON(http.StatusOK, report)
+}
+
+// readOrganizationReport reads every project's report, a few at a time under
+// one deadline, and combines them into organization totals.
+func (s *Service) readOrganizationReport(ctx context.Context, credential apiCredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, reportsAllProjectsTime)
+	defer cancel()
+	reports := make([]hostedReportsReport, len(projects))
+	readable := make([]bool, len(projects))
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(reportsProjectWorkers)
+	for i, id := range projects {
+		group.Go(func() error {
+			report, ok, err := s.readProjectReport(groupCtx, credential, id, w, filter)
+			if err != nil {
+				return fmt.Errorf("read project %s: %w", id, err)
+			}
+			reports[i], readable[i] = report, ok
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return hostedReportsReport{}, err
+	}
+	read := make([]hostedReportsReport, 0, len(reports))
+	for i, report := range reports {
+		if readable[i] {
+			read = append(read, report)
+		}
+	}
+	if len(read) == 0 {
+		return hostedReportsReport{}, errors.New("no project report readable")
+	}
+	return mergeHostedReports(read, w), nil
+}
+
+// hostedReportOptions lists the values the filter chips offer, read only
+// from the projects the viewer's report can read. It is a separate read so
+// the report itself runs only its own statements.
+func (s *Service) hostedReportOptions(c echo.Context) error {
+	ctx := c.Request().Context()
+	credential, _, err := s.hostedCredential(ctx, c)
+	if err != nil {
+		return s.usageCredentialError(c, err)
+	}
+	params := c.QueryParams()
+	projects, found, err := s.reportsReadableProjects(ctx, credential, params.Get("project"))
+	if err != nil {
+		return s.usageCredentialError(c, err)
+	}
+	if !found {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if params.Get("project") != reportsAllProjects {
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: projects[0]}); err != nil {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+	}
+	w, err := reportsWindow(params, s.config.now())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	facets, err := s.readReportsFacets(ctx, projects, w)
+	if err != nil {
+		s.config.Logger.Warn("read report options", "error", err)
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Report filters are temporarily unavailable")
+	}
+	return c.JSON(http.StatusOK, facets)
+}
+
+// readProjectReport reads one project's report, narrowed by the filter. A
+// project the credential cannot read returns false.
+func (s *Service) readProjectReport(ctx context.Context, credential apiCredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
+	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
+	ctx, err := withReportsScope(ctx, scope, filter, w.From.Add(-w.To.Sub(w.From)), w.To)
+	if err != nil {
+		return hostedReportsReport{}, false, err
+	}
+	done := timeSpan(ctx, "reports_analytics")
+	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project, Limit: maxAnalyticsPopulation}, w)
+	done()
+	if err != nil {
+		return hostedReportsReport{}, false, fmt.Errorf("read analytics: %w", err)
+	}
+	if len(analytics.Projects) != 1 {
+		return hostedReportsReport{}, false, nil
+	}
+	report, err := s.readHostedReports(ctx, analytics)
+	if err != nil {
+		return report, false, fmt.Errorf("read report: %w", err)
+	}
+	done = timeSpan(ctx, "reports_prior_quality")
+	err = s.reportsPriorQuality(ctx, scope, analytics.Window, &report.Prior)
+	done()
+	if err != nil {
+		return report, false, fmt.Errorf("read prior quality: %w", err)
+	}
+	report.PriorRecorded = report.PriorCost != nil || report.PriorFirst != nil || report.Previous.Done+report.Previous.Cancelled > 0 || report.PriorFailed != nil && *report.PriorFailed > 0
+	return report, true, nil
 }
 
 func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyticsReport) (hostedReportsReport, error) {
@@ -141,7 +287,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	p := analytics.Projects[0]
 	w := analytics.Window
 	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Series: []reportsSeriesBucket{}, Runners: []reportsRunner{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
+	done := timeSpan(ctx, "reports_diagnostics")
 	diagnostics, err := s.readHostedDiagnosticsFrom(ctx, analytics, q)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -172,18 +320,25 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		return out, err
 	}
 	var shipped, priorShipped []nativeShippedIssue
+	done = timeSpan(ctx, "reports_completion")
 	out.Completion, shipped, err = readReportsCompletion(ctx, q, scope, states, w.From, w.To)
+	done()
 	if err != nil {
 		return out, err
 	}
+	done = timeSpan(ctx, "reports_prior_completion")
 	out.Previous, priorShipped, err = readReportsCompletion(ctx, q, scope, states, w.From.Add(-w.To.Sub(w.From)), w.From)
+	done()
 	if err != nil {
 		return out, err
 	}
 	inputs := reportsInputs{done: reportsDoneFrom(shipped), priorDone: reportsDoneFrom(priorShipped), timing: func(ids []string, to time.Time) (reportsCompletion, error) {
 		return readShippedCompletionTiming(ctx, q, scope, states, ids, to)
 	}}
-	if err := readReportsResidence(ctx, q, scope, w, &inputs); err != nil {
+	done = timeSpan(ctx, "reports_residence")
+	err = readReportsResidence(ctx, q, scope, w, &inputs)
+	done()
+	if err != nil {
 		return out, err
 	}
 	for _, issue := range shipped {
@@ -191,7 +346,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 			out.Throughput[i].Done++
 		}
 	}
+	done = timeSpan(ctx, "reports_usage")
 	rows, err := readUsageRows(ctx, q, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -206,9 +363,13 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		out.Input += row.Input
 		out.Cached += row.CachedInput
 	}
-	if out.Cost, _, err = readProjectSpend(ctx, q, scope, w.From, w.To); err != nil {
+	done = timeSpan(ctx, "reports_spend")
+	out.Cost, _, err = readProjectSpend(ctx, q, scope, w.From, w.To)
+	done()
+	if err != nil {
 		return out, err
 	}
+	done = timeSpan(ctx, "reports_totals")
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
 	out.Runners = reportsRunnerTotals(p.allAttempts, usage)
 	reportsSpendOutcomes(out.Spend, p.allAttempts, inputs)
@@ -217,13 +378,22 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
 	reportClassDetails(out.Rework, out.Failures, p.Quality.returns, p.failures)
-	if err := s.reportsTrackingIssues(ctx, scope, out.Failures, p.failures); err != nil {
+	done()
+	done = timeSpan(ctx, "reports_tracking")
+	err = s.reportsTrackingIssues(ctx, scope, out.Failures, p.failures)
+	done()
+	if err != nil {
 		return out, err
 	}
-	if out.Series, err = reportsSeries(inputs, p.allAttempts, usage, w); err != nil {
+	done = timeSpan(ctx, "reports_series")
+	out.Series, err = reportsSeries(inputs, p.allAttempts, usage, w)
+	if err == nil {
+		reportsSeriesClasses(out.Series, p.Quality.returns, p.failures, w)
+	}
+	done()
+	if err != nil {
 		return out, err
 	}
-	reportsSeriesClasses(out.Series, p.Quality.returns, p.failures, w)
 	policy, err := diagnosticsPolicyValues(ctx, q, scope)
 	if err != nil {
 		return out, err
@@ -258,17 +428,24 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	}
 	firstTryPopulation := p
 	firstTryPopulation.Landings.Items = p.allLandings
-	rate, available, err := s.reportsFirstTry(ctx, scope, firstTryPopulation)
+	done = timeSpan(ctx, "reports_first_try")
+	first, total, available, err := s.reportsFirstTryCounts(ctx, q, scope, firstTryPopulation)
+	done()
 	if err != nil {
 		return out, err
 	}
 	if available {
-		out.FirstTry = &rate
+		out.firstTry = reportsRatio{first, total}
+		out.FirstTry = new(100 * float64(first) / float64(total))
 	} else {
 		out.Unavailable = append(out.Unavailable, "landed_first_try")
+		out.firstTryMissing = len(firstTryPopulation.Landings.Items) > 0
 	}
 	out.Cancelled = out.Completion.Cancelled
-	if err := s.readReportsPrior(ctx, q, scope, operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From}, &out); err != nil {
+	done = timeSpan(ctx, "reports_prior")
+	err = s.readReportsPrior(ctx, q, scope, operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From}, &out)
+	done()
+	if err != nil {
 		return out, err
 	}
 	titleIDs := []string{}
@@ -394,8 +571,9 @@ func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeSco
 		for _, cost := range perIssue {
 			costs = append(costs, cost)
 		}
-		spread := analyticsDuration(costs)
+		spread := sampledDuration(costs)
 		out.CostP50, out.CostP90 = &spread.P50Seconds, &spread.P90Seconds
+		out.perIssue = spread.Samples
 	}
 	return out, population.Shipped, err
 }
@@ -458,11 +636,11 @@ func reportsCompletions(timelines []analyticsResidenceTimeline, states map[strin
 }
 
 func reportsCompletionDurations(out reportsCompletion, states map[string]tracker.NativeState, system, lead, working []float64, lanes map[string][]float64) reportsCompletion {
-	out.System = analyticsDuration(system)
-	out.Lead = analyticsDuration(lead)
-	out.Working = analyticsDuration(working)
+	out.System = sampledDuration(system)
+	out.Lead = sampledDuration(lead)
+	out.Working = sampledDuration(working)
 	for lane, values := range lanes {
-		out.Lanes = append(out.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, states), AnalyticsDuration: analyticsDuration(values)})
+		out.Lanes = append(out.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, states), AnalyticsDuration: sampledDuration(values)})
 	}
 	sort.Slice(out.Lanes, func(i, j int) bool { return out.Lanes[i].Lane < out.Lanes[j].Lane })
 	return out
@@ -516,7 +694,7 @@ func reportsAttemptTotals(attempts []nativeAnalyticsAttempt, usage map[string][]
 	}
 	result := []reportsStage{}
 	for key, row := range stages {
-		row.Duration = analyticsDuration(durations[key])
+		row.Duration = sampledDuration(durations[key])
 		slices.Sort(issues[key])
 		row.Issues = len(slices.Compact(issues[key]))
 		result = append(result, *row)
@@ -553,7 +731,11 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 		out.PriorCost = &cost
 	}
 	var attempts int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts); err != nil {
+	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
+	if err != nil {
+		return err
+	}
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
 		return fmt.Errorf("read prior attempts: %w", err)
 	}
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &prior)
@@ -570,34 +752,51 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	}
 	population := nativeAnalyticsProject{Partial: len(landings) > maxAnalyticsPopulation}
 	population.Landings.Items = landings
-	rate, available, err := s.reportsFirstTry(ctx, scope, population)
+	first, total, available, err := s.reportsFirstTryCounts(ctx, q, scope, population)
 	if err != nil {
 		return fmt.Errorf("read prior first try: %w", err)
 	}
 	if available {
-		out.PriorFirst = &rate
+		out.priorFirst = reportsRatio{first, total}
+		out.PriorFirst = new(100 * float64(first) / float64(total))
+	} else {
+		out.priorFirstMissing = len(landings) > 0
 	}
 	return nil
 }
 
 func (s *Service) reportsFirstTry(ctx context.Context, scope nativeScope, p nativeAnalyticsProject) (float64, bool, error) {
-	if p.Partial || len(p.Landings.Items) == 0 {
-		return 0, false, nil
+	first, total, available, err := s.reportsFirstTryCounts(ctx, s.database.reader, scope, p)
+	if err != nil || !available {
+		return 0, false, err
 	}
-	first, total := 0, 0
+	return 100 * float64(first) / float64(total), true, nil
+}
+
+func (s *Service) reportsFirstTryCounts(ctx context.Context, q nativeQueryer, scope nativeScope, p nativeAnalyticsProject) (int, int, bool, error) {
+	if p.Partial || len(p.Landings.Items) == 0 {
+		return 0, 0, false, nil
+	}
+	landings := []nativeAnalyticsLanding{}
 	seen := map[string]bool{}
 	for _, landing := range p.Landings.Items {
-		id := string(landing.WorkItemID)
-		if seen[id] {
-			continue
+		if !seen[string(landing.WorkItemID)] {
+			seen[string(landing.WorkItemID)] = true
+			landings = append(landings, landing)
 		}
-		seen[id] = true
-		count, complete, err := s.reportsLandingAttemptCount(ctx, scope, landing)
+	}
+	receipts, err := readLandingAttemptReceipts(ctx, q, scope, landings)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	first, total := 0, 0
+	for i, landing := range landings {
+		count, complete, err := landingAttemptCount(landing, receipts[i])
 		if err != nil {
-			return 0, false, err
+			return 0, 0, false, err
 		}
 		if !complete {
-			return 0, false, nil
+			return 0, 0, false, nil
 		}
 		if count == 1 {
 			first++
@@ -605,25 +804,65 @@ func (s *Service) reportsFirstTry(ctx context.Context, scope nativeScope, p nati
 		total++
 	}
 	if total == 0 {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
-	return 100 * float64(first) / float64(total), true, nil
+	return first, total, true, nil
 }
 
-func (s *Service) reportsLandingAttemptCount(ctx context.Context, scope nativeScope, landing nativeAnalyticsLanding) (int, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT coalesce(json_extract(data_json,'$.runtime.landing'),'null') FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND julianday(started_at)<=julianday(?) AND (json_extract(data_json,'$.runtime.identity.role')='merge' OR json_extract(data_json,'$.runtime.landing') IS NOT NULL) ORDER BY started_at,id LIMIT ?`, scope.organization, scope.project, landing.WorkItemID, formatHubTime(landing.Landing.LandedAt), maxAnalyticsPopulation+1)
+// readLandingAttemptReceipts reads, for every landing in one statement, the
+// landing receipts of the merge attempts its work item started by the time
+// it landed, in start order.
+func readLandingAttemptReceipts(ctx context.Context, q nativeQueryer, scope nativeScope, landings []nativeAnalyticsLanding) ([][]string, error) {
+	type landed struct {
+		WorkItemID string `json:"work_item_id"`
+		LandedAt   string `json:"landed_at"`
+	}
+	keys := make([]landed, 0, len(landings))
+	for _, landing := range landings {
+		keys = append(keys, landed{string(landing.WorkItemID), formatHubTime(landing.Landing.LandedAt)})
+	}
+	encoded, err := marshalNative(keys)
 	if err != nil {
-		return 0, false, err
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT l.key,a.started_at,a.id,coalesce(json_extract(a.data_json,'$.runtime.landing'),'null') FROM json_each(?) l
+CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=json_extract(l.value,'$.work_item_id') AND julianday(+a.started_at)<=julianday(json_extract(l.value,'$.landed_at'))
+AND (json_extract(a.data_json,'$.runtime.identity.role')='merge' OR json_extract(a.data_json,'$.runtime.landing') IS NOT NULL)`, encoded, scope.organization, scope.project)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	count := 0
+	type receipt struct{ started, id, raw string }
+	found := make([][]receipt, len(landings))
 	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return 0, false, err
+		var landing int
+		var r receipt
+		if err := rows.Scan(&landing, &r.started, &r.id, &r.raw); err != nil {
+			return nil, err
 		}
+		found[landing] = append(found[landing], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([][]string, len(landings))
+	for i, receipts := range found {
+		slices.SortFunc(receipts, func(a, b receipt) int {
+			return cmp.Or(strings.Compare(a.started, b.started), strings.Compare(a.id, b.id))
+		})
+		for _, r := range receipts[:min(len(receipts), maxAnalyticsPopulation+1)] {
+			out[i] = append(out[i], r.raw)
+		}
+	}
+	return out, nil
+}
+
+// landingAttemptCount is the number of merge attempts up to and including
+// the one that landed the change, and false when that attempt is not among
+// the recorded receipts.
+func landingAttemptCount(landing nativeAnalyticsLanding, receipts []string) (int, bool, error) {
+	count := 0
+	for _, raw := range receipts {
 		var receipt *tracker.NativeLandingReceipt
 		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
 			return 0, false, err
@@ -636,5 +875,5 @@ func (s *Service) reportsLandingAttemptCount(ctx context.Context, scope nativeSc
 			return count, true, nil
 		}
 	}
-	return 0, false, rows.Err()
+	return 0, false, nil
 }

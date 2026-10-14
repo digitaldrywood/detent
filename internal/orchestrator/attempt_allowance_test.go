@@ -461,7 +461,6 @@ func TestAttemptAllowanceLiveHead(t *testing.T) {
 			}
 			cfg.AutoPromote.Gate.Validator.Enabled = tt.validator
 			cfg.AutoPromote.Gate.SecurityAudit.Enabled = tt.audit
-			cfg.ServiceIdentity = "test-service"
 			db, _ := openLaneMutationTestStore(t, t.Context(), cfg.Project.ID, issue, now)
 			orch := newLaneMutationTestOrchestrator(cfg, tracker, db, db, now)
 			orch.securityAuditStore = db

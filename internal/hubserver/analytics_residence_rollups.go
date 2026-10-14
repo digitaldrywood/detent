@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -280,21 +281,82 @@ func residenceSampleItem(sample analyticsResidenceSample, states map[string]trac
 	return item
 }
 
+// analyticsResidenceFrames holds each issue's residence sample at each of
+// the requested points. An issue's sample at a point is its last edge earlier
+// in the point's hour, or else its last hourly sample before that hour.
 type analyticsResidenceFrames struct {
 	states  map[string]tracker.NativeState
 	ids     []string
-	samples map[int64]map[string]analyticsResidenceSample
+	points  map[int64]int
+	issues  map[string]int
+	samples []*analyticsResidenceSample
+	cutoffs map[string]residenceCutoff
 	clipped bool
 }
 
+// residenceRow is one residence rollup row; edges sort by hour, AtNS and
+// event count, hourly samples by hour. Its sample is decoded only when a
+// point selects it.
+type residenceRow struct {
+	hour, atNS int64
+	value      float64
+	raw        string
+	sample     *analyticsResidenceSample
+}
+
+func (r *residenceRow) decode() (*analyticsResidenceSample, error) {
+	if r.sample == nil {
+		r.sample = &analyticsResidenceSample{}
+		if err := json.Unmarshal([]byte(r.raw), r.sample); err != nil {
+			return nil, err
+		}
+	}
+	return r.sample, nil
+}
+
+// residenceCutoff replaces the samples of an issue whose events exceed the
+// population budget with the sample at the last allowed event.
+type residenceCutoff struct {
+	allowed int
+	sample  analyticsResidenceSample
+}
+
+// sample is the issue's residence sample at one of the frame points. A time
+// that is not a point, or an issue with no sample yet, has none.
+func (f analyticsResidenceFrames) sample(at time.Time, id string) (analyticsResidenceSample, bool) {
+	point, ok := f.points[at.UnixNano()]
+	issue, known := f.issues[id]
+	if !ok || !known {
+		return analyticsResidenceSample{}, false
+	}
+	found := f.samples[point*len(f.ids)+issue]
+	if found == nil {
+		return analyticsResidenceSample{}, false
+	}
+	sample := *found
+	if cutoff, clipped := f.cutoffs[id]; clipped {
+		if sample.Events > cutoff.allowed {
+			sample = cutoff.sample
+		}
+		sample.Partial = true
+	}
+	return sample, true
+}
+
+func (f analyticsResidenceFrames) at(at time.Time, id string) analyticsResidenceSample {
+	sample, _ := f.sample(at, id)
+	return sample
+}
+
 func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, points []time.Time) (analyticsResidenceFrames, error) {
-	out := analyticsResidenceFrames{samples: map[int64]map[string]analyticsResidenceSample{}}
+	out := analyticsResidenceFrames{points: map[int64]int{}, issues: map[string]int{}, cutoffs: map[string]residenceCutoff{}}
 	var err error
 	out.states, err = analyticsResidenceStates(ctx, q, scope)
 	if err != nil {
 		return out, err
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?) AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?)) ORDER BY native_id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From))
+	issues, issueArgs := reportsIssueClause(ctx, "i.native_id")
+	rows, err := queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?) AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))`+issues+` ORDER BY native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
 	if err != nil {
 		return out, err
 	}
@@ -315,58 +377,80 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
+	if len(points) == 0 || len(out.ids) == 0 {
+		return out, nil
+	}
+	instants := make([]int64, 0, len(points))
+	for _, at := range points {
+		instants = append(instants, at.UnixNano())
+	}
+	slices.Sort(instants)
+	instants = slices.Compact(instants)
+	for i, ns := range instants {
+		out.points[ns] = i
+	}
+	firstHour, lastHour := residenceHour(instants[0]), residenceHour(instants[len(instants)-1])
+	for i, id := range out.ids {
+		out.issues[id] = i
+	}
+	edges, hours := map[string][]residenceRow{}, map[string][]residenceRow{}
 	ids, err := json.Marshal(out.ids)
 	if err != nil {
 		return out, err
 	}
-	type point struct{ NS, Hour int64 }
-	var times []point
-	seen := map[int64]bool{}
-	for _, at := range points {
-		if !seen[at.UnixNano()] {
-			times = append(times, point{at.UnixNano(), at.Truncate(time.Hour).Unix()})
-			seen[at.UnixNano()] = true
+	read := func(rows *sql.Rows, err error) error {
+		if err != nil {
+			return err
 		}
-		out.samples[at.UnixNano()] = map[string]analyticsResidenceSample{}
+		defer rows.Close()
+		for rows.Next() {
+			var metric, dimension, id string
+			var row residenceRow
+			if err := rows.Scan(&metric, &dimension, &id, &row.hour, &row.atNS, &row.value, &row.raw); err != nil {
+				return err
+			}
+			if _, wanted := out.issues[id]; wanted && metric == "residence_edge" {
+				edges[id] = append(edges[id], row)
+			} else if _, wanted := out.issues[dimension]; wanted && metric == "residence_hour" {
+				hours[dimension] = append(hours[dimension], row)
+			}
+		}
+		return rows.Err()
 	}
-	encoded, err := json.Marshal(times)
-	if err != nil {
+	if err := read(q.QueryContext(ctx, `SELECT metric,dimension,'',hour,0,value,data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND hour>=? AND hour<?`,
+		scope.organization, scope.project, firstHour, lastHour)); err != nil {
 		return out, err
 	}
-	result, err := q.QueryContext(ctx, `SELECT json_extract(p.value,'$.NS'),coalesce(
- (SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND hour=json_extract(p.value,'$.Hour') AND json_extract(data_json,'$.ID')=i.value AND json_extract(data_json,'$.AtNS')<json_extract(p.value,'$.NS') ORDER BY json_extract(data_json,'$.AtNS') DESC,value DESC LIMIT 1),
- (SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=i.value AND hour<json_extract(p.value,'$.Hour') ORDER BY hour DESC LIMIT 1),'null')
- FROM json_each(?) i CROSS JOIN json_each(?) p`, scope.organization, scope.project, scope.organization, scope.project, string(ids), string(encoded))
-	if err != nil {
-		return out, err
+	var edgeHours []int64
+	for _, ns := range instants {
+		if hour := residenceHour(ns); hour*int64(time.Second) != ns && !slices.Contains(edgeHours, hour) {
+			edgeHours = append(edgeHours, hour)
+		}
 	}
-	defer result.Close()
-	for result.Next() {
-		var ns int64
-		var raw string
-		if err := result.Scan(&ns, &raw); err != nil {
+	if len(edgeHours) > 0 {
+		encoded, err := json.Marshal(edgeHours)
+		if err != nil {
 			return out, err
 		}
-		if raw == "null" {
-			continue
-		}
-		var sample analyticsResidenceSample
-		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+		if err := read(q.QueryContext(ctx, `SELECT r.metric,r.dimension,coalesce(json_extract(r.data_json,'$.ID'),''),r.hour,coalesce(json_extract(r.data_json,'$.AtNS'),0),r.value,r.data_json FROM json_each(?) h CROSS JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='residence_edge' AND r.hour=h.value`,
+			string(encoded), scope.organization, scope.project)); err != nil {
 			return out, err
 		}
-		samples := out.samples[ns]
-		if samples == nil {
-			samples = map[string]analyticsResidenceSample{}
-			out.samples[ns] = samples
-		}
-		samples[sample.ID] = sample
 	}
-	if err := errors.Join(result.Err(), result.Close()); err != nil {
+	if err := read(q.QueryContext(ctx, `SELECT r.metric,r.dimension,'',r.hour,0,r.value,r.data_json FROM json_each(?) i JOIN analytics_hourly_rollups r ON r.rowid=(SELECT rowid FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=i.value AND hour<? ORDER BY hour DESC LIMIT 1)`,
+		string(ids), scope.organization, scope.project, firstHour)); err != nil {
 		return out, err
+	}
+	out.samples = make([]*analyticsResidenceSample, len(instants)*len(out.ids))
+	for issue, id := range out.ids {
+		if err := selectResidenceSamples(out.samples[issue:], len(out.ids), instants, edges[id], hours[id]); err != nil {
+			return out, err
+		}
 	}
 	remaining := maxAnalyticsPopulation
+	var clipped []residenceClip
 	for _, id := range out.ids {
-		end := out.samples[w.To.UnixNano()][id]
+		end := out.at(w.To, id)
 		allowed := min(remaining, end.Events)
 		remaining -= allowed
 		if end.Events <= allowed {
@@ -376,28 +460,96 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 		if page := analyticsPagingFromContext(ctx); page != nil {
 			page.next["residence_events"] = "residence_events:1000:" + strconv.Itoa(analyticsPopulationOffset(ctx, "residence_issues"))
 		}
-		var raw string
-		if err := q.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND json_extract(data_json,'$.ID')=? AND value=? ORDER BY json_extract(data_json,'$.AtNS'),json_extract(data_json,'$.Sequence') LIMIT 1`, scope.organization, scope.project, id, allowed).Scan(&raw); err != nil {
-			return out, err
+		clipped = append(clipped, residenceClip{ID: id, Allowed: allowed})
+	}
+	if len(clipped) == 0 {
+		return out, nil
+	}
+	return out, readResidenceCutoffs(ctx, q, scope, clipped, out.cutoffs)
+}
+
+func residenceHour(ns int64) int64 {
+	return time.Unix(0, ns).Truncate(time.Hour).Unix()
+}
+
+// selectResidenceSamples walks the ascending points and one issue's rows
+// together and stores the sample each point selects at every stride-th
+// entry of selected, decoding only the rows a point selects.
+func selectResidenceSamples(selected []*analyticsResidenceSample, stride int, instants []int64, edges, hours []residenceRow) error {
+	slices.SortFunc(edges, func(a, b residenceRow) int {
+		return cmp.Or(cmp.Compare(a.hour, b.hour), cmp.Compare(a.atNS, b.atNS), cmp.Compare(a.value, b.value))
+	})
+	slices.SortFunc(hours, func(a, b residenceRow) int { return cmp.Compare(a.hour, b.hour) })
+	edge, hourly := 0, 0
+	for point, ns := range instants {
+		hour := residenceHour(ns)
+		for edge < len(edges) && (edges[edge].hour < hour || edges[edge].hour == hour && edges[edge].atNS < ns) {
+			edge++
 		}
-		var cutoff analyticsResidenceSample
-		if err := json.Unmarshal([]byte(raw), &cutoff); err != nil {
-			return out, err
+		for hourly < len(hours) && hours[hourly].hour < hour {
+			hourly++
 		}
-		for ns, samples := range out.samples {
-			sample, exists := samples[id]
-			if !exists {
-				continue
-			}
-			if sample.Events > allowed {
-				sample = cutoff
-			}
-			sample.Partial = true
-			samples[id] = sample
-			out.samples[ns] = samples
+		var row *residenceRow
+		if edge > 0 && len(edges) >= edge && edges[edge-1].hour == hour {
+			row = &edges[edge-1]
+		} else if hourly > 0 && len(hours) >= hourly {
+			row = &hours[hourly-1]
+		}
+		if row == nil {
+			continue
+		}
+		sample, err := row.decode()
+		if err != nil {
+			return err
+		}
+		selected[point*stride] = sample
+	}
+	return nil
+}
+
+type residenceClip struct {
+	ID      string `json:"id"`
+	Allowed int    `json:"allowed"`
+}
+
+// readResidenceCutoffs reads, for each clipped issue and its allowed event
+// count, the earliest edge at that count in one statement.
+func readResidenceCutoffs(ctx context.Context, q nativeQueryer, scope nativeScope, clipped []residenceClip, cutoffs map[string]residenceCutoff) error {
+	encoded, err := json.Marshal(clipped)
+	if err != nil {
+		return err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT json_extract(c.value,'$.id'),r.data_json FROM json_each(?) c CROSS JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='residence_edge' AND json_extract(r.data_json,'$.ID')=json_extract(c.value,'$.id') AND r.value=json_extract(c.value,'$.allowed')`, string(encoded), scope.organization, scope.project)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		var sample analyticsResidenceSample
+		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+			return err
+		}
+		current, seen := cutoffs[id]
+		if !seen || sample.AtNS < current.sample.AtNS || sample.AtNS == current.sample.AtNS && sample.Sequence < current.sample.Sequence {
+			cutoffs[id] = residenceCutoff{sample: sample}
 		}
 	}
-	return out, nil
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, clip := range clipped {
+		cutoff, found := cutoffs[clip.ID]
+		if !found {
+			return sql.ErrNoRows
+		}
+		cutoff.allowed = clip.Allowed
+		cutoffs[clip.ID] = cutoff
+	}
+	return nil
 }
 
 func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Time) (operatortool.AnalyticsResidenceSummary, []operatortool.AnalyticsIssueResidence) {
@@ -407,8 +559,8 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 	causes := map[string]operatortool.AnalyticsReworkCause{}
 	var system, held, queue, lead []float64
 	for _, id := range frames.ids {
-		end := frames.samples[to.UnixNano()][id]
-		begin := frames.samples[from.UnixNano()][id]
+		end := frames.at(to, id)
+		begin := frames.at(from, id)
 		item := residenceSampleItem(end, frames.states, to)
 		item.WorkItemID = id
 		endLanes, endQueue := residenceSampleNanoseconds(end, frames.states, to)
@@ -456,7 +608,7 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 		items = append(items, item)
 	}
 	for lane, values := range lanes {
-		summary.Lanes = append(summary.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, frames.states), AnalyticsDuration: analyticsDuration(values)})
+		summary.Lanes = append(summary.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, frames.states), AnalyticsDuration: sampledDuration(values)})
 	}
 	sort.Slice(summary.Lanes, func(i, j int) bool { return summary.Lanes[i].Lane < summary.Lanes[j].Lane })
 	for _, cause := range causes {
@@ -469,7 +621,7 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 		}
 		return a.ReasonDetail < b.ReasonDetail
 	})
-	summary.SystemTotal, summary.HeldTotal, summary.QueueTotal, summary.LeadTotal = analyticsDuration(system), analyticsDuration(held), analyticsDuration(queue), analyticsDuration(lead)
+	summary.SystemTotal, summary.HeldTotal, summary.QueueTotal, summary.LeadTotal = sampledDuration(system), sampledDuration(held), sampledDuration(queue), sampledDuration(lead)
 	return summary, items
 }
 
@@ -488,7 +640,7 @@ func projectAnalyticsResidenceRollups(ctx context.Context, q nativeQueryer, scop
 	available := false
 	aging := []operatortool.AnalyticsAging{}
 	for _, id := range frames.ids {
-		sample := frames.samples[out.Window.To.UnixNano()][id]
+		sample := frames.at(out.Window.To, id)
 		residence.EventsObserved += sample.Events
 		available = available || sample.Initial != ""
 		out.SourceAt = maxTime(out.SourceAt, maxTime(sample.Created, sample.At))
@@ -554,7 +706,7 @@ func projectResidencePipelineRollups(ctx context.Context, q nativeQueryer, scope
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			return err
 		}
-		sample := frames.samples[out.Window.To.UnixNano()][m.ID]
+		sample := frames.at(out.Window.To, m.ID)
 		if sample.Partial || !m.From.Before(out.Window.To) {
 			continue
 		}
@@ -582,14 +734,14 @@ func readDiagnosticsResidenceRollups(ctx context.Context, q nativeQueryer, scope
 	}
 	transitions := 0
 	for _, id := range frames.ids {
-		transitions += frames.samples[out.To.UnixNano()][id].Transitions - frames.samples[out.From.UnixNano()][id].Transitions
+		transitions += frames.at(out.To, id).Transitions - frames.at(out.From, id).Transitions
 	}
 	for i := range out.Capacity {
 		at := minTime(out.Capacity[i].Hour.Add(time.Hour), out.To)
 		count := 0
 		partial := frames.clipped
 		for _, id := range frames.ids {
-			sample, ok := frames.samples[at.UnixNano()][id]
+			sample, ok := frames.sample(at, id)
 			if !ok {
 				continue
 			}

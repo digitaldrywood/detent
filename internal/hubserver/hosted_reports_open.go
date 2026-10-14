@@ -29,6 +29,7 @@ type reportsPrior struct {
 	ReworkPercent         *float64           `json:"rework_percent"`
 	InfrastructureReturns *int               `json:"infrastructure_returns,omitempty"`
 	LaneSeconds           map[string]float64 `json:"lane_seconds"`
+	rework                reportsRatio
 }
 
 func reportsOpenAt(issue reportsOpenIssue, states map[string]tracker.NativeState, at time.Time) (string, bool) {
@@ -105,6 +106,7 @@ func (s *Service) reportsPriorQuality(ctx context.Context, scope nativeScope, w 
 		return err
 	}
 	out.ReworkPercent = quality.ReworkPercent
+	out.rework = reportsRatio{quality.ReworkedItems, quality.WorkedItems}
 	if !quality.Partial {
 		returns := quality.InfraReturns
 		out.InfrastructureReturns = &returns

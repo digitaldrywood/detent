@@ -47,9 +47,20 @@ func nativeReadQuery(c echo.Context) (url.Values, error) {
 }
 
 func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
+	return s.readNativePageLimit(ctx, scope, path, params, maxAPIPageLimit, defaultAPIPageLimit)
+}
+
+func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, path string, params url.Values, maximum, defaultLimit int) (int, nativeCursor, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	limit, err := parsePageLimit(params.Get("limit"))
+	limit := defaultLimit
+	var err error
+	if value := strings.TrimSpace(params.Get("limit")); value != "" {
+		limit, err = strconv.Atoi(value)
+	}
+	if limit < 1 || limit > maximum {
+		err = nativeInvalid("Page limit is invalid")
+	}
 	if err != nil {
 		return 0, nativeCursor{}, nil, nativeInvalid("Page limit is invalid")
 	}
@@ -247,106 +258,14 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 		return tracker.NativeIssuePage{}, err
 	}
 
-	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id = ? `
-	args := []any{scope.organization, scope.project}
-	searchQuery := strings.TrimSpace(params.Get("q"))
-	if searchQuery != "" {
-		expressions := nativeSearchExpressions(searchQuery)
-		terms, err := json.Marshal(expressions)
-		if err != nil {
-			return tracker.NativeIssuePage{}, err
-		}
-		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+"WHERE i.organization_id", 1)
-		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms)}, args...)
-	}
-	var dateClauses strings.Builder
-	for _, filter := range []struct{ name, column, operator string }{
-		{"created_after", "native_created_at", ">="}, {"created_before", "native_created_at", "<"}, {"updated_after", "native_updated_at", ">="},
-	} {
-		if value := params.Get(filter.name); value != "" {
-			date, err := time.Parse(time.RFC3339Nano, value)
-			if err != nil {
-				return tracker.NativeIssuePage{}, nativeInvalid("Date filters must be RFC3339 timestamps")
-			}
-			dateClauses.WriteString(" AND rtrim(i." + filter.column + ", 'Z') " + filter.operator + " ?")
-			args = append(args, strings.TrimSuffix(formatHubTime(date), "Z"))
-		}
-	}
-	query += dateClauses.String()
-	createdBy, err := nativeCreatedBy(scope, params)
+	query, args, err := nativeIssueSelection(scope, params, includeWorkspace)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
-	if createdBy != "" {
-		query += " AND json_extract(i.actor_json, '$.principal_id') = ?"
-		args = append(args, createdBy)
-	}
-	switch params.Get("archived") {
-	case "", "false":
-		query += " AND i.archived = 0"
-	case "true":
-		query += " AND i.archived = 1"
-	case "all":
-	default:
-		return tracker.NativeIssuePage{}, nativeInvalid("archived must be true, false or all")
-	}
-	switch params.Get("open") {
-	case "":
-	case "true":
-		query += " AND ws.terminal = 0"
-	case "false":
-		query += " AND ws.terminal = 1"
-	default:
-		return tracker.NativeIssuePage{}, nativeInvalid("open must be true or false")
-	}
-	if value := strings.TrimSpace(params.Get("fingerprint")); value != "" {
-		query += " AND (instr(i.body, ?) > 0 OR EXISTS (SELECT 1 FROM native_comments c WHERE c.work_item_id = i.native_id AND instr(c.body, ?) > 0))"
-		marker := "\nfingerprint: " + value + "\n"
-		args = append(args, marker, marker)
-	}
-	if !includeWorkspace {
-		// Workspace items hold a worktree open for a person's surfaces, not
-		// project work (decisions section 18.1): the board would otherwise
-		// fill with one card per opened Files panel.
-		query += " AND " + notWorkspaceItemClause
-	}
-	var filterClauses strings.Builder
-	for _, filter := range []struct{ name, clause string }{
-		{"type", "i.issue_type = ?"},
-		{"verification", "i.verification_state = ?"},
-		{"state", "ws.detent_state = ?"},
-		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
-		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},
-		{"priority", "EXISTS (SELECT 1 FROM queue_entries q WHERE q.issue_id = i.id AND q.priority_override = ?)"},
-	} {
-		var alternatives []string
-		for _, value := range params[filter.name] {
-			if value == "" {
-				continue
-			}
-			alternatives = append(alternatives, filter.clause)
-			args = append(args, value)
-		}
-		if len(alternatives) > 0 {
-			filterClauses.WriteString(" AND (" + strings.Join(alternatives, " OR ") + ")")
-		}
-	}
-	query += filterClauses.String()
+	searchQuery := strings.TrimSpace(params.Get("q"))
 	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	if summary && workIncluded {
 		return tracker.NativeIssuePage{}, nativeInvalid("summary cannot include work")
-	}
-	if value := strings.TrimSpace(params.Get("q")); value != "" {
-		text := "i.title"
-		if !workIncluded {
-			text += " || ' ' || i.body"
-		}
-		query += " AND (search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
-			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
-			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
-			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"
-		args = append(args, value, value, value, value)
 	}
 
 	var work *tracker.NativeWorkSummary
@@ -364,8 +283,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	page.Total = total
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
-		for _, issue := range work.Items {
-			operational[string(issue.WorkItemID)] = issue
+		for i, issue := range work.Items {
+			work.Items[i] = s.nativeIssueResponse(issue)
+			operational[string(issue.WorkItemID)] = work.Items[i]
 		}
 	}
 	hasMore := len(items) > limit
@@ -398,6 +318,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		next.Issues = &item.Position
 		if summary {
 			issue = operatortool.NativeListIssue(issue)
+		}
+		if summary || workIncluded {
 			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
 			candidate.NextCursor, err = encodeNativeCursor(next, key)
 			if err != nil {
@@ -665,4 +587,107 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 
 func nativeVerificationFilterInvalid() error {
 	return &nativeError{Code: "invalid_request", Message: "verification must be pending or verified", status: http.StatusUnprocessableEntity, publicMessage: true}
+}
+
+func nativeIssueSelection(scope nativeScope, params url.Values, includeWorkspace bool) (string, []any, error) {
+	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
+WHERE i.organization_id = ? AND i.project_id = ? `
+	args := []any{scope.organization, scope.project}
+	searchQuery := strings.TrimSpace(params.Get("q"))
+	if searchQuery != "" {
+		expressions := nativeSearchExpressions(searchQuery)
+		terms, err := json.Marshal(expressions)
+		if err != nil {
+			return "", nil, err
+		}
+		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+"WHERE i.organization_id", 1)
+		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms)}, args...)
+	}
+	var dateClauses strings.Builder
+	for _, filter := range []struct{ name, column, operator string }{
+		{"created_after", "native_created_at", ">="}, {"created_before", "native_created_at", "<"}, {"updated_after", "native_updated_at", ">="},
+	} {
+		if value := params.Get(filter.name); value != "" {
+			date, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return "", nil, nativeInvalid("Date filters must be RFC3339 timestamps")
+			}
+			dateClauses.WriteString(" AND rtrim(i." + filter.column + ", 'Z') " + filter.operator + " ?")
+			args = append(args, strings.TrimSuffix(formatHubTime(date), "Z"))
+		}
+	}
+	query += dateClauses.String()
+	createdBy, err := nativeCreatedBy(scope, params)
+	if err != nil {
+		return "", nil, err
+	}
+	if createdBy != "" {
+		query += " AND json_extract(i.actor_json, '$.principal_id') = ?"
+		args = append(args, createdBy)
+	}
+	switch params.Get("archived") {
+	case "", "false":
+		query += " AND i.archived = 0"
+	case "true":
+		query += " AND i.archived = 1"
+	case "all":
+	default:
+		return "", nil, nativeInvalid("archived must be true, false or all")
+	}
+	switch params.Get("open") {
+	case "":
+	case "true":
+		query += " AND ws.terminal = 0"
+	case "false":
+		query += " AND ws.terminal = 1"
+	default:
+		return "", nil, nativeInvalid("open must be true or false")
+	}
+	if value := strings.TrimSpace(params.Get("fingerprint")); value != "" {
+		query += " AND (instr(i.body, ?) > 0 OR EXISTS (SELECT 1 FROM native_comments c WHERE c.work_item_id = i.native_id AND instr(c.body, ?) > 0))"
+		marker := "\nfingerprint: " + value + "\n"
+		args = append(args, marker, marker)
+	}
+	if !includeWorkspace {
+		// Workspace items hold a worktree open for a person's surfaces, not
+		// project work (decisions section 18.1): the board would otherwise
+		// fill with one card per opened Files panel.
+		query += " AND " + notWorkspaceItemClause
+	}
+	var filterClauses strings.Builder
+	for _, filter := range []struct{ name, clause string }{
+		{"type", "i.issue_type = ?"},
+		{"verification", "i.verification_state = ?"},
+		{"state", "ws.detent_state = ?"},
+		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
+		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},
+		{"priority", "EXISTS (SELECT 1 FROM queue_entries q WHERE q.issue_id = i.id AND q.priority_override = ?)"},
+	} {
+		var alternatives []string
+		for _, value := range params[filter.name] {
+			if value == "" {
+				continue
+			}
+			alternatives = append(alternatives, filter.clause)
+			args = append(args, value)
+		}
+		if len(alternatives) > 0 {
+			filterClauses.WriteString(" AND (" + strings.Join(alternatives, " OR ") + ")")
+		}
+	}
+	query += filterClauses.String()
+	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
+	if value := strings.TrimSpace(params.Get("q")); value != "" {
+		text := "i.title"
+		if !workIncluded {
+			text += " || ' ' || i.body"
+		}
+		query += " AND (search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
+			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
+			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
+			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"
+		args = append(args, value, value, value, value)
+	}
+
+	return query, args, nil
 }

@@ -203,7 +203,9 @@ func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCre
 		if err != nil {
 			return report, err
 		}
+		done := timeSpan(ctx, "analytics_usage")
 		rows, err := readUsageRows(projectCtx, projectQ, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
+		done()
 		if err != nil {
 			return report, err
 		}
@@ -276,7 +278,9 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		return nativeAnalyticsProject{}, pagingErr
 	}
 	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
+	done := timeSpan(ctx, "analytics_failures")
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &w)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -298,7 +302,9 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: to})
 	}
+	done = timeSpan(ctx, "analytics_landings")
 	landings, err := nativeAnalyticsLandings(ctx, q, scope, w)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -318,7 +324,9 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 	}
 	out.Landings = operatortool.OffsetPage(landings, r.RowOffset, r.Limit)
+	done = timeSpan(ctx, "analytics_attempts")
 	population, err := loadNativeAnalyticsAttempts(ctx, q, scope, w, "")
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -395,14 +403,22 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	if len(phases) == 0 {
 		out.Unavailable = append(out.Unavailable, "recorded_phases")
 	}
-	if err := projectNativeAnalyticsSkips(ctx, q, scope, &out); err != nil {
+	done = timeSpan(ctx, "analytics_skips")
+	err = projectNativeAnalyticsSkips(ctx, q, scope, &out)
+	done()
+	if err != nil {
 		return out, err
 	}
-
-	if err := projectNativeAnalyticsCapacityWait(ctx, q, scope, &out); err != nil {
+	done = timeSpan(ctx, "analytics_capacity_wait")
+	err = projectNativeAnalyticsCapacityWait(ctx, q, scope, &out)
+	done()
+	if err != nil {
 		return out, err
 	}
-	if err := projectNativeAnalyticsResidence(ctx, q, scope, r, &out); err != nil {
+	done = timeSpan(ctx, "analytics_residence")
+	err = projectNativeAnalyticsResidence(ctx, q, scope, r, &out)
+	done()
+	if err != nil {
 		return out, err
 	}
 	out.PopulationCursors = paging.next
@@ -415,7 +431,9 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		out.Unavailable = append(out.Unavailable, "recorded_pipeline_timings")
 	}
 	out.PipelineReceipts = pipelineTimingPage(uniquePipelineTimings(out.pipelineTimings, w), r.RowOffset, r.Limit)
+	done = timeSpan(ctx, "analytics_quality")
 	out.Quality, err = readAnalyticsQuality(ctx, q, scope, r, w)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -424,12 +442,14 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 }
 
 func nativeAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
+	issues, issueArgs := reportsIssueClause(ctx, "c.work_item_id")
 	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c
 JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
 WHERE c.organization_id=? AND c.project_id=? AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha')
 AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
 AND julianday(json_extract(c.record_json,'$.landed.landed_at'))>=julianday(?) AND julianday(json_extract(c.record_json,'$.landed.landed_at'))<julianday(?)
-ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To))
+`+issues+`
+ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}

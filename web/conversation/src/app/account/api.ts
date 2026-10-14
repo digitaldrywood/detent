@@ -45,7 +45,7 @@ import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
 import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
 import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
-import { ReportsReport, type ReportsRange } from "../../contracts/reports.ts";
+import { ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
@@ -111,6 +111,27 @@ function failure(status: number, body: unknown): AccountError {
       ? body.message
       : messageForStatus(status),
   });
+}
+
+const REPORT_FILTER_PARAMS = [
+  ["labels", "labels"],
+  ["priorities", "priorities"],
+  ["types", "types"],
+  ["filedBy", "filed_by"],
+  ["runners", "runners"],
+  ["models", "models"],
+  ["stages", "stages"],
+] as const satisfies readonly (readonly [keyof ReportsFilters, string])[];
+
+/** The Reports query string: a project or `all`, a preset or custom range, and each filter value as its own parameter. */
+export function reportsQuery(project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters): string {
+  const pairs: [string, string][] = [["project", project]];
+  if (typeof range === "string") pairs.push(["range", range]);
+  else pairs.push(["from", range.from], ["to", range.to]);
+  for (const [key, param] of REPORT_FILTER_PARAMS) {
+    for (const value of filters?.[key] ?? []) pairs.push([param, value]);
+  }
+  return pairs.map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join("&");
 }
 
 /** A decoder that accepts a 204 with no body. */
@@ -217,6 +238,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     slackIntegration: () => send(SlackIntegrationStatus, "GET", `${base}/integrations/slack`),
     saveSlackIntegration: (input: { webhook?: string; channel_name: string }) => send(SlackIntegrationStatus, "PUT", `${base}/integrations/slack`, input),
     testSlackIntegration: () => send(SlackIntegrationStatus, "POST", `${base}/integrations/slack/test`, {}),
+    renameOrganization: (input: { name: string; key: string }) => send(Schema.Struct({ name: Schema.String }), "PUT", `${base}/name`, { name: input.name, idempotency_key: input.key }),
     members: () => send(MembersResponse, "GET", `${base}/members`),
     invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {
@@ -522,7 +544,10 @@ export function makeAccountApi(options: AccountApiOptions) {
     },
     fleet: (signal?: AbortSignal) => send(FleetResponse, "GET", `${base}/fleet`, undefined, signal),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
-    reports: (project: string, range: ReportsRange) => send(ReportsReport, "GET", `${base}/reports?project=${encodeURIComponent(project)}&range=${encodeURIComponent(range)}`),
+    reports: (project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters) =>
+      send(ReportsReport, "GET", `${base}/reports?${reportsQuery(project, range, filters)}`),
+    reportOptions: (project: string, range: ReportsRange | ReportsCustomRange) =>
+      send(ReportsFacets, "GET", `${base}/reports/options?${reportsQuery(project, range)}`),
     healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
       const reads = await Promise.all(projects.map(async (project) => {
         const items: HealthFindingsRead["items"][number][] = [];

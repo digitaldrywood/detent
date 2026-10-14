@@ -770,6 +770,7 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
+	OnUsageUpdate   UsageUpdateHandler
 	Issue           connector.Issue
 	Snapshot        securityaudit.Snapshot
 	StartedAt       time.Time
@@ -777,6 +778,8 @@ type SecurityAuditRequest struct {
 }
 
 type SecurityAuditExecution struct {
+	RuntimeIdentity    agentidentity.Identity
+	SessionID          int64
 	InvocationID       string
 	AuthenticationMode string
 	WorkerProcess      procgroup.Identity
@@ -840,6 +843,8 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
+	BaseSHA           string
+	SecurityAudit     bool
 	Validation        *gate.CommandResult
 	RebaseRequired    bool
 	CI                *tracker.NativeLandingCIReceipt
@@ -859,6 +864,7 @@ type NativeLandingTarget struct {
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
+	SecurityAudit   *tracker.SecurityAuditReview
 	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
 	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
 	Path            string
@@ -888,6 +894,7 @@ func (l NativeLanding) RequiresRework() bool {
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
+	SecurityAudit             *tracker.SecurityAuditReview
 	ImplementationReview      *gate.ValidatorResult
 	ImplementationReviewError string
 	Landing                   *NativeLanding

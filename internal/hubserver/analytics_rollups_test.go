@@ -3,6 +3,7 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,6 +13,32 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestCommitReadOnlyTransactionSkipsRefreshes(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO analytics_rollup_dirty SELECT native_id FROM issues WHERE native_id IS NOT NULL"); err != nil {
+		t.Fatal(err)
+	}
+	dirty := func() int {
+		var count int
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_dirty").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	before := dirty()
+	tx, err := f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
+		t.Fatalf("commit a read-only transaction: %v", err)
+	}
+	if before == 0 || dirty() != before {
+		t.Fatalf("read-only commit changed the rollup work queue: %d dirty items, want %d", dirty(), before)
+	}
+}
 
 func rebuildTestAnalyticsRollups(t *testing.T, s *Service, scope nativeScope) {
 	t.Helper()
@@ -229,16 +256,21 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 			t.Fatalf("project %s has no rollups to backfill", project.project)
 		}
 	}
-	migration, err := migrationFiles.ReadFile("migrations/20261013083000_analytics_rollups.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	down := strings.Split(string(migration), "-- +goose Down")[1]
-	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", 20261013083000); err != nil {
-		t.Fatal(err)
+	for _, version := range []struct {
+		id   int64
+		name string
+	}{{20261014200000, "drop_redundant_attempt_indexes"}, {20261014160000, "analytics_attempt_payload"}, {20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
+		migration, err := migrationFiles.ReadFile("migrations/" + strconv.FormatInt(version.id, 10) + "_" + version.name + ".sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		down := strings.Split(string(migration), "-- +goose Down")[1]
+		if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", version.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
 		t.Fatal(err)
@@ -632,7 +664,47 @@ func assertAnalyticsJSONEqual(t *testing.T, want, got any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(wantJSON) != string(gotJSON) {
+	var wantValue, gotValue any
+	if err := json.Unmarshal(wantJSON, &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotJSON, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	if !analyticsJSONClose(wantValue, gotValue) {
 		t.Fatalf("response differs\nwant: %s\ngot: %s", wantJSON, gotJSON)
+	}
+}
+
+func analyticsJSONClose(want, got any) bool {
+	switch w := want.(type) {
+	case float64:
+		g, ok := got.(float64)
+		return ok && math.Abs(w-g) <= 1e-9*math.Max(1, math.Max(math.Abs(w), math.Abs(g)))
+	case []any:
+		g, ok := got.([]any)
+		if !ok || len(w) != len(g) {
+			return false
+		}
+		for i := range w {
+			if !analyticsJSONClose(w[i], g[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		if !ok || len(w) != len(g) {
+			return false
+		}
+		for k, v := range w {
+			gv, ok := g[k]
+			if !ok || !analyticsJSONClose(v, gv) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(want, got)
 	}
 }

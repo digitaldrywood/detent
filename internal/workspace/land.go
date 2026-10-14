@@ -69,21 +69,24 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
-	Native                bool
-	RebaseRequired        bool
-	Validation            *gate.CommandResult
-	LandingMode           string
-	Authorize             func(context.Context) error                                    `json:"-"`
-	PublicationEffect     func(context.Context, string, string, GitHubPublication) error `json:"-"`
-	ValidationCommand     string
-	RequiredStatusChecks  []string
-	CITriggerLabel        string
-	CITriggerLabelStagger time.Duration
-	PreviousCI            *tracker.NativeLandingCIReceipt
-	SourceIssues          []tracker.ExternalReference
-	GitHubClient          GitHubRESTClient
-	External              *tracker.ChangeExternalReference
-	ExternalHeadSHA       string
+	SecurityAuditRequired     bool
+	SecurityAuditMaxDiffBytes int
+	SecurityAudit             func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`
+	Native                    bool
+	RebaseRequired            bool
+	Validation                *gate.CommandResult
+	LandingMode               string
+	Authorize                 func(context.Context) error                                    `json:"-"`
+	PublicationEffect         func(context.Context, string, string, GitHubPublication) error `json:"-"`
+	ValidationCommand         string
+	RequiredStatusChecks      []string
+	CITriggerLabel            string
+	CITriggerLabelStagger     time.Duration
+	PreviousCI                *tracker.NativeLandingCIReceipt
+	SourceIssues              []tracker.ExternalReference
+	GitHubClient              GitHubRESTClient
+	External                  *tracker.ChangeExternalReference
+	ExternalHeadSHA           string
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string
@@ -102,6 +105,7 @@ type LandOptions struct {
 }
 
 type LandResult struct {
+	SecurityAudit       *tracker.SecurityAuditReview    `json:"security_audit,omitempty"`
 	Pipeline            []gate.PipelineTiming           `json:"pipeline,omitempty"`
 	PipelineDropped     int                             `json:"pipeline_dropped,omitempty"`
 	Path                string                          `json:"path,omitempty"`
@@ -211,7 +215,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 		}
 	}
 	if opts.External != nil {
-		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.ReviewBranch, issue); err != nil {
+		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.ReviewBranch, issue, false); err != nil {
 			return info, false, err
 		}
 	} else if _, err := l.runGit(ctx, "cat-file", "-e", opts.HeadSHA+"^{commit}"); err != nil {

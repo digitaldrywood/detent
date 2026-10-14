@@ -2587,11 +2587,10 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", autoPromoteMergingState}, TerminalStates: []string{"Done", "Cancelled"}, MergeFastPathEnabled: true, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOff}}})
 			if tt.audit != "" {
 				cfg.Project.ID = "detent"
-				cfg.ServiceIdentity = "detent:detent"
 				cfg.AutoPromote.Gate.SecurityAudit = gate.SecurityAuditConfig{Enabled: true, MaxAttempts: 1}
 			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workflowMetrics: metrics, now: func() time.Time { return at }, logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 			if tt.audit != "" {
 				memo := newSecurityAuditMemoryStore()
 				orch.securityAuditStore = memo
@@ -2601,6 +2600,7 @@ func TestAttemptTriageParkRecoversOnCleanGreenHead(t *testing.T) {
 				if tt.audit == "passed" || tt.audit == "failed" || tt.audit == "findings" {
 					run := securityAuditPassingRun(issue)
 					if tt.audit == "failed" {
+						run.CompletedAt = at
 						run.ExitStatus = securityaudit.ExitStatusFailed
 					}
 					if tt.audit == "findings" {
