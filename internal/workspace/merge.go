@@ -467,10 +467,13 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	var groupID int
 	defer func() {
 		cleanupCtx := context.WithoutCancel(ctx)
-		cleanupErr := procgroup.Cleanup(groupID)
-		if groupID > 0 {
-			_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
-			cleanupErr = errors.Join(cleanupErr, err)
+		var cleanupErr error
+		if process != nil || toolcache.ManagedBuildFromContext(ctx) != "" {
+			cleanupErr = procgroup.Cleanup(groupID)
+			if groupID > 0 {
+				_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
 		}
 		if cleanupErr == nil {
 			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
