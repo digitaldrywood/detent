@@ -339,9 +339,25 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		return e, err
 	}
 	if found {
-		detail, err := readCurrentChangeDetail(ctx, query, scope, change, now)
+		detail, err := readCurrentChangeDetailWithVersion(ctx, query, scope, change, now)
 		if err != nil {
 			return e, err
+		}
+		for _, version := range detail.Versions {
+			if version.ID == change.CurrentVersion {
+				landing, err := readVersionLanding(ctx, query, version.ID)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return e, err
+				}
+				if err == nil {
+					version.Landing = &landing
+				}
+				e.CurrentVersion = &tracker.NativeChangeVersionEvidence{
+					NativeChangeReference: tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA},
+					PublishedAt:           version.CreatedAt, Validation: boundedChangeCommand(version.Validation), Landing: boundedChangeLanding(version.Landing),
+				}
+				break
+			}
 		}
 		detail.Change.Body = ""
 		detail.External = nil
