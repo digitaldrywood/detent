@@ -1,10 +1,13 @@
 package hubclient
 
 import (
+	"context"
 	"net"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -27,7 +30,7 @@ func TestIsolationProblems(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			codes := []string{}
-			for _, problem := range isolationProblems(test.report, test.tier) {
+			for _, problem := range isolationProblems(test.report, test.tier, nil) {
 				codes = append(codes, problem.Code)
 				if problem.Code == "tier_unavailable" && test.reason != "" && (problem.Message != test.reason || !strings.Contains(problem.FixHint, "switch Agent access to "+test.alternative)) {
 					t.Fatalf("tier problem=%+v", problem)
@@ -78,5 +81,79 @@ func TestHeartbeatProblemsClear(t *testing.T) {
 	_, rejected = source.heartbeatProblems(t.Context(), machine)
 	if rejected {
 		t.Fatal("settings rejection did not clear")
+	}
+}
+
+func TestHeartbeatIncompleteProbe(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unobserved", true: "cached"}[cached], func(t *testing.T) {
+			source := &runnerCredentialSource{routing: &runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{IsolationTier: isolation.NativeTrusted}}}
+			observed := time.Now().Add(-time.Minute)
+			problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", ProjectID: "example-project", Check: "codex login status", Message: "Probe cancelled", ErrorOutput: "context canceled", FixHint: "Check runner probe execution", ReportedAt: observed}
+			machine := Machine{BackendIsolation: isolation.Report{"example-project/codex": {}}, Problems: []runnerauth.Problem{problem}}
+			if cached {
+				machine.BackendIsolation["example-project/codex"] = []string{isolation.NativeTrusted}
+			}
+			problems, _ := source.heartbeatProblems(t.Context(), machine)
+			found := false
+			for _, got := range problems {
+				if got.Code == "backend_missing" || got.FixCommand != "" || strings.Contains(strings.ToLower(got.FixHint), "install") {
+					t.Fatalf("incomplete observation became missing tooling: %+v", problems)
+				}
+				if got.Code == "backend_probe_failed" {
+					found = true
+					if !got.ReportedAt.Equal(observed) || got.Check != problem.Check || got.Subject != problem.Subject {
+						t.Fatalf("probe observation identity changed: %+v", got)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("incomplete probe diagnostic was dropped: %+v", problems)
+			}
+			if machine.BackendIsolation.Supports(isolation.NativeTrusted) != cached {
+				t.Fatal("incomplete probe changed capability decision")
+			}
+		})
+	}
+}
+
+func TestIsolationProbeCancellation(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unobserved", true: "cached"}[cached], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				completed := time.Now()
+				calls := 0
+				scheduler := &Scheduler{now: time.Now, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+					calls++
+					if cached && calls == 1 {
+						return isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, nil
+					}
+					<-ctx.Done()
+					problem := runnerauth.Problem{Code: "backend_probe_failed", Subject: "example-project/codex", Check: "codex login status", Message: "Probe incomplete", ErrorOutput: ctx.Err().Error(), FixHint: "Check the runner probe", ReportedAt: time.Now()}
+					return isolation.Report{"example-project/codex": {}}, []runnerauth.Problem{problem}
+				}}
+				if cached {
+					scheduler.probeIsolation(t.Context())
+					time.Sleep(time.Minute)
+				}
+				report, problems := scheduler.probeIsolation(t.Context())
+				if report.Supports(isolation.NativeTrusted) != cached {
+					t.Fatalf("cancelled probe changed cached capabilities: %+v", report)
+				}
+				if len(problems) != 2 || problems[0].Subject != "example-project/codex" || problems[0].Check != "codex login status" {
+					t.Fatalf("probe source lost: %+v", problems)
+				}
+				observation := problems[1]
+				if observation.Code != "backend_probe_failed" || observation.Check != "runner isolation probe" || !observation.ReportedAt.Equal(time.Now()) || observation.FixCommand != "" {
+					t.Fatalf("incomplete probe observation=%+v", observation)
+				}
+				if cached && !strings.Contains(observation.Message, completed.UTC().Format(time.RFC3339Nano)) {
+					t.Fatalf("cached capability observation time lost: %+v", observation)
+				}
+				if !cached && scheduler.lastIsolation != nil {
+					t.Fatal("incomplete capabilities were cached as completed")
+				}
+			})
+		})
 	}
 }

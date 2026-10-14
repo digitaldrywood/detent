@@ -156,7 +156,9 @@ func updateRunnerProblems(ctx context.Context, tx *sql.Tx, scope nativeScope, pr
 	}
 	for i := range problems {
 		problems[i] = runnerauth.SanitizeProblem(problems[i])
-		problems[i].ReportedAt = now
+		if problems[i].ReportedAt.IsZero() {
+			problems[i].ReportedAt = now
+		}
 	}
 	current := append(slices.Clone(problems), runnerHubProblems(r, report, protocol, rejected)...)
 	if err := applyRunnerPolicyProblems(ctx, tx, &r); err != nil {
