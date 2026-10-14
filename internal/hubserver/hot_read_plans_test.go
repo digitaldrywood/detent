@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var hotReadTables = []string{"native_attempts", "collaboration_events", "change_requests", "attempt_usage"}
@@ -30,6 +32,7 @@ var knownSlowHotReads = []struct {
 	{"work item latest change sort", "ORDER BY c.rowid DESC LIMIT 1", hotReadIssue + "1057"},
 	{"analytics landed changes sort", "SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v", hotReadIssue + "976"},
 	{"analytics quality landings sort", "WITH landed AS ( SELECT c.id,c.work_item_id,v.id AS version_id", hotReadIssue + "976"},
+	{"analytics residence transitions sort", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", hotReadIssue + "1045"},
 	{"analytics review evidence sort", "FROM change_evidence e JOIN change_requests c ON c.id=e.change_id", hotReadIssue + "976"},
 }
 
@@ -43,15 +46,10 @@ var sqlReservedAfterTable = map[string]bool{"where": true, "join": true, "left":
 // a full scan of a large table, or a temporary B-tree built for the ORDER BY
 // of a statement that reads a large table.
 func hotReadPlanViolations(statement string, plan []string) []string {
-	tables := make(map[string]string)
+	tables := sqlTableAliases(statement)
 	readsHotTable := false
-	for _, match := range sqlTableReference.FindAllStringSubmatch(statement, -1) {
-		table := strings.ToLower(match[1])
-		tables[table] = table
+	for _, table := range tables {
 		readsHotTable = readsHotTable || slices.Contains(hotReadTables, table)
-		if alias := strings.ToLower(match[2]); alias != "" && !sqlReservedAfterTable[alias] {
-			tables[alias] = table
-		}
 	}
 	var violations []string
 	for _, detail := range plan {
@@ -69,6 +67,18 @@ func hotReadPlanViolations(statement string, plan []string) []string {
 		}
 	}
 	return violations
+}
+
+func sqlTableAliases(statement string) map[string]string {
+	tables := make(map[string]string)
+	for _, match := range sqlTableReference.FindAllStringSubmatch(statement, -1) {
+		table := strings.ToLower(match[1])
+		tables[table] = table
+		if alias := strings.ToLower(match[2]); alias != "" && !sqlReservedAfterTable[alias] {
+			tables[alias] = table
+		}
+	}
+	return tables
 }
 
 func explainQueryPlan(t *testing.T, db *sql.DB, statement string, args []any) []string {
@@ -195,5 +205,70 @@ func TestHotReadQueryPlans(t *testing.T) {
 		if !known[entry.name] {
 			t.Errorf("known slow read %q (%s) no longer fails the plan rules; remove its entry", entry.name, entry.issue)
 		}
+	}
+}
+
+func TestAnalyticsCommitPlans(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	var item string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 1", scope.organization, scope.project).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
+	scanned := []string{"collaboration_events", "native_attempts", "attempt_usage", "leases", "issues", "analytics_hourly_rollups", "analytics_rollup_positions"}
+	var statements []tracedStatement
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, args []driver.NamedValue) {
+		values := make([]any, 0, len(args))
+		for _, arg := range args {
+			values = append(values, arg.Value)
+		}
+		statements = append(statements, tracedStatement{query, values})
+	}})
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now()
+	for _, event := range []struct {
+		kind string
+		data tracker.CollaborationData
+	}{
+		{"scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: now}}},
+		{"workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}},
+	} {
+		if err := appendNativeHistory(ctx, tx, scope, item, event.kind, event.data, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE attempt_usage SET cost_estimate=cost_estimate+1 WHERE organization_id=? AND project_id=?", scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	statements = statements[:0]
+	f.service.database.refreshAnalyticsRollups(ctx, tx)
+	traced := slices.Clone(statements)
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	explained := 0
+	for _, statement := range traced {
+		head := strings.ToUpper(strings.TrimSpace(statement.query))
+		if strings.HasPrefix(head, "SAVEPOINT") || strings.HasPrefix(head, "RELEASE") || strings.HasPrefix(head, "ROLLBACK") {
+			continue
+		}
+		explained++
+		tables := sqlTableAliases(statement.query)
+		for _, detail := range explainQueryPlan(t, f.service.database.db, statement.query, statement.args) {
+			name, ok := strings.CutPrefix(detail, "SCAN ")
+			if !ok {
+				continue
+			}
+			name, _, _ = strings.Cut(name, " ")
+			if slices.Contains(scanned, tables[strings.ToLower(name)]) {
+				t.Errorf("commit-path statement scans %s\nstatement: %s", detail, statement.query)
+			}
+		}
+	}
+	if explained == 0 {
+		t.Fatal("no commit-path statements were traced")
 	}
 }

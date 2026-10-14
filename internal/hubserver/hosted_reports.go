@@ -143,6 +143,10 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
 	historyWindow := w
 	historyWindow.From = w.From.Add(-w.To.Sub(w.From))
+	q, err = analyticsProjectReader(ctx, q, scope)
+	if err != nil {
+		return out, err
+	}
 	if _, projected := q.(analyticsRollupReader); projected {
 		if err := readReportsCompletionRollups(ctx, q, scope, historyWindow, &out); err != nil {
 			return out, err

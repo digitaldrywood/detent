@@ -15,7 +15,7 @@ type analyticsSkipSample struct {
 }
 
 func refreshAnalyticsSkipSamples(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, through int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,recorded_at,coalesce(json_extract(data_json,'$.decision.source'),''),coalesce(json_extract(data_json,'$.decision.reason'),'') FROM analytics_collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'`, scope.organization, scope.project, id, through)
+	rows, err := tx.QueryContext(ctx, `SELECT id,recorded_at,coalesce(json_extract(data_json,'$.decision.source'),''),coalesce(json_extract(data_json,'$.decision.reason'),'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'`, scope.organization, scope.project, id, through)
 	if err != nil {
 		return err
 	}

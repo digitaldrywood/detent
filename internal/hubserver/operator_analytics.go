@@ -195,16 +195,15 @@ func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCre
 		if err != nil {
 			return report, err
 		}
-		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
-			if err := requireAnalyticsRollups(projectCtx, q, scope); err != nil {
-				return report, err
-			}
-		}
-		value, err := readNativeAnalytics(projectCtx, q, scope, r, w)
+		projectQ, err := analyticsProjectReader(projectCtx, q, scope)
 		if err != nil {
 			return report, err
 		}
-		rows, err := readUsageRows(projectCtx, q, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
+		value, err := readNativeAnalytics(projectCtx, projectQ, scope, r, w)
+		if err != nil {
+			return report, err
+		}
+		rows, err := readUsageRows(projectCtx, projectQ, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
 		if err != nil {
 			return report, err
 		}

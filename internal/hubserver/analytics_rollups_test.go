@@ -122,16 +122,45 @@ func readTestRollupRows(t *testing.T, q nativeQueryer, scope nativeScope) []stri
 	return result
 }
 
+func analyticsRollupsServed(t *testing.T, s *Service, scope nativeScope) bool {
+	t.Helper()
+	q, err := analyticsProjectReader(t.Context(), analyticsRollupReader{s.database.reader}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, served := q.(analyticsRollupReader)
+	return served
+}
+
+func commitTestAnalytics(t *testing.T, s *Service, write func(*sql.Tx)) {
+	t.Helper()
+	tx, err := s.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	write(tx)
+	if err := s.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		recover func(*testing.T, nativeFixture, *sql.Tx, nativeScope, string)
+		recover func(*testing.T, nativeFixture, nativeScope, string)
 	}{
-		{"next commit retries failed item", func(*testing.T, nativeFixture, *sql.Tx, nativeScope, string) {}},
-		{"item change retries failed item", func(t *testing.T, f nativeFixture, tx *sql.Tx, scope nativeScope, id string) {
-			if err := appendNativeHistory(t.Context(), tx, scope, id, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.now()); err != nil {
+		{"maintenance retries failed item", func(t *testing.T, f nativeFixture, _ nativeScope, _ string) {
+			if err := f.service.database.retryFailedAnalyticsRollups(t.Context(), f.service.config.now()); err != nil {
 				t.Fatal(err)
 			}
+		}},
+		{"item change retries failed item", func(t *testing.T, f nativeFixture, scope nativeScope, id string) {
+			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+				if err := appendNativeHistory(t.Context(), tx, scope, id, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.now()); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,43 +171,33 @@ func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_analytics BEFORE INSERT ON analytics_hourly_rollups WHEN json_extract(NEW.data_json,'$.work_item_id')='`+string(issue.WorkItemID)+`' BEGIN SELECT RAISE(ABORT,'projection unavailable'); END`); err != nil {
 				t.Fatal(err)
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			for _, id := range []tracker.NativeWorkItemID{issue.WorkItemID, healthy.WorkItemID} {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(id), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready"}}, f.service.config.now()); err != nil {
-					t.Fatal(err)
+			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+				for _, id := range []tracker.NativeWorkItemID{issue.WorkItemID, healthy.WorkItemID} {
+					if err := appendNativeHistory(t.Context(), tx, scope, string(id), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready"}}, f.service.config.now()); err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			if err := f.service.database.commit(t.Context(), tx); err != nil {
-				t.Fatalf("analytics failure blocked event: %v", err)
-			}
+			})
 			var events, projected int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision'", scope.organization, scope.project).Scan(&events); err != nil || events != 2 {
 				t.Fatalf("event lost: count=%d err=%v", events, err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'", scope.organization, scope.project, healthy.WorkItemID).Scan(&projected); err != nil || projected != 1 {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='event' AND json_extract(data_json,'$.work_item_id')=? AND json_extract(data_json,'$.type')='scheduler.decision'", scope.organization, scope.project, healthy.WorkItemID).Scan(&projected); err != nil || projected != 1 {
 				t.Fatalf("failure blocked another item's projection: count=%d err=%v", projected, err)
 			}
-			if err := requireAnalyticsRollups(t.Context(), f.service.database.reader, scope); err == nil {
-				t.Fatal("failed projection served complete analytics")
+			if analyticsRollupsServed(t, f.service, scope) {
+				t.Fatal("failed projection served rollups instead of the raw computation")
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER reject_analytics"); err != nil {
 				t.Fatal(err)
 			}
-			tx, err = f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
+			commitTestAnalytics(t, f.service, func(*sql.Tx) {})
+			if analyticsRollupsServed(t, f.service, scope) {
+				t.Fatal("an unrelated commit retried the failed item")
 			}
-			defer tx.Rollback()
-			tc.recover(t, f, tx, scope, string(issue.WorkItemID))
-			if err := f.service.database.commit(t.Context(), tx); err != nil {
-				t.Fatal(err)
-			}
-			if err := requireAnalyticsRollups(t.Context(), f.service.database.reader, scope); err != nil {
-				t.Fatalf("recovered projection stayed unavailable: %v", err)
+			tc.recover(t, f, scope, string(issue.WorkItemID))
+			if !analyticsRollupsServed(t, f.service, scope) {
+				t.Fatal("recovered projection stayed on the raw computation")
 			}
 			recovered := readTestRollupRows(t, f.service.database.reader, scope)
 			rebuildTestAnalyticsRollups(t, f.service, scope)
@@ -193,22 +212,21 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	other := nativeScope{organization: scope.organization, project: tracker.ProjectID(f.privateProject)}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if _, err := createNativeIssueTx(t.Context(), tx, other, tracker.CreateIssue{Title: "second project history", State: "Todo"}, f.service.config.now().Add(-time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.service.database.commit(t.Context(), tx); err != nil {
-		t.Fatal(err)
-	}
-	rebuildTestAnalyticsRollups(t, f.service, other)
-	want := readTestRollupRows(t, f.service.database.reader, scope)
-	wantOther := readTestRollupRows(t, f.service.database.reader, other)
-	if len(want) == 0 || len(wantOther) == 0 {
-		t.Fatal("backfill requires two populated projects")
+	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+		for i := range analyticsBackfillBatch + 1 {
+			if _, err := createNativeIssueTx(t.Context(), tx, other, tracker.CreateIssue{Title: "second project history", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	scopes := []nativeScope{scope, other}
+	want := make([][]string, len(scopes))
+	for i, project := range scopes {
+		rebuildTestAnalyticsRollups(t, f.service, project)
+		want[i] = readTestRollupRows(t, f.service.database.reader, project)
+		if len(want[i]) == 0 {
+			t.Fatalf("project %s has no rollups to backfill", project.project)
+		}
 	}
 	migration, err := migrationFiles.ReadFile("migrations/20261013083000_analytics_rollups.sql")
 	if err != nil {
@@ -218,17 +236,71 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id IN (?,?)", 20261013083000, 20261013101000); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", 20261013083000); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
 		t.Fatal(err)
 	}
-	if got := readTestRollupRows(t, f.service.database.reader, scope); !reflect.DeepEqual(want, got) {
-		t.Fatalf("migration changed rollups\nwant=%v\ngot=%v", want, got)
+	for _, project := range scopes {
+		if got := readTestRollupRows(t, f.service.database.reader, project); len(got) != 0 {
+			t.Fatalf("migration copied history: %v", got)
+		}
+		if analyticsRollupsServed(t, f.service, project) {
+			t.Fatal("reads used rollups before the backfill completed")
+		}
 	}
-	if got := readTestRollupRows(t, f.service.database.reader, other); !reflect.DeepEqual(wantOther, got) {
-		t.Fatalf("migration lost second project: %v", got)
+	batches := 0
+	for {
+		more, err := f.service.database.backfillAnalyticsRollups(t.Context(), f.service.config.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			break
+		}
+		batches++
+	}
+	if batches < 3 {
+		t.Fatalf("backfill ran in %d batches; want bounded batches per project", batches)
+	}
+	for i, project := range scopes {
+		if !analyticsRollupsServed(t, f.service, project) {
+			t.Fatalf("project %s stayed on the raw computation after backfill", project.project)
+		}
+		if got := readTestRollupRows(t, f.service.database.reader, project); !reflect.DeepEqual(want[i], got) {
+			t.Fatalf("backfill differs from rebuild\nwant=%v\ngot=%v", want[i], got)
+		}
+	}
+}
+
+func TestAnalyticsRollupUsageWrites(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	for _, test := range []struct {
+		name      string
+		statement string
+	}{
+		{"update", "UPDATE attempt_usage SET cost_estimate=cost_estimate+1.5 WHERE attempt_id='attempt_browser_usage_0_0'"},
+		{"insert", "INSERT INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,cost_estimate,currency,updated_at) SELECT attempt_id,organization_id,project_id,period,provider,'second-model',2.25,currency,updated_at FROM attempt_usage WHERE attempt_id='attempt_browser_usage_0_0' LIMIT 1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+				if _, err := tx.ExecContext(t.Context(), test.statement); err != nil {
+					t.Fatal(err)
+				}
+			})
+			var raw, projected float64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM analytics_attempt_usage WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&projected); err != nil {
+				t.Fatal(err)
+			}
+			if raw != projected {
+				t.Fatalf("projected spend=%v raw=%v", projected, raw)
+			}
+		})
 	}
 }
 
@@ -317,6 +389,9 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT 'rollup-open-lease',id,'machine_browser_preview_runner','rollup-open-session',?,?,?,NULL,?,? FROM issues WHERE native_id=?`, formatHubTime(now.Add(30*time.Minute)), formatHubTime(now.Add(-90*time.Minute)), formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-90*time.Minute)), formatHubTime(now.Add(-time.Minute)), issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	for i := range 2 {
 		changeID := "rollup-change-" + string(rune('a'+i))
 		versionID := changeID + "-version"
@@ -379,7 +454,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer projectedTx.Rollback()
-			if _, err := projectedTx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (json_extract(data_json,'$.type')='scheduler.decision' AND coalesce(json_extract(json_extract(data_json,'$.data_json'),'$.decision.outcome'),'')='ready')`); err != nil {
+			if _, err := projectedTx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (json_extract(data_json,'$.type')='scheduler.decision' AND coalesce(json_extract(data_json,'$.outcome'),'')='ready')`); err != nil {
 				t.Fatal(err)
 			}
 			q := analyticsRollupReader{projectedTx}

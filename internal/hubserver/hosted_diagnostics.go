@@ -96,7 +96,7 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 	return s.readHostedDiagnosticsFrom(ctx, analytics, analyticsRollupReader{tx})
 }
 
-func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (diagnosticsReport, error) {
+func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer) (diagnosticsReport, error) {
 	w := analytics.Window
 	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}}
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
@@ -134,10 +134,9 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			}
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
-		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
-			if err := requireAnalyticsRollups(ctx, q, scope); err != nil {
-				return out, err
-			}
+		q, err := analyticsProjectReader(ctx, reader, scope)
+		if err != nil {
+			return out, err
 		}
 		var projectReady int
 		if _, rolledUp := q.(analyticsRollupReader); rolledUp {

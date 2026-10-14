@@ -69,7 +69,7 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 		return err
 	}
 	var created, initial string
-	err = tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce((SELECT json_extract(data_json,'$.from_state') FROM collaboration_events WHERE organization_id=i.organization_id AND project_id=i.project_id AND work_item_id=i.native_id AND type='workflow.transitioned' ORDER BY sequence LIMIT 1),CASE WHEN EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=i.native_id AND type='issue.created') THEN ws.detent_state END,'') FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, scope.organization, scope.project, id).Scan(&created, &initial)
+	err = tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce((SELECT json_extract(data_json,'$.from_state') FROM collaboration_events WHERE organization_id=i.organization_id AND project_id=i.project_id AND work_item_id=i.native_id AND type='workflow.transitioned' ORDER BY sequence LIMIT 1),CASE WHEN EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=i.organization_id AND work_item_id=i.native_id AND type='issue.created') THEN ws.detent_state END,'') FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, scope.organization, scope.project, id).Scan(&created, &initial)
 	if err != nil {
 		return err
 	}
@@ -248,41 +248,6 @@ type analyticsMergeSample struct {
 	ID       string
 	From, To time.Time
 	Claim    *time.Time
-}
-
-func backfillAnalyticsResidence(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, `SELECT organization_id,project_id,native_id FROM issues WHERE native_id IS NOT NULL AND organization_id IS NOT NULL AND project_id IS NOT NULL`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type item struct {
-		scope nativeScope
-		id    string
-	}
-	var items []item
-	for rows.Next() {
-		var i item
-		if err := rows.Scan(&i.scope.organization, &i.scope.project, &i.id); err != nil {
-			return err
-		}
-		items = append(items, i)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	for _, i := range items {
-		if err := refreshAnalyticsSkipSamples(ctx, tx, i.scope, i.id, 0); err != nil {
-			return err
-		}
-		if err := refreshAnalyticsClaims(ctx, tx, i.scope, i.id, 0); err != nil {
-			return err
-		}
-		if err := refreshAnalyticsResidence(ctx, tx, i.scope, i.id, 0); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func residenceSampleItem(sample analyticsResidenceSample, states map[string]tracker.NativeState, at time.Time) operatortool.AnalyticsIssueResidence {
@@ -598,19 +563,6 @@ func projectResidencePipelineRollups(ctx context.Context, q nativeQueryer, scope
 		out.pipelineTimings = append(out.pipelineTimings, residencePipelineTimings(timeline, out.allAttempts)...)
 	}
 	return rows.Err()
-}
-
-func migrateAnalyticsResidence(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS analytics_residence_hour ON analytics_hourly_rollups(organization_id,project_id,dimension,hour DESC) WHERE metric='residence_hour';
- CREATE INDEX IF NOT EXISTS analytics_residence_edge ON analytics_hourly_rollups(organization_id,project_id,json_extract(data_json,'$.ID'),hour,json_extract(data_json,'$.AtNS') DESC,value DESC) WHERE metric='residence_edge';
- CREATE INDEX IF NOT EXISTS analytics_skip_window ON analytics_hourly_rollups(organization_id,project_id,json_extract(data_json,'$.AtNS'),dimension) WHERE metric='skip_sample';
- CREATE INDEX IF NOT EXISTS analytics_skip_order ON analytics_hourly_rollups(organization_id,project_id,json_extract(data_json,'$.At'),dimension) WHERE metric='skip_sample';
- CREATE INDEX IF NOT EXISTS analytics_capacity_window ON analytics_hourly_rollups(organization_id,project_id,json_extract(data_json,'$.AtNS'),dimension) WHERE metric='capacity_claim';
- CREATE INDEX IF NOT EXISTS analytics_residence_identity ON analytics_hourly_rollups(organization_id,project_id,json_extract(data_json,'$.ID'),metric) WHERE metric IN ('residence_hour','residence_edge','completion','residence_merge','merge_entry');
- CREATE INDEX IF NOT EXISTS analytics_completion ON analytics_hourly_rollups(organization_id,project_id,json_extract(data_json,'$.ID'),json_extract(data_json,'$.AtNS')) WHERE metric='completion'`); err != nil {
-		return err
-	}
-	return backfillAnalyticsResidence(ctx, tx)
 }
 
 func readDiagnosticsResidenceRollups(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) (int, bool, error) {

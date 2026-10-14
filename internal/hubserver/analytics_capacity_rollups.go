@@ -21,7 +21,7 @@ type analyticsCapacitySample struct {
 }
 
 func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, through int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,data_json,recorded_at,prior_data,prior_type,prior_at FROM analytics_collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed'`, scope.organization, scope.project, id, through)
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.data_json,e.recorded_at,coalesce(p.data_json,'null'),coalesce(p.type,''),coalesce(p.recorded_at,'') FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.type='scheduler.decision' AND json_extract(e.data_json,'$.decision.source')='native_claim' AND json_extract(e.data_json,'$.decision.outcome')='claimed'`, scope.organization, scope.project, id, through)
 	if err != nil {
 		return err
 	}
