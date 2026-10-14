@@ -185,7 +185,7 @@ func TestIssueEmailBatchingAndOptOut(t *testing.T) {
 			f.grant(t, reporter, true, false)
 			f.grant(t, member, true, false)
 			var issue tracker.NativeIssue
-			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "change_request", Title: "Reporter notification example", Body: "private-issue-body-sentinel"})
+			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "change_request", Title: "Reporter notification example", Body: reporterChangeSections + "\nprivate-issue-body-sentinel"})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &issue)
 			if issue.State != "Triage" {

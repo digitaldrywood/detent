@@ -87,7 +87,11 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				} else {
 					f = newHostedSecurityFixture(t, configure)
 				}
-				u := f.user(t, "luna-owner", "owner", "luna@example.test", "write", "")
+				role := "owner"
+				if outcome == "wrong role" {
+					role = "member"
+				}
+				u := f.user(t, "luna-owner", role, "luna@example.test", "write", "")
 				var currentEntryClaims cloudassert.Claims
 				var keyExpired bool
 				if sharedEntry {
@@ -504,11 +508,6 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				}
 				if outcome == "bad arguments" {
 					arguments["execute"] = true
-				}
-				if outcome == "wrong role" {
-					if _, err := db.ExecContext(t.Context(), "UPDATE hosted_members SET role='member' WHERE user_id=?", u.identity.Subject); err != nil {
-						t.Fatal(err)
-					}
 				}
 				if outcome == "no write grant" {
 					f.grant(t, u, false, false)
