@@ -161,11 +161,19 @@ export const NativeTestPlan = Schema.Struct({
 });
 export type NativeTestPlan = typeof NativeTestPlan.Type;
 
+export const NativeVerification = Schema.Struct({
+  state: Schema.Literals(["pending", "verified"]),
+  verified_by: Schema.optional(NativeActor),
+  verified_at: Schema.optional(Schema.String),
+});
+export type NativeVerification = typeof NativeVerification.Type;
+
 export const NativeIssue = Schema.Struct({
   type: Schema.optional(Schema.Literals(["bug", "change_request"])),
   /** Where and on what the filer saw the problem. Absent when none was supplied; list and board reads omit it. */
   report_context: Schema.optional(ReportContext),
   test_plan: Schema.optional(NativeTestPlan),
+  verification: Schema.optional(NativeVerification),
 	linked_source: Schema.optional(Schema.Struct({
 		url: Schema.String,
 		status: Schema.String,

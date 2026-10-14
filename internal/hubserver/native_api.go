@@ -166,6 +166,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/source-intake", s.intakeLinkedIssue, worker)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/verification", s.verifyNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
 	e.POST(nativeBase+"/work-items/:item/test-items", s.recordNativeTestItem, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)
@@ -278,6 +279,8 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 						scope.action = operatortool.MoveItem
 					case "POST " + nativeBase + "/work-items/:item/test-items":
 						scope.action = operatortool.UpdateTestItem
+					case "POST " + nativeBase + "/work-items/:item/verification":
+						scope.action = operatortool.VerifyFix
 					case "POST " + attachmentMetadataBase, "POST " + attachmentMetadataBase + "/check":
 						scope.action = operatortool.UploadAttachment
 					case "POST " + attachmentMetadataBase + "/:attachment/reference":

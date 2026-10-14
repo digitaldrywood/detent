@@ -61,6 +61,7 @@ import { IssueResources, type ResourceRow } from "./components/IssueResources.ts
 import { IssueDiagnostics, IssueDetailTabs } from "./components/IssueDiagnostics.tsx";
 import { SourceRecoveryControls } from "./components/SourceRecoveryControls.tsx";
 import { TestPlanProgress, type TestItemRecord } from "./components/TestPlanProgress.tsx";
+import { VerificationControls, type VerificationResult } from "./components/VerificationControls.tsx";
 import { mergeActivity, runnerLabel, type ActivityRow } from "./lib/activity.ts";
 import { toChangeView, toWorkItemView, transitionsFrom } from "./lib/fromWire.ts";
 import { elapsedLabel, issueNumber } from "./lib/format.ts";
@@ -503,6 +504,10 @@ function IssueSurface({
       ? null
       : (client.bootstrap.projects.find((candidate) => candidate.id === projectId) ?? null);
   const canWrite = project?.can_write !== false;
+  const role = account?.actor.role;
+  const canVerify = data !== null && data.project.profile === "native" && data.issue.verification?.state === "pending" &&
+    (data.issue.actor.kind === "human" && data.issue.actor.principal_id === client.bootstrap.actor.principal_id ||
+      canWrite && (role === "member" || role === "admin" || role === "owner"));
   const ask = useIssueAsk(projectId, workItemId);
 
   const item = React.useMemo<WorkItemView | null>(() => {
@@ -681,6 +686,21 @@ function IssueSurface({
           key: newWorkKey("archive"), expectedRevision: revision, archived: !item.archived }),
         item.archived ? "restore this issue" : "archive this issue",
       )}
+      canVerify={canVerify}
+      onVerify={(result, comment) =>
+        void mutate(
+          (revision) =>
+            http.verifyFix({
+              projectId,
+              itemId: workItemId,
+              key: newWorkKey("verify"),
+              expectedRevision: revision,
+              result,
+              ...(comment === undefined ? {} : { comment }),
+            }),
+          "record the verification",
+        )
+      }
       onMove={(state) =>
         void mutate(
           (revision) =>
@@ -818,6 +838,8 @@ interface IssueBodyProps {
   readonly viewerPrincipalId: string;
   readonly preferenceChoices: PreferenceChoices | undefined;
   readonly onArchive: () => void;
+  readonly canVerify: boolean;
+  readonly onVerify: (result: VerificationResult, comment?: string) => void;
   readonly onMove: (state: string) => void;
   readonly onPriority: (name: string | null) => void;
   readonly onLabels: (labels: readonly string[]) => void;
@@ -1129,6 +1151,9 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
                 <Badge variant="secondary" size="sm">{item.type === "bug" ? "Bug" : "Change request"}</Badge>
               )}
             </div>
+            {props.canVerify ? (
+              <VerificationControls key={data.issue.revision} projectId={data.project.project_id} saving={props.saving} onVerify={props.onVerify} />
+            ) : null}
             {props.canWrite && data.project.profile === "native" ? (
               <Button size="sm" variant="outline" className="mt-3" data-testid="issue-archive"
                 disabled={props.saving || data.attempts.some((attempt) => attempt.status === "running")}

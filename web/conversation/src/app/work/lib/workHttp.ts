@@ -202,6 +202,14 @@ export interface WorkHttp {
     state: string;
     reason?: TransitionReason;
   }) => Promise<NativeIssue>;
+  readonly verifyFix: (input: {
+    projectId: string;
+    itemId: string;
+    key: string;
+    expectedRevision: string;
+    result: "verified" | "not_fixed";
+    comment?: string;
+  }) => Promise<NativeIssue>;
   readonly setArchived: (input: {
     projectId: string;
     itemId: string;
@@ -630,6 +638,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         // other two reasons belong to the scheduler and claiming one here
         // would put a lie in the history.
         reason: input.reason ?? "user_requested",
+      }),
+    verifyFix: (input) =>
+      send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/verification`), {
+        idempotency_key: input.key,
+        expected_revision: input.expectedRevision,
+        result: input.result,
+        ...(input.comment === undefined ? {} : { comment: input.comment }),
       }),
     setArchived: (input) =>
       send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/${input.archived ? "archive" : "restore"}`), {

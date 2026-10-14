@@ -26,10 +26,13 @@ func TestIssueParticipantEmails(t *testing.T) {
 		commenter          bool
 		commenterKind      string
 		want               int
+		verify             bool
 	}{
 		{name: "Reporter filer promoted", author: "reporter", eventActor: "member", kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Triage", ToState: "Todo"}, want: 1},
 		{name: "member comment", author: "reporter", eventActor: "member", kind: "comment.created", data: tracker.CollaborationData{CommentID: "cmt_notice"}, want: 1},
 		{name: "Reporter commenter and member filer notified by worker", author: "member", eventActor: "runner", commenter: true, kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, want: 2},
+		{name: "Reporter filer asked to verify", author: "reporter", eventActor: "runner", kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "Done", Verification: tracker.VerificationPending}, want: 1, verify: true},
+		{name: "only the filer is asked to verify", author: "member", eventActor: "runner", commenter: true, kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "Done", Verification: tracker.VerificationPending}, want: 2, verify: true},
 		{name: "runner commenter excluded", author: "reporter", eventActor: "member", commenter: true, commenterKind: "runner", kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, want: 1},
 		{name: "service commenter excluded", author: "reporter", eventActor: "member", commenter: true, commenterKind: "integration", kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, want: 1},
 		{name: "own action", author: "reporter", eventActor: "reporter", kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: "Triage", ToState: "Cancelled"}},
@@ -79,6 +82,9 @@ func TestIssueParticipantEmails(t *testing.T) {
 			}
 			raw, _ := json.Marshal(actor)
 			operatorSQL(t, f.hostedSecurityFixture, "UPDATE issues SET actor_json=? WHERE native_id IN (?,?)", string(raw), issue.WorkItemID, other.WorkItemID)
+			if test.verify {
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE issues SET verification_state='pending' WHERE native_id=?", issue.WorkItemID)
+			}
 			now := time.Now()
 			appendEvent := func(item tracker.NativeIssue, eventActor tracker.Actor, kind string, data tracker.CollaborationData, at time.Time) {
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -137,7 +143,7 @@ func TestIssueParticipantEmails(t *testing.T) {
 				t.Fatalf("got %d emails, want %d: %+v", len(messages), test.want, messages)
 			}
 			for _, message := range messages {
-				if !strings.Contains(message.Body, "/organizations/org_security/work/i/") || !strings.Contains(message.Subject, "[Detent] #") || !strings.Contains(message.Body, "Unsubscribe from this issue:") {
+				if !strings.Contains(message.Body, "/organizations/org_security/work/i/") || !strings.HasPrefix(message.Subject, "[Detent] ") || !strings.Contains(message.Subject, " #") || !strings.Contains(message.Body, "Unsubscribe from this issue:") {
 					t.Fatalf("incomplete message: %+v", message)
 				}
 				if strings.Contains(message.Body, "private-") {
@@ -148,6 +154,11 @@ func TestIssueParticipantEmails(t *testing.T) {
 				}
 				if test.kind == "workflow.transitioned" && !strings.Contains(message.Body, test.data.FromState+" to "+test.data.ToState) {
 					t.Fatalf("missing states: %s", message.Body)
+				}
+				asked := strings.HasPrefix(message.Subject, "[Detent] Please verify #") && strings.Contains(message.Body, "Please verify #")
+				filer := users[test.author].identity.Email == message.To
+				if asked != (test.verify && filer) {
+					t.Fatalf("verification prompt=%t for filer=%t: %+v", asked, filer, message)
 				}
 			}
 			if err := f.service.deliverIssueEmails(t.Context(), now.Add(3*time.Minute)); err != nil {
@@ -185,7 +196,7 @@ func TestIssueEmailBatchingAndOptOut(t *testing.T) {
 			f.grant(t, reporter, true, false)
 			f.grant(t, member, true, false)
 			var issue tracker.NativeIssue
-			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "change_request", Title: "Reporter notification example", Body: "private-issue-body-sentinel"})
+			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "bug", Title: "Reporter notification example", Body: reporterBugSections + "\nprivate-issue-body-sentinel"})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &issue)
 			if issue.State != "Triage" {

@@ -48,6 +48,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 	}
 	for _, filter := range []struct{ name, clause string }{
 		{"type", "json_extract(b.record_json,'$.issue.type')=?"},
+		{"verification", "json_extract(b.record_json,'$.issue.verification.state')=?"},
 		{"state", "b.state=?"},
 		{"label", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.labels') WHERE value=?)"},
 		{"assignee", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.assignees') WHERE value=?)"},
@@ -84,7 +85,7 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 		return nil, err
 	}
 	summary := &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: now}
-	filtered := strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
+	filtered := strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["verification"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
 	statement := "SELECT b.state,count(*),sum(b.running) FROM native_board_items b WHERE " + where + " GROUP BY b.state"
 	if !filtered {
 		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"

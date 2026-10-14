@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ type issueEmailNotice struct {
 	Author    string `json:"author,omitempty"`
 	CommentID string `json:"comment_id,omitempty"`
 	Related   bool   `json:"related,omitempty"`
+	Verify    bool   `json:"verify,omitempty"`
 }
 
 func (s *Service) startIssueMailer() {
@@ -171,7 +173,7 @@ ON CONFLICT(work_item_id) DO UPDATE SET sequence=excluded.sequence`, event.item,
 func issueNotice(event issueEmailEvent) (issueEmailNotice, bool) {
 	switch event.kind {
 	case "workflow.transitioned":
-		return issueEmailNotice{StateFrom: event.data.FromState, StateTo: event.data.ToState}, event.data.FromState != event.data.ToState
+		return issueEmailNotice{StateFrom: event.data.FromState, StateTo: event.data.ToState, Verify: event.data.Verification == tracker.VerificationPending}, event.data.FromState != event.data.ToState
 	case "comment.created":
 		return issueEmailNotice{Author: event.actor.PrincipalID, CommentID: event.data.CommentID}, event.data.CommentID != ""
 	case "issue.edited":
@@ -182,7 +184,7 @@ func issueNotice(event issueEmailEvent) (issueEmailNotice, bool) {
 }
 
 func (s *Service) queueIssueEmail(ctx context.Context, tx *sql.Tx, event issueEmailEvent, item string, notice issueEmailNotice) error {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT m.user_id FROM issues i JOIN hosted_members m
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT m.user_id, m.principal_id=json_extract(i.actor_json,'$.principal_id') AND json_extract(i.actor_json,'$.kind')='human' FROM issues i JOIN hosted_members m
 ON m.principal_id IN (
  SELECT json_extract(i.actor_json,'$.principal_id') WHERE json_extract(i.actor_json,'$.kind')='human'
  UNION SELECT json_extract(e.actor_json,'$.principal_id') FROM collaboration_events e
@@ -199,10 +201,14 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 		return err
 	}
 	defer rows.Close()
-	users := []string{}
+	type recipient struct {
+		user  string
+		filer bool
+	}
+	users := []recipient{}
 	for rows.Next() {
-		var user string
-		if err := rows.Scan(&user); err != nil {
+		var user recipient
+		if err := rows.Scan(&user.user, &user.filer); err != nil {
 			rows.Close()
 			return err
 		}
@@ -211,11 +217,14 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(notice)
-	if err != nil {
-		return err
-	}
-	for _, user := range users {
+	for _, recipient := range users {
+		personal := notice
+		personal.Verify = notice.Verify && recipient.filer && item == event.item
+		raw, err := json.Marshal(personal)
+		if err != nil {
+			return err
+		}
+		user := recipient.user
 		if _, err := tx.ExecContext(ctx, `INSERT INTO issue_subscriptions(work_item_id,user_id,token) VALUES (?,?,?) ON CONFLICT(work_item_id,user_id) DO NOTHING`, item, user, newNativeID("unsub")); err != nil {
 			return err
 		}
@@ -246,12 +255,12 @@ RETURNING work_item_id,user_id,notices_json`, formatHubTime(now)).Scan(&item, &u
 		return auth.EmailMessage{}, false, err
 	}
 	var message auth.EmailMessage
-	var title, token string
+	var title, token, verification string
 	var number int
-	err = tx.QueryRowContext(ctx, `SELECT m.email,i.title,i.number,s.token FROM issue_subscriptions s
+	err = tx.QueryRowContext(ctx, `SELECT m.email,i.title,i.number,s.token,COALESCE(i.verification_state,'') FROM issue_subscriptions s
 JOIN hosted_members m ON m.user_id=s.user_id JOIN api_tokens t ON t.id=m.principal_id JOIN issues i ON i.native_id=s.work_item_id
 WHERE s.work_item_id=? AND s.user_id=? AND s.unsubscribed=0 AND m.notify_issues=1 AND m.active=1 AND t.revoked_at IS NULL AND i.organization_id=?
-AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g.organization_id=i.organization_id AND g.project_id=i.project_id)`, item, user, s.config.Hosted.OrganizationID).Scan(&message.To, &title, &number, &token)
+AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g.organization_id=i.organization_id AND g.project_id=i.project_id)`, item, user, s.config.Hosted.OrganizationID).Scan(&message.To, &title, &number, &token, &verification)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return auth.EmailMessage{}, false, err
 	}
@@ -259,6 +268,11 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 		var notices []issueEmailNotice
 		if err := json.Unmarshal([]byte(raw), &notices); err != nil {
 			return auth.EmailMessage{}, false, err
+		}
+		if verification != tracker.VerificationPending {
+			for i := range notices {
+				notices[i].Verify = false
+			}
 		}
 		message = s.renderIssueEmail(message.To, item, title, number, token, notices)
 	}
@@ -271,6 +285,11 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 func (s *Service) renderIssueEmail(to, item, title string, number int, token string, notices []issueEmailNotice) auth.EmailMessage {
 	link := s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(item))
 	var body strings.Builder
+	subject := fmt.Sprintf("[Detent] #%d %s", number, strings.NewReplacer("\r", " ", "\n", " ").Replace(title))
+	if slices.ContainsFunc(notices, func(notice issueEmailNotice) bool { return notice.Verify }) {
+		subject = "[Detent] Please verify #" + strconv.Itoa(number) + ": " + strings.NewReplacer("\r", " ", "\n", " ").Replace(title)
+		fmt.Fprintf(&body, "Please verify #%d. Your issue is Done. Open it and choose Verified, or Still broken with a comment: %s\n\n", number, link)
+	}
 	fmt.Fprintf(&body, "#%d %s\n\n", number, title)
 	for _, notice := range notices {
 		switch {
@@ -283,5 +302,5 @@ func (s *Service) renderIssueEmail(to, item, title string, number int, token str
 		}
 	}
 	fmt.Fprintf(&body, "\nOpen issue: %s\nUnsubscribe from this issue: %s\n", link, s.config.Hosted.PublicURL+s.hostedPath("/issue-notifications/unsubscribe?token="+url.QueryEscape(token)))
-	return auth.EmailMessage{To: to, Subject: fmt.Sprintf("[Detent] #%d %s", number, strings.NewReplacer("\r", " ", "\n", " ").Replace(title)), Body: body.String()}
+	return auth.EmailMessage{To: to, Subject: subject, Body: body.String()}
 }
