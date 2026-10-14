@@ -66,7 +66,14 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				return runner.NativeValidation{}, nil
 			}
 			for _, review := range detail.Reviews {
-				if review.VersionID == version.ID && review.SecurityAudit != nil && review.Decision == "approved" && review.SecurityAudit.Run.BaseSHA == version.BaseSHA && review.SecurityAudit.Run.HeadSHA == version.HeadSHA && review.SecurityAudit.Run.ReviewerVersion == securityaudit.ReviewerVersion && review.SecurityAudit.Run.ReviewerDigest == securityaudit.ReviewerDigest() {
+				if review.VersionID == version.ID && review.SecurityAudit != nil && review.Decision == "changes_requested" {
+					e.change.SecurityAudit = review.SecurityAudit
+					e.change.Reviewed = false
+					return runner.NativeValidation{}, nil
+				}
+			}
+			for _, review := range detail.Reviews {
+				if review.VersionID == version.ID && review.SecurityAudit != nil && !review.SecurityAudit.Landing && review.Decision == "approved" && review.SecurityAudit.Run.BaseSHA == version.BaseSHA && review.SecurityAudit.Run.HeadSHA == version.HeadSHA && review.SecurityAudit.Run.ReviewerVersion == securityaudit.ReviewerVersion && review.SecurityAudit.Run.ReviewerDigest == securityaudit.ReviewerDigest() {
 					return runner.NativeValidation{}, nil
 				}
 			}

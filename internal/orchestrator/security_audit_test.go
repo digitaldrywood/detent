@@ -25,6 +25,7 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 
 	issue := securityAuditTestIssue()
 	baseRun := securityAuditPassingRun(issue)
+	now := time.Date(2026, 10, 14, 5, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name         string
 		mutateIssue  func(*connector.Issue)
@@ -52,12 +53,21 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 			wantReason: securityaudit.ReasonMissing,
 		},
 		{
-			name: "failed",
+			name: "failed during backoff",
+			mutateRun: func(run *securityaudit.Run) {
+				run.ExitStatus = securityaudit.ExitStatusFailed
+				run.Attempt = gate.DefaultSecurityAuditMaxAttempts
+				run.CompletedAt = now
+			},
+			wantReason: securityaudit.ReasonFailed,
+		},
+		{
+			name: "exhausted instance failure recovers",
 			mutateRun: func(run *securityaudit.Run) {
 				run.ExitStatus = securityaudit.ExitStatusFailed
 				run.Attempt = gate.DefaultSecurityAuditMaxAttempts
 			},
-			wantReason: securityaudit.ReasonFailed,
+			wantReason: securityaudit.ReasonMissing,
 		},
 		{
 			name: "metered authentication",
@@ -118,6 +128,9 @@ func TestSecurityAuditEvaluationFailsClosed(t *testing.T) {
 				memo.dispositions[run.ID] = append([]securityaudit.Disposition(nil), tt.dispositions...)
 			}
 			orch := securityAuditTestOrchestrator(memo)
+			orch.now = func() time.Time { return now }
+			orch.cfg.FailureRetryBaseDelay = time.Second
+			orch.cfg.MaxRetryBackoff = time.Minute
 			got := orch.securityAuditEvaluation(t.Context(), currentIssue)
 			if got.Allowed != tt.wantAllowed || got.Reason != tt.wantReason {
 				t.Fatalf("securityAuditEvaluation() = %#v, want allowed=%t reason=%s", got, tt.wantAllowed, tt.wantReason)
