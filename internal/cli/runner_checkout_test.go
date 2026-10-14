@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -137,20 +141,111 @@ func TestCloneRunnerRepositoryUsesLocalGitConfiguration(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")
 	checkout(t, source)
+	runDoctorWorkflowSourceGit(t, source, "config", "uploadpack.allowFilter", "true")
+	if err := os.WriteFile(filepath.Join(source, "archive.bin"), bytes.Repeat([]byte("obsolete history\n"), 65536), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDoctorWorkflowSourceGit(t, source, "add", "archive.bin")
+	runDoctorWorkflowSourceGit(t, source, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "archive")
+	historic := strings.TrimSpace(runDoctorWorkflowSourceGit(t, source, "rev-parse", "HEAD"))
+	runDoctorWorkflowSourceGit(t, source, "rm", "archive.bin")
+	runDoctorWorkflowSourceGit(t, source, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "remove archive")
 	gitConfig := filepath.Join(root, "gitconfig")
 	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_COUNT", "0")
 	t.Setenv("GIT_CONFIG_SYSTEM", filepath.Join(root, "absent-system-config"))
-	runDoctorWorkflowSourceGit(t, source, "config", "--file", gitConfig, "url."+filepath.ToSlash(source)+".insteadOf", "https://github.com/acme/orders.git")
+	runDoctorWorkflowSourceGit(t, source, "config", "--file", gitConfig, "url.file://"+filepath.ToSlash(source)+".insteadOf", "https://github.com/acme/orders.git")
 	selected := globalconfig.Project{Workdir: filepath.Join(root, "checkout")}
 	for range 2 {
 		if err := prepareRunnerCheckout(t.Context(), selected, "https://github.com/acme/orders.git"); err != nil {
 			t.Fatal(err)
 		}
 	}
+	missing := runDoctorWorkflowSourceGit(t, selected.Workdir, "rev-list", "--objects", "--all", "--missing=print")
+	if !strings.Contains(missing, "\n?") {
+		t.Fatalf("clone downloaded obsolete history blobs: %s", missing)
+	}
+	fresh := filepath.Join(root, "exact-workspace")
+	runDoctorWorkflowSourceGit(t, selected.Workdir, "worktree", "add", "--detach", fresh, historic)
+	if body, err := os.ReadFile(filepath.Join(fresh, "archive.bin")); err != nil || len(body) != len("obsolete history\n")*65536 {
+		t.Fatalf("exact historic workspace could not retrieve missing blob: %d bytes, %v", len(body), err)
+	}
 	body, err := os.ReadFile(filepath.Join(selected.Workdir, "WORKFLOW.md"))
 	if err != nil || !strings.Contains(string(body), "Work the issue") {
 		t.Fatalf("local git checkout: %q %v", body, err)
+	}
+}
+
+func TestCloneRunnerRepositoryFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX git fixture")
+	}
+	for _, test := range []struct {
+		name, stderr, fix string
+		timeout           bool
+	}{
+		{name: "authentication", stderr: "fatal: Authentication failed for https://user:password@github.com/example-org/project.git", fix: "gh auth login"},
+		{name: "not found", stderr: "fatal: repository not found", fix: "Verify the repository binding"},
+		{name: "network", stderr: "fatal: Could not resolve host: github.com", fix: "Check repository connectivity"},
+		{name: "timeout", stderr: "transfer stalled", timeout: true, fix: "Repository checkout timed out"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			script := "#!/bin/sh\nprintf '%s\\n' \"$CHECKOUT_STDERR\" >&2\nexit 128\n"
+			if test.timeout {
+				script = "#!/bin/sh\nprintf '%s\\n' \"$CHECKOUT_STDERR\" >&2\nprintf ready > \"$CHECKOUT_STARTED\"\nwhile :; do :; done\n"
+			}
+			if err := os.WriteFile(filepath.Join(root, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", root)
+			t.Setenv("CHECKOUT_STDERR", test.stderr)
+			started := filepath.Join(root, "started")
+			t.Setenv("CHECKOUT_STARTED", started)
+			contexts := newControlledRuntimeCommandContexts()
+			contexts.AllowCommand()
+			if test.timeout {
+				done := make(chan struct{})
+				defer close(done)
+				go func() {
+					<-contexts.ready
+					ticker := time.NewTicker(time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-done:
+							return
+						case <-ticker.C:
+							if _, err := os.Stat(started); err == nil {
+								contexts.Expire()
+								return
+							}
+						}
+					}
+				}()
+			}
+			err := cloneRunnerRepositoryWithCommandContext(t.Context(), "https://github.com/example-org/project.git", root, contexts.New)
+			var checkoutErr *runnerCheckoutError
+			if !errors.As(err, &checkoutErr) || !strings.Contains(checkoutErr.fix, test.fix) {
+				t.Fatalf("checkout failure: %v", err)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("lost git exit status: %v", err)
+			}
+			if errors.Is(err, context.DeadlineExceeded) != test.timeout {
+				t.Fatalf("deadline cause: %v", err)
+			}
+			if !test.timeout && exitErr.ExitCode() != 128 {
+				t.Fatalf("exit status = %d", exitErr.ExitCode())
+			}
+			if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "user:") {
+				t.Fatalf("credentials leaked: %v", err)
+			}
+			if test.timeout && !strings.Contains(err.Error(), "transfer stalled") {
+				t.Fatalf("lost stderr: %v", err)
+			}
+		})
 	}
 }
