@@ -34,6 +34,8 @@ func artifactReadGrantRequest(c echo.Context) bool {
 }
 
 func (s *Service) hostedArtifactPublisher(c echo.Context, credential apiCredential) bool {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if !credential.NativeOnly || credential.Scope != apiScopeWorker || c.Request().Method != http.MethodPost {
 		return false
 	}
@@ -41,7 +43,7 @@ func (s *Service) hostedArtifactPublisher(c echo.Context, credential apiCredenti
 		return false
 	}
 	var count int
-	err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM artifact_services WHERE organization_id=? AND project_id=? AND id=? AND publisher_token_id=?", c.Param("organization"), c.Param("project"), c.Param("service"), credential.ID).Scan(&count)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM artifact_services WHERE organization_id=? AND project_id=? AND id=? AND publisher_token_id=?", c.Param("organization"), c.Param("project"), c.Param("service"), credential.ID).Scan(&count)
 	return err == nil && count == 1
 }
 
@@ -92,9 +94,11 @@ func (s *Service) artifactServices(c echo.Context) error {
 }
 
 func (s *Service) artifactPublisher(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	scope := nativeRequestScope(c)
 	var id string
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT publisher_token_id FROM artifact_services WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, c.Param("service")).Scan(&id); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT publisher_token_id FROM artifact_services WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, c.Param("service")).Scan(&id); err != nil {
 		return nativeNotFound()
 	}
 	if id != scope.credential.ID {
@@ -104,6 +108,8 @@ func (s *Service) artifactPublisher(c echo.Context) error {
 }
 
 func (s *Service) artifactReceipt(c echo.Context) error {
+	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancelRead()
 	if err := s.artifactPublisher(c); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -116,14 +122,14 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid("Invalid artifact receipt"))
 	}
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND json_extract(data_json,'$.run_id')=?", scope.organization, scope.project, ref.WorkItemID, ref.AttemptID, ref.RunID).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND json_extract(data_json,'$.run_id')=?", scope.organization, scope.project, ref.WorkItemID, ref.AttemptID, ref.RunID).Scan(&count); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if count != 1 {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if ref.VersionID != "" {
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id=? AND c.organization_id=? AND c.project_id=? AND json_extract(v.record_json,'$.attempt_id')=?", ref.VersionID, scope.organization, scope.project, ref.AttemptID).Scan(&count); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id=? AND c.organization_id=? AND c.project_id=? AND json_extract(v.record_json,'$.attempt_id')=?", ref.VersionID, scope.organization, scope.project, ref.AttemptID).Scan(&count); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if count != 1 {
@@ -180,11 +186,13 @@ func (s *Service) artifactReferences(c echo.Context) error {
 }
 
 func (s *Service) readArtifactReferences(ctx context.Context, scope nativeScope, item string) ([]artifact.Reference, error) {
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
 
-	rows, err := s.database.db.QueryContext(ctx, "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, item)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT a.reference_json FROM artifact_references a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.revision=(SELECT max(b.revision) FROM artifact_references b WHERE b.organization_id=a.organization_id AND b.project_id=a.project_id AND b.artifact_id=a.artifact_id) ORDER BY a.artifact_id LIMIT 64", scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +281,8 @@ func minTime(a, b time.Time) time.Time {
 }
 
 func (s *Service) authorizeArtifactRead(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if err := s.artifactPublisher(c); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -287,7 +297,7 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 	var created, principal, sessionHash string
 	var expires *string
 	var deadline int64
-	err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT t.created_at,t.expires_at,a.expires_at,a.principal_id,a.hosted_session_hash FROM artifact_grants a JOIN api_tokens t ON t.id=a.principal_id JOIN token_grants g ON g.token_id=t.id AND g.organization_id=a.organization_id AND g.project_id=a.project_id WHERE a.token_hash=? AND a.organization_id=? AND a.project_id=? AND a.service_id=? AND a.artifact_id=? AND a.revision=? AND t.revoked_at IS NULL", apikey.HashToken(r.Token), scope.organization, scope.project, c.Param("service"), r.ArtifactID, r.Revision).Scan(&created, &expires, &deadline, &principal, &sessionHash)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT t.created_at,t.expires_at,a.expires_at,a.principal_id,a.hosted_session_hash FROM artifact_grants a JOIN api_tokens t ON t.id=a.principal_id JOIN token_grants g ON g.token_id=t.id AND g.organization_id=a.organization_id AND g.project_id=a.project_id WHERE a.token_hash=? AND a.organization_id=? AND a.project_id=? AND a.service_id=? AND a.artifact_id=? AND a.revision=? AND t.revoked_at IS NULL", apikey.HashToken(r.Token), scope.organization, scope.project, c.Param("service"), r.ArtifactID, r.Revision).Scan(&created, &expires, &deadline, &principal, &sessionHash)
 	if err != nil || s.config.now().Unix() >= deadline || expires != nil && !runnerTimeValid(s.config.now(), created, *expires) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
@@ -301,6 +311,8 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 
 func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, sessionHash string) error {
 	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	session, err := s.WebSession(ctx, sessionHash, s.config.now())
 	if err != nil {
 		return err
@@ -311,14 +323,16 @@ func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, session
 	}
 	scope := nativeRequestScope(c)
 	scope.credential = credential
-	if err := s.requireHostedProject(ctx, s.database.db, scope, false); err != nil {
+	if err := s.requireHostedProject(readCtx, s.database.reader, scope, false); err != nil {
 		return err
 	}
 	return s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
 }
 
 func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope) (result []artifact.Binding, err error) {
-	rows, err := s.database.db.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 16", scope.organization, scope.project)
 	if err != nil {
 		return result, err
 	}
@@ -343,8 +357,10 @@ func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var raw, bindingRaw []byte
-	if err := s.database.db.QueryRowContext(ctx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, item, artifactID, revision).Scan(&raw, &bindingRaw); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, item, artifactID, revision).Scan(&raw, &bindingRaw); err != nil {
 		return result, err
 	}
 	var ref artifact.Reference
@@ -417,11 +433,13 @@ func (s *Service) recheckHostedArtifactReader(ctx context.Context, tx *sql.Tx, s
 }
 
 func (s *Service) getArtifactReference(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	revision, err := artifact.Revision(c.Param("revision"))
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid artifact revision"))
 	}
-	result, err := s.artifactReferenceCommand(c.Request().Context(), s.database.db, nativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
+	result, err := s.artifactReferenceCommand(ctx, s.database.reader, nativeRequestScope(c), c.Param("item"), c.Param("artifact"), revision, s.config.now())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

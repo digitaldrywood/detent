@@ -133,7 +133,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if len(evidence) != 1 || evidence[0].RunURL != origin.Source {
 		return nil
 	}
-	approval, err := readProjectPolicy(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	if err != nil || approval.Policy.Authored == nil {
 		return nil
 	}
@@ -141,7 +141,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if err != nil || contract.ScheduledRepairBody() == "" {
 		return nil
 	}
-	repository, err := policyRepository(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	if err != nil || !strings.EqualFold(repository, "digitaldrywood/detent") || !strings.EqualFold(repository, evidence[0].Repository) {
 		return nil
 	}

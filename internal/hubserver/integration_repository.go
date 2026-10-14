@@ -51,7 +51,7 @@ func (s *Service) bindNativeRepositoryCommand(ctx context.Context, scope nativeS
 	if s.config.ReconcileBackend == nil {
 		return nil, nativeInvalid("GitHub repository transport is not configured")
 	}
-	current, err := readProjectIntegration(ctx, s.database.db, scope)
+	current, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

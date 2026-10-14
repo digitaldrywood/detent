@@ -270,6 +270,8 @@ func runnerRequestExempt(method, route string) bool {
 type runnerRequestBudgetContext struct{}
 
 func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	m := s.requestMetrics
 	if m == nil || credential.Runner.RunnerID == "" {
 		return nil
@@ -279,7 +281,7 @@ func (s *Service) admitRunnerRequest(c echo.Context, credential apiCredential) e
 		return nil
 	}
 	var capacity int
-	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT min(r.capacity_limit,r.reported_capacity,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT min(r.capacity_limit,r.reported_capacity,m.capacity) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?", credential.Runner.RunnerID, m.organization).Scan(&capacity); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	projects := make([]string, 0, len(credential.Runner.ProjectIDs))

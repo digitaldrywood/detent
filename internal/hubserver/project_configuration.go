@@ -28,7 +28,17 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 		return operatortool.Result{}, err
 	}
 	scope.project = tracker.ProjectID(args.ProjectID)
-	tx, err := e.service.database.db.BeginTx(ctx, nil)
+	pool := e.service.database.db
+	txCtx := ctx
+	var options *sql.TxOptions
+	if name == operatortool.LocalProjectConfiguration || preview {
+		pool = e.service.database.reader
+		options = &sql.TxOptions{ReadOnly: true}
+		var cancel context.CancelFunc
+		txCtx, cancel = context.WithTimeout(ctx, hubReadTimeout)
+		defer cancel()
+	}
+	tx, err := pool.BeginTx(txCtx, options)
 	if err != nil {
 		return operatortool.Result{}, err
 	}

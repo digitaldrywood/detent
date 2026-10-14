@@ -156,6 +156,8 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 }
 
 func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, action chat.Action) (operatortool.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	ctx, scope, r, err := e.attachmentAuthority(ctx, operatortool.DeleteAttachment, action.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -163,7 +165,7 @@ func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, acti
 	state := ""
 	if action.Status == chat.ActionSucceeded {
 		var confirmed bool
-		err := e.service.database.db.QueryRowContext(ctx, "SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL", scope.organization, scope.project, r.AttachmentID).Scan(&confirmed)
+		err := e.service.database.reader.QueryRowContext(ctx, "SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL", scope.organization, scope.project, r.AttachmentID).Scan(&confirmed)
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}

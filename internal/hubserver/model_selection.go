@@ -27,7 +27,9 @@ func readCloudModelSelection(ctx context.Context, query nativeQueryer, scope nat
 }
 
 func (s *Service) getCloudModelSelection(c echo.Context) error {
-	result, err := readCloudModelSelection(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	result, err := readCloudModelSelection(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

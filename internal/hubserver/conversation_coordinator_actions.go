@@ -162,7 +162,7 @@ func (t *coordinatorToolset) projectAction(ctx context.Context, record conversat
 	requestID := coordinatorActionRequestID(t.state.users[len(t.state.users)-1].ID, call)
 	action := chat.Action{RequiresConfirmation: len(requireConfirmation) > 0 && requireConfirmation[0], ConversationID: record.ID, Kind: chat.ActionKind(call.Name), ProjectID: string(record.ProjectID), RequestID: requestID, Title: strings.ReplaceAll(call.Name, "_", " "), Material: true}
 	if call.Name == "get_project_integration" || call.Name == "update_project_integration" {
-		current, err := s.projectIntegration(ctx, s.database.db, scope)
+		current, err := s.projectIntegration(ctx, s.database.reader, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -419,7 +419,7 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 	if err != nil {
 		return nil, err
 	}
-	record, err := s.conversations.store.readConversation(ctx, s.database.db, tracker.OrganizationID(action.OrganizationID), tracker.ProjectID(action.ProjectID), action.ConversationID)
+	record, err := s.conversations.store.readConversation(ctx, s.database.reader, tracker.OrganizationID(action.OrganizationID), tracker.ProjectID(action.ProjectID), action.ConversationID)
 	if err != nil {
 		return nil, operatortool.ErrAccessDenied
 	}
@@ -491,11 +491,13 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
-	record, err := s.conversations.store.readConversation(ctx, s.database.db, scope.organization, scope.project, c.Param("conversation"))
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	record, err := s.conversations.store.readConversation(readCtx, s.database.reader, scope.organization, scope.project, c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.conversations.authorizeWrite(ctx, s.database.db, scope, record); err != nil {
+	if err := s.conversations.authorizeWrite(readCtx, s.database.reader, scope, record); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {

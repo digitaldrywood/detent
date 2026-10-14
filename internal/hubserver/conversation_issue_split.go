@@ -125,6 +125,8 @@ func validateCoordinatorSplitDrafts(ctx context.Context, tx *sql.Tx, scope nativ
 }
 
 func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var split chat.IssueSplit
 	if err := decodeCoordinatorArguments(call.Arguments, &split); err != nil {
 		return nil, err
@@ -153,7 +155,7 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 	}
 	scope.project = record.ProjectID
 	s := t.coordinator.service.server
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

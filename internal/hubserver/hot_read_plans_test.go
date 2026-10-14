@@ -28,7 +28,6 @@ var knownSlowHotReads = []struct {
 	{"activity running attempts sort", "n.status='running' AND l.released_at IS NULL", hotReadIssue + "1057"},
 	{"activity finished attempts sort", "n.status!='running' AND n.activity_updated_at>=julianday(:from)", hotReadIssue + "1057"},
 	{"work item latest change sort", "ORDER BY c.rowid DESC LIMIT 1", hotReadIssue + "1057"},
-	{"project onboarding latest attempt sort", "SELECT status FROM native_attempts WHERE organization_id=? AND project_id=? ORDER BY fencing_token DESC LIMIT 1", hotReadIssue + "1057"},
 	{"analytics failure signatures sort", "WITH failures AS (", hotReadIssue + "976"},
 	{"analytics landed changes sort", "SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v", hotReadIssue + "976"},
 	{"analytics attempt runtime sort", "coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]')", hotReadIssue + "976"},

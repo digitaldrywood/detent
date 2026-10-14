@@ -233,8 +233,11 @@ func (s *Service) logWriterWaits() {
 	}
 	stats := s.database.db.Stats()
 	waits, waited := stats.WaitCount-s.writerWaits.Swap(stats.WaitCount), stats.WaitDuration-time.Duration(s.writerWaited.Swap(int64(stats.WaitDuration)))
+	reader := s.database.reader.Stats()
+	readerWaits, readerWaited := reader.WaitCount-s.readerWaits.Swap(reader.WaitCount), reader.WaitDuration-time.Duration(s.readerWaited.Swap(int64(reader.WaitDuration)))
 	if last == 0 {
 		return
 	}
-	s.config.Logger.Info("hub writer waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "interval_s", (now-last)/int64(time.Second))
+	s.config.Logger.Info("hub writer waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "interval_s", (now-last)/int64(time.Second),
+		"reader_waits", readerWaits, "reader_wait_ms", readerWaited.Milliseconds(), "reader_in_use", reader.InUse, "reader_max", reader.MaxOpenConnections)
 }

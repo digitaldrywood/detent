@@ -9,6 +9,8 @@ import (
 )
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string) (tracker.NativeRecovery, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var result tracker.NativeRecovery
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {

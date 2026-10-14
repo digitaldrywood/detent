@@ -30,6 +30,8 @@ type hostedBillingReport struct {
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	report := hostedBillingReport{OrganizationID: s.config.Hosted.OrganizationID, Audit: []templates.HostedBillingAudit{}}
 	var err error
 	report.State, err = s.database.readHostedBilling(ctx)
@@ -50,21 +52,21 @@ func (s *Service) hostedBillingReport(ctx context.Context) (hostedBillingReport,
 			return report, err
 		}
 		window := report.ChatUsage.Range
-		if err := s.database.db.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
+		if err := s.database.reader.QueryRowContext(ctx, `SELECT coalesce(-sum(amount_micros),0) FROM ai_credit_transactions
  WHERE organization_id=? AND mode=? AND kind='usage' AND recorded_at>=? AND recorded_at<?`, s.database.hostedOrganization, s.database.aiCreditMode, window.From.UnixMicro(), window.To.UnixMicro()).Scan(&report.ChargedAIMicros); err != nil {
 			return report, err
 		}
 	}
 	var checked sql.NullString
-	err = s.database.db.QueryRowContext(ctx, "SELECT reconciled_at FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&checked)
+	err = s.database.reader.QueryRowContext(ctx, "SELECT reconciled_at FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&checked)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return report, err
 	}
 	report.ReconciledAt = checked.String
-	if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_billing_events WHERE processed_at IS NULL").Scan(&report.PendingEvents); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_billing_events WHERE processed_at IS NULL").Scan(&report.PendingEvents); err != nil {
 		return report, err
 	}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT actor_id,action,record_json,recorded_at FROM hosted_billing_audit WHERE organization_id=? ORDER BY id DESC LIMIT 50", s.config.Hosted.OrganizationID)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT actor_id,action,record_json,recorded_at FROM hosted_billing_audit WHERE organization_id=? ORDER BY id DESC LIMIT 50", s.config.Hosted.OrganizationID)
 	if err != nil {
 		return report, err
 	}
@@ -292,7 +294,7 @@ func (s *Service) hostedBillingUsageJSON(c echo.Context) error {
 }
 
 func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice) string {
-	plan, err := s.database.readHostedPlan(ctx, s.database.db, price.Plan)
+	plan, err := s.database.readHostedPlan(ctx, s.database.reader, price.Plan)
 	if err != nil || plan.MonthlyUSDCents == nil {
 		return price.Label
 	}
@@ -300,6 +302,8 @@ func (s *Service) hostedPriceLabel(ctx context.Context, price HostedBillingPrice
 }
 
 func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	report, err := s.hostedBillingReport(ctx)
 	if err != nil {
 		return hostedBillingView{}, err
@@ -312,7 +316,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 			if !slices.Contains([]string{"starter", "growth", "scale"}, configured.ID) {
 				continue
 			}
-			plan, err := s.database.readHostedPlan(ctx, s.database.db, configured.PlanReference)
+			plan, err := s.database.readHostedPlan(ctx, s.database.reader, configured.PlanReference)
 			if err != nil {
 				return hostedBillingView{}, err
 			}
@@ -337,7 +341,7 @@ func (s *Service) readBillingView(ctx context.Context) (hostedBillingView, error
 			view.CanManage = true
 		}
 		var raw string
-		if err := s.database.db.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
 			var checkout hostedCheckout
 			view.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
 		}

@@ -89,7 +89,9 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 }
 
 func (s *Service) getNativeSourceRecovery(c echo.Context) error {
-	ctx, scope := c.Request().Context(), nativeRequestScope(c)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	scope := nativeRequestScope(c)
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)

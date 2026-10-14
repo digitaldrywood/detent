@@ -15,13 +15,15 @@ import (
 )
 
 func (s *Service) platformTenantAICreditBalance(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
 		return c.NoContent(http.StatusForbidden)
 	}
 	d := s.database
 	var balance int64
-	if err := d.db.QueryRowContext(c.Request().Context(), "SELECT balance_micros FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&balance); err != nil {
+	if err := d.reader.QueryRowContext(ctx, "SELECT balance_micros FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&balance); err != nil {
 		return s.internalAPIError(c, "ai_credits_unavailable", "AI credits are unavailable", err)
 	}
 	return c.JSON(http.StatusOK, map[string]int64{"balance_micros": balance})

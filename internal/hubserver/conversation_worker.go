@@ -1454,7 +1454,9 @@ const conversationInFlightQuery = `SELECT id, organization_id, project_id FROM c
  OR (json_extract(execution_json, '$.status') IN ('completed', 'interrupted', 'failed', 'unknown') AND COALESCE(json_extract(execution_json, '$.settled'), 0) = 0 AND COALESCE(json_extract(execution_json, '$.lease_id'), '') <> '')) `
 
 func (c *conversationService) inFlightExecutions(ctx context.Context, query string, args ...any) ([]conversationExecutionRef, error) {
-	rows, err := c.server.database.db.QueryContext(ctx, query, args...)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := c.server.database.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list in-flight conversations: %w", err)
 	}

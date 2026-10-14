@@ -36,6 +36,8 @@ type Service struct {
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64
+	readerWaits             atomic.Int64
+	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map
@@ -456,11 +458,18 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
+	lastOptimize := s.config.now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if now := s.config.now(); now.Sub(lastOptimize) >= time.Hour {
+				if err := s.database.optimize(ctx, "PRAGMA optimize"); err != nil && !errors.Is(err, context.Canceled) {
+					s.config.Logger.Warn("optimize hub database", "error", err)
+				}
+				lastOptimize = now
+			}
 			s.maintainGitHubWebhooks(ctx)
 			if err := s.maintainGitHubBatches(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				s.config.Logger.Error("process GitHub intake batches", "error", err)

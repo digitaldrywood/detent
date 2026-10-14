@@ -66,6 +66,38 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		})
 	}
 
+	for _, pool := range []struct {
+		name  string
+		db    *sql.DB
+		cache int64
+	}{{"reader", service.database.reader, -8000}, {"auth reader", service.database.auth(), -2000}, {"claim reader", service.database.claimReader, -2000}} {
+		t.Run(pool.name, func(t *testing.T) {
+			for range 2 {
+				conn, err := pool.db.Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := conn.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				for _, check := range []struct {
+					query string
+					want  int64
+				}{{"PRAGMA query_only", 1}, {"PRAGMA cache_size", pool.cache}, {"PRAGMA temp_store", 2}, {"PRAGMA mmap_size", 268435456}} {
+					var value int64
+					if err := conn.QueryRowContext(t.Context(), check.query).Scan(&value); err != nil {
+						t.Fatal(err)
+					}
+					if value != check.want {
+						t.Fatalf("%s=%d, want %d", check.query, value, check.want)
+					}
+				}
+			}
+		})
+	}
+
 	if service.database.schemaVersion != supportedSchemaVersion(t) {
 		t.Fatalf("schema version = %d, want %d", service.database.schemaVersion, supportedSchemaVersion(t))
 	}

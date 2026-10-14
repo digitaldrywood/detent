@@ -121,6 +121,8 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 }
 
 func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}, Cards: []tracker.NativeBoardCard{}}
 	if err := validateNativeIssueQuery(params); err != nil {
 		return page, err

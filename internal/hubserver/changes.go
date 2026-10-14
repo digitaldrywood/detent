@@ -27,11 +27,13 @@ func changeCheckRequest(c echo.Context) bool {
 }
 
 func (s *Service) hostedChangeCheckPrincipal(c echo.Context, credential apiCredential) bool {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if !changeCheckRequest(c) {
 		return false
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
-	return s.requireHostedChangeCheckPrincipal(c.Request().Context(), s.database.db, scope) == nil
+	return s.requireHostedChangeCheckPrincipal(ctx, s.database.reader, scope) == nil
 }
 
 func (s *Service) requireHostedChangeCheckPrincipal(ctx context.Context, query nativeQueryer, scope nativeScope) error {
@@ -134,7 +136,9 @@ func readChangePolicy(ctx context.Context, query nativeQueryer, scope nativeScop
 }
 
 func (s *Service) getChangeReviewPolicy(c echo.Context) error {
-	result, err := readChangePolicy(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	result, err := readChangePolicy(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -257,6 +261,8 @@ func (s *Service) listChanges(c echo.Context) error {
 }
 
 func (s *Service) readChanges(ctx context.Context, scope nativeScope, item string) ([]tracker.ChangeRequest, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
@@ -279,7 +285,9 @@ func (s *Service) createChange(c echo.Context) error {
 }
 
 func (s *Service) getChange(c echo.Context) error {
-	scope, ctx := nativeRequestScope(c), c.Request().Context()
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	scope, ctx := nativeRequestScope(c), ctx
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)

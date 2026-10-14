@@ -202,7 +202,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	}
 	proposal := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: request.ProjectID, IssueID: resourceSelector(request), RequestID: request.RequestID, Arguments: arguments, Mutation: m}
 	if call.Name == "create_project_action_run" {
-		configured, err := readProjectAction(ctx, e.server.database.db, scope, request.ActionID)
+		configured, err := readProjectAction(ctx, e.server.database.reader, scope, request.ActionID)
 		if err != nil {
 			return operatortool.Result{}, safeWorkspaceError(err)
 		}

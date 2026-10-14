@@ -343,7 +343,7 @@ func (c *conversationTurnCoordinator) loop(conversationID string) {
 func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), coordinatorWriteTimeout)
 	defer cancel()
-	record, err := c.readConversation(ctx, c.service.store.db, conversationID)
+	record, err := c.readConversation(ctx, c.service.store.reader, conversationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -353,7 +353,7 @@ func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) 
 	if !coordinatorHandles(record) {
 		return false, nil
 	}
-	pending, err := c.pendingMessages(ctx, c.service.store.db, conversationID)
+	pending, err := c.pendingMessages(ctx, c.service.store.reader, conversationID)
 	if err != nil {
 		return false, err
 	}
@@ -627,7 +627,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 	attachments, runErr := c.coordinatorAttachments(turnCtx, state.users)
 	prompt := coordinatorPrompt(transcript, state.users)
 	if runErr == nil {
-		record, err := c.readConversation(turnCtx, c.service.store.db, conversationID)
+		record, err := c.readConversation(turnCtx, c.service.store.reader, conversationID)
 		if err != nil {
 			runErr = err
 		} else {
@@ -646,7 +646,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 					if authErr != nil {
 						runErr = authErr
 					} else {
-						runErr = c.service.authorizeRead(actorCtx, c.service.store.db, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record)
+						runErr = c.service.authorizeRead(actorCtx, c.service.store.reader, nativeScope{organization: record.OrganizationID, project: record.ProjectID, credential: credential}, record)
 						if runErr == nil {
 							runErr = tools.restrictReadAudience(actorCtx, record, credential)
 						}
@@ -894,7 +894,7 @@ func (c *conversationTurnCoordinator) coordinatorAttachments(ctx context.Context
 			if strings.HasPrefix(attachment.MIME, "image/") {
 				continue
 			}
-			content, err := c.service.store.readAttachmentContent(ctx, c.service.store.db, attachment.ArtifactRef)
+			content, err := c.service.store.readAttachmentContent(ctx, c.service.store.reader, attachment.ArtifactRef)
 			if errors.Is(err, sql.ErrNoRows) {
 				// The upload was swept or deleted between accept and turn;
 				// the turn still runs without it.

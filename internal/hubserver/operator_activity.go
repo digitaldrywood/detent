@@ -68,6 +68,8 @@ func (s *Service) hostedActivity(c echo.Context) error {
 }
 
 func (s *Service) readActivityReport(ctx context.Context, credential apiCredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	out := operatortool.ActivityReport{OrganizationID: s.config.Hosted.OrganizationID, ObservedAt: s.config.now().UTC(), Window: w, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, PopulationLimit: maxAnalyticsPopulation}
 	projects, err := s.usageReadableProjects(ctx, credential)
 	if err != nil {

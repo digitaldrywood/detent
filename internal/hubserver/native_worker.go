@@ -62,6 +62,9 @@ func authorizeClaimItem(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, 
 }
 
 func (s *Service) claimNativeIssue(c echo.Context) error {
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var request tracker.NativeClaim
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -90,12 +93,12 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	}
 	var id tracker.WorkItemID
 	if request.WorkItemID != "" {
-		_, id, err = readNativeIssue(c.Request().Context(), s.database.db, scope, string(request.WorkItemID))
+		_, id, err = readNativeIssue(readCtx, s.database.reader, scope, string(request.WorkItemID))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	lease, err := s.database.claimNext(c.Request().Context(), tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
+	lease, err := s.database.claimNext(ctx, tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
 		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
 		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
 		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
@@ -111,15 +114,17 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 }
 
 func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tracker.Lease) error {
-	policyID, err := s.database.leasePolicyID(c.Request().Context(), lease.ID)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	policyID, err := s.database.leasePolicyID(ctx, lease.ID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	var id tracker.NativeWorkItemID
-	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id = ? AND organization_id = ? AND project_id = ?", lease.WorkItemID, scope.organization, scope.project).Scan(&id); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	reservation, reserved, err := readProviderReservation(c.Request().Context(), s.database.reader, lease.ID)
+	reservation, reserved, err := readProviderReservation(ctx, s.database.reader, lease.ID)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -130,7 +135,7 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 	var policy *isolation.Policy
 	if scope.credential.Runner.RunnerID != "" {
 		var encoded string
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT isolation_policy_json FROM lease_runners WHERE lease_id = ? AND runner_id = ?", lease.ID, scope.credential.Runner.RunnerID).Scan(&encoded); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		policy = &isolation.Policy{}
@@ -142,8 +147,10 @@ func (s *Service) respondNativeLease(c echo.Context, scope nativeScope, lease tr
 }
 
 func (s *Service) requireNativeLease(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	scope := nativeRequestScope(c)
-	return requireLeaseRunner(c.Request().Context(), s.database.reader, tracker.LeaseID(c.Param("lease")), scope)
+	return requireLeaseRunner(ctx, s.database.reader, tracker.LeaseID(c.Param("lease")), scope)
 }
 
 func (s *Service) renewNativeLease(c echo.Context) error {

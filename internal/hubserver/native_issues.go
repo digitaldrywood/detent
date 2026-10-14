@@ -234,7 +234,8 @@ ORDER BY i.native_id`, args...)
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
-	ctx := c.Request().Context()
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	scope := nativeRequestScope(c)
 	if view := c.QueryParam("view"); view != "" {
 		if view != "recovery" || len(c.QueryParams()) != 1 || len(c.QueryParams()["view"]) != 1 {

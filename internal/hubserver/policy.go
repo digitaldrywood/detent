@@ -26,10 +26,12 @@ func policyMismatch(message string) error {
 }
 
 func (s *Service) policyScope(c echo.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if c.Param("organization") != "" {
 		scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))}
 		var count int
-		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&count); err != nil {
 			return "", err
 		}
 		if count != 1 {
@@ -39,7 +41,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	}
 	repository := c.Param("owner") + "/" + c.Param("repo")
 	var count int
-	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM repositories WHERE github_owner || '/' || github_name = ? COLLATE NOCASE", repository).Scan(&count); err != nil {
 		return "", err
 	}
 	if count != 1 {
@@ -49,6 +51,8 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 }
 
 func (s *Service) getProjectPolicy(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	scope, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -57,7 +61,7 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
-	approval, err := readProjectPolicyWithHistory(c.Request().Context(), s.database.reader, scope, limit, c.QueryParam("after"))
+	approval, err := readProjectPolicyWithHistory(ctx, s.database.reader, scope, limit, c.QueryParam("after"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -430,6 +434,11 @@ FROM project_policies p JOIN policy_revisions r ON r.scope = p.scope AND r.polic
 	if err != nil {
 		return result, err
 	}
+	return decodeProjectPolicy(raw, result)
+}
+
+func decodeProjectPolicy(raw string, result policy.Approval) (policy.Approval, error) {
+	var err error
 	if err := json.Unmarshal([]byte(raw), &result.Policy); err != nil {
 		return result, err
 	}
@@ -524,6 +533,8 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 }
 
 func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var id string
 	err := d.reader.QueryRowContext(ctx, "SELECT policy_id FROM lease_policies WHERE lease_id = ?", lease).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {

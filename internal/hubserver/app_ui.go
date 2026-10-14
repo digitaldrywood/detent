@@ -135,8 +135,10 @@ func (s *Service) appShell(c echo.Context) error {
 	firstSegment := strings.Split(strings.Trim(path, "/"), "/")[0]
 	_, readableShared := c.Get("readable_organization_slug").(string)
 	if path != "/login" && (readableShared || readableurl.Validate(firstSegment) == nil) {
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancelRead()
 		var slug string
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&slug); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&slug); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		shell = []byte(strings.Replace(string(shell), "<head>", `<head><meta name="detent-router-base" content="/`+html.EscapeString(slug)+`">`, 1))
@@ -277,13 +279,15 @@ func (s *Service) appUpdates(c echo.Context) error {
 }
 
 func (s *Service) readAppUpdates(ctx context.Context, credential apiCredential) (appUpdates, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if credential.Hosted == nil || credential.HostedRole == "viewer" || !s.appAllRunnerGrants(ctx, credential) {
 		return appUpdates{}, nativeNotFound()
 	}
 	current := detentVersion(s.config.Version)
 	minimum := minimumRunnerVersion(current)
 	payload := appUpdates{MinimumRunnerVersion: minimum, Current: current, Source: "hub", Runners: []appUpdateRunner{}, Client: s.clientBuild}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, r.display_name, m.version, r.last_heartbeat_at
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id
 WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.id`, s.config.Hosted.OrganizationID)
 	if err != nil {
@@ -474,6 +478,8 @@ func (s *Service) appBootstrapPayload(c echo.Context) error {
 }
 
 func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential, session auth.Session) (appBootstrap, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	organization := s.config.Hosted.OrganizationID
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	payload := appBootstrap{
@@ -490,7 +496,7 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 		SignInPath: s.hostedSignInPath(),
 		Version:    s.config.Version,
 	}
-	if err := s.database.db.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
 		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
 	payload.Organization.PublicURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + "/" + payload.Organization.Slug + "/work"
@@ -547,7 +553,7 @@ func (s *Service) appBootstrapPreferences(ctx context.Context, organization stri
 	if err != nil {
 		return preferences, err
 	}
-	models, err := s.conversationModelChoices(ctx, s.database.db, tracker.OrganizationID(organization), projects, now)
+	models, err := s.conversationModelChoices(ctx, s.database.reader, tracker.OrganizationID(organization), projects, now)
 	if err != nil {
 		return preferences, err
 	}
@@ -632,6 +638,8 @@ func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
 // hostedReadableProjects lists the projects the credential may read with the
 // capabilities the client needs to render them.
 func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	projects := []appBootstrapProject{}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.slug, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
@@ -712,11 +720,13 @@ ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID,
 }
 
 func (s *Service) hostedWorkspaceCapabilities(ctx context.Context, credential apiCredential, project appBootstrapProject) (workspacesession.Capabilities, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	result := workspacesession.Capabilities{}
 	if s.workspaces == nil || !project.CanWrite || credential.Hosted == nil || credential.HostedRole == "viewer" {
 		return result, nil
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r
 JOIN token_grants g ON g.token_id = r.token_id AND g.organization_id = r.organization_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL AND g.project_id = ?`, s.config.Hosted.OrganizationID, project.ID)
 	if err != nil {
@@ -736,14 +746,14 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL AND g.project_id = ?`, s.co
 	}
 	now := s.config.now()
 	for _, id := range ids {
-		runner, err := readRunnerWithClock(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
+		runner, err := readRunnerWithClock(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), id, s.config.now)
 		if err != nil {
 			return result, err
 		}
 		if runner.Health != "online" || runner.State != "active" || !slices.Contains(runner.Operations, "claim") {
 			continue
 		}
-		capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, s.database.db, id, now)
+		capabilities, isolation, fresh, err := runnerWorkspaceCapabilities(ctx, s.database.reader, id, now)
 		if err != nil {
 			return result, err
 		}

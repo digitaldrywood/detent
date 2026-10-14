@@ -298,7 +298,7 @@ var conversationSettleInterval = 5 * time.Minute
 // settle window. It returns how many settled.
 func (c *conversationService) settleIdleConversations(ctx context.Context, now time.Time) (int, error) {
 	before := now.Add(-c.config.SettleWindow)
-	candidates, err := c.store.listSettleCandidates(ctx, c.store.db, before, conversationSettleBatch)
+	candidates, err := c.store.listSettleCandidates(ctx, c.store.reader, before, conversationSettleBatch)
 	if err != nil {
 		return 0, err
 	}
@@ -359,14 +359,16 @@ func (c *conversationService) settleConversation(ctx context.Context, id string,
 }
 
 func (s *Service) readWorkItemReferences(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
-	if _, _, err := readNativeIssue(ctx, s.database.db, scope, id); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, id); err != nil {
 		return nil, translateConversationError(err)
 	}
-	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.db, scope.organization, scope.project, id, conversationReferencePage)
+	stored, err := s.conversations.store.listWorkItemReferences(ctx, s.database.reader, scope.organization, scope.project, id, conversationReferencePage)
 	if err != nil {
 		return nil, err
 	}
-	audience, err := conversationReadAudience(ctx, s.database.db, scope.organization, scope.credential)
+	audience, err := conversationReadAudience(ctx, s.database.reader, scope.organization, scope.credential)
 	if err != nil {
 		return nil, err
 	}

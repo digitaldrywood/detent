@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const defaultAICreditCostMultiplier = 1.5
@@ -103,8 +104,14 @@ func (c *HostedBillingConfig) mode() string {
 var errHostedBillingUnbound = errors.New("organization has no billing customer yet")
 
 func (d *database) hostedBillingBinding(ctx context.Context, c *HostedBillingConfig) (billing.Binding, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	return readHostedBillingBinding(ctx, d.reader, d.hostedOrganization, c)
+}
+
+func readHostedBillingBinding(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, c *HostedBillingConfig) (billing.Binding, error) {
 	var account, customer, mode string
-	err := d.db.QueryRowContext(ctx, "SELECT account_id,customer_id,mode FROM hosted_billing_accounts WHERE organization_id=?", d.hostedOrganization).Scan(&account, &customer, &mode)
+	err := query.QueryRowContext(ctx, "SELECT account_id,customer_id,mode FROM hosted_billing_accounts WHERE organization_id=?", organization).Scan(&account, &customer, &mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.Binding{}, errHostedBillingUnbound
 	}
@@ -114,7 +121,7 @@ func (d *database) hostedBillingBinding(ctx context.Context, c *HostedBillingCon
 	if account != c.AccountID || mode != c.mode() {
 		return billing.Binding{}, errors.New("hosted Stripe binding belongs to a different account or mode")
 	}
-	return billing.Binding{AccountID: account, CustomerID: customer, OrganizationID: string(d.hostedOrganization)}, nil
+	return billing.Binding{AccountID: account, CustomerID: customer, OrganizationID: string(organization)}, nil
 }
 
 func (d *database) configureHostedBilling(ctx context.Context, cfg *HostedConfig) error {

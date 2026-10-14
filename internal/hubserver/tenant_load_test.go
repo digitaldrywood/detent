@@ -37,6 +37,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 		maxP95      time.Duration
 	}{
 		{name: "two runners with dashboards open", clients: 12, slowReaders: 8, maxP95: 250 * time.Millisecond},
+		{name: "fifty runners", clients: 50, slowReaders: 8},
 		{name: "one hundred runners", clients: 100, slowReaders: 8},
 	}
 	for _, test := range tests {
