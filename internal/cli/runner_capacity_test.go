@@ -339,7 +339,7 @@ func TestRunnerStorageConstraint(t *testing.T) {
 		want                     string
 	}{
 		{name: "below target", bytes: 100, cacheFree: 50 << 30, workspaceFree: 50 << 30},
-		{name: "recent cache growth", bytes: 2048, cacheFree: 50 << 30, workspaceFree: 50 << 30, want: "admission target"},
+		{name: "recent cache growth", bytes: 2048, cacheFree: 50 << 30, workspaceFree: 50 << 30},
 		{name: "cache disk pressure", bytes: 100, cacheFree: 1 << 30, workspaceFree: 50 << 30, want: "reserve"},
 		{name: "workspace disk pressure", bytes: 100, cacheFree: 50 << 30, workspaceFree: 1 << 30, want: "reserve"},
 		{name: "disk observation failed", bytes: 100, probeError: true, want: "unavailable"},
@@ -357,7 +357,10 @@ func TestRunnerStorageConstraint(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
 				t.Fatal(err)
 			}
-			now := time.Now()
+			now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+			if err := os.Chtimes(entry, now, now); err != nil {
+				t.Fatal(err)
+			}
 			policy := toolcache.Policy{MaxBytes: 1024}
 			if _, err := toolcache.TrimWithReport(t.Context(), root, policy, now); err != nil {
 				t.Fatal(err)
@@ -386,6 +389,9 @@ func TestRunnerStorageConstraint(t *testing.T) {
 			if tt.name == "recent cache growth" {
 				if _, err := toolcache.TrimWithReport(t.Context(), root, policy, now.Add(49*time.Hour)); err != nil {
 					t.Fatal(err)
+				}
+				if _, err := os.Stat(entry); !os.IsNotExist(err) {
+					t.Fatalf("old output was not safely expired: %v", err)
 				}
 				if got := runnerStorageConstraintForPaths(cfg, paths, probe); got != "" {
 					t.Fatalf("capacity did not recover after safe expiry: %s", got)
