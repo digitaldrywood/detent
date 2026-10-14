@@ -24,7 +24,7 @@ func analyticsAttemptsInStartedOrder(q nativeQueryer) string {
 		return "native_attempts"
 	}
 	return `(SELECT organization_id,project_id,dimension AS id,json_work_item_id AS work_item_id,json_extract(data_json,'$.lease_id') AS lease_id,json_extract(data_json,'$.status') AS status,
-json_started_at AS started_at,json_updated_at AS updated_at,data_json FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')`
+json_started_at AS started_at,json_updated_at AS updated_at,attempt_role,data_json FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')`
 }
 
 func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, runner string) (nativeAnalyticsAttemptPopulation, error) {
@@ -87,6 +87,7 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 		if dropped > 0 {
 			partial = true
 		}
+		_, a.publicActivity = q.(analyticsRollupReader)
 		a.activityRaw = activityRaw
 		attempts = append(attempts, a)
 	}
