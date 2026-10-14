@@ -104,7 +104,7 @@ func (s *Server) workActionProposal(ctx context.Context, name string, arguments 
 				return chatpkg.Action{}, errOperatorCommandUnavailable
 			}
 			action.Revision = int64(comment.Revision)
-		case operatortool.DeleteComment, operatortool.RemoveItem, operatortool.OrderItem, operatortool.UpdateTestItem:
+		case operatortool.DeleteComment, operatortool.RemoveItem, operatortool.OrderItem:
 			return chatpkg.Action{}, errOperatorCommandUnavailable
 		case operatortool.SetDependency:
 			// Resolve the related item under the same configured project; the hub also
@@ -116,7 +116,7 @@ func (s *Server) workActionProposal(ctx context.Context, name string, arguments 
 		}
 	} else {
 		switch name {
-		case operatortool.EditItem, operatortool.SetDependency, operatortool.ArchiveItem, operatortool.RestoreItem, operatortool.OrderItem, operatortool.UpdateTestItem:
+		case operatortool.EditItem, operatortool.SetDependency, operatortool.ArchiveItem, operatortool.RestoreItem, operatortool.OrderItem:
 			return chatpkg.Action{}, errOperatorCommandUnavailable
 		case operatortool.AddComment:
 			board, message, _ := s.kanbanActionTarget(request.ProjectID)
