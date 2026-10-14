@@ -171,7 +171,7 @@ func (s *Service) hostedReports(c echo.Context) error {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
 	if compare == "off" {
-		withoutPriorPeriod(&report)
+		report = withoutPriorPeriod(report)
 	}
 	return c.JSON(http.StatusOK, report)
 }

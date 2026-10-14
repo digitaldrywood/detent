@@ -555,7 +555,7 @@ func mergeQualityCounts(counts func(func(analyticsQualityCounts) bool)) analytic
 
 // withoutPriorPeriod drops the window before the report's, for a read that
 // asked for no comparison.
-func withoutPriorPeriod(report *hostedReportsReport) {
+func withoutPriorPeriod(report hostedReportsReport) hostedReportsReport {
 	report.Previous = reportsCompletion{Lanes: []operatortool.AnalyticsLaneDuration{}}
 	report.Prior = reportsPrior{LaneSeconds: map[string]float64{}}
 	report.PriorCost, report.PriorFirst, report.PriorFailed, report.OpenWork.PreviousStuck = nil, nil, nil, nil
@@ -563,4 +563,5 @@ func withoutPriorPeriod(report *hostedReportsReport) {
 	for i := range report.Series {
 		report.Series[i].PriorDone = 0
 	}
+	return report
 }
