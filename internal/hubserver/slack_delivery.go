@@ -81,10 +81,10 @@ func enqueueSlackResolved(ctx context.Context, tx *sql.Tx, organization tracker.
 }
 
 func (s *Service) readSlackWebhook(ctx context.Context, organization tracker.OrganizationID, actor string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var envelope hubsecrets.Envelope
-	err := s.database.reader.QueryRowContext(ctx, `SELECT ciphertext,nonce,wrapped_data_key,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, organization, slackWebhookSecret).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
+	err := s.database.reader.QueryRowContext(readCtx, `SELECT ciphertext,nonce,wrapped_data_key,master_key_version FROM organization_secrets WHERE organization_id=? AND kind=?`, organization, slackWebhookSecret).Scan(&envelope.Ciphertext, &envelope.Nonce, &envelope.WrappedKey, &envelope.Version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

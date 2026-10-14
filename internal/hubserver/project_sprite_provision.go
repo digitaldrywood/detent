@@ -28,21 +28,21 @@ func spriteShellQuote(value string) string {
 }
 
 func (s *Service) poolSpriteToken(ctx context.Context, scope nativeScope, name string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	actor, err := s.spritePoolAuthority(ctx, s.database.reader, scope)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	actor, err := s.spritePoolAuthority(readCtx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
 	scope.credential.ID = actor
 	var project tracker.ProjectID
 	var provider string
-	err = s.database.reader.QueryRowContext(ctx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&project, &provider)
+	err = s.database.reader.QueryRowContext(readCtx, `SELECT token_project_id,provider_organization FROM organization_sprite_members WHERE organization_id=? AND name=? AND state<>'deleted'`, scope.organization, name).Scan(&project, &provider)
 	if err != nil {
 		return nil, err
 	}
 	scope.project = project
-	scope, slug, envelope, err := resolveSpritesSecret(ctx, s.database.reader, scope)
+	scope, slug, envelope, err := resolveSpritesSecret(readCtx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

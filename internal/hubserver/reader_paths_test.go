@@ -522,3 +522,56 @@ func installReadQueryCounter(t *testing.T, d *database) *writerReadGuard {
 	})
 	return counter
 }
+
+type auditDeadlineConnector struct {
+	timedConnector
+	inserts, bounded *atomic.Int64
+}
+
+func (c auditDeadlineConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.timedConnector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &auditDeadlineConn{timedConn: conn.(*timedConn), connector: c}, nil
+}
+
+type auditDeadlineConn struct {
+	*timedConn
+	connector auditDeadlineConnector
+}
+
+func (c *auditDeadlineConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if strings.Contains(query, "secret_audit") {
+		c.connector.inserts.Add(1)
+		if _, ok := ctx.Deadline(); ok {
+			c.connector.bounded.Add(1)
+		}
+	}
+	return c.timedConn.ExecContext(ctx, query, args)
+}
+
+func TestSecretUseAuditIsNotBoundedByReadDeadline(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "audit-deadline")
+	now := time.Now().UTC()
+	configureTestSlack(t, f, &now, true)
+	var inserts, bounded atomic.Int64
+	original := f.service.database.db
+	pool := sql.OpenDB(auditDeadlineConnector{timedConnector: timedConnector{dsn: sqliteWriterDSN(f.service.database.path, f.service.config.BusyTimeout, false), driver: original.Driver()}, inserts: &inserts, bounded: &bounded})
+	pool.SetMaxOpenConns(1)
+	f.service.database.db = pool
+	t.Cleanup(func() {
+		f.service.database.db = original
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	value, err := f.service.readSlackWebhook(t.Context(), f.project.OrganizationID, "test")
+	if err != nil || len(value) == 0 {
+		t.Fatalf("webhook read: %v", err)
+	}
+	clear(value)
+	if inserts.Load() != 1 || bounded.Load() != 0 {
+		t.Fatalf("secret use audit inserts=%d bounded by read deadline=%d", inserts.Load(), bounded.Load())
+	}
+}

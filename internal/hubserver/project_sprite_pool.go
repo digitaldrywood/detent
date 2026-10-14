@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -252,6 +253,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		return input, nil, err
 	}
 	decision, err := checkMonthlyBudget(readCtx, s.database.reader, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	cancelRead()
 	if err != nil {
 		return input, nil, err
 	}
@@ -279,11 +281,7 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		if member.RunnerID == "" {
 			continue
 		}
-		runner, err := readRunnerWithClock(readCtx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
-		if err != nil {
-			return input, nil, err
-		}
-		retained, err := monthlyBudgetRetainsRunner(readCtx, s.database.reader, scope, runner.MachineID)
+		runner, retained, err := s.spritePoolMemberRetention(ctx, scope, member.RunnerID)
 		if err != nil {
 			return input, nil, err
 		}
@@ -300,6 +298,17 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		}
 	}
 	return input, idle, nil
+}
+
+func (s *Service) spritePoolMemberRetention(ctx context.Context, scope nativeScope, runnerID string) (runnerauth.Runner, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, runnerID, s.config.now)
+	if err != nil {
+		return runner, false, err
+	}
+	retained, err := monthlyBudgetRetainsRunner(ctx, s.database.reader, scope, runner.MachineID)
+	return runner, retained, err
 }
 
 func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowCreate bool) error {

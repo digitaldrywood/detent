@@ -294,7 +294,7 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 			c.Set("native_scope", scope)
 			c.Response().Header().Set("Cache-Control", "no-store")
 			if credential.Hosted != nil {
-				if err := s.hostedAudit(readCtx, credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
+				if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
