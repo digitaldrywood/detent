@@ -196,7 +196,7 @@ ORDER BY e.sequence LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.pr
 		return analyticsQuality{}, err
 	}
 	workedIssues, workedArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM native_attempts WHERE organization_id=? AND project_id=? AND coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role')) IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?)`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, workedArgs...)...)
+	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+analyticsAttemptsInStartedOrder(q)+` a WHERE organization_id=? AND project_id=? AND coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role')) IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?)`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, workedArgs...)...)
 	if err != nil {
 		return analyticsQuality{}, err
 	}
