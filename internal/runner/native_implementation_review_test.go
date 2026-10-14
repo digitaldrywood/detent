@@ -246,6 +246,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "CGO native dependencies require commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "cgo-enabled", wantRuns: 2},
 		{name: "new ignored package fixture requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "ignored-package", wantRuns: 2},
 		{name: "changed generated embed asset requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-embed", wantRuns: 1},
+		{name: "generated embed symlink substitution requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-leaf-link", wantRuns: 1},
 		{name: "external generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "external-generated", wantRuns: 2},
 		{name: "directory at generated file path requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-file-directory", wantRuns: 2},
 		{name: "private generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "private-generated", wantRuns: 2},
@@ -423,6 +424,17 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if test.changedInput == "generated-leaf-link" {
+					path := filepath.Join(source, "static", "app", "conversation")
+					if err := os.MkdirAll(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+					for _, name := range []string{"fixture.js", "sibling.js"} {
+						if err := os.WriteFile(filepath.Join(path, name), []byte("same asset"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				runRunnerGit(t, source, "add", ".")
 				if test.changedInput == "gitlink" {
 					head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
@@ -580,6 +592,14 @@ fi
 				receipt.TimingStage = "finalization"
 				receipt = tracker.PublicGateResult(receipt)
 				switch test.changedInput {
+				case "generated-leaf-link":
+					path := filepath.Join(source, "static", "app", "conversation", "fixture.js")
+					if err := os.Remove(path); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("sibling.js", path); err != nil {
+						t.Fatal(err)
+					}
 				case "ignored-package":
 					if err := os.WriteFile(filepath.Join(source, "tmp", "fixture.json"), []byte("machine-local fixture"), 0o600); err != nil {
 						t.Fatal(err)

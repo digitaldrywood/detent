@@ -553,6 +553,15 @@ func validationRootIdentity(root *os.Root) ([]byte, error) {
 		if walkErr != nil {
 			return walkErr
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			link, err := root.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if err := json.NewEncoder(digest).Encode(struct{ Path, Link string }{path, link}); err != nil {
+				return err
+			}
+		}
 		info, err := root.Stat(path)
 		if err != nil {
 			return err
