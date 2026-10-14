@@ -1,10 +1,10 @@
 import * as Schema from "effect/Schema";
 
-import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, NativeBoardCard, type NativeBoardFrame } from "../../../contracts/work.ts";
+import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, NativeBoardCard, type NativeBoardFrame, type NativeShippedWindow } from "../../../contracts/work.ts";
 import { authorizeQueryCache, clearQueryCache, invalidateQueries } from "../../lib/queryCache.ts";
 import { BOARD_CACHE_LIMIT, BOARD_CACHE_VERSION, readBoardDisk, updateBoardDisk } from "./boardDisk.ts";
 import { toBoardCardView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
-import type { Lane, ProjectView, ScopedWorkStats, WorkItemView } from "./model.ts";
+import type { Lane, ProjectView, ScopedWorkStats, ShippedCount, WorkItemView } from "./model.ts";
 import type { WorkHttp } from "./workHttp.ts";
 import { effectiveSort, tabMatches, tabQuery, type WorkViewState } from "./viewState.ts";
 
@@ -557,8 +557,12 @@ export class BoardRead {
       }
       const completed = loaded.every((entry) => entry.work!.completed !== undefined)
         ? loaded.reduce((count, entry) => count + entry.work!.completed!, 0)
-        : this.view.completedWindow === "all" ? closed : null;
-      totals = { lanes: counts, running, waiting, needAttention, backlog, open: total - closed, completed, total,
+        : null;
+      const cancelled = loaded.every((entry) => entry.work!.cancelled !== undefined)
+        ? loaded.reduce((count, entry) => count + entry.work!.cancelled!, 0)
+        : null;
+      totals = { lanes: counts, running, waiting, needAttention, backlog, open: total - closed, completed, cancelled,
+        shippedWindows: shippedWindows(loaded.map((entry) => entry.work!.shipped_windows)), total,
         asOf: loaded.map((entry) => entry.work!.as_of).toSorted()[0]!,
         truncated: loaded.some((entry) => entry.work!.truncated) };
     }
@@ -611,4 +615,16 @@ export class BoardRead {
     confirmWorkItem({ ...issue, state: item.state, revision: item.revision, terminal: item.terminal,
       archived: item.archived, title: item.title, body: item.body, labels: item.labels, assignees: item.assignees });
   };
+}
+
+function shippedWindows(summaries: readonly (readonly NativeShippedWindow[] | undefined)[]): Readonly<Record<string, ShippedCount>> | null {
+  if (summaries.some((windows) => windows === undefined)) return null;
+  const totals: Record<string, ShippedCount> = {};
+  for (const windows of summaries) {
+    for (const window of windows!) {
+      const current = totals[window.window];
+      totals[window.window] = { shipped: (current?.shipped ?? 0) + window.shipped, cancelled: (current?.cancelled ?? 0) + window.cancelled };
+    }
+  }
+  return totals;
 }

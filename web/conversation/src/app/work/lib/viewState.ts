@@ -18,8 +18,15 @@ export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
   closed: "Closed",
 };
 
-export const COMPLETED_WINDOWS = ["48h", "7d", "14d", "all"] as const;
+export const COMPLETED_WINDOWS = ["1h", "24h", "7d"] as const;
 export type CompletedWindow = (typeof COMPLETED_WINDOWS)[number];
+export const DEFAULT_COMPLETED_WINDOW: CompletedWindow = "24h";
+
+export const COMPLETED_WINDOW_LABELS: Readonly<Record<CompletedWindow, string>> = {
+  "1h": "1 hour",
+  "24h": "24 hours",
+  "7d": "7 days",
+};
 
 export interface WorkViewState {
   readonly completedWindow: CompletedWindow;
@@ -50,7 +57,7 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
   sort: "default",
   lanes: null,
   collapsed: ["Backlog"],
-  completedWindow: "48h",
+  completedWindow: DEFAULT_COMPLETED_WINDOW,
 };
 
 /** The multi-valued filters, in the order the Filters menu renders them. */
@@ -99,7 +106,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     sort: WORK_SORTS.find((candidate) => candidate === sort) ?? DEFAULT_VIEW_STATE.sort,
     lanes: lanes === null ? null : readList(lanes),
     collapsed: params.has("collapsed") ? readList(params.get("collapsed")) : DEFAULT_VIEW_STATE.collapsed,
-    completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? "48h",
+    completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? DEFAULT_COMPLETED_WINDOW,
   };
 }
 
@@ -121,7 +128,7 @@ export function serializeViewState(state: WorkViewState): string {
   if (state.sort !== DEFAULT_VIEW_STATE.sort) params.set("sort", state.sort);
   if (state.lanes !== null) params.set("lanes", writeList(state.lanes));
   if (writeList(state.collapsed) !== writeList(DEFAULT_VIEW_STATE.collapsed)) params.set("collapsed", writeList(state.collapsed));
-  if (state.completedWindow !== "48h") params.set("completed", state.completedWindow);
+  if (state.completedWindow !== DEFAULT_COMPLETED_WINDOW) params.set("completed", state.completedWindow);
   return params.toString();
 }
 

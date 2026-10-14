@@ -1353,10 +1353,11 @@ export function createWorkMock(options: {
           invalid(response, problem);
           return true;
         }
-        const completedWindow = url.searchParams.get("completed_window") ?? "48h";
-        const hours: Record<string, number> = { "48h": 48, "7d": 7 * 24, "14d": 14 * 24 };
-        if (completedWindow !== "all" && hours[completedWindow] === undefined) {
-          invalid(response, "completed_window supports 48h,7d,14d,all");
+        const hours: Record<string, number> = { "1h": 1, "24h": 24, "7d": 7 * 24 };
+        const requestedWindow = url.searchParams.get("completed_window") ?? "";
+        const completedWindow = ["", "48h", "14d", "all"].includes(requestedWindow) ? "24h" : requestedWindow;
+        if (hours[completedWindow] === undefined) {
+          invalid(response, "completed_window supports 1h,24h,7d");
           return true;
         }
         const state = url.searchParams.getAll("state");
@@ -1395,6 +1396,14 @@ export function createWorkMock(options: {
         const filtered = baseFiltered
           .filter((issue) => !url.searchParams.has("open") || issue.terminal === (url.searchParams.get("open") === "false"))
           .filter((issue) => state.length === 0 || state.includes(issue.state));
+        const closedIn = (issues: readonly MockIssue[], state: string, window: string) => issues.filter((issue) => issue.state === state
+          && Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[window]! * 3_600_000
+          && Date.parse(terminalEntries.get(issue.work_item_id) ?? "") < now).length;
+        const shippedSummary = (issues: readonly MockIssue[], selected: string) => ({
+          completed: closedIn(issues, "Done", selected),
+          cancelled: closedIn(issues, "Cancelled", selected),
+          shipped_windows: Object.keys(hours).map((window) => ({ window, shipped: closedIn(issues, "Done", window), cancelled: closedIn(issues, "Cancelled", window) })),
+        });
         const ordered = filtered.toSorted((a, b) => url.searchParams.get("sort") === "closed"
           ? Date.parse(terminalEntries.get(b.work_item_id) ?? "1970-01-01") - Date.parse(terminalEntries.get(a.work_item_id) ?? "1970-01-01") || a.number - b.number
           : a.number - b.number);
@@ -1428,8 +1437,7 @@ export function createWorkMock(options: {
                 status: detail.summary.status, external: detail.versions.at(-1)?.external } };
           }) } : {}),
           ...(workIncluded ? { work: {
-            completed: workFiltered.filter((issue) => issue.terminal && (completedWindow === "all"
-              || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[completedWindow]! * 3_600_000)).length,
+            ...shippedSummary(workFiltered, completedWindow),
             items: open.slice(0, limit).map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })),
             lanes: [...new Set(workFiltered.map((issue) => issue.state))].map((state) => ({
               state, total: workFiltered.filter((issue) => issue.state === state).length,

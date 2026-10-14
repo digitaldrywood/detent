@@ -443,11 +443,19 @@ type NativeIssuePage struct {
 }
 
 type NativeWorkSummary struct {
-	Completed int              `json:"completed"`
-	Items     []NativeIssue    `json:"items"`
-	Lanes     []NativeWorkLane `json:"lanes"`
-	Truncated bool             `json:"truncated"`
-	AsOf      time.Time        `json:"as_of"`
+	Completed      int                   `json:"completed"`
+	Cancelled      int                   `json:"cancelled"`
+	ShippedWindows []NativeShippedWindow `json:"shipped_windows,omitempty"`
+	Items          []NativeIssue         `json:"items"`
+	Lanes          []NativeWorkLane      `json:"lanes"`
+	Truncated      bool                  `json:"truncated"`
+	AsOf           time.Time             `json:"as_of"`
+}
+
+type NativeShippedWindow struct {
+	Window    string `json:"window"`
+	Shipped   int    `json:"shipped"`
+	Cancelled int    `json:"cancelled"`
 }
 
 type NativeWorkLane struct {

@@ -219,7 +219,7 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	if err := validateNativeIssueQuery(params); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
-	if _, err := nativeCompletedWindow(params.Get("completed_window")); err != nil {
+	if _, err := nativeShippedWindow(params.Get("completed_window")); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {

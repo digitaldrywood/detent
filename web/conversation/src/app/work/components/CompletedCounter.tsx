@@ -1,22 +1,31 @@
+import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
 import React from "react";
 
 import { InlineButton } from "../../../components/ui/button.tsx";
-import { Menu, MenuGroup, MenuGroupLabel, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../../../components/ui/menu.tsx";
+import { Menu, MenuGroup, MenuGroupLabel, MenuItem, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from "../../../components/ui/menu.tsx";
 import { cn } from "../../../lib/utils.ts";
-import { COMPLETED_WINDOWS, type CompletedWindow } from "../lib/viewState.ts";
+import type { ShippedCount } from "../lib/model.ts";
+import { COMPLETED_WINDOW_LABELS, COMPLETED_WINDOWS, DEFAULT_COMPLETED_WINDOW, type CompletedWindow } from "../lib/viewState.ts";
+
+const REPORTS_RANGE: Readonly<Record<CompletedWindow, string>> = { "1h": "24h", "24h": "24h", "7d": "7d" };
 
 export function CompletedCounter({
   count,
-  completedWindow = "48h",
+  cancelled = null,
+  windows = null,
+  completedWindow = DEFAULT_COMPLETED_WINDOW,
   onCompletedWindowChange,
   loading,
 }: {
   count: number | null;
+  cancelled?: number | null;
+  windows?: Readonly<Record<string, ShippedCount>> | null;
   completedWindow?: CompletedWindow;
   onCompletedWindowChange: (window: CompletedWindow) => void;
   loading: boolean;
 }): React.ReactElement {
+  const label = COMPLETED_WINDOW_LABELS[completedWindow];
   return (
     <div
       aria-busy={loading}
@@ -26,25 +35,42 @@ export function CompletedCounter({
         <MenuTrigger
           render={<InlineButton tone="muted" className="min-h-6 whitespace-nowrap" />}
           data-testid="stat-completed"
-          title={`${completedWindow === "all" ? "All items in terminal states" : `Items that entered terminal states in the last ${completedWindow}`} in the current filter scope, including cancelled and custom terminal states. Choose the completed window.`}
+          title={`Issues closed as Done in the last ${label} in the current filter scope. Choose the shipped window.`}
         >
           <span>
             <b className="font-semibold text-foreground tabular-nums">{count ?? "—"}</b>{" "}
-            completed · {completedWindow === "all" ? "All time" : completedWindow}
+            shipped · {completedWindow}
           </span>
           <ChevronDownIcon aria-hidden className="size-3" />
         </MenuTrigger>
-        <MenuPopup align="start" className="w-44">
+        <MenuPopup align="start" className="w-64">
           <MenuGroup>
-            <MenuGroupLabel>Completed window</MenuGroupLabel>
+            <MenuGroupLabel>Shipped in the last</MenuGroupLabel>
             <MenuRadioGroup value={completedWindow} onValueChange={(value) => onCompletedWindowChange(value as CompletedWindow)}>
               {COMPLETED_WINDOWS.map((window) => (
                 <MenuRadioItem key={window} value={window} closeOnClick>
-                  {window === "48h" ? "48 hours" : window === "7d" ? "7 days" : window === "14d" ? "14 days" : "All time"}
+                  <span className="flex items-center justify-between gap-4">
+                    <span>{COMPLETED_WINDOW_LABELS[window]}</span>
+                    <span className="text-muted-foreground text-xs tabular-nums" data-testid={`shipped-count-${window}`}>
+                      {windows?.[window]?.shipped ?? "—"}
+                    </span>
+                  </span>
                 </MenuRadioItem>
               ))}
             </MenuRadioGroup>
           </MenuGroup>
+          <MenuSeparator />
+          {cancelled === null ? null : (
+            <p className="px-2 py-1 text-muted-foreground text-xs" data-testid="shipped-cancelled">
+              Plus {cancelled} cancelled in {label}
+            </p>
+          )}
+          <MenuItem
+            className="text-primary data-highlighted:text-primary"
+            render={<Link to="/reports" search={{ range: REPORTS_RANGE[completedWindow] } as never} />}
+          >
+            Open in Reports <span aria-hidden>→</span>
+          </MenuItem>
         </MenuPopup>
       </Menu>
     </div>

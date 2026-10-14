@@ -42,15 +42,15 @@ AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	completedFrom, err := nativeCompletedFrom(completedWindow, now)
+	selected, err := nativeShippedWindow(completedWindow)
 	if err != nil {
 		return nil, err
 	}
-	closed, err := readNativeClosedPopulation(ctx, db, scope, "b.work_item_id IN ("+nativeArchivedFilter.ReplaceAllString(query, "")+")", args, completedFrom, now)
+	windows, err := readNativeShippedWindows(ctx, db, scope, "b.work_item_id IN ("+nativeArchivedFilter.ReplaceAllString(query, "")+")", args, now)
 	if err != nil {
 		return nil, err
 	}
-	work.Completed = len(closed.Shipped)
+	applyNativeShippedWindows(work, windows, selected)
 	selected, relevance := "SELECT i.native_id, 0, ''", ""
 	itemArgs := append([]any{}, args...)
 	if search != "" {
@@ -96,26 +96,3 @@ AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <
 }
 
 var nativeArchivedFilter = regexp.MustCompile(`(?i)\s+AND\s+i\.archived\s*=\s*[01]\b`)
-
-func nativeCompletedFrom(value string, now time.Time) (time.Time, error) {
-	window, err := nativeCompletedWindow(value)
-	if err != nil || value == "all" {
-		return time.Time{}, err
-	}
-	return now.Add(-window), nil
-}
-
-func nativeCompletedWindow(value string) (time.Duration, error) {
-	switch value {
-	case "", "48h":
-		return 48 * time.Hour, nil
-	case "7d":
-		return 7 * 24 * time.Hour, nil
-	case "14d":
-		return 14 * 24 * time.Hour, nil
-	case "all":
-		return 0, nil
-	default:
-		return 0, nativeInvalid("completed_window supports 48h,7d,14d,all")
-	}
-}

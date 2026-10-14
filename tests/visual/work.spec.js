@@ -172,7 +172,7 @@ test.describe("the work board", () => {
         await expect(heading).toHaveText(scopeTitle);
         await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
         await expect(page.getByTestId("work-stats")).toHaveCount(0);
-        await expect(header.getByRole("button", { name: /completed ·/ })).toBeVisible();
+        await expect(header.getByRole("button", { name: /shipped ·/ })).toBeVisible();
         await expect(page.getByTestId("connection-chip")).toHaveCount(1);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (scope === "organization") {

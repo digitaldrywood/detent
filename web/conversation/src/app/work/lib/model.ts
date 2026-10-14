@@ -215,6 +215,11 @@ export interface BoardStats {
   readonly total: number;
 }
 
+export interface ShippedCount {
+  readonly shipped: number;
+  readonly cancelled: number;
+}
+
 export interface ScopedWorkStats {
   readonly lanes: Readonly<Record<string, number>>;
   readonly running: number;
@@ -223,6 +228,8 @@ export interface ScopedWorkStats {
   readonly backlog: number;
   readonly open: number;
   readonly completed: number | null;
+  readonly cancelled: number | null;
+  readonly shippedWindows: Readonly<Record<string, ShippedCount>> | null;
   readonly total: number;
   readonly asOf: string;
   readonly truncated: boolean;

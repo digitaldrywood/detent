@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -19,8 +21,9 @@ type nativeShippedIssue struct {
 }
 
 type nativeClosedPopulation struct {
-	Shipped   []nativeShippedIssue
-	Cancelled int
+	Shipped     []nativeShippedIssue
+	Cancelled   int
+	CancelledAt []time.Time
 }
 
 func (p nativeClosedPopulation) shippedIDs() []string {
@@ -60,13 +63,14 @@ WHERE b.organization_id=? AND b.project_id=? AND b.archived IN (0,1) AND b.termi
 		if err := rows.Scan(&id, &state, &closed); err != nil {
 			return out, fmt.Errorf("read closed population: %w", err)
 		}
-		if state == nativeCancelledState {
-			out.Cancelled++
-			continue
-		}
 		at, err := time.Parse(nativeBoardTimeLayout, closed)
 		if err != nil {
 			return out, fmt.Errorf("decode closed population time: %w", err)
+		}
+		if state == nativeCancelledState {
+			out.Cancelled++
+			out.CancelledAt = append(out.CancelledAt, at)
+			continue
 		}
 		out.Shipped = append(out.Shipped, nativeShippedIssue{ID: id, ClosedAt: at})
 	}
@@ -74,6 +78,62 @@ WHERE b.organization_id=? AND b.project_id=? AND b.archived IN (0,1) AND b.termi
 		return out, fmt.Errorf("read closed population: %w", err)
 	}
 	return out, nil
+}
+
+var nativeShippedWindowSpans = []struct {
+	name string
+	span time.Duration
+}{{"1h", time.Hour}, {nativeDefaultShippedWindow, 24 * time.Hour}, {"7d", 7 * 24 * time.Hour}}
+
+const nativeDefaultShippedWindow = "24h"
+
+// nativeShippedWindow names the board counter window. Windows the board no
+// longer offers fall back to the default so saved views keep working.
+func nativeShippedWindow(value string) (string, error) {
+	switch value {
+	case "1h", "7d":
+		return value, nil
+	case "", nativeDefaultShippedWindow, "48h", "14d", "all":
+		return nativeDefaultShippedWindow, nil
+	default:
+		return "", nativeInvalid("completed_window supports 1h,24h,7d")
+	}
+}
+
+// readNativeShippedWindows counts shipped and cancelled work for every board
+// counter window ending at now, from one read of the widest window.
+func readNativeShippedWindows(ctx context.Context, q nativeQueryer, scope nativeScope, filter string, filterArgs []any, now time.Time) ([]tracker.NativeShippedWindow, error) {
+	widest := nativeShippedWindowSpans[len(nativeShippedWindowSpans)-1].span
+	population, err := readNativeClosedPopulation(ctx, q, scope, filter, filterArgs, now.Add(-widest), now)
+	if err != nil {
+		return nil, err
+	}
+	windows := make([]tracker.NativeShippedWindow, 0, len(nativeShippedWindowSpans))
+	for _, span := range nativeShippedWindowSpans {
+		from := now.Add(-span.span)
+		window := tracker.NativeShippedWindow{Window: span.name}
+		for _, issue := range population.Shipped {
+			if !issue.ClosedAt.Before(from) {
+				window.Shipped++
+			}
+		}
+		for _, at := range population.CancelledAt {
+			if !at.Before(from) {
+				window.Cancelled++
+			}
+		}
+		windows = append(windows, window)
+	}
+	return windows, nil
+}
+
+func applyNativeShippedWindows(summary *tracker.NativeWorkSummary, windows []tracker.NativeShippedWindow, selected string) {
+	summary.ShippedWindows = windows
+	for _, window := range windows {
+		if window.Window == selected {
+			summary.Completed, summary.Cancelled = window.Shipped, window.Cancelled
+		}
+	}
 }
 
 // readNativeShippedSpend returns the lifetime spend of the shipped issues up

@@ -1277,7 +1277,7 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			state string
 			age   time.Duration
 		}{
-			{"Done", time.Hour}, {"Done", 60 * time.Hour}, {"Done", 15 * 24 * time.Hour}, {"Cancelled", time.Hour},
+			{"Done", 30 * time.Minute}, {"Done", 5 * time.Hour}, {"Done", 60 * time.Hour}, {"Cancelled", 30 * time.Minute},
 		} {
 			issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)

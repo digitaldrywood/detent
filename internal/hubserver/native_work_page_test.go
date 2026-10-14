@@ -347,6 +347,8 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 		{"Done", []time.Time{now.Add(time.Hour)}, "Todo", false},
 		{"Done", []time.Time{now.Add(-time.Hour)}, "Cancelled", false},
 		{"Done", []time.Time{now.Add(-15 * 24 * time.Hour), now.Add(-time.Hour)}, "Todo", false},
+		{"Cancelled", []time.Time{now.Add(-2 * time.Hour)}, "Todo", false},
+		{"Cancelled", []time.Time{now.Add(-3 * 24 * time.Hour)}, "Todo", false},
 	} {
 		issue := seedArchiveIssues(t, f.service, scope, 1, seed.state)[0]
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -369,21 +371,24 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	windows := []tracker.NativeShippedWindow{{Window: "1h", Shipped: 3}, {Window: "24h", Shipped: 3, Cancelled: 1}, {Window: "7d", Shipped: 5, Cancelled: 2}}
 	for _, test := range []struct {
-		window, filter string
-		want           int
-		status         int
+		window, filter     string
+		shipped, cancelled int
+		status             int
 	}{
-		{"", "", 4, http.StatusOK},
-		{"48h", "", 4, http.StatusOK},
-		{"7d", "", 5, http.StatusOK},
-		{"14d", "", 5, http.StatusOK},
-		{"all", "", 6, http.StatusOK},
-		{"all", "&state=Cancelled", 0, http.StatusOK},
-		{"48h", "&state=Todo", 0, http.StatusOK},
-		{"48h", "&archived=true", 4, http.StatusOK},
-		{"bad", "", 0, http.StatusUnprocessableEntity},
-		{"48h", "&completed_window=all", 0, http.StatusUnprocessableEntity},
+		{"", "", 3, 1, http.StatusOK},
+		{"1h", "", 3, 0, http.StatusOK},
+		{"24h", "", 3, 1, http.StatusOK},
+		{"7d", "", 5, 2, http.StatusOK},
+		{"48h", "", 3, 1, http.StatusOK},
+		{"14d", "", 3, 1, http.StatusOK},
+		{"all", "", 3, 1, http.StatusOK},
+		{"7d", "&state=Cancelled", 0, 2, http.StatusOK},
+		{"24h", "&state=Todo", 0, 0, http.StatusOK},
+		{"24h", "&archived=true", 3, 1, http.StatusOK},
+		{"bad", "", 0, 0, http.StatusUnprocessableEntity},
+		{"24h", "&completed_window=all", 0, 0, http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.window+test.filter, func(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&completed_window="+test.window+test.filter, f.token, nil)
@@ -393,8 +398,11 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 			}
 			var page tracker.NativeIssuePage
 			decodeHubResponse(t, response, &page)
-			if page.Work == nil || page.Work.Completed != test.want {
-				t.Fatalf("completed = %+v, want %d", page.Work, test.want)
+			if page.Work == nil || page.Work.Completed != test.shipped || page.Work.Cancelled != test.cancelled {
+				t.Fatalf("summary = %+v, want %d shipped and %d cancelled", page.Work, test.shipped, test.cancelled)
+			}
+			if test.filter == "" && !slices.Equal(page.Work.ShippedWindows, windows) {
+				t.Fatalf("shipped windows = %+v, want %+v", page.Work.ShippedWindows, windows)
 			}
 		})
 	}
