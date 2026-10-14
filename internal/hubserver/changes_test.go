@@ -133,9 +133,10 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				} else {
 					review.Validator = result
 				}
-				if verdict == "wait" {
+				switch verdict {
+				case "wait":
 					review.Decision = "commented"
-				} else if verdict == "rework" {
+				case "rework":
 					review.Decision = "changes_requested"
 				}
 				return review
