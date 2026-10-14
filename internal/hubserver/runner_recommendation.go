@@ -113,9 +113,8 @@ func recommendRunner(r runnerauth.Routing, hours []recommendationHour, runs []re
 	if r.MachineUse == "shared" {
 		periods = []string{"person_hours", "free_hours"}
 	}
-	var personHours []bool
+	personHours := make([]bool, len(hours))
 	if r.MachineUse == "shared" {
-		personHours = make([]bool, len(hours))
 		for i, hour := range hours {
 			person, err := personHostHour(r, hour.Hour)
 			if err != nil {
