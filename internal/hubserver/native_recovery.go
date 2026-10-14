@@ -37,6 +37,22 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 		if err != nil {
 			return result, err
 		}
+		implementationReview, validator := -1, -1
+		for i := len(detail.Reviews) - 1; i >= 0; i-- {
+			if implementationReview < 0 && detail.Reviews[i].ImplementationReview != nil {
+				implementationReview = i
+			}
+			if validator < 0 && detail.Reviews[i].Validator != nil {
+				validator = i
+			}
+		}
+		reviews := detail.Reviews[:0]
+		for i, review := range detail.Reviews {
+			if review.ImplementationReview == nil && review.Validator == nil || i == implementationReview || i == validator {
+				reviews = append(reviews, review)
+			}
+		}
+		detail.Reviews = reviews
 		result.ChangeDetail = &detail
 		if change.CurrentVersion != "" {
 			if len(detail.Versions) != 1 {
