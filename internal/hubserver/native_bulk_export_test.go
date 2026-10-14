@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,6 +20,127 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestHostedNativeBulkExportLargeItem(t *testing.T) {
+	f, ctx := newHostedKeyMCPFixture(t, "dedicated", "owner")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("Stored imported discussion. ", 50000)
+	for index := range 2 {
+		response := f.request(t, f.user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-export-%d", index)}, Title: fmt.Sprintf("Export item %d", index), State: "Todo"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, response, &issue)
+		now := formatHubTime(time.Now())
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,?,?,?,1,1,?,'{}',?,?)", "comment_"+string(issue.WorkItemID), issue.OrganizationID, issue.ProjectID, issue.WorkItemID, body, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES(?,'Backlog','Backlog',?,?)", f.project, formatHubTime(time.Now()), formatHubTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE project_id=?", f.project, f.project); err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			call := hostedContextProtocol(t, f.service, ctx, transport)
+			for _, selection := range []map[string]any{{"open": true, "limit": 500}, {"open": true, "limit": 50}, {"states": []string{"Backlog"}, "limit": 500}, {"states": []string{"Backlog"}, "limit": 20}, {"states": []string{"Backlog"}, "limit": 1}} {
+				selection["project_id"] = string(f.project)
+				seen := map[tracker.NativeWorkItemID]bool{}
+				for {
+					raw := hostedContextData(t, call("tools/call", operatortool.WorkBulkExport, selection), false)
+					var page operatortool.WorkBulkExportPage
+					if err := json.Unmarshal(raw, &page); err != nil {
+						t.Fatal(err)
+					}
+					if len(raw) <= operatortool.MaxResultBytes || page.Total != 2 || len(page.Items) == 0 || page.Truncated != (page.NextCursor != "") {
+						t.Fatalf("invalid large export: bytes=%d total=%d items=%d", len(raw), page.Total, len(page.Items))
+					}
+					for _, item := range page.Items {
+						if seen[item.WorkItemID] || len(item.Comments) != 1 || item.Comments[0].Body != body || item.Comments[0].ProjectID != f.project {
+							t.Fatal("large export lost or repeated discussion")
+						}
+						seen[item.WorkItemID] = true
+					}
+					if page.NextCursor == "" {
+						break
+					}
+					selection["cursor"] = page.NextCursor
+				}
+				if len(seen) != 2 {
+					t.Fatalf("exported %d items", len(seen))
+				}
+			}
+		})
+	}
+}
+
+func TestNativeBulkExportItemFailure(t *testing.T) {
+	for _, test := range []struct {
+		name, body, actor, cause string
+	}{
+		{"malformed comment", "Private discussion", "[]", "cannot unmarshal array"},
+		{"oversized item", strings.Repeat("Private discussion ", operatortool.WorkBulkExportMaxBytes/19+1), "{}", "operator tool result exceeds"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "export-item-failure")
+			item := f.create(t, "Export item")
+			now := formatHubTime(time.Now())
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,?,?,?,1,1,?,?,?,?)", "comment_"+string(item.WorkItemID), item.OrganizationID, item.ProjectID, item.WorkItemID, test.body, test.actor, now, now); err != nil {
+				t.Fatal(err)
+			}
+			var logs bytes.Buffer
+			f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+			for _, transport := range []string{"native", "stdio", "http"} {
+				t.Run(transport, func(t *testing.T) {
+					logs.Reset()
+					var raw []byte
+					if transport == "native" {
+						response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/export", f.token, nil)
+						requireNativeStatus(t, response, http.StatusInternalServerError)
+						raw = response.Body.Bytes()
+					} else {
+						call := hostedContextProtocol(t, f.service, ctx, transport)
+						reply := call("tools/call", operatortool.WorkBulkExport, map[string]any{"project_id": string(f.project.ID)})
+						var result struct {
+							IsError bool            `json:"isError"`
+							Data    json.RawMessage `json:"structuredContent"`
+						}
+						if err := json.Unmarshal(reply.Result, &result); err != nil {
+							t.Fatal(err)
+						}
+						if !result.IsError {
+							t.Fatal("export accepted invalid item")
+						}
+						raw = result.Data
+					}
+					var failure struct {
+						Code       string `json:"code"`
+						WorkItemID string `json:"work_item_id"`
+					}
+					if err := json.Unmarshal(raw, &failure); err != nil {
+						t.Fatal(err)
+					}
+					if failure.Code != "bulk_export_item_failed" || failure.WorkItemID != string(item.WorkItemID) || strings.Contains(string(raw), "Private discussion") {
+						t.Fatalf("export failure lost item identity: %s", raw)
+					}
+					var entry struct {
+						Error string `json:"error"`
+					}
+					if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(entry.Error, string(item.WorkItemID)) || !strings.Contains(entry.Error, test.cause) {
+						t.Fatalf("export log lost cause: %s", logs.Bytes())
+					}
+				})
+			}
+		})
+	}
+}
 
 type exportTestImporter struct {
 	client   *http.Client

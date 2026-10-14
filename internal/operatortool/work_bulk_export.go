@@ -12,6 +12,19 @@ import (
 const WorkBulkExportMaxItems = 500
 const WorkBulkExportMaxBytes = 16 << 20
 
+type WorkBulkExportItemError struct {
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	WorkItemID string `json:"work_item_id"`
+	Err        error  `json:"-"`
+}
+
+func (e *WorkBulkExportItemError) Error() string {
+	return fmt.Sprintf("export work item %s: %v", e.WorkItemID, e.Err)
+}
+
+func (e *WorkBulkExportItemError) Unwrap() error { return e.Err }
+
 type WorkBulkExportItem struct {
 	tracker.NativeIssue
 	Comments []tracker.NativeComment `json:"comments"`

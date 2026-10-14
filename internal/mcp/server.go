@@ -642,7 +642,8 @@ func safeToolError(err error) string {
 }
 
 func (s *session) toolFailure(ctx context.Context, version, name string, id json.RawMessage, err error) toolCallResult {
-	if errors.Is(err, operatortool.ErrResultTooLarge) {
+	var export *operatortool.WorkBulkExportItemError
+	if errors.Is(err, operatortool.ErrResultTooLarge) && !errors.As(err, &export) {
 		return failedToolCallResult(version, err)
 	}
 	var refusal *apikey.Refusal
@@ -659,6 +660,9 @@ func (s *session) toolFailure(ctx context.Context, version, name string, id json
 		correlation := uuid.NewString()
 		identity := operatortool.ConnectionIdentity(ctx)
 		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "organization_id", identity.OrganizationID, "principal_id", identity.PrincipalID, "request_id", string(id), "error", fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), err), "error_class", ErrorClass(err))
+		if errors.As(err, &export) {
+			return failedToolCallResult(version, err)
+		}
 		return NewToolCallResult(version, json.RawMessage("Operator tool is unavailable (reason_code service_unavailable, correlation_id "+correlation+")"), true)
 	}
 	return failedToolCallResult(version, err)
@@ -670,8 +674,11 @@ func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
 	var allowance *operatortool.AllowanceError
+	var export *operatortool.WorkBulkExportItemError
 	var detail any
 	switch {
+	case errors.As(err, &export):
+		detail = export
 	case errors.Is(err, operatortool.ErrResultTooLarge):
 		tooLarge := &operatortool.ResultTooLargeError{LimitBytes: operatortool.MaxResultBytes}
 		errors.As(err, &tooLarge)
