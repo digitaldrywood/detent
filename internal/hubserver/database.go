@@ -46,6 +46,8 @@ const readerCachePragma = "cache_size(-8000)"
 const readerConnectionLifetime = time.Hour
 
 type database struct {
+	analyticsRetryMu       sync.Mutex
+	analyticsRetryCursor   string
 	linkedSourceBase       string
 	db                     *sql.DB
 	reader                 *sql.DB

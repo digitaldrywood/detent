@@ -77,7 +77,63 @@ BEGIN
  INSERT INTO analytics_rollup_dirty SELECT work_item_id FROM native_attempts WHERE id=NEW.attempt_id AND organization_id=NEW.organization_id AND project_id=NEW.project_id ON CONFLICT(work_item_id) DO NOTHING;
 END;
 -- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_events_inserted AFTER INSERT ON collaboration_events
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT NEW.work_item_id WHERE true ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_issues_inserted AFTER INSERT ON issues
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT NEW.native_id WHERE NEW.native_id IS NOT NULL ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_issues_updated AFTER UPDATE ON issues
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT NEW.native_id WHERE NEW.native_id IS NOT NULL ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_issues_deleted AFTER DELETE ON issues
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT OLD.native_id WHERE OLD.native_id IS NOT NULL ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_attempts_inserted AFTER INSERT ON native_attempts
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT NEW.work_item_id WHERE true ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_attempts_updated AFTER UPDATE ON native_attempts
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT NEW.work_item_id WHERE true ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_leases_inserted AFTER INSERT ON leases
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT native_id FROM issues WHERE id=NEW.issue_id AND native_id IS NOT NULL ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
+-- +goose StatementBegin
+CREATE TRIGGER analytics_leases_updated AFTER UPDATE ON leases
+BEGIN
+ INSERT INTO analytics_rollup_dirty SELECT native_id FROM issues WHERE id=NEW.issue_id AND native_id IS NOT NULL ON CONFLICT(work_item_id) DO NOTHING;
+END;
+-- +goose StatementEnd
 -- +goose Down
+DROP TRIGGER analytics_leases_updated;
+DROP TRIGGER analytics_leases_inserted;
+DROP TRIGGER analytics_attempts_updated;
+DROP TRIGGER analytics_attempts_inserted;
+DROP TRIGGER analytics_issues_deleted;
+DROP TRIGGER analytics_issues_updated;
+DROP TRIGGER analytics_issues_inserted;
+DROP TRIGGER analytics_events_inserted;
 DROP TRIGGER analytics_usage_updated;
 DROP TRIGGER analytics_usage_inserted;
 DROP TRIGGER analytics_event_counts;

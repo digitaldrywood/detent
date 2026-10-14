@@ -296,11 +296,15 @@ bounded population cursors. The same model retains current issue, attempt and
 usage facts for exact quantiles and distinct populations. It excludes observation-event
 payload history. Landing and refusal identities remain bounded drill-downs.
 
-The existing native commit path projects changed work items before committing,
-using the board's dirty-item list, an analytics dirty list fed by usage writes,
-and per-item event sequence positions. Every projection statement is scoped by
-organization and project and uses an index; `TestAnalyticsCommitPlans` fails on
-a full scan. Residence maintenance resumes from the last stored per-issue
+The existing native commit path projects changed work items before committing.
+Triggers on events, issues, attempts, leases and usage mark items in
+`analytics_rollup_dirty`; project, policy and workflow-state changes do not.
+A commit projects at most `analyticsBackfillBatch` dirty items from their
+per-item event sequence positions; the rest stay marked for the next commit or
+the existing maintenance tick. Every projection statement is scoped by
+organization and project and looks up the work item through an index;
+`TestAnalyticsCommitPlans` fails on a full scan or on an index lookup bounded
+only by organization or project. Residence maintenance resumes from the last stored per-issue
 sequence and processes only new transitions and claims. Event rows hold the
 event identity, time and the decision and transition fields the counters use;
 payloads stay in `collaboration_events` and are joined by id. Unchanged lease
@@ -312,14 +316,14 @@ capacity until its next write.
 Each work item projects inside its own savepoint: analytics failure does not
 roll back an event, claim or lane transition, or another item's projection. A
 failed item keeps its last sequence position and is marked failed. It is
-retried on its next change and hourly on the existing maintenance tick, not on
-every commit. While a project has a failed item, its reads use the raw
+retried on its next change and hourly on the existing maintenance tick, which
+rotates through failed items in batches, not on every commit. While a project has a failed item, its reads use the raw
 computation.
 
 The migration only creates the schema. Existing projects are listed for
 backfill, and the existing maintenance tick backfills them after startup in
-batches of `analyticsBackfillBatch` work items, each in its own short write
-transaction, through the same projector and positions. Until a project's
+batches of at most `analyticsBackfillBatch` work items and
+`analyticsBackfillEvents` events, each in its own short write transaction, through the same projector and positions. Until a project's
 backfill completes, its reads use the raw computation, and commits skip its
 unprojected items.
 

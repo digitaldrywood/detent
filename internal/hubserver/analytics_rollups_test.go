@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +302,140 @@ func TestAnalyticsRollupUsageWrites(t *testing.T) {
 				t.Fatalf("projected spend=%v raw=%v", projected, raw)
 			}
 		})
+	}
+}
+
+func projectTestAnalytics(t *testing.T, s *Service, tx *sql.Tx) {
+	t.Helper()
+	for {
+		s.database.refreshAnalyticsRollups(t.Context(), tx)
+		var more bool
+		if err := tx.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&more); err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			return
+		}
+	}
+}
+
+func countTestAnalyticsDirty(t *testing.T, s *Service) int {
+	t.Helper()
+	var count int
+	if err := s.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_dirty").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func TestAnalyticsRollupDeferredWork(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+		for i := range analyticsBackfillBatch + 5 {
+			if _, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "bulk", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	if got := countTestAnalyticsDirty(t, f.service); got != 5 {
+		t.Fatalf("deferred items=%d want 5 beyond the per-commit limit", got)
+	}
+	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=NOT require_dependencies WHERE organization_id=? AND id=?", scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if got := countTestAnalyticsDirty(t, f.service); got != 0 {
+		t.Fatalf("project policy change left %d analytics items; want only the deferred items drained", got)
+	}
+	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE projects SET require_dependencies=NOT require_dependencies WHERE organization_id=? AND id=?", scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		var marked int
+		if err := tx.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_dirty").Scan(&marked); err != nil {
+			t.Fatal(err)
+		}
+		if marked != 0 {
+			t.Fatalf("project policy change marked %d analytics items", marked)
+		}
+	})
+	more, err := f.service.database.drainAnalyticsDirty(t.Context(), f.service.config.now())
+	if err != nil || more {
+		t.Fatalf("drain more=%t err=%v", more, err)
+	}
+	projected := readTestRollupRows(t, f.service.database.reader, scope)
+	rebuildTestAnalyticsRollups(t, f.service, scope)
+	if got := readTestRollupRows(t, f.service.database.reader, scope); !reflect.DeepEqual(projected, got) {
+		t.Fatalf("deferred projection differs from rebuild\nprojected=%v\nrebuild=%v", projected, got)
+	}
+}
+
+func TestAnalyticsBackfillItemsBoundedByEvents(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		sequence int64
+		want     int
+	}{
+		{"small items fill the batch", 1, 3},
+		{"large items stop at the event budget", analyticsBackfillEvents/2 + 1, 1},
+		{"one oversized item still progresses", analyticsBackfillEvents * 2, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			for i := range 3 {
+				f.create(t, "backfill-"+strconv.Itoa(i))
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for _, statement := range []string{"DELETE FROM analytics_rollup_positions WHERE organization_id=? AND project_id=?", "UPDATE issues SET event_sequence=" + strconv.FormatInt(test.sequence, 10) + " WHERE organization_id=? AND project_id=?"} {
+				if _, err := tx.ExecContext(t.Context(), statement, scope.organization, scope.project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ids, err := analyticsBackfillItems(t.Context(), tx, string(scope.organization), string(scope.project))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ids) != test.want {
+				t.Fatalf("batch=%d want %d", len(ids), test.want)
+			}
+		})
+	}
+}
+
+func TestAnalyticsRetryRotatesFailedItems(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	for i := range analyticsBackfillBatch + 1 {
+		f.create(t, "retry-"+strconv.Itoa(i))
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_analytics BEFORE INSERT ON analytics_hourly_rollups BEGIN SELECT RAISE(ABORT,'projection unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE analytics_rollup_positions SET failed=1,sequence=0 WHERE organization_id=? AND project_id=?", scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.retryFailedAnalyticsRollups(t.Context(), f.service.config.now()); err == nil {
+		t.Fatal("retry succeeded while projection was rejected")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER reject_analytics"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.retryFailedAnalyticsRollups(t.Context(), f.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	var failed int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_positions WHERE organization_id=? AND project_id=? AND failed=1", scope.organization, scope.project).Scan(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed != analyticsBackfillBatch {
+		t.Fatalf("failed=%d after the second retry; want the items past the first batch retried first", failed)
 	}
 }
 

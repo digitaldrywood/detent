@@ -70,7 +70,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 			}
 		}
 	}
-	f.service.database.refreshAnalyticsRollups(t.Context(), tx)
+	projectTestAnalytics(t, f.service, tx)
 	for _, test := range []struct {
 		name                      string
 		from, to                  int
@@ -226,7 +226,7 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.service.database.refreshAnalyticsRollups(t.Context(), tx)
+			projectTestAnalytics(t, f.service, tx)
 			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
 				t.Fatal(err)

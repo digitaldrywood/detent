@@ -258,17 +258,37 @@ func TestAnalyticsCommitPlans(t *testing.T) {
 		explained++
 		tables := sqlTableAliases(statement.query)
 		for _, detail := range explainQueryPlan(t, f.service.database.db, statement.query, statement.args) {
-			name, ok := strings.CutPrefix(detail, "SCAN ")
-			if !ok {
-				continue
-			}
-			name, _, _ = strings.Cut(name, " ")
-			if slices.Contains(scanned, tables[strings.ToLower(name)]) {
-				t.Errorf("commit-path statement scans %s\nstatement: %s", detail, statement.query)
+			if violation := analyticsCommitPlanViolation(detail, tables, scanned); violation != "" {
+				t.Errorf("commit-path statement %s: %s\nstatement: %s", violation, detail, statement.query)
 			}
 		}
 	}
 	if explained == 0 {
 		t.Fatal("no commit-path statements were traced")
 	}
+}
+
+func analyticsCommitPlanViolation(detail string, tables map[string]string, scanned []string) string {
+	kind, rest, ok := strings.Cut(detail, " ")
+	if !ok || (kind != "SCAN" && kind != "SEARCH") {
+		return ""
+	}
+	name, _, _ := strings.Cut(rest, " ")
+	if !slices.Contains(scanned, tables[strings.ToLower(name)]) {
+		return ""
+	}
+	if kind == "SCAN" {
+		return "scans a hot table"
+	}
+	open, close := strings.LastIndex(rest, "("), strings.LastIndex(rest, ")")
+	if open < 0 || close < open {
+		return "searches without an index constraint"
+	}
+	for _, term := range strings.Split(rest[open+1:close], " AND ") {
+		column := strings.TrimSpace(strings.FieldsFunc(term, func(r rune) bool { return r == '=' || r == '<' || r == '>' })[0])
+		if column != "organization_id" && column != "project_id" {
+			return ""
+		}
+	}
+	return "reads a whole organization or project"
 }
