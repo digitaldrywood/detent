@@ -1,3 +1,4 @@
+import { basePath } from "../runtime/basePath.ts";
 // The account, settings, usage, project-settings and wizard routes.
 //
 // `router.tsx` owns the route tree; this file owns the routes it adds for the
@@ -96,7 +97,11 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
         throw redirect({ to: "/settings/$section", params: { section: DEFAULT_SECTION } });
       },
     }),
-    createRoute({ getParentRoute, path: "/settings/$section", component: SettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/$section", component: SettingsScreen, beforeLoad: ({ params }) => {
+      if (params.section === "api-keys" && basePath().startsWith("/organizations/")) {
+        throw redirect({ to: "/settings/$section", params: { section: "mcp" }, replace: true });
+      }
+    } }),
     createRoute({ getParentRoute, path: "/settings/organization/$organizationPage", component: SettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
     createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
