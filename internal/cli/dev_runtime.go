@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -17,6 +20,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/devruntime"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 const (
@@ -186,7 +191,7 @@ func devRuntimeBootConfig(runtime devruntime.Runtime, host string, opts options,
 		Headless:         true,
 		StdoutTTY:        false,
 		Output:           output,
-		Runner:           orchestrator.FakeRunner{},
+		Runner:           devRuntimeRunner{},
 		ConnectorFactory: devRuntimeConnectorFactory,
 	}
 }
@@ -215,10 +220,10 @@ func devRuntimeConnectorFactory(cfg workflowconfig.Config) (connector.Connector,
 	if cfg.Tracker.Kind != workflowconfig.TrackerMemory {
 		return nil, fmt.Errorf("%w: %s", devruntime.ErrUnsupportedTracker, cfg.Tracker.Kind)
 	}
-	return memory.New(memory.Config{
+	return devRuntimeConnector{Connector: memory.New(memory.Config{
 		Issues:   cfg.Tracker.Issues,
 		Stateful: true,
-	}), nil
+	})}, nil
 }
 
 func devRuntimeError(err error) error {
@@ -237,4 +242,51 @@ func devRuntimeError(err error) error {
 	default:
 		return err
 	}
+}
+
+const devRuntimeAuditPatch = "diff --git a/example.txt b/example.txt\n--- a/example.txt\n+++ b/example.txt\n@@ -1 +1 @@\n-before\n+after\n"
+
+type devRuntimeConnector struct {
+	*memory.Connector
+}
+
+func (c devRuntimeConnector) PullRequestValidationDiff(ctx context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	current, err := c.HydratePullRequest(ctx, issue)
+	if err != nil {
+		return connector.ValidationDiff{}, err
+	}
+	if current.ID != "mock-issue-autopromote" || current.PullRequest == nil || current.PullRequest.Number != 9001 || current.PullRequest.BaseSHA != "isolated-mock-base" || current.PullRequest.HeadSHA != "isolated-mock-head" {
+		return connector.ValidationDiff{}, errors.New("isolated mock audit source is unavailable")
+	}
+	return connector.ValidationDiff{
+		Repository: "example-org/example-project", PRNumber: 9001,
+		BaseSHA: current.PullRequest.BaseSHA, HeadSHA: current.PullRequest.HeadSHA,
+		Files: []string{"example.txt"}, Patch: devRuntimeAuditPatch,
+	}, nil
+}
+
+type devRuntimeRunner struct {
+	orchestrator.FakeRunner
+}
+
+func (devRuntimeRunner) Audit(ctx context.Context, request orchestrator.SecurityAuditRequest) (orchestrator.SecurityAuditExecution, error) {
+	if err := ctx.Err(); err != nil {
+		return orchestrator.SecurityAuditExecution{}, err
+	}
+	snapshot := request.Snapshot
+	if snapshot.IssueID != "mock-issue-autopromote" || snapshot.Repository != "example-org/example-project" || snapshot.PRNumber != 9001 || snapshot.BaseSHA != "isolated-mock-base" || snapshot.HeadSHA != "isolated-mock-head" || snapshot.Diff != devRuntimeAuditPatch || snapshot.DiffTruncated {
+		return orchestrator.SecurityAuditExecution{}, errors.New("isolated mock audit source does not match the fixture")
+	}
+	output := `{"verdict":"pass","summary":"Simulated isolated-runtime audit of the synthetic example fixture; no provider or worker process ran.","findings":[]}`
+	result, err := securityaudit.ParseOutput(output)
+	if err != nil {
+		return orchestrator.SecurityAuditExecution{}, err
+	}
+	startedAt := time.Now().UTC()
+	return orchestrator.SecurityAuditExecution{
+		InvocationID: "isolated-mock-" + uuid.NewString(), AuthenticationMode: "isolated_mock",
+		WorkerProcess:    procgroup.Identity{PID: 4200, GroupID: 4200, StartedAt: startedAt},
+		ProviderThreadID: "isolated-mock-thread", ProviderSessionID: "isolated-mock-session",
+		Output: output, Result: result, StartedAt: startedAt, CompletedAt: startedAt,
+	}, nil
 }
