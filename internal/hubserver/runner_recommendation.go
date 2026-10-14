@@ -145,7 +145,20 @@ func recommendRunner(r runnerauth.Routing, hours []recommendationHour, runs []re
 		}
 		out.Periods = append(out.Periods, recommendPeriod(period, selected, peaks, cores))
 	}
-	out.Suggested = suggestLimit(r.CapacityLimit, out.Timezone, hours)
+	suggestHours := hours
+	if r.MachineUse == "shared" {
+		suggestHours = []recommendationHour{}
+		for _, hour := range hours {
+			person, err := personHostHour(r, hour.Hour)
+			if err != nil {
+				return out, err
+			}
+			if !person {
+				suggestHours = append(suggestHours, hour)
+			}
+		}
+	}
+	out.Suggested = suggestLimit(r.CapacityLimit, out.Timezone, suggestHours)
 	return out, nil
 }
 
