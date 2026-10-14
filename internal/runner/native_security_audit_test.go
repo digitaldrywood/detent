@@ -37,9 +37,12 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		kind, authentication       string
 		disabled, blocking, failed bool
 		landing                    bool
+		processClockOffset         time.Duration
 	}{
 		{name: "default native Codex subscription pass", kind: config.AgentBackendCodex, authentication: "chatgpt_subscription"},
 		{name: "default native Codex metered pass", kind: config.AgentBackendCodex, authentication: "api_key"},
+		{name: "native OS identity clock precedes audit clock", processClockOffset: -2 * time.Second},
+		{name: "native OS identity clock follows audit clock", processClockOffset: 2 * time.Second},
 		{name: "default native Claude metered pass", kind: config.AgentBackendClaudeCode, authentication: "api_key"},
 		{name: "default native Claude subscription pass", kind: config.AgentBackendClaudeCode, authentication: "subscription"},
 		{name: "default landing Claude metered pass", kind: config.AgentBackendClaudeCode, authentication: "api_key", landing: true},
@@ -63,7 +66,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if test.blocking {
 				output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","body":"Missing authorization"}]}`
 			}
-			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: now.Add(time.Second)}}, {Type: AgentUpdateMessageDelta, Delta: output}}}
+			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: now.Add(time.Second + test.processClockOffset)}}, {Type: AgentUpdateMessageDelta, Delta: output}}}
 			backend.result.AuthenticationMode = authentication
 			if test.failed {
 				backend.err = errors.New("backend unavailable")
