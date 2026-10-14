@@ -42,6 +42,15 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	} else if !os.IsNotExist(moduleErr) {
 		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 	}
+	trackedEntries, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "ls-files", "--stage", "-z")
+	if err != nil {
+		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
+	for _, entry := range strings.Split(trackedEntries, "\x00") {
+		if strings.HasPrefix(entry, "160000 ") {
+			sourceBound = false
+		}
+	}
 	for _, entry := range command.Env {
 		key, value, _ := strings.Cut(entry, "=")
 		if key == "GOFLAGS" {
@@ -328,6 +337,20 @@ func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, executables
 	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
 	digest := sha256.New()
 	for _, path := range paths {
+		ancestor := ""
+		for _, component := range strings.Split(path.name, "/") {
+			ancestor = filepath.Join(ancestor, component)
+			info, err := root.Lstat(ancestor)
+			if os.IsNotExist(err) {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			if info.Mode()&os.ModeSymlink != 0 || ancestor != filepath.FromSlash(path.name) && !info.IsDir() {
+				return nil, fs.ErrInvalid
+			}
+		}
 		info, err := root.Lstat(path.name)
 		if os.IsNotExist(err) {
 			continue

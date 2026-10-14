@@ -248,6 +248,8 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "changed generated embed asset requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-embed", wantRuns: 1},
 		{name: "external generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "external-generated", wantRuns: 2},
 		{name: "directory at generated file path requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-file-directory", wantRuns: 2},
+		{name: "private generated ancestor requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "private-generated", wantRuns: 2},
+		{name: "gitlink package source requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "gitlink", wantRuns: 2},
 		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
 		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
 		{name: "double dash effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-double-vettool", wantRuns: 2},
@@ -394,8 +396,11 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if test.changedInput == "external-generated" {
+				if test.changedInput == "external-generated" || test.changedInput == "private-generated" {
 					outside := t.TempDir()
+					if test.changedInput == "private-generated" {
+						outside = filepath.Join(source, ".git")
+					}
 					if err := os.MkdirAll(filepath.Join(outside, "conversation"), 0o700); err != nil {
 						t.Fatal(err)
 					}
@@ -419,6 +424,10 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					}
 				}
 				runRunnerGit(t, source, "add", ".")
+				if test.changedInput == "gitlink" {
+					head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+					runRunnerGit(t, source, "update-index", "--add", "--cacheinfo", "160000,"+head+",package-source")
+				}
 				runRunnerGit(t, source, "commit", "-m", "landing fixture")
 				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
 				linter := filepath.Join(source, "tmp", "tools", "golangci-lint", "v2.14.0", "go1.26.9", "golangci-lint")
