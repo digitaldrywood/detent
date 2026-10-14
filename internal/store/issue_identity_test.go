@@ -59,6 +59,24 @@ func TestIssueIdentityReadsAreProjectScoped(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("FinishSession(%s) error = %v", projectID, err)
 		}
+		hostSession, err := backend.StartSession(ctx, SessionStart{
+			ProjectID: projectID, IssueID: "same-id", Identifier: "owner/repo#1", IssueURL: "https://example.com/1",
+			StartedAt: at.Add(time.Second), AgentBackendKind: "host", AgentRole: WorkerProcessRoleHostValidation,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.FinishSession(ctx, hostSession, SessionFinish{CompletedAt: at.Add(time.Minute), FinalState: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	totals, err := backend.LifetimeTotals(ctx)
+	if err != nil || totals.Sessions != 2 {
+		t.Fatalf("host commands consumed provider lifetime totals: %+v err=%v", totals, err)
+	}
+	daily, err := backend.DailyTokenSpend(ctx, base)
+	if err != nil || daily.Sessions != 2 {
+		t.Fatalf("host commands consumed provider daily totals: %+v err=%v", daily, err)
 	}
 
 	for _, identity := range []IssueIdentity{

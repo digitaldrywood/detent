@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -335,6 +337,92 @@ func TestReapWorkerProcessesPreservesInterruptedSession(t *testing.T) {
 func TestReapWorkerProcessesAtStartup(t *testing.T) {
 	t.Parallel()
 
+	for _, stale := range []bool{false, true} {
+		t.Run(fmt.Sprintf("scratch reservation survives owner loss/stale=%t", stale), func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("shell process fixture")
+			}
+			root := t.TempDir()
+			scratch, err := workspace.PrepareWorkerScratch(t.Context(), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			database := filepath.Join(t.TempDir(), "processes.db")
+			backend, err := store.Open(t.Context(), store.Config{Path: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{IssueID: "host-gate", StartedAt: time.Now().UTC(), AgentRole: store.WorkerProcessRoleHostValidation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{CleanupRoot: root, CleanupPath: scratch}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", "printf 'ready\n'; read value")
+			cmd.Dir = scratch
+			procgroup.SetTempDir(cmd, scratch)
+			procgroup.Configure(t.Context(), cmd)
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stdin.Close() })
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			wait := make(chan error, 1)
+			go func() { wait <- cmd.Wait() }()
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+				t.Fatalf("child startup: %q %v", line, err)
+			}
+			if err := backend.Close(); err != nil {
+				t.Fatal(err)
+			}
+			backend, err = store.Open(t.Context(), store.Config{Path: database})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = backend.Close() })
+			if stale {
+				if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{
+					WorkerProcessIdentity: store.WorkerProcessIdentity{PID: os.Getpid(), GroupID: os.Getpid(), StartedAt: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
+					CleanupRoot:           root, CleanupPath: scratch,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := reapWorkerProcesses(t.Context(), backend, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), "startup", time.Second, time.Now, nil); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-wait:
+			case <-time.After(5 * time.Second):
+				t.Fatal("scratch child survived startup recovery")
+			}
+			active, err := backend.ListActiveWorkerProcesses(t.Context())
+			if err != nil || len(active) != 0 {
+				t.Fatalf("reservation not released after child termination: %+v %v", active, err)
+			}
+			_, statErr := os.Stat(scratch)
+			if stale {
+				if statErr != nil {
+					t.Fatalf("stale identity artifacts removed: %v", statErr)
+				}
+				if err := workspace.CleanupWorkerScratch(root, scratch); err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("scratch cleanup: %v", statErr)
+			}
+		})
+	}
+
 	startedAt := time.Date(2026, 7, 12, 16, 0, 0, 0, time.UTC)
 	reapedAt := startedAt.Add(time.Minute)
 	processStore := &shutdownWorkerProcessStore{processes: []store.WorkerProcess{
@@ -484,6 +572,7 @@ func TestReapWorkerProcessesClassifiesCleanupOnlyFailures(t *testing.T) {
 		wantCleanup bool
 	}{
 		{"cleanup timeout after termination", nil, context.DeadlineExceeded, true},
+		{"scratch process scan failure", nil, &workerProcessTerminationError{err: context.DeadlineExceeded}, false},
 		{"termination failure", errors.New("remained alive after SIGKILL"), nil, false},
 		{"termination failure beside cleanup failure", errors.New("operation not permitted"), context.DeadlineExceeded, false},
 	} {
@@ -519,8 +608,10 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		projectID, host string
+		scratchFailure  bool
 	}{
 		{projectID: "configured"},
+		{projectID: "scratch-failure", scratchFailure: true},
 		{projectID: "removed"},
 		{projectID: "configured", host: "pool-a"},
 		{projectID: "removed", host: "pool-a"},
@@ -536,6 +627,28 @@ func TestStartupReclaimsProcesslessWorkAttempts(t *testing.T) {
 			id, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: projectID, IssueID: "stranded", WorkerType: "agent", WorkerHost: tc.host, StartedAt: now.Add(-46 * time.Hour), LeaseExpiresAt: now.Add(-22 * time.Hour)})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.scratchFailure {
+				sessionID, err := backend.StartSession(t.Context(), store.SessionStart{ProjectID: projectID, IssueID: "stranded", WorkAttemptID: id, StartedAt: now.Add(-time.Hour), AgentRole: store.WorkerProcessRoleHostValidation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := backend.UpdateSessionWorkerProcess(t.Context(), sessionID, store.WorkerProcessRegistration{CleanupRoot: t.TempDir(), CleanupPath: "pending-host-scratch"}); err != nil {
+					t.Fatal(err)
+				}
+				err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return &workerProcessTerminationError{err: context.DeadlineExceeded} })
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("scratch failure=%v", err)
+				}
+				active, err := backend.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{})
+				if err != nil || len(active) != 1 || active[0].ID != id {
+					t.Fatalf("unconfirmed attempt lost protection: %+v err=%v", active, err)
+				}
+				processes, err := backend.ListActiveWorkerProcesses(t.Context())
+				if err != nil || len(processes) != 1 || processes[0].SessionID != sessionID {
+					t.Fatalf("scratch reservation lost: %+v err=%v", processes, err)
+				}
+				return
 			}
 			err = reapWorkerProcessesWithCleanup(t.Context(), backend, nil, "startup", time.Second, func() time.Time { return now }, nil, func(store.WorkerProcess) error { return nil })
 			if err != nil {
