@@ -21,30 +21,7 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
-var landingValidationRecipe = regexp.MustCompile(`^bash scripts/check-landing\.sh "([^"\r\n]+)" "([1-9][0-9]*)" "([^"\r\n]+)"package workspace
-
-import (
-	"bytes"
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"io"
-	"io/fs"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
-	"slices"
-	"strings"
-
-	"github.com/digitaldrywood/detent"
-	"github.com/digitaldrywood/detent/internal/gate"
-	commandshell "github.com/digitaldrywood/detent/internal/shell"
-)
-
-)
+var landingValidationRecipe = regexp.MustCompile(`^bash scripts/check-landing\.sh "([^"\r\n]+)" "([1-9][0-9]*)" "([^"\r\n]+)"$`)
 var generatedGoBuildPrefixMap = regexp.MustCompile(`(^|[ \t])-ffile-prefix-map=[^ \t=]+[/\\]go-build[0-9]+=([^ \t]+)([ \t]|$)`)
 
 // Only a tool version query has no package execution inputs. Build, vet, tests
