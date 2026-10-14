@@ -155,6 +155,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				t.Fatalf("terminal report added an occurrence: %d", comments)
 			}
 			closed.PublicationReused = false
+			closed = f.service.nativeIssueResponse(closed)
 			origin.Source = "new-scheduled-run"
 			request = tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-scheduled-occurrence"}, Title: "Recurring scheduled failure", Body: issueorigin.Stamp(test.second, origin), State: "Todo", Priority: new(1)}
 			var current tracker.NativeIssue

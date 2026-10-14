@@ -354,7 +354,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 				if test.name == "hosted heartbeat admissible" || test.label == "human-owned" || test.dependency {
 					for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
-						data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID)}), false)
+						data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID), "limit": 1}), false)
 						var board nativeBoardResult
 						queued := 1
 						if !test.privateDependency {

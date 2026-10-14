@@ -55,6 +55,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			original = f.service.nativeIssueResponse(original)
 			now := time.Date(2026, 10, 6, 18, 30, 0, 0, time.UTC)
 			finding := newHealthFinding("retry_storm", test.class, "work_item", string(original.WorkItemID), "Repeated failures.", "Inspect the protocol signature.", []string{string(f.project.ID)}, healthEvidence{AttemptIDs: []string{"attempt_one"}, Signatures: []string{"protocol failure"}, Counts: map[string]int{"attempts": 3}})
 			var owner tracker.NativeIssue
