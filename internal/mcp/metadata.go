@@ -74,9 +74,9 @@ func (s *session) serverInfo() map[string]any {
 	return map[string]any{"name": serverName, "title": serverTitle, "version": s.version}
 }
 
-func (s *session) writeVersionResult(id json.RawMessage, version, method string, result any) error {
+func (s *session) writeVersionResult(id json.RawMessage, version, method string, result any, limits ...int) error {
 	if version != ProtocolVersion {
-		return s.writeResult(id, result)
+		return s.writeResult(id, result, limits...)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -97,5 +97,5 @@ func (s *session) writeVersionResult(id json.RawMessage, version, method string,
 		return s.writeError(id, codeInternalError, "Internal error", nil)
 	}
 	object["_meta"] = info
-	return s.writeResult(id, object)
+	return s.writeResult(id, object, limits...)
 }

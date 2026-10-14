@@ -569,6 +569,20 @@ or `work_export` for complete authorized detail under their existing byte bounds
 Queries still search full authorized original bodies. A single summary whose
 metadata exceeds the page budget returns the existing safe unavailable error.
 
+Native `work_bulk_export` exports complete stored items and comments from one
+project. It accepts `states`, `labels`, `open` and `archived` with the same OR/AND
+and archive semantics as `work_list`. Pages default to 500 items, accept limits
+from 1 through 500, and retain full bodies, confirmed contract sections,
+authorized dependencies/blockers, linked-source snapshots, provenance and
+external references. The top-level `items`, `total`, `truncated`, `next_cursor`,
+`generated_at` and `freshness` describe the export. Pass the cursor with the same
+project and filters; the limit may change. A page may contain fewer items to fit
+its 16 MiB serialized budget. An individual item exceeding that budget is
+refused explicitly; no item content is silently shortened. Item and comment
+revisions expose later edits. Reads use stored data and never refresh GitHub.
+This tool requires the same read scope and current project grants as `work_item`.
+Existing tools retain their limits and response shapes.
+
 ## Native validation evidence
 
 `get_change` defaults to the current immutable version and current review,
