@@ -28,6 +28,9 @@ func NewProblem(code string) Problem {
 	case "tier_unavailable":
 		p.Message = "The configured isolation tier is unavailable."
 		p.FixHint = "Install or repair the sandbox tooling and check the backend's sandbox support."
+	case "backend_probe_failed":
+		p.Message = "The backend readiness probe did not complete successfully."
+		p.FixHint = "Check the runner's probe execution and let its next heartbeat refresh readiness."
 	case "backend_missing":
 		p.Message = "A configured agent backend is unavailable."
 		p.FixHint = "Install the configured backend and verify its command can run on the runner."
@@ -58,7 +61,7 @@ func ValidateReportedProblems(problems []Problem) error {
 		return errors.New("too many runner problems")
 	}
 	for i, problem := range problems {
-		if !slices.Contains([]string{"tier_unavailable", "backend_missing", "host_service_unreachable", "settings_invalid", "keep_awake_failed"}, problem.Code) || slices.ContainsFunc(problems[:i], func(p Problem) bool { return sameProblem(p, problem) }) {
+		if !slices.Contains([]string{"tier_unavailable", "backend_missing", "backend_probe_failed", "host_service_unreachable", "settings_invalid", "keep_awake_failed"}, problem.Code) || slices.ContainsFunc(problems[:i], func(p Problem) bool { return sameProblem(p, problem) }) {
 			return errors.New("invalid or duplicate runner problem code")
 		}
 		for _, detail := range []string{problem.Subject, problem.Check, problem.ErrorOutput, problem.FixCommand} {

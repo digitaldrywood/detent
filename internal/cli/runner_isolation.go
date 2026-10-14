@@ -155,7 +155,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 	if command == "" {
 		return errors.New("backend command is empty")
 	}
-	output, err := runBackendProbe(backendProbeCommand(ctx, command, shell, []string{"--version"}))
+	output, err := runBackendProbe(ctx, backendProbeCommand(ctx, command, shell, []string{"--version"}))
 	if err != nil {
 		return &backendCheckError{Check: command + " --version", Err: err}
 	}
@@ -193,7 +193,7 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		}
 		profile := permissions[options.PermissionProfile]
 		args := []string{"-c", "permissions." + options.PermissionProfile + "=" + tomlInline(profile), "-c", "features.network_proxy=true", "sandbox", "-P", options.PermissionProfile, "-C", inside, "/bin/sh", "-c", `touch allowed && ! touch "$1/denied" && test -n "${HTTPS_PROXY:-${https_proxy:-}}"`, "probe", base}
-		if _, err := runBackendProbe(backendProbeCommand(ctx, command, shell, args)); err != nil {
+		if _, err := runBackendProbe(ctx, backendProbeCommand(ctx, command, shell, args)); err != nil {
 			return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err}
 		}
 		return nil
@@ -260,7 +260,7 @@ func backendProbeCommand(ctx context.Context, command, shell string, args []stri
 	return cmd
 }
 
-func runBackendProbe(cmd *exec.Cmd) ([]byte, error) {
+func runBackendProbe(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	var output boundedProbeOutput
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -269,7 +269,7 @@ func runBackendProbe(cmd *exec.Cmd) ([]byte, error) {
 	}
 	groupID := procgroup.GroupID(cmd)
 	err := cmd.Wait()
-	err = errors.Join(err, procgroup.Cleanup(groupID))
+	err = errors.Join(err, ctx.Err(), procgroup.Cleanup(groupID))
 	if err != nil {
 		err = fmt.Errorf("%w: %s", err, output.data)
 	}
@@ -296,9 +296,19 @@ func (e *backendCheckError) Error() string { return e.Err.Error() }
 func (e *backendCheckError) Unwrap() error { return e.Err }
 
 func backendReadinessProblem(subject, kind, tier, goos string, err error) runnerauth.Problem {
-	code := "backend_missing"
-	if tier == isolation.Sandbox {
-		code = "tier_unavailable"
+	var check *backendCheckError
+	errors.As(err, &check)
+	var exitError *exec.ExitError
+	incomplete := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.As(err, &exitError) && exitError.ExitCode() == -1
+	output := strings.ToLower(err.Error())
+	missingCommand := strings.Contains(output, "command not found") || strings.Contains(output, ": not found") || strings.Contains(output, "executable file not found") || strings.Contains(output, "not installed") || strings.Contains(output, "no such file") || errors.Is(err, exec.ErrNotFound)
+	code := "backend_probe_failed"
+	if !incomplete {
+		if tier == isolation.Sandbox || check == nil {
+			code = "tier_unavailable"
+		} else if check.SignedOut || missingCommand {
+			code = "backend_missing"
+		}
 	}
 	p := runnerauth.NewProblem(code)
 	p.Subject = subject
@@ -307,34 +317,33 @@ func backendReadinessProblem(subject, kind, tier, goos string, err error) runner
 	}
 	p.Check = "isolation " + tier
 	p.ErrorOutput = err.Error()
-	var check *backendCheckError
-	if errors.As(err, &check) {
+	if check != nil {
 		p.Check = check.Check
-		if check.SignedOut {
+		if !incomplete && check.SignedOut {
 			p.Message = "not signed in"
 			p.FixHint = "Sign in on this runner, then wait for its next heartbeat."
 		}
 	}
-	switch kind {
-	case workflowconfig.AgentBackendCodex:
-		p.FixCommand = "npm install -g @openai/codex"
-		if check != nil && check.SignedOut {
-			p.FixCommand = "codex login --device-auth"
+	if code != "backend_probe_failed" {
+		switch kind {
+		case workflowconfig.AgentBackendCodex:
+			p.FixCommand = "npm install -g @openai/codex"
+			if check != nil && check.SignedOut {
+				p.FixCommand = "codex login --device-auth"
+			}
+		case workflowconfig.AgentBackendClaudeCode:
+			p.FixCommand = "npm install -g @anthropic-ai/claude-code"
+			if check != nil && check.SignedOut {
+				p.FixCommand = "claude auth login"
+			}
 		}
-	case workflowconfig.AgentBackendClaudeCode:
-		p.FixCommand = "npm install -g @anthropic-ai/claude-code"
-		if check != nil && check.SignedOut {
-			p.FixCommand = "claude auth login"
+		if code == "tier_unavailable" && (check == nil || !strings.HasSuffix(check.Check, " --version")) {
+			p.FixCommand = ""
 		}
-	}
-	if tier == isolation.Sandbox && (check == nil || !strings.HasSuffix(check.Check, " --version")) {
-		p.FixCommand = ""
-	}
-	output := strings.ToLower(err.Error())
-	missingTool := strings.Contains(output, "bwrap") || strings.Contains(output, "bubblewrap") || strings.Contains(output, "socat")
-	missingCommand := strings.Contains(output, "not found") || strings.Contains(output, "not installed") || strings.Contains(output, "no such file")
-	if tier == isolation.Sandbox && goos == "linux" && missingTool && missingCommand {
-		p.FixCommand = "sudo apt-get install bubblewrap socat"
+		missingTool := strings.Contains(output, "bwrap") || strings.Contains(output, "bubblewrap") || strings.Contains(output, "socat")
+		if tier == isolation.Sandbox && goos == "linux" && missingTool && missingCommand {
+			p.FixCommand = "sudo apt-get install bubblewrap socat"
+		}
 	}
 	return runnerauth.SanitizeProblem(p)
 }
@@ -364,7 +373,7 @@ func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend
 	}
 	cmd := backendProbeCommand(ctx, command, shell, args)
 	procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: environment})
-	output, err := runBackendProbe(cmd)
+	output, err := runBackendProbe(ctx, cmd)
 	if err == nil && backend.Kind == workflowconfig.AgentBackendClaudeCode {
 		var status struct {
 			LoggedIn bool `json:"loggedIn"`
