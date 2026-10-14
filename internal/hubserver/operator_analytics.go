@@ -45,6 +45,7 @@ type nativeAnalyticsAttempt struct {
 	Pipeline            []gate.PipelineTiming `json:"pipeline,omitempty"`
 	PipelineDropped     int                   `json:"pipeline_dropped,omitempty"`
 	activityRaw         string
+	publicActivity      bool
 	UsageRowsObserved   int                              `json:"usage_rows_observed"`
 	Identity            agentidentity.Identity           `json:"identity,omitzero"`
 	Landing             *tracker.NativeLandingReceipt    `json:"landing,omitempty"`
@@ -447,9 +448,9 @@ func nativeAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeS
 JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
 WHERE c.organization_id=? AND c.project_id=? AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha')
 AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
-AND julianday(json_extract(c.record_json,'$.landed.landed_at'))>=julianday(?) AND julianday(json_extract(c.record_json,'$.landed.landed_at'))<julianday(?)
+AND julianday(json_extract(c.record_json,'$.landed.landed_at'))>=julianday(?) AND julianday(json_extract(c.record_json,'$.landed.landed_at'))<julianday(?) AND json_extract(c.record_json,'$.landed.landed_at')>=? AND json_extract(c.record_json,'$.landed.landed_at')<?
 `+issues+`
-ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, issueArgs...)...)
+ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}

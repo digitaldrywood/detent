@@ -40,7 +40,7 @@ func TestCommitReadOnlyTransactionSkipsRefreshes(t *testing.T) {
 	}
 }
 
-func rebuildTestAnalyticsRollups(t *testing.T, s *Service, scope nativeScope) {
+func rebuildTestAnalyticsRollups(t testing.TB, s *Service, scope nativeScope) {
 	t.Helper()
 	tx, err := s.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
@@ -262,7 +262,7 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 	for _, version := range []struct {
 		id   int64
 		name string
-	}{{20261014200000, "drop_redundant_attempt_indexes"}, {20261014160000, "analytics_attempt_payload"}, {20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
+	}{{20261014233000, "analytics_attempt_projection"}, {20261014200000, "drop_redundant_attempt_indexes"}, {20261014160000, "analytics_attempt_payload"}, {20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
 		migration, err := migrationFiles.ReadFile("migrations/" + strconv.FormatInt(version.id, 10) + "_" + version.name + ".sql")
 		if err != nil {
 			t.Fatal(err)
@@ -636,6 +636,23 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				*input.out = nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
 			}
 			assertAnalyticsJSONEqual(t, raw, rolled)
+			if test.request.PopulationCursor == "" {
+				for _, q := range []nativeQueryer{f.service.database.reader, analyticsRollupReader{f.service.database.reader}} {
+					shared := withReportsQualityInputs(t.Context(), w)
+					for _, window := range []operatortool.AnalyticsWindow{w, {From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}} {
+						want, err := readAnalyticsQuality(t.Context(), q, scope, test.request, window)
+						if err != nil {
+							t.Fatal(err)
+						}
+						got, err := readAnalyticsQuality(shared, q, scope, test.request, window)
+						if err != nil {
+							t.Fatal(err)
+						}
+						assertAnalyticsJSONEqual(t, want, got)
+					}
+				}
+			}
+
 			wantDiagnostics, err := f.service.readHostedDiagnosticsFrom(t.Context(), raw, f.service.database.reader)
 			if err != nil {
 				t.Fatal(err)
