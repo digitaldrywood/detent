@@ -15,23 +15,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// An attempt rollup is the attempt's own payload with the attempt columns set
-// at its top level, so the analytics_native_attempts view serves it without
-// copying. It leaves out the command output that no analytics read uses and
-// records failed_at, the time a failed attempt or refused landing counts as
-// a failure, so the failure read is ordered by an index.
 const (
-	analyticsAttemptUnread   = `'$.runtime.validation.output','$.runtime.landing.gate.output'`
 	analyticsAttemptFailedAt = `CASE WHEN status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
 THEN CASE WHEN (json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') AND coalesce(json_extract(data_json,'$.runtime.landing.landed'),0)=0) OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
 THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'0001-01-01T00:00:00Z'),updated_at) ELSE updated_at END END`
 )
 
 const (
-	analyticsSourceIssues         = "WITH analytics_source_issues AS " + `(SELECT organization_id,project_id,unixepoch(created_at)/3600*3600 AS hour,'issue' AS metric,native_id AS dimension,1 AS value,json_object('id',id,'native_id',native_id,'title',title,'created_at',created_at,'updated_at',updated_at,'workflow_state_id',workflow_state_id) AS data_json FROM issues WHERE organization_id IS NOT NULL AND project_id IS NOT NULL AND native_id IS NOT NULL)` + "\n"
-	analyticsSourceNativeAttempts = "WITH analytics_source_native_attempts AS " + `(SELECT organization_id,project_id,unixepoch(started_at)/3600*3600 AS hour,'attempt' AS metric,id AS dimension,1 AS value,json_set(json_remove(data_json,` + analyticsAttemptUnread + `),'$.id',id,'$.work_item_id',work_item_id,'$.lease_id',lease_id,'$.status',status,'$.started_at',started_at,'$.updated_at',updated_at,'$.failed_at',` + analyticsAttemptFailedAt + `) AS data_json,work_item_id FROM native_attempts WHERE organization_id IS NOT NULL AND project_id IS NOT NULL)` + "\n"
-	analyticsSourceAttemptUsage   = "WITH analytics_source_attempt_usage AS " + `(SELECT organization_id,project_id,unixepoch(period)/3600*3600 AS hour,'usage' AS metric,json_array(attempt_id,period,provider,model,currency) AS dimension,cost_estimate AS value,json_object('attempt_id',attempt_id,'period',period,'provider',provider,'model',model,'input',input,'cached_input',cached_input,'output',output,'cost_estimate',cost_estimate,'currency',currency,'updated_at',updated_at) AS data_json,attempt_id FROM attempt_usage WHERE organization_id IS NOT NULL AND project_id IS NOT NULL)` + "\n"
-	analyticsSourceEvents         = "WITH analytics_source_events AS " + `(SELECT e.organization_id,e.project_id,unixepoch(e.recorded_at)/3600*3600 AS hour,'event' AS metric,e.id AS dimension,1 AS value,
+	analyticsSourceIssues = "WITH analytics_source_issues AS " + `(SELECT organization_id,project_id,unixepoch(created_at)/3600*3600 AS hour,'issue' AS metric,native_id AS dimension,1 AS value,json_object('id',id,'native_id',native_id,'title',title,'created_at',created_at,'updated_at',updated_at,'workflow_state_id',workflow_state_id) AS data_json FROM issues WHERE organization_id IS NOT NULL AND project_id IS NOT NULL AND native_id IS NOT NULL)` + "\n"
+
+	analyticsSourceAttemptUsage = "WITH analytics_source_attempt_usage AS " + `(SELECT organization_id,project_id,unixepoch(period)/3600*3600 AS hour,'usage' AS metric,json_array(attempt_id,period,provider,model,currency) AS dimension,cost_estimate AS value,json_object('attempt_id',attempt_id,'period',period,'provider',provider,'model',model,'input',input,'cached_input',cached_input,'output',output,'cost_estimate',cost_estimate,'currency',currency,'updated_at',updated_at) AS data_json,attempt_id FROM attempt_usage WHERE organization_id IS NOT NULL AND project_id IS NOT NULL)` + "\n"
+	analyticsSourceEvents       = "WITH analytics_source_events AS " + `(SELECT e.organization_id,e.project_id,unixepoch(e.recorded_at)/3600*3600 AS hour,'event' AS metric,e.id AS dimension,1 AS value,
 json_object('work_item_id',e.work_item_id,'sequence',e.sequence,'type',e.type,'recorded_at',e.recorded_at,'outcome',json_extract(e.data_json,'$.decision.outcome'),'source',json_extract(e.data_json,'$.decision.source'),'reason',json_extract(e.data_json,'$.decision.reason'),'to_state',json_extract(e.data_json,'$.to_state')) AS data_json,e.work_item_id,e.sequence
 FROM collaboration_events e WHERE e.type IN ('workflow.transitioned','scheduler.decision','issue.created'))` + "\n"
 	analyticsSourceLeases = "WITH analytics_source_leases AS " + `(SELECT i.organization_id,i.project_id,unixepoch(l.acquired_at)/3600*3600 AS hour,'lease' AS metric,l.lease_id AS dimension,1 AS value,
@@ -40,10 +34,10 @@ FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.native_id IS NOT NULL)` +
 )
 
 const (
-	analyticsEventsRefresh   = analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO NOTHING`
-	analyticsIssuesRefresh   = analyticsSourceIssues + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_issues WHERE organization_id=? AND project_id=? AND dimension=? ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json WHERE data_json<>excluded.data_json`
-	analyticsAttemptsRefresh = analyticsSourceNativeAttempts + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json WHERE data_json<>excluded.data_json`
-	analyticsUsageRefresh    = analyticsSourceAttemptUsage + `,analytics_item_attempts(id) AS (SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? UNION SELECT json_extract(data_json,'$.run.attempt_id') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>?)
+	analyticsEventsRefresh = analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO NOTHING`
+	analyticsIssuesRefresh = analyticsSourceIssues + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_issues WHERE organization_id=? AND project_id=? AND dimension=? ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json WHERE data_json<>excluded.data_json`
+
+	analyticsUsageRefresh = analyticsSourceAttemptUsage + `,analytics_item_attempts(id) AS (SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? UNION SELECT json_extract(data_json,'$.run.attempt_id') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>?)
 INSERT INTO analytics_hourly_rollups SELECT u.organization_id,u.project_id,u.hour,u.metric,u.dimension,u.value,u.data_json FROM analytics_item_attempts a CROSS JOIN analytics_source_attempt_usage u WHERE u.attempt_id=a.id AND +u.organization_id=? AND +u.project_id=? ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json WHERE data_json<>excluded.data_json`
 	analyticsLeaseRefresh = analyticsSourceLeases + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_leases WHERE organization_id=? AND project_id=? AND issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) ON CONFLICT DO UPDATE SET hour=excluded.hour,data_json=excluded.data_json WHERE data_json<>excluded.data_json RETURNING dimension,data_json`
 )
@@ -53,7 +47,7 @@ type analyticsStatements map[string]*sql.Stmt
 func prepareAnalyticsStatements(ctx context.Context, db *sql.DB, logger *slog.Logger) analyticsStatements {
 	statements := analyticsStatements{}
 	var failures error
-	for _, query := range []string{analyticsEventsRefresh, analyticsIssuesRefresh, analyticsAttemptsRefresh, analyticsUsageRefresh} {
+	for _, query := range []string{analyticsEventsRefresh, analyticsIssuesRefresh, analyticsUsageRefresh, analyticsAttemptUpsert} {
 		stmt, err := db.PrepareContext(ctx, query) //nolint:sqlclosecheck // database.Close closes the cached statements.
 		if err != nil {
 			failures = errors.Join(failures, err)
@@ -346,7 +340,6 @@ func refreshAnalyticsIssue(ctx context.Context, tx *sql.Tx, statements analytics
 	}
 	for _, source := range []struct{ name, statement string }{
 		{"issues", analyticsIssuesRefresh},
-		{"native_attempts", analyticsAttemptsRefresh},
 		{"attempt_usage", analyticsUsageRefresh},
 	} {
 		args := []any{organization, project, id}
@@ -356,6 +349,9 @@ func refreshAnalyticsIssue(ctx context.Context, tx *sql.Tx, statements analytics
 		if _, err := statements.exec(ctx, tx, source.statement, args...); err != nil {
 			return fmt.Errorf("refresh analytics %s: %w", source.name, err)
 		}
+	}
+	if err := refreshAnalyticsAttempts(ctx, tx, statements, organization, project, id); err != nil {
+		return err
 	}
 	if err := refreshAnalyticsSkipSamples(ctx, tx, nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, id, through); err != nil {
 		return err
@@ -391,7 +387,6 @@ func rebuildAnalyticsRollups(ctx context.Context, tx *sql.Tx, scope nativeScope,
 	}
 	for _, statement := range []string{
 		analyticsSourceIssues + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_issues WHERE organization_id=? AND project_id=?`,
-		analyticsSourceNativeAttempts + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_native_attempts WHERE organization_id=? AND project_id=?`,
 		analyticsSourceAttemptUsage + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_attempt_usage WHERE organization_id=? AND project_id=?`,
 		analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_events WHERE organization_id=? AND project_id=?`,
 		analyticsSourceLeases + `INSERT INTO analytics_hourly_rollups SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_leases WHERE organization_id=? AND project_id=?`,
@@ -399,6 +394,9 @@ func rebuildAnalyticsRollups(ctx context.Context, tx *sql.Tx, scope nativeScope,
 		if _, err := tx.ExecContext(ctx, statement, scope.organization, scope.project); err != nil {
 			return err
 		}
+	}
+	if err := refreshAnalyticsAttempts(ctx, tx, nil, string(scope.organization), string(scope.project), ""); err != nil {
+		return err
 	}
 	if err := refreshAnalyticsSlots(ctx, tx, string(scope.organization), string(scope.project), now); err != nil {
 		return err

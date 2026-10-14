@@ -734,6 +734,12 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			rebuildTestAnalyticsRollups(t, f.service, scope)
+			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, got, projected)
 			if test.malformedPhases && (!got.Partial || len(got.Efficiency) != 0 || !strings.Contains(strings.Join(got.Unavailable, ","), "recorded_phases_malformed")) {
 				t.Fatalf("phase boundary %#v", got)
 			}
