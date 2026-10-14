@@ -232,7 +232,7 @@ func (s *Service) getNativeProject(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	templates, err := nativeReporterContracts(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	templates, err := nativeReporterContracts(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
