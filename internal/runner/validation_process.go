@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -27,6 +28,9 @@ type hostValidationProcess struct {
 }
 
 func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector.Issue, attemptID int64) context.Context {
+	if toolcache.ManagedBuildFromContext(ctx) == "" {
+		return ctx
+	}
 	owner, ok := r.store.(hostValidationStore)
 	if !ok {
 		return ctx

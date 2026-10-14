@@ -391,7 +391,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
 	}
-	if len(sessionStore.workerProcesses) != 1 || sessionStore.workerProcesses[0].PID != 4242 || !sessionStore.workerProcesses[0].StartedAt.Equal(processStartedAt) {
+	if len(sessionStore.workerProcesses) != 2 || sessionStore.workerProcesses[0].PID != 0 || sessionStore.workerProcesses[0].CleanupPath == "" || sessionStore.workerProcesses[1].PID != 4242 || !sessionStore.workerProcesses[1].StartedAt.Equal(processStartedAt) || sessionStore.workerProcesses[0].CleanupPath != sessionStore.workerProcesses[1].CleanupPath {
 		t.Fatalf("worker process updates = %#v", sessionStore.workerProcesses)
 	}
 	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 4 {
