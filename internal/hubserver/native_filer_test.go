@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"slices"
@@ -223,14 +224,11 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		raw, err := f.service.createNativeIssueCommand(t.Context(), scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-filer"}, Title: "Filed issue", Body: issueContractTestSections, State: "Todo"})
-		if err != nil {
-			t.Fatal(err)
-		}
+		response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-filer"}, Title: "Filed issue", Body: issueContractTestSections, State: "Todo", Type: "bug"}, func(request tracker.CreateIssue) *httptest.ResponseRecorder {
+			return f.request(t, user, http.MethodPost, f.base+"/work-items", request)
+		})
 		var issue tracker.NativeIssue
-		if err := json.Unmarshal(raw, &issue); err != nil {
-			t.Fatal(err)
-		}
+		decodeHubResponse(t, response, &issue)
 		if index == 0 {
 			mine = issue
 		}
@@ -246,7 +244,9 @@ func TestHostedPersonalKeyCreatedBy(t *testing.T) {
 			t.Fatal(err)
 		}
 		if kind == "personal" {
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", key.Token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "personal-filer"}, Title: "Personal key issue", Body: issueContractTestSections, State: "Todo"})
+			response := createIndependentNativeIssue(t, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "personal-filer"}, Title: "Personal key issue", Body: issueContractTestSections, State: "Todo", Type: "bug"}, func(request tracker.CreateIssue) *httptest.ResponseRecorder {
+				return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", key.Token, request)
+			})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &personal)
 			if personal.State != "Triage" || personal.Actor.Kind != "human" || personal.Actor.PrincipalID != mine.Actor.PrincipalID || personal.Actor.ViaKey != key.ID {
