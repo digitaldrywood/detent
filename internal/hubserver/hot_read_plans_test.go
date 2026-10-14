@@ -145,6 +145,9 @@ func TestHotReadQueryPlans(t *testing.T) {
 		{"board lanes", project + "/work-items?include=board&state=Todo&open=true&limit=50"},
 		{"projects", organization + "/projects"},
 		{"reports", organization + "/reports?project=" + f.project + "&range=30d"},
+		{"reports filtered by issue", organization + "/reports?project=" + f.project + "&range=30d&labels=cloud&priorities=1&types=bug&filed_by=principal"},
+		{"reports filtered by attempt", organization + "/reports?project=" + f.project + "&range=30d&runners=runner_browser_preview&models=gpt-6-astra&stages=code"},
+		{"reports all projects over a custom range", organization + "/reports?project=all&from=" + f.service.config.now().UTC().AddDate(0, 0, -89).Format(time.DateOnly) + "&to=" + f.service.config.now().UTC().Format(time.DateOnly) + "&labels=cloud"},
 		{"diagnostics", organization + "/diagnostics?range=30d"},
 	} {
 		t.Run(read.name, func(t *testing.T) {

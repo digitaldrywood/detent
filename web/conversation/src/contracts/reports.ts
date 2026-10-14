@@ -87,7 +87,17 @@ const SeriesBucket = Schema.Struct({
   not_shipped_cost: Schema.Number,
   rework_classes: Schema.Record(Schema.String, Schema.Number),
 });
+const Facet = Schema.Struct({ id: Schema.String, name: Schema.String });
+const Facets = Schema.Struct({
+  labels: Schema.Array(Schema.String),
+  filed_by: Schema.Array(Facet),
+  runners: Schema.Array(Facet),
+  models: Schema.Array(Schema.String),
+  stages: Schema.Array(Schema.String),
+});
 export const ReportsReport = Schema.Struct({
+  facets: Schema.optional(Facets),
+  prior_recorded: Schema.optional(Schema.Boolean),
   rework_classes: Schema.Array(ClassTotal),
   failure_classes: Schema.Array(ClassTotal),
   series: Schema.optional(Schema.Array(SeriesBucket)),
@@ -219,4 +229,20 @@ export const ReportsReport = Schema.Struct({
 });
 export type ReportsReport = typeof ReportsReport.Type;
 export type ReportsRange = "24h" | "48h" | "7d" | "30d" | "90d";
+export type ReportsFacets = typeof Facets.Type;
+/** A custom range: its first and last UTC days, YYYY-MM-DD. */
+export interface ReportsCustomRange {
+  readonly from: string;
+  readonly to: string;
+}
+/** Filter values per chip; an empty list leaves that dimension unfiltered. */
+export interface ReportsFilters {
+  readonly labels: readonly string[];
+  readonly priorities: readonly string[];
+  readonly types: readonly string[];
+  readonly filedBy: readonly string[];
+  readonly runners: readonly string[];
+  readonly models: readonly string[];
+  readonly stages: readonly string[];
+}
 export type ReportsTimeView = "system" | "lead";

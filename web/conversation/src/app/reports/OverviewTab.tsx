@@ -15,6 +15,7 @@ import {
   laneColor,
   percentText,
   pointsDelta,
+  priorRecorded,
   rangeOption,
   reportBuckets,
   type ReportsSearch,
@@ -61,7 +62,8 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
   const previous = report.previous.partial ? undefined : report.previous;
   const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
   const perShipped = usageMissing ? null : costPerShipped(completion.cost_usd, completion.done);
-  const priorPerShipped = usageMissing ? null : costPerShipped(report.previous.cost_usd, report.previous.done);
+  const recorded = priorRecorded(report);
+  const priorPerShipped = usageMissing || !recorded ? null : costPerShipped(report.previous.cost_usd, report.previous.done);
   const open = openWork(report);
   const stuck = open.items.filter((item) => item.hours > 24);
   const buckets = reportBuckets(report);
@@ -92,7 +94,7 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
         <MetricTile
           label="Shipped"
           value={residenceMissing ? null : formatCount(completion.done)}
-          delta={compare ? (residenceMissing ? null : countDelta(completion.done, report.previous.done, true, ` vs ${prior}`)) : undefined}
+          delta={compare ? (residenceMissing ? null : countDelta(completion.done, recorded ? report.previous.done : undefined, true, ` vs ${prior}`)) : undefined}
           detail={`plus ${formatCount(completion.cancelled)} cancelled`}
         />
         <MetricTile

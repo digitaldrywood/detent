@@ -29,6 +29,9 @@ type AnalyticsDuration struct {
 	Seconds    float64 `json:"seconds"`
 	P50Seconds float64 `json:"p50_seconds"`
 	P90Seconds float64 `json:"p90_seconds"`
+	// Samples are the sorted values behind the quantiles, kept so that
+	// durations read separately can be combined exactly.
+	Samples []float64 `json:"-"`
 }
 
 type AnalyticsLaneDuration struct {

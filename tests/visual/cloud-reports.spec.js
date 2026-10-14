@@ -116,6 +116,116 @@ test("Reports keeps the tab and range in the URL and restores them from it", asy
   await expect(page.getByRole("region", { name: "Headline metrics" })).toContainText("1,234");
 });
 
+async function routeReportRequests(page, edit = () => {}) {
+  const requests = [];
+  await page.route("**/api/v2/organizations/*/reports?*", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requests.push(params);
+    const report = structuredClone(fixture);
+    report.analytics.project_id = params.get("project") === "all" ? "all" : hub.fixture.project_id;
+    if (params.has("from")) {
+      report.analytics.window = { from: `${params.get("from")}T00:00:00Z`, to: `${params.get("to")}T00:00:00Z` };
+      report.previous.done = 301;
+    }
+    edit(report, params);
+    return route.fulfill({ json: report });
+  });
+  return requests;
+}
+
+async function attachFilterRow(page, name) {
+  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  const row = page.getByTestId("reports-page").getByRole("group", { name: "Filters" }).locator("..");
+  await test.info().attach(name, { body: await row.screenshot({ animations: "disabled", caret: "hide" }), contentType: "image/png" });
+}
+
+for (const theme of ["light", "dark"]) {
+  test(`Reports filters by chip, custom range and prior period, and keeps them in the URL ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.emulateMedia({ colorScheme: theme });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    const requests = await routeReportRequests(page, (report, params) => {
+      if (params.get("project") === "all") report.completion.done = 4321;
+    });
+    await page.goto(hub.fixture.accounts.owner);
+    await page.goto(`${hub.fixture.url}/reports`);
+    await page.evaluate((theme) => {
+      document.documentElement.classList.toggle("dark", theme === "dark");
+      document.documentElement.dataset.theme = theme;
+    }, theme);
+    const headline = page.getByRole("region", { name: "Headline metrics" });
+    await expect(headline).toContainText("276");
+    const filters = page.getByTestId("reports-page").getByRole("group", { name: "Filters" });
+    for (const name of ["Label", "Priority", "Type", "Filed by", "Runner"]) await expect(filters.getByRole("combobox", { name: `${name}, filter` })).toBeEnabled();
+
+    await filters.getByRole("combobox", { name: "Label, filter" }).click();
+    await page.getByRole("option", { name: "cloud", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/reports\?labels=cloud$/);
+    await expect.poll(() => requests.at(-1)?.getAll("labels")).toEqual(["cloud"]);
+    await expect(filters.getByRole("combobox", { name: "Label: cloud, filter" })).toHaveAttribute("aria-pressed", "true");
+    await expect(filters.getByRole("button", { name: "Clear Label filter" })).toBeVisible();
+    await attachFilterRow(page, `cloud-reports-filter-set-chip-${theme}.png`);
+
+    await filters.getByRole("combobox", { name: "Priority, filter" }).click();
+    await page.getByRole("option", { name: "High", exact: true }).click();
+    await page.getByRole("option", { name: "Urgent", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/reports\?labels=cloud&priorities=High%2CUrgent$/);
+    await expect.poll(() => requests.at(-1)?.getAll("priorities")).toEqual(["1", "0"]);
+    await expect(filters.getByRole("combobox", { name: "Priority: 2 selected, filter" })).toBeVisible();
+
+    const range = page.getByRole("group", { name: "Report range" });
+    await range.getByRole("button", { name: "Custom range", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Custom range" });
+    await expect(picker).toBeVisible();
+    const days = picker.locator("[data-day]:not([data-disabled]) button");
+    await days.nth(2).click();
+    await days.nth(6).click();
+    await expect(picker.getByText(/· 5 days, UTC$/)).toBeVisible();
+    await test.info().attach(`cloud-reports-custom-range-${theme}.png`, { body: await page.screenshot({ animations: "disabled", caret: "hide" }), contentType: "image/png" });
+    await picker.getByRole("button", { name: "Apply", exact: true }).click();
+    await expect(page).toHaveURL(/\/reports\?from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}&labels=cloud&priorities=High%2CUrgent$/);
+    const custom = requests.at(-1);
+    expect(custom.get("range")).toBeNull();
+    expect(custom.get("from")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    await expect(range.getByRole("button", { name: /^Custom range, / })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "vs prior period", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(headline).toContainText("25 vs prior period");
+    await test.info().attach(`cloud-reports-compare-delta-${theme}.png`, { body: await headline.screenshot({ animations: "disabled", caret: "hide" }), contentType: "image/png" });
+
+    const url = page.url();
+    await page.goto("about:blank");
+    await page.goto(url);
+    await expect(filters.getByRole("combobox", { name: "Label: cloud, filter" })).toBeVisible();
+    await expect.poll(() => [requests.at(-1)?.get("from"), requests.at(-1)?.getAll("labels")]).toEqual([custom.get("from"), ["cloud"]]);
+
+    await filters.getByRole("button", { name: "Clear Label filter" }).click();
+    await expect(page).toHaveURL(/\/reports\?from=[^&]+&to=[^&]+&priorities=High%2CUrgent$/);
+
+    await page.getByRole("combobox", { name: "Project", exact: true }).click();
+    await page.getByRole("option", { name: "All projects", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]project=all(&|$)/);
+    await expect.poll(() => requests.at(-1)?.get("project")).toBe("all");
+    await expect(headline).toContainText("4,321");
+    await expect(page.getByRole("navigation", { name: "Reports breadcrumb" })).toContainText("All projects");
+    expect(errors).toEqual([]);
+  });
+}
+
+test("Reports shows No prior data instead of a delta when the period before did not exist", async ({ page }) => {
+  await routeReportRequests(page, (report) => {
+    report.prior_recorded = false;
+  });
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.url}/reports`);
+  const headline = page.getByRole("region", { name: "Headline metrics" });
+  await expect(headline).toContainText("276");
+  await expect(headline.getByText("No prior data")).toHaveCount(5);
+  await expect(headline).not.toContainText("vs prior 7d");
+});
+
 test("Reports shows a dash for unrecorded data, the unavailable state and issue Diagnostics links", async ({ page }) => {
   await openReports(page);
   const headline = page.getByRole("region", { name: "Headline metrics" });

@@ -172,6 +172,12 @@ FROM failures a WHERE 1=1`
 		query += " AND julianday(a.failed_at)>=julianday(?) AND julianday(a.failed_at)<julianday(?)"
 		args = append(args, formatHubTime(w.From), formatHubTime(w.To))
 	}
+	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
+	if err != nil {
+		return nil, false, err
+	}
+	query += scoped
+	args = append(args, scopedArgs...)
 	query += " ORDER BY julianday(a.failed_at) DESC,a.id DESC LIMIT ? OFFSET ?"
 	rows, err := queryAnalyticsPopulation(ctx, q, "failures", query, args...)
 	if err != nil {

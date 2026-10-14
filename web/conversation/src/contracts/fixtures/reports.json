@@ -1463,5 +1463,45 @@
       ],
       "infrastructure_returns": 117
     }
+  },
+  "prior_recorded": true,
+  "facets": {
+    "labels": [
+      "cloud",
+      "reports",
+      "runner",
+      "ui"
+    ],
+    "filed_by": [
+      {
+        "id": "hosted_cory",
+        "name": "cory@example.com"
+      },
+      {
+        "id": "key_detent_agent",
+        "name": "Detent agent"
+      }
+    ],
+    "runners": [
+      {
+        "id": "runner_studio",
+        "name": "studio"
+      },
+      {
+        "id": "runner_sprite",
+        "name": "sprite"
+      }
+    ],
+    "models": [
+      "gpt-6-astra",
+      "gpt-6.1-sol"
+    ],
+    "stages": [
+      "code",
+      "merge",
+      "plan",
+      "rework",
+      "validator"
+    ]
   }
 }

@@ -1843,11 +1843,11 @@
       "source": "src/app/reports/ReportsPage.tsx",
       "exports": ["ReportsRoute", "ReportsView"],
       "variants": {},
-      "states": ["loading", "empty", "error", "not recorded"],
-      "keyboard": "Project, range, comparison and refresh controls, then the section tabs, the view toggles and each card's links and expandable rows in reading order.",
-      "use": "Project reports in five tabs (Overview, Flow, Quality, Cost and Failures), each chart first with its rows below; the tab and range live in the URL.",
-      "avoid": "Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.",
-      "related": ["tabs", "metric-tile", "chart", "toggle-group", "workspace-page-header", "workspace-page-container"]
+      "states": ["loading", "empty", "error", "not recorded", "filtered", "no prior data"],
+      "keyboard": "Project, range, custom range, comparison and refresh controls, then the section tabs, the filter chips (each a Combobox, with a clear button once set), the view toggles and each card's links and expandable rows in reading order.",
+      "use": "Project or organization reports in five tabs (Overview, Flow, Quality, Cost and Failures), each chart first with its rows below. The project (or All projects), a preset or custom range, the comparison and every filter chip live in the URL, so a copied link reproduces the view.",
+      "avoid": "Point-in-time snapshots as historical flow metrics, unrecorded values as zeroes, or a 0% delta when the prior period has no data.",
+      "related": ["tabs", "metric-tile", "chart", "toggle-group", "combobox", "calendar", "popover", "workspace-page-header", "workspace-page-container"]
     },
     {
       "id": "usage-page",

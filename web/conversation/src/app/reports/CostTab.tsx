@@ -13,6 +13,7 @@ import {
   NOT_SHIPPED_COLOR,
   OTHER_STAGE_COLOR,
   percentText,
+  priorRecorded,
   reportBuckets,
   type ReportsSearch,
   STAGE_GROUPS,
@@ -114,7 +115,7 @@ export function CostTab({
   const usageMissing = report.unavailable.includes("recorded_usage");
   const shippedKnown = report.spend.some((item) => item.shipped !== undefined);
   const perShipped = report.completion.done > 0 ? report.completion.cost_usd / report.completion.done : null;
-  const priorPerShipped = report.previous.done > 0 ? report.previous.cost_usd / report.previous.done : undefined;
+  const priorPerShipped = priorRecorded(report) && report.previous.done > 0 ? report.previous.cost_usd / report.previous.done : undefined;
   const p50 = report.completion.cost_p50_usd ?? null;
   const p90 = report.completion.cost_p90_usd ?? null;
   const buckets = reportBuckets(report);
