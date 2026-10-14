@@ -112,10 +112,14 @@ func (s *Service) hostedReports(c echo.Context) error {
 func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyticsReport) (hostedReportsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	return s.readHostedReportsFrom(ctx, analytics, analyticsRollupReader{s.database.reader})
+}
+
+func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (hostedReportsReport, error) {
 	p := analytics.Projects[0]
 	w := analytics.Window
 	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
-	diagnostics, err := s.readHostedDiagnostics(ctx, analytics)
+	diagnostics, err := s.readHostedDiagnosticsFrom(ctx, analytics, q)
 	if err != nil {
 		return out, err
 	}
@@ -139,29 +143,39 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
 	historyWindow := w
 	historyWindow.From = w.From.Add(-w.To.Sub(w.From))
-	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, s.database.reader, scope, historyWindow)
+	q, err = analyticsProjectReader(ctx, q, scope)
 	if err != nil {
 		return out, err
 	}
-	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
-	for _, issue := range issues {
-		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
-	}
-	out.Completion = reportsCompletions(timelines, states, w.From, w.To)
-	out.Previous = reportsCompletions(timelines, states, historyWindow.From, w.From)
-	out.Completion.Partial = out.Completion.Partial || clipped
-	out.Previous.Partial = out.Previous.Partial || clipped
-	for _, timeline := range timelines {
-		for _, done := range timeline.done {
-			if !done.Before(w.From) && done.Before(w.To) {
-				if i := nativeAnalyticsBucketIndex(done, w); i >= 0 {
-					out.Throughput[i].Done++
+	if _, projected := q.(analyticsRollupReader); projected {
+		if err := readReportsCompletionRollups(ctx, q, scope, historyWindow, &out); err != nil {
+			return out, err
+		}
+	} else {
+		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, historyWindow)
+		if err != nil {
+			return out, err
+		}
+		timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+		for _, issue := range issues {
+			timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+		}
+		out.Completion = reportsCompletions(timelines, states, w.From, w.To)
+		out.Previous = reportsCompletions(timelines, states, historyWindow.From, w.From)
+		out.Completion.Partial = out.Completion.Partial || clipped
+		out.Previous.Partial = out.Previous.Partial || clipped
+		for _, timeline := range timelines {
+			for _, done := range timeline.done {
+				if !done.Before(w.From) && done.Before(w.To) {
+					if i := nativeAnalyticsBucketIndex(done, w); i >= 0 {
+						out.Throughput[i].Done++
+					}
+					break
 				}
-				break
 			}
 		}
 	}
-	rows, err := readUsageRows(ctx, s.database.reader, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
+	rows, err := readUsageRows(ctx, q, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
 	if err != nil {
 		return out, err
 	}
@@ -180,7 +194,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
-	policy, err := diagnosticsPolicyValues(ctx, s.database.reader, scope)
+	policy, err := diagnosticsPolicyValues(ctx, q, scope)
 	if err != nil {
 		return out, err
 	}
@@ -234,7 +248,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	if err != nil {
 		return out, err
 	}
-	titleRows, err := s.database.reader.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
+	titleRows, err := q.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
 	if err != nil {
 		return out, err
 	}

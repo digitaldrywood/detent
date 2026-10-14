@@ -281,6 +281,66 @@ Do not advance the site's pinned upstream release to this layout until that
 companion source update is available. Site publication remains separate from
 Detent's build and scheduled validation.
 
+## Hub analytics rollups
+
+Diagnostics, Reports and `analytics_dashboard` read the persisted
+`analytics_hourly_rollups` model through the WAL reader pool. Ready decisions,
+skip reasons, merge entries and lease capacity have additive hourly values.
+Residence reads subtract accumulated per-issue lane and queue durations from
+hourly snapshots. Indexed state-boundary samples supply exact partial-hour
+edges, Todo depths and population clipping. Open spans contribute elapsed time
+from their recorded start without a timer or event replay. Completion samples
+retain the accumulated durations at Done for completion quantiles and throughput.
+Claim waits have additive hourly durations; indexed claim and skip samples retain
+bounded population cursors. The same model retains current issue, attempt and
+usage facts for exact quantiles and distinct populations. It excludes observation-event
+payload history. Landing and refusal identities remain bounded drill-downs.
+
+The existing native commit path projects changed work items before committing.
+Triggers on events, issues, attempts, leases and usage mark items in
+`analytics_rollup_dirty`; project, policy and workflow-state changes do not.
+A commit projects at most `analyticsBackfillBatch` dirty items from their
+per-item event sequence positions; the rest stay marked for the next commit or
+the existing maintenance tick. Every projection statement is scoped by
+organization and project and looks up the work item through an index;
+`TestAnalyticsCommitPlans` fails on a full scan or on an index lookup bounded
+only by organization or project. Residence maintenance resumes from the last stored per-issue
+sequence and processes only new transitions and claims. Event rows hold the
+event identity, time and the decision and transition fields the counters use;
+payloads stay in `collaboration_events` and are joined by id. Unchanged lease
+snapshots do not rewrite capacity buckets. Lease capacity buckets extend at most
+24 hours past the projecting commit and a renewal reprojects them, so a lease
+that is neither renewed nor released for more than 24 hours stops adding
+capacity until its next write.
+
+Each work item projects inside its own savepoint: analytics failure does not
+roll back an event, claim or lane transition, or another item's projection. A
+failed item keeps its last sequence position and is marked failed. It is
+retried on its next change and hourly on the existing maintenance tick, which
+rotates through failed items in batches, not on every commit. While a project has a failed item, its reads use the raw
+computation.
+
+The migration only creates the schema. Existing projects are listed for
+backfill, and the existing maintenance tick backfills them after startup in
+batches of at most `analyticsBackfillBatch` work items and
+`analyticsBackfillEvents` events, each in its own short write transaction, through the same projector and positions. Until a project's
+backfill completes, its reads use the raw computation, and commits skip its
+unprojected items.
+
+`rebuildAnalyticsRollups` rebuilds one organization/project in a caller-owned
+transaction from the raw sources, including the hourly counters, residence
+snapshots, completion and decision samples, and lease buckets. It replaces the
+project's rollups and sequence positions atomically and is the test oracle.
+A migration that changes a metric definition deletes the affected projects'
+rollups and positions and lists those projects for backfill again.
+
+Compaction does not delete rollups. Scheduler claim samples retain their exact
+predecessor before raw observation rows can be compacted. A rebuild after
+compaction cannot recreate deleted predecessor evidence: a sequence gap makes
+that capacity-wait interval unavailable. It must not infer adjacency from the
+next surviving earlier event. Current runtime observations and usage remain
+rebuildable from their durable source records.
+
 ## Conversation assets
 
 Conversation source and its npm lockfile are tracked; `static/app/conversation/`

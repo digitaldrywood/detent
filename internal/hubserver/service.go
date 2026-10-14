@@ -459,12 +459,19 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
 	lastOptimize := s.config.now()
+	var lastAnalyticsRetry time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if now := s.config.now(); now.Sub(lastOptimize) >= time.Hour {
+			now := s.config.now()
+			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour
+			s.maintainAnalyticsRollups(ctx, now, retryAnalytics)
+			if retryAnalytics {
+				lastAnalyticsRetry = now
+			}
+			if now.Sub(lastOptimize) >= time.Hour {
 				if err := s.database.optimize(ctx, "PRAGMA optimize"); err != nil && !errors.Is(err, context.Canceled) {
 					s.config.Logger.Warn("optimize hub database", "error", err)
 				}
