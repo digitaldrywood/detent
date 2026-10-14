@@ -220,6 +220,23 @@ func TestCoordinatorScreenReadBoundaries(t *testing.T) {
 	}
 }
 
+func TestCoordinatorWorkListRefusalNamesReason(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+	f, owner, record := coordinatorReadFixture(t)
+	tools, _ := coordinatorViewerTools(t, f, record, owner)
+	for _, test := range []struct{ args, reason string }{
+		{`{"state":"Triage","include":["summary","work"]}`, "include accepts summary or work, not both"},
+		{`{"state":"Triage","offset":20}`, "offset is not supported here; page with the returned next_cursor"},
+	} {
+		result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: operatortool.WorkList, Arguments: json.RawMessage(test.args)})
+		if err != nil || result.Success || !strings.Contains(result.Content, test.reason) {
+			t.Fatalf("%s: want refusal naming %q, got %#v %v", test.args, test.reason, result, err)
+		}
+	}
+}
+
 func TestCoordinatorReadAudience(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
