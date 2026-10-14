@@ -28,16 +28,9 @@ var knownSlowHotReads = []struct {
 	{"activity running attempts sort", "n.status='running' AND l.released_at IS NULL", hotReadIssue + "1057"},
 	{"activity finished attempts sort", "n.status!='running' AND n.activity_updated_at>=julianday(:from)", hotReadIssue + "1057"},
 	{"work item latest change sort", "ORDER BY c.rowid DESC LIMIT 1", hotReadIssue + "1057"},
-	{"analytics failure signatures sort", "WITH failures AS (", hotReadIssue + "976"},
 	{"analytics landed changes sort", "SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v", hotReadIssue + "976"},
-	{"analytics attempt runtime sort", "coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]')", hotReadIssue + "976"},
-	{"analytics skipped decisions sort", "type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'", hotReadIssue + "976"},
-	{"analytics capacity wait sort", "SELECT c.data_json,c.recorded_at, coalesce((SELECT p.data_json FROM collaboration_events p", hotReadIssue + "976"},
 	{"analytics quality landings sort", "WITH landed AS ( SELECT c.id,c.work_item_id,v.id AS version_id", hotReadIssue + "976"},
-	{"analytics residence transitions sort", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", hotReadIssue + "1045"},
 	{"analytics review evidence sort", "FROM change_evidence e JOIN change_requests c ON c.id=e.change_id", hotReadIssue + "976"},
-	{"analytics worked items sort", "IN ('code','rework') AND julianday(started_at)>=julianday(?)", hotReadIssue + "976"},
-	{"usage rows sort", "FROM attempt_usage u LEFT JOIN native_attempts a ON a.id = u.attempt_id", hotReadIssue + "976"},
 }
 
 const hotReadIssue = "prj_6d4919bebd73446798e6cd807feda10e#"
