@@ -258,6 +258,20 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		{"check", "", 2, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
 		}},
+		{"review policy requirement", "", 2, func(t *testing.T) {
+			rules := f.rules
+			rules.RequireReview = false
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "changed-review-rule"}, ExpectedID: f.rules.ID, Policy: rules})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &f.rules)
+		}},
+		{"restored review requirement", "", 2, func(t *testing.T) {
+			rules := f.rules
+			rules.RequireReview = true
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "restored-review-rule"}, ExpectedID: f.rules.ID, Policy: rules})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &f.rules)
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now = now.Add(time.Second)
@@ -283,6 +297,9 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	instructions := hubTestPolicy()
+	instructions.SourceDigest = policy.Digest([]byte("changed instructions"))
+	instructions = instructions.WithID()
 	changed := hubTestPolicy()
 	changed.Gates.AutoPromote = true
 	changed = changed.WithID()
@@ -291,7 +308,8 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		method string
 		body   any
 	}{
-		{"changed policy", http.MethodPut, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: changed}},
+		{"instruction-only custom policy", http.MethodPut, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: instructions}},
+		{"changed policy", http.MethodPut, policy.Change{ExpectedID: instructions.ID, Policy: changed}},
 		{"revoked policy", http.MethodDelete, map[string]string{"expected_policy_id": changed.ID}},
 		{"restored policy", http.MethodPut, policy.Change{Policy: hubTestPolicy()}},
 	} {
@@ -316,7 +334,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 					t.Fatal(err)
 				}
 				wantStatus := "stale_policy"
-				if test.name == "restored policy" {
+				if test.name == "restored policy" || test.name == "instruction-only custom policy" {
 					wantStatus = "needs_evidence"
 					if id == string(f.issue.WorkItemID) {
 						wantStatus = "reviewed"
