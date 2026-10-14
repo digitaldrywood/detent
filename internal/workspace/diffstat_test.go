@@ -215,7 +215,25 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		probeOnly           bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "literal packages and supported flags retain identity", command: "go test ./... -short -count=1", probeOnly: true, toolchainKnown: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
+		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
+		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},
+		{name: "shell escaped vet analyzer is unverified", command: `go vet -vet\tool=custom ./...`, probeOnly: true},
+		{name: "separate vet analyzer operand is unverified", command: "go vet -vettool custom ./...", probeOnly: true},
+		{name: "external compiler configuration is unverified", command: "go build -gcflags=-importcfg=custom ./...", probeOnly: true},
+		{name: "external optimization profile is unverified", command: "go build -pgo=custom ./...", probeOnly: true},
+		{name: "double dash optimization profile is unverified", command: "go build --pgo=custom ./...", probeOnly: true},
+		{name: "forwarded test arguments are unverified", command: "go test ./... -args -config=custom", probeOnly: true},
+		{name: "double dash forwarded test arguments are unverified", command: "go test ./... --args -config=custom", probeOnly: true},
+		{name: "implicit custom test arguments are unverified", command: "go test ./... -config=custom", probeOnly: true},
+		{name: "custom test flag alias is unverified", command: "go test ./pkg -test.tags=tmp/config.json", probeOnly: true},
+		{name: "test flag alias syntax is unverified", command: "go test ./pkg -test.run=Test", probeOnly: true},
+		{name: "forwarded positional test input is unverified", command: "go test ./pkg -v tmp/config.json", probeOnly: true},
+		{name: "packages after flags are unverified", command: "go test -short ./pkg", probeOnly: true},
+		{name: "shell expanded package operands are unverified", command: "go test ./internal/*", probeOnly: true},
+		{name: "external Go source operands are unverified", command: "go test /outside/check_test.go", probeOnly: true},
+		{name: "ignored Go source operands are unverified", command: "go build ./tmp/check.go", probeOnly: true},
 		{name: "package manager toolchain is unverified", command: "pnpm test", probeOnly: true},
 		{name: "make target toolchain is unverified", command: "make check-landing", probeOnly: true},
 		{name: "external Go executor is unverified", command: "go test -exec=custom ./...", probeOnly: true},
@@ -229,8 +247,12 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.probeOnly {
-				if backend.ReviewCommandEnvironment(t.Context(), info, issue, test.command).Known() {
-					t.Fatal("Go metadata was accepted for an unverified command toolchain")
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, issue, test.command)
+				if evidence.Environment.Known() != test.toolchainKnown {
+					t.Fatalf("command toolchain applicability: got %v, want %v", evidence.Environment.Known(), test.toolchainKnown)
+				}
+				if test.toolchainKnown && evidence.InputsSHA == "" {
+					t.Fatal("supported literal Go command lost its input identity")
 				}
 				return
 			}

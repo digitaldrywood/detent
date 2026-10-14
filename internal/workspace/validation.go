@@ -31,7 +31,7 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 
 func directGoValidation(validation string) bool {
 	args := strings.Fields(validation)
-	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\"'`$;&|<>\n\r()%!^") {
+	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\\\"'`$;&|<>\n\r()%!^*?[]{}~#") {
 		return false
 	}
 	switch args[1] {
@@ -42,8 +42,35 @@ func directGoValidation(validation string) bool {
 	if args[1] == "version" && len(args) != 2 {
 		return false
 	}
+	flagsSeen := false
 	for _, arg := range args[2:] {
-		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") || strings.HasPrefix(arg, "-overlay") || strings.HasPrefix(arg, "-compiler") || strings.HasPrefix(arg, "-pkgdir") || strings.HasPrefix(arg, "-ldflags") {
+		if strings.HasPrefix(arg, "-") {
+			flagsSeen = true
+			continue
+		}
+		if flagsSeen || strings.HasPrefix(arg, "/") || arg == ".." || strings.HasPrefix(arg, "../") || strings.Contains(arg, "/../") || strings.HasSuffix(arg, "/..") || strings.HasSuffix(arg, ".go") {
+			return false
+		}
+	}
+	return reusableGoValidationFlags(args[2:])
+}
+
+func reusableGoValidationFlags(args []string) bool {
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "\"'") {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			arg = "-" + strings.TrimLeft(arg, "-")
+		}
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, _, _ := strings.Cut(arg, "=")
+		name = strings.TrimPrefix(name, "-")
+		switch name {
+		case "a", "n", "x", "v", "race", "msan", "asan", "trimpath", "work", "p", "buildvcs", "buildmode", "tags", "mod", "modcacherw", "installsuffix", "c", "short", "json", "run", "bench", "benchtime", "benchmem", "count", "cpu", "failfast", "fullpath", "list", "parallel", "shuffle", "skip", "timeout", "vet":
+		default:
 			return false
 		}
 	}
