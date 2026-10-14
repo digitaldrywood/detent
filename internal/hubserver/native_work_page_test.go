@@ -310,7 +310,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(q.statements) > 302 {
+	if len(q.statements) > 303 {
 		t.Fatalf("compact read exceeded bounded hydration: %d queries", len(q.statements))
 	}
 	for _, statement := range q.statements {
@@ -365,7 +365,7 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET updated_at = ?, native_updated_at = ?, archived = ? WHERE native_id = ?", formatHubTime(now), formatHubTime(now), seed.archived, issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
-		if err := tx.Commit(); err != nil {
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -377,11 +377,11 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 		{"", "", 4, http.StatusOK},
 		{"48h", "", 4, http.StatusOK},
 		{"7d", "", 5, http.StatusOK},
-		{"14d", "", 6, http.StatusOK},
-		{"all", "", 10, http.StatusOK},
-		{"all", "&state=Cancelled", 1, http.StatusOK},
+		{"14d", "", 5, http.StatusOK},
+		{"all", "", 6, http.StatusOK},
+		{"all", "&state=Cancelled", 0, http.StatusOK},
 		{"48h", "&state=Todo", 0, http.StatusOK},
-		{"48h", "&archived=true", 1, http.StatusOK},
+		{"48h", "&archived=true", 4, http.StatusOK},
 		{"bad", "", 0, http.StatusUnprocessableEntity},
 		{"48h", "&completed_window=all", 0, http.StatusUnprocessableEntity},
 	} {

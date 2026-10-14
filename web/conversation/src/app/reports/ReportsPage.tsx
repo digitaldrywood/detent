@@ -194,13 +194,7 @@ export function ReportsView({
         lane.lane !== "Backlog" &&
         lane.lane !== "Triage",
     ) ?? [];
-  const delta =
-    report &&
-    !residenceMissing &&
-    !report.previous.partial &&
-    !report.completion.partial
-      ? report.completion.done - report.previous.done
-      : null;
+  const delta = report ? report.completion.done - report.previous.done : null;
   const usageMissing = unavailable("recorded_usage");
   const completionMissing = residenceMissing || timing?.count === 0;
   return (
@@ -291,11 +285,7 @@ export function ReportsView({
               >
                 <Metric
                   label="Issues done"
-                  value={
-                    residenceMissing
-                      ? UNAVAILABLE
-                      : formatCount(report.completion.done)
-                  }
+                  value={formatCount(report.completion.done)}
                   detail={
                     delta === null
                       ? "Prior window unavailable"
@@ -342,9 +332,11 @@ export function ReportsView({
                 <Metric
                   label="Cost / issue done"
                   value={
-                    usageMissing || residenceMissing || !report.completion.done
+                    usageMissing || !report.completion.done
                       ? UNAVAILABLE
-                      : formatUsd(report.cost_usd / report.completion.done)
+                      : formatUsd(
+                          report.completion.cost_usd / report.completion.done,
+                        )
                   }
                   detail={
                     usageMissing
