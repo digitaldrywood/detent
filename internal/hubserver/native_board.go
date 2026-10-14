@@ -33,6 +33,23 @@ func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
 	return tx.Commit()
 }
 
+func resetNativeBoardPolicy(ctx context.Context, tx *sql.Tx, scope string) error {
+	var organization, project string
+	var sequence int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json)
+SELECT organization_id,id,NULL,NULL FROM projects WHERE organization_id||'/'||id=? AND profile='native'
+RETURNING organization_id,project_id,sequence`, scope).Scan(&organization, &project, &sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES(?,?,?,?)
+ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, organization, project, sequence, sequence)
+	return err
+}
+
 func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var readOnly bool
 	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&readOnly); err != nil {
@@ -52,8 +69,9 @@ func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	policies := map[string]changeSummaryPolicy{}
 	for _, id := range ids {
-		if err := refreshNativeBoardCard(ctx, tx, id, now); err != nil {
+		if err := refreshNativeBoardCard(ctx, tx, id, now, policies); err != nil {
 			return err
 		}
 	}
@@ -61,7 +79,7 @@ func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	return err
 }
 
-func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time.Time, policies map[string]changeSummaryPolicy) error {
 	var previous *tracker.NativeBoardCard
 	var oldJSON string
 	err := tx.QueryRowContext(ctx, "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&oldJSON)
@@ -88,7 +106,7 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1`,
 			scope.organization, scope.project, id, scope.organization, scope.project, id).Scan(&attemptID, &attemptCount)
 		if err == nil {
-			attempt, err := readNativeAttempt(ctx, tx, scope, id, attemptID, now)
+			attempt, err := readNativeAttemptRecord(ctx, tx, scope, id, attemptID, now)
 			if err != nil {
 				return err
 			}
@@ -101,13 +119,22 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			return err
 		}
 		if found {
-			detail, err := readCurrentChangeDetail(ctx, tx, scope, change, now)
+			key := string(scope.organization) + "/" + string(scope.project)
+			currentPolicy, found := policies[key]
+			if !found {
+				currentPolicy, err = readChangeSummaryPolicy(ctx, tx, scope)
+				if err != nil {
+					return err
+				}
+				policies[key] = currentPolicy
+			}
+			detail, err := readCurrentChangeDetailWithPolicy(ctx, tx, scope, change, now, &currentPolicy)
 			if err != nil {
 				return err
 			}
-			version, _, err := readNativeChangeVersion(ctx, tx, change)
-			if err != nil {
-				return err
+			var version tracker.ChangeVersion
+			if len(detail.Versions) > 0 {
+				version = detail.Versions[0]
 			}
 			current.Change = &tracker.NativeBoardChange{ID: change.ID, Title: change.Title, Status: detail.Summary.Status, External: version.External}
 		}
@@ -190,7 +217,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_deltas WHERE organization_id=? AND project_id=? AND sequence<=?", scope.organization, scope.project, floor.Int64); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=? WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=MAX(replay_floor,?) WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
 			return err
 		}
 	}

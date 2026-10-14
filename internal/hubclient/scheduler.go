@@ -74,6 +74,7 @@ type Scheduler struct {
 	githubIntake          func(context.Context, string) (tracker.GitHubIssueSnapshot, error)
 	problems              func() []runnerauth.Problem
 	isolationReport       func(context.Context) (isolationpolicy.Report, []runnerauth.Problem)
+	lastIsolationAt       time.Time
 	lastIsolation         isolationpolicy.Report
 	providerReports       func() ([]providercapacity.Report, error)
 	claimPolicies         map[string]claimPolicy

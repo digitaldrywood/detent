@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -170,7 +171,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id
 	return change, nil
 }
 
-func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
+func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
 	var version tracker.ChangeVersion
 	var raw string
 	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
@@ -178,6 +179,14 @@ func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versi
 	}
 	if err := json.Unmarshal([]byte(raw), &version); err != nil {
 		return version, fmt.Errorf("decode version snapshot: %w", err)
+	}
+	return version, nil
+}
+
+func readChangeVersion(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
+	version, err := readChangeVersionSnapshot(ctx, query, changeID, versionID)
+	if err != nil {
+		return version, err
 	}
 	if err := resolveVersionPublication(ctx, query, changeID, &version); err != nil {
 		return version, fmt.Errorf("resolve publication: %w", err)
@@ -424,6 +433,10 @@ func readCurrentChangeDetail(ctx context.Context, query nativeQueryer, scope nat
 }
 
 func readCurrentChangeDetailWithVersion(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time) (tracker.ChangeDetail, error) {
+	return readCurrentChangeDetailWithPolicy(ctx, query, scope, change, now, nil)
+}
+
+func readCurrentChangeDetailWithPolicy(ctx context.Context, query nativeQueryer, scope nativeScope, change tracker.ChangeRequest, now time.Time, currentPolicy *changeSummaryPolicy) (tracker.ChangeDetail, error) {
 	result := tracker.ChangeDetail{Change: change}
 	var staleApproval bool
 	version, found, err := readNativeChangeVersion(ctx, query, change)
@@ -446,46 +459,74 @@ AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record
 			return result, err
 		}
 	}
-	result.Summary, err = readChangeSummary(ctx, query, scope, result, now, staleApproval)
-	if err != nil {
-		return result, err
+	if currentPolicy == nil {
+		loaded, loadErr := readChangeSummaryPolicy(ctx, query, scope)
+		if loadErr != nil {
+			return result, loadErr
+		}
+		currentPolicy = &loaded
 	}
+	result.Summary = currentPolicy.summarize(result, now, staleApproval)
 	err = loadChangeExternal(ctx, query, scope, &result)
 	result.Reviews, result.Checks = nil, nil
 	return result, err
 }
 
-func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeScope, detail tracker.ChangeDetail, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
+type changeSummaryPolicy struct {
+	approval policy.Approval
+	rules    tracker.ChangeReviewPolicy
+}
+
+func readChangeSummaryPolicy(ctx context.Context, query nativeQueryer, scope nativeScope) (changeSummaryPolicy, error) {
 	approval, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		var failure *nativeError
 		if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
-			return tracker.ChangeSummary{}, err
+			return changeSummaryPolicy{}, err
 		}
 	}
 	rules, err := readChangePolicy(ctx, query, scope)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return changeSummaryPolicy{}, err
+	}
+	return changeSummaryPolicy{approval: approval, rules: rules}, nil
+}
+
+func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeScope, detail tracker.ChangeDetail, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
+	current, err := readChangeSummaryPolicy(ctx, query, scope)
+	if err != nil {
 		return tracker.ChangeSummary{}, err
 	}
-	policyID, reviewID := approval.Policy.ID, rules.ID
-	for _, version := range detail.Versions {
-		if version.ID != detail.Change.CurrentVersion {
-			continue
-		}
+	return current.summarize(detail, now, priorApproval), nil
+}
+
+func (p changeSummaryPolicy) identities(version *tracker.ChangeVersion) (string, string) {
+	policyID, reviewID := p.approval.Policy.ID, p.rules.ID
+	if version != nil {
 		if version.Policy.Gates.LandingMode == "rolling_barrier" {
-			policyID = ""
-			break
+			return "", reviewID
 		}
-		currentRules := rules
+		currentRules := p.rules
 		currentRules.PolicyID = policyID
-		if policyID != "" && rules.ID != "" && version.PolicyID == version.Policy.ID && version.ReviewPolicy.ID != "" &&
-			version.Policy.Gates == approval.Policy.Gates && version.ReviewPolicy.RequireReview == rules.RequireReview &&
-			slices.Equal(version.ReviewPolicy.RequiredChecks, rules.RequiredChecks) && changerequest.ValidatePolicy(currentRules, approval.Policy) == nil {
+		if policyID != "" && p.rules.ID != "" && version.PolicyID == version.Policy.ID && version.ReviewPolicy.ID != "" &&
+			version.Policy.Gates == p.approval.Policy.Gates && version.ReviewPolicy.RequireReview == p.rules.RequireReview &&
+			slices.Equal(version.ReviewPolicy.RequiredChecks, p.rules.RequiredChecks) && changerequest.ValidatePolicy(currentRules, p.approval.Policy) == nil {
 			policyID, reviewID = version.PolicyID, version.ReviewPolicy.ID
 		}
-		break
 	}
-	return changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, priorApproval), nil
+	return policyID, reviewID
+}
+
+func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Time, priorApproval bool) tracker.ChangeSummary {
+	var current *tracker.ChangeVersion
+	for i := range detail.Versions {
+		if detail.Versions[i].ID == detail.Change.CurrentVersion {
+			current = &detail.Versions[i]
+			break
+		}
+	}
+	policyID, reviewID := p.identities(current)
+	return changerequest.SummarizeCurrentVersion(detail, policyID, reviewID, now, priorApproval)
 }
 
 func loadChangeExternal(ctx context.Context, query nativeQueryer, scope nativeScope, detail *tracker.ChangeDetail) error {
@@ -596,6 +637,9 @@ ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.p
 	}
 	if previous.ID != rules.ID {
 		if err := routeStaleNativeLandingChanges(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.actor().PrincipalID, "", s.config.now()); err != nil {
+			return nil, err
+		}
+		if err := resetNativeBoardPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
 			return nil, err
 		}
 	}

@@ -606,3 +606,52 @@ func TestNativeSharedPolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeSharedPolicyBehavior(t *testing.T) {
+	t.Parallel()
+	base := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: make check-landing\n  security_audit:\n    enabled: false\n"
+	resolve := func(content, prompt string) policy.Descriptor {
+		t.Helper()
+		workflow, err := ParseProjectDefinition(ProjectDefinitionSources{Workflow: []byte(prompt), Config: []byte(content), HasConfig: true, ConfigPath: "detent.yaml"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow.Definition.Revision = strings.Repeat("a", 40)
+		descriptor, err := ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return descriptor
+	}
+	approved := resolve(base, "Existing guidance.\n")
+	for _, test := range []struct {
+		name, config, prompt string
+		want                 bool
+	}{
+		{"prose", base, "Updated guidance.\n", true},
+		{"model", base + "codex:\n  model: example-model\n", "Existing guidance.\n", true},
+		{"command", strings.Replace(base, "make check-landing", "make other-check", 1), "Existing guidance.\n", false},
+		{"audit", strings.Replace(base, "enabled: false", "enabled: true", 1), "Existing guidance.\n", false},
+		{"network", base + "worker:\n  extra_network_domains: [example.com]\n", "Existing guidance.\n", false},
+		{"local binding", base + "worker:\n  allow_local_binding: true\n", "Existing guidance.\n", false},
+		{"host hook", base + "hooks:\n  before_run: host-preparation\n", "Existing guidance.\n", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected := resolve(test.config, test.prompt)
+			equal, err := SameSharedPolicyBehavior(approved, selected)
+			if err != nil || equal != test.want {
+				t.Fatalf("equivalent=%t, error=%v, want %t", equal, err, test.want)
+			}
+		})
+	}
+	legacy := approved
+	legacy.Authored = nil
+	if equal, err := SameSharedPolicyBehavior(legacy, legacy); err != nil || equal {
+		t.Fatalf("unknown authored contract equivalent=%t, error=%v", equal, err)
+	}
+	changedDefaults := approved
+	changedDefaults.Gates.SecurityAudit = true
+	if equal, err := SameSharedPolicyBehavior(approved, changedDefaults); err != nil || equal {
+		t.Fatalf("changed effective default equivalent=%t, error=%v", equal, err)
+	}
+}

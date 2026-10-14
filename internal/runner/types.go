@@ -409,6 +409,7 @@ type AgentTurnRequest struct {
 	RSSPollInterval         time.Duration
 	workerGitHub            workerGitHubPolicy
 	processRSS              func(context.Context, procgroup.Identity) (uint64, error)
+	reserveScratch          func(context.Context, string) error
 }
 
 type AgentResume struct {

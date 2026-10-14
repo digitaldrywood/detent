@@ -2127,6 +2127,13 @@ func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
 	processStartedAt := startedAt.Add(time.Second)
 	cleanupRoot := t.TempDir()
 	cleanupPath := filepath.Join(cleanupRoot, "run-1214")
+	if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, WorkerProcessRegistration{CleanupRoot: cleanupRoot, CleanupPath: cleanupPath}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := backend.ListActiveWorkerProcesses(ctx)
+	if err != nil || len(pending) != 1 || pending[0].PID != 0 || pending[0].CleanupPath != cleanupPath {
+		t.Fatalf("provider scratch reservation unavailable to recovery: %+v err=%v", pending, err)
+	}
 	if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, WorkerProcessRegistration{
 		WorkerProcessIdentity: WorkerProcessIdentity{
 			PID:       4242,
@@ -2137,6 +2144,33 @@ func TestActiveWorkerProcessesAreJournaledAndReaped(t *testing.T) {
 		CleanupPath: cleanupPath,
 	}); err != nil {
 		t.Fatalf("UpdateSessionWorkerProcess() error = %v", err)
+	}
+
+	hostSession, err := backend.StartSession(ctx, SessionStart{IssueID: "issue-1214", Identifier: "digitaldrywood/detent#1214", StartedAt: startedAt, AgentBackendKind: "host", AgentRole: WorkerProcessRoleHostValidation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := WorkerProcessRegistration{CleanupRoot: cleanupRoot, CleanupPath: filepath.Join(cleanupRoot, "host-gate")}
+	if err := backend.UpdateSessionWorkerProcess(ctx, sessionID, reservation); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("provider accepted processless reservation: %v", err)
+	}
+	if err := backend.UpdateSessionWorkerProcess(ctx, hostSession, reservation); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := backend.ListActiveWorkerProcesses(ctx)
+	if err != nil || len(reserved) != 2 || reserved[0].PID != 4242 || reserved[1].PID != 0 || reserved[1].Role != WorkerProcessRoleHostValidation || !reserved[1].StartedAt.IsZero() || reserved[1].CleanupPath != reservation.CleanupPath {
+		t.Fatalf("reservation lost provider or recovery scope: %+v err=%v", reserved, err)
+	}
+	reservation.WorkerProcessIdentity = WorkerProcessIdentity{PID: 5252, GroupID: 5252, StartedAt: processStartedAt}
+	if err := backend.UpdateSessionWorkerProcess(ctx, hostSession, reservation); err != nil {
+		t.Fatal(err)
+	}
+	registered, err := backend.ListActiveWorkerProcesses(ctx)
+	if err != nil || len(registered) != 2 || registered[0].PID != 4242 || registered[1].PID != 5252 {
+		t.Fatalf("host gate replaced provider identity: %+v err=%v", registered, err)
+	}
+	if err := backend.MarkSessionWorkerProcessReaped(ctx, hostSession, WorkerProcessReap{ReapedAt: startedAt.Add(time.Minute), Outcome: WorkerProcessOutcomeTerminated, Reason: WorkerProcessRoleHostValidation}); err != nil {
+		t.Fatal(err)
 	}
 
 	active, err := backend.ListActiveWorkerProcesses(ctx)

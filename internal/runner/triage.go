@@ -54,7 +54,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	}
 	startedAt := r.now().UTC()
 	model := effectiveModel("", selection.Model, runtime.defaultModelForRole(role))
-	environment := r.withGoBudget(path, workerEnvironment(map[string]string{
+	environment := r.withGoBudget(ctx, path, workerEnvironment(map[string]string{
 		"GH_TOKEN": "", "GITHUB_TOKEN": "",
 		serviceapi.AddressEnvironment: "", serviceapi.TokenEnvironment: "", serviceapi.DispositionTokenEnvironment: "",
 	}, workspace.Info{Path: path}, workspaceIssue(r.projectID, req.Issue)))
@@ -105,7 +105,8 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	turnCount := 0
 	removeWorkspace = false
 	turn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
-		Workspace: path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
+		reserveScratch: r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, path),
+		Workspace:      path, Prompt: triageInstructions + "\n\nEvidence:\n" + req.TriageContext,
 		ToolInstructions: triageInstructions, ReadOnly: true, Model: model, ModelProvider: provider,
 		ServiceTier: tier, ReasoningEffort: effort, MaxTurns: 1, TurnTimeout: 2 * time.Minute, MaxDuration: 2 * time.Minute,
 		Environment: environment, MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval,

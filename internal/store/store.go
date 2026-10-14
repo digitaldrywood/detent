@@ -484,7 +484,10 @@ type WorkerProcessRegistration struct {
 	CleanupPath string
 }
 
+const WorkerProcessRoleHostValidation = "host_validation"
+
 type WorkerProcess struct {
+	Role        string
 	SessionID   int64
 	IssueID     string
 	Identifier  string

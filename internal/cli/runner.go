@@ -159,7 +159,7 @@ func withRunnerFactoryWithProjectTokens(
 			}); ok {
 				identity = reporter.CommitIdentity()
 			}
-			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, isolationPolicy)
+			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, isolationPolicy)
 			if err == nil {
 				if reporter, ok := deps.Scheduling.(interface {
 					ReportCommitPolicy(string, workspace.CommitReport)
@@ -232,7 +232,7 @@ func buildRunner(
 	serviceConnection serviceapi.Connection,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
-	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, isolationPolicies...)
+	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, nil, isolationPolicies...)
 }
 
 func buildRunnerWithIdentity(
@@ -246,6 +246,7 @@ func buildRunnerWithIdentity(
 	logger *slog.Logger,
 	serviceConnection serviceapi.Connection,
 	commitIdentity workspace.CommitIdentity,
+	buildCache *toolcache.Managed,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
 	deps, err := buildRunnerDependenciesWithIdentity(ctx, workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, commitIdentity, isolationPolicies...)
@@ -253,6 +254,7 @@ func buildRunnerWithIdentity(
 		return nil, err
 	}
 	deps.GoBudget = goBudget
+	deps.BuildCache = buildCache
 	run, err := runnerpkg.NewRunner(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)

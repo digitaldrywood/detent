@@ -143,7 +143,8 @@ SELECT
   COALESCE(MIN(session.started_at), '')
 FROM codex_sessions AS session
 LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
-WHERE (attempt.project_id = ? OR attempt.project_id IS NULL)
+WHERE COALESCE(session.agent_role, '') != 'host_validation'
+  AND (attempt.project_id = ? OR attempt.project_id IS NULL)
   AND ((? != '' AND session.issue_id = ?)
    OR (? != '' AND session.identifier = ?)
    OR (? != '' AND session.issue_url = ?))`,
