@@ -218,7 +218,8 @@ func reportsScopedClause(ctx context.Context, alias string) (string, []any, erro
 // project's matching issues. Runners select the issues with an attempt on
 // one of them during [from, to).
 func readReportsIssueSet(ctx context.Context, q nativeQueryer, scope nativeScope, f reportsFilter, from, to time.Time) ([]string, error) {
-	statement := `SELECT i.native_id FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id IS NOT NULL`
+	var statement strings.Builder
+	statement.WriteString(`SELECT i.native_id FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id IS NOT NULL`)
 	args := []any{scope.organization, scope.project}
 	for _, filter := range []struct {
 		values []string
@@ -236,7 +237,7 @@ func readReportsIssueSet(ctx context.Context, q nativeQueryer, scope nativeScope
 		if err != nil {
 			return nil, fmt.Errorf("encode report issue filter: %w", err)
 		}
-		statement += " AND " + filter.clause
+		statement.WriteString(" AND " + filter.clause)
 		args = append(args, encoded)
 	}
 	if len(f.Runners) > 0 {
@@ -244,12 +245,12 @@ func readReportsIssueSet(ctx context.Context, q nativeQueryer, scope nativeScope
 		if err != nil {
 			return nil, fmt.Errorf("encode report runner filter: %w", err)
 		}
-		statement += ` AND EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id
+		statement.WriteString(` AND EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id
  AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?)
- AND coalesce((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=a.lease_id),json_extract(a.data_json,'$.runner_id'),'') IN (SELECT value FROM json_each(?)))`
+ AND coalesce((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=a.lease_id),json_extract(a.data_json,'$.runner_id'),'') IN (SELECT value FROM json_each(?)))`)
 		args = append(args, formatHubTime(to), formatHubTime(from), encoded)
 	}
-	rows, err := q.QueryContext(ctx, statement, args...)
+	rows, err := q.QueryContext(ctx, statement.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("read report issues: %w", err)
 	}

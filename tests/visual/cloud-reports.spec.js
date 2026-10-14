@@ -214,6 +214,22 @@ for (const theme of ["light", "dark"]) {
   });
 }
 
+test("Reports opens the filter chips from the Filters button on a phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  const requests = await routeReportRequests(page);
+  await page.goto(hub.fixture.accounts.owner);
+  await page.goto(`${hub.fixture.url}/reports/cost?labels=cloud&stages=code`);
+  await expect(page.getByRole("region", { name: "Cost headline" })).toBeVisible();
+  await expect.poll(() => [requests.at(-1)?.getAll("labels"), requests.at(-1)?.getAll("stages")]).toEqual([["cloud"], ["code"]]);
+  await page.getByRole("button", { name: "Filters, 2 set", exact: true }).click();
+  const filters = page.getByRole("dialog").getByRole("group", { name: "Filters" });
+  for (const name of ["Label: cloud", "Priority", "Type", "Filed by", "Runner", "Model", "Stage: Code"]) await expect(filters.getByRole("combobox", { name: `${name}, filter` })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await test.info().attach("cloud-reports-filters-390.png", { body: await page.screenshot({ animations: "disabled", caret: "hide" }), contentType: "image/png" });
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await expect(page).toHaveURL(/\/reports\/cost$/);
+});
+
 test("Reports shows No prior data instead of a delta when the period before did not exist", async ({ page }) => {
   await routeReportRequests(page, (report) => {
     report.prior_recorded = false;
