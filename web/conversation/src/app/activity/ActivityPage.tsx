@@ -53,7 +53,7 @@ import {
   type Sort,
 } from "./activityModel.ts";
 
-import { observeActivity, type ActivityState } from "./activityResource.ts";
+import { activityKey, observeActivity, type ActivityState } from "./activityResource.ts";
 
 export function ActivityRoute() {
   usePageTitle("Activity");
@@ -62,14 +62,17 @@ export function ActivityRoute() {
   const http = useWorkHttp();
   const [project, setProject] = useState("");
   const [live, setLive] = useState(false);
-  const [state, setState] = useState<ActivityState>({ report: null, runners: [], pending: true, error: null });
+  const [state, setState] = useState<ActivityState & { readonly api?: object }>({ report: null, runners: [], pending: true, error: null });
   useEffect(() => {
     const projects = (bootstrap?.projects ?? [])
       .filter((row) => !project || row.id === project)
       .map((row) => row.id);
     const connected = new Set<string>();
     setLive(false);
-    const resource = observeActivity(api, JSON.stringify([project, projects.toSorted()]), project, setState);
+    const resource = observeActivity(api, activityKey(project, projects), project, (next) =>
+      setState((previous) => next.report === null && next.pending && previous.api === api && previous.report !== null
+        ? { ...previous, pending: true, error: null }
+        : { ...next, api }));
     const refreshVisible = resource.refresh;
     const unsubscribe = projects.map((id) =>
       subscribeProjectEvents(http, id, {
@@ -98,7 +101,10 @@ export function ActivityRoute() {
   }, [api, bootstrap?.projects, http, project]);
   return (
     <ActivityView
-      {...state}
+      report={state.report}
+      runners={state.runners}
+      pending={state.pending && state.report === null}
+      error={state.error}
       projects={bootstrap?.projects ?? []}
       organizationName={bootstrap?.organization?.name}
       project={project}

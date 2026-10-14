@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,6 +148,19 @@ func (c *NativeClient) Issue(ctx context.Context, id tracker.NativeWorkItemID) (
 func (c *NativeClient) Issues(ctx context.Context, query url.Values) (tracker.Page[tracker.NativeIssue], error) {
 	result, err := c.IssuesPage(ctx, query)
 	return result.Page, err
+}
+
+func (c *NativeClient) issuePageWithinLimit(ctx context.Context, query url.Values, limit int) (tracker.Page[tracker.NativeIssue], int, error) {
+	for {
+		query.Set("limit", strconv.Itoa(limit))
+		page, err := c.Issues(ctx, query)
+		var oversized *responseSizeError
+		if errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300 && limit > 1 {
+			limit /= 2
+			continue
+		}
+		return page, limit, err
+	}
 }
 
 func (c *NativeClient) IssuesPage(ctx context.Context, query url.Values) (tracker.NativeIssuePage, error) {

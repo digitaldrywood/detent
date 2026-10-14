@@ -137,30 +137,6 @@ export const ReportContext = Schema.Struct({
 });
 export type ReportContext = typeof ReportContext.Type;
 
-export const TestItemResult = Schema.Literals(["pass", "fail", "blocked"]);
-export type TestItemResult = typeof TestItemResult.Type;
-
-export const NativeTestItem = Schema.Struct({
-  index: Schema.Number,
-  text: Schema.String,
-  result: Schema.optional(TestItemResult),
-  note: Schema.optional(Schema.String),
-  tester: Schema.optional(NativeActor),
-  recorded_at: Schema.optional(Schema.String),
-  linked_issues: Schema.Array(Schema.Struct({ work_item_id: NativeWorkItemId, number: Schema.Number })),
-});
-export type NativeTestItem = typeof NativeTestItem.Type;
-
-/** Progress of an issue labeled `test-plan`; present only on its detail read. */
-export const NativeTestPlan = Schema.Struct({
-  passed: Schema.Number,
-  failed: Schema.Number,
-  blocked: Schema.Number,
-  untested: Schema.Number,
-  items: Schema.Array(NativeTestItem),
-});
-export type NativeTestPlan = typeof NativeTestPlan.Type;
-
 export const NativeVerification = Schema.Struct({
   state: Schema.Literals(["pending", "verified"]),
   verified_by: Schema.optional(NativeActor),
@@ -172,7 +148,6 @@ export const NativeIssue = Schema.Struct({
   type: Schema.optional(Schema.Literals(["bug", "change_request"])),
   /** Where and on what the filer saw the problem. Absent when none was supplied; list and board reads omit it. */
   report_context: Schema.optional(ReportContext),
-  test_plan: Schema.optional(NativeTestPlan),
   verification: Schema.optional(NativeVerification),
 	linked_source: Schema.optional(Schema.Struct({
 		url: Schema.String,
@@ -261,6 +236,24 @@ export const WorkItemPage = Schema.Struct({
   grant_version: Schema.optional(Schema.String),
 });
 export type WorkItemPage = typeof WorkItemPage.Type;
+
+/** One issue-picker row: `fields=picker` on the work item list. */
+export const IssuePickerItem = Schema.Struct({
+  work_item_id: NativeWorkItemId,
+  number: Schema.Number,
+  title: Schema.String,
+  state: Schema.String,
+  terminal: Schema.Boolean,
+  priority: Schema.optional(Schema.Number),
+});
+export type IssuePickerItem = typeof IssuePickerItem.Type;
+
+export const IssuePickerPage = Schema.Struct({
+  items: Schema.Array(IssuePickerItem),
+  next_cursor: Schema.optional(Schema.String),
+  total: Schema.optional(Schema.Number),
+});
+export type IssuePickerPage = typeof IssuePickerPage.Type;
 
 /** Priority as the hub numbers it, in the order the tracker ranks it. */
 export const PRIORITY_NAMES = ["Urgent", "High", "Normal", "Low"] as const;
@@ -481,7 +474,6 @@ export const CollaborationData = Schema.Struct({
   to_state: Schema.optional(Schema.String),
   reason: Schema.optional(Schema.String),
   reason_detail: Schema.optional(Schema.String),
-  test_item: Schema.optional(Schema.Struct({ index: Schema.Number, text: Schema.String, result: Schema.String })),
 });
 export type CollaborationData = typeof CollaborationData.Type;
 

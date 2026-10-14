@@ -159,6 +159,15 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nativeAnalyticsReport{}, err
+	}
+	defer tx.Rollback()
+	return s.readAnalyticsReportFrom(ctx, credential, r, w, analyticsRollupReader{tx})
+}
+
+func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {
 	_, _, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsReport{}, pagingErr
@@ -180,22 +189,21 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 	if end < len(projects) {
 		report.NextOffset = &end
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return report, err
-	}
-	defer tx.Rollback()
 	for _, id := range projects[min(r.Offset, len(projects)):end] {
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(id), credential: credential}
 		projectCtx, paging, err := analyticsPagingContext(context.WithValue(ctx, analyticsPagingKey{}, nil), r.PopulationCursor)
 		if err != nil {
 			return report, err
 		}
-		value, err := readNativeAnalytics(projectCtx, tx, scope, r, w)
+		projectQ, err := analyticsProjectReader(projectCtx, q, scope)
 		if err != nil {
 			return report, err
 		}
-		rows, err := readUsageRows(projectCtx, tx, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
+		value, err := readNativeAnalytics(projectCtx, projectQ, scope, r, w)
+		if err != nil {
+			return report, err
+		}
+		rows, err := readUsageRows(projectCtx, projectQ, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
 		if err != nil {
 			return report, err
 		}
@@ -387,58 +395,10 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	if len(phases) == 0 {
 		out.Unavailable = append(out.Unavailable, "recorded_phases")
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
-FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
-AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To))
-	if err != nil {
+	if err := projectNativeAnalyticsSkips(ctx, q, scope, &out); err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	skips := map[string]nativeAnalyticsSkip{}
-	for rows.Next() {
-		if out.DecisionsObserved == maxAnalyticsPopulation {
-			out.Partial = true
-			break
-		}
-		var source, reason, at string
-		if err := rows.Scan(&source, &reason, &at); err != nil {
-			return out, err
-		}
-		key := source + "\x00" + reason
-		value := skips[key]
-		value.Source = source
-		value.Reason = reason
-		value.Count++
-		skips[key] = value
-		out.DecisionsObserved++
-		when, err := parseTimeValue(at)
-		if err != nil {
-			return out, err
-		}
-		if when.After(out.SourceAt) {
-			out.SourceAt = when
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	for _, s := range skips {
-		out.SkipReasons = append(out.SkipReasons, s)
-	}
-	sort.Slice(out.SkipReasons, func(i, j int) bool {
-		a, b := out.SkipReasons[i], out.SkipReasons[j]
-		if a.Source != b.Source {
-			return a.Source < b.Source
-		}
-		return a.Reason < b.Reason
-	})
-	if out.DecisionsObserved == 0 {
-		out.Unavailable = append(out.Unavailable, "recorded_skip_reasons")
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
+
 	if err := projectNativeAnalyticsCapacityWait(ctx, q, scope, &out); err != nil {
 		return out, err
 	}
@@ -488,4 +448,72 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`
 		out = append(out, landing)
 	}
 	return out, rows.Err()
+}
+
+func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+	if _, rolledUp := q.(analyticsRollupReader); rolledUp && analyticsPopulationOffset(ctx, "decisions") == 0 {
+		aggregated, err := readAnalyticsSkipRollups(ctx, q, scope, out)
+		if err != nil || aggregated {
+			return err
+		}
+	}
+	var rows *analyticsRows
+	var err error
+	if _, projected := q.(analyticsRollupReader); projected {
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT json_extract(data_json,'$.Source'),json_extract(data_json,'$.Reason'),json_extract(data_json,'$.At') FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+	} else {
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
+FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
+AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	skips := map[string]nativeAnalyticsSkip{}
+	for rows.Next() {
+		if out.DecisionsObserved == maxAnalyticsPopulation {
+			out.Partial = true
+			break
+		}
+		var source, reason, at string
+		if err := rows.Scan(&source, &reason, &at); err != nil {
+			return err
+		}
+		key := source + "\x00" + reason
+		value := skips[key]
+		value.Source = source
+		value.Reason = reason
+		value.Count++
+		skips[key] = value
+		out.DecisionsObserved++
+		when, err := parseTimeValue(at)
+		if err != nil {
+			return err
+		}
+		if when.After(out.SourceAt) {
+			out.SourceAt = when
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, s := range skips {
+		out.SkipReasons = append(out.SkipReasons, s)
+	}
+	sort.Slice(out.SkipReasons, func(i, j int) bool {
+		a, b := out.SkipReasons[i], out.SkipReasons[j]
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		return a.Reason < b.Reason
+	})
+	if out.DecisionsObserved == 0 {
+		out.Unavailable = append(out.Unavailable, "recorded_skip_reasons")
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return nil
 }

@@ -22,19 +22,22 @@ export function useAccountBootstrap(): AccountBootstrap | null {
 
 const CACHE = new WeakMap<object, AccountApi>();
 
+/** The one API client for a conversation client, outside React. */
+export function accountApiFor(client: ReturnType<typeof useClient>): AccountApi {
+  const cached = CACHE.get(client as unknown as object);
+  if (cached !== undefined) return cached;
+  const api = makeAccountApi({
+    origin: client.http.origin,
+    apiBase: client.http.apiBase,
+    csrfToken: client.http.csrfToken,
+  });
+  CACHE.set(client as unknown as object, api);
+  return api;
+}
+
 export function useAccountApi(): AccountApi {
   const client = useClient();
-  return React.useMemo(() => {
-    const cached = CACHE.get(client as unknown as object);
-    if (cached !== undefined) return cached;
-    const api = makeAccountApi({
-      origin: client.http.origin,
-      apiBase: client.http.apiBase,
-      csrfToken: client.http.csrfToken,
-    });
-    CACHE.set(client as unknown as object, api);
-    return api;
-  }, [client]);
+  return React.useMemo(() => accountApiFor(client), [client]);
 }
 
 /** True when the actor may run the organization's management endpoints. */

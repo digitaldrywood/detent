@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
@@ -30,6 +30,8 @@ import { useAccountApi } from "../account/context.ts";
 import { useSidebarData } from "../adapters/sidebarData.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { formatCount, formatTokens, formatUsd } from "../usage/usageFormat.ts";
+
+import { DEFAULT_REPORTS_RANGE, useReports } from "./reportsQuery.ts";
 
 const WINDOWS: readonly { value: ReportsRange; label: string }[] = [
   { value: "24h", label: "Past 24h" },
@@ -73,65 +75,20 @@ export function ReportsRoute(): React.ReactElement {
   const project = sidebar?.projects.find(
     (p) => p.id === sidebar.activeProjectId,
   );
-  const [range, setRange] = useState<ReportsRange>("48h");
+  const [range, setRange] = useState<ReportsRange>(DEFAULT_REPORTS_RANGE);
   const [view, setView] = useState<ReportsTimeView>("system");
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<{
-    report: ReportsReport | null;
-    pending: boolean;
-    error: string | null;
-    project: string | null;
-    range: ReportsRange;
-  }>({ report: null, pending: true, error: null, project: null, range });
-  useEffect(() => {
-    let current = true;
-    setState({
-      report: null,
-      pending: project !== undefined,
-      error: null,
-      project: project?.id ?? null,
-      range,
-    });
-    if (project !== undefined)
-      void api.reports(project.id, range).then(
-        (report) => {
-          if (current)
-            setState({
-              report,
-              pending: false,
-              error: null,
-              project: project.id,
-              range,
-            });
-        },
-        () => {
-          if (current)
-            setState({
-              report: null,
-              pending: false,
-              error: "Reports are temporarily unavailable.",
-              project: project.id,
-              range,
-            });
-        },
-      );
-    return () => {
-      current = false;
-    };
-  }, [api, project?.id, range, revision]);
-  const current =
-    state.project === (project?.id ?? null) && state.range === range;
+  const reports = useReports(api, project?.id ?? null, range);
   return (
     <ReportsView
-      report={current ? state.report : null}
-      pending={project !== undefined && (!current || state.pending)}
-      error={current ? state.error : null}
+      report={reports.report}
+      pending={reports.pending}
+      error={reports.error}
       scope={project?.name ?? "Choose a project"}
       range={range}
       view={view}
       onRangeChange={setRange}
       onViewChange={setView}
-      onRefresh={() => setRevision((v) => v + 1)}
+      onRefresh={() => void reports.refresh()}
     />
   );
 }
@@ -237,13 +194,7 @@ export function ReportsView({
         lane.lane !== "Backlog" &&
         lane.lane !== "Triage",
     ) ?? [];
-  const delta =
-    report &&
-    !residenceMissing &&
-    !report.previous.partial &&
-    !report.completion.partial
-      ? report.completion.done - report.previous.done
-      : null;
+  const delta = report ? report.completion.done - report.previous.done : null;
   const usageMissing = unavailable("recorded_usage");
   const completionMissing = residenceMissing || timing?.count === 0;
   return (
@@ -334,11 +285,7 @@ export function ReportsView({
               >
                 <Metric
                   label="Issues done"
-                  value={
-                    residenceMissing
-                      ? UNAVAILABLE
-                      : formatCount(report.completion.done)
-                  }
+                  value={formatCount(report.completion.done)}
                   detail={
                     delta === null
                       ? "Prior window unavailable"
@@ -385,9 +332,11 @@ export function ReportsView({
                 <Metric
                   label="Cost / issue done"
                   value={
-                    usageMissing || residenceMissing || !report.completion.done
+                    usageMissing || !report.completion.done
                       ? UNAVAILABLE
-                      : formatUsd(report.cost_usd / report.completion.done)
+                      : formatUsd(
+                          report.completion.cost_usd / report.completion.done,
+                        )
                   }
                   detail={
                     usageMissing

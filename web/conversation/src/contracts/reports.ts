@@ -13,6 +13,8 @@ const Lane = Schema.Struct({
 });
 const Completion = Schema.Struct({
   done: Schema.Number,
+  cancelled: Schema.Number,
+  cost_usd: Schema.Number,
   system: Duration,
   lead: Duration,
   working: Duration,

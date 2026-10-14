@@ -39,9 +39,9 @@ import {
   RelayTicket,
   REVISION_CONFLICT,
   SourceRecovery,
-  type TestItemResult,
   type TransitionReason,
   WorkItemPage,
+  IssuePickerPage,
   WorkItemPullRequestList,
 
   Workspace,
@@ -172,8 +172,10 @@ export interface WorkHttp {
   readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
+  /** The compact issue-picker projection, searched and paged by the hub. */
+  readonly listIssuePicker: (input: { readonly projectId: string; readonly q?: string; readonly cursor?: string; readonly limit?: number; readonly signal?: AbortSignal }) => Promise<IssuePickerPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
-  readonly getWorkItemById: (itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemById: (itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
   readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
@@ -224,17 +226,6 @@ export interface WorkHttp {
     expectedRevision: string;
     relatedWorkItemId: string;
     operation: "add" | "remove";
-  }) => Promise<NativeIssue>;
-  /** Records one checklist item's result on an issue labeled `test-plan`; the body is unchanged. */
-  readonly recordTestItem: (input: {
-    projectId: string;
-    itemId: string;
-    key: string;
-    item: number;
-    text: string;
-    result: TestItemResult;
-    note?: string;
-    relatedIssueNumber?: number;
   }) => Promise<NativeIssue>;
   readonly listAttempts: (
     projectId: string,
@@ -611,10 +602,14 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         undefined,
         input.signal,
       ),
+    listIssuePicker: (input) =>
+      send(IssuePickerPage, "GET", url(`${projectBase(input.projectId)}/work-items`, {
+        fields: "picker", q: input.q?.trim() || undefined, cursor: input.cursor, limit: input.limit,
+      }), undefined, input.signal),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
-    getWorkItemById: (itemId) =>
-      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`)),
+    getWorkItemById: (itemId, signal) =>
+      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`), undefined, signal),
     getWorkItemConversation: (projectId, itemId) =>
       send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>
@@ -657,15 +652,6 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         expected_revision: input.expectedRevision,
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
-      }),
-    recordTestItem: (input) =>
-      send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/test-items`), {
-        idempotency_key: input.key,
-        item: input.item,
-        text: input.text,
-        result: input.result,
-        ...(input.note === undefined || input.note.trim() === "" ? {} : { note: input.note.trim() }),
-        ...(input.relatedIssueNumber === undefined ? {} : { related_issue_number: input.relatedIssueNumber }),
       }),
     listAttempts: (projectId, itemId, limit, signal, cursor) =>
       send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),

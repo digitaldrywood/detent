@@ -1408,6 +1408,15 @@ export function createWorkMock(options: {
           || Number(STATES.find((state) => state.name === b.state)?.dispatchable ?? false)
             - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
           || b.number - a.number);
+        if (url.searchParams.get("fields") === "picker") {
+          json(response, 200, {
+            total: filtered.length,
+            items: page.map((issue) => ({ work_item_id: issue.work_item_id, number: issue.number, title: issue.title,
+              state: issue.state, terminal: issue.terminal, priority: issue.priority })),
+            ...(last !== undefined && matching.length > page.length ? { next_cursor: String(last.number) } : {}),
+          });
+          return true;
+        }
         json(response, 200, {
           total: filtered.length,
           items: workIncluded ? page.map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })) : page,

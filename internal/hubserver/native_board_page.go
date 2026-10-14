@@ -108,16 +108,21 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	window, err := nativeCompletedWindow(params.Get("completed_window"))
+	from, err := nativeCompletedFrom(params.Get("completed_window"), now)
 	if err != nil {
 		return nil, err
 	}
-	statement = "SELECT count(*) FROM native_board_items b WHERE " + where + " AND b.terminal=1"
-	if params.Get("completed_window") != "all" {
-		statement += " AND b.closed_at<>'' AND b.closed_at BETWEEN ? AND ?"
-		args = append(args, now.Add(-window).UTC().Format("2006-01-02T15:04:05.000000000Z"), now.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+	closedParams := url.Values{}
+	for name, values := range params {
+		closedParams[name] = values
 	}
-	err = q.QueryRowContext(ctx, statement, args...).Scan(&summary.Completed)
+	closedParams.Set("archived", "all")
+	closedWhere, closedArgs, err := nativeBoardFilter(scope, closedParams, false)
+	if err != nil {
+		return nil, err
+	}
+	closed, err := readNativeClosedPopulation(ctx, q, scope, closedWhere, closedArgs, from, now)
+	summary.Completed = len(closed.Shipped)
 	return summary, err
 }
 

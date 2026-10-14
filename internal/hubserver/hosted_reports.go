@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -15,12 +16,14 @@ import (
 )
 
 type reportsCompletion struct {
-	Lanes   []operatortool.AnalyticsLaneDuration `json:"lanes"`
-	Done    int                                  `json:"done"`
-	System  operatortool.AnalyticsDuration       `json:"system"`
-	Lead    operatortool.AnalyticsDuration       `json:"lead"`
-	Working operatortool.AnalyticsDuration       `json:"working"`
-	Partial bool                                 `json:"partial"`
+	Lanes     []operatortool.AnalyticsLaneDuration `json:"lanes"`
+	Done      int                                  `json:"done"`
+	Cancelled int                                  `json:"cancelled"`
+	Cost      float64                              `json:"cost_usd"`
+	System    operatortool.AnalyticsDuration       `json:"system"`
+	Lead      operatortool.AnalyticsDuration       `json:"lead"`
+	Working   operatortool.AnalyticsDuration       `json:"working"`
+	Partial   bool                                 `json:"partial"`
 }
 
 type reportsStage struct {
@@ -71,6 +74,10 @@ type hostedReportsReport struct {
 	Cached      int64                  `json:"cached"`
 	Cost        float64                `json:"cost_usd"`
 	FirstTry    *float64               `json:"first_try_percent"`
+	Cancelled   int                    `json:"cancelled"`
+	PriorCost   *float64               `json:"previous_cost_usd,omitempty"`
+	PriorFirst  *float64               `json:"previous_first_try_percent"`
+	PriorFailed *int                   `json:"previous_failed,omitempty"`
 	Unavailable []string               `json:"unavailable"`
 }
 
@@ -112,10 +119,14 @@ func (s *Service) hostedReports(c echo.Context) error {
 func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyticsReport) (hostedReportsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	return s.readHostedReportsFrom(ctx, analytics, analyticsRollupReader{s.database.reader})
+}
+
+func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (hostedReportsReport, error) {
 	p := analytics.Projects[0]
 	w := analytics.Window
 	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
-	diagnostics, err := s.readHostedDiagnostics(ctx, analytics)
+	diagnostics, err := s.readHostedDiagnosticsFrom(ctx, analytics, q)
 	if err != nil {
 		return out, err
 	}
@@ -137,31 +148,29 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Throughput = append(out.Throughput, reportsBucket{From: b.From, To: b.To})
 	}
 	scope := nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(p.ProjectID)}
-	historyWindow := w
-	historyWindow.From = w.From.Add(-w.To.Sub(w.From))
-	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, s.database.reader, scope, historyWindow)
+	q, err = analyticsProjectReader(ctx, q, scope)
 	if err != nil {
 		return out, err
 	}
-	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
-	for _, issue := range issues {
-		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+	states, err := analyticsResidenceStates(ctx, q, scope)
+	if err != nil {
+		return out, err
 	}
-	out.Completion = reportsCompletions(timelines, states, w.From, w.To)
-	out.Previous = reportsCompletions(timelines, states, historyWindow.From, w.From)
-	out.Completion.Partial = out.Completion.Partial || clipped
-	out.Previous.Partial = out.Previous.Partial || clipped
-	for _, timeline := range timelines {
-		for _, done := range timeline.done {
-			if !done.Before(w.From) && done.Before(w.To) {
-				if i := nativeAnalyticsBucketIndex(done, w); i >= 0 {
-					out.Throughput[i].Done++
-				}
-				break
-			}
+	var shipped []nativeShippedIssue
+	out.Completion, shipped, err = readReportsCompletion(ctx, q, scope, states, w.From, w.To)
+	if err != nil {
+		return out, err
+	}
+	out.Previous, _, err = readReportsCompletion(ctx, q, scope, states, w.From.Add(-w.To.Sub(w.From)), w.From)
+	if err != nil {
+		return out, err
+	}
+	for _, issue := range shipped {
+		if i := nativeAnalyticsBucketIndex(issue.ClosedAt, w); i >= 0 {
+			out.Throughput[i].Done++
 		}
 	}
-	rows, err := readUsageRows(ctx, s.database.reader, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
+	rows, err := readUsageRows(ctx, q, analytics.OrganizationID, usageWindow{From: w.From, To: w.To}, []string{p.ProjectID}, maxAnalyticsPopulation+1)
 	if err != nil {
 		return out, err
 	}
@@ -175,12 +184,14 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Tokens += row.tokens()
 		out.Input += row.Input
 		out.Cached += row.CachedInput
-		out.Cost += row.Cost
+	}
+	if out.Cost, _, err = readProjectSpend(ctx, q, scope, w.From, w.To); err != nil {
+		return out, err
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
-	policy, err := diagnosticsPolicyValues(ctx, s.database.reader, scope)
+	policy, err := diagnosticsPolicyValues(ctx, q, scope)
 	if err != nil {
 		return out, err
 	}
@@ -220,6 +231,10 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	} else {
 		out.Unavailable = append(out.Unavailable, "landed_first_try")
 	}
+	out.Cancelled = out.Completion.Cancelled
+	if err := s.readReportsPrior(ctx, q, scope, operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From}, &out); err != nil {
+		return out, err
+	}
 	titleIDs := []string{}
 	for _, item := range p.LaneResidence.Aging.Items {
 		titleIDs = append(titleIDs, item.WorkItemID)
@@ -234,7 +249,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	if err != nil {
 		return out, err
 	}
-	titleRows, err := s.database.reader.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
+	titleRows, err := q.QueryContext(ctx, "SELECT native_id,title FROM issues WHERE organization_id=? AND project_id=? AND native_id IN (SELECT value FROM json_each(?))", scope.organization, scope.project, encodedIDs)
 	if err != nil {
 		return out, err
 	}
@@ -316,49 +331,83 @@ func reportFailureClasses(failures []nativeFailure) []reportClassTotal {
 	return classes.result()
 }
 
-func reportsCompletions(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, from, to time.Time) reportsCompletion {
+func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, from, to time.Time) (reportsCompletion, []nativeShippedIssue, error) {
+	population, err := readNativeClosedPopulation(ctx, q, scope, "", nil, from, to)
+	if err != nil {
+		return reportsCompletion{}, nil, err
+	}
+	ids := population.shippedIDs()
+	out, err := readShippedCompletionTiming(ctx, q, scope, states, ids, to)
+	if err != nil {
+		return out, nil, err
+	}
+	out.Done, out.Cancelled = len(population.Shipped), population.Cancelled
+	out.Cost, err = readNativeShippedSpend(ctx, q, scope, ids, to)
+	return out, population.Shipped, err
+}
+
+func readShippedCompletionTiming(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, ids []string, to time.Time) (reportsCompletion, error) {
+	if _, projected := q.(analyticsRollupReader); projected {
+		return readReportsCompletionRollups(ctx, q, scope, states, ids, to)
+	}
+	issues, err := readShippedResidenceIssues(ctx, q, scope, ids, to)
+	if err != nil {
+		return reportsCompletion{}, err
+	}
+	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+	for _, issue := range issues {
+		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, to))
+	}
+	out := reportsCompletions(timelines, states, to)
+	out.Partial = out.Partial || len(issues) != len(ids)
+	return out, nil
+}
+
+func reportsCompletions(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, to time.Time) reportsCompletion {
 	out := reportsCompletion{Lanes: []operatortool.AnalyticsLaneDuration{}}
 	laneValues := map[string][]float64{}
 	var system, lead, working []float64
 	for _, timeline := range timelines {
-		for _, done := range timeline.done {
-			if done.Before(from) || !done.Before(to) {
+		var done time.Time
+		for _, at := range timeline.done {
+			if at.Before(to) {
+				done = at
+			}
+		}
+		if done.IsZero() || timeline.issue.partial || timeline.started == nil {
+			out.Partial = true
+			continue
+		}
+		var controlled, active float64
+		issueLanes := map[string]float64{}
+		for _, span := range timeline.spans {
+			if analyticsResidenceGroup(span.lane, states) == "excluded" {
 				continue
 			}
-			out.Done++
-			if timeline.issue.partial || timeline.started == nil {
-				out.Partial = true
-				break
+			seconds := max(0, minTime(span.to, done).Sub(span.from).Seconds())
+			issueLanes[span.lane] += seconds
+			if analyticsResidenceGroup(span.lane, states) == "system" {
+				controlled += seconds
 			}
-			var controlled, active float64
-			issueLanes := map[string]float64{}
-			for _, span := range timeline.spans {
-				group := analyticsResidenceGroup(span.lane, states)
-				if group == "excluded" {
-					continue
-				}
-				seconds := max(0, minTime(span.to, done).Sub(span.from).Seconds())
-				issueLanes[span.lane] += seconds
-				if group == "system" {
-					controlled += seconds
-				}
-				if span.lane == "In Progress" {
-					active += seconds
-				}
+			if span.lane == "In Progress" {
+				active += seconds
 			}
-			for lane, seconds := range issueLanes {
-				laneValues[lane] = append(laneValues[lane], seconds)
-			}
-			system = append(system, controlled)
-			working = append(working, active)
-			lead = append(lead, done.Sub(timeline.issue.created).Seconds())
-			break
 		}
+		for lane, seconds := range issueLanes {
+			laneValues[lane] = append(laneValues[lane], seconds)
+		}
+		system = append(system, controlled)
+		working = append(working, active)
+		lead = append(lead, done.Sub(timeline.issue.created).Seconds())
 	}
+	return reportsCompletionDurations(out, states, system, lead, working, laneValues)
+}
+
+func reportsCompletionDurations(out reportsCompletion, states map[string]tracker.NativeState, system, lead, working []float64, lanes map[string][]float64) reportsCompletion {
 	out.System = analyticsDuration(system)
 	out.Lead = analyticsDuration(lead)
 	out.Working = analyticsDuration(working)
-	for lane, values := range laneValues {
+	for lane, values := range lanes {
 		out.Lanes = append(out.Lanes, operatortool.AnalyticsLaneDuration{Lane: lane, Group: analyticsResidenceGroup(lane, states), AnalyticsDuration: analyticsDuration(values)})
 	}
 	sort.Slice(out.Lanes, func(i, j int) bool { return out.Lanes[i].Lane < out.Lanes[j].Lane })
@@ -439,6 +488,37 @@ func reportsAttemptTotals(attempts []nativeAnalyticsAttempt, usage map[string][]
 		return costs[i].Cost > costs[j].Cost
 	})
 	return result, costs
+}
+
+func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope nativeScope, prior operatortool.AnalyticsWindow, out *hostedReportsReport) error {
+	cost, usageRows, err := readProjectSpend(ctx, q, scope, prior.From, prior.To)
+	if err != nil {
+		return err
+	}
+	if usageRows > 0 {
+		out.PriorCost = &cost
+	}
+	var attempts, failed int
+	if err := q.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(a.status='failed'),0) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts, &failed); err != nil {
+		return fmt.Errorf("read prior failed attempts: %w", err)
+	}
+	if attempts > 0 {
+		out.PriorFailed = &failed
+	}
+	landings, err := nativeAnalyticsLandings(ctx, q, scope, prior)
+	if err != nil {
+		return fmt.Errorf("read prior landings: %w", err)
+	}
+	population := nativeAnalyticsProject{Partial: len(landings) > maxAnalyticsPopulation}
+	population.Landings.Items = landings
+	rate, available, err := s.reportsFirstTry(ctx, scope, population)
+	if err != nil {
+		return fmt.Errorf("read prior first try: %w", err)
+	}
+	if available {
+		out.PriorFirst = &rate
+	}
+	return nil
 }
 
 func (s *Service) reportsFirstTry(ctx context.Context, scope nativeScope, p nativeAnalyticsProject) (float64, bool, error) {

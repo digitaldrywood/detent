@@ -13,7 +13,11 @@ import type { WorkViewState } from "./viewState.ts";
 const clients = new WeakMap<object, WorkHttp>();
 
 export function useWorkHttp(): WorkHttp {
-  const client = useClient();
+  return workHttpFor(useClient());
+}
+
+/** The one work client for a conversation client, outside React. */
+export function workHttpFor(client: ReturnType<typeof useClient>): WorkHttp {
   let http = clients.get(client);
   if (http === undefined) {
     const owner = boardAccountKey(client);

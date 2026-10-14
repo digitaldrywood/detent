@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,13 +151,9 @@ func (c *NativeClient) heartbeatIssues(ctx context.Context) ([]tracker.NativeIss
 		cursor := ""
 		limit := 200
 		for {
-			page, err := c.Issues(ctx, url.Values{"limit": {strconv.Itoa(limit)}, "cursor": {cursor}, "archived": {"all"}})
+			page, pageLimit, err := c.issuePageWithinLimit(ctx, url.Values{"cursor": {cursor}, "archived": {"all"}}, limit)
+			limit = pageLimit
 			if err != nil {
-				var oversized *responseSizeError
-				if errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300 && limit > 1 {
-					limit /= 2
-					continue
-				}
 				return nil, true, err
 			}
 			for _, item := range page.Items {

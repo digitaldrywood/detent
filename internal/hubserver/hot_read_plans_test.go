@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var hotReadTables = []string{"native_attempts", "collaboration_events", "change_requests", "attempt_usage"}
@@ -28,16 +30,10 @@ var knownSlowHotReads = []struct {
 	{"activity running attempts sort", "n.status='running' AND l.released_at IS NULL", hotReadIssue + "1057"},
 	{"activity finished attempts sort", "n.status!='running' AND n.activity_updated_at>=julianday(:from)", hotReadIssue + "1057"},
 	{"work item latest change sort", "ORDER BY c.rowid DESC LIMIT 1", hotReadIssue + "1057"},
-	{"analytics failure signatures sort", "WITH failures AS (", hotReadIssue + "976"},
 	{"analytics landed changes sort", "SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v", hotReadIssue + "976"},
-	{"analytics attempt runtime sort", "coalesce(json_extract(a.data_json,'$.runtime.phases'),'[]')", hotReadIssue + "976"},
-	{"analytics skipped decisions sort", "type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'", hotReadIssue + "976"},
-	{"analytics capacity wait sort", "SELECT c.data_json,c.recorded_at, coalesce((SELECT p.data_json FROM collaboration_events p", hotReadIssue + "976"},
 	{"analytics quality landings sort", "WITH landed AS ( SELECT c.id,c.work_item_id,v.id AS version_id", hotReadIssue + "976"},
 	{"analytics residence transitions sort", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", hotReadIssue + "1045"},
 	{"analytics review evidence sort", "FROM change_evidence e JOIN change_requests c ON c.id=e.change_id", hotReadIssue + "976"},
-	{"analytics worked items sort", "IN ('code','rework') AND julianday(started_at)>=julianday(?)", hotReadIssue + "976"},
-	{"usage rows sort", "FROM attempt_usage u LEFT JOIN native_attempts a ON a.id = u.attempt_id", hotReadIssue + "976"},
 }
 
 const hotReadIssue = "prj_6d4919bebd73446798e6cd807feda10e#"
@@ -50,15 +46,10 @@ var sqlReservedAfterTable = map[string]bool{"where": true, "join": true, "left":
 // a full scan of a large table, or a temporary B-tree built for the ORDER BY
 // of a statement that reads a large table.
 func hotReadPlanViolations(statement string, plan []string) []string {
-	tables := make(map[string]string)
+	tables := sqlTableAliases(statement)
 	readsHotTable := false
-	for _, match := range sqlTableReference.FindAllStringSubmatch(statement, -1) {
-		table := strings.ToLower(match[1])
-		tables[table] = table
+	for _, table := range tables {
 		readsHotTable = readsHotTable || slices.Contains(hotReadTables, table)
-		if alias := strings.ToLower(match[2]); alias != "" && !sqlReservedAfterTable[alias] {
-			tables[alias] = table
-		}
 	}
 	var violations []string
 	for _, detail := range plan {
@@ -76,6 +67,18 @@ func hotReadPlanViolations(statement string, plan []string) []string {
 		}
 	}
 	return violations
+}
+
+func sqlTableAliases(statement string) map[string]string {
+	tables := make(map[string]string)
+	for _, match := range sqlTableReference.FindAllStringSubmatch(statement, -1) {
+		table := strings.ToLower(match[1])
+		tables[table] = table
+		if alias := strings.ToLower(match[2]); alias != "" && !sqlReservedAfterTable[alias] {
+			tables[alias] = table
+		}
+	}
+	return tables
 }
 
 func explainQueryPlan(t *testing.T, db *sql.DB, statement string, args []any) []string {
@@ -203,4 +206,89 @@ func TestHotReadQueryPlans(t *testing.T) {
 			t.Errorf("known slow read %q (%s) no longer fails the plan rules; remove its entry", entry.name, entry.issue)
 		}
 	}
+}
+
+func TestAnalyticsCommitPlans(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	var item string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? ORDER BY id LIMIT 1", scope.organization, scope.project).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
+	scanned := []string{"collaboration_events", "native_attempts", "attempt_usage", "leases", "issues", "analytics_hourly_rollups", "analytics_rollup_positions"}
+	var statements []tracedStatement
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, args []driver.NamedValue) {
+		values := make([]any, 0, len(args))
+		for _, arg := range args {
+			values = append(values, arg.Value)
+		}
+		statements = append(statements, tracedStatement{query, values})
+	}})
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now()
+	for _, event := range []struct {
+		kind string
+		data tracker.CollaborationData
+	}{
+		{"scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: now}}},
+		{"workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}},
+	} {
+		if err := appendNativeHistory(ctx, tx, scope, item, event.kind, event.data, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE attempt_usage SET cost_estimate=cost_estimate+1 WHERE organization_id=? AND project_id=?", scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	statements = statements[:0]
+	f.service.database.refreshAnalyticsRollups(ctx, tx)
+	traced := slices.Clone(statements)
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	explained := 0
+	for _, statement := range traced {
+		head := strings.ToUpper(strings.TrimSpace(statement.query))
+		if strings.HasPrefix(head, "SAVEPOINT") || strings.HasPrefix(head, "RELEASE") || strings.HasPrefix(head, "ROLLBACK") {
+			continue
+		}
+		explained++
+		tables := sqlTableAliases(statement.query)
+		for _, detail := range explainQueryPlan(t, f.service.database.db, statement.query, statement.args) {
+			if violation := analyticsCommitPlanViolation(detail, tables, scanned); violation != "" {
+				t.Errorf("commit-path statement %s: %s\nstatement: %s", violation, detail, statement.query)
+			}
+		}
+	}
+	if explained == 0 {
+		t.Fatal("no commit-path statements were traced")
+	}
+}
+
+func analyticsCommitPlanViolation(detail string, tables map[string]string, scanned []string) string {
+	kind, rest, ok := strings.Cut(detail, " ")
+	if !ok || (kind != "SCAN" && kind != "SEARCH") {
+		return ""
+	}
+	name, _, _ := strings.Cut(rest, " ")
+	if !slices.Contains(scanned, tables[strings.ToLower(name)]) {
+		return ""
+	}
+	if kind == "SCAN" {
+		return "scans a hot table"
+	}
+	open, close := strings.LastIndex(rest, "("), strings.LastIndex(rest, ")")
+	if open < 0 || close < open {
+		return "searches without an index constraint"
+	}
+	for _, term := range strings.Split(rest[open+1:close], " AND ") {
+		column := strings.TrimSpace(strings.FieldsFunc(term, func(r rune) bool { return r == '=' || r == '<' || r == '>' })[0])
+		if column != "organization_id" && column != "project_id" {
+			return ""
+		}
+	}
+	return "reads a whole organization or project"
 }

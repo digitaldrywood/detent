@@ -283,15 +283,6 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err := requireUnreservedLabels(ctx, *request.Labels); err != nil {
 				return nil, err
 			}
-			if isTestPlan(*request.Labels) && !isTestPlan(issue.Labels) {
-				project, err := readNativeProject(ctx, tx, scope)
-				if err != nil {
-					return nil, err
-				}
-				if err := requireTestPlanLabelLane(project.States, issue.Labels, *request.Labels, issue.State); err != nil {
-					return nil, err
-				}
-			}
 			issue.Labels = *request.Labels
 			fields = append(fields, "labels")
 		}
@@ -490,7 +481,7 @@ func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScop
 		return nil, err
 	}
 	if request.State == "" && request.GitHubIssueURL == "" {
-		request.State = defaultNativeIssueStateFor(project.States, request.Labels)
+		request.State = defaultNativeIssueState(project.States)
 	}
 	return s.createNativeIssueCommand(ctx, scope, request)
 }
@@ -526,8 +517,6 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 			return nil, nativeInvalid("expected revision is required")
 		}
 		return s.changeNativeDependencyCommand(ctx, scope, request.Identifier, tracker.DependencyMutation{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), RelatedWorkItemID: tracker.NativeWorkItemID(request.Related), RelationshipType: request.RelationshipType, Operation: request.Operation})
-	case operatortool.UpdateTestItem:
-		return s.recordNativeTestItemCommand(ctx, scope, request.Identifier, tracker.RecordTestItem{Mutation: command, Item: request.Item, Text: request.ItemText, Result: request.Result, Note: request.Note, RelatedIssueNumber: request.RelatedIssue})
 	case operatortool.RestoreItem:
 		return s.setNativeArchiveCommand(ctx, scope, request.Identifier, archiveIssueRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision)}, false)
 	case operatortool.OrderItem, operatortool.SetQueuePriority:
