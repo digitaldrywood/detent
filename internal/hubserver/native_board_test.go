@@ -125,10 +125,29 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	if err != nil || unchanged.Gap || len(unchanged.Deltas) != 0 {
 		t.Fatalf("unchanged=%#v err=%v", unchanged, err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_sequences SET replay_floor=? WHERE project_id=?", initial.Sequence+1, scope.project); err != nil {
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	gap, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, initial.Sequence)
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE retained(n) AS (
+SELECT 1 UNION ALL SELECT n+1 FROM retained WHERE n<?)
+INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json)
+SELECT ?,?,NULL,NULL FROM retained`, nativeBoardReplayLimit, scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	var beforeReset int64
+	if err := tx.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&beforeReset); err != nil {
+		t.Fatal(err)
+	}
+	if err := resetNativeBoardPolicy(t.Context(), tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	f.create(t, "Card after policy reset")
+	gap, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, beforeReset)
 	if err != nil || !gap.Gap {
 		t.Fatalf("gap=%#v err=%v", gap, err)
 	}

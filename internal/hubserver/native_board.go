@@ -217,7 +217,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_deltas WHERE organization_id=? AND project_id=? AND sequence<=?", scope.organization, scope.project, floor.Int64); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=? WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=MAX(replay_floor,?) WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
 			return err
 		}
 	}
