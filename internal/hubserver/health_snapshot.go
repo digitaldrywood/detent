@@ -136,10 +136,10 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 }
 
 func readHealthCandidates(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]tracker.WorkItemID, error) {
-	query := claimCandidateQuery{NativeScope: &scope, AvailableAt: now}
+	query := claimCandidateQuery{NativeScope: &scope, AvailableAt: now, PageSize: healthReadLimit + 1}
 	var candidates []tracker.WorkItemID
 	for len(candidates) <= healthReadLimit {
-		query.Limit = min(100, healthReadLimit+1-len(candidates))
+		query.Limit = healthReadLimit + 1 - len(candidates)
 		page, err := nativeCandidateIDs(ctx, q, query, nil, nil, nil, nil, nil, nil, nil)
 		if err != nil {
 			return nil, err
