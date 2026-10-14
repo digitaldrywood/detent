@@ -140,8 +140,11 @@ func TestBackendReadinessProblem(t *testing.T) {
 		{"codex killed", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "darwin", "codex login status", "signal: killed", "", false},
 		{"claude killed", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude auth status --json", "signal: killed", "", false},
 		{"codex missing", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "codex: command not found", "npm install -g @openai/codex", false},
+		{"codex missing default shell", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "sh: 1: codex: not found", "npm install -g @openai/codex", false},
+		{"claude missing default shell", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude --version", "sh: 1: claude: not found", "npm install -g @anthropic-ai/claude-code", false},
 		{"sandbox", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "operation not permitted", "", false},
 		{"sandbox tooling missing", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "bwrap: command not found", "sudo apt-get install bubblewrap socat", false},
+		{"sandbox tooling missing default shell", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "sh: 1: bwrap: not found", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox socket tooling missing", workflowconfig.AgentBackendClaudeCode, isolation.Sandbox, "linux", "claude --print", "socat: no such file or directory", "sudo apt-get install bubblewrap socat", false},
 		{"host repair", workflowconfig.AgentBackendCodex, isolation.Sandbox, "darwin", "codex sandbox", "bwrap: command not found", "", false},
 	} {
