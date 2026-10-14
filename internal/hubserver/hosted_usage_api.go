@@ -45,6 +45,7 @@ func (s *Service) registerHostedUsageRoutes(e *echo.Echo) {
 	e.GET("/api/v2/organizations/:organization/diagnostics/requests", s.hostedRequestMetrics, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/diagnostics", s.hostedDiagnostics, s.usageSessionOnly, s.operatorAuthority)
 	e.GET("/api/v2/organizations/:organization/reports", s.hostedReports, s.usageSessionOnly, s.operatorAuthority)
+	e.GET("/api/v2/organizations/:organization/reports/options", s.hostedReportOptions, s.usageSessionOnly, s.operatorAuthority)
 }
 
 // usageSessionOnly refuses a bearer credential on the session-authenticated

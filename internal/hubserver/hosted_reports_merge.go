@@ -26,6 +26,7 @@ func mergeHostedReports(reports []hostedReportsReport, w operatortool.AnalyticsW
 	completions, previous, priors := make([]reportsCompletion, 0, len(reports)), make([]reportsCompletion, 0, len(reports)), make([]reportsPrior, 0, len(reports))
 	priorFailed := true
 	var failed int
+	firstMissing, priorFirstMissing, priorCostMissing := false, false, false
 	for _, r := range reports {
 		analytics = append(analytics, r.Analytics)
 		completions, previous, priors = append(completions, r.Completion), append(previous, r.Previous), append(priors, r.Prior)
@@ -38,6 +39,9 @@ func mergeHostedReports(reports []hostedReportsReport, w operatortool.AnalyticsW
 		out.PriorRecorded = out.PriorRecorded || r.PriorRecorded
 		out.firstTry.add(r.firstTry)
 		out.priorFirst.add(r.priorFirst)
+		firstMissing = firstMissing || r.firstTryMissing
+		priorFirstMissing = priorFirstMissing || r.priorFirstMissing
+		priorCostMissing = priorCostMissing || r.PriorRecorded && r.PriorCost == nil
 		if r.PriorCost != nil {
 			out.PriorCost = new(*r.PriorCost + valueOr(out.PriorCost))
 		}
@@ -53,6 +57,18 @@ func mergeHostedReports(reports []hostedReportsReport, w operatortool.AnalyticsW
 		out.PriorFailed = &failed
 	}
 	out.FirstTry, out.PriorFirst = out.firstTry.percent(), out.priorFirst.percent()
+	if firstMissing {
+		out.FirstTry, out.firstTryMissing = nil, true
+		if !slices.Contains(out.Unavailable, "landed_first_try") {
+			out.Unavailable = append(out.Unavailable, "landed_first_try")
+		}
+	}
+	if priorFirstMissing {
+		out.PriorFirst, out.priorFirstMissing = nil, true
+	}
+	if priorCostMissing {
+		out.PriorCost = nil
+	}
 	out.Analytics = mergeReportsAnalytics(analytics, w)
 	out.Completion, out.Previous = mergeReportsCompletion(completions), mergeReportsCompletion(previous)
 	out.Prior = mergeReportsPrior(priors)
@@ -353,7 +369,12 @@ func mergeReportClasses(reports []hostedReportsReport, classes func(hostedReport
 			merged.Count += class.Count
 			merged.Issues += class.Issues
 			merged.Cost += class.Cost
-			merged.WorkItems = append(merged.WorkItems, class.WorkItems...)
+			if merged.itemCounts == nil {
+				merged.itemCounts = map[string]int{}
+			}
+			for item, count := range class.itemCounts {
+				merged.itemCounts[item] += count
+			}
 			if class.FirstSeen != nil && (merged.FirstSeen == nil || class.FirstSeen.Before(*merged.FirstSeen)) {
 				merged.FirstSeen = class.FirstSeen
 			}
@@ -366,15 +387,18 @@ func mergeReportClasses(reports []hostedReportsReport, classes func(hostedReport
 		}
 	}
 	for i := range out {
-		out[i].WorkItems = out[i].WorkItems[:min(len(out[i].WorkItems), reportClassTopIssues)]
+		out[i].WorkItems = reportClassTopItems(out[i].itemCounts)
 	}
 	slices.SortStableFunc(out, func(a, b reportClassTotal) int { return cmp.Compare(b.Count, a.Count) })
 	return out
 }
 
+// mergeReportsCoverage adds each source's coverage across projects; a source
+// a project did not report, or reported unobserved, is unobserved overall.
 func mergeReportsCoverage(reports []hostedReportsReport) []diagnosticsCoverage {
 	type total struct {
 		name            string
+		projects        int
 		observed, total int
 		unobserved      bool
 		untotalled      bool
@@ -390,6 +414,7 @@ func mergeReportsCoverage(reports []hostedReportsReport) []diagnosticsCoverage {
 				totals = append(totals, total{name: c.Source})
 			}
 			t := &totals[i]
+			t.projects++
 			if c.Observed == nil {
 				t.unobserved = true
 			} else {
@@ -405,6 +430,7 @@ func mergeReportsCoverage(reports []hostedReportsReport) []diagnosticsCoverage {
 	out := make([]diagnosticsCoverage, 0, len(totals))
 	for _, t := range totals {
 		c := diagnosticsCoverage{Source: t.name}
+		t.unobserved = t.unobserved || t.projects < len(reports)
 		if !t.unobserved {
 			c.Observed = new(t.observed)
 		}

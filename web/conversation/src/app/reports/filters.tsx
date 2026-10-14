@@ -68,7 +68,7 @@ export function ReportFilterChip({
   const value = options.filter((option) => selected.includes(option.value));
   const summary = chipSummary(label, options, selected);
   return (
-    <span ref={anchor} className="inline-flex min-w-0 items-center gap-0.5">
+    <span ref={anchor} className="inline-flex min-w-0 items-center gap-0.5 pointer-coarse:gap-4">
       <Combobox
         multiple
         items={options}

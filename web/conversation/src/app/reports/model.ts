@@ -70,9 +70,10 @@ function readDay(value: unknown): string | null {
   return typeof value === "string" && DAY_PATTERN.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) ? value : null;
 }
 
+/** One filter's values from repeated query parameters; a value may hold a comma. */
 function readList(value: unknown): readonly string[] {
-  const raw = Array.isArray(value) ? value.join(",") : typeof value === "string" || typeof value === "number" ? String(value) : "";
-  return [...new Set(raw.split(",").map((item) => item.trim()).filter((item) => item.length > 0))].toSorted();
+  const values = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+  return [...new Set(values.map((item) => String(item).trim()).filter((item) => item.length > 0))].toSorted();
 }
 
 /** Whole UTC days from `from` through `to`, or null when the range is not one the Hub reads. */
@@ -108,9 +109,9 @@ export function parseReportsSearch(search: Readonly<Record<string, unknown>>): R
   };
 }
 
-/** The query string for a view: defaults are left out so a plain link stays plain. */
-export function reportsSearchParams(search: ReportsSearch): Record<string, string> {
-  const out: Record<string, string> = {};
+/** The query string for a view: defaults are left out so a plain link stays plain, and each filter value is its own parameter. */
+export function reportsSearchParams(search: ReportsSearch): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
   if (search.project !== null) out.project = search.project;
   if (search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null) {
     out.from = search.from;
@@ -118,7 +119,7 @@ export function reportsSearchParams(search: ReportsSearch): Record<string, strin
   } else if (search.range !== DEFAULT_RANGE && search.range !== CUSTOM_RANGE.value) out.range = search.range;
   for (const filter of REPORT_FILTERS) {
     const values = search.filters[filter.key];
-    if (values.length > 0) out[filter.param] = [...new Set(values)].toSorted().join(",");
+    if (values.length > 0) out[filter.param] = [...new Set(values)].toSorted();
   }
   if (!search.compare) out.compare = "off";
   if (search.clock !== "todo") out.clock = search.clock;

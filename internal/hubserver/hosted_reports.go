@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"golang.org/x/sync/errgroup"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -90,15 +93,41 @@ type hostedReportsReport struct {
 	PriorFirst    *float64               `json:"previous_first_try_percent"`
 	PriorFailed   *int                   `json:"previous_failed,omitempty"`
 	Unavailable   []string               `json:"unavailable"`
-	Facets        *reportsFacets         `json:"facets,omitempty"`
 	PriorRecorded bool                   `json:"prior_recorded"`
 	firstTry      reportsRatio
 	priorFirst    reportsRatio
+	// firstTryMissing and priorFirstMissing mark a rate that had landings
+	// to measure but could not be computed, as opposed to having none.
+	firstTryMissing   bool
+	priorFirstMissing bool
 }
 
 // reportsRatio is the count behind a percentage, so that the percentages of
 // several projects combine exactly.
 type reportsRatio struct{ part, total int }
+
+const (
+	reportsProjectWorkers  = 4
+	reportsAllProjectsTime = 2 * hubReadTimeout
+)
+
+// reportsReadableProjects is the projects a report may read: the
+// credential's granted projects that also pass the read authorization, all
+// of them for `all` or the one requested.
+func (s *Service) reportsReadableProjects(ctx context.Context, credential apiCredential, project string) ([]string, bool, error) {
+	granted, err := s.usageReadableProjects(ctx, credential)
+	if err != nil {
+		return nil, false, err
+	}
+	if project != reportsAllProjects {
+		return []string{project}, slices.Contains(granted, project), nil
+	}
+	readable := slices.DeleteFunc(granted, func(id string) bool {
+		_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: id})
+		return err != nil
+	})
+	return readable, len(readable) > 0, nil
+}
 
 func (s *Service) hostedReports(c echo.Context) error {
 	ctx := c.Request().Context()
@@ -106,17 +135,13 @@ func (s *Service) hostedReports(c echo.Context) error {
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
-	projects, err := s.usageReadableProjects(ctx, credential)
+	params := c.QueryParams()
+	project := params.Get("project")
+	selected, found, err := s.reportsReadableProjects(ctx, credential, project)
 	if err != nil {
 		return s.usageCredentialError(c, err)
 	}
-	params := c.QueryParams()
-	project := params.Get("project")
-	selected := []string{project}
-	if project == reportsAllProjects {
-		selected = projects
-	}
-	if len(selected) == 0 || project != reportsAllProjects && !slices.Contains(projects, project) {
+	if !found {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	w, err := reportsWindow(params, s.config.now())
@@ -131,51 +156,99 @@ func (s *Service) hostedReports(c echo.Context) error {
 	if compare != "" && compare != "prior" && compare != "off" {
 		return s.nativeAPIError(c, nativeInvalid("compare must be prior or off"))
 	}
-	reports := make([]hostedReportsReport, 0, len(selected))
-	for _, id := range selected {
-		report, readable, err := s.readProjectReport(ctx, credential, id, w, filter)
-		if err != nil {
-			s.config.Logger.Warn("read reports", "project", id, "error", err)
-			return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
-		}
-		if readable {
-			reports = append(reports, report)
-		}
-	}
-	if len(reports) == 0 || project != reportsAllProjects && len(reports) != 1 {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
-	}
-	report := reports[0]
+	var report hostedReportsReport
 	if project == reportsAllProjects {
-		report = mergeHostedReports(reports, w)
+		report, err = s.readOrganizationReport(ctx, credential, selected, w, filter)
+	} else {
+		var readable bool
+		report, readable, err = s.readProjectReport(ctx, credential, project, w, filter)
+		if err == nil && !readable {
+			err = errors.New("project report not readable")
+		}
 	}
-	facets, err := s.readReportsFacets(ctx, selected, w)
 	if err != nil {
-		s.config.Logger.Warn("read report facets", "error", err)
+		s.config.Logger.Warn("read reports", "project", project, "error", err)
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
-	report.Facets = &facets
 	if compare == "off" {
 		withoutPriorPeriod(&report)
 	}
 	return c.JSON(http.StatusOK, report)
 }
 
+// readOrganizationReport reads every project's report, a few at a time under
+// one deadline, and combines them into organization totals.
+func (s *Service) readOrganizationReport(ctx context.Context, credential apiCredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, reportsAllProjectsTime)
+	defer cancel()
+	reports := make([]hostedReportsReport, len(projects))
+	readable := make([]bool, len(projects))
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(reportsProjectWorkers)
+	for i, id := range projects {
+		group.Go(func() error {
+			report, ok, err := s.readProjectReport(groupCtx, credential, id, w, filter)
+			if err != nil {
+				return fmt.Errorf("read project %s: %w", id, err)
+			}
+			reports[i], readable[i] = report, ok
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return hostedReportsReport{}, err
+	}
+	read := make([]hostedReportsReport, 0, len(reports))
+	for i, report := range reports {
+		if readable[i] {
+			read = append(read, report)
+		}
+	}
+	if len(read) == 0 {
+		return hostedReportsReport{}, errors.New("no project report readable")
+	}
+	return mergeHostedReports(read, w), nil
+}
+
+// hostedReportOptions lists the values the filter chips offer, read only
+// from the projects the viewer's report can read. It is a separate read so
+// the report itself runs only its own statements.
+func (s *Service) hostedReportOptions(c echo.Context) error {
+	ctx := c.Request().Context()
+	credential, _, err := s.hostedCredential(ctx, c)
+	if err != nil {
+		return s.usageCredentialError(c, err)
+	}
+	params := c.QueryParams()
+	projects, found, err := s.reportsReadableProjects(ctx, credential, params.Get("project"))
+	if err != nil {
+		return s.usageCredentialError(c, err)
+	}
+	if !found {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	if params.Get("project") != reportsAllProjects {
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: projects[0]}); err != nil {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+	}
+	w, err := reportsWindow(params, s.config.now())
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	facets, err := s.readReportsFacets(ctx, projects, w)
+	if err != nil {
+		s.config.Logger.Warn("read report options", "error", err)
+		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Report filters are temporarily unavailable")
+	}
+	return c.JSON(http.StatusOK, facets)
+}
+
 // readProjectReport reads one project's report, narrowed by the filter. A
 // project the credential cannot read returns false.
 func (s *Service) readProjectReport(ctx context.Context, credential apiCredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
 	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
-	var issues []string
-	if filter.issues() {
-		readCtx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-		var err error
-		issues, err = readReportsIssueSet(readCtx, s.database.reader, scope, filter, w.From.Add(-w.To.Sub(w.From)), w.To)
-		cancel()
-		if err != nil {
-			return hostedReportsReport{}, false, err
-		}
-	}
-	ctx, err := withReportsScope(ctx, issues, filter)
+	ctx, err := withReportsScope(ctx, scope, filter, w.From.Add(-w.To.Sub(w.From)), w.To)
 	if err != nil {
 		return hostedReportsReport{}, false, err
 	}
@@ -193,22 +266,8 @@ func (s *Service) readProjectReport(ctx context.Context, credential apiCredentia
 	if err := s.reportsPriorQuality(ctx, scope, analytics.Window, &report.Prior); err != nil {
 		return report, false, fmt.Errorf("read prior quality: %w", err)
 	}
-	if report.PriorRecorded, err = s.reportsPriorRecorded(ctx, scope, w); err != nil {
-		return report, false, err
-	}
+	report.PriorRecorded = report.PriorCost != nil || report.PriorFirst != nil || report.Previous.Done+report.Previous.Cancelled > 0 || report.PriorFailed != nil && *report.PriorFailed > 0
 	return report, true, nil
-}
-
-// reportsPriorRecorded reports whether the project existed during the window
-// before w, so a comparison against it means something.
-func (s *Service) reportsPriorRecorded(ctx context.Context, scope nativeScope, w operatortool.AnalyticsWindow) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	var recorded bool
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issues WHERE organization_id=? AND project_id=? AND julianday(created_at)<julianday(?))`, scope.organization, scope.project, formatHubTime(w.From)).Scan(&recorded); err != nil {
-		return false, fmt.Errorf("read prior record: %w", err)
-	}
-	return recorded, nil
 }
 
 func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyticsReport) (hostedReportsReport, error) {
@@ -347,6 +406,7 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		out.FirstTry = new(100 * float64(first) / float64(total))
 	} else {
 		out.Unavailable = append(out.Unavailable, "landed_first_try")
+		out.firstTryMissing = len(firstTryPopulation.Landings.Items) > 0
 	}
 	out.Cancelled = out.Completion.Cancelled
 	if err := s.readReportsPrior(ctx, q, scope, operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From}, &out); err != nil {
@@ -663,6 +723,8 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	if available {
 		out.priorFirst = reportsRatio{first, total}
 		out.PriorFirst = new(100 * float64(first) / float64(total))
+	} else {
+		out.priorFirstMissing = len(landings) > 0
 	}
 	return nil
 }

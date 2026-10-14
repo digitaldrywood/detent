@@ -18,7 +18,7 @@ import {
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { ReportsReport } from "../../contracts/reports.ts";
+import type { ReportsFacets, ReportsReport } from "../../contracts/reports.ts";
 import type { BootstrapProject } from "../../contracts/index.ts";
 import { useAccountApi } from "../account/context.ts";
 import { useSidebarData } from "../adapters/sidebarData.tsx";
@@ -47,7 +47,7 @@ import {
 } from "./model.ts";
 import { OverviewTab } from "./OverviewTab.tsx";
 import { QualityTab } from "./QualityTab.tsx";
-import { useReports } from "./reportsQuery.ts";
+import { useReportOptions, useReports } from "./reportsQuery.ts";
 
 const ISSUE_FILTERS = ["labels", "priorities", "types", "filedBy", "runners"] as const;
 /** The chips each tab offers; a chip set on another tab stays visible so it can be cleared. */
@@ -85,16 +85,9 @@ export function ReportsRoute(): React.ReactElement {
   const search = parseReportsSearch(rawSearch);
   const project = sidebar?.projects.find((p) => p.id === sidebar.activeProjectId);
   const projectId = search.project === ALL_PROJECTS && (sidebar?.projects.length ?? 0) > 0 ? ALL_PROJECTS : (project?.id ?? null);
-  const reports = useReports(
-    api,
-    projectId === null
-      ? null
-      : {
-          projectId,
-          range: search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? { from: search.from, to: search.to } : search.range === CUSTOM_RANGE.value ? "7d" : search.range,
-          filters: reportsQueryFilters(search.filters),
-        },
-  );
+  const range = search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? { from: search.from, to: search.to } : search.range === CUSTOM_RANGE.value ? "7d" : search.range;
+  const reports = useReports(api, projectId === null ? null : { projectId, range, filters: reportsQueryFilters(search.filters) });
+  const options = useReportOptions(api, projectId, range);
   const go = (nextTab: ReportTab, nextSearch: ReportsSearch) => {
     void navigate({
       to: nextTab === "overview" ? "/reports" : "/reports/$tab",
@@ -105,6 +98,7 @@ export function ReportsRoute(): React.ReactElement {
   return (
     <ReportsView
       report={withPriorPeriod(reports.report)}
+      options={options}
       pending={projectId !== null && reports.pending}
       error={reports.error}
       projects={sidebar?.projects ?? []}
@@ -144,6 +138,7 @@ export function windowLabel(report: ReportsReport): string {
 
 export function ReportsView({
   report,
+  options,
   pending,
   error,
   projects,
@@ -155,6 +150,7 @@ export function ReportsView({
   onRefresh,
 }: {
   readonly report: ReportsReport | null;
+  readonly options?: ReportsFacets | undefined;
   readonly pending: boolean;
   readonly error: string | null;
   readonly projects: readonly BootstrapProject[];
@@ -180,7 +176,7 @@ export function ReportsView({
     <ReportFilterChip
       key={filter.key}
       label={filter.label}
-      options={filterOptions(filter.key, report?.facets, search.filters[filter.key])}
+      options={filterOptions(filter.key, options, search.filters[filter.key])}
       selected={search.filters[filter.key]}
       onChange={(values) => setSearch({ filters: { ...search.filters, [filter.key]: values } })}
     />
@@ -290,7 +286,7 @@ export function ReportsView({
               {setCount > 0 ? `Filters · ${setCount}` : "Filters"}
             </PopoverTrigger>
             <PopoverPopup align="start" width="sm">
-              <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2">
+              <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2 pointer-coarse:gap-4">
                 {chips}
               </div>
               {anyFilterSet(search.filters) ? (
@@ -314,7 +310,7 @@ export function ReportsView({
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="expanded" data-testid="reports-page" className="pt-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <div role="group" aria-label="Filters" className="hidden flex-wrap items-center gap-2 sm:flex">
+              <div role="group" aria-label="Filters" className="hidden flex-wrap items-center gap-2 pointer-coarse:gap-4 sm:flex">
                 {chips}
               </div>
               <span className="flex-1" />

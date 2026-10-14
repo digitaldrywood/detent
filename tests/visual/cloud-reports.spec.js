@@ -1,6 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 const fixture = require("../../web/conversation/src/contracts/fixtures/reports.json");
+const optionsFixture = require("../../web/conversation/src/contracts/fixtures/reportOptions.json");
 
 let hub;
 test.beforeAll(async () => {
@@ -118,6 +119,7 @@ test("Reports keeps the tab and range in the URL and restores them from it", asy
 
 async function routeReportRequests(page, edit = () => {}) {
   const requests = [];
+  await page.route("**/api/v2/organizations/*/reports/options?*", (route) => route.fulfill({ json: optionsFixture }));
   await page.route("**/api/v2/organizations/*/reports?*", (route) => {
     const params = new URL(route.request().url()).searchParams;
     requests.push(params);
@@ -172,7 +174,7 @@ for (const theme of ["light", "dark"]) {
     await page.getByRole("option", { name: "High", exact: true }).click();
     await page.getByRole("option", { name: "Urgent", exact: true }).click();
     await page.keyboard.press("Escape");
-    await expect(page).toHaveURL(/\/reports\?labels=cloud&priorities=High%2CUrgent$/);
+    await expect(page).toHaveURL(/\/reports\?labels=cloud&priorities=High&priorities=Urgent$/);
     await expect.poll(() => requests.at(-1)?.getAll("priorities")).toEqual(["1", "0"]);
     await expect(filters.getByRole("combobox", { name: "Priority: 2 selected, filter" })).toBeVisible();
 
@@ -186,7 +188,7 @@ for (const theme of ["light", "dark"]) {
     await expect(picker.getByText(/· 5 days, UTC$/)).toBeVisible();
     await test.info().attach(`cloud-reports-custom-range-${theme}.png`, { body: await page.screenshot({ animations: "disabled", caret: "hide" }), contentType: "image/png" });
     await picker.getByRole("button", { name: "Apply", exact: true }).click();
-    await expect(page).toHaveURL(/\/reports\?from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}&labels=cloud&priorities=High%2CUrgent$/);
+    await expect(page).toHaveURL(/\/reports\?from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}&labels=cloud&priorities=High&priorities=Urgent$/);
     const custom = requests.at(-1);
     expect(custom.get("range")).toBeNull();
     expect(custom.get("from")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -202,7 +204,7 @@ for (const theme of ["light", "dark"]) {
     await expect.poll(() => [requests.at(-1)?.get("from"), requests.at(-1)?.getAll("labels")]).toEqual([custom.get("from"), ["cloud"]]);
 
     await filters.getByRole("button", { name: "Clear Label filter" }).click();
-    await expect(page).toHaveURL(/\/reports\?from=[^&]+&to=[^&]+&priorities=High%2CUrgent$/);
+    await expect(page).toHaveURL(/\/reports\?from=[^&]+&to=[^&]+&priorities=High&priorities=Urgent$/);
 
     await page.getByRole("combobox", { name: "Project", exact: true }).click();
     await page.getByRole("option", { name: "All projects", exact: true }).click();

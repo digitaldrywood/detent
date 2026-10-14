@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -85,7 +86,8 @@ func parseReportsFilter(params url.Values) (reportsFilter, error) {
 var reportsRangeHours = map[string]int{"24h": 24, "48h": 48, "7d": 168, "30d": 720, "90d": 2160}
 
 // reportsWindow resolves a preset range, or a custom from/to of whole UTC
-// days, to a window ending at the last complete hour.
+// days, to a window ending at the last complete hour; a custom range of only
+// today, read in its first hour, ends now.
 func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWindow, error) {
 	to := now.UTC().Truncate(time.Hour)
 	var from time.Time
@@ -106,6 +108,9 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 			return operatortool.AnalyticsWindow{}, err
 		}
 		from, to = start, minTime(end, to)
+		if !from.Before(to) && end.After(to) {
+			to = now.UTC()
+		}
 		if !from.Before(to) || to.Sub(from) > reportsMaxCustomSpan {
 			return operatortool.AnalyticsWindow{}, nativeInvalid("A custom range runs forward from a past day and spans at most 90 days")
 		}
@@ -139,26 +144,28 @@ type reportsScopeKey struct{}
 // window reads add to their statements. A read without a scope keeps its
 // statement unchanged, so an unfiltered report reads exactly as before.
 type reportsScope struct {
-	issues   string
-	attempts reportsFilter
+	issues    string
+	issueArgs []any
+	attempts  reportsFilter
 }
 
-func withReportsScope(ctx context.Context, issues []string, f reportsFilter) (context.Context, error) {
-	scope := reportsScope{attempts: reportsFilter{Runners: f.Runners, Models: f.Models, Stages: f.Stages}}
+// withReportsScope narrows the window reads under ctx to the filter. The
+// issue dimensions become one subquery over the project's issues that were
+// open, closed or worked during [from, to), joined into each read, so no
+// issue list leaves the database.
+func withReportsScope(ctx context.Context, scope nativeScope, f reportsFilter, from, to time.Time) (context.Context, error) {
+	out := reportsScope{attempts: reportsFilter{Runners: f.Runners, Models: f.Models, Stages: f.Stages}}
 	if f.issues() {
-		if issues == nil {
-			issues = []string{}
-		}
-		encoded, err := marshalNative(issues)
+		statement, args, err := reportsIssueSubquery(scope, f, from, to)
 		if err != nil {
-			return ctx, fmt.Errorf("encode report issues: %w", err)
+			return ctx, err
 		}
-		scope.issues = encoded
+		out.issues, out.issueArgs = statement, args
 	}
-	if scope.issues == "" && !f.attempts() {
+	if out.issues == "" && !f.attempts() {
 		return ctx, nil
 	}
-	return context.WithValue(ctx, reportsScopeKey{}, scope), nil
+	return context.WithValue(ctx, reportsScopeKey{}, out), nil
 }
 
 func reportsScopeFrom(ctx context.Context) (reportsScope, bool) {
@@ -173,7 +180,7 @@ func reportsIssueClause(ctx context.Context, column string) (string, []any) {
 	if !ok || scope.issues == "" {
 		return "", nil
 	}
-	return " AND " + column + " IN (SELECT value FROM json_each(?))", []any{scope.issues}
+	return " AND " + column + " IN (" + scope.issues + ")", slices.Clone(scope.issueArgs)
 }
 
 // reportsAttemptClause narrows a read of native_attempts, under alias, to the
@@ -214,59 +221,44 @@ func reportsScopedClause(ctx context.Context, alias string) (string, []any, erro
 	return issue + attempt, append(issueArgs, attemptArgs...), err
 }
 
-// readReportsIssueSet resolves the issue dimensions of a filter to the
-// project's matching issues. Runners select the issues with an attempt on
-// one of them during [from, to).
-func readReportsIssueSet(ctx context.Context, q nativeQueryer, scope nativeScope, f reportsFilter, from, to time.Time) ([]string, error) {
+// reportsIssueSubquery selects the project's issues that match the issue
+// dimensions of a filter and were open, closed or worked during [from, to).
+// Runners select the issues with an attempt on one of them in that window.
+// It names main.issues because the rollup reader rewrites a bare issues
+// table to its narrow projection.
+func reportsIssueSubquery(scope nativeScope, f reportsFilter, from, to time.Time) (string, []any, error) {
 	var statement strings.Builder
-	statement.WriteString(`SELECT i.native_id FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id IS NOT NULL`)
-	args := []any{scope.organization, scope.project}
+	statement.WriteString(`SELECT ri.native_id FROM main.issues ri LEFT JOIN workflow_states rws ON rws.id=ri.workflow_state_id
+ WHERE ri.organization_id=? AND ri.project_id=? AND ri.native_id IS NOT NULL AND julianday(ri.created_at)<julianday(?)
+ AND (coalesce(rws.terminal,0)=0 OR julianday(ri.updated_at)>=julianday(?) OR EXISTS (SELECT 1 FROM native_attempts rwa WHERE rwa.organization_id=ri.organization_id AND rwa.project_id=ri.project_id AND rwa.work_item_id=ri.native_id AND julianday(rwa.updated_at)>=julianday(?)))`)
+	args := []any{scope.organization, scope.project, formatHubTime(to), formatHubTime(from), formatHubTime(from)}
 	for _, filter := range []struct {
 		values []string
 		clause string
+		window bool
 	}{
-		{f.Labels, "EXISTS (SELECT 1 FROM json_each(i.labels_json) l WHERE l.value IN (SELECT value FROM json_each(?)))"},
-		{f.Types, "i.issue_type IN (SELECT value FROM json_each(?))"},
-		{f.FiledBy, "json_extract(i.actor_json,'$.principal_id') IN (SELECT value FROM json_each(?))"},
-		{f.Priorities, "EXISTS (SELECT 1 FROM queue_entries q WHERE q.issue_id=i.id AND CAST(q.priority_override AS TEXT) IN (SELECT value FROM json_each(?)))"},
+		{f.Labels, "EXISTS (SELECT 1 FROM json_each(ri.labels_json) rl WHERE rl.value IN (SELECT value FROM json_each(?)))", false},
+		{f.Types, "ri.issue_type IN (SELECT value FROM json_each(?))", false},
+		{f.FiledBy, "json_extract(ri.actor_json,'$.principal_id') IN (SELECT value FROM json_each(?))", false},
+		{f.Priorities, "EXISTS (SELECT 1 FROM queue_entries rq WHERE rq.issue_id=ri.id AND CAST(rq.priority_override AS TEXT) IN (SELECT value FROM json_each(?)))", false},
+		{f.Runners, `EXISTS (SELECT 1 FROM native_attempts ra WHERE ra.organization_id=ri.organization_id AND ra.project_id=ri.project_id AND ra.work_item_id=ri.native_id
+ AND julianday(ra.started_at)<julianday(?) AND julianday(ra.updated_at)>=julianday(?)
+ AND coalesce((SELECT rlr.runner_id FROM lease_runners rlr WHERE rlr.lease_id=ra.lease_id),json_extract(ra.data_json,'$.runner_id'),'') IN (SELECT value FROM json_each(?)))`, true},
 	} {
 		if len(filter.values) == 0 {
 			continue
 		}
 		encoded, err := marshalNative(filter.values)
 		if err != nil {
-			return nil, fmt.Errorf("encode report issue filter: %w", err)
+			return "", nil, fmt.Errorf("encode report issue filter: %w", err)
 		}
 		statement.WriteString(" AND " + filter.clause)
+		if filter.window {
+			args = append(args, formatHubTime(to), formatHubTime(from))
+		}
 		args = append(args, encoded)
 	}
-	if len(f.Runners) > 0 {
-		encoded, err := marshalNative(f.Runners)
-		if err != nil {
-			return nil, fmt.Errorf("encode report runner filter: %w", err)
-		}
-		statement.WriteString(` AND EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id
- AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?)
- AND coalesce((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=a.lease_id),json_extract(a.data_json,'$.runner_id'),'') IN (SELECT value FROM json_each(?)))`)
-		args = append(args, formatHubTime(to), formatHubTime(from), encoded)
-	}
-	rows, err := q.QueryContext(ctx, statement.String(), args...)
-	if err != nil {
-		return nil, fmt.Errorf("read report issues: %w", err)
-	}
-	defer rows.Close()
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("read report issues: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("read report issues: %w", err)
-	}
-	return ids, nil
+	return statement.String(), args, nil
 }
 
 type reportsFacet struct {
@@ -274,9 +266,9 @@ type reportsFacet struct {
 	Name string `json:"name"`
 }
 
-// reportsFacets are the values the filter chips offer: labels and filers of
-// the readable projects' issues, the organization's runners, and the models
-// and stages of the window's attempts.
+// reportsFacets are the values the filter chips offer, from the projects the
+// report reads: their issues' labels and filers, and the runners, models and
+// stages of their attempts in the window.
 type reportsFacets struct {
 	Labels  []string       `json:"labels"`
 	FiledBy []reportsFacet `json:"filed_by"`
@@ -318,18 +310,25 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 		func(values ...string) { out.FiledBy = append(out.FiledBy, reportsFacet{values[0], values[1]}) }, organization, organization, encoded, reportsFacetLimit); err != nil {
 		return out, fmt.Errorf("read report filer facets: %w", err)
 	}
-	if err := read(`SELECT r.id,coalesce(r.display_name,'') FROM runner_identities r WHERE r.organization_id=? ORDER BY 2,1 LIMIT ?`,
-		func(values ...string) { out.Runners = append(out.Runners, reportsFacet{values[0], values[1]}) }, organization, reportsFacetLimit); err != nil {
-		return out, fmt.Errorf("read report runner facets: %w", err)
-	}
-	models, stages := map[string]bool{}, map[string]bool{}
+	models, stages, runners := map[string]bool{}, map[string]bool{}, map[string]reportsFacet{}
 	for _, project := range projects {
 		if err := read(`SELECT DISTINCT coalesce(nullif(trim(json_extract(a.data_json,'$.runtime.identity.resolved_model.value')),''),nullif(trim(json_extract(a.data_json,'$.runtime.identity.requested_model.value')),''),'`+reportsUnavailableName+`'),coalesce(nullif(trim(json_extract(a.data_json,'$.runtime.identity.role')),''),'`+reportsUnavailableName+`')
 FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
 			func(values ...string) { models[values[0]], stages[values[1]] = true, true }, organization, project, formatHubTime(w.From), formatHubTime(w.To), reportsFacetLimit); err != nil {
 			return out, fmt.Errorf("read report attempt facets: %w", err)
 		}
+		if err := read(`SELECT DISTINCT r.id,coalesce(r.display_name,'') FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id
+WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
+			func(values ...string) { runners[values[0]] = reportsFacet{values[0], values[1]} }, organization, project, formatHubTime(w.From), formatHubTime(w.To), reportsFacetLimit); err != nil {
+			return out, fmt.Errorf("read report runner facets: %w", err)
+		}
 	}
+	for _, runner := range runners {
+		out.Runners = append(out.Runners, runner)
+	}
+	slices.SortFunc(out.Runners, func(a, b reportsFacet) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.ID, b.ID))
+	})
 	for model := range models {
 		out.Models = append(out.Models, model)
 	}

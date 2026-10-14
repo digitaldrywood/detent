@@ -88,7 +88,8 @@ const SeriesBucket = Schema.Struct({
   rework_classes: Schema.Record(Schema.String, Schema.Number),
 });
 const Facet = Schema.Struct({ id: Schema.String, name: Schema.String });
-const Facets = Schema.Struct({
+/** The values the filter chips offer, read apart from the report. */
+export const ReportsFacets = Schema.Struct({
   labels: Schema.Array(Schema.String),
   filed_by: Schema.Array(Facet),
   runners: Schema.Array(Facet),
@@ -96,7 +97,6 @@ const Facets = Schema.Struct({
   stages: Schema.Array(Schema.String),
 });
 export const ReportsReport = Schema.Struct({
-  facets: Schema.optional(Facets),
   prior_recorded: Schema.optional(Schema.Boolean),
   rework_classes: Schema.Array(ClassTotal),
   failure_classes: Schema.Array(ClassTotal),
@@ -229,7 +229,7 @@ export const ReportsReport = Schema.Struct({
 });
 export type ReportsReport = typeof ReportsReport.Type;
 export type ReportsRange = "24h" | "48h" | "7d" | "30d" | "90d";
-export type ReportsFacets = typeof Facets.Type;
+export type ReportsFacets = typeof ReportsFacets.Type;
 /** A custom range: its first and last UTC days, YYYY-MM-DD. */
 export interface ReportsCustomRange {
   readonly from: string;

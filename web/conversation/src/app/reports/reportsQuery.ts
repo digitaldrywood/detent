@@ -1,6 +1,6 @@
 import type { AccountApi } from "../account/api.ts";
 import { prefetchQuery, scopeOf, useQuery } from "../lib/queryCache.ts";
-import type { ReportsCustomRange, ReportsFilters, ReportsRange, ReportsReport } from "../../contracts/reports.ts";
+import type { ReportsCustomRange, ReportsFacets, ReportsFilters, ReportsRange, ReportsReport } from "../../contracts/reports.ts";
 
 export const REPORTS_STALE_MS = 60_000;
 export const DEFAULT_REPORTS_RANGE: ReportsRange = "7d";
@@ -52,4 +52,19 @@ export function useReports(api: AccountApi, view: ReportsView | null): ReportsRe
     error: query.error !== null && query.data === undefined ? "Reports are temporarily unavailable." : null,
     refresh: query.refresh,
   };
+}
+
+/**
+ * The filter chips' choices for a project or `all` over a range, read apart
+ * from the report: a failed read leaves the chips with only their fixed and
+ * selected values and never touches the report.
+ */
+export function useReportOptions(api: AccountApi, projectId: string | null, range: ReportsRange | ReportsCustomRange): ReportsFacets | undefined {
+  const rangeKey = typeof range === "string" ? range : `${range.from}..${range.to}`;
+  const query = useQuery(
+    projectId === null ? null : (["report-options", scopeOf(api), projectId, rangeKey] as const),
+    () => api.reportOptions(projectId!, range),
+    { staleTime: REPORTS_STALE_MS, keepPreviousIn: JSON.stringify([scopeOf(api), projectId]) },
+  );
+  return query.data ?? undefined;
 }

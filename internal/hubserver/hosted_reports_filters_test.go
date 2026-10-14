@@ -46,6 +46,9 @@ func TestReportsFilterDimensions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET created_at=? WHERE native_id=(SELECT work_item_id FROM native_attempts WHERE id='attempt_browser_usage_1_0')", formatHubTime(to.AddDate(0, 0, -20))); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET work_item_id=?,started_at=?,updated_at=? WHERE id='attempt_browser_usage_0_0'", ids["runner bug"], formatHubTime(to.Add(-5*time.Hour)), formatHubTime(to.Add(-4*time.Hour))); err != nil {
 		t.Fatal(err)
 	}
@@ -173,9 +176,61 @@ func TestReportsFilterDimensions(t *testing.T) {
 			t.Fatalf("prior period kept: %+v", report.Previous)
 		}
 	})
-	if facets := unfiltered.Facets; facets == nil || !slices.Contains(facets.Labels, "rpt-cloud") || !slices.ContainsFunc(facets.Runners, func(r reportsFacet) bool { return r.ID == "runner_browser_preview" }) || !slices.ContainsFunc(facets.FiledBy, func(r reportsFacet) bool { return r.ID == "principal_rpt_two" }) {
-		t.Fatalf("facets=%+v", unfiltered.Facets)
-	}
+	t.Run("options read only the readable projects", func(t *testing.T) {
+		secret := nativeScope{organization: scope.organization, project: "prj_rpt_secret"}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'secret',profile,states_json,created_at FROM projects WHERE id=?`, secret.project, f.project); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id=?`, secret.project, f.project); err != nil {
+			t.Fatal(err)
+		}
+		issue, err := createNativeIssueTx(t.Context(), tx, secret, tracker.CreateIssue{Title: "secret", Body: nativeContractTestBody, State: "Todo", Labels: []string{"rpt-secret"}}, to.Add(-3*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []struct {
+			query string
+			args  []any
+		}{
+			{"UPDATE issues SET actor_json=json_set(actor_json,'$.principal_id','principal_rpt_secret') WHERE native_id=?", []any{issue.WorkItemID}},
+			{`INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
+ SELECT 'lease_rpt_secret',(SELECT id FROM issues WHERE native_id=?),machine_id,'session_rpt_secret',expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_1'`, []any{issue.WorkItemID}},
+			{"INSERT INTO lease_runners (lease_id, runner_id) VALUES ('lease_rpt_secret','runner_browser_preview_shared')", nil},
+			{"DELETE FROM hosted_project_grants WHERE project_id=?", []any{secret.project}},
+			{`INSERT INTO native_attempts (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, started_at, updated_at)
+ SELECT 'attempt_rpt_secret',organization_id,?,?,'lease_rpt_secret',(SELECT max(fencing_token)+1 FROM native_attempts),'run_rpt_secret',1,status,data_json,?,? FROM native_attempts WHERE id='attempt_browser_usage_0_1'`, []any{secret.project, issue.WorkItemID, formatHubTime(to.Add(-2 * time.Hour)), formatHubTime(to.Add(-time.Hour))}},
+		} {
+			if _, err := tx.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
+				t.Fatalf("seed the unreadable project: %v", err)
+			}
+		}
+		if err := f.service.database.commit(t.Context(), tx); err != nil {
+			t.Fatal(err)
+		}
+		for _, project := range []string{f.project, reportsAllProjects} {
+			var facets reportsFacets
+			usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+project+"&range=24h", http.StatusOK), &facets)
+			runner := func(id string) bool { return slices.ContainsFunc(facets.Runners, func(r reportsFacet) bool { return r.ID == id }) }
+			filer := func(id string) bool { return slices.ContainsFunc(facets.FiledBy, func(r reportsFacet) bool { return r.ID == id }) }
+			if !slices.Contains(facets.Labels, "rpt-cloud") || !filer("principal_rpt_two") || !runner("runner_browser_preview") {
+				t.Fatalf("%s options miss the readable project: %+v", project, facets)
+			}
+			if slices.Contains(facets.Labels, "rpt-secret") || filer("principal_rpt_secret") || runner("runner_browser_preview_shared") {
+				t.Fatalf("%s options leak an unreadable project or an idle runner: %+v", project, facets)
+			}
+		}
+		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
+		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
+		organization := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}})
+		if organization.Completion.Done != unfiltered.Completion.Done {
+			t.Fatalf("all projects counted an unreadable project: %d, want %d", organization.Completion.Done, unfiltered.Completion.Done)
+		}
+	})
 }
 
 func TestReportsRequestValidation(t *testing.T) {
@@ -209,6 +264,10 @@ func TestReportsRequestValidation(t *testing.T) {
 				t.Fatalf("window=%+v want %s..%s", w, tt.from, tt.to)
 			}
 		})
+	}
+	firstHour := time.Date(2026, 10, 13, 0, 30, 0, 0, time.UTC)
+	if w, err := reportsWindow(url.Values{"from": {"2026-10-13"}, "to": {"2026-10-13"}}, firstHour); err != nil || !w.From.Equal(firstHour.Truncate(24*time.Hour)) || !w.To.Equal(firstHour) {
+		t.Fatalf("today in its first hour: window=%+v err=%v, want midnight to now", w, err)
 	}
 	for _, tt := range []struct {
 		name    string
@@ -273,6 +332,22 @@ func TestMergeHostedReports(t *testing.T) {
 			report(2, []float64{10, 20}, reportsRatio{1, 2}, failed(1), cost(2), []float64{1, 3}),
 			report(3, []float64{30, 40, 50}, reportsRatio{3, 3}, failed(2), nil, []float64{5}),
 		}, 5, 30, new(80.0), failed(3), cost(2), []string{"activity_complete_window", "recorded_usage"}},
+		{"a recorded prior period without cost leaves the organization's prior cost unavailable", []hostedReportsReport{
+			report(1, []float64{10}, reportsRatio{1, 1}, failed(0), cost(4), nil),
+			func() hostedReportsReport {
+				r := report(1, []float64{20}, reportsRatio{1, 1}, failed(0), nil, nil)
+				r.PriorRecorded = true
+				return r
+			}(),
+		}, 2, 15, new(100.0), failed(0), nil, []string{"activity_complete_window", "recorded_usage"}},
+		{"a first-try rate a project could not compute leaves the organization's unavailable", []hostedReportsReport{
+			report(1, []float64{10}, reportsRatio{1, 1}, failed(0), nil, nil),
+			func() hostedReportsReport {
+				r := report(1, []float64{20}, reportsRatio{}, failed(0), nil, nil)
+				r.firstTryMissing = true
+				return r
+			}(),
+		}, 2, 15, nil, failed(0), nil, []string{"activity_complete_window", "recorded_usage"}},
 		{"a project without a prior count has no prior total", []hostedReportsReport{
 			report(1, []float64{10}, reportsRatio{}, failed(1), nil, nil),
 			report(1, []float64{20}, reportsRatio{}, nil, nil, nil),
@@ -296,5 +371,27 @@ func TestMergeHostedReports(t *testing.T) {
 				t.Fatalf("analytics=%+v spend=%+v", got.Analytics.Unavailable, got.Spend)
 			}
 		})
+	}
+}
+
+func TestMergeReportClassesAndCoverage(t *testing.T) {
+	observed := func(n int) *int { return &n }
+	reports := []hostedReportsReport{
+		{
+			Failures: []reportClassTotal{{Class: "Hub request timed out", Count: 3, itemCounts: map[string]int{"wi_a": 1, "wi_b": 2}}},
+			Coverage: []diagnosticsCoverage{{Source: "Usage joins", Observed: observed(2), Total: observed(4)}, {Source: "Skip reasons", Observed: observed(1), Total: observed(1)}},
+		},
+		{
+			Failures: []reportClassTotal{{Class: "Hub request timed out", Count: 5, itemCounts: map[string]int{"wi_c": 4, "wi_a": 1}}},
+			Coverage: []diagnosticsCoverage{{Source: "Usage joins", Observed: observed(3), Total: nil}},
+		},
+	}
+	classes := mergeReportClasses(reports, func(r hostedReportsReport) []reportClassTotal { return r.Failures })
+	if len(classes) != 1 || classes[0].Count != 8 || !slices.Equal(classes[0].WorkItems, []string{"wi_c", "wi_a", "wi_b"}) {
+		t.Fatalf("classes=%+v, want one class of 8 with its issues ordered by combined count", classes)
+	}
+	coverage := mergeReportsCoverage(reports)
+	if len(coverage) != 2 || coverage[0].Observed == nil || *coverage[0].Observed != 5 || coverage[0].Total != nil || coverage[1].Observed != nil {
+		t.Fatalf("coverage=%+v, want usage joins observed 5 with no total and skip reasons unobserved where a project did not report it", coverage)
 	}
 }

@@ -45,7 +45,7 @@ import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
 import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
 import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
-import { ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
+import { ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
 /** A decoded failure from the hosted API, or the network under it. */
@@ -545,6 +545,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters) =>
       send(ReportsReport, "GET", `${base}/reports?${reportsQuery(project, range, filters)}`),
+    reportOptions: (project: string, range: ReportsRange | ReportsCustomRange) =>
+      send(ReportsFacets, "GET", `${base}/reports/options?${reportsQuery(project, range)}`),
     healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
       const reads = await Promise.all(projects.map(async (project) => {
         const items: HealthFindingsRead["items"][number][] = [];
