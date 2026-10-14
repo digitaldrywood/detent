@@ -169,11 +169,6 @@ export const LANE_COLORS: Readonly<Record<string, string>> = {
 export const laneColor = (lane: string) => LANE_COLORS[lane] ?? LANE_COLORS.Held!;
 export const HELD_LANES = new Set(["Blocked", "Human Review"]);
 
-export const KIND_LABEL: Readonly<Record<string, string>> = {
-  infrastructure: "Infrastructure",
-  issue: "Issue",
-};
-
 /** Infrastructure, issue or unknown, from a failure signature class or a class total's kind. */
 export function failureKind(value: string): "infrastructure" | "issue" | "unknown" {
   if (value === "infrastructure") return "infrastructure";
