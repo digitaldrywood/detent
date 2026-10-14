@@ -15,24 +15,36 @@ type ReviewCommandRunner interface {
 }
 
 func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issue Issue, validation string) gate.CheckEnvironment {
+	return l.ReviewCommandEvidence(ctx, info, issue, validation).Environment
+}
+
+func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue Issue, validation string) *gate.CommandEvidence {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
+	command := commandshell.Command(ctx, "", l.hooks.Shell)
+	command.Dir = normalized.Path
+	command.Env = hookEnv(normalized, issue, l.hooks.StripGitHubTokens)
+	return reviewCommandEvidence(ctx, command, validation)
+}
+
+func directGoValidation(validation string) bool {
 	args := strings.Fields(validation)
 	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\"'`$;&|<>\n\r()%!^") {
-		return gate.CheckEnvironment{}
+		return false
 	}
 	switch args[1] {
 	case "build", "test", "vet", "version":
 	default:
-		return gate.CheckEnvironment{}
+		return false
 	}
 	for _, arg := range args[2:] {
-		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") {
-			return gate.CheckEnvironment{}
+		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") || strings.HasPrefix(arg, "-overlay") || strings.HasPrefix(arg, "-compiler") || strings.HasPrefix(arg, "-pkgdir") || strings.HasPrefix(arg, "-ldflags") {
+			return false
 		}
 	}
-	command := commandshell.Command(ctx, "", l.hooks.Shell)
-	command.Dir = info.Path
-	command.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
-	return validationEnvironment(ctx, command).Environment
+	return true
 }
 
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
