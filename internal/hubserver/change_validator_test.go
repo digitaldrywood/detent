@@ -134,6 +134,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				cfg.Tracker.Kind = config.TrackerHubNative
 				cfg.Gate.Kind = test.stages.gateKind
 				cfg.Gate.Validator.Enabled = true
+				cfg.Gate.SecurityAudit.Enabled = false
 				cfg.Review.Human = test.stages.gateKind == gate.KindHumanReview
 				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg})
 				if err != nil {
@@ -351,6 +352,24 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					}
 					land := tracker.LandChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "landing-" + mismatch, LeaseID: lease.ID, FencingToken: lease.FencingToken}, Receipt: receipt, MergeSHA: original.HeadSHA, BaseRef: "main", Method: "squash"}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", worker, land), want)
+				}
+			}
+			if test.name == "security audit blocking finding" || test.name == "security audit landing blocking finding" {
+				passing := *request.SecurityAudit
+				passing.SessionID, passing.Run.ID = 44, 44
+				passing.Run.InvocationID = "later-pass"
+				passing.Run.Verdict, passing.Verdict = "pass", "pass"
+				passing.Run.Findings = nil
+				request.SecurityAudit = &passing
+				request.Decision = "approved"
+				request.IdempotencyKey = "later-audit"
+				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &detail)
+				if detail.Summary.Status != "needs_evidence" || len(detail.Reviews) < 2 || detail.Reviews[len(detail.Reviews)-2].Decision != "changes_requested" {
+					t.Fatalf("later pass cleared the unchanged version's blocking audit: %+v", detail)
 				}
 			}
 			if test.name == "separate session pass with multiple receipts" || test.stages != nil && test.stages.gateKind != "" {
