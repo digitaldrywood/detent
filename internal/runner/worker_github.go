@@ -607,6 +607,7 @@ func (r *Runner) agentPreflightError(preflightErr, cleanupErr error) error {
 
 func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest, policy workerGitHubPolicy) (AgentProcessRequest, func() error, error) {
 	tempDir, err := workspace.PrepareWorkerScratch(ctx, process.Workspace)
+	owner := workspace.ValidationProcessOwnerFromContext(ctx)
 	var reservation workspace.ValidationProcess
 	cleanup := func() error {
 		cleanupCtx := context.WithoutCancel(ctx)
@@ -627,6 +628,7 @@ func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest
 		return nil
 	}
 	if workspace.IsMissingWorkspaceError(err) && toolcache.ManagedBuildFromContext(ctx) == "" {
+		owner = nil
 		tempDir, err = os.MkdirTemp("", "detent-agent-preflight-")
 		cleanup = func() error {
 			if err := os.RemoveAll(tempDir); err != nil {
@@ -638,7 +640,7 @@ func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest
 	if err != nil {
 		return AgentProcessRequest{}, nil, fmt.Errorf("prepare agent preflight scratch: %w", err)
 	}
-	if owner := workspace.ValidationProcessOwnerFromContext(ctx); owner != nil {
+	if owner != nil {
 		reservation, err = owner(ctx, workspace.Info{Path: process.Workspace}, workspace.Issue{}, tempDir)
 		if err != nil {
 			return AgentProcessRequest{}, nil, errors.Join(fmt.Errorf("reserve agent preflight scratch: %w", err), cleanup())

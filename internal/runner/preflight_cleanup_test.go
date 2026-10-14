@@ -20,6 +20,22 @@ import (
 
 func TestPreflightCleanupFailurePrecedence(t *testing.T) {
 	t.Parallel()
+	t.Run("native missing workspace does not strand a reservation", func(t *testing.T) {
+		ctx := workspace.WithValidationProcessOwner(t.Context(), func(context.Context, workspace.Info, workspace.Issue, string) (workspace.ValidationProcess, error) {
+			t.Fatal("native external fallback created an unrecoverable workspace reservation")
+			return nil, errors.New("unreachable")
+		})
+		process, cleanup, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{Workspace: filepath.Join(t.TempDir(), "missing")}, workerGitHubPolicy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cleanup(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(process.TempDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("external fallback scratch retained: %v", err)
+		}
+	})
 	for _, role := range []string{RoleCode, RoleValidator, RoleSecurityAudit} {
 		for _, failCleanup := range []bool{false, true} {
 			name := role + "/selection_only"
