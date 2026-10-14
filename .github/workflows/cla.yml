@@ -30,5 +30,5 @@ jobs:
           path-to-signatures: .github/cla-signatures.json
           # The action writes signature records directly; keep this storage branch unprotected.
           branch: cla-signatures
-          allowlist: corylanou,dependabot[bot],github-actions[bot],chatgpt-codex-connector[bot]
+          allowlist: corylanou,loganlanou,dependabot[bot],github-actions[bot],chatgpt-codex-connector[bot]
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
