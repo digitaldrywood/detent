@@ -62,8 +62,8 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))
 	}
 	var approval policy.Approval
-	credential, _ := c.Get("hub_api_credential").(apiCredential)
-	if credential.Runner.Valid() {
+	credential, ok := c.Get("hub_api_credential").(apiCredential)
+	if ok && credential.Runner.Valid() {
 		approval, err = readProjectPolicy(ctx, s.database.reader, scope)
 	} else {
 		approval, err = readProjectPolicyWithHistory(ctx, s.database.reader, scope, limit, c.QueryParam("after"))
