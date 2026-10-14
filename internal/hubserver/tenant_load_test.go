@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -94,7 +95,7 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	counts := map[string]int{}
 	previous := 0
 	for _, history := range []int{20000, 200000} {
-		t.Run(fmt.Sprint(history), func(t *testing.T) {
+		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
 				for index, item := range items {
 					var sequence int
