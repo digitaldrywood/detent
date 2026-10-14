@@ -11,7 +11,7 @@ import type {
 import { DEFAULT_TURN_PREFERENCES } from "../../contracts/index.ts";
 import { ComposerContextAttachment } from "../components/ComposerContextAttachment.tsx";
 import { Composer } from "../components/Composer.tsx";
-import { ConversationView } from "../App.tsx";
+import { ConversationView } from "../ChatRoutes.tsx";
 import { newCommandKey, useClient } from "../client.ts";
 import { useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 

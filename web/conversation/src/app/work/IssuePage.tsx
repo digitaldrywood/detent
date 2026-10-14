@@ -37,7 +37,8 @@ import type {
 import { priorityValue } from "../../contracts/work.ts";
 import type { ConversationDetail } from "../../runtime/state/conversationState.ts";
 import { isStreaming } from "../../runtime/state/conversationState.ts";
-import { ConversationView, useShell } from "../App.tsx";
+import { useShell } from "../App.tsx";
+import { ConversationView } from "../ChatRoutes.tsx";
 import { newCommandKey, useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { ChatWorkspace, useWorkspacePanel } from "../components/ChatWorkspace.tsx";

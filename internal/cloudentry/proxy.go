@@ -352,6 +352,7 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		return c.JSON(http.StatusBadGateway, map[string]string{"code": "tenant_unavailable", "message": "The organization is temporarily unavailable"})
 	}
+	static := strings.HasPrefix(request.URL.Path, "/organizations/"+organization.ID+"/static/")
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -383,11 +384,14 @@ func (s *Service) proxy(c echo.Context) error {
 				return err
 			}
 			response.Header.Del("Set-Cookie")
-			response.Header.Set("Cache-Control", "no-store")
+			if !static || !tenantCachePolicy(response) {
+				response.Header.Set("Cache-Control", "no-store")
+			}
 			response.Header.Set("Content-Security-Policy", contentSecurity)
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			w.Header().Set("Cache-Control", "no-store")
 			s.config.Logger.Warn("shared entry tenant proxy failed", "organization", organization.ID, "error", err)
 			if wantsHTMLNavigation(c) {
 				if err := s.browserUnavailable(c, http.StatusBadGateway); err != nil {
@@ -399,6 +403,9 @@ func (s *Service) proxy(c echo.Context) error {
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`{"code":"tenant_unavailable","message":"The organization is temporarily unavailable"}`))
 		},
+	}
+	if static {
+		c.Response().Header().Del("Cache-Control")
 	}
 	proxy.ServeHTTP(c.Response(), request)
 	return nil
@@ -526,4 +533,16 @@ func (s *Service) acceptInvitationID(ctx context.Context, organization Organizat
 		return errors.Join(errors.New("tenant rejected the invitation"), err)
 	}
 	return nil
+}
+
+// tenantCachePolicy reports whether a tenant answered a request for its
+// embedded static tree with a cache policy of its own, which the entry keeps:
+// those files are the same build artifacts for every reader and carry no
+// tenant data.
+func tenantCachePolicy(response *http.Response) bool {
+	switch response.StatusCode {
+	case http.StatusOK, http.StatusNotModified, http.StatusPartialContent:
+		return response.Header.Get("Cache-Control") != ""
+	}
+	return false
 }

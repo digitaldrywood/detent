@@ -146,6 +146,80 @@ function devFonts(): Plugin {
   };
 }
 
+/** The output files whose names carry their content hash. */
+const HASHED_FILE = /^(chunks|assets)\/.+-[\w-]{8}\.[a-z0-9]+$/;
+const COMPRESSIBLE = /\.(js|css|svg|txt|json|wasm)$/;
+
+/**
+ * Writes a brotli and a gzip sibling next to every compressible output file,
+ * which the hub serves by `Accept-Encoding` negotiation, then holds the entry
+ * chunk to the committed budget in `bundle-budget.json`: the build fails when
+ * the compressed entry grows more than 10% past it. It runs in `closeBundle`,
+ * after `mitAttribution` has rewritten the entry on disk.
+ */
+function precompressAndBudget(): Plugin {
+  let outDir = "";
+  let client = false;
+  return {
+    name: "detent-precompress-budget",
+    apply: "build",
+    configResolved(config) {
+      client = config.mode === "production";
+      outDir = config.build.outDir.startsWith("/") ? config.build.outDir : `${config.root}/${config.build.outDir}`;
+    },
+    async closeBundle() {
+      if (!client) return;
+      const { readdir, readFile, writeFile } = await import("node:fs/promises");
+      const { join, relative, sep } = await import("node:path");
+      const { promisify } = await import("node:util");
+      const zlib = await import("node:zlib");
+      const brotli = promisify(zlib.brotliCompress);
+      const gzip = promisify(zlib.gzip);
+      const files = (await readdir(outDir, { recursive: true, withFileTypes: true }))
+        .filter((entry) => entry.isFile())
+        .map((entry) => relative(outDir, join(entry.parentPath, entry.name)).split(sep).join("/"));
+      const unhashed = files.filter((name) => /^(chunks|assets)\//.test(name) && !HASHED_FILE.test(name));
+      if (unhashed.length > 0) {
+        throw new Error(`Files under chunks/ and assets/ are served as immutable and must carry a content hash: ${unhashed.join(", ")}`);
+      }
+      const sizes = new Map<string, { raw: number; br: number; gzip: number }>();
+      await Promise.all(
+        files.filter((name) => COMPRESSIBLE.test(name)).map(async (name) => {
+          const source = await readFile(join(outDir, name));
+          const [br, gz] = await Promise.all([
+            brotli(source, {
+              params: {
+                [zlib.constants.BROTLI_PARAM_QUALITY]: zlib.constants.BROTLI_MAX_QUALITY,
+                [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.length,
+              },
+            }),
+            gzip(source, { level: zlib.constants.Z_BEST_COMPRESSION }),
+          ]);
+          sizes.set(name, { raw: source.length, br: br.length, gzip: gz.length });
+          if (source.length < 1024) return;
+          if (br.length < source.length) await writeFile(join(outDir, `${name}.br`), br);
+          if (gz.length < source.length) await writeFile(join(outDir, `${name}.gz`), gz);
+        }),
+      );
+      const budget = JSON.parse(await readFile(new URL("./bundle-budget.json", import.meta.url), "utf8")) as {
+        entry: string;
+        brotli: number;
+        gzip: number;
+      };
+      const entry = sizes.get(budget.entry);
+      if (entry === undefined) throw new Error(`The budgeted entry ${budget.entry} was not built.`);
+      const over = (["brotli", "gzip"] as const).filter((key) => entry[key === "brotli" ? "br" : "gzip"] > budget[key] * 1.1);
+      if (over.length > 0) {
+        throw new Error(
+          `${budget.entry} is over its budget by more than 10%: brotli ${entry.br} B (budget ${budget.brotli} B), gzip ${entry.gzip} B (budget ${budget.gzip} B). ` +
+            "Split the new code into a route chunk, or raise bundle-budget.json deliberately.",
+        );
+      }
+      this.environment?.logger.info(`${budget.entry}: ${entry.raw} B, brotli ${entry.br} B, gzip ${entry.gzip} B (budget brotli ${budget.brotli} B, gzip ${budget.gzip} B)`);
+    },
+  };
+}
+
 /** The hub the dev server proxies API and bootstrap requests to. */
 const hubUrl = process.env.DETENT_HUB_URL || "http://127.0.0.1:4100";
 
@@ -159,7 +233,7 @@ export default defineConfig({
     renderBuiltUrl: (filename, { hostType }) =>
       hostType === "html" ? `/static/app/conversation/${filename}` : { relative: true },
   },
-  plugins: [tailwindcss(), mitAttribution(), thirdPartyLicenses(), devFonts()],
+  plugins: [tailwindcss(), mitAttribution(), thirdPartyLicenses(), devFonts(), precompressAndBudget()],
   resolve: {
     alias: {
       "~": fileURLToPath(new URL("./src", import.meta.url)),
@@ -339,8 +413,11 @@ export default defineConfig({
     outDir: "../../static/app/conversation",
     emptyOutDir: true,
     chunkSizeWarningLimit: 700,
-    // Fixed names: Go embeds the directory and the shell template references
-    // these two files literally, so a content hash would break every build.
+    // `app.js` and `app.css` keep fixed names: the shell references them
+    // literally and the hub revalidates them on every load. Everything under
+    // `chunks/` and `assets/` is named by its content hash, which is what lets
+    // `internal/staticasset` serve those files as immutable.
+    cssCodeSplit: false,
     rollupOptions: {
       // The router ships "use client" directives for frameworks that need
       // them; this bundle is a plain SPA, so they are noise.
@@ -367,9 +444,9 @@ export default defineConfig({
         // block in that language is rendered. `embed.go` embeds `static/**`
         // recursively, so the chunks ship and are served from the same prefix.
         inlineDynamicImports: false,
-        chunkFileNames: "chunks/[name].js",
+        chunkFileNames: "chunks/[name]-[hash].js",
         assetFileNames: (asset) =>
-          asset.names?.some((name) => name.endsWith(".css")) ? "app.css" : "assets/[name][extname]",
+          asset.names?.some((name) => name.endsWith(".css")) ? "app.css" : "assets/[name]-[hash][extname]",
       },
     },
   },

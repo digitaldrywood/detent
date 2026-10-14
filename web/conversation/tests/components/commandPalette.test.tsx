@@ -199,7 +199,7 @@ describe("the command palette", () => {
   }, 30_000);
 
   it("offers the workspace's own commands only where there is a workspace", async () => {
-    await mountShell();
+    const { router } = await mountShell();
 
     // On a chat route the workspace publishes its commands upward
     // (`adapters/paletteContext.ts`) and the palette offers them.
@@ -220,6 +220,8 @@ describe("the command palette", () => {
     await waitFor(() => expect(screen.queryByTestId("command-palette")).toBeNull(), {
       timeout: 5_000,
     });
+    // The Usage screen is a route chunk; the chat route stays mounted until it loads.
+    await waitFor(() => expect(router.state.resolvedLocation?.pathname).toBe("/usage"), { timeout: 5_000 });
 
     const onUsage = await openPalette();
     expect(within(onUsage).queryByText("Copy link")).toBeNull();

@@ -17,13 +17,14 @@ import (
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	e.GET("/", s.hostedLanding)
 	e.GET("/login", s.appShell)
 	e.GET("/auth/oidc/start", s.startHostedLogin)
