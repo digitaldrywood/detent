@@ -688,8 +688,11 @@ fi
 				if err != nil || string(invocations) != strings.Repeat("build\n", 1+test.wantRuns) {
 					t.Fatalf("landing validation repeated: %q %v", invocations, err)
 				}
-				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
+				if !test.unsupported && test.changedInput != "environment-vettool" && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
 					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
+				}
+				if strings.HasSuffix(test.changedInput, "vettool") && receipt.Evidence.InputsSHA != "" {
+					t.Fatal("external vet analyzer received a reusable input identity")
 				}
 				if test.changedInput == "linter" || test.wantRuns == 0 {
 					invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "linter-invocations"))
