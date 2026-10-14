@@ -17,6 +17,11 @@ func (s *Service) readableProxy(c echo.Context) error {
 	if readableurl.Validate(parts[0]) != nil {
 		return readableNotFound(c)
 	}
+	if wantsHTMLNavigation(c) {
+		if _, err := s.session(c); err != nil {
+			return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?return=%2Forganizations")
+		}
+	}
 	var id string
 	if err := s.registry.store.db.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&id); err != nil {
 		return readableNotFound(c)

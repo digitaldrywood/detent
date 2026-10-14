@@ -115,6 +115,16 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 			t.Fatalf("%s=%+v want %s", test.path, response, test.location)
 		}
 	}
+	html := map[string]string{"Accept": "text/html"}
+	for _, path := range []string{"/alpha/work", "/alpha", "/missing/work", "/missing"} {
+		response := anonymous.do(http.MethodGet, path, nil, html)
+		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/auth/oidc/start?return=%2Forganizations" {
+			t.Fatalf("signed-out navigation %s=%+v", path, response)
+		}
+	}
+	if member := alice.do(http.MethodGet, "/alpha/work", nil, html); member.StatusCode == http.StatusSeeOther {
+		t.Fatalf("member navigation=%+v", member)
+	}
 	for _, path := range []string{"/alpha", "/alpha/"} {
 		denied, _ := anonymous.get(path)
 		absent, _ := anonymous.get("/missing" + strings.TrimPrefix(path, "/alpha"))
