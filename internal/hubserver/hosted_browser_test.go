@@ -736,9 +736,8 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 		} `json:"conversation"`
 	}
 	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/conversations", map[string]any{
-		"key":           "browser-preview-conversation",
-		"title":         "Lease renewal under load",
-		"first_message": map[string]any{"key": "browser-preview-message", "text": "Why does the lease lapse under load?"},
+		"key":   "browser-preview-conversation",
+		"title": "Lease renewal under load",
 	}, http.StatusCreated), &created)
 	f.conversation = created.Conversation.ID
 	if f.conversation == "" {
@@ -761,6 +760,9 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 	if f.workItem == "" {
 		t.Fatal("linked issue has no work item id")
 	}
+	f.api(t, "owner", http.MethodPost, base+"/conversations/"+f.conversation+"/commands", map[string]any{
+		"key": "browser-preview-message", "kind": "message", "text": "Why does the lease lapse under load?",
+	}, http.StatusOK)
 	if os.Getenv("DETENT_HOSTED_BROWSER_CHAT_ORIGIN") == "" {
 		return
 	}
@@ -864,6 +866,8 @@ func TestHostedBrowserPreviewSeed(t *testing.T) {
 	}{
 		{name: "owner reads the conversation", account: "owner", path: base + "/conversations/" + f.conversation, status: http.StatusOK, contains: f.workItem},
 		{name: "owner lists project conversations", account: "owner", path: base + "/conversations", status: http.StatusOK, contains: f.conversation},
+		{name: "viewer reads the shared transcript", account: "viewer", path: base + "/conversations/" + f.conversation, status: http.StatusOK, contains: "Why does the lease lapse under load?"},
+		{name: "viewer lists the shared conversation", account: "viewer", path: base + "/conversations", status: http.StatusOK, contains: f.conversation},
 		{name: "viewer reads the linked work item", account: "viewer", path: base + "/work-items/" + f.workItem, status: http.StatusOK, contains: "Renew the lease"},
 		{name: "owner reads runner updates", account: "owner", path: "/app/updates", status: http.StatusOK, contains: `"runners":[]`},
 	}
