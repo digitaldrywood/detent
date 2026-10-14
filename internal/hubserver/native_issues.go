@@ -288,9 +288,6 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 			issue.PullRequest = &tracker.NativePullRequest{Number: issue.Change.Number, URL: issue.Change.URL}
 		}
 	}
-	if err := attachNativeTestPlan(ctx, s.database.reader, scope, &issue); err != nil {
-		return s.nativeAPIError(c, err)
-	}
 	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
 }
 
@@ -465,10 +462,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return tracker.NativeIssue{}, err
 	}
 	if request.State == "" {
-		request.State = defaultNativeIssueStateFor(project.States, request.Labels)
-	}
-	if err := requireTestPlanFilingLane(project.States, request.Labels, request.State); err != nil {
-		return tracker.NativeIssue{}, err
+		request.State = defaultNativeIssueState(project.States)
 	}
 	var sourceKey any
 	if request.Provenance != nil {
@@ -828,9 +822,6 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 			return nil, err
 		}
 		if err := validateNativeWorkflowTransition(project.States, issue.State, request.State, scope.credential.Scope); err != nil {
-			return nil, err
-		}
-		if err := requireTestPlanTransition(project.States, issue, request.State); err != nil {
 			return nil, err
 		}
 		from := issue.State

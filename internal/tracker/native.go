@@ -118,48 +118,7 @@ type NativeIssue struct {
 	// Change is the item's change review surface, present only on a resource
 	// the caller asked for it with (include=change). It is null everywhere
 	// else, so the default work item resource is what it always was.
-	Change   *NativeIssueChange `json:"change,omitempty"`
-	TestPlan *NativeTestPlan    `json:"test_plan,omitempty"`
-}
-
-type NativeTestPlan struct {
-	Passed   int              `json:"passed"`
-	Failed   int              `json:"failed"`
-	Blocked  int              `json:"blocked"`
-	Untested int              `json:"untested"`
-	Items    []NativeTestItem `json:"items"`
-}
-
-type NativeTestItem struct {
-	Index        int                  `json:"index"`
-	Text         string               `json:"text"`
-	Result       string               `json:"result,omitempty"`
-	Note         string               `json:"note,omitempty"`
-	Tester       *Actor               `json:"tester,omitempty"`
-	RecordedAt   *time.Time           `json:"recorded_at,omitempty"`
-	LinkedIssues []NativeTestItemLink `json:"linked_issues"`
-}
-
-type NativeTestItemLink struct {
-	WorkItemID NativeWorkItemID `json:"work_item_id"`
-	Number     int              `json:"number"`
-}
-
-type RecordTestItem struct {
-	Mutation
-	Item               int    `json:"item"`
-	Text               string `json:"text"`
-	Result             string `json:"result"`
-	Note               string `json:"note,omitempty"`
-	RelatedIssueNumber int    `json:"related_issue_number,omitempty"`
-}
-
-type TestItemResult struct {
-	Index         int    `json:"index"`
-	Text          string `json:"text"`
-	Result        string `json:"result"`
-	Note          string `json:"note,omitempty"`
-	RelatedNumber int    `json:"related_number,omitempty"`
+	Change *NativeIssueChange `json:"change,omitempty"`
 }
 
 type NativeListChange struct {
@@ -454,7 +413,6 @@ type CollaborationData struct {
 	ToState           string                   `json:"to_state,omitempty"`
 	Reason            string                   `json:"reason,omitempty"`
 	ReasonDetail      string                   `json:"reason_detail,omitempty"`
-	TestItem          *TestItemResult          `json:"test_item,omitempty"`
 	Verification      string                   `json:"verification,omitempty"`
 }
 

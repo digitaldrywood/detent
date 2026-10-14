@@ -323,8 +323,6 @@ refresh approved policy inputs; uncertain mutation outcomes still require resour
 inspection before retrying. Unexpected failures remain redacted as
 `service_unavailable` with a correlation ID.
 
-An issue labeled `test-plan` holds a Markdown checklist of screens and workflows to test and stays in a non-dispatchable, nonterminal lane. `update_test_item` records `pass`, `fail` or `blocked` for one checklist item, numbered from 1 and identified by its exact `text`, with an optional `note`; a `fail` result may carry a `related_issue` number that links a filed finding as related. A changed item is refused as a conflict. Reporters may record results but cannot edit the plan. `work_item` returns the plan's progress as `test_plan`.
-
 Native `verify_fix` answers a Done issue whose `verification.state` is `pending`: `result: verified` records the verifier, and `result: not_fixed` requires `comment`, which may embed `upload_attachment` references, and reopens the issue to Todo. Only the filer, or a member and above, may answer. `work_list created_by=me verification=pending` lists the caller's issues awaiting verification.
 
 Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.

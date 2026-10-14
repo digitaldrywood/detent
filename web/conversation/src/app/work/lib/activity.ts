@@ -132,13 +132,6 @@ export function historySentence(event: CollaborationEvent): HistorySentence {
     case "issue.created":
       return { icon: "created", sentence: "created the issue", lowValue: false };
     case "issue.edited":
-      if (data.test_item !== undefined) {
-        return {
-          icon: "edited",
-          sentence: `marked test item ${data.test_item.index} ${data.test_item.result === "pass" ? "passed" : data.test_item.result === "fail" ? "failed" : "blocked"}`,
-          lowValue: false,
-        };
-      }
       if (data.operation === "archive" || data.operation === "restore") {
         return {
           icon: "edited",

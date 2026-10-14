@@ -48,7 +48,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
-		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem, operatortool.UpdateTestItem, operatortool.VerifyFix:
+		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem, operatortool.VerifyFix:
 			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
@@ -303,8 +303,6 @@ func operatorNativeConflict(err error) error {
 	switch failure.Code {
 	case "revision_conflict":
 		return &operatortool.ConflictError{Code: failure.Code, CurrentRevision: int64(failure.CurrentRevision)}
-	case "test_item_changed":
-		return &operatortool.ConflictError{Code: failure.Code, Message: failure.Message}
 	case "stale_execution":
 		if len(failure.Details) == 0 {
 			return &operatortool.ConflictError{Code: failure.Code}
