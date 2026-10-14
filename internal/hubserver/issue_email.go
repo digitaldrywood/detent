@@ -274,7 +274,11 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 				notices[i].Verify = false
 			}
 		}
-		message = s.renderIssueEmail(message.To, item, title, number, token, notices)
+		path, err := readIssueBrowserPath(ctx, tx, item)
+		if err != nil {
+			return auth.EmailMessage{}, false, err
+		}
+		message = s.renderIssueEmail(message.To, strings.TrimRight(s.config.Hosted.PublicURL, "/")+path, title, number, token, notices)
 	}
 	if err := tx.Commit(); err != nil {
 		return auth.EmailMessage{}, false, err
@@ -282,8 +286,7 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 	return message, true, nil
 }
 
-func (s *Service) renderIssueEmail(to, item, title string, number int, token string, notices []issueEmailNotice) auth.EmailMessage {
-	link := s.config.Hosted.PublicURL + s.hostedPath("/work/i/"+url.PathEscape(item))
+func (s *Service) renderIssueEmail(to, link, title string, number int, token string, notices []issueEmailNotice) auth.EmailMessage {
 	var body strings.Builder
 	subject := fmt.Sprintf("[Detent] #%d %s", number, strings.NewReplacer("\r", " ", "\n", " ").Replace(title))
 	if slices.ContainsFunc(notices, func(notice issueEmailNotice) bool { return notice.Verify }) {

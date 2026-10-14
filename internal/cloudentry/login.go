@@ -244,11 +244,11 @@ func (s *Service) completeLogin(c echo.Context) error {
 			callback.Reason = "audit_failed"
 			return s.loginDenied(c, http.StatusServiceUnavailable, "Sign-in is temporarily unavailable", callback)
 		}
-		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {invited.ID}, "return": {s.organizationHome(invited.ID)}}.Encode())
+		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+url.Values{"organization": {invited.ID}, "return": {s.legacyOrganizationHome(invited.ID)}}.Encode())
 	}
 	switch {
 	case organization.ID != "" && (transaction.ReturnPath == "" || transaction.ReturnPath == "/organizations"):
-		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization.ID))
+		return c.Redirect(http.StatusSeeOther, s.organizationHome(organization))
 	case transaction.ReturnPath != "":
 		target := transaction.ReturnPath
 		if transaction.Organization != "" && target == "/organizations/"+transaction.Organization+"/organization/billing" {
@@ -384,7 +384,7 @@ func (s *Service) organizationChoices(ctx context.Context, session accountSessio
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationHome(organization.ID), Role: membership.Role.Slug})
+		result = append(result, organizationChoice{ID: organization.ID, Name: organization.Name, URL: s.organizationHome(organization), Role: membership.Role.Slug})
 	}
 	return result, nil
 }
