@@ -53,9 +53,16 @@ if args[:1] == ["env"]:
     print({"GOHOSTOS": "fixture", "GOHOSTARCH": "fixture", "GOVERSION": "fixture"}[args[1]])
     sys.exit(0)
 if args[:1] == ["list"]:
+    if os.environ["PROBE_TARGET"] == "test-cover":
+        print("github.com/digitaldrywood/detent/internal/hubserver")
     print("fixture")
     sys.exit(0)
-if args[:2] == ["tool", "cover"] or "./tools/covermerge" in args:
+if args[:2] == ["tool", "cover"]:
+    sys.exit(0)
+if "./tools/covermerge" in args:
+    with open("trace", "a") as output:
+        output.write(json.dumps({"stage": "coverage-merge", "action": "start", "args": args}) + "\n")
+    print("mode: set")
     sys.exit(0)
 if name == "make":
     stage = "app"
@@ -91,6 +98,8 @@ if os.environ["PROBE_TARGET"] == "check-land" and stage in ("lint", "vet", "buil
             sys.exit("independent stages did not overlap")
         time.sleep(0.01)
 record("end")
+if any(arg == "-coverprofile=tmp/" + os.environ.get("PROBE_FAILURE", "") + "-cover.raw.out" for arg in args):
+    sys.exit("deliberate coverage partition failure")
 if stage == os.environ.get("PROBE_FAILURE"):
     sys.exit("deliberate " + stage + " failure")
 '''
@@ -103,6 +112,7 @@ class LandingGateTest(unittest.TestCase):
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
         cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
+        cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-b", "2/3"))]
         shared_ui = "web/conversation/src/app/App.tsx"
         cases += [("check-land", 4, "", path) for path in (shared_ui, "web/conversation/src/app/main.tsx", "web/conversation/src/app/router.tsx", "web/conversation/src/components/ui/button.tsx", "tests/visual/cloud-reports.spec.js")]
         cases += [("check-land", 4, failure, shared_ui) for failure in ("app", "lint", "unit-short")]
@@ -129,6 +139,8 @@ class LandingGateTest(unittest.TestCase):
                 env = {key: value for key, value in os.environ.items() if key not in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES")}
                 env.update(PATH=str(root) + os.pathsep + env["PATH"], PROBE_BUDGET=str(budget), PROBE_FAILURE=failure, PROBE_TARGET=target, PROBE_MAKE=shutil.which("make"), PROBE_PYTHON=sys.executable)
                 env["PROBE_CHANGED"] = changed
+                if target == "test-cover" and changed:
+                    env["COVER_SHARD"] = changed
                 failed = bool(failure)
                 result = subprocess.run([env["PROBE_MAKE"], target, f"TEST_PROCS={budget}", f"GOLANGCI_LINT={root / 'lint'}"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
@@ -138,6 +150,28 @@ class LandingGateTest(unittest.TestCase):
                     self.assertTrue(tests)
                 for event in tests:
                     self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover"), event)
+                if target == "test-cover":
+                    hub = [event for event in tests if "./internal/hubserver" in event["args"]]
+                    if changed == "3/3":
+                        self.assertEqual(hub, [])
+                    else:
+                        selectors = [("-run", "^Test[A-GI-O]"), ("-run", "^Test[HW]"), ("-skip", "^Test[A-GI-O]|^Test[HW]")]
+                        if failure:
+                            selectors = selectors[:2]
+                        self.assertEqual(len(hub), len(selectors), hub)
+                        for event, (flag, pattern) in zip(hub, selectors):
+                            self.assertEqual(event["args"][event["args"].index(flag) + 1], pattern)
+                            self.assertIn("-timeout=10m", event["args"])
+                            self.assertEqual(event["budget"], budget)
+                        merges = [event for event in events if event["stage"] == "coverage-merge"]
+                        unions = [event for event in merges if "-union" in event["args"]]
+                        self.assertEqual(len(unions), int(not failure), merges)
+                        if not failure:
+                            self.assertEqual(unions[0]["args"][-3:], [f"tmp/hub-{part}-cover.raw.out" for part in "abc"])
+                        else:
+                            self.assertEqual(merges, [])
+                    for event in tests:
+                        self.assertTrue(any(arg in ("fixture", "./internal/hubserver", "./internal/web") for arg in event["args"]), event)
                 if target != "check-land":
                     continue
                 self.assertEqual("Landing checks passed." in result.stdout, not failed)

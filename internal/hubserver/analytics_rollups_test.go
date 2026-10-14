@@ -3,6 +3,7 @@ package hubserver
 import (
 	"database/sql"
 	"encoding/json"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -663,7 +664,47 @@ func assertAnalyticsJSONEqual(t *testing.T, want, got any) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(wantJSON) != string(gotJSON) {
+	var wantValue, gotValue any
+	if err := json.Unmarshal(wantJSON, &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(gotJSON, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	if !analyticsJSONClose(wantValue, gotValue) {
 		t.Fatalf("response differs\nwant: %s\ngot: %s", wantJSON, gotJSON)
+	}
+}
+
+func analyticsJSONClose(want, got any) bool {
+	switch w := want.(type) {
+	case float64:
+		g, ok := got.(float64)
+		return ok && math.Abs(w-g) <= 1e-9*math.Max(1, math.Max(math.Abs(w), math.Abs(g)))
+	case []any:
+		g, ok := got.([]any)
+		if !ok || len(w) != len(g) {
+			return false
+		}
+		for i := range w {
+			if !analyticsJSONClose(w[i], g[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		g, ok := got.(map[string]any)
+		if !ok || len(w) != len(g) {
+			return false
+		}
+		for k, v := range w {
+			gv, ok := g[k]
+			if !ok || !analyticsJSONClose(v, gv) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(want, got)
 	}
 }

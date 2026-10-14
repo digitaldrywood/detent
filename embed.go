@@ -7,8 +7,12 @@ import (
 
 const operatorSkillPath = "internal/operatorskill/detent-operator-introspection/SKILL.md"
 
-//go:embed static/** internal/operatorskill/detent-operator-introspection/SKILL.md
+//go:embed static/** internal/operatorskill/detent-operator-introspection/SKILL.md Makefile scripts/check-landing.sh scripts/check-evidence.sh
 var embeddedFiles embed.FS
+
+func ValidationFS() fs.FS {
+	return embeddedFiles
+}
 
 func StaticFS() fs.FS {
 	staticFS, err := fs.Sub(embeddedFiles, "static")
