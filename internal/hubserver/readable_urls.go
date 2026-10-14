@@ -381,10 +381,6 @@ func (s *Service) readablePage(ctx context.Context, credential apiCredential, pa
 func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	path := c.Request().URL.Path
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
-	if err != nil {
-		return "", false, nativeNotFound()
-	}
 	var orgSlug string
 	if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&orgSlug); err != nil {
 		return "", false, err
@@ -401,7 +397,20 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 			parts = parts[1:]
 		}
 	}
-	if len(parts) >= 3 && parts[0] == "work" && parts[1] == "i" || len(parts) >= 3 && parts[0] == "chat" && parts[1] == "issues" {
+	legacyIssue := len(parts) >= 3 && (parts[0] == "work" && parts[1] == "i" || parts[0] == "chat" && parts[1] == "issues")
+	legacyProjectIssue := len(parts) >= 4 && parts[0] == "projects" && parts[2] == "issues"
+	legacyProject := len(parts) == 3 && parts[0] == "work" && parts[1] == "p"
+	if !legacyIssue && !legacyProjectIssue && !legacyProject && readableurl.Validate(parts[0]) != nil {
+		if requestedOrgSlug != "" && requestedOrgSlug != orgSlug {
+			return "/" + orgSlug + path, true, nil
+		}
+		return "", false, nil
+	}
+	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	if err != nil {
+		return "", false, nativeNotFound()
+	}
+	if legacyIssue {
 		id := parts[2]
 		var project string
 		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id=? AND native_id=?", s.config.Hosted.OrganizationID, id).Scan(&project); err != nil {
@@ -417,7 +426,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		}
 		return target, true, err
 	}
-	if len(parts) >= 4 && parts[0] == "projects" && parts[2] == "issues" {
+	if legacyProjectIssue {
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(parts[1]), credential: credential}
 		if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, false); err != nil {
 			return "", false, err
@@ -432,7 +441,7 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		}
 		return target, true, err
 	}
-	if len(parts) == 3 && parts[0] == "work" && parts[1] == "p" {
+	if legacyProject {
 		var slug string
 		if err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT slug FROM projects WHERE organization_id=? AND id=?", s.config.Hosted.OrganizationID, parts[2]).Scan(&slug); err != nil {
 			return "", false, err
@@ -443,9 +452,6 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 	if len(parts) > 0 && readableurl.Validate(parts[0]) == nil {
 		_, _, target, err := s.readablePage(c.Request().Context(), credential, path)
 		return target, true, err
-	}
-	if requestedOrgSlug != "" && requestedOrgSlug != orgSlug {
-		return "/" + orgSlug + path, true, nil
 	}
 	return "", false, nil
 }
