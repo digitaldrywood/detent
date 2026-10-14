@@ -10,7 +10,7 @@ afterEach(cleanup);
 describe("MetricTile", () => {
   it.each([
     { name: "a value and a good delta", value: "276", delta: { text: "56 vs prior 7d", direction: "up", tone: "good" } as const, text: ["276", "▲", "56 vs prior 7d", "up 56 vs prior 7d, better"] },
-    { name: "an unrecorded value and prior", value: null, delta: null, text: ["Not recorded", "Change: Not recorded"] },
+    { name: "an unrecorded value and prior", value: null, delta: null, text: ["Not recorded", "No prior data"] },
   ])("renders $name", ({ value, delta, text }) => {
     const { container } = render(<MetricTile label="Shipped" value={value} delta={delta} />);
     for (const part of text) expect(container.textContent).toContain(part);

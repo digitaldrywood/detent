@@ -114,8 +114,8 @@ export function CostTab({
   const compare = search.compare;
   const usageMissing = report.unavailable.includes("recorded_usage");
   const shippedKnown = report.spend.some((item) => item.shipped !== undefined);
-  const perShipped = report.completion.done > 0 ? report.cost_usd / report.completion.done : null;
-  const priorPerShipped = report.previous_cost_usd !== undefined && report.previous.done > 0 ? report.previous_cost_usd / report.previous.done : undefined;
+  const perShipped = report.completion.done > 0 ? report.completion.cost_usd / report.completion.done : null;
+  const priorPerShipped = report.previous.done > 0 ? report.previous.cost_usd / report.previous.done : undefined;
   const shippedCosts = report.spend.filter((item) => item.shipped === true).map((item) => item.cost_usd);
   const p50 = quantile(shippedCosts, 0.5);
   const p90 = quantile(shippedCosts, 0.9);

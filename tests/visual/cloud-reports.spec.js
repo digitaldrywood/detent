@@ -133,6 +133,8 @@ test("Reports shows a dash for unrecorded data, the unavailable state and issue 
   await page.getByRole("button", { name: "Refresh reports" }).click();
   await expect(headline).toContainText("Not recorded");
   await expect(headline).not.toContainText("$22.47");
+  await expect(headline).toContainText("No prior data");
+  await expect(headline).not.toContainText("▼ 0 pts");
   await expect(page.getByRole("region", { name: "Most expensive shipped issues" })).toContainText("Not recorded");
   await page.unrouteAll();
   await page.route("**/api/v2/organizations/*/reports?*", (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));

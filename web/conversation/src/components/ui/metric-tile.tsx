@@ -18,7 +18,7 @@ const VALUE_CLASS = {
   compact: "font-semibold tabular-nums tracking-tight text-xl",
 } as const;
 
-/** The change against a prior period. `null` means the prior value is not recorded. */
+/** The change against a prior period. `null` means the prior period has no data. */
 export type MetricDelta = {
   readonly text: string;
   readonly direction: "up" | "down" | "flat";
@@ -26,6 +26,7 @@ export type MetricDelta = {
 } | null;
 
 const NOT_RECORDED = "Not recorded";
+const NO_PRIOR = "No prior data";
 
 const TONE_WORD = { good: "better", bad: "worse", neutral: "no change" } as const;
 
@@ -76,10 +77,7 @@ function MetricTile({
       )}
       {size === "compact" ? <span className="text-muted-foreground text-xs">{label}</span> : null}
       {delta === undefined ? null : delta === null ? (
-        <span className="text-muted-foreground text-xs tabular-nums" title={NOT_RECORDED}>
-          <span aria-hidden>— vs prior</span>
-          <span className="sr-only">Change: {NOT_RECORDED}</span>
-        </span>
+        <span className="text-muted-foreground text-xs">{NO_PRIOR}</span>
       ) : (
         <span
           className={cn(

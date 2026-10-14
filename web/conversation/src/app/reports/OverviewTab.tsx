@@ -61,8 +61,8 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
   const previous = report.previous.partial ? undefined : report.previous;
   const firstTry = report.unavailable.includes("landed_first_try") ? null : report.first_try_percent;
   const cost = usageMissing ? undefined : report.cost_usd;
-  const perShipped = costPerShipped(cost, completion.done);
-  const priorPerShipped = previous ? costPerShipped(report.previous_cost_usd, previous.done) : null;
+  const perShipped = usageMissing ? null : costPerShipped(completion.cost_usd, completion.done);
+  const priorPerShipped = usageMissing ? null : costPerShipped(report.previous.cost_usd, report.previous.done);
   const open = openWork(report);
   const stuck = open.items;
   const buckets = reportBuckets(report);
@@ -93,8 +93,8 @@ export function OverviewTab({ report, search }: { readonly report: ReportsReport
         <MetricTile
           label="Shipped"
           value={residenceMissing ? null : formatCount(completion.done)}
-          delta={compare ? (residenceMissing ? null : countDelta(completion.done, previous?.done, true, ` vs ${prior}`)) : undefined}
-          detail={report.cancelled === undefined ? <>Cancelled <Dash /></> : `plus ${formatCount(report.cancelled)} cancelled`}
+          delta={compare ? (residenceMissing ? null : countDelta(completion.done, report.previous.done, true, ` vs ${prior}`)) : undefined}
+          detail={`plus ${formatCount(completion.cancelled)} cancelled`}
         />
         <MetricTile
           label="Cycle time p50"

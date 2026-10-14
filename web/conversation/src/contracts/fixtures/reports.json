@@ -1,6 +1,8 @@
 {
   "completion": {
     "done": 276,
+    "cancelled": 112,
+    "cost_usd": 6201.72,
     "system": {
       "count": 276,
       "seconds": 15102720,
@@ -73,6 +75,8 @@
   },
   "previous": {
     "done": 220,
+    "cancelled": 97,
+    "cost_usd": 5241.35,
     "system": {
       "count": 220,
       "seconds": 13812480,
