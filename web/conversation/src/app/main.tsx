@@ -21,7 +21,8 @@ import { isDesignSystemPath, makeRouter } from "./router.tsx";
 import { isLoginPath, LoginCard } from "./routes.account.tsx";
 import "./index.css";
 import { hubPath, routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
-import { isEntrySurface, makeEntryRouter } from "./entry/router.tsx";
+import { isEntrySurface } from "./entry/surface.ts";
+import { loadChunk } from "./lib/chunkReload.ts";
 import { formatPageTitle } from "./pageTitle.ts";
 
 const container = document.getElementById("root");
@@ -74,11 +75,17 @@ if (
     mount(<GalleryApp />);
   });
 } else if (isEntrySurface()) {
-  mount(
-    <React.StrictMode>
-      <RouterProvider router={makeEntryRouter() as never} />
-    </React.StrictMode>,
-  );
+  void loadChunk(() => import("./entry/router.tsx"))
+    .then(({ makeEntryRouter }) => {
+      mount(
+        <React.StrictMode>
+          <RouterProvider router={makeEntryRouter() as never} />
+        </React.StrictMode>,
+      );
+    })
+    .catch((cause: unknown) => {
+      mount(<Failure message={cause instanceof Error ? cause.message : "Detent could not start."} />);
+    });
 } else {
   startOrganizationClient();
 }

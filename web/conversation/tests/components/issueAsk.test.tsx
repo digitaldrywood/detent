@@ -49,7 +49,7 @@ vi.mock("../../src/app/components/RightPanel.tsx", () => ({
   useRightPanelWorkspace: ({ ask }: { ask: React.ReactNode }) => ({ panel: ask, layoutControls: null, openAsk: mock.open }),
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mock.navigate }));
-vi.mock("../../src/app/App.tsx", () => ({
+vi.mock("../../src/app/ChatRoutes.tsx", () => ({
   ConversationView: ({ conversationId }: { conversationId: string }) => (
     <div data-testid="selected-chat">{conversationId}</div>
   ),

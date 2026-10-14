@@ -1486,3 +1486,27 @@ func assertEntryFallback(t *testing.T, browser *browser, body string) {
 		}
 	}
 }
+
+func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	for _, test := range []struct {
+		name, target, cache string
+	}{
+		{name: "tenant static asset", target: "/organizations/org_alpha/static/fonts/Geist-Variable.woff2", cache: "no-cache"},
+		{name: "tenant page", target: "/organizations/org_alpha/organization", cache: "no-store"},
+		{name: "missing tenant static asset", target: "/organizations/org_alpha/static/fonts/absent.woff2", cache: "no-store"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, _ := alice.get(test.target)
+			if got := response.Header.Get("Cache-Control"); got != test.cache {
+				t.Fatalf("GET %s Cache-Control = %q (status %d), want %q", test.target, got, response.StatusCode, test.cache)
+			}
+			if policy := response.Header.Get("Content-Security-Policy"); policy != contentSecurity {
+				t.Fatalf("GET %s content security = %q", test.target, policy)
+			}
+		})
+	}
+}
