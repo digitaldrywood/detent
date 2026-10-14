@@ -363,6 +363,9 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 						if err := json.Unmarshal(data, &board); err != nil || board.Counts.QueuedInventory != queued || board.Counts.Running != 0 || board.Counts.ClosedInventory != 0 || board.EligibilityTool != operatortool.ExplainItem || !slices.Contains(board.Unavailable, "aggregate_dispatch_readiness") {
 							t.Fatalf("native inventory confused with admission: %s err=%v", data, err)
 						}
+						if test.extraDependencies >= 100 && (!board.Truncated || len(board.Projects) != 1 || board.Projects[0].Board.NextCursor == "" || !board.Projects[0].Board.Work.Truncated) {
+							t.Fatalf("bounded board dropped continuation evidence: %s", data)
+						}
 					}
 				}
 			}

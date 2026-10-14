@@ -127,20 +127,28 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	}
 	first := read("")
 	for _, include := range []string{"", "&include=summary"} {
-		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100&cursor="+url.QueryEscape(first.NextCursor)+include, f.token, nil)
-		requireNativeStatus(t, response, http.StatusOK)
-		var continuation tracker.NativeIssuePage
-		if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) != 36 || continuation.Total != 136 {
-			t.Fatalf("continuation without work: %s err=%v", response.Body, err)
-		}
-		ids := make(map[string]bool)
+		ids := make(map[tracker.NativeWorkItemID]bool)
 		for _, issue := range first.Items {
-			ids[string(issue.WorkItemID)] = true
+			ids[issue.WorkItemID] = true
 		}
-		for _, issue := range continuation.Items {
-			if ids[string(issue.WorkItemID)] {
-				t.Fatalf("continuation repeated %s", issue.WorkItemID)
+		cursor := first.NextCursor
+		for cursor != "" {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?limit=100&cursor="+url.QueryEscape(cursor)+include, f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var continuation tracker.NativeIssuePage
+			if err := json.Unmarshal(response.Body.Bytes(), &continuation); err != nil || continuation.Work != nil || len(continuation.Items) == 0 || continuation.Total != 136 {
+				t.Fatalf("continuation without work: %s err=%v", response.Body, err)
 			}
+			for _, issue := range continuation.Items {
+				if ids[issue.WorkItemID] {
+					t.Fatalf("continuation repeated %s", issue.WorkItemID)
+				}
+				ids[issue.WorkItemID] = true
+			}
+			cursor = continuation.NextCursor
+		}
+		if len(ids) != 136 {
+			t.Fatalf("continuation lost inventory: got %d items, want 136", len(ids))
 		}
 	}
 	for transport, call := range transports {
@@ -302,8 +310,14 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	changed := strings.Replace(query, "state=Todo", "state=In%20Progress", 1)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+changed+"&cursor="+url.QueryEscape(read(query).NextCursor), f.token, nil), http.StatusUnprocessableEntity)
 	page := read("")
-	if !page.Work.Truncated || len(page.Work.Items) != 100 || page.Work.Items[0].WorkItemID != ip[1].WorkItemID {
+	if !page.Work.Truncated || len(page.Work.Items) == 0 || len(page.Work.Items) > 100 || page.Work.Items[0].WorkItemID != ip[1].WorkItemID {
 		t.Fatal("large open inventory displaced live work or exceeded the bound")
+	}
+	for _, items := range [][]tracker.NativeIssue{page.Items, page.Work.Items} {
+		raw, err := json.Marshal(operatortool.NativeItemPage(string(f.project.ID), tracker.Page[tracker.NativeIssue]{Items: items}))
+		if err != nil || len(raw) > operatortool.WorkListPageBytes {
+			t.Fatalf("work projection exceeds the existing page budget: bytes=%d error=%v", len(raw), err)
+		}
 	}
 	q := &runtimeReadQuery{nativeQueryer: f.service.database.db}
 	_, err = readNativeWorkSummary(t.Context(), q, scope, "SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0", []any{scope.organization, scope.project}, 100, f.service.config.now(), "all", "")
