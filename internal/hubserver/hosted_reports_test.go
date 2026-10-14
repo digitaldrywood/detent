@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,10 +74,13 @@ func TestReportsShippedPopulation(t *testing.T) {
 		state string
 		steps []step
 	}{
-		"reclosed":     {"Done", []step{{to.Add(-40 * time.Hour), "Todo", "Done"}, {to.Add(-39 * time.Hour), "Done", "Todo"}, {to.Add(-10 * time.Hour), "Todo", "Done"}}},
-		"window start": {"Done", []step{{w.From, "Todo", "Done"}}},
-		"just outside": {"Done", []step{{w.From.Add(-time.Second), "Todo", "Done"}}},
-		"cancelled":    {"Cancelled", []step{{to.Add(-5 * time.Hour), "Todo", "Cancelled"}}},
+		"reclosed":       {"Done", []step{{to.Add(-40 * time.Hour), "Todo", "Done"}, {to.Add(-39 * time.Hour), "Done", "Todo"}, {to.Add(-10 * time.Hour), "Todo", "Done"}}},
+		"window start":   {"Done", []step{{w.From, "Todo", "Done"}}},
+		"just outside":   {"Done", []step{{w.From.Add(-time.Second), "Todo", "Done"}}},
+		"cancelled":      {"Cancelled", []step{{to.Add(-5 * time.Hour), "Todo", "Cancelled"}}},
+		"archived":       {"Done", []step{{to.Add(-6 * time.Hour), "Todo", "Done"}}},
+		"reopened":       {"Todo", []step{{to.Add(-30 * time.Hour), "Todo", "Done"}, {to.Add(-29 * time.Hour), "Done", "Todo"}}},
+		"then cancelled": {"Cancelled", []step{{to.Add(-15 * time.Hour), "Todo", "Done"}, {to.Add(-14 * time.Hour), "Done", "Cancelled"}}},
 	}
 	for i := range 4 {
 		var steps []step
@@ -115,18 +119,23 @@ func TestReportsShippedPopulation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	priorAt := w.From.Add(-2 * time.Hour)
-	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
+	if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", ids["archived"]); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE attempt_usage SET period=? WHERE attempt_id='attempt_browser_usage_2_1'", priorAt.Format(usagePeriodLayout)); err != nil {
+	priorAt := w.From.Add(-2 * time.Hour)
+	for attempt, at := range map[string]time.Time{"attempt_browser_usage_1_0": w.From.Add(-30 * time.Hour), "attempt_browser_usage_2_1": priorAt} {
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO attempt_usage SELECT attempt_id,organization_id,project_id,?,provider,model,input,cached_input,output,cost_estimate,currency,updated_at FROM attempt_usage WHERE attempt_id=?", at.Format(usagePeriodLayout), attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
 	var priorCost float64
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE attempt_id='attempt_browser_usage_2_1'").Scan(&priorCost); err != nil || priorCost == 0 {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE period>=? AND period<?", w.From.Add(-48*time.Hour).Format(usagePeriodLayout), w.From.Format(usagePeriodLayout)).Scan(&priorCost); err != nil || priorCost == 0 {
 		t.Fatalf("prior cost=%v err=%v", priorCost, err)
 	}
 	var shippedCost float64
@@ -152,14 +161,26 @@ func TestReportsShippedPopulation(t *testing.T) {
 	for _, bucket := range report.Throughput {
 		throughput += bucket.Done
 	}
-	if c := report.Completion; c.Done != 6 || c.Cancelled != 1 || c.Partial || c.System.Count != 6 || throughput != 6 || c.Cost != shippedCost {
-		t.Fatalf("completion=%+v throughput=%d want 6 shipped, 1 cancelled, cost %v", c, throughput, shippedCost)
+	if c := report.Completion; c.Done != 7 || c.Cancelled != 2 || c.Partial || c.System.Count != 7 || throughput != 7 || c.Cost != shippedCost {
+		t.Fatalf("completion=%+v throughput=%d want 7 shipped, 2 cancelled, lifetime cost %v", c, throughput, shippedCost)
 	}
 	if p := report.Previous; p.Done != 1 || p.Cancelled != 0 || p.Partial || p.Cost != 0 {
 		t.Fatalf("previous=%+v", p)
 	}
-	if report.Cancelled != 1 || report.PriorCost != priorCost || report.PriorFailed != 1 || report.PriorFirst != nil {
-		t.Fatalf("cancelled=%d prior cost=%v failed=%d first try=%v, want 1, %v, 1, nil", report.Cancelled, report.PriorCost, report.PriorFailed, report.PriorFirst, priorCost)
+	if report.Cancelled != 2 || report.PriorCost == nil || *report.PriorCost != priorCost || report.PriorFailed == nil || *report.PriorFailed != 1 || report.PriorFirst != nil {
+		t.Fatalf("cancelled=%d prior cost=%v failed=%v first try=%v, want 2, %v, 1, nil", report.Cancelled, report.PriorCost, report.PriorFailed, report.PriorFirst, priorCost)
+	}
+	for _, window := range []struct {
+		from, to time.Time
+		want     bool
+	}{{w.From.Add(-time.Hour), w.From, false}, {w.From, w.From.Add(time.Hour), true}} {
+		population, err := readNativeClosedPopulation(t.Context(), f.service.database.reader, scope, "", nil, window.from, window.to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := slices.Contains(population.shippedIDs(), ids["window start"]); got != window.want {
+			t.Fatalf("close on the boundary in [%s, %s) = %t, want %t", window.from, window.to, got, window.want)
+		}
 	}
 	board, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{"completed_window": {"48h"}}, to)
 	if err != nil {

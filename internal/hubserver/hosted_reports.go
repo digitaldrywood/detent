@@ -75,9 +75,9 @@ type hostedReportsReport struct {
 	Cost        float64                `json:"cost_usd"`
 	FirstTry    *float64               `json:"first_try_percent"`
 	Cancelled   int                    `json:"cancelled"`
-	PriorCost   float64                `json:"previous_cost_usd"`
+	PriorCost   *float64               `json:"previous_cost_usd,omitempty"`
 	PriorFirst  *float64               `json:"previous_first_try_percent"`
-	PriorFailed int                    `json:"previous_failed"`
+	PriorFailed *int                   `json:"previous_failed,omitempty"`
 	Unavailable []string               `json:"unavailable"`
 }
 
@@ -184,7 +184,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		out.Tokens += row.tokens()
 		out.Input += row.Input
 		out.Cached += row.CachedInput
-		out.Cost += row.Cost
+	}
+	if out.Cost, _, err = readProjectSpend(ctx, q, scope, w.From, w.To); err != nil {
+		return out, err
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
@@ -330,7 +332,7 @@ func reportFailureClasses(failures []nativeFailure) []reportClassTotal {
 }
 
 func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, from, to time.Time) (reportsCompletion, []nativeShippedIssue, error) {
-	population, err := readNativeClosedPopulation(ctx, q, scope, from, to)
+	population, err := readNativeClosedPopulation(ctx, q, scope, "", nil, from, to)
 	if err != nil {
 		return reportsCompletion{}, nil, err
 	}
@@ -340,7 +342,7 @@ func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeSco
 		return out, nil, err
 	}
 	out.Done, out.Cancelled = len(population.Shipped), population.Cancelled
-	out.Cost, err = readNativeShippedSpend(ctx, q, scope, ids, from, to)
+	out.Cost, err = readNativeShippedSpend(ctx, q, scope, ids, to)
 	return out, population.Shipped, err
 }
 
@@ -489,11 +491,19 @@ func reportsAttemptTotals(attempts []nativeAnalyticsAttempt, usage map[string][]
 }
 
 func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope nativeScope, prior operatortool.AnalyticsWindow, out *hostedReportsReport) error {
-	if err := q.QueryRowContext(ctx, `SELECT coalesce(sum(cost_estimate),0) FROM attempt_usage WHERE organization_id=? AND period>=? AND period<? AND project_id=?`, scope.organization, prior.From.UTC().Format(usagePeriodLayout), prior.To.UTC().Format(usagePeriodLayout), scope.project).Scan(&out.PriorCost); err != nil {
-		return fmt.Errorf("read prior spend: %w", err)
+	cost, usageRows, err := readProjectSpend(ctx, q, scope, prior.From, prior.To)
+	if err != nil {
+		return err
 	}
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.status='failed' AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&out.PriorFailed); err != nil {
+	if usageRows > 0 {
+		out.PriorCost = &cost
+	}
+	var attempts, failed int
+	if err := q.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(a.status='failed'),0) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts, &failed); err != nil {
 		return fmt.Errorf("read prior failed attempts: %w", err)
+	}
+	if attempts > 0 {
+		out.PriorFailed = &failed
 	}
 	landings, err := nativeAnalyticsLandings(ctx, q, scope, prior)
 	if err != nil {
