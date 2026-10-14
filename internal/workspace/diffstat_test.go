@@ -14,6 +14,67 @@ import (
 	"time"
 )
 
+func TestLocalGitReviewCommandRerunsExternalRuntimeInputs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX Go command fixture")
+	}
+	t.Setenv("CGO_ENABLED", "0")
+	fixture := filepath.Join(t.TempDir(), "runtime-input")
+	t.Setenv("DETENT_RUNTIME_FIXTURE", fixture)
+	if err := os.WriteFile(fixture, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := initSourceRepo(t)
+	for name, content := range map[string]string{
+		"go.mod": "module example.test/runtime\n\ngo 1.26.0\n",
+		"runtime_test.go": `package runtimefixture
+import ("os"; "testing")
+func TestExternalFixture(t *testing.T) {
+ data, err := os.ReadFile(os.Getenv("DETENT_RUNTIME_FIXTURE"))
+ if err != nil || string(data) != "ready" { t.Fatalf("external fixture unavailable: %v", err) }
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, source, "add", "go.mod", "runtime_test.go")
+	runGit(t, source, "commit", "-m", "external runtime input fixture")
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "runtime-input"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(head)
+	first, err := backend.RunReviewCommand(t.Context(), info, issue, "go test ./... -count=1")
+	if err != nil || first.ExitCode != 0 {
+		t.Fatalf("initial fixture failed: %+v %v", first, err)
+	}
+	if first.Evidence == nil || first.Evidence.InputsSHA != "" {
+		t.Fatal("test runtime received a reusable source/tool identity")
+	}
+	if err := os.WriteFile(fixture, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preflight := backend.ReviewCommandEvidence(t.Context(), info, issue, first.Command)
+	if preflight.InputsSHA != "" {
+		t.Fatal("external runtime inputs were considered bound")
+	}
+	second, err := backend.RunReviewCommand(t.Context(), info, issue, first.Command)
+	if err != nil || second.ExitCode == 0 || second.HeadSHA != first.HeadSHA || second.TreeSHA != first.TreeSHA || !strings.Contains(second.Output, "external fixture unavailable") {
+		t.Fatalf("unchanged source did not observe changed runtime: %+v %v", second, err)
+	}
+}
+
 func TestParseDiffStat(t *testing.T) {
 	t.Parallel()
 
@@ -245,9 +306,9 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		unbound, cgo, ignored bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
-		{name: "literal packages and supported flags retain identity", command: "go test ./... -short -count=1", probeOnly: true, toolchainKnown: true},
-		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, toolchainKnown: true, unbound: true, cgo: true},
-		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, toolchainKnown: true, unbound: true, ignored: true},
+		{name: "package runtime inputs are unbound with supported flags", command: "go test ./... -short -count=1", probeOnly: true, unbound: true},
+		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, unbound: true, cgo: true},
+		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, unbound: true, ignored: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
 		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
 		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},

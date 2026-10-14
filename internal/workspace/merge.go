@@ -448,7 +448,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
 	inputs := result.Evidence.InputsSHA
 	if !result.Evidence.Environment.Known() {
-		result.Evidence = validationEnvironment(ctx, cmd, false)
+		result.Evidence = validationEnvironment(ctx, cmd)
 		result.Evidence.InputsSHA = ""
 	}
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
@@ -481,7 +481,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	return result, nil
 }
 
-func validationEnvironment(ctx context.Context, command *exec.Cmd, packageInputs bool) *gate.CommandEvidence {
+func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
 	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 	probe := validationProbe(ctx, command, "go env -json")
 	if probe == nil {
@@ -497,7 +497,7 @@ func validationEnvironment(ctx context.Context, command *exec.Cmd, packageInputs
 		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
 		if environment.Valid() {
 			evidence.Environment = environment
-			evidence.InputsSHA = validationInputs(ctx, command, output, packageInputs)
+			evidence.InputsSHA = validationInputs(ctx, command, output)
 		}
 	}
 	return evidence
