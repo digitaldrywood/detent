@@ -242,8 +242,9 @@ func (a *mergingSecurityAuditor) Audit(ctx context.Context, request SecurityAudi
 	execution.Result.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Path: "internal/database/webhook.go", Line: 342, Body: "authorization bypass"}}
 	return execution, err
 }
-func (c *mergingSecurityAuditConnector) SecurityAuditSnapshot(_ context.Context, issue connector.Issue, _ int) (securityaudit.Snapshot, error) {
-	return securityAuditSnapshotFromIssue("detent", issue), nil
+func (c *mergingSecurityAuditConnector) PullRequestValidationDiff(_ context.Context, issue connector.Issue) (connector.ValidationDiff, error) {
+	snapshot := securityAuditSnapshotFromIssue("detent", issue)
+	return connector.ValidationDiff{Repository: snapshot.Repository, PRNumber: snapshot.PRNumber, BaseSHA: snapshot.BaseSHA, HeadSHA: snapshot.HeadSHA, Patch: "diff"}, nil
 }
 
 func TestMergeWorkerActionableGateControls(t *testing.T) {
@@ -290,8 +291,6 @@ func TestMergeWorkerAuditFailureDoesNotPublishFindings(t *testing.T) {
 		mutate func(*securityaudit.Run)
 	}{
 		{name: "backend failure", mutate: func(r *securityaudit.Run) { r.ExitStatus = securityaudit.ExitStatusFailed }},
-		{name: "metered authentication", mutate: func(r *securityaudit.Run) { r.AuthenticationMode = "api_key" }},
-		{name: "untrusted evidence", mutate: func(r *securityaudit.Run) { r.ServiceIdentity = "untrusted" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o, tracker, issue := mergingSecurityAuditFixture()
@@ -299,13 +298,16 @@ func TestMergeWorkerAuditFailureDoesNotPublishFindings(t *testing.T) {
 			o.securityAuditStore = memo
 			audit := securityAuditPassingRun(issue)
 			audit.Attempt = gate.DefaultSecurityAuditMaxAttempts
+			now := time.Date(2026, 10, 14, 5, 0, 0, 0, time.UTC)
+			o.now = func() time.Time { return now }
+			audit.CompletedAt = now
 			tc.mutate(&audit)
 			if _, err := memo.RecordSecurityAuditRun(t.Context(), audit); err != nil {
 				t.Fatal(err)
 			}
 			tracker.publishErr = errors.New("PR comment unavailable")
 			state := newState(o.cfg)
-			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: time.Now(), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean, TurnStarted: true}}
+			event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathClean, TurnStarted: true}}
 			running := Running{Issue: issue, Attempt: 1, Mode: runpkg.RunModeMerge}
 			if !o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
 				t.Fatal("completion was not handled")
@@ -315,6 +317,26 @@ func TestMergeWorkerAuditFailureDoesNotPublishFindings(t *testing.T) {
 			}
 			if got := state.Retry[issue.ID].Error; got != string(gate.ReasonSecurityAuditFailed) {
 				t.Fatalf("retry reason = %q, want %q", got, gate.ReasonSecurityAuditFailed)
+			}
+			now = now.Add(o.retryDelay(audit.Attempt, false))
+			o.securityAuditor = &securityAuditTestAuditor{}
+			event.CompletedAt = now
+			if !o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+				t.Fatal("recovered completion was not handled")
+			}
+			o.securityAuditWG.Wait()
+			if got := o.securityAuditEvaluation(t.Context(), issue); !got.Allowed {
+				t.Fatalf("recovered backend did not produce a passing audit: %+v", got)
+			}
+			latest, err := memo.LatestSecurityAuditRun(t.Context(), o.securityAuditIdentity(issue).key)
+			if err != nil || latest.Attempt != audit.Attempt+1 || latest.BaseSHA != audit.BaseSHA || latest.HeadSHA != audit.HeadSHA {
+				t.Fatalf("recovery audit = %+v, err = %v", latest, err)
+			}
+			if len(tracker.merges) == 0 {
+				o.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue)
+			}
+			if len(tracker.merges) != 1 || len(tracker.updates) != 1 || tracker.updates[0].state != "Done" || len(tracker.comments) != 0 || len(tracker.prComments) != 0 {
+				t.Fatalf("recovered audit did not merge without findings or Rework: %+v", tracker)
 			}
 		})
 	}

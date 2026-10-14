@@ -27,6 +27,7 @@ import {
   type SidebarShellData,
 } from "./adapters/sidebarData.tsx";
 import { SidebarInset, useSidebar } from "../components/ui/sidebar.tsx";
+import { OrganizationMembersProvider } from "./account/OrganizationMembers.tsx";
 import { AppSidebarLayout } from "../components/AppSidebarLayout.tsx";
 import {
   chipStamp,
@@ -127,11 +128,14 @@ function useListState(client: ConversationClient) {
 }
 
 export function Shell(): React.ReactElement {
+  const pathname = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
 
   return (
     <ToastProvider>
       <AnchoredToastProvider>
-        <ShellBody />
+        <OrganizationMembersProvider enabled={/^\/settings(\/|$)/.test(pathname)}>
+          <ShellBody />
+        </OrganizationMembersProvider>
       </AnchoredToastProvider>
     </ToastProvider>
   );

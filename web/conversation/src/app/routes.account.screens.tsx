@@ -19,9 +19,10 @@ function useGo(): (to: string) => void {
 }
 
 export function SettingsScreen(): React.ReactElement {
-  const { section } = useParams({ strict: false }) as { section?: string };
+  const { section, organizationPage } = useParams({ strict: false }) as { section?: string; organizationPage?: string };
   const search = useSearch({ strict: false }) as { project?: string };
-  const id = section !== undefined && isSettingsSectionId(section) ? section : DEFAULT_SECTION;
+  const requested = organizationPage === undefined ? section : `organization/${organizationPage}`;
+  const id = requested !== undefined && isSettingsSectionId(requested) ? requested : organizationPage === undefined ? DEFAULT_SECTION : "organization";
   return <SettingsRoute section={id} project={search.project ?? null} onNavigate={useGo()} />;
 }
 

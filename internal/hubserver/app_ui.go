@@ -323,6 +323,7 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 // Bootstrap payload (decisions section 12).
 
 type appBootstrapOrganization struct {
+	Role      string `json:"role,omitempty"`
 	ID        string `json:"id"`
 	Slug      string `json:"slug"`
 	Name      string `json:"name"`
@@ -791,7 +792,7 @@ func (s *Service) hostedOrganizationChoices(ctx context.Context, session auth.Se
 			}
 			choices = append(choices, appBootstrapOrganization{
 				ID: destination.OrganizationID, Name: destination.OrganizationID, PublicURL: destination.PublicURL,
-				Current: destination.OrganizationID == s.config.Hosted.OrganizationID,
+				Current: destination.OrganizationID == s.config.Hosted.OrganizationID, Role: membership.Role.Slug,
 			})
 			break
 		}

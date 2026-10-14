@@ -422,7 +422,16 @@ func (s *httpProtocolSession) dispatch(ctx context.Context, message request, fra
 	if !ok {
 		return marshalHTTPResponse(response{JSONRPC: "2.0", ID: json.RawMessage(`null`), Error: &rpcError{Code: codeInvalidRequest, Message: "Invalid Request"}}), false, nil
 	}
-	responses, ok := s.router.register(key)
+	responseLimit := MaxHTTPResponseBytes
+	if message.Method == "tools/call" {
+		var params struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(message.Params, &params) == nil && params.Name == operatortool.WorkBulkExport {
+			responseLimit = 3*operatortool.WorkBulkExportMaxBytes + 64*1024
+		}
+	}
+	responses, ok := s.router.register(key, responseLimit)
 	if !ok {
 		return marshalHTTPResponse(response{JSONRPC: "2.0", ID: responseID(message.ID), Error: &rpcError{Code: codeInvalidRequest, Message: "Duplicate request ID"}}), false, nil
 	}
@@ -523,14 +532,15 @@ func (s *httpProtocolSession) lastSeen() time.Time {
 type httpResponseRouter struct {
 	mu      sync.Mutex
 	pending map[string]chan []byte
+	limits  map[string]int
 	stopped bool
 }
 
 func newHTTPResponseRouter() *httpResponseRouter {
-	return &httpResponseRouter{pending: make(map[string]chan []byte)}
+	return &httpResponseRouter{pending: make(map[string]chan []byte), limits: make(map[string]int)}
 }
 
-func (r *httpResponseRouter) register(key string) (chan []byte, bool) {
+func (r *httpResponseRouter) register(key string, limits ...int) (chan []byte, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stopped || r.pending[key] != nil {
@@ -538,6 +548,10 @@ func (r *httpResponseRouter) register(key string) (chan []byte, bool) {
 	}
 	responses := make(chan []byte, 1)
 	r.pending[key] = responses
+	r.limits[key] = MaxHTTPResponseBytes
+	if len(limits) > 0 {
+		r.limits[key] = limits[0]
+	}
 	return responses, true
 }
 
@@ -546,6 +560,7 @@ func (r *httpResponseRouter) unregister(key string, responses chan []byte) {
 	defer r.mu.Unlock()
 	if r.pending[key] == responses {
 		delete(r.pending, key)
+		delete(r.limits, key)
 	}
 }
 
@@ -561,7 +576,13 @@ func (r *httpResponseRouter) Write(frame []byte) (int, error) {
 	if !ok {
 		return len(frame), nil
 	}
-	if len(trimmed) > MaxHTTPResponseBytes {
+	r.mu.Lock()
+	limit := r.limits[key]
+	r.mu.Unlock()
+	if limit == 0 {
+		limit = MaxHTTPResponseBytes
+	}
+	if len(trimmed) > limit {
 		trimmed = marshalHTTPResponse(oversizedResponse(responseID(message.ID), len(trimmed)))
 	}
 	r.mu.Lock()
@@ -591,6 +612,7 @@ func (r *httpResponseRouter) stop() {
 	defer r.mu.Unlock()
 	r.stopped = true
 	clear(r.pending)
+	clear(r.limits)
 }
 
 func parseHTTPRequest(body []byte) (request, []byte) {

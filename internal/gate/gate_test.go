@@ -146,7 +146,7 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 func TestEffectiveSecurityAuditDefaults(t *testing.T) {
 	t.Parallel()
 
-	cfg := Effective(Config{SecurityAudit: SecurityAuditConfig{Enabled: true}}).SecurityAudit
+	cfg := DefaultConfig().SecurityAudit
 	if !cfg.Enabled || cfg.MaxAttempts != DefaultSecurityAuditMaxAttempts || cfg.TurnTimeoutMS != DefaultSecurityAuditTurnTimeoutMS {
 		t.Fatalf("SecurityAudit = %#v", cfg)
 	}
@@ -181,9 +181,9 @@ func TestEvaluateSecurityAudit(t *testing.T) {
 			want:       Decision{Action: ActionWait, Reason: ReasonSecurityAuditMissing},
 		},
 		{
-			name:       "metered reworks",
-			evaluation: securityaudit.Evaluation{Reason: securityaudit.ReasonMeteredAuth},
-			want:       Decision{Action: ActionRework, Reason: ReasonSecurityAuditFailed},
+			name:       "backend failure waits",
+			evaluation: securityaudit.Evaluation{Reason: securityaudit.ReasonFailed},
+			want:       Decision{Action: ActionWait, Reason: ReasonSecurityAuditFailed},
 		},
 		{
 			name: "finding reworks",

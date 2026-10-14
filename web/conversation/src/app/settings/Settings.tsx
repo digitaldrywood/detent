@@ -34,7 +34,8 @@ import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { PLATFORM } from "../entry/api.ts";
 import { newKey } from "../account/idempotency.ts";
-import { OrganizationRoute } from "../account/Organization.tsx";
+import { OrganizationMembersRoute } from "../account/Organization.tsx";
+import { OrganizationOverviewRoute, OrganizationModelsRoute } from "../account/OrganizationOverview.tsx";
 import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
@@ -844,8 +845,14 @@ export function SettingsRoute({
             <h1>Settings</h1>
           </WorkspaceBreadcrumbItem>
           <WorkspaceBreadcrumbSeparator />
+          {activeId.startsWith("organization") ? (
+            <>
+              <WorkspaceBreadcrumbItem>Organization</WorkspaceBreadcrumbItem>
+              <WorkspaceBreadcrumbSeparator />
+            </>
+          ) : null}
           <WorkspaceBreadcrumbItem current className="min-w-10">
-            <span className="min-w-0 truncate">{SETTINGS_SECTION_LABELS[activeId]}</span>
+            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : SETTINGS_SECTION_LABELS[activeId]}</span>
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
@@ -868,7 +875,11 @@ function SettingsBody({
 }): React.ReactElement {
   switch (section) {
     case "organization":
-      return <OrganizationRoute />;
+      return <OrganizationOverviewRoute />;
+    case "organization/members":
+      return <OrganizationMembersRoute />;
+    case "organization/models":
+      return <OrganizationModelsRoute />;
     case "projects":
       return <ProjectsSettings onNavigate={onNavigate} />;
     case "runners":
