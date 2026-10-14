@@ -145,12 +145,20 @@ func recommendRunner(r runnerauth.Routing, hours []recommendationHour, runs []re
 		}
 		out.Periods = append(out.Periods, recommendPeriod(period, selected, peaks, cores))
 	}
-	out.Suggested = suggestLimit(r.CapacityLimit, hours)
+	out.Suggested = suggestLimit(r.CapacityLimit, out.Timezone, hours)
 	return out, nil
 }
 
-func suggestLimit(current int, hours []recommendationHour) suggestedLimit {
+func hostPressured(hour recommendationHour) bool {
+	return hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 || hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10
+}
+
+func suggestLimit(current int, timezone string, hours []recommendationHour) suggestedLimit {
 	out := suggestedLimit{Current: current, Direction: "insufficient_evidence", Reasons: []string{}}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		location = time.UTC
+	}
 	cpuHot := func(hour recommendationHour) bool {
 		return hour.CPUSampleCount > 0 && hour.CPUBusySumPercent/float64(hour.CPUSampleCount) >= 90
 	}
@@ -158,30 +166,30 @@ func suggestLimit(current int, hours []recommendationHour) suggestedLimit {
 		return earlier >= 0 && later < len(hours) && hours[later].Hour.Sub(hours[earlier].Hour) == time.Hour
 	}
 	type level struct{ hours, saturated int }
-	levels := map[int]*level{}
-	cpuHours, memoryHours, fullHours := 0, 0, 0
+	levels := map[int]level{}
+	busyHours, cpuHours, memoryHours, fullHours := 0, 0, 0, 0
 	var lowDisk *recommendationHour
 	for i, hour := range hours {
+		if hour.DiskSampleCount > 0 && hour.DiskFreeMinBytes*10 < hour.DiskTotalMinBytes && (lowDisk == nil || hour.DiskFreeMinBytes < lowDisk.DiskFreeMinBytes) {
+			lowDisk = &hours[i]
+		}
 		if hour.MemorySampleCount == 0 || hour.CPUSampleCount == 0 {
 			continue
 		}
 		out.HoursCovered++
-		if hour.DiskSampleCount > 0 && hour.DiskFreeMinBytes*10 < hour.DiskTotalMinBytes && (lowDisk == nil || hour.DiskFreeMinBytes < lowDisk.DiskFreeMinBytes) {
-			lowDisk = &hours[i]
+		if hour.Slots <= 0 {
+			continue
 		}
-		memory := hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 ||
-			hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10 ||
-			follows(i, i-1) && hour.SwapUsedMaxBytes >= hours[i-1].SwapUsedMaxBytes+capacityGiB
+		busyHours++
+		swapGrew := follows(i, i-1) && hour.SwapSampleCount > 0 && hours[i-1].SwapSampleCount > 0 && hour.SwapUsedMaxBytes >= hours[i-1].SwapUsedMaxBytes+capacityGiB
+		memory := hostPressured(hour) || swapGrew
 		cpu := cpuHot(hour) && (follows(i, i-1) && cpuHot(hours[i-1]) || follows(i+1, i) && cpuHot(hours[i+1]))
-		saturated := hour.Slots > 0 && (memory || cpu)
 		slots := int(math.Round(hour.Slots))
-		if levels[slots] == nil {
-			levels[slots] = &level{}
-		}
-		levels[slots].hours++
-		if saturated {
+		l := levels[slots]
+		l.hours++
+		if memory || cpu {
 			out.SaturatedHours++
-			levels[slots].saturated++
+			l.saturated++
 			if cpu {
 				cpuHours++
 			}
@@ -191,10 +199,11 @@ func suggestLimit(current int, hours []recommendationHour) suggestedLimit {
 		} else if current > 0 && hour.Slots >= 0.9*float64(current) {
 			fullHours++
 		}
+		levels[slots] = l
 	}
 	diskReason := func() {
 		if lowDisk != nil && len(out.Reasons) < 3 {
-			out.Reasons = append(out.Reasons, fmt.Sprintf("Free disk fell to %d GB on %s.", lowDisk.DiskFreeMinBytes/capacityGiB, lowDisk.Hour.Format("Jan 2")))
+			out.Reasons = append(out.Reasons, fmt.Sprintf("Free disk fell to %.1f GB on %s.", float64(lowDisk.DiskFreeMinBytes)/1e9, lowDisk.Hour.In(location).Format("Jan 2")))
 		}
 	}
 	if out.HoursCovered < 24 {
@@ -206,26 +215,31 @@ func suggestLimit(current int, hours []recommendationHour) suggestedLimit {
 	switch {
 	case current <= 0:
 		out.Reasons = append(out.Reasons, "The runner is stopped at 0 jobs at once.")
-	case out.SaturatedHours*20 > out.HoursCovered:
+	case out.SaturatedHours*20 > busyHours:
 		limit = current - 1
 		for slots := current - 1; slots >= max(1, current-2); slots-- {
-			if l := levels[slots]; l != nil && l.hours >= 3 && l.saturated*20 <= l.hours {
+			if l := levels[slots]; l.hours >= 3 && l.saturated*20 <= l.hours {
 				limit = slots
 				break
 			}
 		}
 		limit = max(1, limit)
 		if cpuHours > 0 {
-			out.Reasons = append(out.Reasons, fmt.Sprintf("CPU stayed at 90%% or more in %d of %d hours.", cpuHours, out.HoursCovered))
+			out.Reasons = append(out.Reasons, fmt.Sprintf("CPU stayed at 90%% or more in %d of %d busy hours.", cpuHours, busyHours))
 		}
 		if memoryHours > 0 {
-			out.Reasons = append(out.Reasons, fmt.Sprintf("Memory pressure or growing swap in %d of %d hours.", memoryHours, out.HoursCovered))
+			out.Reasons = append(out.Reasons, fmt.Sprintf("Memory pressure or growing swap in %d of %d busy hours.", memoryHours, busyHours))
 		}
-	case fullHours*4 >= out.HoursCovered:
+		if limit == current {
+			out.Reasons = append(out.Reasons, "It already runs the minimum of 1 job.")
+		}
+	case current < 10000 && fullHours*4 >= out.HoursCovered:
 		limit = current + 1
 		out.Reasons = append(out.Reasons, fmt.Sprintf("Every slot was busy in %d of %d hours without saturation.", fullHours, out.HoursCovered))
+	case busyHours == 0:
+		out.Reasons = append(out.Reasons, fmt.Sprintf("No work ran in the %d covered hours.", out.HoursCovered))
 	default:
-		out.Reasons = append(out.Reasons, fmt.Sprintf("Saturated in %d of %d hours.", out.SaturatedHours, out.HoursCovered))
+		out.Reasons = append(out.Reasons, fmt.Sprintf("Saturated in %d of %d busy hours.", out.SaturatedHours, busyHours))
 	}
 	diskReason()
 	out.Direction = "hold"
@@ -271,7 +285,7 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 	pressureCap := 10000
 	for i, hour := range hours {
 		swapping := hour.SwapUsedMaxBytes > 0 && i > 0 && hours[i-1].SwapUsedMaxBytes > 0 && hour.Hour.Sub(hours[i-1].Hour) == time.Hour
-		pressure := hour.OverCapacity || swapping || hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 || hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10
+		pressure := hour.OverCapacity || swapping || hostPressured(hour)
 		if pressure {
 			out.OverCapacityHours++
 			pressureCap = min(pressureCap, max(0, int(math.Ceil(hour.Slots))-1))

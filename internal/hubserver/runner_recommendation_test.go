@@ -486,13 +486,14 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 	}
 	for _, test := range []struct {
 		name      string
+		timezone  string
 		current   int
 		hours     []recommendationHour
 		direction string
 		limit     int
 		reasons   []string
 	}{
-		{"studio overload lowers to clean level with disk reason", 8, hostHours(len(studioCPU), func(i int, h *recommendationHour) {
+		{"studio overload lowers to clean level with disk reason", "UTC", 8, hostHours(len(studioCPU), func(i int, h *recommendationHour) {
 			h.CPUBusySumPercent = studioCPU[i] * 120
 			h.Slots = 6
 			if studioCPU[i] >= 90 || studioWarn[i] == '1' {
@@ -504,40 +505,65 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 			if i == 17 {
 				h.DiskFreeMinBytes = 0
 			}
-		}), "lower", 6, []string{"CPU stayed at 90% or more in 11 of 91 hours.", "Memory pressure or growing swap in 8 of 91 hours.", "Free disk fell to 0 GB on Oct 11."}},
-		{"memory pressure alone lowers by one without a clean level", 8, hostHours(48, func(i int, h *recommendationHour) {
+		}), "lower", 6, []string{"CPU stayed at 90% or more in 11 of 91 busy hours.", "Memory pressure or growing swap in 8 of 91 busy hours.", "Free disk fell to 0.0 GB on Oct 11."}},
+		{"memory pressure alone lowers by one without a clean level", "UTC", 8, hostHours(48, func(i int, h *recommendationHour) {
 			h.Slots = 8
 			if i%4 == 0 {
 				h.PressureCriticalCount = 1
 			}
-		}), "lower", 7, []string{"Memory pressure or growing swap in 12 of 48 hours."}},
-		{"swap growth counts as memory saturation", 6, hostHours(48, func(i int, h *recommendationHour) {
+		}), "lower", 7, []string{"Memory pressure or growing swap in 12 of 48 busy hours."}},
+		{"swap growth counts as memory saturation", "UTC", 6, hostHours(48, func(i int, h *recommendationHour) {
+			h.SwapSampleCount = 120
 			h.SwapUsedMaxBytes = uint64(i) * 2 * capacityGiB
-		}), "lower", 5, []string{"Memory pressure or growing swap in 47 of 48 hours."}},
-		{"isolated hot CPU hour is not saturation", 6, hostHours(48, func(i int, h *recommendationHour) {
+		}), "lower", 5, []string{"Memory pressure or growing swap in 47 of 48 busy hours."}},
+		{"unsampled previous swap hour is not growth", "UTC", 6, hostHours(48, func(i int, h *recommendationHour) {
+			h.SwapUsedMaxBytes = 3 * capacityGiB
+			if i%2 == 1 {
+				h.SwapSampleCount = 120
+			}
+		}), "hold", 6, []string{"Saturated in 0 of 48 busy hours."}},
+		{"isolated hot CPU hour is not saturation", "UTC", 6, hostHours(48, func(i int, h *recommendationHour) {
 			if i%2 == 0 {
 				h.CPUBusySumPercent = 95 * 120
 			}
-		}), "hold", 6, []string{"Saturated in 0 of 48 hours."}},
-		{"pressure while idle is not saturation", 6, hostHours(48, func(_ int, h *recommendationHour) {
+		}), "hold", 6, []string{"Saturated in 0 of 48 busy hours."}},
+		{"pressure while idle is not saturation", "UTC", 6, hostHours(48, func(_ int, h *recommendationHour) {
 			h.Slots = 0
 			h.PressureWarnCount = 5
-		}), "hold", 6, []string{"Saturated in 0 of 48 hours."}},
-		{"low disk alone holds and reports disk", 6, hostHours(48, func(i int, h *recommendationHour) {
+		}), "hold", 6, []string{"No work ran in the 48 covered hours."}},
+		{"saturation counts against busy hours only", "UTC", 6, hostHours(48, func(i int, h *recommendationHour) {
+			h.Slots = 0
+			if i < 4 {
+				h.Slots = 4
+				h.PressureWarnCount = 1
+			}
+		}), "lower", 5, []string{"Memory pressure or growing swap in 4 of 4 busy hours."}},
+		{"saturated at one job holds at the minimum", "UTC", 1, hostHours(48, func(_ int, h *recommendationHour) {
+			h.Slots = 1
+			h.PressureCriticalCount = 1
+		}), "hold", 1, []string{"Memory pressure or growing swap in 48 of 48 busy hours.", "It already runs the minimum of 1 job."}},
+		{"raise stops at the routing maximum", "UTC", 10000, hostHours(48, func(_ int, h *recommendationHour) { h.Slots = 10000 }), "hold", 10000, []string{"Saturated in 0 of 48 busy hours."}},
+		{"low disk reports the runner-local date without changing the limit", "America/Chicago", 6, hostHours(48, func(i int, h *recommendationHour) {
 			if i == 30 {
 				h.DiskFreeMinBytes = 12 * capacityGiB
 			}
-		}), "hold", 6, []string{"Saturated in 0 of 48 hours.", "Free disk fell to 12 GB on Oct 12."}},
-		{"full slots without saturation raise by one", 4, hostHours(40, func(i int, h *recommendationHour) {
+		}), "hold", 6, []string{"Saturated in 0 of 48 busy hours.", "Free disk fell to 12.9 GB on Oct 11."}},
+		{"low disk counts without CPU samples", "UTC", 6, hostHours(48, func(i int, h *recommendationHour) {
+			if i == 47 {
+				h.CPUSampleCount = 0
+				h.DiskFreeMinBytes = capacityGiB
+			}
+		}), "hold", 6, []string{"Saturated in 0 of 47 busy hours.", "Free disk fell to 1.1 GB on Oct 12."}},
+		{"full slots without saturation raise by one", "UTC", 4, hostHours(40, func(i int, h *recommendationHour) {
 			if i%10 < 3 {
 				h.Slots = 3.8
 			} else {
 				h.Slots = 1
 			}
 		}), "raise", 5, []string{"Every slot was busy in 12 of 40 hours without saturation."}},
-		{"idle host never raises", 4, hostHours(72, func(_ int, h *recommendationHour) { h.Slots = 0 }), "hold", 4, []string{"Saturated in 0 of 72 hours."}},
-		{"stopped runner holds", 0, hostHours(48, nil), "hold", 0, []string{"The runner is stopped at 0 jobs at once."}},
-		{"uncovered hours do not count", 6, hostHours(30, func(i int, h *recommendationHour) {
+		{"idle host never raises", "UTC", 4, hostHours(72, func(_ int, h *recommendationHour) { h.Slots = 0 }), "hold", 4, []string{"No work ran in the 72 covered hours."}},
+		{"stopped runner holds", "UTC", 0, hostHours(48, nil), "hold", 0, []string{"The runner is stopped at 0 jobs at once."}},
+		{"uncovered hours do not count", "UTC", 6, hostHours(30, func(i int, h *recommendationHour) {
 			if i < 10 {
 				h.CPUSampleCount = 0
 			}
@@ -545,7 +571,7 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := suggestLimit(test.current, test.hours)
+			got := suggestLimit(test.current, test.timezone, test.hours)
 			limit := -1
 			if got.Limit != nil {
 				limit = *got.Limit
