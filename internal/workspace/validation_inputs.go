@@ -51,9 +51,16 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 		}
 	}
 	if directGoValidation(validation) {
-		evidence := validationEnvironment(ctx, command)
+		packageInputs := strings.Fields(validation)[1] != "version"
+		evidence := validationEnvironment(ctx, command, packageInputs)
 		if !sourceBound {
 			evidence.InputsSHA = ""
+		}
+		if packageInputs && evidence.InputsSHA != "" {
+			ignored, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+			if err != nil || ignored != "" {
+				evidence.InputsSHA = ""
+			}
 		}
 		return evidence
 	}
@@ -119,7 +126,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	}
 	probe := *command
 	probe.Env = append(slices.Clone(command.Env), "GOTOOLCHAIN="+toolchain, "GOMAXPROCS=1")
-	evidence = validationEnvironment(ctx, &probe)
+	evidence = validationEnvironment(ctx, &probe, true)
 	if !evidence.Environment.Known() {
 		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 	}
@@ -272,13 +279,78 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 			return evidence
 		}
 	}
+	ignoredIdentity, err := validationIgnoredInputs(ctx, command, linter)
+	if err != nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	_, _ = digest.Write(ignoredIdentity)
 	evidence.InputsSHA = hex.EncodeToString(digest.Sum(nil))
 	return evidence
 }
 
-func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte) string {
+func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, linter string) ([]byte, error) {
+	ignored, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	linterPath, err := filepath.Rel(command.Dir, linter)
+	if err != nil {
+		return nil, err
+	}
+	paths := []string{"node_modules", "web/conversation/node_modules", "static/app/conversation", "static/css/output.css", "docs/config.md", "config.reference.yaml"}
+	for _, name := range strings.Split(ignored, "\x00") {
+		if name == "" || name == filepath.ToSlash(linterPath) {
+			continue
+		}
+		bound := false
+		for _, path := range paths {
+			if name == path || strings.HasPrefix(name, path+"/") {
+				bound = true
+				break
+			}
+		}
+		if !bound {
+			return nil, fs.ErrInvalid
+		}
+	}
+	digest := sha256.New()
+	for _, name := range paths {
+		path := filepath.Join(command.Dir, filepath.FromSlash(name))
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var identity []byte
+		if info.IsDir() {
+			identity, err = validationDirectoryIdentity(path)
+		} else if info.Mode().IsRegular() {
+			var content []byte
+			content, err = os.ReadFile(path)
+			value := sha256.Sum256(content)
+			identity = value[:]
+		} else {
+			return nil, fs.ErrInvalid
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := json.NewEncoder(digest).Encode(struct{ Path, Mode, SHA string }{name, info.Mode().String(), hex.EncodeToString(identity)}); err != nil {
+			return nil, err
+		}
+	}
+	return digest.Sum(nil), nil
+}
+
+func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte, packageInputs bool) string {
 	var goEnvironment map[string]string
 	if json.Unmarshal(observed, &goEnvironment) != nil {
+		return ""
+	}
+	if packageInputs && goEnvironment["CGO_ENABLED"] != "0" {
 		return ""
 	}
 	identities := make(map[string]string)

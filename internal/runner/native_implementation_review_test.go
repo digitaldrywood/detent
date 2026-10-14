@@ -243,6 +243,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
 		{name: "matching wrapped finalization receipt is reused", validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
 		{name: "matching bounded Go flags reuse receipt", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "stable-flags"},
+		{name: "CGO native dependencies require commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "cgo-enabled", wantRuns: 2},
+		{name: "new ignored package fixture requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "ignored-package", wantRuns: 1},
+		{name: "changed generated embed asset requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "generated-embed", wantRuns: 1},
 		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
 		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
 		{name: "double dash effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-double-vettool", wantRuns: 2},
@@ -339,7 +342,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					t.Fatal(err)
 				}
 				for name, content := range map[string]string{
-					".gitignore":        "tmp/\nnode_modules/\n",
+					".gitignore":        "tmp/\nnode_modules/\n/static/app/conversation/\n",
 					".golangci-version": "v2.14.0\n",
 					"main.go":           "package main\nfunc main() {}\n",
 				} {
@@ -420,7 +423,7 @@ if [ "$1" = env ]; then
         if [ -f .git/compiler-flags ]; then flags=$(cat .git/compiler-flags); fi
         if [ -f .git/cgo-flags ]; then cgo_flags=$(cat .git/cgo-flags); fi
         if [ -f .git/prefix-target ]; then target=$(cat .git/prefix-target); fi
-		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
+		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","CGO_ENABLED":"%s","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "${FIXTURE_CGO_ENABLED:-0}" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
     else
         case "$2" in GOHOSTOS) echo linux;; GOHOSTARCH) echo amd64;; GOVERSION) echo "$version";; esac
     fi
@@ -510,6 +513,9 @@ fi
 					t.Fatal(err)
 				}
 				worktree.local = local
+				if test.changedInput == "cgo-enabled" {
+					t.Setenv("FIXTURE_CGO_ENABLED", "1")
+				}
 				worktree.info.Path = source
 				head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 				worktree.heads = []string{head}
@@ -538,6 +544,18 @@ fi
 				receipt.TimingStage = "finalization"
 				receipt = tracker.PublicGateResult(receipt)
 				switch test.changedInput {
+				case "ignored-package":
+					if err := os.WriteFile(filepath.Join(source, "tmp", "fixture.json"), []byte("machine-local fixture"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "generated-embed":
+					path := filepath.Join(source, "static", "app", "conversation", "fixture.js")
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("replacement asset"), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				case "asset-framing":
 					if err := os.WriteFile(filepath.Join(source, "node_modules", "css-runtime"), []byte("first\n/z-next\n-rw-------\nsecond\n"), 0o600); err != nil {
 						t.Fatal(err)
