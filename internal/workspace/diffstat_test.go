@@ -238,6 +238,7 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		probeOnly           bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
 		{name: "package manager toolchain is unverified", command: "pnpm test", probeOnly: true},
 		{name: "make target toolchain is unverified", command: "make check-landing", probeOnly: true},
 		{name: "external Go executor is unverified", command: "go test -exec=custom ./...", probeOnly: true},
