@@ -152,7 +152,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 					t.Fatalf("terminal items aging %#v", residence.Aging)
 				}
 				for _, item := range residence.Aging.Items {
-					if item.WorkItemID == ids["c"] && (item.Lane != "Todo" || item.Hours != 21 || item.LaneP90Hours == nil || math.Abs(*item.LaneP90Hours-test.todoP90) > 0.001) {
+					if item.WorkItemID == ids["c"] && (item.Lane != "Todo" || item.Hours != 21 || item.LaneP90Hours == nil || math.Abs(*item.LaneP90Hours-test.todoP90) > 0.001 || item.SinceTodoHours == nil || *item.SinceTodoHours != 21) {
 						t.Fatalf("open lane aging %#v", item)
 					}
 				}

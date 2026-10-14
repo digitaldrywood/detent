@@ -1,4 +1,5 @@
 import { CapacityPanel } from "../fleet/CapacityPanel.tsx";
+import { MetricTile } from "../../components/ui/metric-tile.tsx";
 import { runnerFindings } from "./runnerFindings.ts";
 import React, { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
@@ -192,26 +193,6 @@ export function DiagnosticsRoute(): React.ReactElement {
     <FindingAskWorkspace key={`${askedProject.id}:${askedFinding.id}`} finding={askedFinding} project={askedProject} focusRequest={askFocusRequest}>
       {(controls) => view(controls)}
     </FindingAskWorkspace>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail?: string;
-}): React.ReactElement {
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <span className="text-xl font-semibold tabular-nums">{value}</span>
-      <span className="text-xs text-muted-foreground">{label}</span>
-      {detail ? (
-        <span className="text-xs text-muted-foreground">{detail}</span>
-      ) : null}
-    </div>
   );
 }
 
@@ -448,10 +429,10 @@ export function DiagnosticsView({
                 {error ? <Unavailable>{error}</Unavailable> : null}
                 {report ? <p className="text-xs text-muted-foreground">{timestamp(report.from)} to {timestamp(report.to)}{report.partial ? " · Partial history; recorded samples only" : ""}</p> : null}
                 <section aria-label="Diagnostics headline" className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
-                  <Metric label="Open findings" value={count(findings == null ? null : findings.filter((finding) => finding.resolved_at == null).length + problems.length)} />
-                  <Metric label="Stalled in lane" value={count(report?.stalled)} />
-                  <Metric label="Merge queue wait p50" value={duration(report?.merge_wait_p50)} />
-                  <Metric label="Landings refused on conflict" value={conflictPercent} />
+                  <MetricTile size="compact" label="Open findings" value={count(findings == null ? null : findings.filter((finding) => finding.resolved_at == null).length + problems.length)} />
+                  <MetricTile size="compact" label="Stalled in lane" value={count(report?.stalled)} />
+                  <MetricTile size="compact" label="Merge queue wait p50" value={duration(report?.merge_wait_p50)} />
+                  <MetricTile size="compact" label="Landings refused on conflict" value={conflictPercent} />
                 </section>
                 <Section title="Hourly capacity">
                   {report?.capacity && report.capacity.length > 0 ? <CapacityChart points={report.capacity} /> : <Unavailable>Hourly capacity is unavailable.</Unavailable>}
@@ -461,17 +442,17 @@ export function DiagnosticsView({
                 <div className="grid min-w-0 gap-6 sm:grid-cols-2">
                   <Section title="Work throughput">
                     <div className="grid grid-cols-2 gap-4">
-                      <Metric label="Claimed" value={count(report?.claimed)} />
-                      <Metric label="Ready" value={count(report?.ready)} />
-                      <Metric label="Skipped" value={count(report?.skipped)} />
+                      <MetricTile size="compact" label="Claimed" value={count(report?.claimed)} />
+                      <MetricTile size="compact" label="Ready" value={count(report?.ready)} />
+                      <MetricTile size="compact" label="Skipped" value={count(report?.skipped)} />
                     </div>
                   </Section>
                   <Section title="Merge throughput">
                     <div className="grid grid-cols-2 gap-4">
-                      <Metric label="Entered" value={count(report?.merge_entered)} />
-                      <Metric label="Landed" value={count(report?.merge_landed)} />
-                      <Metric label="Wait p90" value={duration(report?.merge_wait_p90)} />
-                      <Metric label="Longest wait" value={duration(report?.merge_wait_max)} />
+                      <MetricTile size="compact" label="Entered" value={count(report?.merge_entered)} />
+                      <MetricTile size="compact" label="Landed" value={count(report?.merge_landed)} />
+                      <MetricTile size="compact" label="Wait p90" value={duration(report?.merge_wait_p90)} />
+                      <MetricTile size="compact" label="Longest wait" value={duration(report?.merge_wait_max)} />
                     </div>
                   </Section>
                 </div>

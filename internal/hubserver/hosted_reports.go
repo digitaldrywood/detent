@@ -20,6 +20,8 @@ type reportsCompletion struct {
 	Done      int                                  `json:"done"`
 	Cancelled int                                  `json:"cancelled"`
 	Cost      float64                              `json:"cost_usd"`
+	CostP50   *float64                             `json:"cost_p50_usd,omitempty"`
+	CostP90   *float64                             `json:"cost_p90_usd,omitempty"`
 	System    operatortool.AnalyticsDuration       `json:"system"`
 	Lead      operatortool.AnalyticsDuration       `json:"lead"`
 	Working   operatortool.AnalyticsDuration       `json:"working"`
@@ -46,6 +48,9 @@ type reportsSpend struct {
 	WorkItemID string  `json:"work_item_id"`
 	Title      string  `json:"title"`
 	Cost       float64 `json:"cost_usd"`
+	Attempts   int     `json:"attempts"`
+	Shipped    bool    `json:"shipped"`
+	State      string  `json:"state,omitempty"`
 }
 
 type reportsBucket struct {
@@ -57,28 +62,33 @@ type reportsBucket struct {
 }
 
 type hostedReportsReport struct {
-	Pipeline    pipelineReport         `json:"pipeline"`
-	Requests    *requestMetricsReport  `json:"requests,omitempty"`
-	Analytics   nativeAnalyticsProject `json:"analytics"`
-	Completion  reportsCompletion      `json:"completion"`
-	Previous    reportsCompletion      `json:"previous"`
-	Stages      []reportsStage         `json:"stages"`
-	Spend       []reportsSpend         `json:"spend"`
-	Throughput  []reportsBucket        `json:"throughput"`
-	Titles      map[string]string      `json:"titles"`
-	Coverage    []diagnosticsCoverage  `json:"coverage"`
-	Rework      []reportClassTotal     `json:"rework_classes"`
-	Failures    []reportClassTotal     `json:"failure_classes"`
-	Tokens      int64                  `json:"tokens"`
-	Input       int64                  `json:"input"`
-	Cached      int64                  `json:"cached"`
-	Cost        float64                `json:"cost_usd"`
-	FirstTry    *float64               `json:"first_try_percent"`
-	Cancelled   int                    `json:"cancelled"`
-	PriorCost   *float64               `json:"previous_cost_usd,omitempty"`
-	PriorFirst  *float64               `json:"previous_first_try_percent"`
-	PriorFailed *int                   `json:"previous_failed,omitempty"`
-	Unavailable []string               `json:"unavailable"`
+	Pipeline     pipelineReport         `json:"pipeline"`
+	Requests     *requestMetricsReport  `json:"requests,omitempty"`
+	Analytics    nativeAnalyticsProject `json:"analytics"`
+	Completion   reportsCompletion      `json:"completion"`
+	Previous     reportsCompletion      `json:"previous"`
+	Series       []reportsSeriesBucket  `json:"series"`
+	FailedIssues int                    `json:"failed_issues"`
+	Runners      []reportsRunner        `json:"runners"`
+	OpenWork     reportsOpenWork        `json:"open_work"`
+	Prior        reportsPrior           `json:"prior"`
+	Stages       []reportsStage         `json:"stages"`
+	Spend        []reportsSpend         `json:"spend"`
+	Throughput   []reportsBucket        `json:"throughput"`
+	Titles       map[string]string      `json:"titles"`
+	Coverage     []diagnosticsCoverage  `json:"coverage"`
+	Rework       []reportClassTotal     `json:"rework_classes"`
+	Failures     []reportClassTotal     `json:"failure_classes"`
+	Tokens       int64                  `json:"tokens"`
+	Input        int64                  `json:"input"`
+	Cached       int64                  `json:"cached"`
+	Cost         float64                `json:"cost_usd"`
+	FirstTry     *float64               `json:"first_try_percent"`
+	Cancelled    int                    `json:"cancelled"`
+	PriorCost    *float64               `json:"previous_cost_usd,omitempty"`
+	PriorFirst   *float64               `json:"previous_first_try_percent"`
+	PriorFailed  *int                   `json:"previous_failed,omitempty"`
+	Unavailable  []string               `json:"unavailable"`
 }
 
 func (s *Service) hostedReports(c echo.Context) error {
@@ -95,21 +105,26 @@ func (s *Service) hostedReports(c echo.Context) error {
 	if !slices.Contains(projects, project) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	hours := map[string]int{"24h": 24, "48h": 48, "7d": 168, "30d": 720}[c.QueryParam("range")]
+	hours := map[string]int{"24h": 24, "48h": 48, "7d": 168, "30d": 720, "90d": 2160}[c.QueryParam("range")]
 	if hours == 0 {
 		return s.nativeAPIError(c, nativeInvalid("Unsupported report range"))
 	}
 	to := s.config.now().UTC().Truncate(time.Hour)
 	bucket := time.Hour
-	if hours > 240 {
+	if hours > 720 {
+		bucket = 24 * time.Hour
+	} else if hours > 240 {
 		bucket = 4 * time.Hour
 	}
-	w := operatortool.AnalyticsWindow{From: to.Add(-time.Duration(hours) * time.Hour), To: to, Bucket: bucket}
+	w := operatortool.AnalyticsWindow{From: reportsWindowStart(to, hours), To: to, Bucket: bucket}
 	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project, Limit: maxAnalyticsPopulation}, w)
 	if err != nil || len(analytics.Projects) != 1 {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
 	report, err := s.readHostedReports(ctx, analytics)
+	if err == nil {
+		err = s.reportsPriorQuality(ctx, nativeScope{organization: tracker.OrganizationID(analytics.OrganizationID), project: tracker.ProjectID(project)}, analytics.Window, &report.Prior)
+	}
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
 	}
@@ -125,7 +140,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (hostedReportsReport, error) {
 	p := analytics.Projects[0]
 	w := analytics.Window
-	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
+	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Series: []reportsSeriesBucket{}, Runners: []reportsRunner{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
 	diagnostics, err := s.readHostedDiagnosticsFrom(ctx, analytics, q)
 	if err != nil {
 		return out, err
@@ -156,13 +171,19 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	if err != nil {
 		return out, err
 	}
-	var shipped []nativeShippedIssue
+	var shipped, priorShipped []nativeShippedIssue
 	out.Completion, shipped, err = readReportsCompletion(ctx, q, scope, states, w.From, w.To)
 	if err != nil {
 		return out, err
 	}
-	out.Previous, _, err = readReportsCompletion(ctx, q, scope, states, w.From.Add(-w.To.Sub(w.From)), w.From)
+	out.Previous, priorShipped, err = readReportsCompletion(ctx, q, scope, states, w.From.Add(-w.To.Sub(w.From)), w.From)
 	if err != nil {
+		return out, err
+	}
+	inputs := reportsInputs{done: reportsDoneFrom(shipped), priorDone: reportsDoneFrom(priorShipped), timing: func(ids []string, to time.Time) (reportsCompletion, error) {
+		return readShippedCompletionTiming(ctx, q, scope, states, ids, to)
+	}}
+	if err := readReportsResidence(ctx, q, scope, w, &inputs); err != nil {
 		return out, err
 	}
 	for _, issue := range shipped {
@@ -189,8 +210,20 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		return out, err
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
+	out.Runners = reportsRunnerTotals(p.allAttempts, usage)
+	reportsSpendOutcomes(out.Spend, p.allAttempts, inputs)
+	out.OpenWork = reportsOpenWorkFor(inputs, p.LaneResidence.Lanes, w)
+	out.Prior = reportsPrior{LaneSeconds: inputs.lanes(w.From.Add(-w.To.Sub(w.From)), w.From)}
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
+	reportClassDetails(out.Rework, out.Failures, p.Quality.returns, p.failures)
+	if err := s.reportsTrackingIssues(ctx, scope, out.Failures, p.failures); err != nil {
+		return out, err
+	}
+	if out.Series, err = reportsSeries(inputs, p.allAttempts, usage, w); err != nil {
+		return out, err
+	}
+	reportsSeriesClasses(out.Series, p.Quality.returns, p.failures, w)
 	policy, err := diagnosticsPolicyValues(ctx, q, scope)
 	if err != nil {
 		return out, err
@@ -203,13 +236,16 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	if policy["Plan gate"] == "" || policy["Validator gate"] == "" {
 		out.Unavailable = append(out.Unavailable, "stage_gate_configuration")
 	}
+	failedIssues := map[string]bool{}
 	for _, a := range p.allAttempts {
 		if a.Status == "failed" {
+			failedIssues[a.WorkItemID] = true
 			if i := nativeAnalyticsBucketIndex(a.ObservedAt, w); i >= 0 {
 				out.Throughput[i].Failed++
 			}
 		}
 	}
+	out.FailedIssues = len(failedIssues)
 	for i, b := range out.Throughput {
 		var seconds float64
 		for _, capacity := range diagnostics.Capacity {
@@ -239,11 +275,20 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	for _, item := range p.LaneResidence.Aging.Items {
 		titleIDs = append(titleIDs, item.WorkItemID)
 	}
+	for _, item := range out.OpenWork.Items {
+		titleIDs = append(titleIDs, item.WorkItemID)
+	}
 	for _, item := range out.Spend {
 		titleIDs = append(titleIDs, item.WorkItemID)
 	}
 	for _, signature := range p.FailureSignatures.Items {
 		titleIDs = append(titleIDs, signature.WorkItems...)
+	}
+	for _, class := range slices.Concat(out.Rework, out.Failures) {
+		titleIDs = append(titleIDs, class.WorkItems...)
+		if class.TrackingWorkItemID != "" {
+			titleIDs = append(titleIDs, class.TrackingWorkItemID)
+		}
 	}
 	encodedIDs, err := marshalNative(titleIDs)
 	if err != nil {
@@ -342,7 +387,16 @@ func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeSco
 		return out, nil, err
 	}
 	out.Done, out.Cancelled = len(population.Shipped), population.Cancelled
-	out.Cost, err = readNativeShippedSpend(ctx, q, scope, ids, to)
+	var perIssue map[string]float64
+	out.Cost, perIssue, err = readNativeShippedSpend(ctx, q, scope, ids, to)
+	if len(perIssue) > 0 {
+		costs := make([]float64, 0, len(perIssue))
+		for _, cost := range perIssue {
+			costs = append(costs, cost)
+		}
+		spread := analyticsDuration(costs)
+		out.CostP50, out.CostP90 = &spread.P50Seconds, &spread.P90Seconds
+	}
 	return out, population.Shipped, err
 }
 
@@ -498,11 +552,16 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	if usageRows > 0 {
 		out.PriorCost = &cost
 	}
-	var attempts, failed int
-	if err := q.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(a.status='failed'),0) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts, &failed); err != nil {
+	var attempts int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&attempts); err != nil {
+		return fmt.Errorf("read prior attempts: %w", err)
+	}
+	failures, partial, err := readNativeFailures(ctx, q, scope, "", &prior)
+	if err != nil {
 		return fmt.Errorf("read prior failed attempts: %w", err)
 	}
-	if attempts > 0 {
+	if attempts > 0 && !partial {
+		failed := len(failures)
 		out.PriorFailed = &failed
 	}
 	landings, err := nativeAnalyticsLandings(ctx, q, scope, prior)

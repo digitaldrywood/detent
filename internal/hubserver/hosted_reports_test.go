@@ -164,6 +164,9 @@ func TestReportsShippedPopulation(t *testing.T) {
 	if c := report.Completion; c.Done != 7 || c.Cancelled != 2 || c.Partial || c.System.Count != 7 || throughput != 7 || c.Cost != shippedCost {
 		t.Fatalf("completion=%+v throughput=%d want 7 shipped, 2 cancelled, lifetime cost %v", c, throughput, shippedCost)
 	}
+	if c := report.Completion; c.CostP50 == nil || c.CostP90 == nil || *c.CostP50 != 0 || *c.CostP90 <= 0 || *c.CostP90 > shippedCost {
+		t.Fatalf("shipped spend p50=%v p90=%v, want 0 and a share of %v: one of seven shipped issues spent", c.CostP50, c.CostP90, shippedCost)
+	}
 	if p := report.Previous; p.Done != 1 || p.Cancelled != 0 || p.Partial || p.Cost != 0 {
 		t.Fatalf("previous=%+v", p)
 	}
@@ -208,6 +211,34 @@ func TestReportsStageAndSpendAttribution(t *testing.T) {
 	}
 	if !reflect.DeepEqual(spend, []reportsSpend{{WorkItemID: "one", Cost: 3}}) {
 		t.Fatalf("spend=%+v", spend)
+	}
+}
+
+func TestReportsRunnerTotals(t *testing.T) {
+	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	minutes := func(n int) []tracker.NativePhase {
+		return []tracker.NativePhase{{Name: "implement", StartedAt: at, FinishedAt: at.Add(time.Duration(n) * time.Minute)}}
+	}
+	attempts := []nativeAnalyticsAttempt{
+		{AttemptID: "a", WorkItemID: "one", Status: "succeeded", Phases: minutes(2)},
+		{AttemptID: "b", WorkItemID: "one", Status: "failed", Phases: minutes(4)},
+		{AttemptID: "c", WorkItemID: "two", Status: "succeeded", Phases: minutes(1)},
+		{AttemptID: "d", WorkItemID: "two", Status: "succeeded"},
+		{AttemptID: "e", WorkItemID: "two", Status: "running"},
+	}
+	usage := map[string][]usageRow{
+		"a": {{RunnerID: "run_studio", RunnerName: "studio", Cost: 1}, {RunnerID: "run_studio", RunnerName: "studio", Cost: 2}},
+		"b": {{RunnerID: "run_studio", RunnerName: "studio", Cost: 1}},
+		"c": {{RunnerID: "run_sprite", RunnerName: "sprite", Cost: 5}},
+		"d": {{Cost: 9}},
+	}
+	got := reportsRunnerTotals(attempts, usage)
+	want := []reportsRunner{
+		{RunnerID: "run_sprite", Name: "sprite", Sessions: 1, Succeeded: 1, Duration: analyticsDuration([]float64{60}), Cost: 5},
+		{RunnerID: "run_studio", Name: "studio", Sessions: 2, Succeeded: 1, Duration: analyticsDuration([]float64{120, 240}), Cost: 4},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runners=%+v want %+v", got, want)
 	}
 }
 
@@ -265,6 +296,191 @@ func TestReportsFirstTryHistory(t *testing.T) {
 }
 
 func reportsPercent(value float64) *float64 { return &value }
+
+func TestReportsOpenWork(t *testing.T) {
+	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
+	states := map[string]tracker.NativeState{"Done": {Terminal: true}, "Todo": {Dispatchable: true}, "Rework": {Dispatchable: true}, "Backlog": {}}
+	move := func(hour int, from, to string) analyticsResidenceEvent {
+		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}}
+	}
+	w := operatortool.AnalyticsWindow{From: at(100), To: at(200), Bucket: time.Hour}
+	issues := []analyticsResidenceIssue{
+		{id: "backlog", created: at(0), initial: "Backlog"},
+		{id: "todo", created: at(10), initial: "Todo"},
+		{id: "held", created: at(150), initial: "Todo", events: []analyticsResidenceEvent{move(160, "Todo", "Blocked")}},
+		{id: "working", created: at(190), initial: "Todo", events: []analyticsResidenceEvent{move(195, "Todo", "In Progress")}},
+		{id: "done", created: at(20), initial: "Todo", events: []analyticsResidenceEvent{move(110, "Todo", "Done")}},
+		{id: "late", created: at(60), initial: "Todo", events: []analyticsResidenceEvent{move(90, "Todo", "Rework"), move(120, "Rework", "Done")}},
+	}
+	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+	for _, issue := range issues {
+		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
+	}
+	var in reportsInputs
+	reportsTimelineResidence(&in, timelines, issues, states, w, false)
+	got := reportsOpenWorkFor(in, nil, w)
+	ids := []string{}
+	for _, item := range got.Items {
+		ids = append(ids, item.WorkItemID)
+	}
+	if got.Count != 2 || got.Held != 1 || got.Stuck != 2 || !slices.Equal(ids, []string{"todo", "held", "working"}) {
+		t.Fatalf("open work=%+v ids=%v", got, ids)
+	}
+	if got.PreviousStuck == nil || *got.PreviousStuck != 2 {
+		t.Fatalf("previous stuck=%v, want todo and done open over 24h at the prior window end", got.PreviousStuck)
+	}
+	if *got.Items[0].SinceTodoHours != 190 {
+		t.Fatalf("since todo=%v", *got.Items[0].SinceTodoHours)
+	}
+	prior := operatortool.AnalyticsWindow{From: at(0), To: w.From}
+	if lanes := in.lanes(prior.From, prior.To); lanes["Todo"] != (90+80+30)*3600 || lanes["Backlog"] != 0 || lanes["Rework"] != 10*3600 {
+		t.Fatalf("prior lane seconds=%v", lanes)
+	}
+	in.clipped = true
+	if clipped := reportsOpenWorkFor(in, nil, w); clipped.PreviousStuck != nil {
+		t.Fatalf("clipped history reported a prior count")
+	}
+}
+
+func TestReportsWindowStart(t *testing.T) {
+	to := time.Date(2026, 10, 13, 10, 0, 0, 0, time.UTC)
+	midnight := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name  string
+		to    time.Time
+		hours int
+		want  time.Time
+	}{
+		{"hours stay rolling", to, 24, to.Add(-24 * time.Hour)},
+		{"days end with today so far", to, 168, time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)},
+		{"thirty days", to, 720, time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)},
+		{"window ending at midnight", midnight, 168, time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reportsWindowStart(tt.to, tt.hours); !got.Equal(tt.want) {
+				t.Fatalf("start=%s want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReportsSeriesBuckets(t *testing.T) {
+	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	at := func(hour int) time.Time { return base.Add(time.Duration(hour) * time.Hour) }
+	day := func(n, hour int) int { return n*24 + hour }
+	states := map[string]tracker.NativeState{"Done": {Terminal: true}, "Todo": {Dispatchable: true}}
+	transition := func(hour int, from, to string) analyticsResidenceEvent {
+		return analyticsResidenceEvent{at: at(hour), kind: "workflow.transitioned", data: tracker.CollaborationData{FromState: from, ToState: to}}
+	}
+	end := at(day(14, 10))
+	shippedIssue := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "shipped", created: at(day(7, 1)), initial: "Backlog", events: []analyticsResidenceEvent{
+		transition(day(7, 12), "Backlog", "Todo"), transition(day(7, 14), "Todo", "In Progress"), transition(day(8, 1), "In Progress", "Done"),
+		transition(day(9, 2), "Done", "Todo"), transition(day(10, 3), "Todo", "Done"),
+	}}, states, end)
+	priorIssue := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "prior", created: at(1), initial: "Todo", events: []analyticsResidenceEvent{
+		transition(day(1, 5), "Todo", "Done"),
+	}}, states, end)
+	open := buildAnalyticsResidenceTimeline(analyticsResidenceIssue{id: "open", created: at(day(7, 0)), initial: "Todo"}, states, end)
+	timelines := []analyticsResidenceTimeline{shippedIssue, priorIssue, open}
+	identity := agentidentity.Configured("codex", "codex", "", "code", "model-a", "openai", "high", "", base)
+	attempts := []nativeAnalyticsAttempt{
+		{AttemptID: "a", WorkItemID: "shipped", Status: "succeeded", Identity: identity},
+		{AttemptID: "b", WorkItemID: "open", Status: "failed", ObservedAt: at(day(8, 3)), Identity: identity},
+	}
+	usage := map[string][]usageRow{"a": {{Period: at(day(7, 12)), Cost: 2}}, "b": {{Period: at(day(8, 3)), Cost: 1.5}}, "": {{Period: at(day(14, 5)), Cost: 0.5}}}
+	w := operatortool.AnalyticsWindow{From: at(day(7, 10)), To: end, Bucket: time.Hour}
+	in := reportsInputs{
+		done:      []reportsDone{{id: "shipped", at: at(day(10, 3))}},
+		priorDone: []reportsDone{{id: "prior", at: at(day(1, 5))}},
+		timing: func(ids []string, to time.Time) (reportsCompletion, error) {
+			var picked []analyticsResidenceTimeline
+			for _, timeline := range timelines {
+				if slices.Contains(ids, timeline.issue.id) {
+					picked = append(picked, timeline)
+				}
+			}
+			return reportsCompletions(picked, states, to), nil
+		},
+	}
+	reportsTimelineResidence(&in, timelines, nil, states, w, false)
+	series, err := reportsSeries(in, attempts, usage, w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series) != 8 || !series[0].From.Equal(w.From) || !series[0].To.Equal(at(day(8, 0))) || !series[7].From.Equal(at(day(14, 0))) || !series[7].To.Equal(end) {
+		t.Fatalf("buckets=%d first=%s..%s last=%s..%s, want UTC days clipped to the window", len(series), series[0].From, series[0].To, series[len(series)-1].From, series[len(series)-1].To)
+	}
+	var done int
+	var total float64
+	for _, bucket := range series {
+		done += bucket.Done
+		total += bucket.NotShippedCost
+		for _, cost := range bucket.StageCost {
+			total += cost
+		}
+	}
+	if done != 1 || total != 4 {
+		t.Fatalf("done=%d spend=%v, want each issue once and every usage row", done, total)
+	}
+	for _, tt := range []struct {
+		name                  string
+		bucket                int
+		done, priorDone       int
+		code, other, notShip  float64
+		cycleCount            int
+		inProgress, todoHours float64
+	}{
+		{"partial first day", 0, 0, 0, 2, 0, 0, 0, 10, 16},
+		{"first Done is not counted", 1, 0, 1, 0, 0, 1.5, 0, 1, 24},
+		{"reopened", 2, 0, 0, 0, 0, 0, 0, 0, 46},
+		{"last Done counts", 3, 1, 0, 0, 0, 0, 1, 0, 27},
+		{"today so far", 7, 0, 0, 0, 0.5, 0, 0, 0, 10},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := series[tt.bucket]
+			if got.Done != tt.done || got.PriorDone != tt.priorDone || got.StageCost["code"] != tt.code || got.StageCost[reportsOtherStage] != tt.other || got.NotShippedCost != tt.notShip || got.Cycle.Count != tt.cycleCount {
+				t.Fatalf("bucket=%+v", got)
+			}
+			if got.LaneSeconds["In Progress"] != tt.inProgress*3600 || got.LaneSeconds["Todo"] != tt.todoHours*3600 {
+				t.Fatalf("lanes=%+v", got.LaneSeconds)
+			}
+		})
+	}
+	returns := []qualityReturn{
+		{item: "open", at: at(day(7, 13)), class: classifyReworkReason("Merging", "conflict on landing")},
+		{item: "shipped", at: at(day(8, 2)), class: classifyReworkReason("Merging", "conflict on landing")},
+		{item: "open", at: at(day(8, 4)), class: classifyReworkReason("Merging", "base protected")},
+	}
+	failures := []nativeFailure{
+		{workItem: "open", at: at(day(8, 3)), example: "hub request timed out"},
+		{workItem: "open", at: at(day(8, 5)), example: "landing gate failed"},
+		{workItem: "open", at: at(day(6, 0)), example: "hub request timed out"},
+	}
+	reportsSeriesClasses(series, returns, failures, w)
+	if got := series[1].ReworkClasses; !reflect.DeepEqual(got, map[string]int{"Conflict on landing": 1, "Landing refused: protected base": 1}) {
+		t.Fatalf("rework classes=%v", got)
+	}
+	if got := series[1]; got.Failed != 2 || got.FailedInfrastructure != 1 || got.FailedIssue != 1 || series[0].Failed != 0 {
+		t.Fatalf("failures=%+v first=%+v", got, series[0])
+	}
+	rework := reportReworkClasses(returns, nil, nil)
+	failureTotals := reportFailureClasses(failures)
+	reportClassDetails(rework, failureTotals, returns, failures)
+	conflict := rework[0]
+	if conflict.Class != "Conflict on landing" || !reflect.DeepEqual(conflict.WorkItems, []string{"open", "shipped"}) || !conflict.FirstSeen.Equal(at(day(7, 13))) || !conflict.LastSeen.Equal(at(day(8, 2))) {
+		t.Fatalf("rework detail=%+v", conflict)
+	}
+	timeout := failureTotals[0]
+	if timeout.Class != "Hub request timed out" || !reflect.DeepEqual(timeout.WorkItems, []string{"open"}) || !timeout.FirstSeen.Equal(at(day(6, 0))) {
+		t.Fatalf("failure detail=%+v", timeout)
+	}
+	spend := []reportsSpend{{WorkItemID: "shipped", Cost: 2}, {WorkItemID: "open", Cost: 1.5}}
+	reportsSpendOutcomes(spend, attempts, in)
+	if !reflect.DeepEqual(spend, []reportsSpend{{WorkItemID: "shipped", Cost: 2, Attempts: 1, Shipped: true, State: "Done"}, {WorkItemID: "open", Cost: 1.5, Attempts: 1, State: "Todo"}}) {
+		t.Fatalf("spend=%+v", spend)
+	}
+}
 
 func TestReportsPipelineTiming(t *testing.T) {
 	t.Parallel()

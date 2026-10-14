@@ -257,7 +257,7 @@ function ShellBody(): React.ReactElement {
     activeProjectId: projectId === "" ? null : projectId,
     onProjectChange: (id: string) => {
       setProjectId(id);
-      if (activePath === "/reports") {
+      if (activePath === "/reports" || activePath.startsWith("/reports/")) {
         writeLastProject(id);
       } else if (activePath.startsWith("/work")) {
         void navigate({ to: id === "" ? "/work" : `/work/p/${id}` });

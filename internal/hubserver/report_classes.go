@@ -3,6 +3,7 @@ package hubserver
 import (
 	"slices"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,11 +18,15 @@ type reportClass struct {
 }
 
 type reportClassTotal struct {
-	Class  string  `json:"class"`
-	Kind   string  `json:"kind"`
-	Count  int     `json:"count"`
-	Issues int     `json:"issues"`
-	Cost   float64 `json:"cost_usd"`
+	Class              string     `json:"class"`
+	Kind               string     `json:"kind"`
+	Count              int        `json:"count"`
+	Issues             int        `json:"issues"`
+	Cost               float64    `json:"cost_usd"`
+	WorkItems          []string   `json:"work_items,omitempty"`
+	FirstSeen          *time.Time `json:"first_seen,omitempty"`
+	LastSeen           *time.Time `json:"last_seen,omitempty"`
+	TrackingWorkItemID string     `json:"tracking_work_item_id,omitempty"`
 }
 
 type reportClassRule struct {

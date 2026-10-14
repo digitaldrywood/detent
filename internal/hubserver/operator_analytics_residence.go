@@ -86,6 +86,10 @@ func projectNativeAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer
 			continue
 		}
 		item := operatortool.AnalyticsAging{WorkItemID: timeline.issue.id, Lane: timeline.state, EnteredAt: timeline.entered, Hours: out.Window.To.Sub(timeline.entered).Hours()}
+		if timeline.started != nil {
+			since := out.Window.To.Sub(*timeline.started).Hours()
+			item.SinceTodoHours = &since
+		}
 		for _, lane := range residence.Lanes {
 			if lane.Lane == item.Lane {
 				hours := lane.P90Seconds / 3600
