@@ -114,6 +114,7 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
       events: [{ event: "requested", generation: 1, recorded_at: "2026-09-20T10:00:00Z" }],
       entitlements: await api.platformEntitlements(id),
     })),
+    adjustPlatformAICredits: vi.fn(async () => ({ organization_id: "org_alpha", balance_micros: 0 })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
     platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => organizations),
@@ -140,6 +141,21 @@ async function renderPlatform(api: EntryApi, path = "/platform/tenants") {
     await router.load();
   });
   return router;
+}
+
+const credits = {
+  balance_micros: 100_000_000, spent_micros: 750_000, month: "2026-10", auto_enabled: false,
+  history: [
+    { amount_micros: 100_000_000, kind: "complimentary", actor: "staff@example.test", reason: "Pilot credits", at: "2026-10-09T12:00:00Z" },
+    { amount_micros: 5_000_000, kind: "purchase", actor: "", reason: "", at: "2026-10-08T12:00:00Z" },
+  ],
+};
+
+function creditApi(overrides: Partial<EntryApi> = {}): EntryApi {
+  const api = fakeApi(overrides);
+  const read = api.platformTenant;
+  api.platformTenant = vi.fn(async (id) => ({ ...await read(id), credit_balance_micros: credits.balance_micros, ai_credits: credits }));
+  return api;
 }
 
 describe("platform console", () => {
@@ -1088,18 +1104,125 @@ describe("tenant discovery and detail", () => {
   });
 
   it.each(["viewer", "support", "billing", "admin"])("opens a tenant page with role-gated actions for %s", async (role) => {
-    const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
+    const api = creditApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
     await renderPlatform(api, "/platform/tenants/org_alpha");
     const organization = await screen.findByRole("region", { name: "Organization" });
     expect(within(organization).getByRole("link", { name: "member@example.test" }).getAttribute("href")).toBe("/platform/users/member%40example.test");
     expect(screen.queryByRole("dialog", { name: "Alpha" })).toBeNull();
+    expect(within(screen.getByRole("region", { name: "AI credits" })).getByText("$100.00")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Support access" }) !== null).toBe(role === "support" || role === "admin");
     for (const name of ["Change plan", "Grant model choice", "Revoke grant"]) expect(screen.queryByRole("button", { name }) !== null).toBe(role === "billing" || role === "admin");
+    expect(screen.queryByRole("button", { name: "Grant AI credits" }) !== null).toBe(role === "billing" || role === "admin");
+    expect(screen.queryByRole("button", { name: "Grant credits" }) !== null).toBe(role === "billing" || role === "admin");
     expect(screen.queryByRole("button", { name: "Resume provisioning" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
     const members = await screen.findByRole("region", { name: "Members" });
     expect(within(members).getByRole("link", { name: "member@example.test" }).getAttribute("href")).toBe("/platform/users/member%40example.test");
     expect(within(members).getByText("Owner")).toBeTruthy();
+  });
+
+  it.each(["", "0", "-5", "1.0000001", "1e3", "Infinity"])("rejects invalid credit amount %s", async (amount) => {
+    const api = creditApi();
+    await renderPlatform(api, "/platform/tenants/org_alpha");
+    fireEvent.click(await screen.findByRole("button", { name: "Grant AI credits" }));
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    fireEvent.change(within(dialog).getByLabelText("Amount (USD)"), { target: { value: amount } });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Pilot credits" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant credits" }));
+    expect(await within(dialog).findByText(/Enter a positive dollar amount/)).toBeTruthy();
+    expect(api.adjustPlatformAICredits).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { role: "billing", amount: "25.00", amountMicros: 25_000_000, balance: 100_000_000, balanceText: "$100.00", spent: 750_000, spentText: "$0.75", after: 125_000_000, afterText: "$125.00", submit: "Grant $25.00", adjustmentText: "+$25.00" },
+    { role: "admin", amount: "25.00", amountMicros: 25_000_000, balance: 100_000_000, balanceText: "$100.00", spent: 750_000, spentText: "$0.75", after: 125_000_000, afterText: "$125.00", submit: "Grant $25.00", adjustmentText: "+$25.00" },
+    { role: "billing", amount: "0.000001", amountMicros: 1, balance: 100_000_001, balanceText: "$100.000001", spent: 1, spentText: "$0.000001", after: 100_000_002, afterText: "$100.000002", submit: "Grant $0.000001", adjustmentText: "+$0.000001" },
+    { role: "admin", amount: "0.001234", amountMicros: 1234, balance: 100_000_001, balanceText: "$100.000001", spent: 1, spentText: "$0.000001", after: 100_001_235, afterText: "$100.001235", submit: "Grant $0.001234", adjustmentText: "+$0.001234" },
+  ])("grants and refreshes credit balance and history in place for $role ($amount)", async ({ role, amount, amountMicros, balance, balanceText, spent, spentText, after, afterText, submit, adjustmentText }) => {
+    const api = creditApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
+    const initial = api.platformTenant;
+    let applied = false;
+    api.platformTenant = vi.fn(async (id) => ({ ...await initial(id), credit_balance_micros: applied ? after : balance,
+      ai_credits: { ...credits, balance_micros: applied ? after : balance, spent_micros: spent, history: applied ? [{ ...credits.history[0]!, amount_micros: amountMicros, reason: "Extra pilot credits" }, ...credits.history] : credits.history } }));
+    api.adjustPlatformAICredits = vi.fn(async () => { applied = true; return { organization_id: "org_alpha", balance_micros: after }; });
+    const router = await renderPlatform(api, "/platform/tenants/org_alpha");
+    const section = await screen.findByRole("region", { name: "AI credits" });
+    expect(within(section).getByText("Spent in October")).toBeTruthy();
+    expect(within(section).getByText(spentText)).toBeTruthy();
+    expect(within(section).getByText("Off")).toBeTruthy();
+    fireEvent.click(within(section).getByRole("button", { name: "Grant credits" }));
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    expect(within(dialog).getByText(balanceText)).toBeTruthy();
+    if (amount === "25.00") fireEvent.click(within(dialog).getByRole("button", { name: "$25" }));
+    else fireEvent.change(within(dialog).getByLabelText("Amount (USD)"), { target: { value: amount } });
+    expect(within(dialog).getByText(afterText)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    expect(await within(dialog).findByText("Give a reason for this adjustment.")).toBeTruthy();
+    expect(api.adjustPlatformAICredits).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: " Extra pilot credits " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.adjustPlatformAICredits).toHaveBeenCalledWith({ organization: "org_alpha", csrf: "staff-csrf", change: { amount_usd: amount, reason: "Extra pilot credits", idempotency_key: expect.any(String) } });
+    expect(within(screen.getByRole("region", { name: "AI credits" })).getByText(afterText)).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "AI credits" })).getByText(/Extra pilot credits/)).toBeTruthy();
+    expect(api.platformAudit).toHaveBeenCalledTimes(2);
+    expect(router.state.location.pathname).toBe("/platform/tenants/org_alpha");
+    fireEvent.click(screen.getByRole("link", { name: "All adjustments" }));
+    const history = await screen.findByRole("region", { name: "Adjustment history" });
+    expect(within(history).getByText(adjustmentText, { exact: false })).toBeTruthy();
+    expect(within(history).getByText("Purchased")).toBeTruthy();
+    expect(within(history).getByText(/Pilot credits/)).toBeTruthy();
+    expect(api.resumePlatformTenant).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { amount: "10.00", preview: "$90.00", submit: "Remove $10.00", payload: "-10.00" },
+    { amount: "0.000001", preview: "$99.999999", submit: "Remove $0.000001", payload: "-0.000001" },
+  ])("replays an unknown removal of $amount with the same key after reopening and gives an edited command a fresh key", async ({ amount, preview, submit, payload }) => {
+    const adjust = vi.fn().mockRejectedValue(new AccountError({ status: 502, code: "tenant_unavailable", message: "Hub unavailable" }));
+    const api = creditApi({ adjustPlatformAICredits: adjust });
+    await renderPlatform(api, "/platform/tenants/org_alpha?section=credits");
+    fireEvent.click(await screen.findByRole("button", { name: "Grant AI credits" }));
+    let dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove credits" }));
+    fireEvent.change(within(dialog).getByLabelText("Amount (USD)"), { target: { value: amount } });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Correct duplicate grant" } });
+    expect(within(dialog).getByText(preview)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    await within(dialog).findByText(/The result is unknown/);
+    expect(adjust.mock.calls[0]![0].change.amount_usd).toBe(payload);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Grant AI credits" }));
+    dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    await waitFor(() => expect(adjust).toHaveBeenCalledTimes(2));
+    await within(dialog).findByText(/The result is unknown/);
+    expect(adjust.mock.calls[1]![0]).toEqual(adjust.mock.calls[0]![0]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "$25" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove $25.00" }));
+    await waitFor(() => expect(adjust).toHaveBeenCalledTimes(3));
+    expect(adjust.mock.calls[2]![0].change.idempotency_key).not.toBe(adjust.mock.calls[0]![0].change.idempotency_key);
+  });
+
+  it("renders unavailable credit history and disables grants without a balance", async () => {
+    const api = fakeApi();
+    await renderPlatform(api, "/platform/tenants/org_alpha?section=credits");
+    expect(await screen.findByText("History unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Grant AI credits" }));
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    expect((within(dialog).getByRole("button", { name: "Grant credits" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.adjustPlatformAICredits).not.toHaveBeenCalled();
+  });
+
+  it("returns keyboard focus to the credit action after cancelling", async () => {
+    const user = userEvent.setup();
+    await renderPlatform(creditApi(), "/platform/tenants/org_alpha");
+    const trigger = await screen.findByRole("button", { name: "Grant AI credits" });
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("restores URL sections, navigates sections and redirects old tenant links", async () => {
