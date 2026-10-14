@@ -1,11 +1,14 @@
 package runner
 
 import (
+	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func isGoModule(workspacePath string) bool {
@@ -16,7 +19,14 @@ func isGoModule(workspacePath string) bool {
 	return err == nil
 }
 
-func (r *Runner) withGoBudget(workspacePath string, environment procgroup.Environment) procgroup.Environment {
+func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environment procgroup.Environment) procgroup.Environment {
+	if root := toolcache.ManagedBuildFromContext(ctx); root != "" {
+		environment.Variables = maps.Clone(environment.Variables)
+		if environment.Variables == nil {
+			environment.Variables = make(map[string]string)
+		}
+		environment.Variables["GOCACHE"] = root
+	}
 	if !isGoModule(workspacePath) {
 		return environment
 	}

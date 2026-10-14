@@ -10,6 +10,8 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -56,7 +58,7 @@ var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
 // Trim expires old entries without evicting recent outputs to meet MaxBytes.
 // Metadata is counted toward the size but is never removed.
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
-	return trim(ctx, root, policy, now, nil)
+	return trim(ctx, root, policy, now, nil, false)
 }
 
 // TrimWithReport reuses the trim walk to report retained build-cache bytes.
@@ -64,14 +66,30 @@ func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64
 // during or after the walk, so the report is an estimate.
 func TrimWithReport(ctx context.Context, root string, policy Policy, now time.Time) (Report, error) {
 	report := Report{BuildPath: root}
-	_, err := trim(ctx, root, policy, now, &report)
+	_, err := trim(ctx, root, policy, now, &report, false)
 	if err != nil {
 		report.Error = err.Error()
 	}
 	return report, err
 }
 
-func trim(ctx context.Context, root string, policy Policy, now time.Time, report *Report) (reclaimed int64, err error) {
+func trimManaged(ctx context.Context, root string, policy Policy, now time.Time) (Report, error) {
+	report := Report{BuildPath: root}
+	_, err := trim(ctx, root, policy, now, &report, true)
+	if err != nil {
+		report.Error = err.Error()
+	}
+	return report, err
+}
+
+type trimEntry struct {
+	name      string
+	bytes     int64
+	modified  time.Time
+	directory bool
+}
+
+func trim(ctx context.Context, root string, policy Policy, now time.Time, report *Report, managed bool) (reclaimed int64, err error) {
 	capacity, capacityErr := CapacityBytes(root)
 	if capacityErr != nil {
 		capacity = 0
@@ -99,28 +117,32 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 			break
 		}
 	}
-	if !marked {
+	if !marked && !managed {
 		slog.Warn("skip host Go cache trim: cache marker absent", "path", root)
 		return 0, nil
 	}
 	var total int64
 	defer func() { report.BuildBytes = total }()
-	err = fs.WalkDir(cache.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+	var candidates []trimEntry
+	err = fs.WalkDir(cache.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if os.IsNotExist(err) {
+		if os.IsNotExist(walkErr) {
 			return nil
 		}
-		if err != nil {
-			return err
+		if walkErr != nil {
+			return walkErr
 		}
-		if entry.IsDir() && name != "." {
-			if path.Dir(name) != "." || !cacheShardName.MatchString(entry.Name()) {
+		candidate := path.Dir(path.Dir(name)) == "." && cacheShardName.MatchString(path.Base(path.Dir(name))) && cacheEntryName.MatchString(entry.Name())
+		if entry.IsDir() {
+			if name == "." || path.Dir(name) == "." && cacheShardName.MatchString(entry.Name()) {
+				return nil
+			}
+			if !candidate || !strings.HasSuffix(entry.Name(), "-d") {
 				return fs.SkipDir
 			}
-		}
-		if !entry.Type().IsRegular() {
+		} else if !entry.Type().IsRegular() {
 			return nil
 		}
 		info, err := entry.Info()
@@ -130,40 +152,61 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if err != nil {
 			return err
 		}
-		total += info.Size()
-		if path.Dir(path.Dir(name)) != "." || !cacheShardName.MatchString(path.Base(path.Dir(name))) || !cacheEntryName.MatchString(entry.Name()) {
-			return nil
-		}
-		if !info.ModTime().Before(now.Add(-policy.MaxAge)) {
-			return nil
-		}
-		// Recheck immediately before removal in case a concurrent Go build touched it.
-		current, err := cache.Lstat(name)
-		if os.IsNotExist(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if !current.Mode().IsRegular() {
-			return nil
-		}
-		if !current.ModTime().Before(now.Add(-policy.MaxAge)) {
-			return nil
-		}
-		if err := cache.Remove(name); err != nil {
-			if os.IsNotExist(err) {
-				return nil
+		bytes := info.Size()
+		if entry.IsDir() {
+			bytes, err = sizeFS(ctx, cache.FS(), name)
+			if err != nil {
+				return err
 			}
-			return err
 		}
-		report.AgeExpiredBytes += current.Size()
-		reclaimed += current.Size()
-		total -= info.Size()
+		total += bytes
+		if candidate && (managed || info.ModTime().Before(now.Add(-policy.MaxAge))) {
+			candidates = append(candidates, trimEntry{name: name, bytes: bytes, modified: info.ModTime(), directory: entry.IsDir()})
+		}
+		if entry.IsDir() {
+			return fs.SkipDir
+		}
 		return nil
 	})
 	if err != nil {
 		return reclaimed, err
+	}
+	if managed {
+		slices.SortFunc(candidates, func(a, b trimEntry) int { return a.modified.Compare(b.modified) })
+	}
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return reclaimed, err
+		}
+		aged := candidate.modified.Before(now.Add(-policy.MaxAge))
+		if !aged && (!managed || total <= policy.MaxBytes) {
+			continue
+		}
+		current, err := cache.Lstat(candidate.name)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return reclaimed, err
+		}
+		if current.IsDir() != candidate.directory || !current.IsDir() && !current.Mode().IsRegular() || !current.ModTime().Equal(candidate.modified) {
+			continue
+		}
+		if candidate.directory {
+			err = cache.RemoveAll(candidate.name)
+		} else {
+			err = cache.Remove(candidate.name)
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return reclaimed, err
+		}
+		if aged {
+			report.AgeExpiredBytes += candidate.bytes
+		} else {
+			report.SizeEvictedBytes += candidate.bytes
+		}
+		reclaimed += candidate.bytes
+		total -= candidate.bytes
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
 	marker := "detent-trim.txt"
