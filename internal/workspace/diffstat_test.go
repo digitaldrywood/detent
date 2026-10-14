@@ -15,6 +15,9 @@ import (
 )
 
 func TestLocalGitReviewCommandRerunsExternalRuntimeInputs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess runtime integration fixture")
+	}
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Go command fixture")
 	}
