@@ -647,6 +647,40 @@ export const FleetRunner = Schema.Struct({
 });
 export type FleetRunner = typeof FleetRunner.Type;
 
+export const SuggestedLimit = Schema.Struct({
+  limit: Schema.optional(Schema.Number),
+  current: Schema.Number,
+  direction: Schema.Literals(["lower", "raise", "hold", "insufficient_evidence"]),
+  hours_covered: Schema.Number,
+  saturated_hours: Schema.Number,
+  reasons: Schema.Array(Schema.String),
+});
+export type SuggestedLimit = typeof SuggestedLimit.Type;
+
+export const RunnerCapacityRead = Schema.Struct({
+  recommendation: Schema.optional(Schema.Struct({ suggested_limit: Schema.optional(SuggestedLimit) })),
+});
+export type RunnerCapacityRead = typeof RunnerCapacityRead.Type;
+
+export const RunnerHostHour = Schema.Struct({
+  hour: Schema.String,
+  logical_cores: Schema.Number,
+  memory_total_bytes: Schema.Number,
+  memory_available_min_bytes: Schema.Number,
+  memory_sample_count: Schema.Number,
+  swap_used_max_bytes: Schema.Number,
+  pressure_warn_count: Schema.Number,
+  pressure_critical_count: Schema.Number,
+  cpu_sample_count: Schema.Number,
+  cpu_busy_average_percent: Schema.optional(Schema.Number),
+  load1_max: Schema.Number,
+  load_sample_count: Schema.Number,
+  disk_free_min_bytes: Schema.Number,
+  disk_total_min_bytes: Schema.Number,
+  disk_sample_count: Schema.Number,
+});
+export type RunnerHostHour = typeof RunnerHostHour.Type;
+
 /** One allowance: what the window consumed, and what the plan allows. */
 export const Allowance = Schema.Struct({
   used: Schema.Number,

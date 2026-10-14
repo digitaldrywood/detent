@@ -644,7 +644,7 @@ A headline number with its label, an optional change against the prior period an
 
 ### Chart
 
-Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`.
+Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout.
 
 - Kind: Primitive; status: available; id: `chart`.
 - Import: `import { Chart, ChartLegend, ChartPanel, ChartSwatch, ProportionBar, BarMeter, ChartCategory, ChartSeries, ChartLegendItem, chartTicks } from "~/components/ui/chart";`
