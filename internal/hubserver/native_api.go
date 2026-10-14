@@ -357,7 +357,7 @@ func (scope nativeScope) actor() tracker.Actor {
 	if kind == "integration" && scope.credential.HostedKeyKind == "service" {
 		principal = scope.credential.ID
 	}
-	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.viaKey()}
+	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.viaKey(), Agent: scope.credential.Agent}
 }
 
 func (credential apiCredential) viaKey() string {

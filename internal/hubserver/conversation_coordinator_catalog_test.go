@@ -100,6 +100,17 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 			if !strings.Contains(related(), second) {
 				t.Fatalf("confirmed catalog write did not apply: %s", related())
 			}
+			raw, err := json.Marshal(map[string]string{"project_id": string(f.project), "reference": first})
+			if err != nil {
+				t.Fatal(err)
+			}
+			history, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: operatortool.WorkHistory, Arguments: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(history.Content), `"agent":"Luna"`) {
+				t.Fatalf("chat write was not attributed to the agent: %s", history.Content)
+			}
 		})
 	}
 	if counts["owner"] <= counts["viewer"] {
