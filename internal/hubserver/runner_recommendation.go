@@ -225,7 +225,7 @@ func suggestLimit(current int, timezone string, hours []recommendationHour) sugg
 		}
 		limit = max(1, limit)
 		if cpuHours > 0 {
-			out.Reasons = append(out.Reasons, fmt.Sprintf("CPU stayed at 90%% or more in %d of %d busy hours.", cpuHours, busyHours))
+			out.Reasons = append(out.Reasons, fmt.Sprintf("CPU stayed at 90%% or more for 2+ hours running in %d of %d busy hours.", cpuHours, busyHours))
 		}
 		if memoryHours > 0 {
 			out.Reasons = append(out.Reasons, fmt.Sprintf("Memory pressure or growing swap in %d of %d busy hours.", memoryHours, busyHours))

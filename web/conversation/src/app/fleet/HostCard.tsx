@@ -1,7 +1,8 @@
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
-import type { FleetRunner } from "../../contracts/account.ts";
+import type { FleetRunner, SuggestedLimit } from "../../contracts/account.ts";
+import { SuggestedLimitChip } from "./SuggestedLimit.tsx";
 import { RunnerProblems } from "./RunnerProblems.tsx";
 import { cn } from "../../lib/utils.ts";
 import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
@@ -12,8 +13,10 @@ export function HostCard({
   projects = [],
   onOpen,
   onRemove,
+  suggestion,
 }: {
   readonly runner: FleetRunner;
+  readonly suggestion?: SuggestedLimit;
   readonly projects?: readonly RunnerProject[];
   readonly onOpen: () => void;
   readonly onRemove?: () => void;
@@ -56,6 +59,7 @@ export function HostCard({
       <div className={cn("space-y-1 text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning-foreground")}>
         <p>{runner.claim_refusal_reason ? "Can’t take work" : health}</p>
         <p>{runner.state} · Limit {runner.capacity_limit}</p>
+        <SuggestedLimitChip suggestion={suggestion} />
       </div>
       <div className="min-w-0 space-y-1 text-xs">
         <p className="text-muted-foreground @[48rem]/runner-list:sr-only">Running</p>
