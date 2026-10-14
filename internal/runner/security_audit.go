@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -24,6 +25,11 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, _, _ := r.runtimeSnapshot()
+	if req.Issue.IsolationPolicy != nil {
+		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
+	} else if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+		ctx = isolation.WithPolicy(ctx, isolation.Policy{})
+	}
 	auditConfig := gateSecurityAuditConfig(workflow.Config)
 	prompt, err := securityaudit.BuildPrompt(req.Snapshot, securityAuditMaxDiffBytes(auditConfig))
 	if err != nil {
