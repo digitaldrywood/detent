@@ -8,7 +8,11 @@ import { cn } from "../../../lib/utils.ts";
 import type { ShippedCount } from "../lib/model.ts";
 import { COMPLETED_WINDOW_LABELS, COMPLETED_WINDOWS, DEFAULT_COMPLETED_WINDOW, type CompletedWindow } from "../lib/viewState.ts";
 
-const REPORTS_RANGE: Readonly<Record<CompletedWindow, string>> = { "1h": "24h", "24h": "24h", "7d": "7d" };
+interface ReportsLinkSearch {
+  readonly range: "24h" | "7d";
+}
+
+const REPORTS_RANGE: Readonly<Record<CompletedWindow, ReportsLinkSearch["range"]>> = { "1h": "24h", "24h": "24h", "7d": "7d" };
 
 export function CompletedCounter({
   count,
@@ -26,6 +30,7 @@ export function CompletedCounter({
   loading: boolean;
 }): React.ReactElement {
   const label = COMPLETED_WINDOW_LABELS[completedWindow];
+  const reportsSearch: ReportsLinkSearch = { range: REPORTS_RANGE[completedWindow] };
   return (
     <div
       aria-busy={loading}
@@ -48,8 +53,8 @@ export function CompletedCounter({
             <MenuGroupLabel>Shipped in the last</MenuGroupLabel>
             <MenuRadioGroup value={completedWindow} onValueChange={(value) => onCompletedWindowChange(value as CompletedWindow)}>
               {COMPLETED_WINDOWS.map((window) => (
-                <MenuRadioItem key={window} value={window} closeOnClick>
-                  <span className="flex items-center justify-between gap-4">
+                <MenuRadioItem key={window} value={window} density="touch" closeOnClick>
+                  <span className="flex w-full items-center justify-between gap-4">
                     <span>{COMPLETED_WINDOW_LABELS[window]}</span>
                     <span className="text-muted-foreground text-xs tabular-nums" data-testid={`shipped-count-${window}`}>
                       {windows?.[window]?.shipped ?? "—"}
@@ -60,17 +65,18 @@ export function CompletedCounter({
             </MenuRadioGroup>
           </MenuGroup>
           <MenuSeparator />
-          {cancelled === null ? null : (
-            <p className="px-2 py-1 text-muted-foreground text-xs" data-testid="shipped-cancelled">
-              Plus {cancelled} cancelled in {label}
-            </p>
-          )}
-          <MenuItem
-            className="text-primary data-highlighted:text-primary"
-            render={<Link to="/reports" search={{ range: REPORTS_RANGE[completedWindow] } as never} />}
-          >
-            Open in Reports <span aria-hidden>→</span>
-          </MenuItem>
+          <MenuGroup>
+            {cancelled === null ? null : (
+              <MenuGroupLabel data-testid="shipped-cancelled">Plus {cancelled} cancelled in {label}</MenuGroupLabel>
+            )}
+            <MenuItem
+              density="touch"
+              className="text-primary data-highlighted:text-primary"
+              render={<Link to="/reports" search={reportsSearch} />}
+            >
+              Open in Reports <span aria-hidden>→</span>
+            </MenuItem>
+          </MenuGroup>
         </MenuPopup>
       </Menu>
     </div>

@@ -214,8 +214,8 @@ describe("CollapsiblePanel", () => {
 
 describe("MenuItem", () => {
   it.each([
-    { density: undefined, variant: undefined, present: ["min-h-8"], absent: ["min-h-10"] },
-    { density: "touch" as const, variant: undefined, present: ["min-h-10"], absent: [] },
+    { density: undefined, variant: undefined, present: ["min-h-8"], absent: ["min-h-11", "sm:min-h-10"] },
+    { density: "touch" as const, variant: undefined, present: ["min-h-11", "sm:min-h-10"], absent: [] },
     { density: undefined, variant: "ghost" as const, present: ["w-full"], absent: [] },
   ])("density=$density variant=$variant", ({ density, variant, present, absent }) => {
     render(
