@@ -30,8 +30,7 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 }
 
 func directGoValidation(validation string) bool {
-	args := strings.Fields(validation)
-	return len(args) == 2 && args[0] == "go" && args[1] == "version"
+	return validation == "go version"
 }
 
 func reusableGoValidationFlags(args []string) bool {

@@ -310,6 +310,7 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, unbound: true, cgo: true},
 		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, unbound: true, ignored: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
+		{name: "version separated into shell commands is unverified", command: "go\nversion", probeOnly: true},
 		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
 		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},
 		{name: "shell escaped vet analyzer is unverified", command: `go vet -vet\tool=custom ./...`, probeOnly: true},
