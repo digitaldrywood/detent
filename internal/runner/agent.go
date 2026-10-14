@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -113,6 +114,7 @@ func (f AgentBackendFactoryFunc) NewAgentBackend(cfg config.AgentBackend) (Agent
 type durationLimitContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
 type Dependencies struct {
+	BuildCache             *toolcache.Managed
 	ProjectID              string
 	Workflow               config.Workflow
 	Workspace              workspace.Backend
@@ -143,6 +145,7 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	buildCache                *toolcache.Managed
 	sleepInhibitor            func(context.Context, func()) (func(), error)
 	sleepFailures             int
 	mu                        sync.RWMutex
@@ -249,6 +252,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	enforcedBudget, enforcedBudgetKnown := enforcedBudgetConfig(deps.Workflow.Config.Budget, budgetChecker)
 
 	return &Runner{
+		buildCache:                deps.BuildCache,
 		projectID:                 projectID,
 		workflow:                  deps.Workflow,
 		workspace:                 deps.Workspace,
@@ -1092,6 +1096,11 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 		}
 		return nil
 	}
+	if request.reserveScratch != nil {
+		if err := request.reserveScratch(ctx, tempDir); err != nil {
+			return AgentTurnResult{}, cleanupScratch, err
+		}
+	}
 	if err := configureWorkerGitHubEnvironment(&request); err != nil {
 		return AgentTurnResult{}, cleanupScratch, fmt.Errorf("prepare worker github environment: %w", err)
 	}
@@ -1211,6 +1220,7 @@ func (r *Runner) runAgentTurn(
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
+	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
 	providerResume := turnRequest.Resume
 	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
 	activityProfile := runRequest.activityProfile
@@ -1853,7 +1863,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	runStartedAt := r.now()
 	modelProvider, serviceTier, configuredEffort := agentTurnIdentityOptions(backendConfig)
 	baseModel := effectiveModel("", selection.Model, agentRuntime.defaultModelForRole(role))
-	baseEnvironment := r.withGoBudget(info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
+	baseEnvironment := r.withGoBudget(ctx, info.Path, workerServiceEnvironment(mode, r.serviceConnection, info, workspaceIssue))
 	if mergeFallback {
 		baseEnvironment.Variables["GIT_CONFIG_PARAMETERS"] = strings.TrimSpace(r.lookupEnv("GIT_CONFIG_PARAMETERS") + " 'merge.conflictStyle'='zdiff3'")
 	}
@@ -3428,7 +3438,7 @@ func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *B
 	}
 }
 
-func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
 	role := RoleValidator
 	if req.implementationReview {
 		if req.NativeVersion == nil {
@@ -3497,7 +3507,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			r.afterRun(runWorkspace, info, workspaceIssue)
+			r.afterRun(ctx, runWorkspace, info, workspaceIssue)
 		}
 	}()
 	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
@@ -3586,7 +3596,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		selectedModel = override
 	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
-	baseEnvironment := r.withGoBudget(info.Path, workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue))
+	baseEnvironment := r.withGoBudget(ctx, info.Path, workerEnvironment(serviceapi.RestrictedEnvironment(), info, workspaceIssue))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   info.Path,
 		Environment: baseEnvironment,
@@ -3696,6 +3706,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		RSSPollInterval:     r.rssPollInterval,
 		workerGitHub:        workerGitHub,
 		processRSS:          r.processRSS,
+		reserveScratch:      r.reserveSessionWorkerScratch(sessionID, info.Path, ""),
 	}, validationTools, validationHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
@@ -3802,7 +3813,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			}
 		}
 	}
-	r.afterRun(runWorkspace, info, workspaceIssue)
+	r.afterRun(ctx, runWorkspace, info, workspaceIssue)
 	afterRunPending = false
 	r.logWorkerEvent(req.Issue, "worker_check_after_run_finished",
 		telemetry.DetentSessionIDKey, sessionID,
@@ -4140,8 +4151,8 @@ func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string)
 	return result.Skills, nil
 }
 
-func (r *Runner) afterRun(backend workspace.Backend, info workspace.Info, issue workspace.Issue) {
-	ctx, cancel := context.WithTimeout(context.Background(), r.afterRunTimeout)
+func (r *Runner) afterRun(parent context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), r.afterRunTimeout)
 	defer cancel()
 
 	backend.AfterRun(ctx, info, issue)
@@ -4284,16 +4295,18 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	}
 	if reapWorkspace != nil {
 		reapErrors = errors.Join(reapErrors, reapWorkspace())
-	} else {
-		for _, reaped := range processes {
-			process := reaped.process
-			reap := r.reapArtifactProcesses
-			if reap == nil {
-				reap = workspace.ReapWorkerArtifactProcesses
-			}
-			_, err := reap(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
-			reapErrors = errors.Join(reapErrors, err)
+	}
+	for _, reaped := range processes {
+		process := reaped.process
+		if reapWorkspace != nil && process.PID > 0 {
+			continue
 		}
+		reap := r.reapArtifactProcesses
+		if reap == nil {
+			reap = workspace.ReapWorkerArtifactProcesses
+		}
+		_, err := reap(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
+		reapErrors = errors.Join(reapErrors, err)
 	}
 	if reapErrors != nil {
 		return reapErrors

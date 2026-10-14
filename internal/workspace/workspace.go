@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 const (
@@ -2187,6 +2188,21 @@ func CleanupOwnedPath(root string, path string) error {
 	return nil
 }
 
+func ReapWorkerArtifactPathProcesses(ctx context.Context, root string, path string, grace time.Duration) (int, error) {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
+		return 0, nil
+	}
+	root = bestEffortCanonicalPath(root)
+	if _, ok := workerScratchParent(root, path); ok {
+		return ReapProcesses(ctx, path, grace)
+	}
+	path, err := validateWorkspacePath(root, path)
+	if err != nil {
+		return 0, err
+	}
+	return ReapProcesses(ctx, path, grace)
+}
+
 func ReapWorkerArtifactProcesses(ctx context.Context, root string, path string, grace time.Duration) (int, error) {
 	if strings.TrimSpace(root) == "" || strings.TrimSpace(path) == "" {
 		return 0, nil
@@ -2287,12 +2303,22 @@ func (l *LocalGit) runHookUnderSourceLock(ctx context.Context, name string, comm
 		slog.String("command", command),
 	)
 
-	output, err := runHookCommand(hookCtx, command, l.hooks, info, issue)
+	var output []byte
+	var err error
+	exitCode := -1
+	if toolcache.ManagedBuildFromContext(hookCtx) != "" {
+		result, runErr := l.runValidationCommand(hookCtx, info, issue, command)
+		output, err, exitCode = []byte(result.Output), runErr, result.ExitCode
+		if err == nil && exitCode != 0 {
+			err = fmt.Errorf("hook exited with status %d", exitCode)
+		}
+	} else {
+		output, err = runHookCommand(hookCtx, command, l.hooks, info, issue)
+	}
 	if err == nil {
 		return nil
 	}
 
-	exitCode := -1
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		exitCode = exitErr.ExitCode()

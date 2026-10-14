@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -431,6 +433,18 @@ func (l *LocalGit) validateMergeResolution(ctx context.Context, info Info, issue
 	return nil
 }
 
+type ValidationProcess interface {
+	Started(context.Context, procgroup.Identity) error
+	Finished(context.Context, gate.CommandResult, error) error
+}
+
+type validationProcessOwnerKey struct{}
+type ValidationProcessOwner func(context.Context, Info, Issue, string) (ValidationProcess, error)
+
+func WithValidationProcessOwner(ctx context.Context, owner ValidationProcessOwner) context.Context {
+	return context.WithValue(ctx, validationProcessOwnerKey{}, owner)
+}
+
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	result.Command = command
 	result.ExitCode = -1
@@ -438,11 +452,36 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if err != nil {
 		return result, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, CleanupWorkerScratch(info.Path, scratch)) }()
+	var process ValidationProcess
+	var groupID int
+	defer func() {
+		cleanupCtx := context.WithoutCancel(ctx)
+		cleanupErr := procgroup.Cleanup(groupID)
+		if groupID > 0 {
+			_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+		if cleanupErr == nil {
+			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
+		}
+		resultErr = errors.Join(resultErr, cleanupErr)
+		if process != nil {
+			resultErr = errors.Join(resultErr, process.Finished(cleanupCtx, result, cleanupErr))
+		}
+	}()
+	if owner, ok := ctx.Value(validationProcessOwnerKey{}).(ValidationProcessOwner); ok {
+		process, err = owner(ctx, info, issue, scratch)
+		if err != nil {
+			return result, fmt.Errorf("reserve host validation process: %w", err)
+		}
+	}
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	cmd.WaitDelay = workspaceCommandWaitDelay
+	if cache := toolcache.ManagedBuildFromContext(ctx); cache != "" {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cache}})
+	}
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
 	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
@@ -453,10 +492,25 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	started := time.Now()
 	result.StartedAt = started.UTC()
 	result.Execution = "executed"
-	output, err := cmd.CombinedOutput()
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		return result, fmt.Errorf("start validation command: %w", err)
+	}
+	groupID = procgroup.GroupID(cmd)
+	if process != nil {
+		identity, registrationErr := procgroup.Inspect(cmd)
+		if registrationErr == nil {
+			registrationErr = process.Started(ctx, identity)
+		}
+		if registrationErr != nil {
+			return result, errors.Join(fmt.Errorf("register host validation process: %w", registrationErr), cmd.Cancel(), cmd.Wait())
+		}
+	}
+	err = cmd.Wait()
 	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
-	result.Output = string(output)
+	result.Output = output.String()
 	result.Evidence.Checks = gate.CheckObservations(result.Output)
 	if ctx.Err() != nil {
 		return result, ctx.Err()
@@ -467,7 +521,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			result.ExitCode = exited.ExitCode()
 			return result, nil
 		}
-		return result, fmt.Errorf("validation command failed: %w: %s", err, output)
+		return result, fmt.Errorf("validation command failed: %w: %s", err, output.String())
 	}
 	result.ExitCode = 0
 	return result, nil

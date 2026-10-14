@@ -149,17 +149,19 @@ SET worker_pid = sqlc.arg(worker_pid),
     worker_reaped_at = NULL,
     worker_reap_outcome = NULL,
     worker_reap_reason = NULL
-WHERE id = sqlc.arg(id);
+WHERE id = sqlc.arg(id)
+  AND (sqlc.arg(worker_pid) > 0 OR worker_pid IS NULL OR worker_reaped_at IS NOT NULL);
 
 -- name: ListActiveWorkerProcesses :many
 SELECT
   id AS session_id,
+  CAST(COALESCE(agent_role, '') AS TEXT) AS agent_role,
   CAST(COALESCE(issue_id, '') AS TEXT) AS issue_id,
   CAST(COALESCE(identifier, '') AS TEXT) AS identifier,
   CAST(COALESCE(issue_url, '') AS TEXT) AS issue_url,
-  CAST(worker_pid AS INTEGER) AS worker_pid,
+  CAST(COALESCE(worker_pid, 0) AS INTEGER) AS worker_pid,
   CAST(COALESCE(worker_pgid, 0) AS INTEGER) AS worker_pgid,
-  CAST(worker_started_at AS TEXT) AS worker_started_at,
+  CAST(COALESCE(worker_started_at, '') AS TEXT) AS worker_started_at,
   CAST(COALESCE(worker_cleanup_root, '') AS TEXT) AS worker_cleanup_root,
   CAST(COALESCE(worker_cleanup_path, '') AS TEXT) AS worker_cleanup_path,
   CAST(COALESCE(final_state, '') AS TEXT) AS final_state,
@@ -167,7 +169,7 @@ SELECT
   CAST(COALESCE(owner_generation, 0) AS INTEGER) AS owner_generation
 FROM codex_sessions
 WHERE worker_reaped_at IS NULL
-  AND worker_pid > 0
+  AND (worker_pid > 0 OR (worker_cleanup_root IS NOT NULL AND worker_cleanup_path IS NOT NULL))
 ORDER BY started_at, id;
 
 -- name: MarkCodexSessionWorkerProcessReaped :execrows
@@ -443,13 +445,15 @@ ORDER BY created_at DESC, id DESC;
 -- name: ListRecentCodexSessions :many
 SELECT *
 FROM codex_sessions
+WHERE COALESCE(agent_role, '') != 'host_validation'
 ORDER BY completed_at DESC, id DESC
 LIMIT ?;
 
 -- name: ListIssueCodexSessions :many
 SELECT *
 FROM codex_sessions
-WHERE project_id = sqlc.arg(project_id)
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND project_id = sqlc.arg(project_id)
   AND (
     (sqlc.arg(issue_id) != '' AND issue_id = sqlc.arg(issue_id))
     OR (sqlc.arg(identifier) != '' AND identifier = sqlc.arg(identifier))
@@ -465,7 +469,8 @@ WITH issue_sessions AS (
     completed_at,
     lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned') AS successful
   FROM codex_sessions
-  WHERE started_at IS NOT NULL
+  WHERE COALESCE(agent_role, '') != 'host_validation'
+    AND started_at IS NOT NULL
     AND completed_at IS NOT NULL
     AND NOT EXISTS (
       SELECT 1 FROM work_attempts AS attempt
@@ -507,7 +512,8 @@ SELECT
   CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN input_tokens ELSE 0 END), 0) AS INTEGER) AS resumed_input_tokens,
   CAST(COALESCE(SUM(CASE WHEN orphan_recovery_outcome = 'resumed' THEN cached_input_tokens ELSE 0 END), 0) AS INTEGER) AS resumed_cached_tokens
 FROM codex_sessions
-WHERE completed_at IS NOT NULL;
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND completed_at IS NOT NULL;
 
 -- name: DailyTokenSpend :many
 SELECT
@@ -519,7 +525,8 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE substr(completed_at, 1, 10) = ?
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND substr(completed_at, 1, 10) = ?
 GROUP BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '')
 ORDER BY COALESCE(NULLIF(model, ''), NULLIF(requested_model, ''), '');
 
@@ -533,7 +540,8 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE substr(completed_at, 1, 10) = sqlc.arg(completed_at)
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND substr(completed_at, 1, 10) = sqlc.arg(completed_at)
   AND (
     project_id = sqlc.arg(project_id)
     OR trim(COALESCE(project_id, '')) = ''
@@ -552,7 +560,8 @@ SELECT
   CAST(SUM(CASE WHEN completed_at IS NOT NULL AND turns = 0 AND turn_start_refused = 1
     THEN 0 ELSE 1 END) AS INTEGER) AS sessions
 FROM codex_sessions NOT INDEXED
-WHERE codex_sessions.project_id = sqlc.arg(project_id)
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND codex_sessions.project_id = sqlc.arg(project_id)
   AND codex_sessions.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
     WHERE session_by_id.issue_id = sqlc.arg(issue_id)
@@ -1330,7 +1339,8 @@ WITH issue_events AS (
     CAST(0 AS INTEGER)
   FROM codex_sessions AS session
   LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
-  WHERE session.started_at IS NOT NULL
+  WHERE COALESCE(session.agent_role, '') != 'host_validation'
+    AND session.started_at IS NOT NULL
     AND (sqlc.arg(project_id) = '' OR attempt.project_id = sqlc.arg(project_id) OR attempt.project_id IS NULL)
     AND session.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
@@ -1365,7 +1375,8 @@ WITH issue_events AS (
     CAST(0 AS INTEGER)
   FROM codex_sessions AS session
   LEFT JOIN work_attempts AS attempt ON attempt.id = session.work_attempt_id
-  WHERE session.completed_at IS NOT NULL
+  WHERE COALESCE(session.agent_role, '') != 'host_validation'
+    AND session.completed_at IS NOT NULL
     AND (sqlc.arg(project_id) = '' OR attempt.project_id = sqlc.arg(project_id) OR attempt.project_id IS NULL)
     AND session.id IN (
     SELECT session_by_id.id FROM codex_sessions AS session_by_id
@@ -1508,14 +1519,14 @@ WHERE project_id = ?
 
 -- name: DailyDigestRuntime :one
 SELECT
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS sessions,
-  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS cached_input_tokens,
-  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS output_tokens,
-  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS total_tokens,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
-  (SELECT COUNT(*) FROM codex_sessions AS session WHERE (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS sessions,
+  (SELECT CAST(COALESCE(SUM(session.input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.cached_input_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS cached_input_tokens,
+  (SELECT CAST(COALESCE(SUM(session.output_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS output_tokens,
+  (SELECT CAST(COALESCE(SUM(session.total_tokens), 0) AS INTEGER) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at)) AS total_tokens,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'resumed') AS orphan_resumed,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.orphan_recovery_outcome, ''))) = 'fresh') AS orphan_fresh,
+  (SELECT COUNT(*) FROM codex_sessions AS session WHERE COALESCE(session.agent_role, '') != 'host_validation' AND (sqlc.arg(project_ids_json) = '' OR session.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND session.completed_at >= sqlc.arg(from_at) AND session.completed_at < sqlc.arg(to_at) AND lower(trim(COALESCE(session.final_state, ''))) IN ('failed', 'failure', 'cancelled', 'canceled', 'orphaned', 'token_ceiling_exceeded')) AS failed_sessions,
   (SELECT COUNT(*) FROM work_attempts AS attempt WHERE (sqlc.arg(project_ids_json) = '' OR attempt.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND attempt.started_at < sqlc.arg(to_at) AND attempt.completed_at > sqlc.arg(from_at) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_outages,
   (SELECT CAST(COALESCE(SUM(MAX(0, CAST(strftime('%s', MIN(attempt.completed_at, sqlc.arg(to_at))) AS INTEGER) - CAST(strftime('%s', MAX(attempt.started_at, sqlc.arg(from_at))) AS INTEGER))), 0) AS INTEGER) FROM work_attempts AS attempt WHERE (sqlc.arg(project_ids_json) = '' OR attempt.project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json)))) AND attempt.started_at < sqlc.arg(to_at) AND attempt.completed_at > sqlc.arg(from_at) AND lower(trim(COALESCE(attempt.terminal_state, ''))) = 'capacity') AS capacity_seconds,
   (SELECT COUNT(DISTINCT trip.identifier) FROM (
@@ -1544,7 +1555,8 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   COUNT(*) AS sessions
 FROM codex_sessions
-WHERE (sqlc.arg(project_ids_json) = '' OR project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
+WHERE COALESCE(agent_role, '') != 'host_validation'
+  AND (sqlc.arg(project_ids_json) = '' OR project_id IN (SELECT value FROM json_each(sqlc.arg(project_ids_json))))
   AND completed_at >= sqlc.arg(from_at)
   AND completed_at < sqlc.arg(to_at)
 GROUP BY COALESCE(NULLIF(trim(model), ''), NULLIF(trim(requested_model), ''), 'unassigned')

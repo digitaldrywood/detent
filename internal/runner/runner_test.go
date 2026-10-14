@@ -1806,8 +1806,11 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 		workspaceReapErr error
 		outcome          procgroup.TerminationOutcome
 		wantScratch      bool
+		noProcess        bool
 	}{
 		{name: "reaped process group"},
+		{name: "reserved before process update", noProcess: true},
+		{name: "unobserved descendant exit not verified", noProcess: true, workspaceReapErr: errors.New("unobserved descendant remained alive"), wantScratch: true},
 		{name: "process group exit not verified", reapErr: errors.New("process group remained alive"), wantScratch: true},
 		{name: "workspace descendant exit not verified", workspaceReapErr: errors.New("workspace descendant remained alive"), wantScratch: true},
 		{name: "stale process identity", outcome: procgroup.TerminationOutcomeStaleIdentity, wantScratch: true},
@@ -1822,6 +1825,9 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 			const sessionID = int64(2954)
 			identity := procgroup.Identity{PID: 17626, GroupID: 17626, StartedAt: startedAt}
 			backend := &scratchWritingAgentBackend{workerProcess: identity}
+			if tt.noProcess {
+				backend.workerProcess = procgroup.Identity{}
+			}
 			t.Cleanup(func() {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Fatal(err)
@@ -1838,6 +1844,11 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 					},
 				},
 			}
+			backend.beforeStart = func(req AgentTurnRequest) {
+				if sessionStore.process.PID != 0 || sessionStore.process.CleanupRoot != workspacePath || sessionStore.process.CleanupPath != req.TempDir {
+					t.Fatalf("backend started without scratch reservation: %+v", sessionStore.process)
+				}
+			}
 			scratchPresentDuringReap := false
 			r := &Runner{
 				now:             time.Now,
@@ -1851,6 +1862,12 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 						return tt.outcome, tt.reapErr
 					}
 					return procgroup.TerminationOutcomeTerminated, tt.reapErr
+				},
+				reapArtifactProcesses: func(_ context.Context, root, path string, _ time.Duration) (int, error) {
+					if !tt.noProcess || root != workspacePath || path != backend.tempDir {
+						t.Fatalf("unexpected scratch fallback: root=%q path=%q", root, path)
+					}
+					return 0, tt.workspaceReapErr
 				},
 				reapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) {
 					if tt.outcome == procgroup.TerminationOutcomeStaleIdentity {
@@ -7980,10 +7997,14 @@ type scratchWritingAgentBackend struct {
 	writableRoots []string
 	workerProcess procgroup.Identity
 	scratchReady  []bool
+	beforeStart   func(AgentTurnRequest)
 }
 
 func (b *scratchWritingAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.tempDir = req.TempDir
+	if b.beforeStart != nil {
+		b.beforeStart(req)
+	}
 	b.writableRoots = req.ExtraWritableRoots
 	_, scratchErr := os.Stat(req.TempDir)
 	b.scratchReady = append(b.scratchReady, scratchErr == nil)

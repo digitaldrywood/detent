@@ -48,6 +48,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tmuxstatus"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/tui"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -602,7 +603,20 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
 		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
+		buildCache, cacheErr := newRunnerBuildCache(ctx, cfg, manager.Registry(), globalDispatchGate, runtimeStore, logger)
+		if cacheErr != nil && !errors.Is(cacheErr, errNativeBuildCache) {
+			logger.Warn("runner-owned Go build cache unavailable; retaining native cache", "error", cacheErr)
+		}
+		var cacheOwner *toolcache.Managed
+		var trimCache func(context.Context, toolcache.Policy, time.Time) error
+		var cacheReport func() *toolcache.Report
+		if buildCache != nil {
+			cacheOwner, trimCache, cacheReport = buildCache.cache, buildCache.trim, buildCache.observe
+		}
 		projectFactory = withRunnerFactoryWithProjectTokens(ctx, project.Dependencies{
+			HostBuildCache:     cacheOwner,
+			TrimHostCache:      trimCache,
+			HostCacheReport:    cacheReport,
 			Events:             events,
 			Scheduling:         hubScheduling,
 			Logger:             logger,
