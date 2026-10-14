@@ -761,7 +761,10 @@ when observed pressure leaves no safe slot estimate.
 at once" value: `limit`, `current`, `direction` (`lower`, `raise`, `hold` or
 `insufficient_evidence`), `hours_covered`, `saturated_hours` and up to three
 `reasons`. An hour counts when it has memory and CPU samples, and is busy when
-slots were in use. A busy hour is saturated when memory pressure warned or was
+slots were in use. Shared runners leave person hours, as split for the periods
+above, out of coverage and saturation because the person's own work loads them;
+those hours still feed the low-disk reason and the adjacent-hour CPU and swap
+checks. A busy hour is saturated when memory pressure warned or was
 critical, PSI `some` avg10 averaged above 10, swap grew by at least 1 GiB over a
 swap-sampled previous hour, or CPU busy averaged 90% or more in it and an
 adjacent hour. Load average is not used. Fewer than 24 counted hours returns

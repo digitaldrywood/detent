@@ -113,19 +113,22 @@ func recommendRunner(r runnerauth.Routing, hours []recommendationHour, runs []re
 	if r.MachineUse == "shared" {
 		periods = []string{"person_hours", "free_hours"}
 	}
-	for _, period := range periods {
-		selected := []recommendationHour{}
-		peaks, cores := []float64{}, []float64{}
-		for _, hour := range hours {
-			if period == "dedicated" {
-				selected = append(selected, hour)
-				continue
-			}
+	var personHours []bool
+	if r.MachineUse == "shared" {
+		personHours = make([]bool, len(hours))
+		for i, hour := range hours {
 			person, err := personHostHour(r, hour.Hour)
 			if err != nil {
 				return out, err
 			}
-			if period == "dedicated" || person == (period == "person_hours") {
+			personHours[i] = person
+		}
+	}
+	for _, period := range periods {
+		selected := []recommendationHour{}
+		peaks, cores := []float64{}, []float64{}
+		for i, hour := range hours {
+			if period == "dedicated" || personHours[i] == (period == "person_hours") {
 				selected = append(selected, hour)
 			}
 		}
@@ -145,7 +148,7 @@ func recommendRunner(r runnerauth.Routing, hours []recommendationHour, runs []re
 		}
 		out.Periods = append(out.Periods, recommendPeriod(period, selected, peaks, cores))
 	}
-	out.Suggested = suggestLimit(r.CapacityLimit, out.Timezone, hours)
+	out.Suggested = suggestLimit(r.CapacityLimit, out.Timezone, hours, personHours)
 	return out, nil
 }
 
@@ -153,7 +156,7 @@ func hostPressured(hour recommendationHour) bool {
 	return hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 || hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10
 }
 
-func suggestLimit(current int, timezone string, hours []recommendationHour) suggestedLimit {
+func suggestLimit(current int, timezone string, hours []recommendationHour, skip []bool) suggestedLimit {
 	out := suggestedLimit{Current: current, Direction: "insufficient_evidence", Reasons: []string{}}
 	location, err := time.LoadLocation(timezone)
 	if err != nil {
@@ -173,7 +176,7 @@ func suggestLimit(current int, timezone string, hours []recommendationHour) sugg
 		if hour.DiskSampleCount > 0 && hour.DiskFreeMinBytes*10 < hour.DiskTotalMinBytes && (lowDisk == nil || hour.DiskFreeMinBytes < lowDisk.DiskFreeMinBytes) {
 			lowDisk = &hours[i]
 		}
-		if hour.MemorySampleCount == 0 || hour.CPUSampleCount == 0 {
+		if hour.MemorySampleCount == 0 || hour.CPUSampleCount == 0 || skip != nil && skip[i] {
 			continue
 		}
 		out.HoursCovered++
