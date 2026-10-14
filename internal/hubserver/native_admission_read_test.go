@@ -29,6 +29,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		reason             string
 		dependency         bool
 		extraDependencies  int
+		boardStateOnly     bool
 		ignoreDependencies bool
 		privateDependency  bool
 		intake             bool
@@ -67,6 +68,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "hosted unfinished dependency refuses", heartbeat: true, dependency: true, outcome: "skipped", code: "no_claimable_work"},
 		{name: "multiple unfinished dependencies retain evidence", heartbeat: true, dependency: true, extraDependencies: 1, outcome: "skipped", code: "no_claimable_work"},
 		{name: "dependency evidence remains bounded", heartbeat: true, dependency: true, extraDependencies: 100, outcome: "skipped", code: "no_claimable_work", unavailable: "unresolved_dependencies"},
+		{name: "first board summary exceeds list budget", heartbeat: true, dependency: true, extraDependencies: 400, boardStateOnly: true, outcome: "skipped", code: "no_claimable_work", unavailable: "unresolved_dependencies"},
 		{name: "dependency and intake retain unknown other exclusions", heartbeat: true, dependency: true, intake: true, outcome: "skipped", code: "no_claimable_work"},
 		{name: "optional unfinished dependency permits candidate", heartbeat: true, dependency: true, ignoreDependencies: true, outcome: "ready"},
 		{name: "optional dependency cannot explain intake refusal", heartbeat: true, dependency: true, ignoreDependencies: true, intake: true, outcome: "skipped", code: "no_claimable_work", unavailable: "native_candidate_exclusion"},
@@ -110,6 +112,12 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 				for index := range 1 + test.extraDependencies {
 					blocker := blockerFixture.create(t, "unfinished blocker "+strconv.Itoa(index))
+					if test.boardStateOnly {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, blocker.WorkItemID); err != nil {
+							t.Fatal(err)
+						}
+						blocker.State = "In Progress"
+					}
 					blockers = append(blockers, blocker)
 					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies (dependent_issue_id, blocker_issue_id, provenance, created_at, updated_at) SELECT a.id, b.id, 'native', ?, ? FROM issues a, issues b WHERE a.native_id = ? AND b.native_id = ?", testTimestamp, testTimestamp, issue.WorkItemID, blocker.WorkItemID); err != nil {
 						t.Fatal(err)
@@ -357,10 +365,17 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 				if test.name == "hosted heartbeat admissible" || test.label == "human-owned" || test.dependency {
 					for _, name := range []string{operatortool.Dashboard, operatortool.BoardState} {
-						data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID)}), false)
+						args := map[string]any{"project_id": string(f.project.ID)}
+						if test.boardStateOnly {
+							if name == operatortool.Dashboard {
+								continue
+							}
+							args["state"] = "Todo"
+						}
+						data := hostedContextData(t, call("tools/call", name, args), false)
 						var board nativeBoardResult
 						queued := 1
-						if !test.privateDependency {
+						if !test.privateDependency && !test.boardStateOnly {
 							queued += len(blockers)
 						}
 						if err := json.Unmarshal(data, &board); err != nil || board.Counts.QueuedInventory != queued || board.Counts.Running != 0 || board.Counts.ClosedInventory != 0 || board.EligibilityTool != operatortool.ExplainItem || !slices.Contains(board.Unavailable, "aggregate_dispatch_readiness") {
@@ -371,6 +386,17 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 						}
 						if test.extraDependencies >= 100 {
 							t.Logf("tool=%s content_bytes=%d", name, len(data))
+							if test.boardStateOnly {
+								if len(data) > operatortool.MaxResultBytes || len(board.Projects) != 1 || len(board.Projects[0].Board.Items) != 1 || board.Truncated || board.Projects[0].Board.NextCursor != "" {
+									t.Fatalf("large first summary lost complete board: %s", data)
+								}
+								item := board.Projects[0].Board.Items[0]
+								raw, err := json.Marshal(item)
+								if err != nil || len(raw) <= operatortool.WorkListPageBytes || item.WorkItemID != issue.WorkItemID || len(item.Dependencies) != len(blockers) || len(item.Blockers) != len(blockers) {
+									t.Fatalf("large first summary lost dependency projection: bytes=%d item=%#v err=%v", len(raw), item, err)
+								}
+								continue
+							}
 							if len(data) > operatortool.MaxResultBytes || len(board.Projects) != 1 || !board.Truncated || board.Projects[0].Board.NextCursor == "" {
 								t.Fatalf("dependency-heavy board lost bounded continuation: %s", data)
 							}

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -101,12 +102,7 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board snapshot: %w", err))
 		}
-		params.Set("include", "summary")
-		summary, err := s.readIssues(projectCtx, projectScope, params)
-		if err != nil {
-			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board summary: %w", err))
-		}
-		page.Page = summary.Page
+		page.Page = tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}
 		counts := nativeBoardInventory(project, page.Work.Lanes)
 		result.Projects = append(result.Projects, nativeBoardProject{Project: project, Counts: counts, Board: operatortool.NativeWorkPageView(string(project.ID), page)})
 		result.Counts.Running += counts.Running
@@ -114,6 +110,21 @@ func (s *Service) executeBoardRead(ctx context.Context, call operatortool.Call) 
 		result.Counts.Open += counts.Open
 		result.Counts.ClosedInventory += counts.ClosedInventory
 		result.Counts.Total += counts.Total
+		raw, err := json.Marshal(result)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		empty, err := json.Marshal(operatortool.NativeItemPage(string(project.ID), page.Page))
+		if err != nil {
+			return operatortool.Result{}, err
+		}
+		params.Set("include", "summary")
+		summary, err := s.readIssuesWithSummaryBudget(projectCtx, projectScope, params, operatortool.MaxResultBytes-len(raw)+len(empty))
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(fmt.Errorf("read board summary: %w", err))
+		}
+		page.Page = summary.Page
+		result.Projects[len(result.Projects)-1].Board = operatortool.NativeWorkPageView(string(project.ID), page)
 		result.Truncated = result.Truncated || page.NextCursor != "" || page.Work.Truncated
 		remaining -= max(len(page.Items), len(page.Work.Items))
 	}

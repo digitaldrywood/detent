@@ -188,6 +188,10 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 }
 
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	return s.readIssuesWithSummaryBudget(ctx, scope, params, operatortool.WorkListPageBytes)
+}
+
+func (s *Service) readIssuesWithSummaryBudget(ctx context.Context, scope nativeScope, params url.Values, summaryBytes int) (tracker.NativeIssuePage, error) {
 	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
 		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
 			return tracker.NativeIssuePage{}, nativeInvalid("Date filters require an issue list projection")
@@ -375,7 +379,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			if encodeErr != nil {
 				return tracker.NativeIssuePage{}, encodeErr
 			}
-			if len(raw) > operatortool.WorkListPageBytes {
+			if len(raw) > summaryBytes {
 				if len(page.Items) == 0 {
 					return tracker.NativeIssuePage{}, operatortool.ErrReadUnavailable
 				}
