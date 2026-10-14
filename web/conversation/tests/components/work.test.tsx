@@ -1266,10 +1266,10 @@ describe("the filter-first Work surface", () => {
   });
 
   it.each([
-    { title: "Queue item 1", badge: "Bug" },
-    { title: "Queue item 2", badge: "Change request" },
-    { title: "Queue item 3", badge: null },
-  ])("renders the issue type beside $title only when classified", async ({ title, badge }) => {
+    { title: "Queue item 1", badge: "Bug", context: [["URL", "https://app.example.test/settings"], ["App build", "v1.4.2"], ["Browser", "Chrome 130"], ["OS", "macOS 15"], ["Viewport", "1440x900"], ["Captured", "2026-10-13T12:00:00Z"]] },
+    { title: "Queue item 2", badge: "Change request", context: null },
+    { title: "Queue item 3", badge: null, context: null },
+  ])("renders the issue type beside $title only when classified and its report context only when supplied", async ({ title, badge, context }) => {
     const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all");
     await settledWork();
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
@@ -1283,6 +1283,14 @@ describe("the filter-first Work surface", () => {
       expect(header.queryByText("Change request")).toBeNull();
     } else {
       expect(header.getByText(badge)).not.toBeNull();
+    }
+    const block = screen.queryByTestId("issue-report-context");
+    if (context === null) {
+      expect(block).toBeNull();
+    } else {
+      const region = within(screen.getByRole("region", { name: "Report context" }));
+      expect(region.getAllByRole("term").map((term) => term.textContent)).toEqual(context.map(([label]) => label));
+      expect(region.getAllByRole("definition").map((value) => value.textContent)).toEqual(context.map(([, value]) => value));
     }
   });
 

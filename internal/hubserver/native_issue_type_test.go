@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -166,5 +167,106 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 		if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != test.id || page.Items[0].Type != "" {
 			t.Fatalf("existing issue page=%#v err=%v", page, err)
 		}
+	}
+}
+
+func TestNativeIssueReportContext(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "report-context")
+	contexts := make(chan context.Context, 1)
+	f.service.echo.POST("/api/v2/organizations/:organization/report-context-test", func(c echo.Context) error {
+		contexts <- operatortool.BindConnection(c.Request().Context(), "report-context", "test")
+		return c.NoContent(http.StatusOK)
+	}, f.service.operatorAuthority)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/report-context-test", f.token, map[string]any{}), http.StatusOK)
+	ctx := <-contexts
+	executor := hostedOperatorExecutor{f.service}
+	full := &tracker.ReportContext{URL: "https://app.example.test/board?tab=1", AppBuild: "v1.4.2+abc123", Browser: "Firefox 131", OS: "Ubuntu 24.04", Viewport: "390x844", CapturedAt: "2026-10-13T12:00:00Z"}
+	for _, test := range []struct {
+		name    string
+		context any
+		want    *tracker.ReportContext
+	}{
+		{"absent", nil, nil},
+		{"all fields", map[string]any{"url": full.URL, "app_build": full.AppBuild, "browser": full.Browser, "os": full.OS, "viewport": full.Viewport, "captured_at": full.CapturedAt}, full},
+		{"trimmed partial", map[string]any{"browser": "  Safari 18 ", "url": ""}, &tracker.ReportContext{Browser: "Safari 18"}},
+		{"blank", map[string]any{"os": "  "}, nil},
+	} {
+		t.Run("mcp/"+test.name, func(t *testing.T) {
+			arguments := map[string]any{"project_id": f.project.ID, "request_id": "context-" + test.name, "title": "Context " + test.name}
+			if test.context != nil {
+				arguments["report_context"] = test.context
+			}
+			raw, err := json.Marshal(arguments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var created operatortool.WorkReadResult[tracker.NativeIssue]
+			if err := json.Unmarshal(result.Content, &created); err != nil {
+				t.Fatal(err)
+			}
+			raw, err = json.Marshal(map[string]any{"project_id": f.project.ID, "reference": created.Data.WorkItemID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err = executor.Execute(ctx, operatortool.Call{Name: operatortool.WorkItem, Arguments: raw})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fetched operatortool.WorkReadResult[operatortool.NativeItem]
+			if err := json.Unmarshal(result.Content, &fetched); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(fetched.Data.ReportContext, test.want) {
+				t.Fatalf("work_item report_context=%+v, want %+v", fetched.Data.ReportContext, test.want)
+			}
+			if test.want == nil && strings.Contains(string(result.Content), "report_context") {
+				t.Fatalf("issue without context exposes report_context: %s", result.Content)
+			}
+			for _, query := range []string{"?include=board", ""} {
+				var page tracker.NativeIssuePage
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items"+query, f.token, nil), &page)
+				for _, item := range page.Items {
+					if item.ReportContext != nil {
+						t.Fatalf("list %q carries report_context: %+v", query, item)
+					}
+				}
+			}
+		})
+	}
+	for _, test := range []struct {
+		name   string
+		body   string
+		status int
+		want   *tracker.ReportContext
+	}{
+		{"valid", `{"browser":"Edge 130","app_build":"v2"}`, http.StatusOK, &tracker.ReportContext{Browser: "Edge 130", AppBuild: "v2"}},
+		{"unknown key", `{"browser":"Edge 130","cookie":"secret-cookie"}`, http.StatusUnprocessableEntity, nil},
+		{"oversized", `{"app_build":"` + strings.Repeat("secret", 60) + `"}`, http.StatusUnprocessableEntity, nil},
+		{"control character", `{"os":"secret\u0000os"}`, http.StatusUnprocessableEntity, nil},
+		{"non-string", `{"viewport":["secret"]}`, http.StatusUnprocessableEntity, nil},
+	} {
+		t.Run("rest/"+test.name, func(t *testing.T) {
+			body := json.RawMessage(`{"idempotency_key":"rest-context-` + strings.ReplaceAll(test.name, " ", "-") + `","title":"REST context ` + test.name + `","body":"","state":"","labels":[],"assignees":[],"report_context":` + test.body + `}`)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, body)
+			requireNativeStatus(t, response, test.status)
+			if test.status != http.StatusOK {
+				var failure apiErrorResponse
+				decodeHubResponse(t, response, &failure)
+				if failure.Code != "invalid_request" || strings.Contains(failure.Message, "secret") {
+					t.Fatalf("failure=%#v", failure)
+				}
+				return
+			}
+			var created tracker.NativeIssue
+			decodeHubResponse(t, response, &created)
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(created.WorkItemID), f.token, nil), &created)
+			if !reflect.DeepEqual(created.ReportContext, test.want) {
+				t.Fatalf("report_context=%+v, want %+v", created.ReportContext, test.want)
+			}
+		})
 	}
 }

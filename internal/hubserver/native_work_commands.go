@@ -27,6 +27,12 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
 		return nil, err
 	}
+	if err := validateNativeReportContext(request.ReportContext); err != nil {
+		return nil, err
+	}
+	if request.ReportContext != nil {
+		request.ReportContext = request.ReportContext.Normalized()
+	}
 	scope.action = operatortool.FileIssue
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
 	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {

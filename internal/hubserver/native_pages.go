@@ -365,6 +365,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			}
 		}
 		issue = s.nativeIssueResponse(issue)
+		issue.ReportContext = nil
 		issue.Snippet = item.Snippet
 		next := cursor
 		next.Issues = &item.Position

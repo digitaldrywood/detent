@@ -541,33 +541,59 @@ func TestReporterAttachmentMCPRoundTrip(t *testing.T) {
 	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
 		t.Fatal(err)
 	}
-	raw, failed := call(operatortool.UploadAttachment, map[string]any{"request_id": "reporter-png", "project_id": project, "name": "screenshot.png", "content_base64": base64.StdEncoding.EncodeToString(pixels.Bytes())})
-	var record attachment.Metadata
-	if failed || json.Unmarshal(raw, &record) != nil || record.ID == "" || record.ContentType != "image/png" || record.Size != int64(pixels.Len()) {
-		t.Fatalf("PNG upload=%s failed=%v", raw, failed)
+	har := []byte(`{"log":{"version":"1.2","entries":[{"request":{"method":"GET","url":"https://app.example.test/api"},"response":{"status":500}}]}}`)
+	consoleLog := []byte("12:00:01 [error] Uncaught TypeError: settings is undefined\n")
+	uploads := []struct {
+		name, contentType, media string
+		content                  []byte
+	}{
+		{"screenshot.png", "", "image/png", pixels.Bytes()},
+		{"session.har", "", attachment.HARMediaType, har},
+		{"network.har", "application/har+json", attachment.HARMediaType, har},
+		{"console.log", "", "text/plain", consoleLog},
 	}
-	raw, failed = call(operatortool.FileIssue, map[string]any{"request_id": "reporter-file", "project_id": project, "type": "bug", "title": "Screenshot report", "description": "## Steps to reproduce\nOpen settings and save.\n## Expected\nSettings persist.\n## Actual\nSettings revert.\n## Where\nSettings screen.\n## Environment\nFirefox on Linux, build example.\n![Screenshot](attachment:" + record.ID + ")", "state": "Todo"})
+	records := make([]attachment.Metadata, len(uploads))
+	var description strings.Builder
+	description.WriteString("## Steps to reproduce\nOpen settings and save.\n## Expected\nSettings persist.\n## Actual\nSettings revert.\n## Where\nSettings screen.\n")
+	for index, upload := range uploads {
+		arguments := map[string]any{"request_id": "reporter-" + upload.name, "project_id": project, "name": upload.name, "content_base64": base64.StdEncoding.EncodeToString(upload.content)}
+		if upload.contentType != "" {
+			arguments["content_type"] = upload.contentType
+		}
+		raw, failed := call(operatortool.UploadAttachment, arguments)
+		record := &records[index]
+		if failed || json.Unmarshal(raw, record) != nil || record.ID == "" || record.ContentType != upload.media || record.Size != int64(len(upload.content)) {
+			t.Fatalf("%s upload=%s failed=%v", upload.name, raw, failed)
+		}
+		description.WriteString("\n[" + upload.name + "](attachment:" + record.ID + ")")
+	}
+	if raw, failed := call(operatortool.UploadAttachment, map[string]any{"request_id": "reporter-html", "project_id": project, "name": "page.html", "content_type": "text/html", "content_base64": base64.StdEncoding.EncodeToString([]byte("<!doctype html><html>secret</html>"))}); !failed {
+		t.Fatalf("HTML upload accepted: %s", raw)
+	}
+	raw, failed := call(operatortool.FileIssue, map[string]any{"request_id": "reporter-file", "project_id": project, "type": "bug", "title": "Screenshot report", "description": description.String(), "report_context": map[string]any{"browser": "Chrome 130", "app_build": "v1.4.2"}, "state": "Todo"})
 	var filed struct {
 		Data tracker.NativeIssue `json:"data"`
 	}
-	if failed || json.Unmarshal(raw, &filed) != nil || filed.Data.State != "Triage" || filed.Data.Type != "bug" || filed.Data.WorkItemID == "" {
+	if failed || json.Unmarshal(raw, &filed) != nil || filed.Data.State != "Triage" || filed.Data.Type != "bug" || filed.Data.WorkItemID == "" || filed.Data.ReportContext == nil || filed.Data.ReportContext.Browser != "Chrome 130" {
 		t.Fatalf("file=%s failed=%v", raw, failed)
 	}
-	raw, failed = call(operatortool.ReadAttachment, map[string]any{"project_id": project, "attachment_id": record.ID})
-	var read struct {
-		Content  string              `json:"content_base64"`
-		Metadata attachment.Metadata `json:"metadata"`
-		Returned int                 `json:"returned_bytes"`
-		EOF      bool                `json:"eof"`
-	}
-	if failed || json.Unmarshal(raw, &read) != nil {
-		t.Fatalf("read=%s failed=%v", raw, failed)
-	}
-	content, err := base64.StdEncoding.DecodeString(read.Content)
-	if err != nil || !bytes.Equal(content, pixels.Bytes()) || read.Returned != pixels.Len() || !read.EOF {
-		t.Fatalf("PNG readback differs: bytes=%d err=%v", len(content), err)
-	}
-	if len(read.Metadata.ReferencedBy) != 1 || read.Metadata.ReferencedBy[0].WorkItemID != string(filed.Data.WorkItemID) {
-		t.Fatalf("issue reference=%+v", read.Metadata.ReferencedBy)
+	for index, upload := range uploads {
+		raw, failed = call(operatortool.ReadAttachment, map[string]any{"project_id": project, "attachment_id": records[index].ID})
+		var read struct {
+			Content  string              `json:"content_base64"`
+			Metadata attachment.Metadata `json:"metadata"`
+			Returned int                 `json:"returned_bytes"`
+			EOF      bool                `json:"eof"`
+		}
+		if failed || json.Unmarshal(raw, &read) != nil {
+			t.Fatalf("%s read=%s failed=%v", upload.name, raw, failed)
+		}
+		content, err := base64.StdEncoding.DecodeString(read.Content)
+		if err != nil || !bytes.Equal(content, upload.content) || read.Returned != len(upload.content) || !read.EOF || read.Metadata.ContentType != upload.media {
+			t.Fatalf("%s readback differs: bytes=%d err=%v", upload.name, len(content), err)
+		}
+		if len(read.Metadata.ReferencedBy) != 1 || read.Metadata.ReferencedBy[0].WorkItemID != string(filed.Data.WorkItemID) {
+			t.Fatalf("%s issue reference=%+v", upload.name, read.Metadata.ReferencedBy)
+		}
 	}
 }

@@ -48,6 +48,7 @@ interface MockIssue {
   revision: string;
   profile: string;
   type?: "bug" | "change_request";
+  report_context?: { url?: string; app_build?: string; browser?: string; os?: string; viewport?: string; captured_at?: string };
   title: string;
   body: string;
   state: string;
@@ -482,6 +483,7 @@ export function createWorkMock(options: {
           state: lane,
           terminal: lane === "Done",
           ...(index % 3 === 0 ? { type: "bug" as const } : index % 3 === 1 ? { type: "change_request" as const } : {}),
+          ...(index === 0 ? { report_context: { url: "https://app.example.test/settings", app_build: "v1.4.2", browser: "Chrome 130", os: "macOS 15", viewport: "1440x900", captured_at: "2026-10-13T12:00:00Z" } } : {}),
           ...(index % 4 === 3 ? {} : { priority: index % 4 }),
           labels: index % 3 === 0 ? [LABELS[index % LABELS.length]!, "effort:medium"] : [],
           assignees: ASSIGNEES[index % ASSIGNEES.length] === "" ? [] : [ASSIGNEES[index % ASSIGNEES.length]!],
