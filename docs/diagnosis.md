@@ -80,7 +80,9 @@ from discarded evidence; absent causal attribution is unknown.
 Every authenticated `/api/v2` response carries a `Server-Timing` header with
 `db`, `compute`, `encode` and `total` durations in milliseconds. `db` is the
 time spent executing SQLite statements and stepping their rows on any pool,
-`encode` is JSON encoding, and `compute` is the remainder of `total`.
+`encode` is JSON encoding, and `compute` is the remainder of `total`. The
+`db` span leaves out `BEGIN`, `COMMIT` and the wait for a pool connection;
+that time falls into `compute`.
 Unauthenticated responses carry no timing. One header is a single sample; it
 never establishes a trend.
 

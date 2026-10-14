@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -105,6 +106,8 @@ type tenantRequestMetrics struct {
 	flushMu      sync.Mutex
 	pending      map[requestMetricKey]requestLatency
 	runners      map[string]*runnerRequestWindow
+	routesOnce   sync.Once
+	routes       map[string]bool
 }
 
 func openRequestMetrics(ctx context.Context, path string, organization tracker.OrganizationID) (*tenantRequestMetrics, error) {
@@ -377,10 +380,6 @@ func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
 				kind, caller = "browser", session.Identity.Subject
 			}
 		}
-		route := c.Path()
-		if route == "" {
-			route = "<unmatched>"
-		}
 		status := c.Response().Status
 		if err != nil {
 			status = 500
@@ -389,7 +388,34 @@ func (s *Service) measureRequests(next echo.HandlerFunc) echo.HandlerFunc {
 				status = failure.Code
 			}
 		}
-		s.requestMetrics.record(s.config.now(), c.Request().Method+" "+route, kind, caller, status, time.Since(start))
+		s.requestMetrics.record(s.config.now(), metricRoute(s.requestMetrics.knownRoutes(s.echo), c.Request().Method, c.Path()), kind, caller, status, time.Since(start))
 		return err
 	}
+}
+
+const unmatchedMetricRoute = "<unmatched>"
+
+var metricMethods = map[string]bool{http.MethodGet: true, http.MethodHead: true, http.MethodPost: true, http.MethodPut: true, http.MethodPatch: true, http.MethodDelete: true, http.MethodOptions: true, http.MethodConnect: true, http.MethodTrace: true}
+
+// metricRoute keys a request by method and registered route template. Unknown
+// methods and paths that match no registered route collapse to constants, so
+// clients cannot grow the metrics store with arbitrary keys.
+func metricRoute(routes map[string]bool, method, path string) string {
+	if !metricMethods[method] {
+		method = "OTHER"
+	}
+	if !routes[method+" "+path] {
+		path = unmatchedMetricRoute
+	}
+	return method + " " + path
+}
+
+func (m *tenantRequestMetrics) knownRoutes(e *echo.Echo) map[string]bool {
+	m.routesOnce.Do(func() {
+		m.routes = make(map[string]bool)
+		for _, route := range e.Routes() {
+			m.routes[route.Method+" "+route.Path] = true
+		}
+	})
+	return m.routes
 }

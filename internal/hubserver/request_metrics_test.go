@@ -118,6 +118,56 @@ func TestRequestMetricsPersistence(t *testing.T) {
 	}
 }
 
+func TestMetricRouteBoundsKeys(t *testing.T) {
+	t.Parallel()
+	routes := map[string]bool{"GET /api/v2/organizations/:organization/activity": true}
+	for _, test := range []struct {
+		method, path, want string
+	}{
+		{"GET", "/api/v2/organizations/:organization/activity", "GET /api/v2/organizations/:organization/activity"},
+		{"PATCH", "/api/v2/organizations/:organization/activity", "PATCH <unmatched>"},
+		{"GET", "/api/v2/organizations/:organization/", "GET <unmatched>"},
+		{"GET", "", "GET <unmatched>"},
+		{"BREW", "/api/v2/organizations/:organization/activity", "OTHER <unmatched>"},
+		{"get", "/api/v2/organizations/:organization/activity", "OTHER <unmatched>"},
+	} {
+		if got := metricRoute(routes, test.method, test.path); got != test.want {
+			t.Errorf("metricRoute(%q, %q) = %q, want %q", test.method, test.path, got, test.want)
+		}
+	}
+}
+
+func TestRequestHistoryKeepsBusiestRoutes(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+	m := testRequestMetrics(t, filepath.Join(t.TempDir(), "busy.metrics.sqlite"), "org_busy")
+	for route := range routeLatencyRouteLimit + 5 {
+		for range route + 1 {
+			m.record(now.Add(-time.Minute), fmt.Sprintf("GET /route/%02d", route), "browser", "user", 200, time.Millisecond)
+			m.record(now.Add(-48*time.Hour), fmt.Sprintf("GET /route/%02d", route), "browser", "user", 500, time.Millisecond)
+		}
+	}
+	if err := m.flush(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	history, err := m.history(t.Context(), now.Add(-2160*time.Hour), now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int64)
+	for _, bucket := range history.Buckets {
+		counts[bucket.Route] += bucket.Count
+	}
+	if len(counts) != routeLatencyRouteLimit {
+		t.Fatalf("routes=%d want %d: %v", len(counts), routeLatencyRouteLimit, counts)
+	}
+	for route := 5; route < routeLatencyRouteLimit+5; route++ {
+		if got := counts[fmt.Sprintf("GET /route/%02d", route)]; got != int64(2*(route+1)) {
+			t.Fatalf("route %d count=%d want %d", route, got, 2*(route+1))
+		}
+	}
+}
+
 func TestRequestMetricsFlushDoesNotUseTenantWriter(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
@@ -281,6 +331,7 @@ func TestRequestMetricsAdminReads(t *testing.T) {
 		t.Fatalf("route latency history: %s", historyResponse.Body.String())
 	}
 	requireNativeStatus(t, f.request(t, owner, http.MethodGet, path+"?window=1m", nil), http.StatusBadRequest)
+	requireNativeStatus(t, f.request(t, member, http.MethodGet, path+"?window=1m", nil), http.StatusForbidden)
 	f.grant(t, owner, false, false)
 	for _, test := range []struct {
 		access hostedProjectAccess

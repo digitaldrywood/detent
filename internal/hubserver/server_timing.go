@@ -100,7 +100,7 @@ func (timedJSONSerializer) Serialize(c echo.Context, i any, indent string) error
 		encoder.SetIndent("", indent)
 	}
 	if err := encoder.Encode(i); err != nil {
-		return err
+		return fmt.Errorf("encode json response: %w", err)
 	}
 	if timing := requestTimingFrom(c.Request().Context()); timing != nil {
 		timing.encode.Add(int64(time.Since(start)))

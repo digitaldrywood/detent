@@ -88,13 +88,14 @@ func (m *tenantRequestMetrics) history(ctx context.Context, from, to time.Time, 
 	start := from.UTC().Truncate(time.Hour)
 	bucket = max(time.Hour, bucket.Truncate(time.Hour), (to.Sub(start)/routeLatencyBucketLimit + time.Hour - 1).Truncate(time.Hour))
 	out := routeLatencyHistory{From: start, To: to.UTC(), Bucket: bucket.String(), Buckets: []routeLatencyBucket{}}
-	rows, err := m.db.QueryContext(ctx, "SELECT hour,route,status_class,count,sum_ms,max_ms,histogram FROM request_hours WHERE hour>=? AND hour<?", start.Unix(), to.Unix())
+	rows, err := m.db.QueryContext(ctx, `WITH top AS (SELECT route FROM request_hours WHERE hour>=:from AND hour<:to GROUP BY route ORDER BY sum(count) DESC, route LIMIT :limit)
+SELECT h.hour,h.route,h.status_class,h.count,h.sum_ms,h.max_ms,h.histogram FROM request_hours h JOIN top ON top.route=h.route WHERE h.hour>=:from AND h.hour<:to`,
+		sql.Named("from", start.Unix()), sql.Named("to", to.Unix()), sql.Named("limit", routeLatencyRouteLimit))
 	if err != nil {
 		return out, fmt.Errorf("query request hours: %w", err)
 	}
 	defer rows.Close()
 	buckets := make(map[requestHourKey]requestLatency)
-	totals := make(map[string]int64)
 	for rows.Next() {
 		var key requestHourKey
 		var histogram string
@@ -109,26 +110,11 @@ func (m *tenantRequestMetrics) history(ctx context.Context, from, to time.Time, 
 		current := buckets[key]
 		current.merge(l)
 		buckets[key] = current
-		totals[key.Route] += l.Count
 	}
 	if err := rows.Err(); err != nil {
 		return out, fmt.Errorf("read request hours: %w", err)
 	}
-	routes := make([]string, 0, len(totals))
-	for route := range totals {
-		routes = append(routes, route)
-	}
-	slices.SortFunc(routes, func(a, b string) int {
-		return cmp.Or(cmp.Compare(totals[b], totals[a]), cmp.Compare(a, b))
-	})
-	kept := make(map[string]bool, routeLatencyRouteLimit)
-	for _, route := range routes[:min(routeLatencyRouteLimit, len(routes))] {
-		kept[route] = true
-	}
 	for key, l := range buckets {
-		if !kept[key.Route] {
-			continue
-		}
 		l.percentiles()
 		out.Buckets = append(out.Buckets, routeLatencyBucket{From: time.Unix(key.Hour, 0).UTC(), Route: key.Route, StatusClass: fmt.Sprintf("%dxx", key.Status), requestLatency: l})
 	}
@@ -153,6 +139,9 @@ type requestMetricsResponse struct {
 
 func (s *Service) hostedRequestMetrics(c echo.Context) error {
 	ctx := c.Request().Context()
+	if !s.requestMetricsVisible(ctx) {
+		return c.NoContent(http.StatusForbidden)
+	}
 	var window time.Duration
 	if raw := c.QueryParam("window"); raw != "" {
 		parsed, err := time.ParseDuration(raw)
@@ -161,10 +150,10 @@ func (s *Service) hostedRequestMetrics(c echo.Context) error {
 		}
 		window = parsed
 	}
-	report, allowed, err := s.adminRequestMetrics(ctx)
+	now := s.config.now().UTC()
+	report, err := s.requestMetrics.report(ctx, now)
 	response := requestMetricsResponse{requestMetricsReport: report}
-	if err == nil && allowed && window > 0 {
-		now := s.config.now().UTC()
+	if err == nil && window > 0 {
 		var history routeLatencyHistory
 		history, err = s.requestMetrics.history(ctx, now.Add(-window), now, time.Hour)
 		response.RouteLatency = &history
@@ -172,9 +161,6 @@ func (s *Service) hostedRequestMetrics(c echo.Context) error {
 	if err != nil {
 		s.config.Logger.Warn("read request metrics", "error", err)
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Request metrics are temporarily unavailable")
-	}
-	if !allowed {
-		return c.NoContent(http.StatusForbidden)
 	}
 	return c.JSON(http.StatusOK, response)
 }
