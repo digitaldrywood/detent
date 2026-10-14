@@ -650,22 +650,42 @@
       "rework_causes": [
         {
           "from_state": "Merging",
-          "reason_detail": "Conflict on landing",
-          "count": 34
+          "reason_detail": "landing gate failed: exit status 2 [earlier output truncated] goroutine 64176 [running]:\ntesting.(*T).Parallel(0x96d7337ed88) /usr/local/go/src/testing/testing.go:1489 +0x114",
+          "count": 21
         },
         {
-          "from_state": "Human Review",
-          "reason_detail": "Review transition",
+          "from_state": "Merging",
+          "reason_detail": "GitHub requires these review conversations to be resolved before the merge. Address each finding in Rework.\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow)</sub></sub>** internal/hubserver/hosted_reports.go:233 keep coverage out of the UI",
           "count": 12
+        },
+        {
+          "from_state": "Merging",
+          "reason_detail": "landing refused: base_protected",
+          "count": 9
+        },
+        {
+          "from_state": "Merging",
+          "reason_detail": "squashing fcd7735d91336d868d2536d10d33d88eb1622803 onto the base conflicts: Auto-merging web/conversation/dev/mock-hub.ts",
+          "count": 4
+        },
+        {
+          "from_state": "In Progress",
+          "reason_detail": "terminal attempt without work product",
+          "count": 3
+        },
+        {
+          "from_state": "Blocked",
+          "reason_detail": "",
+          "count": 2
         }
       ]
     },
     "failure_signatures": {
       "items": [
         {
-          "signature": "sig_conflict",
-          "example": "Landing refused: merge conflict",
-          "class": "source",
+          "signature": "run agent turn: source finalization gate failed: exit status <n>",
+          "example": "run agent turn: source finalization gate failed: exit status 2 panic: runtime error: invalid memory address or nil pointer dereference [signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x1029b4f20] goroutine 412 [running]: github.com/digitaldrywood/detent/internal/hubserver.(*Service).readHostedReports(0x14000a2c000) /home/runner/work/detent/detent/internal/hubserver/hosted_reports.go:233 +0x5c0",
+          "class": "attempt",
           "count": 34,
           "work_items": [
             "wi_old"
@@ -716,9 +736,99 @@
             "missing_criterion": 1,
             "validator_miss": 1,
             "infrastructure": 1
-          }
+          },
+          "infrastructure_returns": 30
         }
-      ]
+      ],
+      "infrastructure_returns": 30
     }
-  }
+  },
+  "rework_classes": [
+    {
+      "class": "Gate failed before landing",
+      "kind": "infrastructure",
+      "count": 21,
+      "issues": 14,
+      "cost_usd": 61.2
+    },
+    {
+      "class": "Review findings to address",
+      "kind": "issue",
+      "count": 12,
+      "issues": 9,
+      "cost_usd": 38.75
+    },
+    {
+      "class": "Landing refused: protected base",
+      "kind": "infrastructure",
+      "count": 9,
+      "issues": 7,
+      "cost_usd": 12.4
+    },
+    {
+      "class": "Conflict on landing",
+      "kind": "issue",
+      "count": 4,
+      "issues": 4,
+      "cost_usd": 9.1
+    },
+    {
+      "class": "Finished without a change",
+      "kind": "issue",
+      "count": 3,
+      "issues": 3,
+      "cost_usd": 4.2
+    },
+    {
+      "class": "Not classified",
+      "kind": "unknown",
+      "count": 2,
+      "issues": 2,
+      "cost_usd": 0
+    }
+  ],
+  "failure_classes": [
+    {
+      "class": "Finalization gate failed",
+      "kind": "infrastructure",
+      "count": 34,
+      "issues": 12,
+      "cost_usd": 120
+    },
+    {
+      "class": "Landing refused: protected base",
+      "kind": "infrastructure",
+      "count": 9,
+      "issues": 7,
+      "cost_usd": 18.5
+    },
+    {
+      "class": "Review conversations unresolved at merge",
+      "kind": "issue",
+      "count": 6,
+      "issues": 5,
+      "cost_usd": 22.3
+    },
+    {
+      "class": "Hub request timed out",
+      "kind": "infrastructure",
+      "count": 3,
+      "issues": 3,
+      "cost_usd": 5.75
+    },
+    {
+      "class": "Worker processes left running after stop",
+      "kind": "infrastructure",
+      "count": 2,
+      "issues": 2,
+      "cost_usd": 3.1
+    },
+    {
+      "class": "Not classified",
+      "kind": "unknown",
+      "count": 1,
+      "issues": 1,
+      "cost_usd": 0.4
+    }
+  ]
 }

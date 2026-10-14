@@ -18,6 +18,7 @@ type analyticsQualityCounts struct {
 	EscapedVersions int            `json:"escaped_versions"`
 	Escapes         int            `json:"escapes"`
 	Infrastructure  int            `json:"infrastructure"`
+	InfraReturns    int            `json:"infrastructure_returns"`
 	Pending         int            `json:"pending_classification"`
 	ReworkPercent   *float64       `json:"rework_percent"`
 	EscapePercent   *float64       `json:"escape_percent"`
@@ -242,7 +243,7 @@ ORDER BY e.sequence LIMIT ? OFFSET ?`, scope.organization, scope.project, format
 }
 
 func summarizeAnalyticsQuality(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, discussions []qualityDiscussion, w operatortool.AnalyticsWindow) analyticsQuality {
-	out := analyticsQuality{Source: "native_landing_workflow_review_and_escape_evidence", Coverage: "rework: unique_items_returned_before_landing / unique_items_worked_in_window; escape: unique_landed_versions_in_window_with_non_infrastructure_escape_by_window_end / versions_landed_in_window; buckets_use_landing_cohorts; occurrences_and_causes_use_detection_time; pending_classifications_count_as_escapes; infrastructure_excluded_from_escape_rate", Unavailable: []string{}, Buckets: []analyticsQualityBucket{}}
+	out := analyticsQuality{Source: "native_landing_workflow_review_and_escape_evidence", Coverage: "rework: unique_items_returned_before_landing / unique_items_worked_in_window; escape: unique_landed_versions_in_window_with_non_infrastructure_escape_by_window_end / versions_landed_in_window; buckets_use_landing_cohorts; occurrences_and_causes_use_detection_time; pending_classifications_count_as_escapes; infrastructure_excluded_from_escape_rate; infrastructure_returns_excluded_from_rework_rate", Unavailable: []string{}, Buckets: []analyticsQualityBucket{}}
 	byVersion := map[string]nativeAnalyticsLanding{}
 	byItem := map[string][]nativeAnalyticsLanding{}
 	for _, landing := range landings {
@@ -328,7 +329,9 @@ func qualityCounts(landings []nativeAnalyticsLanding, events []qualityHistoryEve
 				}
 			}
 		}
-		if returned {
+		if returned && event.Kind != "changes_requested" && classifyReworkReason(event.Data.FromState, event.Data.ReasonDetail).Kind == reportKindInfrastructure {
+			out.InfraReturns++
+		} else if returned {
 			reworked[event.Item] = true
 		}
 		if returned || event.Kind == "worked" || event.Data.ToState == "In Progress" || event.Data.ToState == "Human Review" || event.Data.ToState == "Merging" {

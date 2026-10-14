@@ -64,6 +64,8 @@ type hostedReportsReport struct {
 	Throughput  []reportsBucket        `json:"throughput"`
 	Titles      map[string]string      `json:"titles"`
 	Coverage    []diagnosticsCoverage  `json:"coverage"`
+	Rework      []reportClassTotal     `json:"rework_classes"`
+	Failures    []reportClassTotal     `json:"failure_classes"`
 	Tokens      int64                  `json:"tokens"`
 	Input       int64                  `json:"input"`
 	Cached      int64                  `json:"cached"`
@@ -112,7 +114,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	defer cancel()
 	p := analytics.Projects[0]
 	w := analytics.Window
-	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
+	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
 	diagnostics, err := s.readHostedDiagnostics(ctx, analytics)
 	if err != nil {
 		return out, err
@@ -176,6 +178,8 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Cost += row.Cost
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
+	out.Rework = reportReworkClasses(timelines, p.allAttempts, usage, w.From, w.To)
+	out.Failures = reportFailureClasses(p.failures)
 	policy, err := diagnosticsPolicyValues(ctx, s.database.reader, scope)
 	if err != nil {
 		return out, err
@@ -278,6 +282,48 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Coverage = append(out.Coverage, coverage)
 	}
 	return out, nil
+}
+
+func reportReworkClasses(timelines []analyticsResidenceTimeline, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, from, to time.Time) []reportClassTotal {
+	type reworkReturn struct {
+		at    time.Time
+		class reportClass
+	}
+	classes := newReportClassAccumulator()
+	returns := map[string][]reworkReturn{}
+	for _, timeline := range timelines {
+		for _, event := range timeline.rework {
+			if event.at.Before(from) || !event.at.Before(to) {
+				continue
+			}
+			class := classifyReworkReason(event.data.FromState, event.data.ReasonDetail)
+			classes.add(class, timeline.issue.id, 0)
+			returns[timeline.issue.id] = append(returns[timeline.issue.id], reworkReturn{at: event.at, class: class})
+		}
+	}
+	for _, a := range attempts {
+		var latest *reworkReturn
+		for i, r := range returns[a.WorkItemID] {
+			if !r.at.After(a.StartedAt) {
+				latest = &returns[a.WorkItemID][i]
+			}
+		}
+		if latest == nil {
+			continue
+		}
+		for _, u := range usage[a.AttemptID] {
+			classes.addCost(latest.class, u.Cost)
+		}
+	}
+	return classes.result()
+}
+
+func reportFailureClasses(failures []nativeFailure) []reportClassTotal {
+	classes := newReportClassAccumulator()
+	for _, f := range failures {
+		classes.add(classifyFailure(f.example), f.workItem, f.cost)
+	}
+	return classes.result()
 }
 
 func reportsCompletions(timelines []analyticsResidenceTimeline, states map[string]tracker.NativeState, from, to time.Time) reportsCompletion {

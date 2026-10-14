@@ -1539,13 +1539,13 @@ Showing a secret such as an API key redacted until revealed.
 
 ### Reports page
 
-Project flow, throughput, stage and cost reports from recorded analytics, with source coverage.
+Project flow, throughput, stage and cost reports from recorded analytics, with rework causes and failures grouped into named classes.
 
 - Kind: Composition; status: available; id: `reports-page`.
 - Import: `import { ReportsRoute, ReportsView } from "~/app/reports/ReportsPage";`
 - Source: [src/app/reports/ReportsPage.tsx](../../web/conversation/src/app/reports/ReportsPage.tsx).
 - Variants: none.
-- States: loading, empty, error, partial, unavailable.
+- States: loading, empty, error, unavailable.
 - Keyboard: Time and range controls, refresh and issue Diagnostics links in reading order.
 - Avoid: Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.
 - Related: [Usage page](#usage-page), [Table](#table), [Toggle group](#toggle-group), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
