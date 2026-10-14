@@ -372,6 +372,30 @@ func (s *Service) proxy(c echo.Context) error {
 			if response.StatusCode >= http.StatusBadRequest {
 				responseError = http.StatusText(response.StatusCode)
 			}
+			if request.Method == http.MethodPut && request.URL.Path == "/api/v2/organizations/"+organization.ID+"/name" && response.StatusCode == http.StatusOK {
+				read := claims
+				read.Method, read.Path, read.BodyDigest = http.MethodGet, request.URL.Path, cloudassert.BodyDigest(nil)
+				read.ID, err = cloudassert.NewID()
+				if err != nil {
+					return err
+				}
+				status, raw, err := s.signedCall(c.Request().Context(), organization, read, nil, "")
+				if err != nil {
+					return err
+				}
+				if status != http.StatusOK {
+					return fmt.Errorf("read organization name: status %d", status)
+				}
+				var rename struct {
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(raw, &rename); err != nil {
+					return err
+				}
+				if _, err := s.registry.store.db.ExecContext(c.Request().Context(), "UPDATE organizations SET name=?, updated_at=? WHERE id=?", strings.TrimSpace(rename.Name), formatTime(s.registry.now()), organization.ID); err != nil {
+					return err
+				}
+			}
 			if request.Method != http.MethodGet && request.Method != http.MethodHead && response.StatusCode < http.StatusBadRequest {
 				if err := s.refreshGitHubRoutes(c.Request().Context(), organization); err != nil {
 					return err

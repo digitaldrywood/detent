@@ -47,6 +47,7 @@ type CheckObservation struct {
 
 type CommandEvidence struct {
 	Environment CheckEnvironment   `json:"environment"`
+	InputsSHA   string             `json:"inputs_sha,omitempty"`
 	Checks      []CheckObservation `json:"checks"`
 }
 
@@ -145,7 +146,7 @@ func (e *CommandEvidence) Valid() bool {
 	if e == nil {
 		return true
 	}
-	if !e.Environment.Valid() || len(e.Checks) > 32 {
+	if !e.Environment.Valid() || (e.InputsSHA != "" && !evidenceFingerprint.MatchString(e.InputsSHA)) || len(e.Checks) > 32 {
 		return false
 	}
 	for _, c := range e.Checks {

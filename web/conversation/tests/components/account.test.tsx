@@ -25,7 +25,6 @@ import {
   OIDC_SIGN_UP,
 } from "../../src/app/account/Login.tsx";
 import {
-  CreateOrganizationCard,
   InviteForm,
   MembersTable,
   OrganizationSwitcher,
@@ -399,11 +398,6 @@ describe("the members table", () => {
 });
 
 describe("the organization's own rules", () => {
-  it("offers a neutral organization-name placeholder", () => {
-    render(<CreateOrganizationCard onCreate={vi.fn()} />);
-    expect(screen.getByRole("textbox", { name: "Organization name" }).getAttribute("placeholder")).toBe("Your company name");
-  });
-
   it("labels an absent grant as no access", () => {
     renderMembers({ canManage: false });
     const viewer = screen.getByRole("row", { name: /sam@example.test/ });

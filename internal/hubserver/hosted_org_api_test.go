@@ -98,6 +98,79 @@ func TestHostedMemberManagement(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
 	base := browserHostedOrganizationBase + "/members/"
+	t.Run("organization rename", func(t *testing.T) {
+		for _, test := range []struct {
+			name, role, value string
+			status            int
+		}{
+			{"owner", "owner", " Renamed team ", http.StatusOK},
+			{"admin", "admin", "Renamed team", http.StatusOK},
+			{"member", "member", "Renamed team", http.StatusForbidden},
+			{"viewer", "viewer", "Renamed team", http.StatusForbidden},
+			{"empty", "owner", "  ", http.StatusUnprocessableEntity},
+			{"long", "owner", strings.Repeat("a", 121), http.StatusUnprocessableEntity},
+			{"wrong organization", "owner", "Renamed team", http.StatusNotFound},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false)
+				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_owner", test.role); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role=? WHERE user_id=?", test.role, "user_browser_owner"); err != nil {
+					t.Fatal(err)
+				}
+				var before string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id=?", "org_browser_preview").Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				path := browserHostedOrganizationBase + "/name"
+				if test.name == "wrong organization" {
+					path = "/api/v2/organizations/org_other/name"
+				}
+				f.api(t, "owner", http.MethodPut, path, map[string]string{"name": test.value, "idempotency_key": "rename-" + test.name}, test.status)
+				var after string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT name FROM organizations WHERE id=?", "org_browser_preview").Scan(&after); err != nil {
+					t.Fatal(err)
+				}
+				want := before
+				if test.status == http.StatusOK {
+					want = "Renamed team"
+				}
+				if after != want {
+					t.Fatalf("organization name = %q, want %q", after, want)
+				}
+				if test.name == "owner" {
+					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Latest team", "idempotency_key": "rename-later"}, http.StatusOK)
+					var replay organizationNameSettings
+					browserHostedDecode(t, f.api(t, "owner", http.MethodPut, path, map[string]string{"name": test.value, "idempotency_key": "rename-owner"}, http.StatusOK), &replay)
+					if replay.Name != "Renamed team" {
+						t.Fatalf("replayed name = %q", replay.Name)
+					}
+					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Conflicting name", "idempotency_key": "rename-owner"}, http.StatusConflict)
+					f.api(t, "owner", http.MethodPut, path, map[string]string{"name": "Missing key"}, http.StatusUnprocessableEntity)
+					var audits int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM hosted_audit WHERE event='action' AND route=?", "PUT /api/v2/organizations/:organization/name").Scan(&audits); err != nil {
+						t.Fatal(err)
+					}
+					if audits != 2 {
+						t.Fatalf("rename audits = %d, want 2", audits)
+					}
+					var current organizationNameSettings
+					browserHostedDecode(t, f.api(t, "viewer", http.MethodGet, path, nil, http.StatusOK), &current)
+					if current.Name != "Latest team" {
+						t.Fatalf("current name = %q", current.Name)
+					}
+				}
+			})
+		}
+	})
+	t.Run("read-only member count", func(t *testing.T) {
+		var members hostedMembersResponse
+		browserHostedDecode(t, f.api(t, "viewer", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &members)
+		if members.MemberCount != 2 || len(members.Members) != 1 || members.Members[0].UserID != "user_browser_viewer" || len(members.Invitations) != 0 {
+			t.Fatalf("read-only members = %#v", members)
+		}
+	})
 	t.Run("member identities", func(t *testing.T) {
 		for _, test := range []struct {
 			name, query           string

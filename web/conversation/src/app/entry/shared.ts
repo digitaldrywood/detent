@@ -11,6 +11,7 @@ export interface SharedOrganization {
   readonly name: string;
   readonly url: string;
   readonly current: boolean;
+  readonly role?: string;
 }
 
 /** True when this client runs inside an organization behind the shared entry. */

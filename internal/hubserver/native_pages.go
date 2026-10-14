@@ -364,8 +364,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	page.Total = total
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
-		for _, issue := range work.Items {
-			operational[string(issue.WorkItemID)] = issue
+		for i, issue := range work.Items {
+			work.Items[i] = s.nativeIssueResponse(issue)
+			operational[string(issue.WorkItemID)] = work.Items[i]
 		}
 	}
 	hasMore := len(items) > limit
@@ -398,6 +399,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		next.Issues = &item.Position
 		if summary {
 			issue = operatortool.NativeListIssue(issue)
+		}
+		if summary || workIncluded {
 			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
 			candidate.NextCursor, err = encodeNativeCursor(next, key)
 			if err != nil {

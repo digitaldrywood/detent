@@ -83,6 +83,12 @@ time spent executing SQLite statements and stepping their rows on any pool,
 `encode` is JSON encoding, and `compute` is the remainder of `total`. The
 `db` span leaves out `BEGIN`, `COMMIT` and the wait for a pool connection;
 that time falls into `compute`.
+Reads made of several sub-reads add one named span per sub-read after
+`total`, such as `reports_analytics`, `reports_diagnostics`,
+`reports_completion`, `reports_residence`, `reports_prior` and the
+`analytics_*` parts of the analytics read; spans of concurrent project reads
+add up. The `hub request timing` log line of a slow request carries `db_ms`
+and the same spans in `spans_ms`. Neither appears in any UI.
 Unauthenticated responses carry no timing. One header is a single sample; it
 never establishes a trend.
 
@@ -103,8 +109,10 @@ claims cite this history.
 `TestHotReadQueryPlans` runs `EXPLAIN QUERY PLAN` on every statement that
 Activity, the work-items list, board lanes, projects, Reports and Diagnostics
 issue. A hot read never fully scans `native_attempts`,
-`collaboration_events`, `change_requests` or `attempt_usage`, and never sorts
-rows of those tables in a temporary B-tree. A statement that currently breaks
+`collaboration_events`, `change_requests`, `attempt_usage`,
+`analytics_hourly_rollups` or the rollup views, and never sorts rows of those
+tables in a temporary B-tree. `TestAnalyticsRollupReportPlans` applies the
+same rules to Reports over production-shaped tenants and logs their times. A statement that currently breaks
 a rule is listed in the test's known-failing table with the issue that fixes
 it, and the entry is removed when that fix lands.
 

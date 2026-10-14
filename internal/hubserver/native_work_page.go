@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -90,6 +92,18 @@ AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <
 			return nil, err
 		}
 		issue.Snippet = item.Snippet
+		candidate := tracker.Page[tracker.NativeIssue]{Items: append(work.Items, issue)}
+		raw, err := json.Marshal(operatortool.NativeItemPage(string(scope.project), candidate))
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) > operatortool.WorkListPageBytes {
+			if len(work.Items) == 0 {
+				return nil, operatortool.ErrReadUnavailable
+			}
+			work.Truncated = true
+			break
+		}
 		work.Items = append(work.Items, issue)
 	}
 	return work, nil
