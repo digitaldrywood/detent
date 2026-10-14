@@ -162,6 +162,16 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	}
 	request := runnerauth.ProjectConfigurationRequest{RequestID: args.RequestID, Operation: name, ProjectID: args.ProjectID, ExpectedConfigRevision: args.ExpectedConfigRevision, ExpectedPolicyID: args.ExpectedPolicyID, PolicyID: args.PolicyID, SourceRevision: args.SourceRevision, Checkpoint: args.Checkpoint, AllowLocalBinding: args.AllowLocalBinding}
 	rawAuthority, err := json.Marshal(scope.credential)
+	if scope.credential.EntryKey != nil {
+		origin, ok := ctx.Value(operatorEntryOriginKey{}).(string)
+		if !ok || origin == "" {
+			origin = operatortool.CurrentConnection(ctx).Origin
+		}
+		if origin == "" {
+			return operatortool.Result{}, operatortool.ErrAccessDenied
+		}
+		rawAuthority, err = json.Marshal(operatorChatIdentity{Identity: operatorIdentity(scope.credential, string(scope.organization)), Origin: origin})
+	}
 	if err != nil {
 		return operatortool.Result{}, err
 	}
@@ -219,7 +229,46 @@ func (s *Service) configurationRequestAuthority(ctx context.Context, tx *sql.Tx,
 	return authorizeNativeProject(ctx, tx, scope)
 }
 
-func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *runnerauth.ProjectConfiguration, now time.Time) (runnerauth.ProjectConfigurationRequest, error) {
+type projectConfigurationIssuer struct {
+	requestID      string
+	runnerRevision int64
+	credential     apiCredential
+}
+
+func (s *Service) prepareProjectConfigurationIssuer(ctx context.Context, scope nativeScope, observation *runnerauth.ProjectConfiguration) (projectConfigurationIssuer, error) {
+	if scope.credential.Runner.RunnerID == "" {
+		return projectConfigurationIssuer{}, nil
+	}
+	var raw sql.NullString
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT json_extract(routing_settings_json, '$.project_configuration_request') FROM runner_identities WHERE organization_id = ? AND id = ?", scope.organization, scope.credential.Runner.RunnerID).Scan(&raw); err != nil {
+		return projectConfigurationIssuer{}, err
+	}
+	if !raw.Valid {
+		return projectConfigurationIssuer{}, nil
+	}
+	var command runnerauth.ProjectConfigurationCommand
+	if err := json.Unmarshal([]byte(raw.String), &command); err != nil {
+		return projectConfigurationIssuer{}, err
+	}
+	if command.Request.ProjectID != string(scope.project) || observation != nil && observation.RequestID == command.Request.RequestID {
+		return projectConfigurationIssuer{}, nil
+	}
+	var identity operatorChatIdentity
+	if err := json.Unmarshal(command.Issuer, &identity); err != nil {
+		return projectConfigurationIssuer{}, err
+	}
+	if identity.Origin == "" && !identity.Valid() {
+		return projectConfigurationIssuer{}, nil
+	}
+	issuer := projectConfigurationIssuer{requestID: command.Request.RequestID, runnerRevision: command.RunnerRevision}
+	credential, err := s.currentEntryOriginCredential(ctx, identity.Origin)
+	if err == nil && operatorIdentity(credential, string(scope.organization)) == identity.Identity {
+		issuer.credential = credential
+	}
+	return issuer, nil
+}
+
+func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *runnerauth.ProjectConfiguration, preparedIssuer projectConfigurationIssuer, now time.Time) (runnerauth.ProjectConfigurationRequest, error) {
 	path := "$." + jsonPathKey(string(scope.project))
 	if observation != nil {
 		if err := observation.Validate(); err != nil || observation.ProjectID != string(scope.project) {
@@ -261,8 +310,15 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
 	request := command.Request
+	var identity operatorChatIdentity
 	var credential apiCredential
-	if json.Unmarshal(command.Issuer, &credential) != nil {
+	if json.Unmarshal(command.Issuer, &identity) != nil {
+		return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration request")
+	}
+	entryIssuer := identity.Origin != "" || identity.Valid()
+	if entryIssuer {
+		credential.ID = identity.PrincipalID
+	} else if json.Unmarshal(command.Issuer, &credential) != nil {
 		return runnerauth.ProjectConfigurationRequest{}, nativeInvalid("Invalid project configuration request")
 	}
 	finish := func(view runnerauth.ProjectConfiguration) (runnerauth.ProjectConfigurationRequest, error) {
@@ -304,6 +360,17 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		return finish(view)
 	}
 	if r.Revision != command.RunnerRevision || !slices.Contains(r.ProjectIDs, scope.project) || request.ProjectID != string(scope.project) {
+		return refuse()
+	}
+	if entryIssuer {
+		if preparedIssuer.requestID != request.RequestID || preparedIssuer.runnerRevision != command.RunnerRevision {
+			return runnerauth.ProjectConfigurationRequest{}, nil
+		}
+		if operatorIdentity(preparedIssuer.credential, string(scope.organization)) != identity.Identity {
+			return refuse()
+		}
+		credential = preparedIssuer.credential
+	} else if credential.EntryKey != nil {
 		return refuse()
 	}
 	issuer := nativeScope{organization: scope.organization, project: scope.project, credential: credential}
