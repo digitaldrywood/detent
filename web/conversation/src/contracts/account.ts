@@ -88,6 +88,12 @@ export type WorkflowState = typeof WorkflowState.Type;
  * own `BootstrapProject` fields (`labels`, `priorities`, `coordinator`) stay
  * optional here so one payload satisfies both schemas.
  */
+export const ReporterTemplates = Schema.Struct({
+  bug: Schema.Array(Schema.String),
+  change_request: Schema.Array(Schema.String),
+});
+export type ReporterTemplates = typeof ReporterTemplates.Type;
+
 export const AccountProject = Schema.Struct({
   slug: Schema.optional(Schema.String),
   id: Schema.String,

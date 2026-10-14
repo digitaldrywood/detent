@@ -22,7 +22,7 @@ import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { AttachmentEditor } from "./components/AttachmentEditor.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
-import type { AccountProject } from "../../contracts/account.ts";
+import type { AccountProject, ReporterTemplates } from "../../contracts/account.ts";
 import { ControlError, NativeSelect } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { newKey } from "../account/idempotency.ts";
@@ -113,6 +113,27 @@ export function NewIssueDialog({
   const [title, setTitle] = React.useState("");
 	const [githubIssueUrl, setGithubIssueUrl] = React.useState("");
   const [body, setBody] = React.useState("");
+  const [templates, setTemplates] = React.useState<ReporterTemplates | null>(null);
+  const templateBody = issueType === "" || templates === null
+    ? "" : templates[issueType].map((heading) => `## ${heading}\n\n`).join("\n");
+  const previousTemplate = React.useRef("");
+  React.useEffect(() => {
+    if (!open || project?.profile !== "native") return;
+    let active = true;
+    setTemplates(null);
+    void api.reporterTemplates(target).then((result) => {
+      if (active) setTemplates(result.reporter_templates);
+    }).catch(() => {
+      if (active) setTemplates(null);
+    });
+    return () => { active = false; };
+  }, [api, open, target, project?.profile]);
+  React.useEffect(() => {
+    const next = templateBody;
+    const previous = previousTemplate.current;
+    setBody((current) => current.trim() === "" || current === previous ? next : current);
+    previousTemplate.current = next;
+  }, [templateBody]);
   const [uploading, setUploading] = React.useState(false);
   const [state, setState] = React.useState(() => newIssueState(project, requestedState, role));
   const key = React.useRef(newKey());

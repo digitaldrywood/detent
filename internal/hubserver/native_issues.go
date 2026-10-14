@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -358,6 +359,16 @@ func validateNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
 		return tracker.NativeProject{}, err
 	}
+	if scope.credential.HostedRole == "reporter" {
+		contracts, err := nativeReporterContracts(ctx, tx, scope)
+		if err != nil {
+			return tracker.NativeProject{}, err
+		}
+		contract := config.IssueContract{Sections: contracts[request.Type]}
+		if missing := contract.Evaluate(connector.Issue{Description: request.Body}).Missing; len(missing) > 0 {
+			return tracker.NativeProject{}, &nativeError{Code: "invalid_request", Message: "Add or complete these required Reporter sections: " + strings.Join(missing, ", "), status: http.StatusUnprocessableEntity, publicMessage: true}
+		}
+	}
 	if err := validateNativeContent(request.Title, request.Body, request.Labels, request.Assignees, request.Priority); err != nil {
 		return tracker.NativeProject{}, err
 	}
@@ -489,7 +500,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
 	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)
-	if issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
+	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 		if !issue.IssueContract.Exempt {
 			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {

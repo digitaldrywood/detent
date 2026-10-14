@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -225,7 +226,14 @@ func (s *Service) getNativeProject(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, project)
+	templates, err := nativeReporterContracts(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, struct {
+		tracker.NativeProject
+		ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
+	}{project, templates})
 }
 
 func updateNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope, states []tracker.NativeState, now time.Time) error {

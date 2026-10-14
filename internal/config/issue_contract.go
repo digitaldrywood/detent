@@ -3,7 +3,6 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -52,7 +51,15 @@ func ResolveIssueContract(prompt string) (IssueContract, error) {
 	if err != nil {
 		return IssueContract{}, err
 	}
-	contract.Sections = nil
+	contract.Sections, err = issueContractRequiredSections(text, "issue contract")
+	if err != nil {
+		return IssueContract{}, err
+	}
+	return contract, nil
+}
+
+func issueContractRequiredSections(text, kind string) ([]string, error) {
+	var sections []string
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -68,15 +75,15 @@ func ResolveIssueContract(prompt string) (IssueContract, error) {
 		section = strings.TrimSpace(section)
 		key := issueContractSectionKey(section)
 		if key == "" || seen[key] {
-			return IssueContract{}, fmt.Errorf("issue contract sections must be nonempty and unique: %q", section)
+			return nil, fmt.Errorf("%s sections must be nonempty and unique: %q", kind, section)
 		}
 		seen[key] = true
-		contract.Sections = append(contract.Sections, section)
+		sections = append(sections, section)
 	}
-	if len(contract.Sections) == 0 {
-		return IssueContract{}, errors.New("issue contract must list required sections")
+	if len(sections) == 0 {
+		return nil, fmt.Errorf("%s must list required sections", kind)
 	}
-	return contract, nil
+	return sections, nil
 }
 
 func (c IssueContract) ScheduledRepairBody() string {

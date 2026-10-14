@@ -325,6 +325,28 @@ inspection before retrying. Unexpected failures remain redacted as
 
 Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
 
+Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. The New issue form pre-fills these headings when a type is selected.
+
+Projects can override either template in WORKFLOW, using the same list syntax as the engineering issue contract:
+
+```markdown
+## Reporter Contract
+### bug
+- **Steps to reproduce** — A reproducible sequence.
+- Expected
+- Actual
+- Where
+- Environment
+
+### change_request
+- Current behavior
+- Desired behavior
+- Why
+```
+
+An omitted type keeps its default template. Triage is exempt from the engineering issue contract; after promotion into the configured admission lane, the existing contract check requires the member-authored engineering sections and uses the existing Blocked human-action recovery when they are missing or unconfirmed. Preserve the Reporter sections as evidence.
+
+
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
 and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
