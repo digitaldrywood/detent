@@ -105,27 +105,28 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		organization := s.config.Hosted.OrganizationID
 		prefix := "/organizations/" + organization
 		path := request.URL.Path
-		internal := strings.HasPrefix(path, "/internal/")
 		switch {
-		case internal:
+		case strings.HasPrefix(path, "/internal/"):
 		case path == prefix || strings.HasPrefix(path, prefix+"/"):
 			path = strings.TrimPrefix(path, prefix)
 			if path == "" {
 				path = "/"
 			}
-			if strings.HasPrefix(path, "/organizations/") || strings.HasPrefix(path, "/internal/") || hostedSharedEntryRoutes[path] {
-				return s.nativeAPIError(c, nativeNotFound())
-			}
-			request.URL.Path, request.URL.RawPath = path, ""
 		case strings.HasPrefix(path, "/api/v2/organizations/"+organization+"/"):
 		case claims.OrganizationSlug != "" && len(strings.Split(strings.Trim(path, "/"), "/")) >= 2 && readableurl.Validate(strings.Split(strings.Trim(path, "/"), "/")[0]) == nil:
 			first := strings.Split(strings.Trim(path, "/"), "/")[0]
 			path = strings.TrimPrefix(path, "/"+first)
-			request.URL.Path, request.URL.RawPath = path, ""
 			c.Set("readable_organization_slug", first)
 		default:
 			return s.nativeAPIError(c, nativeNotFound())
 		}
+		if path != request.URL.Path {
+			if strings.HasPrefix(path, "/organizations/") || strings.HasPrefix(path, "/internal/") || hostedSharedEntryRoutes[path] {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
+			request.URL.Path, request.URL.RawPath = path, ""
+		}
+		internal := strings.HasPrefix(path, "/internal/")
 		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, nativeNotFound())
@@ -257,6 +258,9 @@ type hostedSharedBillingQuery struct {
 }
 
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
+	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
@@ -321,6 +325,9 @@ type hostedSharedBillingEventRequest struct {
 }
 
 func (s *Service) hostedSharedBillingEvent(c echo.Context) error {
+	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	cfg := s.hostedBillingConfig()
 	var request hostedSharedBillingEventRequest
 	if err := decodeAPIJSON(c, &request); err != nil || cfg == nil || !strings.HasPrefix(request.EventID, "evt_") || !hostedSafeID(request.EventID) || request.EventType == "" || len(request.EventType) > 128 {
@@ -348,7 +355,10 @@ type hostedSharedOwner struct {
 }
 
 func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
-	claims, _ := hostedSharedClaims(c)
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	var request hostedSharedOwner
 	name := ""
 	if err := decodeAPIJSON(c, &request); err == nil {
@@ -392,6 +402,9 @@ type hostedSharedRevocation struct {
 }
 
 func (s *Service) revokeHostedSharedSessions(c echo.Context) error {
+	if claims, ok := hostedSharedClaims(c); !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	var request hostedSharedRevocation
 	if err := decodeAPIJSON(c, &request); err != nil || len(request.Bindings) == 0 || len(request.Bindings) > 100 {
 		return invalidAPIRequest(c, errors.New("invalid revocation"))
@@ -435,7 +448,10 @@ type hostedSharedInvitation struct {
 }
 
 func (s *Service) acceptHostedSharedInvitation(c echo.Context) error {
-	claims, _ := hostedSharedClaims(c)
+	claims, ok := hostedSharedClaims(c)
+	if !ok || claims.Kind != cloudassert.KindService {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	var request hostedSharedInvitation
 	if err := decodeAPIJSON(c, &request); err != nil || claims.Subject == "" || claims.Email == "" {
 		return invalidAPIRequest(c, errors.New("invalid invitation"))
