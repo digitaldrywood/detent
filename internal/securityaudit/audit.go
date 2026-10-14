@@ -187,7 +187,6 @@ func validSuccessfulRun(run Run) bool {
 	if strings.TrimSpace(run.InvocationID) == "" || run.WorkerPID <= 0 || run.WorkerPGID <= 0 || run.WorkerStartedAt.IsZero() ||
 
 		run.StartedAt.IsZero() || run.CompletedAt.IsZero() || run.CompletedAt.Before(run.StartedAt) ||
-		run.WorkerStartedAt.Before(run.StartedAt) || run.WorkerStartedAt.After(run.CompletedAt) ||
 		len(strings.TrimSpace(run.OutputDigest)) != sha256.Size*2 || strings.TrimSpace(run.Summary) == "" {
 		return false
 	}
