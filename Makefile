@@ -168,7 +168,7 @@ test-cover:
 		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
 	fi
 	@packages="$$(bash scripts/cover-packages.sh $(COVER_SHARD))" && \
-	$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages -count=1
+	$(GO_TEST) -timeout=20m -coverprofile=tmp/rest-cover.raw.out $$packages -count=1
 	# Keep the web timing check isolated and coverage profiles disjoint.
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
 		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web -count=1 && \

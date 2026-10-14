@@ -91,7 +91,7 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 		{name: "test", want: "$(GO_TEST) $$packages"},
 		{name: "test-web", want: "$(GO_TEST) ./internal/web"},
 		{name: "test-race", want: "$(GO_TEST) -short -race -timeout=30m ./..."},
-		{name: "test-cover", want: "$(GO_TEST) -coverprofile=tmp/rest-cover.raw.out $$packages"},
+		{name: "test-cover", want: "$(GO_TEST) -timeout=20m -coverprofile=tmp/rest-cover.raw.out $$packages"},
 		{name: "test-cover-web", want: "$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web"},
 	}
 	for _, tt := range tests {
