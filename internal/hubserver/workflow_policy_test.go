@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -33,8 +35,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		autoInitial                                                                           bool
 		bind, adopt, nativeRevision                                                           bool
 		history                                                                               int
+		historyLegacy                                                                         string
 	}{
 		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
+		{name: "instruction change with legacy policy identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "policy", status: http.StatusNoContent, applied: true},
+		{name: "instruction change with legacy review identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "review", status: http.StatusNoContent, applied: true},
 		{name: "binding leaves differing repository policy pending", initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent},
 		{name: "binding without approval applies first repository policy", bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "binding carries same authored approval", initial: true, bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
@@ -240,11 +245,60 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &item)
 			}
+			historySummaries := map[string]tracker.ChangeSummary{}
+			historyItems := map[string]tracker.NativeWorkItemID{}
 			if test.history > 0 {
+				linked := []tracker.NativeWorkItemID{item.WorkItemID}
 				for i := range test.history {
 					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-%d", i)}, Title: "Retained history", Body: issueContractTestSections, State: "Done"})
 					requireNativeStatus(t, response, http.StatusOK)
+					var historical tracker.NativeIssue
+					decodeHubResponse(t, response, &historical)
+					linked = append(linked, historical.WorkItemID)
 				}
+				for i, id := range linked {
+					path := f.base + "/work-items/" + string(id) + "/changes"
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-change-%d", i)}, Title: "Retained Change"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var change tracker.ChangeRequest
+					decodeHubResponse(t, response, &change)
+					path += "/" + change.ID
+					input := changeTestInput()
+					input.PolicyID = original.ID
+					response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-version-%d", i)}, ChangeVersionInput: input})
+					requireNativeStatus(t, response, http.StatusOK)
+					if i > 0 && test.historyLegacy != "" {
+						var version tracker.ChangeVersion
+						decodeHubResponse(t, response, &version)
+						version.ID, version.Number = "legacy_"+change.ID, 2
+						if test.historyLegacy == "policy" {
+							version.Policy.ID = ""
+						} else {
+							version.ReviewPolicy.ID = ""
+						}
+						raw, err := json.Marshal(version)
+						if err != nil {
+							t.Fatal(err)
+						}
+						commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+							if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)", version.ID, change.ID, version.Number, string(raw)); err != nil {
+								t.Fatal(err)
+							}
+							if _, err := tx.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.current_version_id',?) WHERE id=?", version.ID, change.ID); err != nil {
+								t.Fatal(err)
+							}
+						})
+					}
+					response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var detail tracker.ChangeDetail
+					decodeHubResponse(t, response, &detail)
+					historySummaries[path] = detail.Summary
+					historyItems[path] = id
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &item)
 				for _, statement := range []string{
 					"CREATE TABLE policy_work_counts(kind TEXT NOT NULL)",
 					"CREATE TRIGGER count_policy_dirty AFTER INSERT ON native_board_dirty BEGIN INSERT INTO policy_work_counts VALUES('card'); END",
@@ -259,6 +313,30 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			report := policy.Observation{Descriptor: candidate, Source: source}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
 			if test.history > 0 {
+				for path, before := range historySummaries {
+					response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var detail tracker.ChangeDetail
+					decodeHubResponse(t, response, &detail)
+					if test.historyLegacy != "" && historyItems[path] != item.WorkItemID {
+						if detail.Summary.Status != "stale_policy" {
+							t.Fatalf("legacy summary = %#v", detail.Summary)
+						}
+					} else if !reflect.DeepEqual(detail.Summary, before) {
+						t.Errorf("instruction-only adoption changed summary: before=%#v after=%#v", before, detail.Summary)
+					}
+					var raw string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", historyItems[path]).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					var card tracker.NativeBoardCard
+					if err := json.Unmarshal([]byte(raw), &card); err != nil {
+						t.Fatal(err)
+					}
+					if card.Change == nil || card.Change.Status != detail.Summary.Status {
+						t.Fatalf("cached summary=%#v, canonical summary=%#v", card.Change, detail.Summary)
+					}
+				}
 				for _, kind := range []string{"card", "state", "project"} {
 					var count int
 					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM policy_work_counts WHERE kind=?", kind).Scan(&count); err != nil {
@@ -266,6 +344,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					}
 					t.Logf("instruction-only adoption: %s work=%d, retained history=%d", kind, count, test.history)
 					want := 0
+					if kind == "card" && test.historyLegacy != "" {
+						want = test.history
+					}
 					if kind == "project" {
 						want = 1
 					}
