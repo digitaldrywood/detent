@@ -4,7 +4,7 @@
   "runners": [
     {
       "runner_id": "rnr_macbook",
-      "display_name": "Michael's MacBook Pro",
+      "display_name": "Example laptop",
       "version": "v0.9.0",
       "online": true,
       "behind": true

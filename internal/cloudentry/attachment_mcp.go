@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -75,26 +76,8 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 	}
 	buffer := &attachmentResponse{header: make(http.Header)}
 	if call.Params.Name == operatortool.UploadAttachment && authorized.EntryUpload {
-		input, content, err := operatortool.DecodeAttachmentArguments(call.Params.Arguments)
+		buffer, err = s.uploadAttachmentMCP(c.Request().Context(), c.Request(), c.Param("organization"), call.Params.Arguments, authorized.Mutation)
 		if err != nil {
-			return nil
-		}
-		request := c.Request().Clone(mutation.WithContext(c.Request().Context(), authorized.Mutation))
-		request.URL.Path = "/organizations/" + c.Param("organization") + "/api/v2/projects/" + input.ProjectID + "/attachments"
-		request.URL.RawPath, request.URL.RawQuery = "", ""
-		request.Body = io.NopCloser(bytes.NewReader(content))
-		request.ContentLength = int64(len(content))
-		media := input.ContentType
-		if media == "" {
-			media = http.DetectContentType(content)
-		}
-		request.Header.Set("Content-Type", media)
-		request.Header.Set("X-Attachment-Name", input.Name)
-		request.Header.Set("Idempotency-Key", input.RequestID)
-		upload := s.echo.NewContext(request, buffer)
-		upload.SetParamNames("organization", "project")
-		upload.SetParamValues(c.Param("organization"), input.ProjectID)
-		if err := s.uploadAttachment(upload); err != nil {
 			return err
 		}
 	} else if (call.Params.Name == operatortool.ReadAttachment || call.Params.Name == operatortool.ReadAttachmentMetadata) && authorized.EntryAttachment == call.Params.Name {
@@ -158,6 +141,28 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 	response.ContentLength = int64(len(raw))
 	response.Header.Set("Content-Length", strconv.Itoa(len(raw)))
 	return nil
+}
+
+func (s *Service) uploadAttachmentMCP(ctx context.Context, request *http.Request, organization string, arguments json.RawMessage, audit mutation.Metadata) (*attachmentResponse, error) {
+	input, content, err := operatortool.DecodeAttachmentArguments(arguments)
+	if err != nil {
+		return nil, err
+	}
+	request = request.Clone(mutation.WithContext(ctx, audit))
+	request.URL.Path = "/organizations/" + organization + "/api/v2/projects/" + input.ProjectID + "/attachments"
+	request.URL.RawPath, request.URL.RawQuery = "", ""
+	request.Body = io.NopCloser(bytes.NewReader(content))
+	request.ContentLength = int64(len(content))
+	media := input.ContentType
+	if media == "" {
+		media = http.DetectContentType(content)
+	}
+	request.Header.Set("Content-Type", media)
+	request.Header.Set("X-Attachment-Name", input.Name)
+	request.Header.Set("Idempotency-Key", input.RequestID)
+	buffer := &attachmentResponse{header: make(http.Header)}
+	s.echo.ServeHTTP(buffer, request)
+	return buffer, nil
 }
 
 func (s *Service) attachmentMCPContext(c echo.Context, buffer *attachmentResponse, input operatortool.AttachmentOperationArguments) echo.Context {

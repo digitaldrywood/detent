@@ -1,27 +1,27 @@
 {
   "organization": {
-    "id": "org_parable",
-    "name": "Parable"
+    "id": "org_secondary_example",
+    "name": "Secondary Example Organization"
   },
   "organizations": [
     {
-      "id": "org_parable",
-      "name": "Parable",
-      "public_url": "https://parable.detent.cloud",
+      "id": "org_secondary_example",
+      "name": "Secondary Example Organization",
+      "public_url": "https://secondary.example.org",
       "current": true
     }
   ],
   "actor": {
     "principal_id": "tok_support",
-    "subject": "support@detent.dev",
-    "email": "support@detent.dev",
+    "subject": "support@example.com",
+    "email": "support@example.com",
     "role": "admin",
     "can_manage": true,
     "can_manage_runners": false
   },
   "projects": [],
   "support": {
-    "actor": "support@detent.dev",
+    "actor": "support@example.com",
     "reason": "Investigating a stuck lease reported in ticket 4471",
     "expires_at": "2026-09-10T22:30:00Z"
   },
@@ -34,5 +34,5 @@
     "conversation": true
   },
   "plan": null,
-  "api_base": "/api/v2/organizations/org_parable"
+  "api_base": "/api/v2/organizations/org_secondary_example"
 }

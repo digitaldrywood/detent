@@ -63,11 +63,11 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 		}
 	}
 	view.Quiesced = released.Valid && (rawStatus == "succeeded" || rawStatus == "failed" || rawStatus == "cancelled")
-	var unquiesced int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM leases l JOIN issues i ON i.id=l.issue_id LEFT JOIN native_attempts a ON a.lease_id=l.lease_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=? AND (a.status='running' OR l.released_at IS NULL)`, scope.organization, scope.project, item).Scan(&unquiesced); err != nil {
+	_, claimed, err := readUnreleasedLease(ctx, q, id)
+	if err != nil {
 		return view, id, err
 	}
-	view.Quiesced = view.Quiesced && unquiesced == 0 && !issue.Archived && !issue.Terminal
+	view.Quiesced = view.Quiesced && !claimed && !issue.Archived && !issue.Terminal
 	allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, "", id)
 	if err != nil {
 		return view, id, err
@@ -89,7 +89,9 @@ func readSourceRecoveryView(ctx context.Context, q nativeQueryer, scope nativeSc
 }
 
 func (s *Service) getNativeSourceRecovery(c echo.Context) error {
-	ctx, scope := c.Request().Context(), nativeRequestScope(c)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	scope := nativeRequestScope(c)
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)

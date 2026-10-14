@@ -245,11 +245,11 @@ if (typeof globalThis.PointerEvent === "undefined") {
 const MEMBERS: Member[] = [
   {
     id: "mem_owner",
-    user_id: "user_michael",
-    email: "michael@threefold.solutions",
+    user_id: "user_owner",
+    email: "owner@example.com",
     role: "owner",
     status: "active",
-    grants: [{ project_id: "proj_parable", write: true, runner: true }],
+    grants: [{ project_id: "proj_example_project", write: true, runner: true }],
   },
   {
     id: "mem_viewer",
@@ -261,7 +261,7 @@ const MEMBERS: Member[] = [
   },
 ];
 
-const PROJECTS = [{ id: "proj_parable", name: "parable", can_write: true, can_manage_runners: true }];
+const PROJECTS = [{ id: "proj_example_project", name: "example-project", can_write: true, can_manage_runners: true }];
 
 function renderMembers(overrides: Partial<React.ComponentProps<typeof MembersTable>> = {}) {
   const onRoleChange = vi.fn();
@@ -340,17 +340,28 @@ describe("the members table", () => {
     expect((within(row).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("assigns Reporter from the member role picker and describes its access", () => {
+    const onRoleChange = vi.fn();
+    const reporter = { ...MEMBERS[1]!, role: "reporter", email: "reporter@example.test" };
+    render(<MembersTable members={[reporter]} projects={PROJECTS} canManage actorRole="owner" busyMember={null} errorFor={() => null} onRoleChange={onRoleChange} onGrantChange={vi.fn()} onRemove={vi.fn()} />);
+    const select = screen.getByRole("combobox", { name: "Role for reporter@example.test" });
+    expect(within(select).getByRole("option", { name: "Reporter" })).toBeTruthy();
+    expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
+    fireEvent.change(select, { target: { value: "reporter" } });
+    expect(onRoleChange).toHaveBeenCalledWith(reporter, "reporter");
+  });
+
   it("offers a role control and a removal for a manager", () => {
     renderMembers();
     expect(
-      screen.getByLabelText("Role for michael@threefold.solutions"),
+      screen.getByLabelText("Role for owner@example.com"),
     ).toBeInstanceOf(HTMLSelectElement);
     expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
   });
 
   it("shows a viewer the roles and none of the controls (§10.11)", () => {
     renderMembers({ canManage: false });
-    expect(screen.queryByLabelText("Role for michael@threefold.solutions")).toBeNull();
+    expect(screen.queryByLabelText("Role for owner@example.com")).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     expect(screen.getAllByText("owner")).not.toHaveLength(0);
   });
@@ -360,21 +371,21 @@ describe("the members table", () => {
     const select = screen.getByLabelText("Role for sam@example.test") as HTMLSelectElement;
     const owner = within(select).getByRole("option", { name: "Owner" }) as HTMLOptionElement;
     expect(owner.disabled).toBe(true);
-    const access = screen.getByLabelText("Access to parable for sam@example.test") as HTMLSelectElement;
+    const access = screen.getByLabelText("Access to example-project for sam@example.test") as HTMLSelectElement;
     expect((within(access).getByRole("option", { name: "Write" }) as HTMLOptionElement).disabled).toBe(true);
-    expect(screen.getByLabelText("Runner management on parable for sam@example.test").getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByLabelText("Runner management on example-project for sam@example.test").getAttribute("aria-disabled")).toBe("true");
   });
 
   it("distinguishes read-only access from no access", () => {
     const { onGrantChange } = renderMembers();
-    fireEvent.change(screen.getByLabelText("Access to parable for sam@example.test"), { target: { value: "read" } });
-    expect(onGrantChange).toHaveBeenCalledWith(MEMBERS[1], "proj_parable", {
-      project_id: "proj_parable",
+    fireEvent.change(screen.getByLabelText("Access to example-project for sam@example.test"), { target: { value: "read" } });
+    expect(onGrantChange).toHaveBeenCalledWith(MEMBERS[1], "proj_example_project", {
+      project_id: "proj_example_project",
       write: false,
       runner: false,
     });
-    fireEvent.change(screen.getByLabelText("Access to parable for sam@example.test"), { target: { value: "none" } });
-    expect(onGrantChange).toHaveBeenLastCalledWith(MEMBERS[1], "proj_parable", null);
+    fireEvent.change(screen.getByLabelText("Access to example-project for sam@example.test"), { target: { value: "none" } });
+    expect(onGrantChange).toHaveBeenLastCalledWith(MEMBERS[1], "proj_example_project", null);
   });
 
   it("surfaces a per-member refusal next to that member", () => {
@@ -434,14 +445,14 @@ describe("the organization's own rules", () => {
     const onExit = vi.fn();
     render(
       <SupportBanner
-        actor="support@detent.dev"
+        actor="support@example.com"
         reason="ticket 4471"
         expiresAt="2026-09-10T22:30:00Z"
         onExit={onExit}
       />,
     );
     const banner = screen.getByRole("alert");
-    expect(banner.textContent).toContain("support@detent.dev");
+    expect(banner.textContent).toContain("support@example.com");
     expect(banner.textContent).toContain("ticket 4471");
     fireEvent.click(screen.getByRole("button", { name: "Exit support session" }));
     expect(onExit).toHaveBeenCalled();
@@ -451,17 +462,18 @@ describe("the organization's own rules", () => {
     const onInvite = vi.fn().mockResolvedValue(success);
     render(<InviteForm onInvite={onInvite} projects={PROJECTS} />);
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rae@example.test" } });
-    fireEvent.change(screen.getByLabelText("Role"), { target: { value: "admin" } });
-    const access = screen.getByLabelText("Access to parable for invitation");
+    fireEvent.change(screen.getByLabelText("Role"), { target: { value: "reporter" } });
+    expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
+    const access = screen.getByLabelText("Access to example-project for invitation");
     expect((access as HTMLSelectElement).value).toBe("none");
     fireEvent.change(access, { target: { value: "read" } });
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Send invitation" }));
     });
-    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "admin", grants: [{ project_id: "proj_parable", write: false, runner: false }] });
+    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "reporter", grants: [{ project_id: "proj_example_project", write: false, runner: false }] });
     expect((access as HTMLSelectElement).value).toBe(success ? "none" : "read");
     expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe(success ? "" : "rae@example.test");
-    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "admin");
+    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "reporter");
     if (success) expect(screen.getByRole("status").textContent).toContain("Invitation sent to rae@example.test.");
     else expect(screen.queryByRole("status")).toBeNull();
   });
@@ -589,10 +601,10 @@ describe("the project settings", () => {
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
     expect(screen.getByText("Rework · Dispatchable")).toBeTruthy();
-    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/parable", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
+    view.rerender(<WorkflowSettings integration={{ ...integration, states, authority: { workflow: "repository" }, checkout_repository: "acme/example-project", workflow_source: "detent.yaml", workflow_source_revision: "abc123" }} canManage saving={false} error={null} onSave={onSave} />);
     expect(screen.queryByRole("textbox", { name: "Workflow definition" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save workflow" })).toBeNull();
-    expect(screen.getByText(/Controlled by acme\/parable: detent.yaml at revision abc123/)).toBeTruthy();
+    expect(screen.getByText(/Controlled by acme\/example-project: detent.yaml at revision abc123/)).toBeTruthy();
   });
 
   it("reads both shapes of \"nothing is approved\" as an answer, not a failure", () => {
@@ -677,7 +689,7 @@ describe("the register command", () => {
   it.each([
     { value: "plain", want: "plain" },
     { value: "two words", want: "'two words'" },
-    { value: "Cory's Mac", want: "'Cory'\\''s Mac'" },
+    { value: "Owner's Mac", want: "'Owner'\\''s Mac'" },
     { value: "$(rm -rf /)", want: "'$(rm -rf /)'" },
     { value: "", want: "''" },
   ])("quotes $value for the shell", ({ value, want }) => {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -13,6 +14,120 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLocalGitVersionReceiptsDoNotBindShellStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess shell startup integration fixture")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell startup fixture")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("Bash is unavailable")
+	}
+	startup := filepath.Join(t.TempDir(), "startup")
+	if err := os.WriteFile(startup, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASH_ENV", startup)
+	source := initSourceRepo(t)
+	options := LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true}
+	options.Hooks.Shell = bash
+	backend, err := NewLocalGit(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "shell-startup"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(head)
+	first, err := backend.RunReviewCommand(t.Context(), info, issue, "go version")
+	if err != nil || first.ExitCode != 0 || first.Evidence == nil || first.Evidence.InputsSHA != "" {
+		t.Fatalf("version observation was failed or reusable: %+v %v", first, err)
+	}
+	if err := os.WriteFile(startup, []byte("if [ \"$BASH_EXECUTION_STRING\" = \"go version\" ]; then exit 23; fi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preflight := backend.ReviewCommandEvidence(t.Context(), info, issue, first.Command)
+	if preflight.InputsSHA != "" || preflight.Environment != first.Evidence.Environment {
+		t.Fatalf("unchanged probes did not remain observations: %+v", preflight)
+	}
+	second, err := backend.RunReviewCommand(t.Context(), info, issue, first.Command)
+	if err != nil || second.ExitCode != 23 || second.HeadSHA != first.HeadSHA || second.TreeSHA != first.TreeSHA {
+		t.Fatalf("unchanged probes hid failing startup: %+v %v", second, err)
+	}
+}
+
+func TestLocalGitReviewCommandRerunsExternalRuntimeInputs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess runtime integration fixture")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX Go command fixture")
+	}
+	t.Setenv("CGO_ENABLED", "0")
+	fixture := filepath.Join(t.TempDir(), "runtime-input")
+	t.Setenv("DETENT_RUNTIME_FIXTURE", fixture)
+	if err := os.WriteFile(fixture, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := initSourceRepo(t)
+	for name, content := range map[string]string{
+		"go.mod": "module example.test/runtime\n\ngo 1.26.0\n",
+		"runtime_test.go": `package runtimefixture
+import ("os"; "testing")
+func TestExternalFixture(t *testing.T) {
+ data, err := os.ReadFile(os.Getenv("DETENT_RUNTIME_FIXTURE"))
+ if err != nil || string(data) != "ready" { t.Fatalf("external fixture unavailable: %v", err) }
+}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, source, "add", "go.mod", "runtime_test.go")
+	runGit(t, source, "commit", "-m", "external runtime input fixture")
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "runtime-input"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(head)
+	first, err := backend.RunReviewCommand(t.Context(), info, issue, "go test ./... -count=1")
+	if err != nil || first.ExitCode != 0 {
+		t.Fatalf("initial fixture failed: %+v %v", first, err)
+	}
+	if first.Evidence == nil || first.Evidence.InputsSHA != "" {
+		t.Fatal("test runtime received a reusable source/tool identity")
+	}
+	if err := os.WriteFile(fixture, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preflight := backend.ReviewCommandEvidence(t.Context(), info, issue, first.Command)
+	if preflight.InputsSHA != "" {
+		t.Fatal("external runtime inputs were considered bound")
+	}
+	second, err := backend.RunReviewCommand(t.Context(), info, issue, first.Command)
+	if err != nil || second.ExitCode == 0 || second.HeadSHA != first.HeadSHA || second.TreeSHA != first.TreeSHA || !strings.Contains(second.Output, "external fixture unavailable") {
+		t.Fatalf("unchanged source did not observe changed runtime: %+v %v", second, err)
+	}
+}
 
 func TestParseDiffStat(t *testing.T) {
 	t.Parallel()
@@ -83,6 +198,7 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 		advance        bool
 		dirty          bool
 		missingPullRef bool
+		stalePullRef   bool
 		missingBranch  bool
 		movedBranch    bool
 		wantErr        bool
@@ -94,6 +210,10 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 		{name: "missing pull ref uses published branch", advance: true, missingPullRef: true},
 		{name: "missing pull ref and branch", missingPullRef: true, missingBranch: true, wantErr: true},
 		{name: "missing pull ref with moved branch", advance: true, missingPullRef: true, movedBranch: true, wantErr: true},
+		{name: "stale pull ref uses published branch", advance: true, stalePullRef: true},
+		{name: "stale pull ref with dirty workspace", advance: true, stalePullRef: true, dirty: true, wantErr: true},
+		{name: "stale pull ref with missing branch", advance: true, stalePullRef: true, missingBranch: true, wantErr: true},
+		{name: "stale pull ref with wrong branch head", advance: true, stalePullRef: true, movedBranch: true, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -129,29 +249,46 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 				}
 			}
 			issue.PullRequestHeadSHA = wanted
-			if tt.missingPullRef {
+			if tt.missingPullRef || tt.stalePullRef {
 				issue.PullRequestNumber = 119
 				issue.PullRequestBranch = info.Branch
+			}
+			if tt.stalePullRef {
+				runGit(t, remote, "update-ref", "refs/pull/119/head", a)
 			}
 			if tt.missingBranch {
 				issue.PullRequestBranch = "missing-review-branch"
 			}
 			if tt.movedBranch {
-				issue.PullRequestHeadSHA = a
+				if tt.stalePullRef {
+					runGit(t, remote, "update-ref", "refs/heads/"+info.Branch, a)
+				} else {
+					issue.PullRequestHeadSHA = a
+				}
 			}
 			err = backend.SeedReviewHead(t.Context(), info, issue)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("SeedReviewHead() error = %v, want error %t", err, tt.wantErr)
 			}
-			if tt.movedBranch {
+			if tt.dirty {
+				if !strings.Contains(err.Error(), "review workspace has local changes") {
+					t.Fatalf("SeedReviewHead() error = %v, want dirty workspace refusal", err)
+				}
+				data, readErr := os.ReadFile(filepath.Join(info.Path, "dirty.txt"))
+				if readErr != nil || string(data) != "local" {
+					t.Fatalf("dirty file = %q, error = %v; want preserved local content", data, readErr)
+				}
+			}
+			if tt.movedBranch || (tt.stalePullRef && tt.missingBranch) {
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
 					t.Fatalf("SeedReviewHead() error = %v, want head_moved refusal", err)
 				}
 			}
-			if tt.missingBranch && (!strings.Contains(err.Error(), "refs/pull/119/head") || !strings.Contains(err.Error(), "refs/heads/missing-review-branch")) {
+			if tt.missingPullRef && tt.missingBranch && (!strings.Contains(err.Error(), "refs/pull/119/head") || !strings.Contains(err.Error(), "refs/heads/missing-review-branch")) {
 				t.Fatalf("SeedReviewHead() error = %v, want both missing remote refs", err)
 			}
+			t.Logf("expected source = %s; seeding error = %v", issue.PullRequestHeadSHA, err)
 			head, err := backend.Head(t.Context(), info, issue)
 			if err != nil {
 				t.Fatal(err)
@@ -162,6 +299,7 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 			if strings.TrimSpace(head) != wanted {
 				t.Fatalf("HEAD = %s, want %s", head, wanted)
 			}
+			t.Logf("final HEAD = %s", strings.TrimSpace(head))
 		})
 	}
 }
@@ -170,8 +308,14 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
+	t.Setenv("CGO_ENABLED", "0")
 
 	source := initSourceRepo(t)
+	if err := os.WriteFile(filepath.Join(source, ".gitignore"), []byte("package-data/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".gitignore")
+	runGit(t, source, "commit", "-m", "ignored package data fixture")
 	if runtime.GOOS != "windows" {
 		script, err := os.ReadFile("../../scripts/check-evidence.sh")
 		if err != nil {
@@ -211,7 +355,38 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		name, command, head string
 		exit                int
 		wantErr             bool
+		toolchainKnown      bool
+		probeOnly           bool
+		cgo, ignored        bool
 	}{
+		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "package runtime inputs are unbound with supported flags", command: "go test ./... -short -count=1", probeOnly: true},
+		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, cgo: true},
+		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, ignored: true},
+		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
+		{name: "version separated into shell commands is unverified", command: "go\nversion", probeOnly: true},
+		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
+		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},
+		{name: "shell escaped vet analyzer is unverified", command: `go vet -vet\tool=custom ./...`, probeOnly: true},
+		{name: "separate vet analyzer operand is unverified", command: "go vet -vettool custom ./...", probeOnly: true},
+		{name: "external compiler configuration is unverified", command: "go build -gcflags=-importcfg=custom ./...", probeOnly: true},
+		{name: "external optimization profile is unverified", command: "go build -pgo=custom ./...", probeOnly: true},
+		{name: "double dash optimization profile is unverified", command: "go build --pgo=custom ./...", probeOnly: true},
+		{name: "forwarded test arguments are unverified", command: "go test ./... -args -config=custom", probeOnly: true},
+		{name: "double dash forwarded test arguments are unverified", command: "go test ./... --args -config=custom", probeOnly: true},
+		{name: "implicit custom test arguments are unverified", command: "go test ./... -config=custom", probeOnly: true},
+		{name: "custom test flag alias is unverified", command: "go test ./pkg -test.tags=tmp/config.json", probeOnly: true},
+		{name: "test flag alias syntax is unverified", command: "go test ./pkg -test.run=Test", probeOnly: true},
+		{name: "forwarded positional test input is unverified", command: "go test ./pkg -v tmp/config.json", probeOnly: true},
+		{name: "packages after flags are unverified", command: "go test -short ./pkg", probeOnly: true},
+		{name: "shell expanded package operands are unverified", command: "go test ./internal/*", probeOnly: true},
+		{name: "external Go source operands are unverified", command: "go test /outside/check_test.go", probeOnly: true},
+		{name: "ignored Go source operands are unverified", command: "go build ./tmp/check.go", probeOnly: true},
+		{name: "package manager toolchain is unverified", command: "pnpm test", probeOnly: true},
+		{name: "make target toolchain is unverified", command: "make check-landing", probeOnly: true},
+		{name: "external Go executor is unverified", command: "go test -exec=custom ./...", probeOnly: true},
+		{name: "alternate Go module is unverified", command: "go test -modfile=other.mod ./...", probeOnly: true},
+		{name: "compound command is unverified", command: "go version; pnpm test", probeOnly: true},
 		{name: "passing observed output", command: "echo verified"},
 		{name: "failed command", command: failedCommand, exit: 7},
 		{name: "wrong immutable head", command: "echo must-not-run", head: strings.Repeat("f", 40), wantErr: true},
@@ -219,6 +394,33 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		{name: "dirty result", command: "echo changed > untracked.txt", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.cgo {
+				t.Setenv("CGO_ENABLED", "1")
+			}
+			if test.ignored {
+				path := filepath.Join(info.Path, "package-data", "fixture.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := os.Remove(path); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+			if test.probeOnly {
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, issue, test.command)
+				if evidence.Environment.Known() != test.toolchainKnown {
+					t.Fatalf("command toolchain applicability: got %v, want %v", evidence.Environment.Known(), test.toolchainKnown)
+				}
+				if evidence.InputsSHA != "" {
+					t.Fatal("unbound package inputs received a reusable identity")
+				}
+				return
+			}
 			request := issue
 			if test.head != "" {
 				request.PullRequestHeadSHA = test.head
@@ -229,6 +431,19 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			}
 			if !test.wantErr && (receipt.Command != test.command || receipt.HeadSHA != issue.PullRequestHeadSHA || receipt.TreeSHA == "" || receipt.ExitCode != test.exit || receipt.Output == "") {
 				t.Fatalf("missing command evidence: %+v", receipt)
+			}
+			if !test.wantErr && (receipt.Evidence == nil || !receipt.Evidence.Environment.Known()) {
+				t.Fatalf("missing host command environment: %+v", receipt.Evidence)
+			}
+			if !test.wantErr {
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, request, test.command)
+				environment := evidence.Environment
+				if environment.Known() != test.toolchainKnown || (test.toolchainKnown && environment != receipt.Evidence.Environment) {
+					t.Fatalf("command toolchain applicability differs: %+v", environment)
+				}
+				if evidence.InputsSHA != "" || receipt.Evidence.InputsSHA != "" {
+					t.Fatal("observed local metadata authorized receipt reuse")
+				}
 			}
 		})
 	}
@@ -305,40 +520,75 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	source := initSourceRepo(t)
-	fork := filepath.Join(t.TempDir(), "fork.git")
-	base := filepath.Join(t.TempDir(), "base.git")
-	runGit(t, t.TempDir(), "clone", "--bare", source, fork)
-	runGit(t, t.TempDir(), "clone", "--bare", source, base)
-	runGit(t, source, "remote", "add", "origin", fork)
-	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue := Issue{Identifier: "review-base-ref"}
-	info, err := backend.Create(t.Context(), issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writer := filepath.Join(t.TempDir(), "writer")
-	runGit(t, t.TempDir(), "clone", base, writer)
-	if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("PR head\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, writer, "add", "review.txt")
-	runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "PR head")
-	wanted := strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
-	runGit(t, writer, "push", "origin", "HEAD:refs/pull/119/head")
-	runGit(t, info.Path, "config", "url."+base+".insteadOf", "https://github.com/acme/base.git")
-	issue.PullRequestRepository = "acme/base"
-	issue.PullRequestHeadSHA = wanted
-	issue.PullRequestNumber = 119
-	if err := backend.SeedReviewHead(t.Context(), info, issue); err != nil {
-		t.Fatal(err)
-	}
-	head, err := backend.Head(t.Context(), info, issue)
-	if err != nil || strings.TrimSpace(head) != wanted {
-		t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
+	for _, tt := range []struct {
+		name            string
+		stalePullRef    bool
+		missingBranch   bool
+		wrongBranchHead bool
+	}{
+		{name: "pull ref in PR repository"},
+		{name: "stale pull ref uses PR repository branch", stalePullRef: true},
+		{name: "missing PR repository branch cannot use fork branch", stalePullRef: true, missingBranch: true},
+		{name: "wrong PR repository branch cannot use fork branch", stalePullRef: true, wrongBranchHead: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			fork := filepath.Join(t.TempDir(), "fork.git")
+			base := filepath.Join(t.TempDir(), "base.git")
+			runGit(t, t.TempDir(), "clone", "--bare", source, fork)
+			runGit(t, t.TempDir(), "clone", "--bare", source, base)
+			runGit(t, source, "remote", "add", "origin", fork)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "review-base-ref"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer := filepath.Join(t.TempDir(), "writer")
+			runGit(t, t.TempDir(), "clone", base, writer)
+			if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("PR head\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, writer, "add", "review.txt")
+			runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "PR head")
+			wanted := strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
+			initial := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if tt.stalePullRef {
+				runGit(t, base, "update-ref", "refs/pull/119/head", initial)
+				runGit(t, writer, "push", fork, "HEAD:refs/heads/published-review")
+				if !tt.missingBranch {
+					head := "HEAD"
+					if tt.wrongBranchHead {
+						head = initial
+					}
+					runGit(t, writer, "push", "origin", head+":refs/heads/published-review")
+				}
+			} else {
+				runGit(t, writer, "push", "origin", "HEAD:refs/pull/119/head")
+			}
+			runGit(t, info.Path, "config", "url."+base+".insteadOf", "https://github.com/example-org/base.git")
+			issue.PullRequestRepository = "example-org/base"
+			issue.PullRequestHeadSHA = wanted
+			issue.PullRequestNumber = 119
+			issue.PullRequestBranch = "published-review"
+			err = backend.SeedReviewHead(t.Context(), info, issue)
+			if tt.missingBranch || tt.wrongBranchHead {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Fatalf("SeedReviewHead() error = %v, want head_moved refusal", err)
+				}
+				wanted = initial
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			head, err := backend.Head(t.Context(), info, issue)
+			if err != nil || strings.TrimSpace(head) != wanted {
+				t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
+			}
+		})
 	}
 }
 

@@ -259,11 +259,15 @@ func (e *Executor) snapshot(ctx context.Context) (telemetry.Snapshot, error) {
 }
 
 func decodeArguments(raw json.RawMessage, target any) error {
+	return decodeArgumentsWithLimit(raw, target, MaxArgumentBytes)
+}
+
+func decodeArgumentsWithLimit(raw json.RawMessage, target any, limit int) error {
 	if len(raw) == 0 || string(raw) == "null" {
 		raw = json.RawMessage(`{}`)
 	}
-	if len(raw) > MaxArgumentBytes {
-		return invalidArgument("arguments", fmt.Sprintf("must not exceed %d bytes", MaxArgumentBytes))
+	if len(raw) > limit {
+		return invalidArgument("arguments", fmt.Sprintf("must not exceed %d bytes", limit))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

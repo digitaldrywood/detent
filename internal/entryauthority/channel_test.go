@@ -32,20 +32,39 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				t.Cleanup(func() { _ = serverWrite.Close() })
 				client := &Client{client: rpc.NewClient(channel{reader: clientRead, writer: clientWrite, budget: 2 * time.Second}), budget: 4 * time.Second}
 				t.Cleanup(func() { _ = client.Close() })
-				results := make(chan error, 2)
-				for range 2 {
-					go func() {
-						ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
-						defer cancel()
-						_, err := callAuthority[cloudassert.Claims](ctx, client, "Resolve", strings.Repeat("x", 1<<20))
-						results <- err
-					}()
+				payload := strings.Repeat("x", 1<<20)
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				canceledResult := make(chan error, 1)
+				go func() {
+					_, err := callAuthority[cloudassert.Claims](ctx, client, "Resolve", payload)
+					canceledResult <- err
+				}()
+				if err := serverRead.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+					t.Fatal(err)
 				}
-				for range 2 {
+				if _, err := serverRead.Read(make([]byte, 1)); err != nil {
+					t.Fatalf("request never entered stalled pipe: %v", err)
+				}
+				deadlineResult := make(chan error, 1)
+				go func() {
+					ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+					defer cancel()
+					_, err := callAuthority[cloudassert.Claims](ctx, client, "Resolve", payload)
+					deadlineResult <- err
+				}()
+				cancel()
+				for _, pending := range []struct {
+					result <-chan error
+					want   error
+				}{
+					{canceledResult, context.Canceled},
+					{deadlineResult, context.DeadlineExceeded},
+				} {
 					select {
-					case err := <-results:
-						if !errors.Is(err, context.DeadlineExceeded) {
-							t.Fatalf("blocked send did not honor caller deadline: %v", err)
+					case err := <-pending.result:
+						if !errors.Is(err, pending.want) {
+							t.Fatalf("blocked send returned %v, want %v", err, pending.want)
 						}
 					case <-time.After(time.Second):
 						t.Fatal("blocked send escaped caller deadline")

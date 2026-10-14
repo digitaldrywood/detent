@@ -233,7 +233,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertNotIn(TOKEN, launcher.read_text())
         service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
         self.assertEqual(service.returncode, 0, service.stderr)
-        self.assertEqual((self.root / "detent-cwd").read_text(), str(work))
+        self.assertEqual((self.root / "detent-cwd").read_text(), str(work.resolve()))
         self.assertIn(["detent", ["--config", str(config), "--headless"]], self.calls())
         self.assertIn("claude auth login", first.stdout)
         self.assertIn("codex login", first.stdout)

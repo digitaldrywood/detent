@@ -13,6 +13,7 @@ import {
   readableKey,
   tenantPlanGrant,
 } from "./platformFormat.ts";
+import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import {
@@ -49,6 +50,7 @@ import { redirectPlatformSignIn } from "./usePlatformResource.ts";
 import { AccountError } from "../account/api.ts";
 import type {
   EntitlementChange,
+  EntitlementPlan,
   EntitlementGrant,
   OrganizationEntitlements,
   PlanReference,
@@ -420,6 +422,359 @@ export function RevokeGrantDialog({
   );
 }
 
+function PlanAdministrationDialog({
+  organization,
+  value,
+  csrf,
+  onChanged,
+  create = false,
+}: {
+  readonly organization: PlatformOrganization;
+  readonly value: OrganizationEntitlements;
+  readonly csrf: string;
+  readonly onChanged: () => Promise<void>;
+  readonly create?: boolean;
+}): React.ReactElement {
+  const [open, setOpen] = React.useState(false);
+  const [sourceKey, setSourceKey] = React.useState("");
+  const [definition, setDefinition] = React.useState<EntitlementPlan | null>(
+    null,
+  );
+  const [action, setAction] = React.useState<
+    "base" | "subscription" | "end_subscription"
+  >("base");
+  const [expires, setExpires] = React.useState("");
+  const [reason, setReason] = React.useState("");
+  const [key, setKey] = React.useState(newKey);
+  const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
+  const change = useChange(organization.id, csrf, onChanged);
+  const prefix = `${create ? "create" : "assign"}-plan-${organization.id}`;
+  const title = create ? "Create plan version" : "Change base or subscription";
+  const featureChoices = [
+    ...new Set(value.plans.flatMap((plan) => plan.features ?? [])),
+  ].sort();
+
+  const choose = (selection: string) => {
+    setSourceKey(selection);
+    const source = value.plans.find((plan) => planKey(plan) === selection);
+    if (source !== undefined) {
+      const nextVersion =
+        Math.max(
+          ...value.plans
+            .filter((plan) => plan.id === source.id)
+            .map((plan) => plan.version),
+        ) + 1;
+      setDefinition({
+        ...source,
+        version: nextVersion,
+        features: [...(source.features ?? [])],
+        allowances: { ...(source.allowances ?? {}) },
+      });
+    }
+  };
+  const reset = (next: boolean) => {
+    setOpen(next);
+    if (next) {
+      choose(value.plans[0] === undefined ? "" : planKey(value.plans[0]));
+      setAction("base");
+      setExpires("");
+      setReason("");
+      setKey(newKey());
+      setRetryRevision(null);
+      change.setError(null);
+    }
+  };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (reason.trim() === "") {
+      change.setError("Give a reason for this plan change.");
+      return;
+    }
+    const selected = value.plans.find((plan) => planKey(plan) === sourceKey);
+    if (selected === undefined || definition === null) {
+      change.setError("Choose an existing plan to continue.");
+      return;
+    }
+    if (
+      create &&
+      (!/^[a-zA-Z0-9_-]{1,128}$/.test(definition.id) ||
+        !Number.isSafeInteger(definition.version) ||
+        definition.version < 1 ||
+        Object.values(definition.allowances ?? {}).some(
+          (limit) => !Number.isSafeInteger(limit) || limit < 0,
+        ))
+    ) {
+      change.setError(
+        "Give a plan ID, positive version and nonnegative whole-number allowances.",
+      );
+      return;
+    }
+    if (!create && action === "subscription" && expires === "") {
+      change.setError("A subscription requires an expiry date.");
+      return;
+    }
+    const revision = retryRevision ?? value.revision;
+    const common = {
+      idempotency_key: key,
+      expected_revision: revision,
+      reason: reason.trim(),
+    };
+    const command: EntitlementChange = create
+      ? {
+          ...common,
+          action: "create_plan",
+          definition,
+          plan: { id: definition.id, version: definition.version },
+        }
+      : {
+          ...common,
+          action,
+          plan: { id: selected.id, version: selected.version },
+          expires_at: expires === "" ? null : `${expires}T23:59:59Z`,
+        };
+    const outcome = await change.submit(command);
+    if (outcome === "done") setOpen(false);
+    if (outcome === "failed") {
+      setRetryRevision(revision);
+    } else {
+      setKey(newKey());
+      setRetryRevision(null);
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={reset}>
+      <Button size="sm" variant="outline" onClick={() => reset(true)}>
+        {title}
+      </Button>
+      <DialogPopup>
+        <form className="contents" onSubmit={submit} noValidate>
+          <DialogHeader>
+            <DialogTitle>
+              {title} for {organization.name}
+            </DialogTitle>
+            <DialogDescription>
+              {create
+                ? "Copy a plan and adjust its features and allowances. Existing versions and organization access stay unchanged until you assign or grant the new version."
+                : "Base changes apply immediately. Stripe manages paid subscriptions; use complimentary grants for additional access."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${prefix}-source`}>
+                  {create ? "Copy from" : "Plan"}
+                </Label>
+                <select
+                  id={`${prefix}-source`}
+                  value={sourceKey}
+                  onChange={(event) => choose(event.currentTarget.value)}
+                  className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                >
+                  {value.plans.map((plan) => (
+                    <option key={planKey(plan)} value={planKey(plan)}>
+                      {planDisplayName(plan, value)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {create && definition !== null ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-id`}>Plan ID</Label>
+                      <Input
+                        id={`${prefix}-id`}
+                        value={definition.id}
+                        maxLength={128}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            id: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-version`}>Version</Label>
+                      <Input
+                        id={`${prefix}-version`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={definition.version}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            version: Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-name`}>Display name</Label>
+                      <Input
+                        id={`${prefix}-name`}
+                        value={definition.name ?? ""}
+                        maxLength={80}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            name: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-price`}>
+                        Monthly price (USD cents)
+                      </Label>
+                      <Input
+                        id={`${prefix}-price`}
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={definition.monthly_usd_cents ?? ""}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            monthly_usd_cents:
+                              event.currentTarget.value === ""
+                                ? undefined
+                                : Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <fieldset className="flex flex-col gap-2">
+                    <legend className="mb-2 text-sm font-medium">
+                      Features
+                    </legend>
+                    {featureChoices.map((feature) => (
+                      <Label
+                        key={feature}
+                        htmlFor={`${prefix}-feature-${feature}`}
+                        className="flex items-center gap-2"
+                      >
+                        <Checkbox
+                          id={`${prefix}-feature-${feature}`}
+                          checked={(definition.features ?? []).includes(
+                            feature,
+                          )}
+                          onCheckedChange={(checked) =>
+                            setDefinition({
+                              ...definition,
+                              features: checked
+                                ? [...(definition.features ?? []), feature]
+                                : (definition.features ?? []).filter(
+                                    (item) => item !== feature,
+                                  ),
+                            })
+                          }
+                        />
+                        {feature.replaceAll("_", " ")}
+                      </Label>
+                    ))}
+                  </fieldset>
+                  <fieldset className="grid gap-3 sm:grid-cols-2">
+                    <legend className="mb-2 text-sm font-medium">
+                      Allowances
+                    </legend>
+                    {Object.entries(definition.allowances ?? {})
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([name, limit]) => (
+                        <div key={name} className="flex flex-col gap-1.5">
+                          <Label htmlFor={`${prefix}-allowance-${name}`}>
+                            {name.replaceAll("_", " ")}
+                          </Label>
+                          <Input
+                            id={`${prefix}-allowance-${name}`}
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={limit}
+                            onChange={(event) =>
+                              setDefinition({
+                                ...definition,
+                                allowances: {
+                                  ...definition.allowances,
+                                  [name]: Number(event.currentTarget.value),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                  </fieldset>
+                </>
+              ) : null}
+              {!create ? (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={`${prefix}-action`}>Apply as</Label>
+                    <select
+                      id={`${prefix}-action`}
+                      value={action}
+                      onChange={(event) =>
+                        setAction(event.currentTarget.value as typeof action)
+                      }
+                      className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                    >
+                      <option value="base">Base plan</option>
+                      {!organization.billing.available ? (
+                        <>
+                          <option value="subscription">Subscription</option>
+                          <option value="end_subscription">
+                            End subscription
+                          </option>
+                        </>
+                      ) : null}
+                    </select>
+                  </div>
+                  {action === "subscription" ? (
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-expires`}>Expires</Label>
+                      <Input
+                        id={`${prefix}-expires`}
+                        type="date"
+                        value={expires}
+                        onChange={(event) =>
+                          setExpires(event.currentTarget.value)
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${prefix}-reason`}>Reason</Label>
+                <Textarea
+                  id={`${prefix}-reason`}
+                  maxLength={500}
+                  required
+                  value={reason}
+                  onChange={(event) => setReason(event.currentTarget.value)}
+                />
+              </div>
+              <ControlError message={change.error} />
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline">Cancel</Button>} />
+            <Button type="submit" disabled={change.pending}>
+              {change.pending
+                ? "Saving…"
+                : create
+                  ? "Create version"
+                  : "Apply plan"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
 export function TenantPlan({
   organization,
   csrf,
@@ -444,12 +799,27 @@ export function TenantPlan({
       aria-label={`Plan for ${organization.name}`}
       headerAction={
         canGrant ? (
-          <GrantComplimentaryDialog
-            organization={organization}
-            entitlements={value}
-            csrf={csrf}
-            onChanged={onChanged}
-          />
+          <div className="flex flex-wrap gap-2">
+            <PlanAdministrationDialog
+              organization={organization}
+              value={value}
+              csrf={csrf}
+              onChanged={onChanged}
+              create
+            />
+            <PlanAdministrationDialog
+              organization={organization}
+              value={value}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+            <GrantComplimentaryDialog
+              organization={organization}
+              entitlements={value}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+          </div>
         ) : null
       }
     >

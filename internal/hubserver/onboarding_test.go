@@ -492,7 +492,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 		t.Fatalf("observed policies = %v, want %v (approved %+v)", ids, want, approved)
 	}
 	project, err := readNativeProject(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-	if err != nil || !reflect.DeepEqual(project.States, nativeFixtureStates()) {
+	if err != nil || !reflect.DeepEqual(project.States, f.project.States) {
 		t.Fatalf("unapproved runner report changed workflow: %#v, %v", project, err)
 	}
 

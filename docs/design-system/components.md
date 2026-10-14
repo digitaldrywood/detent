@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 142 entries; by kind: 53 primitive, 82 composition, 7 surface; by status: 142 available, 0 proposed, 0 exception.
+Catalog totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -327,7 +327,7 @@ A small contextual interaction anchored to its trigger: a filter, a short form, 
 
 ### Menu
 
-A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives rows a 40px height for touch; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
+A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives item and radio rows a 44px height on phones and 40px from the small breakpoint; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
 
 - Kind: Primitive; status: available; id: `menu`.
 - Import: `import { MenuCreateHandle, Menu, MenuPortal, MenuTrigger, MenuPopup, MenuGroup, MenuItem, MenuCheckboxItem, MenuRadioGroup, MenuRadioItem, MenuRadioItemIndicator, MenuGroupLabel, MenuSeparator, MenuShortcut, MenuSub, MenuSubTrigger, MenuSubPopup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, MenuItemLabel } from "~/components/ui/menu";`
@@ -496,6 +496,19 @@ The building blocks of Detent's app sidebar: provider, rail, groups and SidebarM
 - Avoid: Using it for in-page navigation lists; settings use SettingsSidebarNav, which composes these blocks.
 - Related: [Thread sidebar](#thread-sidebar), [App sidebar layout](#app-sidebar-layout), [Settings sidebar nav](#settings-sidebar-nav).
 
+### Tabs
+
+Sections of one page that share a header, such as the Reports Overview, Flow, Quality, Cost and Failures tabs. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.
+
+- Kind: Primitive; status: available; id: `tabs`.
+- Import: `import { Tabs, TabsList, TabsTab, TabsPanel } from "~/components/ui/tabs";`
+- Source: [src/components/ui/tabs.tsx](../../web/conversation/src/components/ui/tabs.tsx).
+- Variants: none.
+- States: selected, hover, focus-visible, disabled.
+- Keyboard: Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.
+- Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).
+- Related: [Toggle group](#toggle-group), [Right panel tabs](#right-panel-tabs), [Workspace page header](#workspace-page-header).
+
 ## Structure
 
 ### Scroll area
@@ -615,6 +628,32 @@ Tabular data such as usage and billing rows: labels left-aligned, comparable num
 - Keyboard: Native table semantics; interactive cells hold their own focusable controls.
 - Avoid: Layout grids and lists of navigable entities (use rows or cards from the owning composition).
 - Related: [Usage page](#usage-page).
+
+### Metric tile
+
+A headline number with its label, an optional change against the prior period and one line of detail. `MetricTileGroup` joins tiles into one divided panel (two per row on phones); `size="compact"` is the bare value-over-label form for dense pages such as Diagnostics. Pass `value={null}` for an unrecorded value and `delta={null}` when the prior period has no data: the value renders a dash with a Not recorded hint and the delta reads No prior data, never a zero. A delta pairs its colour with an arrow and reads to screen readers as words, such as "up 38, worse".
+
+- Kind: Primitive; status: available; id: `metric-tile`.
+- Import: `import { MetricTile, MetricTileGroup, MetricDelta, deltaDescription } from "~/components/ui/metric-tile";`
+- Source: [src/components/ui/metric-tile.tsx](../../web/conversation/src/components/ui/metric-tile.tsx).
+- Variants: `size`: `default`, `compact`.
+- States: value, not recorded, delta up, delta down, delta not recorded.
+- Keyboard: Static text; not focusable.
+- Avoid: Plan allowances (use Usage meter), statuses (use Badge) and values that need a chart to be understood.
+- Related: [Chart](#chart), [Usage meter](#usage-meter), [Badge](#badge).
+
+### Chart
+
+Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`.
+
+- Kind: Primitive; status: available; id: `chart`.
+- Import: `import { Chart, ChartLegend, ChartPanel, ChartSwatch, ProportionBar, BarMeter, ChartCategory, ChartSeries, ChartLegendItem, chartTicks } from "~/components/ui/chart";`
+- Source: [src/components/ui/chart.tsx](../../web/conversation/src/components/ui/chart.tsx).
+- Variants: none.
+- States: hover, focus-visible, empty.
+- Keyboard: The plot is one focus stop; Left and Right move the readout between categories and Escape clears it.
+- Avoid: Per-provider usage (use Usage provider chart), new chart palettes and tables of numbers that read better as a Table.
+- Related: [Metric tile](#metric-tile), [Usage provider chart](#usage-provider-chart), [Table](#table).
 
 ### Keyboard key
 
@@ -1270,7 +1309,7 @@ The tab strip that switches right-panel surfaces (Diff, Files, Terminal, Output,
 - Variants: none.
 - States: selected, hover, focus-visible.
 - Keyboard: Tabs are focusable; surface shortcuts switch tabs; each tab's close button is separately focusable.
-- Avoid: Page-level tabs (use ToggleGroup).
+- Avoid: Page-level sections (use Tabs).
 - Related: [Panel tab close button](#panel-tab-close-button), [Right panel workspace](#right-panel-workspace).
 
 ### Right panel sheet
@@ -1539,16 +1578,16 @@ Showing a secret such as an API key redacted until revealed.
 
 ### Reports page
 
-Project flow, throughput, stage and cost reports from recorded analytics, with source coverage.
+Project or organization reports in five tabs (Overview, Flow, Quality, Cost and Failures), each chart first with its rows below. The project (or All projects), a preset or custom range, the comparison and every filter chip live in the URL, so a copied link reproduces the view.
 
 - Kind: Composition; status: available; id: `reports-page`.
 - Import: `import { ReportsRoute, ReportsView } from "~/app/reports/ReportsPage";`
 - Source: [src/app/reports/ReportsPage.tsx](../../web/conversation/src/app/reports/ReportsPage.tsx).
 - Variants: none.
-- States: loading, empty, error, partial, unavailable.
-- Keyboard: Time and range controls, refresh and issue Diagnostics links in reading order.
-- Avoid: Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.
-- Related: [Usage page](#usage-page), [Table](#table), [Toggle group](#toggle-group), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
+- States: loading, empty, error, not recorded, filtered, no prior data.
+- Keyboard: Project, range, custom range, comparison and refresh controls, then the section tabs, the filter chips (each a Combobox, with a clear button once set), the view toggles and each card's links and expandable rows in reading order.
+- Avoid: Point-in-time snapshots as historical flow metrics, unrecorded values as zeroes, or a 0% delta when the prior period has no data.
+- Related: [Tabs](#tabs), [Metric tile](#metric-tile), [Chart](#chart), [Toggle group](#toggle-group), [Combobox](#combobox), [Calendar](#calendar), [Popover](#popover), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
 
 ### Usage page
 

@@ -210,13 +210,12 @@ a failed smoke stops promotion. Operators promote the validated tag tree to
 `main` through a reviewed PR. A commit already tagged in that series receives no
 new stable tag or replacement status. A retry authenticates the original tag
 evidence, refuses superseded evidence, and resumes dispatch only when no release
-run exists for that tag. Operator-landed
-Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
-its successful `make check-land` Actions check is authenticated by the existing
-provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
-prerelease before deploying the same version and binary through staging and
-production. These prereleases do not replace stable installer or package feeds;
-enrolled runners follow the Hub through the existing coordinated update owner.
+run exists for that tag. Every release, including operator recovery, starts from
+a frozen develop snapshot on a release branch. Fixes land on develop first and
+are cherry-picked with `-x` through release-branch PRs. No develop prerelease or
+source-gate-only deployment path is permitted. Staging and production deploy
+the same validated version and binary; enrolled runners follow the Hub through
+the existing coordinated update owner.
 Every failing scheduled job is reported through the
 selected native owner at least High into Todo under a stable job fingerprint,
 following [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting);

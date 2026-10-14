@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -50,6 +51,8 @@ func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecor
 }
 
 func (s *Service) storedWebSession(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var session auth.Session
 	var encoded, expiry string
 	err := s.database.auth().QueryRowContext(ctx, "SELECT email,identity_json,expires_at FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", hash).Scan(&session.Email, &encoded, &expiry)
@@ -136,6 +139,8 @@ func (s *Service) hostedCredential(ctx context.Context, c echo.Context) (apiCred
 // so the tenant does not call the provider on the request path; membership
 // removal reaches the tenant through the entry's revocation of the binding.
 func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Session, hash, role string) (apiCredential, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if !auth.ValidOrganizationRole(role) {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -159,7 +164,7 @@ func (s *Service) hostedSharedCredential(ctx context.Context, session auth.Sessi
 // a downgrade recorded by the tenant applies before the entry's access token
 // carrying the older role expires.
 func lesserHostedRole(a, b string) string {
-	rank := map[string]int{"viewer": 0, "member": 1, "admin": 2, "owner": 3}
+	rank := map[string]int{"viewer": 0, "reporter": 1, "member": 2, "admin": 3, "owner": 4}
 	if rank[a] <= rank[b] {
 		return a
 	}
@@ -179,6 +184,8 @@ func (s *Service) hostedSessionCredential(ctx context.Context, session auth.Sess
 }
 
 func (s *Service) hostedMemberCredential(ctx context.Context, session auth.Session, hash string, membership auth.Membership) (apiCredential, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, session.Email) && session.Identity.SupportActor == "" {
 		return apiCredential{}, http.StatusForbidden, auth.ErrHostedIdentity
 	}
@@ -332,19 +339,29 @@ func (s *Service) hostedMutationIdentity(ctx context.Context, credential apiCred
 	return identity, membership, nil
 }
 
-func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
+func (s *Service) recheckHostedMutation(ctx context.Context, tx *sql.Tx, scope *nativeScope) error {
 	return s.recheckHostedAuthority(ctx, tx, scope, apikey.ScopeWrite)
 }
 
-func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, required apikey.Scope) error {
+func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope *nativeScope, required apikey.Scope) error {
 	if scope.credential.Hosted == nil {
 		return nil
 	}
 	identity, membership, err := s.hostedMutationIdentity(ctx, scope.credential)
-	if err != nil || required != apikey.ScopeRead && membership.Role.Slug == "viewer" {
+	if err != nil {
 		return auth.ErrHostedIdentity
 	}
-	if scope.requireHostedAdmin && membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
+	if scope.credential.EntryKey == nil || scope.credential.EntryKey.Kind != "service" {
+		var localRole string
+		if err := tx.QueryRowContext(ctx, "SELECT role FROM hosted_members WHERE user_id=? AND membership_id=? AND active=1", identity.Subject, membership.ID).Scan(&localRole); err != nil || !auth.ValidOrganizationRole(localRole) {
+			return auth.ErrHostedIdentity
+		}
+		scope.credential.HostedRole = lesserHostedRole(scope.credential.HostedRole, lesserHostedRole(localRole, membership.Role.Slug))
+	}
+	if !hostedRoleAllows(scope.credential.HostedRole, required, scope.action) {
+		return operatortool.ErrAccessDenied
+	}
+	if scope.requireHostedAdmin && scope.credential.HostedRole != "owner" && scope.credential.HostedRole != "admin" {
 		return auth.ErrHostedIdentity
 	}
 	var count int
@@ -352,13 +369,13 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 		if scope.requireHostedAdmin {
 			required = apikey.ScopeAdmin
 		}
-		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required) {
+		if !hostedKeyAllows(scope.credential.HostedKeyScope, required) || !hostedRoleAllows(scope.credential.HostedRole, required, scope.action) {
 			return auth.ErrHostedIdentity
 		}
 		if scope.credential.EntryKey.Kind == "personal" {
 			var local string
 			err := tx.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.membership_id=? AND m.active=1 AND t.revoked_at IS NULL", identity.Subject, membership.ID).Scan(&local)
-			if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) {
+			if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required, scope.action) {
 				return auth.ErrHostedIdentity
 			}
 		}
@@ -373,7 +390,7 @@ func (s *Service) recheckHostedAuthority(ctx context.Context, tx *sql.Tx, scope 
 		var access hostedProjectAccess
 		err = tx.QueryRowContext(ctx, `SELECT m.role,t.operator_key_scope,t.operator_project_access,m.principal_id FROM hosted_members m JOIN api_tokens t ON t.hosted_user_id=m.user_id AND t.hosted_membership_id=m.membership_id JOIN api_tokens p ON p.id=m.principal_id AND p.revoked_at IS NULL
 WHERE t.id=? AND t.token_hash=? AND t.revoked_at IS NULL AND t.native_only=1 AND t.scope IN ('operator','admin') AND t.hosted_organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) AND m.user_id=? AND m.membership_id=? AND m.active=1`, scope.credential.ID, scope.credential.Hash, scope.organization, formatHubTime(s.config.now()), identity.Subject, membership.ID).Scan(&local, &keyScope, &access, &scope.credential.HostedPrincipal)
-		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required) || !hostedKeyAllows(apikey.Scope(keyScope), required) || access != hostedProjectsAll && access != hostedProjectsSelected {
+		if err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, membership.Role.Slug), required, scope.action) || !hostedKeyAllows(apikey.Scope(keyScope), required) || access != hostedProjectsAll && access != hostedProjectsSelected {
 			return auth.ErrHostedIdentity
 		}
 		scope.credential.HostedProjectAccess = access
@@ -385,7 +402,7 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		}
 	}
 	if scope.project != "" {
-		if err := s.requireHostedProject(ctx, tx, scope, required != apikey.ScopeRead); err != nil {
+		if err := s.requireHostedProject(ctx, tx, *scope, required != apikey.ScopeRead); err != nil {
 			return err
 		}
 		condition, args := scope.credential.projectGrantSQL("p.organization_id", "p.id")
@@ -395,6 +412,25 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		}
 		if count != 1 {
 			return nativeNotFound()
+		}
+		if scope.credential.HostedRole == "reporter" && scope.actionItem != "" {
+			switch scope.action {
+			case operatortool.MoveItem:
+				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
+				if err != nil || scope.actionTarget != "Cancelled" || issue.Actor.PrincipalID != scope.actor().PrincipalID {
+					return operatortool.ErrAccessDenied
+				}
+			case operatortool.VerifyFix:
+				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)
+				if err != nil || issue.Actor.PrincipalID != scope.actor().PrincipalID {
+					return operatortool.ErrAccessDenied
+				}
+			case operatortool.EditComment:
+				comment, err := readNativeComment(ctx, tx, *scope, scope.actionItem, scope.actionComment)
+				if err != nil || comment.Actor.PrincipalID != scope.actor().PrincipalID {
+					return operatortool.ErrAccessDenied
+				}
+			}
 		}
 		return nil
 	}

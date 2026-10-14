@@ -9,6 +9,7 @@ import { normalizeCatalog, rawCatalog, type CatalogEntry } from "./catalog";
 import type { GalleryDoc } from "./specimen";
 import * as actions from "./specimens/actions";
 import * as chat from "./specimens/chat";
+import * as dataDisplay from "./specimens/dataDisplay";
 import * as feedback from "./specimens/feedback";
 import { FOUNDATIONS } from "./specimens/foundations";
 import * as forms from "./specimens/forms";
@@ -68,6 +69,9 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   group: layout.group,
   collapsible: layout.collapsible,
   table: layout.table,
+  tabs: dataDisplay.tabs,
+  "metric-tile": dataDisplay.metricTile,
+  chart: dataDisplay.chart,
   kbd: layout.kbd,
   // Navigation
   sidebar: navigation.sidebar,

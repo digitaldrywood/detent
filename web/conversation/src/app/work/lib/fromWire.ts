@@ -187,6 +187,7 @@ export function toWorkItemView(
     projectName,
     identifier: `${projectName}#${issue.number}`,
     number: issue.number,
+    ...(issue.type === undefined ? {} : { type: issue.type }),
     title: issue.title,
     body: issue.body,
     state: issue.state,

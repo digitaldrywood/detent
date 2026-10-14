@@ -25,7 +25,7 @@ import { ApiError } from "./conversation.ts";
  * `admin` manage the organization; `member` writes where a grant says so;
  * `viewer` reads only (decisions.md §10.11).
  */
-export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "viewer"]);
+export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "reporter", "viewer"]);
 export type OrganizationRole = typeof OrganizationRole.Type;
 
 /** True for the two roles §12 gates the management endpoints behind. */
@@ -49,6 +49,8 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  * redirect through `/auth/oidc/start` rather than a state change here.
  */
 export const BootstrapOrganization = Schema.Struct({
+  slug: Schema.optional(Schema.String),
+  role: Schema.optional(OrganizationRole),
   id: Schema.String,
   name: Schema.String,
   public_url: Schema.String,
@@ -87,7 +89,14 @@ export type WorkflowState = typeof WorkflowState.Type;
  * own `BootstrapProject` fields (`labels`, `priorities`, `coordinator`) stay
  * optional here so one payload satisfies both schemas.
  */
+export const ReporterTemplates = Schema.Struct({
+  bug: Schema.Array(Schema.String),
+  change_request: Schema.Array(Schema.String),
+});
+export type ReporterTemplates = typeof ReporterTemplates.Type;
+
 export const AccountProject = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   profile: Schema.String,
@@ -169,6 +178,7 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  */
 export const AccountBootstrap = Schema.Struct({
   organization: Schema.Struct({
+    slug: Schema.optional(Schema.String),
     id: Schema.String,
     name: Schema.String,
     public_url: Schema.optional(Schema.String),
@@ -219,6 +229,7 @@ export type Invitation = typeof Invitation.Type;
 
 /** `GET /members`. A plain member sees only themselves and no invitations. */
 export const MembersResponse = Schema.Struct({
+  member_count: Schema.optional(Schema.Number),
   members: Schema.Array(Member),
   invitations: Schema.Array(Invitation),
 });
@@ -264,6 +275,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),
   archive_cancelled_after_days: Schema.NullOr(Schema.Number),
   workflow_source: Schema.optional(Schema.String),

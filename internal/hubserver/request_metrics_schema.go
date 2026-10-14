@@ -15,6 +15,12 @@ CREATE TABLE request_minutes(
  count INTEGER NOT NULL, sum_ms REAL NOT NULL, p50_ms REAL NOT NULL, p95_ms REAL NOT NULL, max_ms REAL NOT NULL, histogram TEXT NOT NULL,
  PRIMARY KEY(minute,route,caller_kind,caller_id,status_class));`)
 		return err
+	}}, nil), goose.NewGoMigration(20261013235900, &goose.GoFunc{RunTx: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE request_hours(
+ hour INTEGER NOT NULL, route TEXT NOT NULL, status_class INTEGER NOT NULL,
+ count INTEGER NOT NULL, sum_ms REAL NOT NULL, p50_ms REAL NOT NULL, p95_ms REAL NOT NULL, max_ms REAL NOT NULL, histogram TEXT NOT NULL,
+ PRIMARY KEY(hour,route,status_class));`)
+		return err
 	}}, nil)))
 	if err != nil {
 		return err

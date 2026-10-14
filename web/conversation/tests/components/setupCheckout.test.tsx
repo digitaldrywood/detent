@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 
@@ -32,6 +32,80 @@ async function mountSetup(onNavigate?: (to: string) => void) {
     </ClientContext.Provider>,
   );
 }
+
+it("preserves unsaved setup choices and fields through refresh, then saves and switches projects", async () => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  let finishRefresh: (() => void) | undefined;
+  let deferRefresh = false;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/integration") && response.ok) {
+      return Response.json({ ...await response.json(), checkout_repository: "example-org/example-project", checkout_verified: true });
+    }
+    if (deferRefresh && String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
+      deferRefresh = false;
+      await new Promise<void>((resolve) => { finishRefresh = resolve; });
+    }
+    return response;
+  });
+  let poll: (() => void) | undefined;
+  const setInterval = window.setInterval;
+  vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
+    const timer = setInterval(callback, delay, ...args);
+    if (delay === 5_000 && typeof callback === "function") {
+      poll = callback as () => void;
+      window.clearInterval(timer);
+    }
+    return timer as unknown as ReturnType<typeof window.setInterval>;
+  });
+  const view = mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Repository configuration/ }));
+  deferRefresh = true;
+  expect(poll).toBeDefined();
+  act(() => poll!());
+  await waitFor(() => expect(finishRefresh).toBeDefined());
+  await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
+  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
+  await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+  const fields = [
+    ["Service id", "service_example"],
+    ["Gateway origin", "https://artifacts.example.com"],
+    ["Publisher token id", "token_example"],
+  ] as const;
+  for (const [label, value] of fields) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
+  await act(async () => finishRefresh!());
+  expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(true);
+  for (const [label, value] of fields) expect((screen.getByRole("textbox", { name: label }) as HTMLInputElement).value).toBe(value);
+  expect(screen.getByRole("button", { name: "Help for Publisher token id" })).toBeTruthy();
+  await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
+  await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
+  expect((screen.getByRole("radio", { name: "Create configuration files" }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
+  expect(await screen.findByRole("button", { name: "Approve settings" })).toBeTruthy();
+  const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json());
+  expect(saved.progress).toMatchObject({ repository: "generate", artifacts: "local", revision: "2" });
+  await user.click(screen.getByRole("button", { name: /Artifact history/ }));
+  expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true);
+  await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+  const alpha = `${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/onboarding`;
+  const alphaProgress = await fetch(alpha).then((response) => response.json());
+  const seed = await fetch(alpha, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idempotency_key: "setup-project-switch", progress: { ...alphaProgress.progress, repository: "generate", artifacts: "local" } }),
+  });
+  expect(seed.ok).toBe(true);
+  view.rerender(
+    <ClientContext.Provider value={client!}>
+      <SetupRoute projectId="proj_alpha" />
+    </ClientContext.Provider>,
+  );
+  await waitFor(() => expect((screen.getByRole("radio", { name: "Your runner (local history)" }) as HTMLInputElement).checked).toBe(true));
+  expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(false);
+  expect(screen.queryByRole("textbox", { name: "Publisher token id" })).toBeNull();
+});
 
 it.each([
   ["reported checkout", "mockorg/private", "Verified runner checkout:"],
@@ -166,6 +240,8 @@ it.each([
 ])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted)", async ({ ready, unrouted }) => {
   const onNavigate = vi.fn();
   const mount = await mountSetup(onNavigate);
+  const intervals = vi.spyOn(window, "setInterval");
+  let onboardingReads = 0;
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
@@ -174,6 +250,7 @@ it.each([
     }
     if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
       const onboarding = await response.json();
+      onboardingReads += 1;
       onboarding.runners = ready ? onboarding.runners : [];
       if (unrouted) {
         onboarding.runners = [{
@@ -232,6 +309,16 @@ it.each([
     expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
     expect(screen.getByRole("button", { name: "Skip for now" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: "Save choice" }).hasAttribute("disabled")).toBe(true);
+    await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+    expect(await screen.findByLabelText("Publisher token id")).toBeTruthy();
+    const reads = onboardingReads;
+    const poll = intervals.mock.calls.find(([, timeout]) => timeout === 5_000)?.[0];
+    expect(poll).toBeTypeOf("function");
+    await act(async () => {
+      (poll as () => void)();
+      await waitFor(() => expect(onboardingReads).toBeGreaterThan(reads));
+    });
+    expect(screen.getByLabelText("Publisher token id")).toBeTruthy();
     await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));
     const saveChoice = screen.getByRole("button", { name: "Save choice" });
     expect(saveChoice.classList.contains("bg-primary")).toBe(true);

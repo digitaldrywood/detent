@@ -28,7 +28,7 @@ func TestWorkAttemptReceiptAPI(t *testing.T) {
 				AttemptID:  42,
 				ProjectID:  "detent",
 				IssueID:    "issue-979",
-				Identifier: "digitaldrywood/detent#979",
+				Identifier: "example-org/example-project#979",
 				Status:     "active",
 			},
 			Available: []orchestrator.WorkAttemptRecoveryActionDescriptor{
@@ -70,7 +70,7 @@ func TestWorkAttemptReceiptHTMXAllowsDashboardUICookie(t *testing.T) {
 				AttemptID:      42,
 				ProjectID:      "detent",
 				IssueID:        "issue-979",
-				Identifier:     "digitaldrywood/detent#979",
+				Identifier:     "example-org/example-project#979",
 				Status:         "active",
 				WorkerHost:     "worker-a",
 				Phase:          "running",

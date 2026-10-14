@@ -575,3 +575,44 @@ func TestCloudRejectsInvalidTenantConfigurationAtStartup(t *testing.T) {
 		})
 	}
 }
+
+func TestCloudReloadValidatesFileAndPreservesLaunchIdentity(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "cloud.yaml")
+	body := "public_url: https://hub.example.test\nstate_directory: /var/lib/detent/cloud\nassertion:\n  issuer: detent-cloud\nworkos:\n  client_id: client_example\nallocation:\n  tenant_root: /var/lib/detent/tenants\n  socket_root: /run/detent/tenants\n  binary: /usr/local/bin/detent\n  max_tenants: 4\n  entitlement_administrator: test-operator\n  entitlement_admin_token_env: ENTITLEMENT_TOKEN\n  entitlements:\n    base: {id: free_example, version: 1}\n    window_seconds: 3600\n    retention_windows: 24\n    connected_seconds: 90\n    invitation_seconds: 86400\n    plans:\n      - {id: free_example, version: 1, features: [collaboration], allowances: {projects: 1}}\n"
+	write := func(raw string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(body)
+	env := map[string]string{"WORKOS_API_KEY": "sk_test", "DETENT_CLOUD_ASSERTION_KEY": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=", "ENTITLEMENT_TOKEN": "entitlement-admin-token-0123456789abcdef"}
+	config, err := readCloudConfig(path, func(name string) string { return env[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{body + "unknown_key: true\n", body + "---\npublic_url: https://other.example.test\n", strings.Replace(body, "connected_seconds: 90", "connected_seconds: 0", 1), strings.Replace(body, "client_id: client_example", "client_id: ''", 1)} {
+		write(invalid)
+		if _, err := config.Reload(); err == nil {
+			t.Fatal("invalid complete cloud file accepted")
+		}
+	}
+	write(strings.Replace(strings.Replace(body, "hub.example.test", "changed.example.test", 1), "projects: 1", "projects: 50", 1))
+	next, err := config.Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := config.ConfigureRuntime(*next.Runtime)(cloudentry.TenantSpec{Organization: cloudentry.Organization{ID: "org_example", ProviderID: "porg_example", Generation: 1}, PublicURL: config.PublicURL, Issuer: config.Issuer, PublicKey: cloudassert.PublicKeyOf(config.SigningKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tenant hostedFileConfig
+	if err := yaml.Unmarshal(raw, &tenant); err != nil {
+		t.Fatal(err)
+	}
+	if tenant.PublicURL != "https://hub.example.test" || tenant.Plans.Plans[0].Allowances["projects"] != 50 {
+		t.Fatalf("reloaded tenant=%+v", tenant)
+	}
+}

@@ -1,23 +1,24 @@
 {
+  "member_count": 3,
   "members": [
     {
       "id": "mem_owner",
-      "user_id": "user_michael",
-      "email": "michael@threefold.solutions",
+      "user_id": "user_owner",
+      "email": "owner@example.com",
       "never_signed_in": false,
       "role": "owner",
       "status": "active",
-      "grants": [{ "project_id": "proj_parable", "write": true, "runner": true }]
+      "grants": [{ "project_id": "proj_example_project", "write": true, "runner": true }]
     },
     {
       "id": "mem_admin",
-      "user_id": "user_dana",
-      "email": "dana@threefold.solutions",
+      "user_id": "user_member",
+      "email": "member@example.com",
       "never_signed_in": false,
       "role": "admin",
       "status": "active",
       "grants": [
-        { "project_id": "proj_parable", "write": true, "runner": false },
+        { "project_id": "proj_example_project", "write": true, "runner": false },
         { "project_id": "proj_marketing", "write": true, "runner": false }
       ]
     },

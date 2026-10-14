@@ -12,7 +12,7 @@ test.afterAll(async () => {
 
 test("invited member receives only the selected read-only project", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
-  await page.goto(`${hub.fixture.url}/settings/organization`);
+  await page.goto(`${hub.fixture.url}/settings/organization/members`);
   await page.getByLabel("Email", { exact: true }).fill("invitee@example.test");
   const collaboration = page.getByLabel("Access to Browser collaboration for invitation", { exact: true });
   const privateProject = page.getByLabel("Access to Owner private project for invitation", { exact: true });
@@ -37,7 +37,7 @@ test("invited member receives only the selected read-only project", async ({ pag
   await page.goto(hub.fixture.accounts.invitee);
   await page.goto(`${hub.fixture.url}/invite?invitation_token=${encodeURIComponent(invitationId)}`);
   await expect(page).toHaveURL(`${hub.fixture.url}/organization`);
-  await page.goto(`${hub.fixture.url}/settings/organization`);
+  await page.goto(`${hub.fixture.url}/settings/organization/members`);
   const member = page.getByRole("row").filter({ hasText: "invitee@example.test" });
   await expect(member).toContainText("Browser collaboration");
   await expect(member).toContainText("read");

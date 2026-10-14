@@ -11,6 +11,7 @@ import {
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Switch } from "../../components/ui/switch.tsx";
 import { UsageMeter } from "../../components/ui/usage-meter.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
@@ -33,7 +34,8 @@ import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { PLATFORM } from "../entry/api.ts";
 import { newKey } from "../account/idempotency.ts";
-import { OrganizationRoute } from "../account/Organization.tsx";
+import { OrganizationMembersRoute } from "../account/Organization.tsx";
+import { OrganizationOverviewRoute, OrganizationModelsRoute } from "../account/OrganizationOverview.tsx";
 import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
@@ -113,6 +115,12 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
 export function GeneralSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const api = useAccountApi();
+  const notifications = useResource(() => api.issueNotificationPreference(), [api]);
+  const saveNotifications = useMutation(async (enabled: boolean) => {
+    const value = await api.saveIssueNotificationPreference(enabled);
+    notifications.set(value);
+    return value;
+  });
   const signOut = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
@@ -160,6 +168,18 @@ export function GeneralSettings(): React.ReactElement {
           }
         />
         {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
+        <SettingsRow
+          id="settings-general-issue-notifications"
+          title="Issue email notifications"
+          description="Notify me about issues I filed or commented on."
+          control={<Switch
+            aria-label="Notify me about issues I filed or commented on"
+            checked={notifications.value?.enabled ?? false}
+            disabled={notifications.loading || notifications.error !== null || saveNotifications.pending}
+            onCheckedChange={(enabled) => void saveNotifications.call(enabled)}
+          />}
+        />
+        <ControlError message={(notifications.error ?? saveNotifications.error)?.message ?? null} />
         {bootstrap?.plan == null ? null : (
           <SettingsRow
             id="settings-general-plan"
@@ -825,8 +845,14 @@ export function SettingsRoute({
             <h1>Settings</h1>
           </WorkspaceBreadcrumbItem>
           <WorkspaceBreadcrumbSeparator />
+          {activeId.startsWith("organization") ? (
+            <>
+              <WorkspaceBreadcrumbItem>Organization</WorkspaceBreadcrumbItem>
+              <WorkspaceBreadcrumbSeparator />
+            </>
+          ) : null}
           <WorkspaceBreadcrumbItem current className="min-w-10">
-            <span className="min-w-0 truncate">{SETTINGS_SECTION_LABELS[activeId]}</span>
+            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : SETTINGS_SECTION_LABELS[activeId]}</span>
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
@@ -849,7 +875,11 @@ function SettingsBody({
 }): React.ReactElement {
   switch (section) {
     case "organization":
-      return <OrganizationRoute />;
+      return <OrganizationOverviewRoute />;
+    case "organization/members":
+      return <OrganizationMembersRoute />;
+    case "organization/models":
+      return <OrganizationModelsRoute />;
     case "projects":
       return <ProjectsSettings onNavigate={onNavigate} />;
     case "runners":

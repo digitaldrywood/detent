@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const runnerServiceName = "detent.runner"
@@ -27,14 +28,15 @@ const runnerServiceName = "detent.runner"
 type runnerServiceStarter func(cmd *cobra.Command, configPath string) error
 
 type runnerRegistration struct {
-	RunnerID   string            `json:"runner_id"`
-	MachineID  tracker.MachineID `json:"machine_id"`
-	Config     string            `json:"config"`
-	Identity   string            `json:"identity_file"`
-	Created    bool              `json:"config_created"`
-	Service    string            `json:"service,omitempty"`
-	NextSteps  []string          `json:"next_steps,omitempty"`
-	ServiceRun bool              `json:"service_started"`
+	Commit     workspace.CommitReport `json:"commit"`
+	RunnerID   string                 `json:"runner_id"`
+	MachineID  tracker.MachineID      `json:"machine_id"`
+	Config     string                 `json:"config"`
+	Identity   string                 `json:"identity_file"`
+	Created    bool                   `json:"config_created"`
+	Service    string                 `json:"service,omitempty"`
+	NextSteps  []string               `json:"next_steps,omitempty"`
+	ServiceRun bool                   `json:"service_started"`
 }
 
 func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, startService runnerServiceStarter) *cobra.Command {
@@ -130,6 +132,10 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
 			}
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
+			result.Commit, err = workspace.ProbeCommitReport(cmd.Context(), "", workspace.CommitIdentity{Name: "Detent runner", Email: string(identity.MachineID) + "@runners.detent.invalid"})
+			if err != nil {
+				return err
+			}
 			minimumVersion, err := client.MinimumRunnerVersion(cmd.Context())
 			if err != nil {
 				return fmt.Errorf("runner enrolled; read minimum runner version: %w", err)
@@ -429,6 +435,7 @@ func writeRunnerRegistration(cmd *cobra.Command, result runnerRegistration) erro
 	return output.Write(func(w io.Writer) error {
 		lines := []string{
 			fmt.Sprintf("Registered runner %s (machine %s).", result.RunnerID, result.MachineID),
+			fmt.Sprintf("Runner commits: %s <%s>; signing: %s.", result.Commit.Identity.Name, result.Commit.Identity.Email, result.Commit.Signing),
 		}
 		if result.Created {
 			lines = append(lines, "Wrote "+result.Config)

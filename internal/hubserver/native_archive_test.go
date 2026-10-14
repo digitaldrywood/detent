@@ -278,7 +278,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 				responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(archived.WorkItemID)+"/restore", archiveRequest(archived, "restore-race"))
 				return
 			}
-			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "Contender", State: "Todo"})
+			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "allocationfixture" + strconv.Itoa(index) + "x", State: "Todo"})
 		})
 	}
 	group.Wait()
@@ -412,7 +412,7 @@ func TestHostedIssueAllowanceCatalog(t *testing.T) {
 			if err := f.service.database.configureHostedPlans(t.Context(), &cfg); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := readHostedPlan(t.Context(), f.service.database.db, config.Base)
+			plan, err := f.service.database.readHostedPlan(t.Context(), f.service.database.db, config.Base)
 			if err != nil {
 				t.Fatal(err)
 			}

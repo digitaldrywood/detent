@@ -29,4 +29,6 @@ export interface IntakeCommand {
   readonly numbers?: readonly number[];
   readonly destination?: string;
   readonly allow_dispatch?: boolean;
+  readonly label_lanes?: Readonly<Record<string, string>>;
+  readonly ignore_lane_labels?: boolean;
 }

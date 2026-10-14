@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -194,6 +195,11 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
 		return context.WithValue(ctx, operatorCredentialKey{}, billingAuthorization(func(context.Context) (apiCredential, error) { return credential, nil }))
 	}, Check: func(ctx context.Context, requirement operatortool.Requirement) error {
+		ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancel()
+		if credential.HostedRole == "reporter" && !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
+			return operatortool.ErrAccessDenied
+		}
 		if requirement.ResourceKind == "credentials" && s.config.Hosted != nil {
 			if requirement.ProjectID != "" || requirement.ResourceID != "" {
 				return operatortool.ErrAccessDenied
@@ -215,7 +221,7 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				return operatortool.ErrAccessDenied
 			}
 			if credential.Hosted != nil {
-				return s.requireHostedRunnerAdministration(ctx, s.database.db, credential)
+				return s.requireHostedRunnerAdministration(ctx, s.database.reader, credential)
 			}
 			if credential.Scope != apiScopeAdmin {
 				return operatortool.ErrAccessDenied
@@ -233,10 +239,15 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 				return operatortool.ErrAccessDenied
 			}
 		}
+		query := s.database.db
+		if requirement.Scope == apikey.ScopeRead {
+			query = s.database.reader
+		}
 		checkScope := scope
+		checkScope.action = requirement.Action
 		if requirement.ProjectID != "" {
 			checkScope.project = tracker.ProjectID(requirement.ProjectID)
-			if err := s.requireHostedProject(ctx, s.database.db, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
+			if err := s.requireHostedProject(ctx, query, checkScope, requirement.Scope != apikey.ScopeRead); err != nil {
 				return err
 			}
 			if err := s.database.authorizeNativeProject(ctx, checkScope); err != nil {
@@ -245,16 +256,16 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		}
 		if requirement.Scope != apikey.ScopeRead {
 			if credential.Hosted != nil {
-				if credential.HostedRole == "viewer" || requirement.Scope == apikey.ScopeAdmin && credential.HostedRole != "owner" && credential.HostedRole != "admin" {
+				if !hostedRoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 					return operatortool.ErrAccessDenied
 				}
 				checkScope.requireHostedAdmin = requirement.Scope == apikey.ScopeAdmin
-				tx, err := s.database.db.BeginTx(ctx, nil)
+				tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 				if err != nil {
 					return err
 				}
 				defer tx.Rollback()
-				if err := s.recheckHostedMutation(ctx, tx, checkScope); err != nil {
+				if err := s.recheckHostedMutation(ctx, tx, &checkScope); err != nil {
 					return err
 				}
 				if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
@@ -269,6 +280,6 @@ func (s *Service) operatorCurrentAuthority(ctx context.Context, credential apiCr
 		if requirement.ResourceKind == "billing" || requirement.ResourceKind == "plan" {
 			return nil
 		}
-		return s.checkOperatorResource(ctx, s.database.db, checkScope, requirement)
+		return s.checkOperatorResource(ctx, query, checkScope, requirement)
 	}}, nil
 }

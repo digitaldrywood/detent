@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func runnerCapacityOwner(selected globalconfig.Config, runtimeConfig func() globalconfig.Config) func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig {
@@ -114,4 +117,40 @@ func runnerCapacityConfiguration(selected, runtime, cfg globalconfig.Config, rev
 		report.Constraint = "Waiting for the existing configuration reload to apply the saved limits."
 	}
 	return report
+}
+
+func runnerStorageConstraint(ctx context.Context, cfg globalconfig.Config) string {
+	paths, err := toolcache.Resolve(ctx)
+	if err != nil {
+		return "Host storage is unavailable; waiting for a storage observation."
+	}
+	return runnerStorageConstraintForPaths(cfg, paths, func(root string) (uint64, uint64, error) {
+		free, err := toolcache.FreeBytes(root)
+		if err != nil {
+			return 0, 0, err
+		}
+		total, err := toolcache.CapacityBytes(root)
+		return free, total, err
+	})
+}
+
+func runnerStorageConstraintForPaths(cfg globalconfig.Config, paths toolcache.Paths, volume func(string) (uint64, uint64, error)) string {
+	roots := []string{paths.Build, cfg.WorkspaceRoot}
+	if cfg.WorkspaceRoot == "" {
+		roots = append(roots, filepath.Dir(cfg.Path))
+	}
+	for _, root := range roots {
+		if root == "" || root == "off" {
+			continue
+		}
+		free, total, err := volume(root)
+		if err != nil {
+			return "Host storage is unavailable; waiting for a storage observation."
+		}
+		reserve := toolcache.Policy{}.NormalizedForCapacity(total).MaxBytes
+		if free < uint64(reserve) {
+			return fmt.Sprintf("Host storage has %s free below the %s reserve; waiting for disk space.", toolcache.FormatBytes(int64(min(free, 1<<63-1))), toolcache.FormatBytes(reserve))
+		}
+	}
+	return ""
 }

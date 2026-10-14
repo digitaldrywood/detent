@@ -183,7 +183,7 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 	seed[2] = 9
 	root := shortTempDir(t)
 	p := &sharedOriginPilot{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), handler: &swappableHandler{}, client: client}
-	for _, user := range []string{"dana", "eve", "fay", "gus"} {
+	for _, user := range []string{"member", "eve", "fay", "gus"} {
 		p.provider.users["user_"+user] = user + "@example.test"
 	}
 	p.launcher = &pilotTenantLauncher{provider: p.provider, billing: billingProvider, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root), specs: map[string]TenantSpec{}}
@@ -521,24 +521,24 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 	var alphaSecondProject string
 
 	pilotStage(t, "unrelated users create organizations on one origin", func() {
-		dana, eve := p.browser(t), p.browser(t)
-		pilotStatus(t, "dana sign-in", dana.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
+		member, eve := p.browser(t), p.browser(t)
+		pilotStatus(t, "member sign-in", member.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
 		pilotStatus(t, "eve sign-in", eve.login("/auth/oidc/start", "user_eve:"), http.StatusSeeOther)
 		p.provider.mu.Lock()
 		p.provider.createFailures = 1
 		p.provider.mu.Unlock()
-		created := dana.createOrganization("Alpha Labs")
-		pilotStatus(t, "dana create", created, http.StatusSeeOther)
+		created := member.createOrganization("Alpha Labs")
+		pilotStatus(t, "member create", created, http.StatusSeeOther)
 		alpha.id = organizationFromLocation(t, created.location)
 		failed := p.waitState(t, alpha.id, "failed")
 		if failed.ErrorCode != "provider_organization_failed" {
 			t.Fatalf("injected failure = %+v", failed)
 		}
-		status := dana.get("/organizations/" + alpha.id + "/provisioning")
+		status := member.get("/organizations/" + alpha.id + "/provisioning")
 		if !strings.Contains(status.body, "Resume setup") {
 			t.Fatalf("failed provisioning page = %s", status.body)
 		}
-		resumed := dana.form("/organizations/"+alpha.id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status.body)}})
+		resumed := member.form("/organizations/"+alpha.id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status.body)}})
 		pilotStatus(t, "resume", resumed, http.StatusSeeOther)
 		readyAlpha := p.waitState(t, alpha.id, "ready")
 		created = eve.createOrganization("Beta Works")
@@ -554,9 +554,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 				t.Fatalf("tenant %s is not private behind the shared origin: %+v", organization.ID, spec)
 			}
 		}
-		pilotStatus(t, "dana organization sign-in", dana.login("/organizations/"+alpha.id+"/organization", "user_dana:porg_"+alpha.id), http.StatusSeeOther)
+		pilotStatus(t, "member organization sign-in", member.login("/organizations/"+alpha.id+"/organization", "user_member:porg_"+alpha.id), http.StatusSeeOther)
 		pilotStatus(t, "eve organization sign-in", eve.login("/organizations/"+beta.id+"/organization", "user_eve:porg_"+beta.id), http.StatusSeeOther)
-		alpha.owner, beta.owner = dana, eve
+		alpha.owner, beta.owner = member, eve
 		for _, o := range []*pilotOrganization{&alpha, &beta} {
 			page := o.owner.get(o.page())
 			pilotStatus(t, "owner page", page, http.StatusOK)
@@ -743,6 +743,29 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 					issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("tab-%s-%d", tab.self.id, i)}, Title: fmt.Sprintf("%s tab issue %d", tab.self.projectName, i), State: "Todo"}
 					created := fay.json(http.MethodPost, tab.self.projectAPI()+"/work-items", fayCSRF[tab.self.id], issue)
 					requests.Add(1)
+					if created.status == http.StatusConflict {
+						var challenge struct {
+							Code    string `json:"code"`
+							Token   string `json:"challenge_token"`
+							Matches []struct {
+								Number int `json:"number"`
+							} `json:"possible_duplicates"`
+						}
+						if err := json.Unmarshal([]byte(created.body), &challenge); err != nil {
+							errs <- fmt.Errorf("decode tab %s challenge: %w", tab.self.id, err)
+							return
+						}
+						if challenge.Code != "possible_duplicates" || challenge.Token == "" || len(challenge.Matches) == 0 {
+							errs <- fmt.Errorf("tab %s challenge %s", tab.self.id, created.body)
+							return
+						}
+						issue.ChallengeToken = challenge.Token
+						for _, match := range challenge.Matches {
+							issue.NotDuplicateOf = append(issue.NotDuplicateOf, match.Number)
+						}
+						created = fay.json(http.MethodPost, tab.self.projectAPI()+"/work-items", fayCSRF[tab.self.id], issue)
+						requests.Add(1)
+					}
 					if created.status != http.StatusOK {
 						errs <- fmt.Errorf("tab %s create %d: %.200s", tab.self.id, created.status, created.body)
 						return
@@ -805,9 +828,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 
 	pilotStage(t, "runners enroll and execute within one organization", func() {
 		for _, o := range []pilotOrganization{alpha, beta} {
-			pilotStatus(t, "runner grant", o.owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_" + map[string]string{alpha.id: "dana", beta.id: "eve"}[o.id]}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
+			pilotStatus(t, "runner grant", o.owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_" + map[string]string{alpha.id: "member", beta.id: "eve"}[o.id]}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
 		}
-		pilotStatus(t, "second project runner grant", alpha.owner.form("/organizations/"+alpha.id+"/organization/grants", url.Values{"user": {"user_dana"}, "project": {alphaSecondProject}, "write": {"true"}, "runner": {"true"}, "csrf": {alpha.ownerCSRF}}), http.StatusSeeOther)
+		pilotStatus(t, "second project runner grant", alpha.owner.form("/organizations/"+alpha.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {alphaSecondProject}, "write": {"true"}, "runner": {"true"}, "csrf": {alpha.ownerCSRF}}), http.StatusSeeOther)
 		pilotStatus(t, "foreign enrollment", beta.owner.json(http.MethodPost, alpha.api()+"/runner-enrollments", beta.ownerCSRF, runnerauth.EnrollmentRequest{Binding: runnerauth.NewBinding(), ProjectIDs: []tracker.ProjectID{tracker.ProjectID(alpha.project)}, Operations: []string{runnerauth.Read}, TTLSeconds: 60}), http.StatusUnauthorized)
 		alphaRunner = p.enrollRunner(t, alpha, beta, "alpha-runner.example.test")
 		betaRunner = p.enrollRunner(t, beta, alpha, "beta-runner.example.test")
@@ -991,7 +1014,7 @@ func (p *sharedOriginPilot) previewAuthorize(w http.ResponseWriter, r *http.Requ
 	p.provider.mu.Lock()
 	type choice struct{ label, code string }
 	var choices []choice
-	for _, user := range []string{"dana", "eve", "fay", "gus", "hal"} {
+	for _, user := range []string{"member", "eve", "fay", "gus", "hal"} {
 		subject := "user_" + user
 		if _, ok := p.provider.users[subject]; !ok {
 			continue
@@ -1018,7 +1041,7 @@ func (p *sharedOriginPilot) previewAuthorize(w http.ResponseWriter, r *http.Requ
 func seedSharedOriginPreview(t *testing.T, p *sharedOriginPilot) map[string]string {
 	t.Helper()
 	organizations := map[string]pilotOrganization{}
-	for _, seed := range []struct{ user, name, project string }{{"dana", "Alpha Labs", "Alpha secret project"}, {"eve", "Beta Works", "Beta secret project"}} {
+	for _, seed := range []struct{ user, name, project string }{{"member", "Alpha Labs", "Alpha secret project"}, {"eve", "Beta Works", "Beta secret project"}} {
 		owner := p.browser(t)
 		owner.login("/auth/oidc/start", "user_"+seed.user+":")
 		created := owner.createOrganization(seed.name)
@@ -1045,7 +1068,7 @@ func seedSharedOriginPreview(t *testing.T, p *sharedOriginPilot) map[string]stri
 	p.provider.mu.Lock()
 	p.provider.users["user_hal"] = "hal@example.test"
 	p.provider.mu.Unlock()
-	alpha, beta := organizations["dana"], organizations["eve"]
+	alpha, beta := organizations["member"], organizations["eve"]
 	return map[string]string{
 		"origin": p.base, "alpha": alpha.id, "beta": beta.id,
 		"alpha_project": p.base + "/organizations/" + alpha.id + "/projects/" + alpha.project,
@@ -1103,12 +1126,12 @@ func TestSharedOriginAPIKeyConnection(t *testing.T) {
 
 	p := newSharedOriginPilot(t, 1, 1)
 	owner := p.browser(t)
-	pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
+	pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
 	created := owner.createOrganization("API key organization")
 	pilotStatus(t, "organization", created, http.StatusSeeOther)
 	o := pilotOrganization{id: organizationFromLocation(t, created.location), owner: owner}
 	p.waitState(t, o.id, "ready")
-	pilotStatus(t, "organization sign-in", owner.login(o.page(), "user_dana:porg_"+o.id), http.StatusSeeOther)
+	pilotStatus(t, "organization sign-in", owner.login(o.page(), "user_member:porg_"+o.id), http.StatusSeeOther)
 	o.ownerCSRF = owner.csrf(o.page())
 	project := owner.form("/organizations/"+o.id+"/projects", url.Values{"name": {"API key project"}, "grant_access": {"true"}, "csrf": {o.ownerCSRF}})
 	pilotStatus(t, "project", project, http.StatusSeeOther)

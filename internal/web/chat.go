@@ -586,16 +586,16 @@ func (s *Server) demoChatProvider() chatpkg.Provider {
 			threadID = "demo-chat-thread"
 		}
 		if strings.Contains(strings.ToLower(request.Prompt), "move") {
-			arguments := json.RawMessage(`{"project_id":"dogfood","identifier":"digitaldrywood/detent-core#5250","target_state":"Todo"}`)
+			arguments := json.RawMessage(`{"project_id":"dogfood","identifier":"example-org/detent-core#5250","target_state":"Todo"}`)
 			if _, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_move_item", Arguments: arguments}); err != nil {
 				return chatpkg.TurnResponse{}, err
 			}
-			return chatpkg.TurnResponse{ThreadID: threadID, Content: "I prepared a move for digitaldrywood/detent-core#5250 from Backlog to Todo. Confirm it below before Detent changes the board."}, nil
+			return chatpkg.TurnResponse{ThreadID: threadID, Content: "I prepared a move for example-org/detent-core#5250 from Backlog to Todo. Confirm it below before Detent changes the board."}, nil
 		}
 		if _, err := request.Handle(ctx, chatpkg.ToolCall{Name: "board_state", Arguments: json.RawMessage(`{"state":"Blocked"}`)}); err != nil {
 			return chatpkg.TurnResponse{}, err
 		}
-		return chatpkg.TurnResponse{ThreadID: threadID, Content: "Two items are blocked. digitaldrywood/billing-api#5280 is waiting on ledger migration #5200, and digitaldrywood/detent-core#5281 needs operator input after its workspace hook failed."}, nil
+		return chatpkg.TurnResponse{ThreadID: threadID, Content: "Two items are blocked. example-org/billing-api#5280 is waiting on ledger migration #5200, and example-org/detent-core#5281 needs operator input after its workspace hook failed."}, nil
 	})
 }
 

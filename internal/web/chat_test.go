@@ -35,7 +35,7 @@ func TestChatQuestionUsesLiveBoardToolAndPersistsSession(t *testing.T) {
 	})
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC),
-		Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "issue-1362", Identifier: "digitaldrywood/detent#1362", ProjectID: "detent", Title: "Chat", State: "Todo"}, Error: "dependency is not merged", Source: telemetry.BlockedSourceDependency}},
+		Blocked:     []telemetry.Blocked{{Issue: telemetry.Issue{ID: "issue-1362", Identifier: "example-org/example-project#1362", ProjectID: "detent", Title: "Chat", State: "Todo"}, Error: "dependency is not merged", Source: telemetry.BlockedSourceDependency}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -80,7 +80,7 @@ func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
 		if !found {
 			return chatpkg.TurnResponse{}, errors.New("explain_item was not discovered")
 		}
-		result, err := request.Handle(ctx, chatpkg.ToolCall{Name: "explain_item", Arguments: json.RawMessage(`{"project_id":"detent","reference":"digitaldrywood/detent#1647"}`)})
+		result, err := request.Handle(ctx, chatpkg.ToolCall{Name: "explain_item", Arguments: json.RawMessage(`{"project_id":"detent","reference":"example-org/example-project#1647"}`)})
 		if err != nil {
 			return chatpkg.TurnResponse{}, err
 		}
@@ -99,7 +99,7 @@ func TestChatExplainItemUsesIssueExplanationReadModel(t *testing.T) {
 	})
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: observedAt,
-		BoardIssues: []telemetry.Issue{{ID: "issue-1647", Identifier: "digitaldrywood/detent#1647", ProjectID: "detent", Title: "Extract operator tool executor", State: "Rework"}},
+		BoardIssues: []telemetry.Issue{{ID: "issue-1647", Identifier: "example-org/example-project#1647", ProjectID: "detent", Title: "Extract operator tool executor", State: "Rework"}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -127,12 +127,12 @@ func TestChatMutationRequiresConfirmationAndUsesKanbanHandler(t *testing.T) {
 	deps.Store = backend
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, actionConnector)
 	deps.Chat = chatpkg.ProviderFunc(func(ctx context.Context, request chatpkg.TurnRequest) (chatpkg.TurnResponse, error) {
-		_, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_move_item", Arguments: json.RawMessage(`{"project_id":"detent","identifier":"digitaldrywood/detent#1362","target_state":"Todo"}`)})
+		_, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_move_item", Arguments: json.RawMessage(`{"project_id":"detent","identifier":"example-org/example-project#1362","target_state":"Todo"}`)})
 		return chatpkg.TurnResponse{ThreadID: "thread-move", Content: "Confirm the proposed move below."}, err
 	})
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Now().UTC(),
-		BoardIssues: []telemetry.Issue{{ID: "issue-1362", Identifier: "digitaldrywood/detent#1362", ProjectID: "detent", Title: "Chat", State: "Backlog"}},
+		BoardIssues: []telemetry.Issue{{ID: "issue-1362", Identifier: "example-org/example-project#1362", ProjectID: "detent", Title: "Chat", State: "Backlog"}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -188,12 +188,12 @@ func TestChatPriorityRequiresConfirmationAndUsesPriorityHandler(t *testing.T) {
 	deps.Store = backend
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, priorityConnector)
 	deps.Chat = chatpkg.ProviderFunc(func(ctx context.Context, request chatpkg.TurnRequest) (chatpkg.TurnResponse, error) {
-		_, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_set_priority", Arguments: json.RawMessage(`{"project_id":"detent","identifier":"digitaldrywood/detent#1362","priority":"High"}`)})
+		_, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_set_priority", Arguments: json.RawMessage(`{"project_id":"detent","identifier":"example-org/example-project#1362","priority":"High"}`)})
 		return chatpkg.TurnResponse{ThreadID: "thread-priority", Content: "Confirm the priority update below."}, err
 	})
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Now().UTC(),
-		BoardIssues: []telemetry.Issue{{ID: "issue-1362", Identifier: "digitaldrywood/detent#1362", ProjectID: "detent", Title: "Chat", State: "Todo"}},
+		BoardIssues: []telemetry.Issue{{ID: "issue-1362", Identifier: "example-org/example-project#1362", ProjectID: "detent", Title: "Chat", State: "Todo"}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -231,12 +231,12 @@ func TestChatConfirmationEnforcesAPIKeyProjectScope(t *testing.T) {
 	deps.Store = backend
 	mustSetKanbanProject(t, deps.Registry, "beta", workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration}, actionConnector)
 	deps.Chat = chatpkg.ProviderFunc(func(ctx context.Context, request chatpkg.TurnRequest) (chatpkg.TurnResponse, error) {
-		_, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_move_item", Arguments: json.RawMessage(`{"project_id":"beta","identifier":"digitaldrywood/beta#1","target_state":"Todo"}`)})
+		_, err := request.Handle(ctx, chatpkg.ToolCall{Name: "propose_move_item", Arguments: json.RawMessage(`{"project_id":"beta","identifier":"example-org/beta#1","target_state":"Todo"}`)})
 		return chatpkg.TurnResponse{Content: "Confirm the move below."}, err
 	})
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: time.Now().UTC(),
-		BoardIssues: []telemetry.Issue{{ID: "issue-beta-1", Identifier: "digitaldrywood/beta#1", ProjectID: "beta", Title: "Scoped", State: "Backlog"}},
+		BoardIssues: []telemetry.Issue{{ID: "issue-beta-1", Identifier: "example-org/beta#1", ProjectID: "beta", Title: "Scoped", State: "Backlog"}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}

@@ -40,18 +40,18 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 			}
 			p.service.attachments = storage
 			owner := p.browser(t)
-			pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
+			pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
 			created := owner.createOrganization("Alpha Labs")
 			pilotStatus(t, "create", created, http.StatusSeeOther)
 			o := pilotOrganization{id: organizationFromLocation(t, created.location), owner: owner}
 			p.waitState(t, o.id, "ready")
-			pilotStatus(t, "organization sign-in", owner.login(o.page(), "user_dana:porg_"+o.id), http.StatusSeeOther)
+			pilotStatus(t, "organization sign-in", owner.login(o.page(), "user_member:porg_"+o.id), http.StatusSeeOther)
 			o.ownerCSRF = owner.csrf(o.page())
 			project := owner.form("/organizations/"+o.id+"/projects", url.Values{"name": {"Alpha project"}, "grant_access": {"true"}, "csrf": {o.ownerCSRF}})
 			pilotStatus(t, "project", project, http.StatusSeeOther)
 			o.project = strings.TrimPrefix(project.location, "/organizations/"+o.id+"/projects/")
 
-			pilotStatus(t, "runner grant", owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_dana"}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
+			pilotStatus(t, "runner grant", owner.form("/organizations/"+o.id+"/organization/grants", url.Values{"user": {"user_member"}, "project": {o.project}, "write": {"true"}, "runner": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
 			binding := runnerauth.NewBinding()
 			enrollment := owner.json(http.MethodPost, o.api()+"/runner-enrollments", o.ownerCSRF, runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(o.project)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900})
 			pilotStatus(t, "enrollment", enrollment, http.StatusCreated)

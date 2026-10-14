@@ -15,10 +15,22 @@ if (location.protocol === "file:") {
   let grants: unknown[] = [];
   let revision = 1;
   const plan = fixture.entitlements.base;
+  let credits = fixture.detail.ai_credits;
+  const creditCommands = new Set<string>();
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     let value: unknown;
-    if (path.endsWith("/entitlements")) {
+    if (path.endsWith("/ai-credits") && init?.method === "POST") {
+      const change = JSON.parse(String(init.body));
+      if (!creditCommands.has(change.idempotency_key)) {
+        const amount = Number(change.amount_usd) * 1_000_000;
+        credits = { ...credits, balance_micros: credits.balance_micros + amount, history: [
+          { amount_micros: amount, kind: "complimentary", actor: "staff@example.test", reason: change.reason, at: "2026-10-12T12:00:00Z" }, ...credits.history,
+        ] };
+        creditCommands.add(change.idempotency_key);
+      }
+      value = { organization_id: fixture.detail.organization.id, balance_micros: credits.balance_micros };
+    } else if (path.endsWith("/entitlements")) {
       if (init?.method === "POST") {
         const change = JSON.parse(String(init.body));
         features = change.action === "grant" ? ["model_choice"] : [];
@@ -33,7 +45,7 @@ if (location.protocol === "file:") {
       }
     } else if (path.startsWith("/api/cloud/platform/organizations/")) {
       const role = params.get("role") ?? "admin";
-      value = { ...fixture.detail, can_grant: ["admin", "billing"].includes(role),
+      value = { ...fixture.detail, ai_credits: credits, credit_balance_micros: credits.balance_micros, can_grant: ["admin", "billing"].includes(role),
         organization: { ...fixture.detail.organization, can_support: ["admin", "support"].includes(role) },
         entitlements: { ...fixture.entitlements, revision, features, grants } };
     } else if (path === "/api/cloud/session" || path === "/api/cloud/organizations") {

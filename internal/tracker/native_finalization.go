@@ -38,10 +38,12 @@ func (p NativePRPublication) Matches(change string, version ChangeVersion) bool 
 }
 
 var nativeFinalizationPrivateText = regexp.MustCompile(`(?i)(?:https?://|file://|[a-z]:[\\/]|~/|/|[a-z0-9_.-]+/)[^\s"'<>]+|[a-z0-9_]*(?:token|secret|password|api_key)[a-z0-9_]*\s*[=:]\s*[^\s,;]+`)
-var nativeGateSecretField = regexp.MustCompile(`(?i)((?:"|')?(?:authorization|token|secret|password|credential|api[_-]?key)(?:"|')?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+var nativeGateSecretField = regexp.MustCompile(`(?i)((?:"|')?[a-z0-9_-]*(?:authorization|token|secret|password|credential|api[_-]?key)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|(?:Bearer\s+)?[^\s,;]+)`)
 var nativeGateBearer = regexp.MustCompile(`(?i)\bBearer\s+[^\s,;]+`)
 var nativeGateToken = regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})\b`)
 var nativeGatePrivateCommand = regexp.MustCompile(`(?i)(token|secret|password|credential|api[_-]?key|https?://|file://|(?:^|\s)(?:[a-z]:[\\/]|/|~/))`)
+var nativeGatePrivateText = regexp.MustCompile(`(?i)(?:https?://|file://)[^\s"'<>]+|(^|[\s"'=:(])(?:[a-z]:[\\/]|~/|/|\\\\)[^\s"'<>]+`)
+var nativeGateFailure = regexp.MustCompile(`(?m)^[\t ]*(?:panic:|fatal error:|--- FAIL:|FAIL(?:[\t ]|$)|WARNING: DATA RACE)`)
 
 func PublicGateResult(result gate.CommandResult) gate.CommandResult {
 	if nativeGatePrivateCommand.MatchString(result.Command) {
@@ -54,7 +56,7 @@ func PublicGateResult(result gate.CommandResult) gate.CommandResult {
 	result.OutputTruncated = result.OutputTruncated || truncated
 	if result.Evidence != nil {
 		evidence := *result.Evidence
-		evidence.Checks = make([]gate.CheckObservation, 0, len(result.Evidence.Checks))
+		evidence.Checks = nil
 		for _, check := range result.Evidence.Checks {
 			check.Scope, _ = publicGateOutput(check.Scope)
 			check.Command, _ = publicGateOutput(check.Command)
@@ -79,18 +81,35 @@ func publicGateOutput(value string) (string, bool) {
 	value = nativeGateSecretField.ReplaceAllString(value, `${1}[redacted]`)
 	value = nativeGateBearer.ReplaceAllString(value, "Bearer [redacted]")
 	value = nativeGateToken.ReplaceAllString(value, "[redacted]")
-	value = nativeFinalizationPrivateText.ReplaceAllString(value, "[redacted]")
-	const marker = "[earlier output truncated]\n"
+	value = nativeGatePrivateText.ReplaceAllString(value, `${1}[redacted]`)
+	const earlier = "[earlier output truncated]\n"
 	limit := NativeFinalizationTextLimit
 	if len(value) <= limit {
 		return value, false
 	}
-	suffixLimit := limit - len(marker)
+	prefix := earlier
+	if failure := nativeGateFailure.FindStringIndex(value); failure != nil {
+		const omitted = "\n[intervening output truncated]\n"
+		start := failure[0]
+		if start == 0 {
+			prefix = ""
+		}
+		if len(value)-start <= limit-len(prefix) {
+			return prefix + value[start:], true
+		}
+		prefixLimit := (limit - len(prefix) - len(omitted)) / 2
+		end := start + prefixLimit
+		for !utf8.RuneStart(value[end]) {
+			end--
+		}
+		prefix += value[start:end] + omitted
+	}
+	suffixLimit := limit - len(prefix)
 	start := len(value) - suffixLimit
 	for start < len(value) && !utf8.RuneStart(value[start]) {
 		start++
 	}
-	return marker + value[start:], true
+	return prefix + value[start:], true
 }
 
 func (f NativeFinalization) Public() NativeFinalization {

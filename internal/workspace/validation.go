@@ -7,10 +7,30 @@ import (
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 type ReviewCommandRunner interface {
 	RunReviewCommand(context.Context, Info, Issue, string) (gate.CommandResult, error)
+}
+
+func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issue Issue, validation string) gate.CheckEnvironment {
+	return l.ReviewCommandEvidence(ctx, info, issue, validation).Environment
+}
+
+func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue Issue, validation string) *gate.CommandEvidence {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
+	command := commandshell.Command(ctx, "", l.hooks.Shell)
+	command.Dir = normalized.Path
+	command.Env = hookEnv(normalized, issue, l.hooks.StripGitHubTokens)
+	return reviewCommandEvidence(ctx, command, validation)
+}
+
+func directGoValidation(validation string) bool {
+	return validation == "go version"
 }
 
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {

@@ -204,9 +204,13 @@ WHERE i.organization_id = `,
 			return nil, providerWait("provider_candidate_changed", "Queue changed during provider selection; refresh the candidate page")
 		}
 	}
-	limit := min(100, max(1, query.Limit))
+	pageSize := 100
+	if query.PageSize > 0 {
+		pageSize = query.PageSize
+	}
+	limit := min(pageSize, max(1, query.Limit))
 	if query.Limit == 0 {
-		limit = 100
+		limit = pageSize
 	}
 	var ids []tracker.WorkItemID
 	after := query.After

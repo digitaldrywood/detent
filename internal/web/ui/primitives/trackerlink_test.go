@@ -18,9 +18,9 @@ func TestTrackerReferenceLink(t *testing.T) {
 	}{
 		{
 			name: "linked reference",
-			url:  "https://github.com/digitaldrywood/detent/issues/1132",
+			url:  "https://github.com/example-org/example-project/issues/1132",
 			want: []string{
-				`href="https://github.com/digitaldrywood/detent/issues/1132"`,
+				`href="https://github.com/example-org/example-project/issues/1132"`,
 				`target="_blank"`,
 				`rel="noopener noreferrer"`,
 			},
@@ -28,7 +28,7 @@ func TestTrackerReferenceLink(t *testing.T) {
 		},
 		{
 			name:     "isolated linked reference",
-			url:      "https://github.com/digitaldrywood/detent/pull/1132",
+			url:      "https://github.com/example-org/example-project/pull/1132",
 			isolated: true,
 			want:     []string{`onclick="event.stopPropagation()"`},
 		},

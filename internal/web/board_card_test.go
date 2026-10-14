@@ -26,7 +26,7 @@ func TestAPIBoardCardRendersLiveActivityAndVerboseUsage(t *testing.T) {
 	t.Parallel()
 
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
-	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Live timeline", State: "In Progress"}
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", Title: "Live timeline", State: "In Progress"}
 	deps := testDeps(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		GeneratedAt: at,
@@ -103,7 +103,7 @@ func TestAPIBoardCardRendersAuthorizationSelectorDetail(t *testing.T) {
 func TestBoardLiveSessionPageRendersActiveSessionFullWidth(t *testing.T) {
 	t.Parallel()
 
-	issue := telemetry.Issue{ID: "issue-1239", Identifier: "digitaldrywood/detent#1239", ProjectID: "detent", Title: "Readable live session", State: "In Progress"}
+	issue := telemetry.Issue{ID: "issue-1239", Identifier: "example-org/example-project#1239", ProjectID: "detent", Title: "Readable live session", State: "In Progress"}
 	deps := testDeps(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		BoardIssues: []telemetry.Issue{issue},
@@ -116,14 +116,14 @@ func TestBoardLiveSessionPageRendersActiveSessionFullWidth(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	body := requestHTML(t, server.Handler(), http.MethodGet, "/live-session?project=detent&issue=issue-1239&identifier=digitaldrywood%2Fdetent%231239", http.StatusOK)
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/live-session?project=detent&issue=issue-1239&identifier=example-org%2Fexample-project%231239", http.StatusOK)
 	for _, want := range []string{
 		"<!doctype html>",
 		"data-live-session-page",
 		"data-board-live-session",
 		"Attached read-only",
 		"flex min-h-0 flex-1 flex-col bg-page text-left",
-		`sse-connect="/api/v1/board/session/events?display=full&amp;identifier=digitaldrywood%2Fdetent%231239&amp;issue=issue-1239&amp;project=detent"`,
+		`sse-connect="/api/v1/board/session/events?display=full&amp;identifier=example-org%2Fexample-project%231239&amp;issue=issue-1239&amp;project=detent"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("full-page live session missing %q:\n%s", want, body)
@@ -133,11 +133,11 @@ func TestBoardLiveSessionPageRendersActiveSessionFullWidth(t *testing.T) {
 		t.Fatalf("full-page live session contains recursive pop-out link:\n%s", body)
 	}
 
-	fragment := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session?project=detent&issue=issue-1239&identifier=digitaldrywood%2Fdetent%231239", http.StatusOK)
+	fragment := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/session?project=detent&issue=issue-1239&identifier=example-org%2Fexample-project%231239", http.StatusOK)
 	for _, want := range []string{
 		"Open full-page view",
 		`target="_blank"`,
-		`href="/live-session?identifier=digitaldrywood%2Fdetent%231239&amp;issue=issue-1239&amp;project=detent"`,
+		`href="/live-session?identifier=example-org%2Fexample-project%231239&amp;issue=issue-1239&amp;project=detent"`,
 	} {
 		if !strings.Contains(fragment, want) {
 			t.Fatalf("sheet live session missing %q:\n%s", want, fragment)
@@ -149,8 +149,8 @@ func TestAPIBoardCardKeysPreservedSessionByIssue(t *testing.T) {
 	t.Parallel()
 
 	issues := []telemetry.Issue{
-		{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "First card", State: "In Progress"},
-		{ID: "issue-1157", Identifier: "digitaldrywood/detent#1157", ProjectID: "detent", Title: "Second card", State: "In Progress"},
+		{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", Title: "First card", State: "In Progress"},
+		{ID: "issue-1157", Identifier: "example-org/example-project#1157", ProjectID: "detent", Title: "Second card", State: "In Progress"},
 	}
 	deps := testDeps(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{BoardIssues: issues}); err != nil {
@@ -181,7 +181,7 @@ func TestAPIBoardCardKeysPreservedSessionByIssue(t *testing.T) {
 func TestAPIBoardCardRotatesPreservedSessionWithWorkerLifecycle(t *testing.T) {
 	t.Parallel()
 
-	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Lifecycle card", State: "In Progress"}
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", Title: "Lifecycle card", State: "In Progress"}
 	deps := testDeps(t)
 	if err := deps.Hub.Publish(telemetry.Snapshot{
 		BoardIssues: []telemetry.Issue{issue},
@@ -209,7 +209,7 @@ func TestAPIBoardCardRotatesPreservedSessionWithWorkerLifecycle(t *testing.T) {
 func TestAPIBoardSessionAttachBackfillsAndFollows(t *testing.T) {
 	t.Parallel()
 
-	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Live transcript", State: "In Progress"}
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", Title: "Live transcript", State: "In Progress"}
 	broker := activity.NewBroker()
 	deps := testDeps(t)
 	deps.Activity = broker
@@ -241,7 +241,7 @@ func TestAPIBoardSessionAttachBackfillsAndFollows(t *testing.T) {
 func TestAPIBoardActivityStreamShowsDispatchSkipWithinTick(t *testing.T) {
 	t.Parallel()
 
-	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", Title: "Live skip", State: "In Progress"}
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", Title: "Live skip", State: "In Progress"}
 	backend := openWebTestStore(t)
 	deps := testDeps(t)
 	deps.Store = backend
@@ -276,7 +276,7 @@ func TestAPIBoardSessionPagesFailedRolloutHistory(t *testing.T) {
 
 	ctx := context.Background()
 	at := time.Date(2026, 7, 10, 15, 0, 0, 0, time.UTC)
-	issue := telemetry.Issue{ID: "issue-1156", Identifier: "digitaldrywood/detent#1156", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/1156", Title: "Closed transcript", State: "Done"}
+	issue := telemetry.Issue{ID: "issue-1156", Identifier: "example-org/example-project#1156", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/1156", Title: "Closed transcript", State: "Done"}
 	backend := openWebTestStore(t)
 	sessionID, err := backend.StartSession(ctx, store.SessionStart{
 		ProjectID:        issue.ProjectID,
@@ -465,11 +465,11 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:         "i1",
-				Identifier: "digitaldrywood/detent#9510",
+				Identifier: "example-org/example-project#9510",
 				ProjectID:  "demo-project",
 				Title:      "Kanban demo backlog intake",
 				State:      "Backlog",
-				URL:        "https://github.com/digitaldrywood/detent/issues/9510",
+				URL:        "https://github.com/example-org/example-project/issues/9510",
 			},
 		},
 	}); err != nil {
@@ -481,7 +481,7 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239510", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=example-org%2Fexample-project%239510", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -490,7 +490,7 @@ func TestAPIBoardCardRendersDetailSheet(t *testing.T) {
 		"data-detail-sheet",
 		"Kanban demo backlog intake",
 		"#9510",
-		`href="https://github.com/digitaldrywood/detent/issues/9510"`,
+		`href="https://github.com/example-org/example-project/issues/9510"`,
 		"data-sheet-close",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -538,13 +538,13 @@ func TestAPIBoardCardDoesNotWaitForCommentReaders(t *testing.T) {
 		Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
 		BoardIssues: []telemetry.Issue{{
 			ID:         "I_async_comments",
-			Identifier: "digitaldrywood/detent#1446",
+			Identifier: "example-org/example-project#1446",
 			ProjectID:  "detent",
 			Title:      "Open card details immediately",
 			State:      "In Progress",
 			PullRequest: &telemetry.PullRequest{
 				Number: 1447,
-				URL:    "https://github.com/digitaldrywood/detent/pull/1447",
+				URL:    "https://github.com/example-org/example-project/pull/1447",
 			},
 		}},
 	}); err != nil {
@@ -707,13 +707,13 @@ func TestAPIBoardConversationHydratesCommentReadersIndependently(t *testing.T) {
 		Projects: []telemetry.ProjectSnapshot{{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}}},
 		BoardIssues: []telemetry.Issue{{
 			ID:         "I_split_comments",
-			Identifier: "digitaldrywood/detent#1446",
+			Identifier: "example-org/example-project#1446",
 			ProjectID:  "detent",
 			Title:      "Hydrate comments independently",
 			State:      "In Progress",
 			PullRequest: &telemetry.PullRequest{
 				Number: 1447,
-				URL:    "https://github.com/digitaldrywood/detent/pull/1447",
+				URL:    "https://github.com/example-org/example-project/pull/1447",
 			},
 		}},
 	}); err != nil {
@@ -778,7 +778,7 @@ func TestAPIBoardCardRendersIssueComments(t *testing.T) {
 		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
 		BoardIssues: []telemetry.Issue{{
 			ID:         "i1",
-			Identifier: "digitaldrywood/detent#9510",
+			Identifier: "example-org/example-project#9510",
 			ProjectID:  "demo-project",
 			Title:      "Kanban demo backlog intake",
 			State:      "Backlog",
@@ -800,7 +800,7 @@ func TestAPIBoardCardRendersIssueComments(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239510", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=example-org%2Fexample-project%239510", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -826,7 +826,7 @@ func TestAPIBoardCardRendersIssueCommentEmptyState(t *testing.T) {
 		GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
 		BoardIssues: []telemetry.Issue{{
 			ID:         "i1",
-			Identifier: "digitaldrywood/detent#9510",
+			Identifier: "example-org/example-project#9510",
 			ProjectID:  "demo-project",
 			Title:      "Kanban demo backlog intake",
 			State:      "Backlog",
@@ -840,7 +840,7 @@ func TestAPIBoardCardRendersIssueCommentEmptyState(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=digitaldrywood%2Fdetent%239510", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=demo-project&issue=example-org%2Fexample-project%239510", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -857,7 +857,7 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 	actionConnector := &kanbanActionConnector{
 		name: "github",
 		prThreads: map[string][]connector.IssueComment{
-			kanbanPRThreadKey("digitaldrywood/frontend", 42): {{
+			kanbanPRThreadKey("example-org/frontend", 42): {{
 				ID:          "PRC_1",
 				Backend:     connector.BackendGitHub.String(),
 				Body:        "Reviewed implementation details",
@@ -876,13 +876,13 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 		},
 		BoardIssues: []telemetry.Issue{{
 			ID:         "I_scope",
-			Identifier: "digitaldrywood/detent#42",
+			Identifier: "example-org/example-project#42",
 			ProjectID:  "detent",
 			Title:      "Scoped sheet card",
 			State:      "Todo",
 			PullRequest: &telemetry.PullRequest{
 				Number: 42,
-				URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+				URL:    "https://github.com/example-org/frontend/pull/42",
 			},
 		}},
 	}); err != nil {
@@ -894,7 +894,7 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&scope=project&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342&scope=project&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -909,13 +909,13 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 			t.Fatalf("sheet missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	fragment := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%2342&scope=project&actions=board&target=pr", http.StatusOK)
+	fragment := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=example-org%2Fexample-project%2342&scope=project&actions=board&target=pr", http.StatusOK)
 	if !strings.Contains(fragment, "Reviewed implementation details") {
 		t.Fatalf("project PR comments missing hydrated content:\n%s", fragment)
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -930,7 +930,7 @@ func TestAPIBoardCardRendersPullRequestCommentsWhenSupported(t *testing.T) {
 			t.Fatalf("fleet sheet missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	fragment = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board&target=pr", http.StatusOK)
+	fragment = requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=example-org%2Fexample-project%2342&actions=board&target=pr", http.StatusOK)
 	if !strings.Contains(fragment, "Reviewed implementation details") {
 		t.Fatalf("fleet PR comments missing hydrated content:\n%s", fragment)
 	}
@@ -950,13 +950,13 @@ func TestAPIBoardCardHidesPullRequestCommentsWhenUnsupported(t *testing.T) {
 		},
 		BoardIssues: []telemetry.Issue{{
 			ID:         "I_scope",
-			Identifier: "digitaldrywood/detent#42",
+			Identifier: "example-org/example-project#42",
 			ProjectID:  "detent",
 			Title:      "Scoped sheet card",
 			State:      "Todo",
 			PullRequest: &telemetry.PullRequest{
 				Number: 42,
-				URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+				URL:    "https://github.com/example-org/frontend/pull/42",
 			},
 		}},
 	}); err != nil {
@@ -968,7 +968,7 @@ func TestAPIBoardCardHidesPullRequestCommentsWhenUnsupported(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&scope=project&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342&scope=project&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -984,7 +984,7 @@ func TestAPIBoardCardHidesPullRequestCommentsWhenUnsupported(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -1011,7 +1011,7 @@ func TestAPIBoardCardScopesDemoProjectSheets(t *testing.T) {
 	// A card opened from an integration-mode demo project board must keep its
 	// project-scoped Move/Remove actions, not fall back to fleet-scoped data.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=dogfood&issue=digitaldrywood%2Fdetent-core%235251&scope=project&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=dogfood&issue=example-org%2Fdetent-core%235251&scope=project&actions=board", nil)
 	req.Header.Set(web.DemoScenarioHeader, "kanban-full-integration")
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1043,7 +1043,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:         "I_scope",
-				Identifier: "digitaldrywood/detent#42",
+				Identifier: "example-org/example-project#42",
 				ProjectID:  "detent",
 				Title:      "Scoped sheet card",
 				State:      "Todo",
@@ -1058,7 +1058,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&scope=project&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342&scope=project&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -1072,12 +1072,12 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("fleet status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
-	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%2342&actions=board&target=issue", http.StatusOK)
+	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=example-org%2Fexample-project%2342&actions=board&target=issue", http.StatusOK)
 	if !strings.Contains(conversation, `name="kanban_board" value="fleet"`) {
 		t.Fatalf("fleet conversation should preserve fleet scope for inline actions:\n%s", conversation)
 	}
@@ -1091,7 +1091,7 @@ func TestAPIBoardCardPreservesProjectScope(t *testing.T) {
 	// must not offer inline kanban actions that would swap board lanes over
 	// the page the user is on.
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%2342", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%2342", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("no-actions status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -1115,7 +1115,7 @@ func TestAPIBoardCardFleetSheetShowsIssueCommentControls(t *testing.T) {
 		},
 		BoardIssues: []telemetry.Issue{{
 			ID:         "I_fleet_comment",
-			Identifier: "digitaldrywood/detent#953",
+			Identifier: "example-org/example-project#953",
 			ProjectID:  "detent",
 			Title:      "Fleet comment card",
 			State:      "Todo",
@@ -1129,7 +1129,7 @@ func TestAPIBoardCardFleetSheetShowsIssueCommentControls(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%23953&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%23953&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -1143,7 +1143,7 @@ func TestAPIBoardCardFleetSheetShowsIssueCommentControls(t *testing.T) {
 			t.Fatalf("fleet sheet missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%23953&actions=board&target=issue", http.StatusOK)
+	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=example-org%2Fexample-project%23953&actions=board&target=issue", http.StatusOK)
 	for _, want := range []string{`name="kanban_board" value="fleet"`, `name="kanban_thread" value="true"`, `hx-post="/api/v1/kanban/comment"`} {
 		if !strings.Contains(conversation, want) {
 			t.Fatalf("fleet conversation missing %q:\n%s", want, conversation)
@@ -1177,7 +1177,7 @@ func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T
 		},
 		BoardIssues: []telemetry.Issue{{
 			ID:         "I_read_only_comment",
-			Identifier: "digitaldrywood/detent#954",
+			Identifier: "example-org/example-project#954",
 			ProjectID:  "detent",
 			Title:      "Read-only fleet comment card",
 			State:      "Todo",
@@ -1198,7 +1198,7 @@ func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=digitaldrywood%2Fdetent%23954&actions=board", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/board/card?project=detent&issue=example-org%2Fexample-project%23954&actions=board", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
@@ -1211,7 +1211,7 @@ func TestAPIBoardCardFleetReadOnlyShowsCommentsWithoutWriteControls(t *testing.T
 			t.Fatalf("read-only fleet sheet missing %q:\n%s", want, rec.Body.String())
 		}
 	}
-	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=digitaldrywood%2Fdetent%23954&actions=board&target=issue", http.StatusOK)
+	conversation := requestHTML(t, server.Handler(), http.MethodGet, "/api/v1/board/conversation?project=detent&issue=example-org%2Fexample-project%23954&actions=board&target=issue", http.StatusOK)
 	for _, want := range []string{"Existing read-only discussion", "alice"} {
 		if !strings.Contains(conversation, want) {
 			t.Fatalf("read-only fleet conversation missing %q:\n%s", want, conversation)

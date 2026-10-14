@@ -81,7 +81,7 @@ func TestProjectRefreshInstanceSelector(t *testing.T) {
 							page := projectItemsConnection{TotalCount: len(numbers), PageInfo: pageInfo{HasNextPage: end < len(numbers), EndCursor: strconv.Itoa(end)}}
 							for i := start; i < end; i++ {
 								n := numbers[i]
-								node := &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, Title: "Task", Body: "Task", State: "OPEN", Repository: repository{NameWithOwner: "getparable/parable"}, Author: &actor{Login: "alice"}}
+								node := &githubIssueNode{TypeName: "Issue", ID: fmt.Sprintf("I%d", n), Number: n, Title: "Task", Body: "Task", State: "OPEN", Repository: repository{NameWithOwner: "example-org/example-project"}, Author: &actor{Login: "alice"}}
 								node.Labels.Nodes = []label{}
 								node.Assignees.Nodes = []assignee{{Login: "bob"}}
 								node.Assignees.TotalCount = 1
@@ -123,7 +123,7 @@ func TestProjectRefreshInstanceSelector(t *testing.T) {
 					}
 				}))
 				defer server.Close()
-				c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "getparable/parable", RESTFanoutMaxRequests: 500, ActiveStates: []string{"Todo"}})
+				c := newGitHubTestConnector(t, &graphqlTestServer{Server: server}, Config{ProjectSlug: "PVT_1", Repository: "example-org/example-project", RESTFanoutMaxRequests: 500, ActiveStates: []string{"Todo"}})
 				hint := connector.IssueFilterHint{LabelInclude: []string{"detent:macbook-air-1"}}
 				if mode == "observed routing" {
 					hint.SchedulerStates = []string{"Blocked", "Human Review", "Rework", "In Progress"}
@@ -157,7 +157,7 @@ func TestProjectRefreshInstanceSelector(t *testing.T) {
 					got = append(got, issue.Identifier)
 				}
 				slices.Sort(got)
-				want := []string{"getparable/parable#1604", "getparable/parable#3480", "getparable/parable#3481", "getparable/parable#3485", "getparable/parable#3531"}
+				want := []string{"example-org/example-project#1604", "example-org/example-project#3480", "example-org/example-project#3481", "example-org/example-project#3485", "example-org/example-project#3531"}
 				if !slices.Equal(got, want) {
 					t.Fatalf("candidates=%v want=%v", got, want)
 				}

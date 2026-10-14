@@ -24,14 +24,14 @@ func analyticsTestData() DashboardData {
 					Status:        "running",
 					Phase:         "implementation",
 					StatusMessage: "session started",
-					WorkerHost:    "corys-mac-studio",
+					WorkerHost:    "example-mac-studio",
 					StartedAt:     now.Add(-time.Minute),
 					HeartbeatAt:   &heartbeat,
 				},
 				{
 					AttemptID:  72,
 					ProjectID:  "detent",
-					Identifier: "digitaldrywood/detent#92",
+					Identifier: "example-org/example-project#92",
 					Status:     "running",
 					Stale:      true,
 					StartedAt:  now.Add(-2 * time.Hour),
@@ -118,7 +118,7 @@ func TestAnalyticsAttemptDetailReadsAsSentence(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"phase implementation", "session started", "on corys-mac-studio"} {
+	for _, want := range []string{"phase implementation", "session started", "on example-mac-studio"} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("detail %q missing %q", detail, want)
 		}

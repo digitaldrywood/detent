@@ -13,21 +13,14 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 const staleEntitlementMessage = "Someone changed this organization's plan; reload and try again."
 
-type planReference struct {
-	ID      string `json:"id"`
-	Version int64  `json:"version"`
-}
-
-type entitlementPlan struct {
-	planReference
-	Name       string           `json:"name,omitempty"`
-	Features   []string         `json:"features"`
-	Allowances map[string]int64 `json:"allowances"`
-}
+type planReference = operatortool.PlatformPlanReference
+type entitlementPlan = operatortool.PlatformEntitlementPlan
 
 type entitlementGrant struct {
 	ID        string        `json:"id"`
@@ -53,26 +46,18 @@ type organizationEntitlements struct {
 	Plans          []entitlementPlan  `json:"plans"`
 }
 
-type entitlementChange struct {
-	Action           string        `json:"action"`
-	Feature          string        `json:"feature,omitempty"`
-	IdempotencyKey   string        `json:"idempotency_key"`
-	ExpectedRevision int64         `json:"expected_revision"`
-	Plan             planReference `json:"plan"`
-	GrantID          string        `json:"grant_id"`
-	ExpiresAt        *time.Time    `json:"expires_at"`
-	Reason           string        `json:"reason"`
-}
+type entitlementChange = operatortool.PlatformEntitlementChange
 
 type tenantPlanCommand struct {
-	ID               string        `json:"idempotency_key"`
-	Action           string        `json:"action"`
-	ExpectedRevision int64         `json:"expected_revision"`
-	Plan             planReference `json:"plan"`
-	GrantID          string        `json:"grant_id"`
-	Scope            []string      `json:"scope"`
-	ExpiresAt        *time.Time    `json:"expires_at"`
-	Reason           string        `json:"reason"`
+	ID               string           `json:"idempotency_key"`
+	Action           string           `json:"action"`
+	ExpectedRevision int64            `json:"expected_revision"`
+	Plan             planReference    `json:"plan"`
+	Definition       *entitlementPlan `json:"definition,omitempty"`
+	GrantID          string           `json:"grant_id"`
+	Scope            []string         `json:"scope"`
+	ExpiresAt        *time.Time       `json:"expires_at"`
+	Reason           string           `json:"reason"`
 }
 
 type tenantStatusError struct{ status int }
@@ -143,13 +128,33 @@ func (r *Registry) entitlementGranters(ctx context.Context, organization string)
 	return result, rows.Err()
 }
 
-func (s *Service) entitlementSession(c echo.Context, event string) (accountSession, Organization, bool, error) {
-	session, err := s.session(c)
-	if err != nil {
-		return accountSession{}, Organization{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
+func (s *Service) platformEntitlementAuthority(next echo.HandlerFunc) echo.HandlerFunc {
+	bearer := s.platformCreditAuthority(next)
+	return func(c echo.Context) error {
+		if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+			return bearer(c)
+		}
+		return next(c)
 	}
-	if !s.entitlementAdministrator(c.Request().Context(), session) {
-		return accountSession{}, Organization{}, false, c.JSON(http.StatusForbidden, map[string]string{"code": "forbidden", "message": "Complimentary plans are limited to entitlement administrators"})
+}
+
+func (s *Service) entitlementSession(c echo.Context, event string) (accountSession, Organization, bool, error) {
+	var session accountSession
+	if c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+		actor, err := (platformCredits{s}).actor(c.Request().Context())
+		if err != nil {
+			return session, Organization{}, false, c.NoContent(http.StatusForbidden)
+		}
+		session.Subject, session.Email = actor, actor
+	} else {
+		var err error
+		session, err = s.session(c)
+		if err != nil {
+			return session, Organization{}, false, c.JSON(http.StatusUnauthorized, map[string]string{"code": "unauthenticated", "message": "Sign in to continue"})
+		}
+		if !s.entitlementAdministrator(c.Request().Context(), session) {
+			return session, Organization{}, false, c.NoContent(http.StatusForbidden)
+		}
 	}
 	if s.config.Allocation == nil || len(s.config.Allocation.EntitlementAdminToken) < 32 {
 		return accountSession{}, Organization{}, false, c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Platform entitlement administration is not configured"})
@@ -166,6 +171,10 @@ func (s *Service) entitlementSession(c echo.Context, event string) (accountSessi
 }
 
 func (s *Service) tenantEntitlementFailure(c echo.Context, err error) error {
+	var input *entitlementInputError
+	if errors.As(err, &input) {
+		return c.JSON(input.status, map[string]string{"code": "invalid_request", "message": input.message})
+	}
 	var failure *tenantStatusError
 	if errors.As(err, &failure) {
 		switch failure.status {
@@ -217,7 +226,7 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	if !allowed {
 		return err
 	}
-	if !s.csrfValid(c, session, "") {
+	if c.Request().Header.Get(echo.HeaderAuthorization) == "" && !s.csrfValid(c, session, "") {
 		return c.JSON(http.StatusForbidden, map[string]string{"code": "csrf_invalid", "message": "Reload the page and try again"})
 	}
 	var change entitlementChange
@@ -226,33 +235,57 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	if err := decoder.Decode(&change); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "The plan change could not be read"})
 	}
-	change.Reason = strings.TrimSpace(change.Reason)
-	switch {
-	case change.Action != "grant" && change.Action != "revoke":
-		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose grant or revoke"})
-	case change.Feature != "" && (change.Action != "grant" || change.Feature != "model_choice" || change.Plan != (planReference{})):
-		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose model_choice without a plan for a feature grant"})
-	case !safeID(change.IdempotencyKey) || change.ExpectedRevision < 1:
-		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Reload the organization's plan and try again"})
-	case change.Reason == "" || len(change.Reason) > 500:
-		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "reason_required", "message": "Give a reason of at most 500 characters"})
-	case change.Action == "grant" && change.ExpiresAt != nil && !change.ExpiresAt.After(s.config.now()):
-		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "The expiry must be in the future"})
-	}
-	ctx := c.Request().Context()
-	current, err := s.tenantEntitlements(ctx, organization)
+	command, err := s.applyPlatformEntitlement(c.Request().Context(), session, organization, change)
 	if err != nil {
 		return s.tenantEntitlementFailure(c, err)
 	}
-	command := tenantPlanCommand{ID: change.IdempotencyKey, Action: change.Action, ExpectedRevision: change.ExpectedRevision, Reason: change.Reason}
+	return c.JSON(http.StatusOK, map[string]string{"action": command.Action, "grant_id": command.GrantID})
+}
+
+type entitlementInputError struct {
+	status  int
+	message string
+}
+
+func (e *entitlementInputError) Error() string { return e.message }
+
+func (s *Service) applyPlatformEntitlement(ctx context.Context, session accountSession, organization Organization, change entitlementChange) (tenantPlanCommand, error) {
+	change.Reason = strings.TrimSpace(change.Reason)
+	switch {
+	case !slices.Contains([]string{"grant", "revoke", "base", "subscription", "end_subscription", "create_plan"}, change.Action):
+		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Choose a supported plan action"}
+	case change.Feature != "" && (change.Action != "grant" || change.Feature != "model_choice" || change.Plan != (planReference{})):
+		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Choose model_choice without a plan for a feature grant"}
+	case !safeID(change.IdempotencyKey) || change.ExpectedRevision < 1:
+		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Reload the organization's plan and try again"}
+	case change.Reason == "" || len(change.Reason) > 500:
+		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Give a reason of at most 500 characters"}
+	case change.Action == "grant" && change.ExpiresAt != nil && !change.ExpiresAt.After(s.config.now()):
+		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "The expiry must be in the future"}
+	}
+	current, err := s.tenantEntitlements(ctx, organization)
+	if err != nil {
+		return tenantPlanCommand{}, err
+	}
+	command := tenantPlanCommand{ID: change.IdempotencyKey, Action: change.Action, ExpectedRevision: change.ExpectedRevision, Reason: change.Reason, Definition: change.Definition}
 	switch change.Action {
+	case "create_plan":
+		if change.Definition == nil || change.Definition.PlatformPlanReference != change.Plan {
+			return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Give a plan definition matching its reference"}
+		}
+		command.Plan = change.Plan
+	case "base", "subscription":
+		if !slices.ContainsFunc(current.Plans, func(plan entitlementPlan) bool { return plan.PlatformPlanReference == change.Plan }) {
+			return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Choose an existing plan version"}
+		}
+		command.Plan, command.ExpiresAt = change.Plan, change.ExpiresAt
 	case "grant":
 		if change.Feature == "model_choice" {
 			command.Plan, command.Scope = current.Base, []string{change.Feature}
 		} else {
-			index := slices.IndexFunc(current.Plans, func(plan entitlementPlan) bool { return plan.planReference == change.Plan })
+			index := slices.IndexFunc(current.Plans, func(plan entitlementPlan) bool { return plan.PlatformPlanReference == change.Plan })
 			if index < 0 {
-				return c.JSON(http.StatusUnprocessableEntity, map[string]string{"code": "invalid_request", "message": "Choose a configured plan"})
+				return tenantPlanCommand{}, &entitlementInputError{status: http.StatusUnprocessableEntity, message: "Choose a configured plan"}
 			}
 			command.Plan, command.Scope = change.Plan, planScope(current.Plans[index])
 		}
@@ -265,21 +298,21 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	case "revoke":
 		index := slices.IndexFunc(current.Grants, func(grant entitlementGrant) bool { return grant.ID == change.GrantID })
 		if index < 0 {
-			return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "That grant no longer exists on the organization's Hub"})
+			return tenantPlanCommand{}, &entitlementInputError{status: http.StatusNotFound, message: "That grant no longer exists on the organization's Hub"}
 		}
 		command.GrantID = change.GrantID
 		command.Plan, command.ExpiresAt = current.Grants[index].Plan, current.Grants[index].ExpiresAt
 	}
 	body, err := json.Marshal(command)
 	if err != nil {
-		return err
+		return tenantPlanCommand{}, err
 	}
 	status, _, err := s.machineCall(ctx, organization, http.MethodPost, tenantEntitlementsPath(organization.ID), body, string(s.config.Allocation.EntitlementAdminToken))
 	if err == nil && status != http.StatusNoContent {
 		err = &tenantStatusError{status}
 	}
 	if err != nil {
-		return s.tenantEntitlementFailure(c, err)
+		return tenantPlanCommand{}, err
 	}
 	// The tenant has applied the change, so the staff record is written even
 	// if the browser has gone; a retry with the same key replays it.
@@ -287,10 +320,10 @@ func (s *Service) changePlatformEntitlement(c echo.Context) error {
 	defer cancel()
 	if err := s.registry.recordEntitlementChange(recordCtx, organization.ID, session, command, s.config.now()); err != nil {
 		s.config.Logger.Error("entitlement change applied but not recorded in the entry audit log", "organization", organization.ID, "idempotency_key", command.ID)
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "audit_unavailable", "message": "The change was applied but could not be recorded; retry to record it"})
+		return tenantPlanCommand{}, &entitlementInputError{status: http.StatusServiceUnavailable, message: "The change was applied but could not be recorded; retry to record it"}
 	}
-	s.config.Logger.Info("complimentary plan changed", "organization", organization.ID, "action", command.Action, "plan", command.Plan.ID, "grant", command.GrantID, "staff", session.Email)
-	return c.JSON(http.StatusOK, map[string]string{"action": command.Action, "grant_id": command.GrantID})
+	s.config.Logger.Info("hosted plan changed", "organization", organization.ID, "action", command.Action, "plan", command.Plan.ID, "grant", command.GrantID, "actor", session.Email, "reason", command.Reason)
+	return command, nil
 }
 
 func (r *Registry) recordEntitlementChange(ctx context.Context, organization string, session accountSession, command tenantPlanCommand, now time.Time) error {

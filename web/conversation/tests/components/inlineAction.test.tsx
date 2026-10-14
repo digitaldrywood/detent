@@ -37,11 +37,24 @@ it("cancels a tier preview without changing access", () => {
   expect(submit).not.toHaveBeenCalled();
 });
 
-it("honors the automatic submission preference for ordinary actions", async () => {
+it.each(["edit_item", "update_project_integration", "approve_project_policy", "apply_local_project_policy"])("honors the automatic submission preference for %s", async (kind) => {
   localStorage.setItem("detent:chat-confirmation:tier-admin", "off");
   const submit = vi.fn().mockResolvedValue({ ok: true });
   vi.stubGlobal("fetch", submit);
-  render(<InlineActionCard proposal={{ action: { kind: "edit_item", request_id: "ordinary", project_id: "prj_test" }, conversation_id: "conv_test" }} text="Edit issue" />);
+  render(<InlineActionCard proposal={{ action: { kind, request_id: "ordinary", project_id: "prj_test" }, conversation_id: "conv_test" }} text="Edit issue" />);
   await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
   await screen.findByText("Change completed.");
 });
+
+ it.each([
+  { status: 409, message: "Project configuration changed; request a fresh proposal" },
+  { status: 403, message: "Project-management access is required" },
+ ])("shows the workflow refusal for HTTP $status", async ({ status, message }) => {
+  const submit = vi.fn().mockResolvedValue({ ok: false, status, json: async () => ({ message }) });
+  vi.stubGlobal("fetch", submit);
+  render(<InlineActionCard proposal={{ action: { kind: "approve_project_policy", request_id: "workflow", project_id: "prj_test" }, conversation_id: "conv_test" }} text="github_pull_request: false → true" />);
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect((await screen.findByRole("alert")).textContent).toBe(`${message} (${status}).`);
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+ });

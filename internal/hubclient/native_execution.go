@@ -499,6 +499,22 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	return nil
 }
 
+func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
+	change := e.change
+	if change == nil {
+		return nil
+	}
+	finalization := (tracker.NativeFinalization{
+		Publication: e.publication,
+		ObservedAt:  e.scheduler.now().UTC(), Settled: e.settled,
+		Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
+		VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
+		Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,
+		Error: change.Error, SourceVersion: e.finalizationSource, SourceAttemptID: e.finalizationAttempt,
+	}).Public()
+	return &finalization
+}
+
 func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -528,16 +544,8 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	}
 	e.data.Disposition = e.preparedDisposition
 	e.data.TerminalFailure = e.preparedFailure
-	if change := e.change; change != nil {
-		finalization := (tracker.NativeFinalization{
-			Publication: e.publication,
-			ObservedAt:  e.scheduler.now().UTC(), Settled: e.settled,
-			Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
-			VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
-			Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,
-			Error: change.Error, SourceVersion: e.finalizationSource, SourceAttemptID: e.finalizationAttempt,
-		}).Public()
-		e.data.Finalization = &finalization
+	if finalization := e.preparedFinalization(); finalization != nil {
+		e.data.Finalization = finalization
 	}
 	return errors.Join(preparationErr, e.append(ctx, "run.finished", outcome, nil))
 }

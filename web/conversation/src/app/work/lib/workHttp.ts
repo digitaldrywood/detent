@@ -41,6 +41,7 @@ import {
   SourceRecovery,
   type TransitionReason,
   WorkItemPage,
+  IssuePickerPage,
   WorkItemPullRequestList,
 
   Workspace,
@@ -138,6 +139,7 @@ export interface ListWorkItemsInput {
   readonly signal?: AbortSignal;
   readonly projectId: string;
   readonly state?: string | readonly string[] | undefined;
+  readonly type?: string | readonly string[] | undefined;
   readonly label?: string | readonly string[] | undefined;
   readonly assignee?: string | readonly string[] | undefined;
   readonly priority?: string | readonly string[] | undefined;
@@ -152,6 +154,7 @@ export interface ListWorkItemsInput {
   readonly completedWindow?: string;
   readonly sort?: "closed";
   readonly archived?: boolean | "all";
+  readonly createdBy?: string | undefined;
 }
 
 export interface WorkHttp {
@@ -169,8 +172,10 @@ export interface WorkHttp {
   readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
+  /** The compact issue-picker projection, searched and paged by the hub. */
+  readonly listIssuePicker: (input: { readonly projectId: string; readonly q?: string; readonly cursor?: string; readonly limit?: number; readonly signal?: AbortSignal }) => Promise<IssuePickerPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
-  readonly getWorkItemById: (itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemById: (itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
   readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
@@ -198,6 +203,14 @@ export interface WorkHttp {
     expectedRevision: string;
     state: string;
     reason?: TransitionReason;
+  }) => Promise<NativeIssue>;
+  readonly verifyFix: (input: {
+    projectId: string;
+    itemId: string;
+    key: string;
+    expectedRevision: string;
+    result: "verified" | "not_fixed";
+    comment?: string;
   }) => Promise<NativeIssue>;
   readonly setArchived: (input: {
     projectId: string;
@@ -561,7 +574,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
     eventsUrl: (projectId, workspaceId, workItemId, board) =>
       url(hubPath(`/projects/${encodeURIComponent(projectId)}/events`), { workspace: workspaceId, work_item: workItemId,
         board: board === undefined ? undefined : "true", since: board?.since,
-        q: board?.filters.q || undefined, label: board?.filters.label, assignee: board?.filters.assignee,
+        created_by: board?.filters.createdBy, q: board?.filters.q || undefined, type: board?.filters.type, label: board?.filters.label, assignee: board?.filters.assignee,
         priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
@@ -571,11 +584,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         WorkItemPage,
         "GET",
         url(`${projectBase(input.projectId)}/work-items`, {
+          created_by: input.createdBy,
           q: input.q?.trim() || undefined,
           state: input.state,
           open: input.open === undefined ? undefined : String(input.open),
           sort: input.sort,
           archived: input.archived === "all" ? "all" : input.archived === true ? "true" : undefined,
+          type: input.type,
           label: input.label,
           assignee: input.assignee,
           priority: input.priority,
@@ -587,10 +602,14 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         undefined,
         input.signal,
       ),
+    listIssuePicker: (input) =>
+      send(IssuePickerPage, "GET", url(`${projectBase(input.projectId)}/work-items`, {
+        fields: "picker", q: input.q?.trim() || undefined, cursor: input.cursor, limit: input.limit,
+      }), undefined, input.signal),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
-    getWorkItemById: (itemId) =>
-      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`)),
+    getWorkItemById: (itemId, signal) =>
+      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`), undefined, signal),
     getWorkItemConversation: (projectId, itemId) =>
       send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>
@@ -614,6 +633,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         // other two reasons belong to the scheduler and claiming one here
         // would put a lie in the history.
         reason: input.reason ?? "user_requested",
+      }),
+    verifyFix: (input) =>
+      send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/verification`), {
+        idempotency_key: input.key,
+        expected_revision: input.expectedRevision,
+        result: input.result,
+        ...(input.comment === undefined ? {} : { comment: input.comment }),
       }),
     setArchived: (input) =>
       send(NativeIssue, "POST", url(`${itemBase(input.projectId, input.itemId)}/${input.archived ? "archive" : "restore"}`), {

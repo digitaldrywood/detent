@@ -41,7 +41,7 @@ type landingReviewThread struct {
 
 func resolveLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repository string, number int, head string, refusal error) error {
 	var landing *LandRefusal
-	if !errors.As(refusal, &landing) || landing.Kind != LandRefusalProtected || !ReviewConversationsRefusal(landing.Reason) {
+	if refusal != nil && (!errors.As(refusal, &landing) || landing.Kind != LandRefusalProtected || !ReviewConversationsRefusal(landing.Reason)) {
 		return refusal
 	}
 	threads, err := readLandingReviewThreads(ctx, client, repository, number)
@@ -140,12 +140,15 @@ func readLandingReviewThreads(ctx context.Context, client GitHubRESTClient, repo
 			}
 			threads = append(threads, thread)
 		}
-		if !connection.PageInfo.HasNextPage || connection.PageInfo.EndCursor == "" {
+		if !connection.PageInfo.HasNextPage {
 			return threads, nil
+		}
+		if connection.PageInfo.EndCursor == "" || connection.PageInfo.EndCursor == after {
+			return nil, errors.New("the review thread connection did not advance its pagination cursor")
 		}
 		after = connection.PageInfo.EndCursor
 	}
-	return threads, nil
+	return nil, errors.New("the review thread connection exceeded the pagination limit")
 }
 
 func replyLandingReviewThread(ctx context.Context, client GitHubRESTClient, thread, body string) error {

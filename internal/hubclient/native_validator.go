@@ -40,10 +40,16 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 		if version.HeadSHA != e.lastDiff.HeadSHA || version.BaseSHA != e.lastDiff.BaseSHA || version.PolicyID != e.data.PolicyID {
 			return runner.NativeValidation{}, errors.New("native validator version differs from the published source")
 		}
+		var discussion runner.NativeReviewDiscussion
 		if implementationReview {
 			if version.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired {
 				return runner.NativeValidation{}, nil
 			}
+			recovery, err := e.claim.source.client.Recovery(ctx, e.claim.lease.WorkItemID)
+			if err != nil {
+				return runner.NativeValidation{}, err
+			}
+			discussion = runner.NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, version.ID)
 			var latest *tracker.ChangeReview
 			for i := range detail.Reviews {
 				review := &detail.Reviews[i]
@@ -51,7 +57,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 					latest = review
 				}
 			}
-			if latest != nil && latest.Decision == "approved" {
+			if latest != nil && latest.Decision == "approved" && !discussion.HumanFeedbackSince(latest.CreatedAt) {
 				return runner.NativeValidation{}, nil
 			}
 		} else if !version.Policy.Gates.Validator || detail.Summary.Status == "reviewed" {
@@ -79,7 +85,18 @@ func (e *nativeExecution) validationVersion(ctx context.Context, implementationR
 		if runtime.Issue.OrganizationID != e.claim.source.client.organization || runtime.Issue.ProjectID != e.claim.source.client.project || runtime.Issue.WorkItemID != e.claim.lease.WorkItemID || runtime.Attempt == nil || runtime.Attempt.AttemptID != e.data.AttemptID || runtime.Attempt.LeaseID != e.claim.lease.ID || runtime.Attempt.FencingToken != e.claim.lease.FencingToken || runtime.Attempt.PolicyID != e.data.PolicyID {
 			return runner.NativeValidation{}, errors.New("native validator evidence differs from the current attempt")
 		}
-		return runner.NativeValidation{Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence}, nil
+		var commands []gate.CommandResult
+		for _, review := range detail.Reviews {
+			if review.VersionID != version.ID || review.Actor.Kind != "runner" {
+				continue
+			}
+			for _, result := range []*gate.ValidatorResult{review.ImplementationReview, review.Validator} {
+				if result != nil && result.VersionID == version.ID && result.HeadSHA == version.HeadSHA && result.BaseSHA == version.BaseSHA && result.Repository == version.Repository {
+					commands = append(commands, result.Commands...)
+				}
+			}
+		}
+		return runner.NativeValidation{Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
 }
@@ -116,11 +133,15 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	if err != nil {
 		return err
 	}
+	e.change.ImplementationReview = &result
+	e.change.Reviewed = false
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
 	if err != nil {
+		if result.Verdict == gate.ValidatorVerdictRework {
+			return nil
+		}
 		return err
 	}
-	e.change.ImplementationReview = &result
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
 	return nil
 }

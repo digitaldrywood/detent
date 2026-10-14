@@ -75,6 +75,7 @@ type nativeAnalyticsProject struct {
 	pipelineTimings      []gate.PipelineTiming
 	allAttempts          []nativeAnalyticsAttempt
 	allLandings          []nativeAnalyticsLanding
+	failures             []nativeFailure
 	Pipeline             pipelineReport                                `json:"pipeline"`
 	PipelineReceipts     operatortool.ReadPage[gate.PipelineTiming]    `json:"pipeline_receipts"`
 	Quality              analyticsQuality                              `json:"quality"`
@@ -102,6 +103,7 @@ type nativeAnalyticsProject struct {
 }
 type nativeAnalyticsReport struct {
 	Requests       *requestMetricsReport        `json:"requests,omitempty"`
+	RouteLatency   *routeLatencyHistory         `json:"route_latency,omitempty"`
 	OrganizationID string                       `json:"organization_id"`
 	Projects       []nativeAnalyticsProject     `json:"projects"`
 	ObservedAt     time.Time                    `json:"observed_at"`
@@ -141,10 +143,31 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 			report.Requests = &requests
 		}
 	}
+	if call.Name == operatortool.TimeSeries {
+		history, visible, err := s.adminRouteLatency(ctx, w.From, w.To, w.Bucket)
+		if err != nil {
+			s.config.Logger.Warn("read route latency history", "error", err)
+			return operatortool.Result{}, errHubOperatorUnavailable
+		}
+		if visible {
+			report.RouteLatency = &history
+		}
+	}
 	return hubOperatorResult(report)
 }
 
 func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nativeAnalyticsReport{}, err
+	}
+	defer tx.Rollback()
+	return s.readAnalyticsReportFrom(ctx, credential, r, w, analyticsRollupReader{tx})
+}
+
+func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {
 	_, _, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsReport{}, pagingErr
@@ -166,22 +189,23 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 	if end < len(projects) {
 		report.NextOffset = &end
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return report, err
-	}
-	defer tx.Rollback()
 	for _, id := range projects[min(r.Offset, len(projects)):end] {
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(id), credential: credential}
 		projectCtx, paging, err := analyticsPagingContext(context.WithValue(ctx, analyticsPagingKey{}, nil), r.PopulationCursor)
 		if err != nil {
 			return report, err
 		}
-		value, err := readNativeAnalytics(projectCtx, tx, scope, r, w)
+		projectQ, err := analyticsProjectReader(projectCtx, q, scope)
 		if err != nil {
 			return report, err
 		}
-		rows, err := readUsageRows(projectCtx, tx, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
+		value, err := readNativeAnalytics(projectCtx, projectQ, scope, r, w)
+		if err != nil {
+			return report, err
+		}
+		done := timeSpan(ctx, "analytics_usage")
+		rows, err := readUsageRows(projectCtx, projectQ, s.config.Hosted.OrganizationID, usageWindow{From: w.From, To: w.To, Hourly: w.Bucket < 24*time.Hour}, []string{id}, maxAnalyticsPopulation+1)
+		done()
 		if err != nil {
 			return report, err
 		}
@@ -254,10 +278,13 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		return nativeAnalyticsProject{}, pagingErr
 	}
 	out := nativeAnalyticsProject{ProjectID: string(scope.project), Source: "native_change_landing_and_recorded_runtime", Window: w, PopulationLimit: maxAnalyticsPopulation, Unavailable: []string{"private_instruction_causality", "receipt_efficiency_quantiles"}, Digest: []nativeAnalyticsBucket{}, Efficiency: []nativeAnalyticsPhase{}, SkipReasons: []nativeAnalyticsSkip{}}
+	done := timeSpan(ctx, "analytics_failures")
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &w)
+	done()
 	if err != nil {
 		return out, err
 	}
+	out.failures = failures
 	out.FailureSignatures = nativeFailureSignaturePage(groupNativeFailures(failures), r.RowOffset, r.Limit)
 	out.Partial = partial
 	if partial {
@@ -275,7 +302,9 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 		out.Digest = append(out.Digest, nativeAnalyticsBucket{From: from, To: to})
 	}
+	done = timeSpan(ctx, "analytics_landings")
 	landings, err := nativeAnalyticsLandings(ctx, q, scope, w)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -295,7 +324,9 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 	}
 	out.Landings = operatortool.OffsetPage(landings, r.RowOffset, r.Limit)
+	done = timeSpan(ctx, "analytics_attempts")
 	population, err := loadNativeAnalyticsAttempts(ctx, q, scope, w, "")
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -372,62 +403,22 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	if len(phases) == 0 {
 		out.Unavailable = append(out.Unavailable, "recorded_phases")
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
-FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
-AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To))
+	done = timeSpan(ctx, "analytics_skips")
+	err = projectNativeAnalyticsSkips(ctx, q, scope, &out)
+	done()
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	skips := map[string]nativeAnalyticsSkip{}
-	for rows.Next() {
-		if out.DecisionsObserved == maxAnalyticsPopulation {
-			out.Partial = true
-			break
-		}
-		var source, reason, at string
-		if err := rows.Scan(&source, &reason, &at); err != nil {
-			return out, err
-		}
-		key := source + "\x00" + reason
-		value := skips[key]
-		value.Source = source
-		value.Reason = reason
-		value.Count++
-		skips[key] = value
-		out.DecisionsObserved++
-		when, err := parseTimeValue(at)
-		if err != nil {
-			return out, err
-		}
-		if when.After(out.SourceAt) {
-			out.SourceAt = when
-		}
-	}
-	if err := rows.Err(); err != nil {
+	done = timeSpan(ctx, "analytics_capacity_wait")
+	err = projectNativeAnalyticsCapacityWait(ctx, q, scope, &out)
+	done()
+	if err != nil {
 		return out, err
 	}
-	for _, s := range skips {
-		out.SkipReasons = append(out.SkipReasons, s)
-	}
-	sort.Slice(out.SkipReasons, func(i, j int) bool {
-		a, b := out.SkipReasons[i], out.SkipReasons[j]
-		if a.Source != b.Source {
-			return a.Source < b.Source
-		}
-		return a.Reason < b.Reason
-	})
-	if out.DecisionsObserved == 0 {
-		out.Unavailable = append(out.Unavailable, "recorded_skip_reasons")
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-	if err := projectNativeAnalyticsCapacityWait(ctx, q, scope, &out); err != nil {
-		return out, err
-	}
-	if err := projectNativeAnalyticsResidence(ctx, q, scope, r, &out); err != nil {
+	done = timeSpan(ctx, "analytics_residence")
+	err = projectNativeAnalyticsResidence(ctx, q, scope, r, &out)
+	done()
+	if err != nil {
 		return out, err
 	}
 	out.PopulationCursors = paging.next
@@ -440,7 +431,9 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		out.Unavailable = append(out.Unavailable, "recorded_pipeline_timings")
 	}
 	out.PipelineReceipts = pipelineTimingPage(uniquePipelineTimings(out.pipelineTimings, w), r.RowOffset, r.Limit)
+	done = timeSpan(ctx, "analytics_quality")
 	out.Quality, err = readAnalyticsQuality(ctx, q, scope, r, w)
+	done()
 	if err != nil {
 		return out, err
 	}
@@ -449,12 +442,14 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 }
 
 func nativeAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
+	issues, issueArgs := reportsIssueClause(ctx, "c.work_item_id")
 	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c
 JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
 WHERE c.organization_id=? AND c.project_id=? AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha')
 AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
 AND julianday(json_extract(c.record_json,'$.landed.landed_at'))>=julianday(?) AND julianday(json_extract(c.record_json,'$.landed.landed_at'))<julianday(?)
-ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To))
+`+issues+`
+ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -473,4 +468,72 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`
 		out = append(out, landing)
 	}
 	return out, rows.Err()
+}
+
+func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+	if _, rolledUp := q.(analyticsRollupReader); rolledUp && analyticsPopulationOffset(ctx, "decisions") == 0 {
+		aggregated, err := readAnalyticsSkipRollups(ctx, q, scope, out)
+		if err != nil || aggregated {
+			return err
+		}
+	}
+	var rows *analyticsRows
+	var err error
+	if _, projected := q.(analyticsRollupReader); projected {
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT json_extract(data_json,'$.Source'),json_extract(data_json,'$.Reason'),json_extract(data_json,'$.At') FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+	} else {
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
+FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
+AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) ORDER BY recorded_at,id LIMIT ? OFFSET ?`, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
+	}
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	skips := map[string]nativeAnalyticsSkip{}
+	for rows.Next() {
+		if out.DecisionsObserved == maxAnalyticsPopulation {
+			out.Partial = true
+			break
+		}
+		var source, reason, at string
+		if err := rows.Scan(&source, &reason, &at); err != nil {
+			return err
+		}
+		key := source + "\x00" + reason
+		value := skips[key]
+		value.Source = source
+		value.Reason = reason
+		value.Count++
+		skips[key] = value
+		out.DecisionsObserved++
+		when, err := parseTimeValue(at)
+		if err != nil {
+			return err
+		}
+		if when.After(out.SourceAt) {
+			out.SourceAt = when
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, s := range skips {
+		out.SkipReasons = append(out.SkipReasons, s)
+	}
+	sort.Slice(out.SkipReasons, func(i, j int) bool {
+		a, b := out.SkipReasons[i], out.SkipReasons[j]
+		if a.Source != b.Source {
+			return a.Source < b.Source
+		}
+		return a.Reason < b.Reason
+	})
+	if out.DecisionsObserved == 0 {
+		out.Unavailable = append(out.Unavailable, "recorded_skip_reasons")
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return nil
 }

@@ -181,7 +181,7 @@ func (l *LocalGit) Checkpoint(ctx context.Context, plan CheckpointPlan, selectio
 			if err := checkpointGuard(ctx, git, plan, selection.HeadSHA, validate); err != nil {
 				return "", err
 			}
-			if _, err := git(ctx, append([]string{"commit", "--only", "-m", "chore(recovery): checkpoint intended issue work", "--"}, dirty...)...); err != nil {
+			if _, err := l.runCommit(ctx, plan.Info.Path, checkpointEnvironment(environment), append([]string{"commit", "--only", "-m", "chore(recovery): checkpoint intended issue work", "--"}, dirty...)...); err != nil {
 				return "", err
 			}
 		}
@@ -223,11 +223,16 @@ func (l *LocalGit) Checkpoint(ctx context.Context, plan CheckpointPlan, selectio
 
 type checkpointGitRunner func(context.Context, ...string) (string, error)
 
-func checkpointGit(path string, environment procgroup.Environment) checkpointGitRunner {
+func checkpointEnvironment(environment procgroup.Environment) []string {
 	env := []string{"GIT_LITERAL_PATHSPECS=1", "GIT_TERMINAL_PROMPT=0"}
 	for key, value := range environment.Variables {
 		env = append(env, key+"="+value)
 	}
+	return env
+}
+
+func checkpointGit(path string, environment procgroup.Environment) checkpointGitRunner {
+	env := checkpointEnvironment(environment)
 	return func(ctx context.Context, args ...string) (string, error) {
 		return runGitAtWithEnv(ctx, path, env, args...)
 	}

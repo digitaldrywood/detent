@@ -80,6 +80,43 @@ func TestNativeRetention(t *testing.T) {
 			}
 		}
 	})
+	t.Run("duplicate challenges", func(t *testing.T) {
+		now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-challenges")
+		for _, project := range []tracker.NativeProject{f.project, other.project} {
+			for _, test := range []struct {
+				name     string
+				age      time.Duration
+				consumed *string
+			}{
+				{"expired", time.Hour + time.Second, nil},
+				{"boundary", time.Hour, nil},
+				{"live", time.Hour - time.Second, nil},
+				{"consumed", 0, new(formatHubTime(now))},
+			} {
+				token := string(project.ID) + "-" + test.name
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_duplicate_challenges
+(token,organization_id,project_id,principal_id,request_id,content_hash,matches_json,consumed_at,created_at)
+VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "principal", token, "hash", "[]", test.consumed, formatHubTime(now.Add(-test.age))); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		for _, project := range []tracker.NativeProject{f.project, other.project} {
+			var count int
+			var token string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*), COALESCE(min(token),'') FROM native_duplicate_challenges WHERE project_id=?", project.ID).Scan(&count, &token); err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 || token != string(project.ID)+"-live" {
+				t.Fatalf("retained challenges=%d, token=%s", count, token)
+			}
+		}
+	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
 		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})

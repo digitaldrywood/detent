@@ -153,14 +153,14 @@ test.describe("the work board", () => {
     test(`keeps one toolbar and the completed counter in the ${scope} header at desktop and phone widths`, async ({ page }) => {
       const scopeTitle = scope === "project"
         ? "Browser collaboration"
-        : "All Parable and Drywood Creek Collaborative Research Organization With a Very Long Name projects";
+        : "All Example Organization and Secondary Example Organization Collaborative Research Organization With a Very Long Name projects";
       if (scope === "organization") {
         await page.route(/\/(?:app|chat)\/bootstrap$/, async (route) => {
           const response = await route.fetch();
           const bootstrap = await response.json();
           await route.fulfill({ response, json: { ...bootstrap, organization: {
             ...bootstrap.organization,
-            name: "Parable and Drywood Creek Collaborative Research Organization With a Very Long Name",
+            name: "Example Organization and Secondary Example Organization Collaborative Research Organization With a Very Long Name",
           } } });
         });
       }
@@ -172,7 +172,7 @@ test.describe("the work board", () => {
         await expect(heading).toHaveText(scopeTitle);
         await expect(page.getByTestId("work-toolbar")).toHaveCount(1);
         await expect(page.getByTestId("work-stats")).toHaveCount(0);
-        await expect(header.getByRole("button", { name: /completed ·/ })).toBeVisible();
+        await expect(header.getByRole("button", { name: /shipped ·/ })).toBeVisible();
         await expect(page.getByTestId("connection-chip")).toHaveCount(1);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (scope === "organization") {
@@ -457,7 +457,7 @@ test.describe("the issue page", () => {
     await testInfo.attach("issue-project-breadcrumb", { body: await page.screenshot(), contentType: "image/png" });
     await crumb.click();
 
-    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${hub.fixture.project_id}`);
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration$/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Browser collaboration");
     await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("Browser collaboration");
     const board = page.getByTestId("work-board");
@@ -475,7 +475,7 @@ test.describe("the issue page", () => {
     const errors = watchConsole(page);
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     await page.getByRole("button", { name: "Review the invitation flow", exact: true }).first().click();
-    await expect(page).toHaveURL(/\/work\/i\//);
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/\d+(?:\?|$)/);
 
     // The title is the page's one `h1`, above the identifier.
     await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
@@ -504,7 +504,7 @@ test.describe("the issue page", () => {
     const errors = watchConsole(page);
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     await page.getByRole("button", { name: "Review the invitation flow", exact: true }).first().click();
-    await expect(page).toHaveURL(/\/work\/i\//);
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/\d+(?:\?|$)/);
 
     const feed = page.getByTestId("issue-activity");
     await expect(feed).toBeVisible();
@@ -779,7 +779,7 @@ test.describe("the issue page", () => {
     await page.goto(new URL(`/chat/issues/${hub.fixture.work_item}`, hub.fixture.url).toString(), {
       waitUntil: "domcontentloaded",
     });
-    await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}$`));
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2$/);
     await expect(page.getByTestId("issue-properties")).toBeVisible();
   });
 
@@ -790,8 +790,8 @@ test("shares project scope between the sidebar and Work across reloads", async (
   await openWork(page, `/work/p/${hub.fixture.project_id}`);
   const secondProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
   const projects = [
-    { id: hub.fixture.project_id, name: "Browser collaboration", title: "Completed collaboration work" },
-    { id: secondProjectId, name: "Owner private project", title: "Completed private work" },
+    { id: hub.fixture.project_id, slug: "browser-collaboration", name: "Browser collaboration", title: "Completed collaboration work" },
+    { id: secondProjectId, slug: "owner-private-project", name: "Owner private project", title: "Completed private work" },
   ];
   for (const project of projects) {
     const created = await page.evaluate(async ({ id, title }) => {
@@ -820,7 +820,7 @@ test("shares project scope between the sidebar and Work across reloads", async (
     await page.getByRole("option", { name, exact: true }).click();
   };
   const expectProject = async (project) => {
-    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/p/${project.id}`);
+    await expect.poll(() => new URL(page.url()).pathname).toBe(`/local-organization/${project.slug}`);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
     await expect(scope).toHaveText(project.name);
     await showClosed();

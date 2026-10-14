@@ -262,7 +262,7 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 // conversationWorkerError maps tracker fencing failures onto the
 // conversation vocabulary: a lease that is not current is stale_execution.
 func conversationWorkerError(err error) error {
-	if errors.Is(err, tracker.ErrStaleFencingToken) {
+	if errors.Is(err, tracker.ErrStaleFencingToken) || errors.Is(err, tracker.ErrLeaseConflict) {
 		return conversationStale("The lease is no longer current")
 	}
 	return err
@@ -274,22 +274,27 @@ func conversationWorkerError(err error) error {
 // attempt to that lease and fencing token. With allowReleased the lease may
 // already be released or expired, which lets a finishing worker unbind.
 func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return leaseRecord{}, err
-	}
-	if err := requireLeaseRunner(ctx, tx, identity.LeaseID, scope); err != nil {
-		return leaseRecord{}, err
-	}
-	lease, err := c.requireExecutionOwner(ctx, tx, scope, item, identity, runID, allowReleased, now)
-	if err != nil {
-		return leaseRecord{}, err
-	}
-	if !allowReleased {
-		if err := requireApprovedLeasePolicy(ctx, tx, identity.LeaseID, true); err != nil {
+	if allowReleased {
+		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+			return leaseRecord{}, err
+		}
+		if err := requireLeaseRunner(ctx, tx, identity.LeaseID, scope); err != nil {
 			return leaseRecord{}, err
 		}
 	}
-	return lease, nil
+	return c.requireExecutionOwner(ctx, tx, scope, item, identity, runID, allowReleased, now)
+}
+
+func readConversationOwnerScope(ctx context.Context, tx *sql.Tx, scope nativeScope, lease tracker.LeaseID) (nativeScope, error) {
+	err := tx.QueryRowContext(ctx, `SELECT t.id, t.token_hash, t.scope, t.native_only,
+COALESCE(r.id, ''), COALESCE(r.organization_id, ''), COALESCE(r.scope, 'projects')
+FROM leases l JOIN machines m ON m.id = l.machine_id
+LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
+LEFT JOIN runner_identities r ON r.id = lr.runner_id
+JOIN api_tokens t ON t.id = COALESCE(r.token_id, m.token_id)
+WHERE l.lease_id = ?`, lease).Scan(&scope.credential.ID, &scope.credential.Hash, &scope.credential.Scope, &scope.credential.NativeOnly,
+		&scope.credential.Runner.RunnerID, &scope.credential.Runner.OrganizationID, &scope.credential.Runner.Scope)
+	return scope, err
 }
 
 func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
@@ -314,7 +319,7 @@ func (c *conversationService) requireExecutionOwner(ctx context.Context, tx *sql
 		return leaseRecord{}, conversationStale("The lease fencing token does not match")
 	}
 	if !allowReleased {
-		if err := requireCurrentLease(lease, identity.FencingToken, now); err != nil {
+		if err := requireRenewableLease(ctx, tx, lease, identity.FencingToken, now, true, scope); err != nil {
 			return leaseRecord{}, conversationWorkerError(err)
 		}
 	}
@@ -414,7 +419,13 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if issue.Actor.PrincipalID != "" {
-		record.OwnerPrincipalID = issue.Actor.PrincipalID
+		var owner string
+		switch err := tx.QueryRowContext(ctx, "SELECT id FROM api_tokens WHERE id = ?", issue.Actor.PrincipalID).Scan(&owner); {
+		case err == nil:
+			record.OwnerPrincipalID = owner
+		case !errors.Is(err, sql.ErrNoRows):
+			return conversationRecord{}, fmt.Errorf("read issue actor token: %w", err)
+		}
 	}
 	if err := c.store.createConversation(ctx, tx, &record); err != nil {
 		return conversationRecord{}, err
@@ -503,6 +514,9 @@ func (c *conversationService) setControlDelivery(ctx context.Context, tx *sql.Tx
 // current owner and returns their envelopes in acceptance order. Controls
 // already sending to this owner are returned again without new events.
 func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, record *conversationRecord, after int64, now time.Time) (controls []conversationControl, changed bool, err error) {
+	if conversationBetweenTurns(record.Execution) {
+		return []conversationControl{}, false, nil
+	}
 	owner := record.Execution.Owner
 	// A queued control has not been handed to this owner whatever its seq
 	// is, so a retry that re-queues an older message still reaches a worker
@@ -700,7 +714,7 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	var record conversationRecord
 	var response conversationBindResponse
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		lease, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
@@ -829,7 +843,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	var record conversationRecord
 	changed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		if _, err := c.requireWorkerOwner(ctx, tx, scope, item, request.conversationWorkerIdentity, "", true, now); err != nil {
@@ -1016,7 +1030,7 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	var response conversationTurnEventsResponse
 	replayed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		var item string
@@ -1416,8 +1430,6 @@ func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker
 	}
 }
 
-// reconcileExecutions marks executions whose lease was released or expired
-// without an unbind as interrupted, applying the unbind transition.
 func (c *conversationService) reconcileExecutions(ctx context.Context) error {
 	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery)
 	if err != nil {
@@ -1445,7 +1457,9 @@ const conversationInFlightQuery = `SELECT id, organization_id, project_id FROM c
  OR (json_extract(execution_json, '$.status') IN ('completed', 'interrupted', 'failed', 'unknown') AND COALESCE(json_extract(execution_json, '$.settled'), 0) = 0 AND COALESCE(json_extract(execution_json, '$.lease_id'), '') <> '')) `
 
 func (c *conversationService) inFlightExecutions(ctx context.Context, query string, args ...any) ([]conversationExecutionRef, error) {
-	rows, err := c.server.database.db.QueryContext(ctx, query, args...)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := c.server.database.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list in-flight conversations: %w", err)
 	}
@@ -1464,8 +1478,6 @@ func (c *conversationService) inFlightExecutions(ctx context.Context, query stri
 	return refs, nil
 }
 
-// settleLostExecution re-checks the owner lease inside a transaction and
-// applies the interrupted transition when it is released or expired.
 func (c *conversationService) settleLostExecution(ctx context.Context, ref conversationExecutionRef) error {
 	var record conversationRecord
 	changed := false
@@ -1486,7 +1498,10 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 			return nil
 		}
 		identity := conversationWorkerIdentity{LeaseID: tracker.LeaseID(execution.Owner.LeaseID), FencingToken: tracker.FencingToken(execution.Owner.FencingToken), AttemptID: execution.Owner.AttemptID}
-		_, err = c.requireExecutionOwner(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, record.WorkItemID, identity, execution.Owner.RunID, false, now)
+		scope, err := readConversationOwnerScope(ctx, tx, nativeScope{organization: record.OrganizationID, project: record.ProjectID}, identity.LeaseID)
+		if err == nil {
+			_, err = c.requireExecutionOwner(ctx, tx, scope, record.WorkItemID, identity, execution.Owner.RunID, false, now)
+		}
 		if err == nil {
 			return nil
 		}

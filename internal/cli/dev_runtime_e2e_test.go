@@ -263,7 +263,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 
 	sheetQuery := url.Values{
 		"project": {projectID},
-		"issue":   {"digitaldrywood/detent#9511"},
+		"issue":   {"example-org/example-project#9511"},
 		"scope":   {"project"},
 		"actions": {"board"},
 	}
@@ -279,7 +279,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		"issue_id":      {"kanban-demo-backlog"},
 		"current_state": {"Backlog"},
 		"target_state":  {"Todo"},
-		"identifier":    {"digitaldrywood/detent#9510"},
+		"identifier":    {"example-org/example-project#9511"},
 		"title":         {"Kanban demo backlog intake"},
 	}
 	moveDialogURL := dashboardURL + "/api/v1/kanban/move?" + moveDialogValues.Encode()
@@ -298,17 +298,17 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	for _, want := range []string{
 		`id="board-lanes"`,
 		"Moved card to Todo.",
-		`id="card-digitaldrywood-detent-9511"`,
+		`id="card-example-org-example-project-9511"`,
 	} {
 		if !strings.Contains(moveBody, want) {
 			t.Fatalf("immediate Kanban move response missing %q:\n%s", want, moveBody)
 		}
 	}
-	if got := strings.Count(moveBody, `id="card-digitaldrywood-detent-9511"`); got != 1 {
+	if got := strings.Count(moveBody, `id="card-example-org-example-project-9511"`); got != 1 {
 		t.Fatalf("immediate Kanban move response rendered moved card %d times, want 1:\n%s", got, moveBody)
 	}
 	postRuntimeRefresh(t, dashboardURL, done)
-	movedCardPattern := regexp.MustCompile(`data-board-lane="todo"[\s\S]*?id="card-digitaldrywood-detent-9511"`)
+	movedCardPattern := regexp.MustCompile(`data-board-lane="todo"[\s\S]*?id="card-example-org-example-project-9511"`)
 	waitForDashboardCondition(t, pageURL, done, "backlog card moved to todo", func(body string) bool {
 		return movedCardPattern.MatchString(body)
 	})
@@ -322,7 +322,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/comment", done, url.Values{
 		"project_id":    {projectID},
 		"target":        {"pr"},
-		"pr_repository": {"digitaldrywood/detent"},
+		"pr_repository": {"example-org/example-project"},
 		"pr_number":     {"9515"},
 		"body":          {"Safe demo PR comment"},
 	})

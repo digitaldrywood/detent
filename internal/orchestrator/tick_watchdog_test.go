@@ -130,7 +130,7 @@ func TestTickWatchdogCompletedSlowRefresh(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				interval := 300 * time.Second
 				var logs bytes.Buffer
-				watchdog := newTickWatchdog("parable", interval, slog.New(slog.NewTextHandler(&logs, nil)))
+				watchdog := newTickWatchdog("example-project", interval, slog.New(slog.NewTextHandler(&logs, nil)))
 				orch := &Orchestrator{tickWatchdog: watchdog}
 				started := time.Now()
 				state := State{PollInterval: interval, LastRefreshAt: started, NextRefreshAt: started.Add(interval)}
@@ -199,7 +199,7 @@ func TestTickWatchdogMissedScheduledTick(t *testing.T) {
 		{"missed", interval, 2, telemetry.TickLivenessStatusNeedsAttention},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			w := newTickWatchdog("parable", interval, nil)
+			w := newTickWatchdog("example-project", interval, nil)
 			w.Advance(started, started.Add(interval), interval)
 			w.Schedule(next, interval)
 			got := w.Evaluate(next.Add(tt.offset))

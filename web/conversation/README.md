@@ -425,11 +425,18 @@ Run it with `make app` first (the spec needs the built client) and then
 
 ## Bundle size
 
-| File | Size | Gzip |
-|---|---:|---:|
-| `app.js` | 2,833 kB | 890 kB |
-| `app.css` | 329 kB | 45 kB |
-| `chunks/*.js` | 134 files, ~6.5 MB | fetched on use |
+Each screen is a route chunk loaded on first use (`src/app/router.tsx`,
+`src/app/routes.account.tsx`), so `app.js` carries the shell, the sidebar and
+the runtime, not the chat timeline, Lexical, markdown or diff rendering. The
+build writes `.br` and `.gz` siblings for every compressible file and fails when
+the compressed entry grows more than 10% past `bundle-budget.json`; raise the
+budget in the same change only when the growth is deliberate.
+
+| File | Size | Brotli | Gzip |
+|---|---:|---:|---:|
+| `app.js` | 1,414 kB | 384 kB | 466 kB |
+| `app.css` | 397 kB | 41 kB | 54 kB |
+| `chunks/*.js` | ~180 files, ~9 MB | fetched on use | |
 
 Porting the interface roughly doubled the JavaScript — it was 562 kB (178 kB
 gzipped) when the UI was hand-written — and took the CSS from 16.7 kB to

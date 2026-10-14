@@ -1,4 +1,5 @@
 import { CapacityPanel } from "../fleet/CapacityPanel.tsx";
+import { MetricTile } from "../../components/ui/metric-tile.tsx";
 import { runnerFindings } from "./runnerFindings.ts";
 import React, { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
@@ -24,10 +25,13 @@ import {
   type DiagnosticFinding,
 } from "../../contracts/diagnostics.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
+import { getQueryData, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
+import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics } from "./diagnosticsQuery.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import { CapacityChart } from "./CapacityChart.tsx";
+import { FindingAskWorkspace } from "./FindingAsk.tsx";
 
 const WINDOWS = [
   { value: "24h", label: "Past 24h" },
@@ -54,6 +58,13 @@ const timestamp = (value: string) =>
     minute: "2-digit",
   });
 
+interface FindingsState {
+  readonly findings: readonly DiagnosticFinding[] | null;
+  readonly detectorTick: string | null;
+  readonly findingsError: string | null;
+}
+
+const EMPTY_FINDINGS: FindingsState = { findings: null, detectorTick: null, findingsError: null };
 export function DiagnosticsRoute(): React.ReactElement {
   usePageTitle("Diagnostics");
   const api = useAccountApi();
@@ -61,40 +72,30 @@ export function DiagnosticsRoute(): React.ReactElement {
   const http = useWorkHttp();
   const [range, setRange] = useState<Window>("24h");
   const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<{
-    report: DiagnosticsReport | null;
-    runners: readonly FleetRunner[] | null;
-    findings: readonly DiagnosticFinding[] | null;
-    detectorTick: string | null;
-    findingsError: string | null;
-    pending: boolean;
-    error: string | null;
-  }>({
-    report: null,
-    runners: null,
-    findings: null,
-    detectorTick: null,
-    findingsError: null,
-    pending: true,
-    error: null,
-  });
+  const [askedFinding, setAskedFinding] = useState<DiagnosticFinding | null>(null);
+  const [askFocusRequest, setAskFocusRequest] = useState(0);
+  const projects = React.useMemo(() => (bootstrap?.projects ?? [])
+    .filter((project) => project.profile === "native")
+    .map((project) => project.id), [bootstrap?.projects]);
+  const projectsKey = projects.join(",");
+  const reportQuery = useQuery(diagnosticsKey(api, range), readDiagnostics(api, range),
+    { staleTime: DIAGNOSTICS_STALE_MS, keepPreviousIn: String(scopeOf(api)) });
+  const findingsKey = React.useMemo(() => ["diagnostics-findings", scopeOf(api), projectsKey] as const, [api, projectsKey]);
+  const [findings, setFindings] = useState<{ readonly key: typeof findingsKey; readonly value: FindingsState }>(() =>
+    ({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS }));
+  useEffect(() => {
+    if (findings.key === findingsKey && findings.value !== EMPTY_FINDINGS) setQueryData(findingsKey, findings.value);
+  }, [findings, findingsKey]);
+  const findingsState = findings.key === findingsKey ? findings.value : getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS;
   useEffect(() => {
     let current = true;
-    setState({
-      report: null,
-      runners: null,
-      findings: null,
-      detectorTick: null,
-      findingsError: null,
-      pending: true,
-      error: null,
-    });
-    const projects = (bootstrap?.projects ?? [])
-      .filter((project) => project.profile === "native")
-      .map((project) => project.id);
+    setFindings({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS });
     let request = 0;
     let tick: string | null = null;
     let since: string | undefined;
+    const update = (next: (previous: FindingsState) => FindingsState) => {
+      setFindings((previous) => ({ key: findingsKey, value: next(previous.key === findingsKey ? previous.value : EMPTY_FINDINGS) }));
+    };
     const refreshFindings = async (live: boolean) => {
       const version = ++request;
       try {
@@ -105,7 +106,7 @@ export function DiagnosticsRoute(): React.ReactElement {
         if (!current || request !== version) return;
         since ??= open.last_tick_at ?? undefined;
         tick = open.last_tick_at;
-        setState((previous) => {
+        update((previous) => {
           const findings =
             open.last_tick_at === null ? null : findingsFromRead(open);
           const updates = new Map(
@@ -121,7 +122,6 @@ export function DiagnosticsRoute(): React.ReactElement {
             : [];
           const ids = new Set(retained.map((finding) => finding.id));
           return {
-            ...previous,
             findings:
               findings === null
                 ? null
@@ -134,27 +134,11 @@ export function DiagnosticsRoute(): React.ReactElement {
           };
         });
       } catch {
-        if (current && request === version) setState((previous) => ({ ...previous, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." }));
+        if (current && request === version) update((previous) => ({ ...previous, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." }));
         return;
       }
     };
-    void Promise.allSettled([
-      api.diagnostics(range),
-      api.fleet(),
-      refreshFindings(false),
-    ]).then(([report, fleet]) => {
-      if (!current) return;
-      setState((previous) => ({
-        ...previous,
-        report: report.status === "fulfilled" ? report.value : null,
-        runners: fleet.status === "fulfilled" ? fleet.value.runners : null,
-        pending: false,
-        error:
-          report.status === "rejected"
-            ? "Diagnostics are temporarily unavailable."
-            : null,
-      }));
-    });
+    void refreshFindings(false);
     const refreshLive = () => {
       if (document.visibilityState === "visible") void refreshFindings(true);
     };
@@ -174,8 +158,18 @@ export function DiagnosticsRoute(): React.ReactElement {
       unsubscribe?.();
       document.removeEventListener("visibilitychange", refreshLive);
     };
-  }, [api, http, bootstrap?.projects, range, revision]);
-  return (
+  }, [api, http, projects, findingsKey, revision]);
+  const state = {
+    report: reportQuery.data?.report ?? null,
+    runners: reportQuery.data?.runners ?? null,
+    ...findingsState,
+    pending: reportQuery.pending,
+    error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
+  };
+  const projectFor = (finding: DiagnosticFinding) =>
+    bootstrap?.projects.find((project) => project.id === finding.subject.project_id);
+  const askedProject = askedFinding === null ? undefined : projectFor(askedFinding);
+  const view = (controls?: React.ReactNode) => (
     <DiagnosticsView
       {...state}
       scope={bootstrap?.organization.name ?? "This organization"}
@@ -183,28 +177,22 @@ export function DiagnosticsRoute(): React.ReactElement {
       canManage={bootstrap?.actor.can_manage ?? false}
       range={range}
       onRangeChange={setRange}
-      onRefresh={() => setRevision((value) => value + 1)}
+      onRefresh={() => {
+        void reportQuery.refresh();
+        setRevision((value) => value + 1);
+      }}
+      onAsk={(finding) => {
+        setAskedFinding(finding);
+        setAskFocusRequest((request) => request + 1);
+      }}
+      canAsk={(finding) => projectFor(finding)?.can_write !== false && projectFor(finding) !== undefined}
+      panelControls={controls}
     />
   );
-}
-
-function Metric({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail?: string;
-}): React.ReactElement {
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <span className="text-xl font-semibold tabular-nums">{value}</span>
-      <span className="text-xs text-muted-foreground">{label}</span>
-      {detail ? (
-        <span className="text-xs text-muted-foreground">{detail}</span>
-      ) : null}
-    </div>
+  return askedFinding === null || askedProject === undefined ? view() : (
+    <FindingAskWorkspace key={`${askedProject.id}:${askedFinding.id}`} finding={askedFinding} project={askedProject} focusRequest={askFocusRequest}>
+      {(controls) => view(controls)}
+    </FindingAskWorkspace>
   );
 }
 
@@ -249,6 +237,9 @@ export function DiagnosticsView({
   projects = [],
   canManage = false,
   findingsError = null,
+  onAsk,
+  canAsk,
+  panelControls,
 }: {
   readonly projects?: readonly AccountProject[];
   readonly canManage?: boolean;
@@ -263,6 +254,9 @@ export function DiagnosticsView({
   readonly range: Window;
   readonly onRangeChange: (range: Window) => void;
   readonly onRefresh: () => void;
+  readonly onAsk?: (finding: DiagnosticFinding) => void;
+  readonly canAsk?: (finding: DiagnosticFinding) => boolean;
+  readonly panelControls?: React.ReactNode;
 }): React.ReactElement {
   const findings = findingRows === null ? null : orderedFindings(findingRows);
   const problems = runnerFindings(runners ?? [], projects, canManage);
@@ -296,6 +290,7 @@ export function DiagnosticsView({
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
         <div className="ms-auto flex items-center gap-2">
+          {panelControls}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -381,6 +376,16 @@ export function DiagnosticsView({
                             </p>
                           </div>
                           <div className="flex items-start gap-1.5">
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              disabled={canAsk?.(finding) === false}
+                              title={canAsk?.(finding) === false ? "Project chat requires write access to the finding's project" : undefined}
+                              aria-label={`Ask about ${finding.summary}`}
+                              onClick={() => onAsk?.(finding)}
+                            >
+                              Ask
+                            </Button>
                             <Badge
                               variant={
                                 finding.resolved_at
@@ -424,10 +429,10 @@ export function DiagnosticsView({
                 {error ? <Unavailable>{error}</Unavailable> : null}
                 {report ? <p className="text-xs text-muted-foreground">{timestamp(report.from)} to {timestamp(report.to)}{report.partial ? " · Partial history; recorded samples only" : ""}</p> : null}
                 <section aria-label="Diagnostics headline" className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
-                  <Metric label="Open findings" value={count(findings == null ? null : findings.filter((finding) => finding.resolved_at == null).length + problems.length)} />
-                  <Metric label="Stalled in lane" value={count(report?.stalled)} />
-                  <Metric label="Merge queue wait p50" value={duration(report?.merge_wait_p50)} />
-                  <Metric label="Landings refused on conflict" value={conflictPercent} />
+                  <MetricTile size="compact" label="Open findings" value={count(findings == null ? null : findings.filter((finding) => finding.resolved_at == null).length + problems.length)} />
+                  <MetricTile size="compact" label="Stalled in lane" value={count(report?.stalled)} />
+                  <MetricTile size="compact" label="Merge queue wait p50" value={duration(report?.merge_wait_p50)} />
+                  <MetricTile size="compact" label="Landings refused on conflict" value={conflictPercent} />
                 </section>
                 <Section title="Hourly capacity">
                   {report?.capacity && report.capacity.length > 0 ? <CapacityChart points={report.capacity} /> : <Unavailable>Hourly capacity is unavailable.</Unavailable>}
@@ -437,17 +442,17 @@ export function DiagnosticsView({
                 <div className="grid min-w-0 gap-6 sm:grid-cols-2">
                   <Section title="Work throughput">
                     <div className="grid grid-cols-2 gap-4">
-                      <Metric label="Claimed" value={count(report?.claimed)} />
-                      <Metric label="Ready" value={count(report?.ready)} />
-                      <Metric label="Skipped" value={count(report?.skipped)} />
+                      <MetricTile size="compact" label="Claimed" value={count(report?.claimed)} />
+                      <MetricTile size="compact" label="Ready" value={count(report?.ready)} />
+                      <MetricTile size="compact" label="Skipped" value={count(report?.skipped)} />
                     </div>
                   </Section>
                   <Section title="Merge throughput">
                     <div className="grid grid-cols-2 gap-4">
-                      <Metric label="Entered" value={count(report?.merge_entered)} />
-                      <Metric label="Landed" value={count(report?.merge_landed)} />
-                      <Metric label="Wait p90" value={duration(report?.merge_wait_p90)} />
-                      <Metric label="Longest wait" value={duration(report?.merge_wait_max)} />
+                      <MetricTile size="compact" label="Entered" value={count(report?.merge_entered)} />
+                      <MetricTile size="compact" label="Landed" value={count(report?.merge_landed)} />
+                      <MetricTile size="compact" label="Wait p90" value={duration(report?.merge_wait_p90)} />
+                      <MetricTile size="compact" label="Longest wait" value={duration(report?.merge_wait_max)} />
                     </div>
                   </Section>
                 </div>

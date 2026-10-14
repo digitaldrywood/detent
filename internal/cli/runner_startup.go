@@ -44,7 +44,12 @@ func resolveRunnerProjectGitHubToken(ctx context.Context, cfg globalconfig.Confi
 func runnerStartupProblems(registry *project.Registry) []runnerauth.Problem {
 	var problems []runnerauth.Problem
 	for _, runtimeProject := range registry.List() {
-		problems = append(problems, runtimeProject.RunnerProblems()...)
+		for _, problem := range runtimeProject.RunnerProblems() {
+			if problem.ProjectID == "" {
+				problem.ProjectID = string(runtimeProject.ID())
+			}
+			problems = append(problems, problem)
+		}
 	}
 	for _, health := range registry.Health() {
 		if health.LastError == "" {

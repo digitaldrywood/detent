@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -125,16 +126,18 @@ func (s *Service) startHostedSupportJSON(c echo.Context) error {
 // token was already accepted by the signed-in account, so a retry after a lost
 // response receives the same destination instead of a refusal.
 func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string) bool {
-	session, _, err := s.hostedSession(c.Request().Context(), c)
+	ctx := c.Request().Context()
+	session, _, err := s.hostedSession(ctx, c)
 	if err != nil || session.Identity.SupportActor != "" || token == "" || len(token) > 512 {
 		return false
 	}
-	ctx := c.Request().Context()
 	invitation, err := s.config.Hosted.Provider.Invitation(ctx, token)
 	if err != nil || invitation.State != "accepted" || invitation.AcceptedUserID != session.Identity.Subject {
 		return false
 	}
 	var accepted int
-	err = s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = ?", invitation.ID, s.config.Hosted.OrganizationID, session.Identity.Subject).Scan(&accepted)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id = ? AND organization_id = ? AND accepted_user_id = ?", invitation.ID, s.config.Hosted.OrganizationID, session.Identity.Subject).Scan(&accepted)
 	return err == nil && accepted == 1
 }

@@ -10,7 +10,7 @@ func TestMatch(t *testing.T) {
 	t.Parallel()
 
 	issue := connector.Issue{
-		AuthorID:   "corylanou",
+		AuthorID:   "example-user",
 		AssigneeID: "worker-1",
 		Assignees:  []string{"worker-1", "worker-2"},
 		Labels:     []string{"Enhancement", "stage:s2"},
@@ -60,7 +60,7 @@ func TestMatch(t *testing.T) {
 		{
 			name: "author in matches author login",
 			selector: Selector{
-				AuthorIn: []string{"corylanou"},
+				AuthorIn: []string{"example-user"},
 			},
 			want: true,
 		},
@@ -146,7 +146,7 @@ func TestMatch(t *testing.T) {
 			name: "and group requires every child selector",
 			selector: Selector{
 				And: []Selector{
-					{AuthorIn: []string{"corylanou"}},
+					{AuthorIn: []string{"example-user"}},
 					{Labels: Labels{Include: []string{"stage:s2"}}},
 				},
 			},
@@ -156,7 +156,7 @@ func TestMatch(t *testing.T) {
 			name: "and group rejects false child selector",
 			selector: Selector{
 				And: []Selector{
-					{AuthorIn: []string{"corylanou"}},
+					{AuthorIn: []string{"example-user"}},
 					{Labels: Labels{Include: []string{"bug"}}},
 				},
 			},

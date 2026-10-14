@@ -405,6 +405,8 @@ func (s *Service) listNativeAttempts(c echo.Context) error {
 }
 
 func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
 
 	if err := validateNativeQuery(params, "view"); err != nil {
@@ -563,6 +565,8 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 }
 
 func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item, id string) (tracker.NativeAttempt, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	return readNativeAttempt(ctx, s.database.reader, scope, item, id, s.config.now())
 }
 

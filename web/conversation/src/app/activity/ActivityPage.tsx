@@ -53,6 +53,8 @@ import {
   type Sort,
 } from "./activityModel.ts";
 
+import { activityKey, observeActivity, type ActivityState } from "./activityResource.ts";
+
 export function ActivityRoute() {
   usePageTitle("Activity");
   const api = useAccountApi();
@@ -60,52 +62,18 @@ export function ActivityRoute() {
   const http = useWorkHttp();
   const [project, setProject] = useState("");
   const [live, setLive] = useState(false);
-  const [state, setState] = useState<{
-    report: ActivityReport | null;
-    runners: readonly FleetRunner[];
-    pending: boolean;
-    error: string | null;
-  }>({ report: null, runners: [], pending: true, error: null });
+  const [state, setState] = useState<ActivityState & { readonly api?: object }>({ report: null, runners: [], pending: true, error: null });
   useEffect(() => {
-    let current = true;
-    let request = 0;
     const projects = (bootstrap?.projects ?? [])
       .filter((row) => !project || row.id === project)
       .map((row) => row.id);
     const connected = new Set<string>();
     setLive(false);
-    setState((previous) => ({
-      ...previous,
-      report: null,
-      pending: true,
-      error: null,
-    }));
-    const refresh = async () => {
-      const version = ++request;
-      try {
-        const [report, fleet] = await Promise.all([
-          api.activity(project ? { project_id: project } : {}),
-          api.fleet(),
-        ]);
-        if (current && request === version)
-          setState({
-            report,
-            runners: fleet.runners,
-            pending: false,
-            error: null,
-          });
-      } catch {
-        if (current && request === version)
-          setState((previous) => ({
-            ...previous,
-            pending: false,
-            error: "Activity is temporarily unavailable.",
-          }));
-      }
-    };
-    const refreshVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
-    };
+    const resource = observeActivity(api, activityKey(project, projects), project, (next) =>
+      setState((previous) => next.report === null && next.pending && previous.api === api && previous.report !== null
+        ? { ...previous, pending: true, error: null }
+        : { ...next, api }));
+    const refreshVisible = resource.refresh;
     const unsubscribe = projects.map((id) =>
       subscribeProjectEvents(http, id, {
         open: () => {
@@ -124,17 +92,19 @@ export function ActivityRoute() {
         },
       }),
     );
-    void refresh();
     document.addEventListener("visibilitychange", refreshVisible);
     return () => {
-      current = false;
+      resource.close();
       unsubscribe.forEach((stop) => stop());
       document.removeEventListener("visibilitychange", refreshVisible);
     };
   }, [api, bootstrap?.projects, http, project]);
   return (
     <ActivityView
-      {...state}
+      report={state.report}
+      runners={state.runners}
+      pending={state.pending && state.report === null}
+      error={state.error}
       projects={bootstrap?.projects ?? []}
       organizationName={bootstrap?.organization?.name}
       project={project}

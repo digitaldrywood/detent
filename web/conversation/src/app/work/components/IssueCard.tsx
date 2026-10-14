@@ -79,6 +79,10 @@ export interface IssueCardProps {
   readonly showProject: boolean;
   readonly now?: number;
   readonly onOpen: (item: WorkItemView) => void;
+  /** The reader is about to open the card: hover or focus on its title. */
+  readonly onIntent?: (item: WorkItemView) => void;
+  /** The pointer or focus left the title before it was opened. */
+  readonly onIntentEnd?: () => void;
   /** Lanes this card may move to, from the workflow's own transition list. */
   readonly moves: readonly string[];
   readonly onMove: (item: WorkItemView, toState: string) => void;
@@ -156,6 +160,8 @@ export function IssueCard({
   showProject,
   now,
   onOpen,
+  onIntent,
+  onIntentEnd,
   moves,
   onMove,
   moving = false,
@@ -232,6 +238,10 @@ export function IssueCard({
         type="button"
         data-testid="issue-card-open"
         onClick={() => onOpen(item)}
+        onPointerEnter={onIntent === undefined ? undefined : () => onIntent(item)}
+        onFocus={onIntent === undefined ? undefined : () => onIntent(item)}
+        onPointerLeave={onIntentEnd}
+        onBlur={onIntentEnd}
         className="min-w-0 cursor-pointer rounded-sm text-left text-[13px] text-foreground leading-snug wrap-anywhere outline-none ring-ring focus-visible:ring-2"
       >
         {item.title}

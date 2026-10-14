@@ -20,7 +20,9 @@ type monthlyBudgetRequest struct {
 }
 
 func (s *Service) getMonthlyBudget(c echo.Context) error {
-	result, err := readMonthlyBudgetSettings(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	result, err := readMonthlyBudgetSettings(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

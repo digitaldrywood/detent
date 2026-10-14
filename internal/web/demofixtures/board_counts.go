@@ -6,7 +6,7 @@ func demoBoardCountsSnapshot(variant string) telemetry.Snapshot {
 	live := telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, Complete: true, ObservedAt: demoBaseTime}
 	snapshot := telemetry.Snapshot{GeneratedAt: demoBaseTime, Tracker: live, Runtime: live,
 		Refresh: telemetry.Refresh{Status: telemetry.RefreshStatusReady, LastRefreshAt: &demoBaseTime}}
-	ids := []string{"dogfood", "billing-api", "parable"}
+	ids := []string{"dogfood", "billing-api", "example-project"}
 	if variant == "board-counts-single-cached" {
 		ids = ids[:1]
 	}
@@ -31,7 +31,7 @@ func demoBoardCountsSnapshot(variant string) telemetry.Snapshot {
 			project.Refresh.Status = telemetry.RefreshStatusDegraded
 			project.Refresh.LastError = "Cached snapshot after tracker refresh failure."
 		}
-		if variant == "board-counts-complete-degraded" && id == "parable" {
+		if variant == "board-counts-complete-degraded" && id == "example-project" {
 			project.Refresh.Status = telemetry.RefreshStatusDegraded
 			project.Refresh.LastError = "Tracker refresh failed with complete sections retained."
 		}

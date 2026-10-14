@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 
 import { createWorkMock } from "./mock-work.ts";
 import reportsFixture from "../src/contracts/fixtures/reports.json";
+import reportOptionsFixture from "../src/contracts/fixtures/reportOptions.json";
 import type {
   Conversation,
   ConversationEvent,
@@ -89,6 +90,7 @@ interface ProjectRow {
 }
 
 interface IntegrationRow {
+  duplicate_challenge?: boolean;
   profile: string;
   /** A JSON *string*: the hub marshals the counter with `json:",string"`. */
   revision: string;
@@ -231,8 +233,8 @@ const SEED_MEMBERS: MemberRow[] = [
   },
   {
     id: "mem_admin",
-    user_id: "usr_dana",
-    email: "dana@example.test",
+    user_id: "usr_member",
+    email: "member@example.test",
     role: "admin",
     status: "active",
     grants: [
@@ -863,7 +865,7 @@ const SEED_BILLING = {
 
 /** An open support session: somebody from Detent acting as this organization. */
 const SEED_SUPPORT: SupportRow = {
-  actor: "support@detent.dev",
+  actor: "support@example.com",
   reason: "Investigating a stuck lease reported in ticket 4471",
   expires_at: "2026-09-10T22:30:00Z",
 };
@@ -2669,6 +2671,10 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    if (segments[0] === "reports" && segments[1] === "options" && segments.length === 2 && method === "GET") {
+      json(response, 200, structuredClone(reportOptionsFixture));
+      return true;
+    }
     if (segments[0] === "reports" && segments.length === 1 && method === "GET") {
       const report = structuredClone(reportsFixture);
       report.analytics.project_id = url.searchParams.get("project") ?? "proj_alpha";
@@ -2934,6 +2940,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: String(body.intake ?? current.intake),
           projection: String(body.projection ?? current.projection),
           repository_enabled: body.repository_enabled === true,
+          duplicate_challenge: body.duplicate_challenge === undefined ? current.duplicate_challenge ?? true : body.duplicate_challenge === true,
           archive_completed_after_days: body.archive_completed_after_days === undefined ? current.archive_completed_after_days : body.archive_completed_after_days === null ? null : Number(body.archive_completed_after_days),
           archive_cancelled_after_days: body.archive_cancelled_after_days === undefined ? current.archive_cancelled_after_days : body.archive_cancelled_after_days === null ? null : Number(body.archive_cancelled_after_days),
           revision: String(Number(current.revision) + 1),

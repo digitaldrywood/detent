@@ -11,7 +11,7 @@ import type { BootstrapProject } from "../../contracts/conversation.ts";
 import type { CollaborationEvent, NativeAttempt } from "../../contracts/work.ts";
 import type { ProjectScript, ThreadId } from "../../contracts/ui.ts";
 import { cn } from "../../lib/utils.ts";
-import { withoutBasePath } from "../../runtime/basePath.ts";
+import { routerBasePath, withoutBasePath } from "../../runtime/basePath.ts";
 import { detentKeybindings } from "../adapters/keybindings.ts";
 import {
   HeaderActionsProvider,
@@ -104,7 +104,7 @@ export interface ChatWorkspaceProps {
 export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
-  const chatRoute = withoutBasePath(pathname).startsWith("/chat");
+  const chatRoute = withoutBasePath(pathname, routerBasePath()).startsWith("/chat");
   const viewportRef = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
     if (!chatRoute) return;

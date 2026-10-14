@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 One row per catalogued element. The [component contracts](components.md) hold the full contract for each. Status *available* means the component ships in Detent; *proposed* means it is planned and has no source yet; *exception* means a deliberate, documented departure from the shared contract.
 
-Totals: 142 entries; by kind: 53 primitive, 82 composition, 7 surface; by status: 142 available, 0 proposed, 0 exception.
+Totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception.
 
 | Element | Group | Kind | Status | Source |
 | --- | --- | --- | --- | --- |
@@ -45,6 +45,7 @@ Totals: 142 entries; by kind: 53 primitive, 82 composition, 7 surface; by status
 | [Runner status dot](components.md#runner-status-dot) | Feedback | composition | available | `src/components/RunnerStatusDot.tsx` |
 | [Stage progress](components.md#stage-progress) | Feedback | composition | available | `src/components/StageProgress.tsx` |
 | [Sidebar primitive](components.md#sidebar-primitive) | Navigation | primitive | available | `src/components/ui/sidebar.tsx` |
+| [Tabs](components.md#tabs) | Navigation | primitive | available | `src/components/ui/tabs.tsx` |
 | [Scroll area](components.md#scroll-area) | Structure | primitive | available | `src/components/ui/scroll-area.tsx` |
 | [Separator](components.md#separator) | Structure | primitive | available | `src/components/ui/separator.tsx` |
 | [Group](components.md#group) | Structure | primitive | available | `src/components/ui/group.tsx` |
@@ -54,6 +55,8 @@ Totals: 142 entries; by kind: 53 primitive, 82 composition, 7 surface; by status
 | [Animated height](components.md#animated-height) | Structure | primitive | available | `src/components/AnimatedHeight.tsx` |
 | [Render error boundary](components.md#render-error-boundary) | Structure | primitive | available | `src/components/RenderErrorBoundary.tsx` |
 | [Table](components.md#table) | Data display | primitive | available | `src/components/ui/table.tsx` |
+| [Metric tile](components.md#metric-tile) | Data display | primitive | available | `src/components/ui/metric-tile.tsx` |
+| [Chart](components.md#chart) | Data display | primitive | available | `src/components/ui/chart.tsx` |
 | [Keyboard key](components.md#keyboard-key) | Data display | primitive | available | `src/components/ui/kbd.tsx` |
 | [Discovery list](components.md#discovery-list) | Data display | primitive | available | `src/components/ui/discovery-list.tsx` |
 | [Navigation list](components.md#navigation-list) | Entry | primitive | available | `src/components/ui/navigation-list.tsx` |
@@ -153,7 +156,7 @@ Totals: 142 entries; by kind: 53 primitive, 82 composition, 7 surface; by status
 
 ## Internal modules
 
-Every module under `src/components` is part of an entry or listed here: 152 of 163 are catalogued (as an entry's source or one of its files) and 11 are internal.
+Every module under `src/components` is part of an entry or listed here: 155 of 166 are catalogued (as an entry's source or one of its files) and 11 are internal.
 
 | Module | Why it is not a catalogued component |
 | --- | --- |

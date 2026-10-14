@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // collectRunnerLocalChecks reuses doctor and the configured provider's local
@@ -112,11 +113,23 @@ func reportRunnerSetup(ctx context.Context, cfg globalconfig.Config, version str
 		return err
 	}
 	for name, checks := range reports {
+		source := ""
+		for _, selected := range cfg.Projects {
+			if selected.ID == name && checks.Checkout == "passed" {
+				source = selected.Workdir
+				break
+			}
+		}
+		report, err := workspace.ProbeCommitReport(ctx, source, workspace.CommitIdentity{Name: "Detent runner", Email: string(file.Identity.MachineID) + "@runners.detent.invalid"})
+		if err != nil {
+			return err
+		}
+		checks.CommitName, checks.CommitEmail, checks.CommitSigning = report.Identity.Name, report.Identity.Email, report.Signing
 		native, err := client.Native(file.Identity.OrganizationID, tracker.ProjectID(cfg.Client.NativeProjects[name]))
 		if err != nil {
 			return err
 		}
-		if err := native.HeartbeatMachine(ctx, hubclient.Machine{ID: file.Identity.MachineID, DisplayName: cfg.Client.DisplayName, Capacity: cfg.Client.Capacity, Version: firstNonBlankString(version, "dev"), LocalChecks: &checks}); err != nil {
+		if err := native.HeartbeatMachine(ctx, hubclient.Machine{ID: file.Identity.MachineID, DisplayName: cfg.Client.DisplayName, Capacity: cfg.Client.Capacity, Version: firstNonBlankString(version, "dev"), LocalChecks: &checks, Problems: report.Problems()}); err != nil {
 			return err
 		}
 	}

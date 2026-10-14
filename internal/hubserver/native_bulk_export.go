@@ -26,6 +26,8 @@ func (s *Service) exportNativeWorkItems(c echo.Context) error {
 }
 
 func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params url.Values) (operatortool.WorkBulkExportPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.project), GeneratedAt: s.config.now(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
 	if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
 		return page, err
@@ -54,7 +56,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	if err != nil {
 		return page, err
 	}
-	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, "")
+	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, "", "")
 	if err != nil {
 		return page, err
 	}

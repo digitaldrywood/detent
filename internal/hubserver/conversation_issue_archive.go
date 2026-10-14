@@ -50,6 +50,8 @@ func readCoordinatorArchiveIssue(ctx context.Context, query nativeQueryer, scope
 }
 
 func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var args struct {
 		WorkItemIDs []string `json:"work_item_ids"`
 	}
@@ -82,7 +84,7 @@ func (t *coordinatorToolset) proposeIssueArchive(ctx context.Context, record con
 		}
 	}
 	s := t.coordinator.service.server
-	tx, err := s.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}

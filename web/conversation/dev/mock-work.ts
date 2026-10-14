@@ -47,6 +47,9 @@ interface MockIssue {
   number: number;
   revision: string;
   profile: string;
+  type?: "bug" | "change_request";
+  report_context?: { url?: string; app_build?: string; browser?: string; os?: string; viewport?: string; captured_at?: string };
+  verification?: { state: "pending" | "verified"; verified_by?: { kind: string; principal_id: string }; verified_at?: string };
   title: string;
   body: string;
   state: string;
@@ -105,7 +108,7 @@ function mockLabelColor(name: string): string {
   }
   return LABEL_PALETTE[hash % LABEL_PALETTE.length]!;
 }
-const ASSIGNEES = ["michaelhvisser", "octocat", ""];
+const ASSIGNEES = ["example-owner", "octocat", ""];
 const TITLES = [
   "checkout: renewal waits on a healthy handoff",
   "board: show scheduler dispatch waits",
@@ -334,7 +337,7 @@ function acceptWebSocket(
 }
 
 export interface WorkMock {
-  addIssue: (issue: Pick<MockIssue, "work_item_id" | "project_id" | "number" | "title" | "body" | "state" | "labels"> & Pick<Partial<MockIssue>, "priority">) => void;
+  addIssue: (issue: Pick<MockIssue, "work_item_id" | "project_id" | "number" | "title" | "body" | "state" | "labels"> & Pick<Partial<MockIssue>, "priority" | "type">) => void;
   /**
    * Returns true when it answered the request.
    *
@@ -480,6 +483,9 @@ export function createWorkMock(options: {
             "## Acceptance\n\n- The renewal blocks until the handoff is acknowledged.\n- A lost lease is reported as lost within one tick.\n- The board says which runner holds the lease.\n",
           state: lane,
           terminal: lane === "Done",
+          ...(index % 3 === 0 ? { type: "bug" as const } : index % 3 === 1 ? { type: "change_request" as const } : {}),
+          ...(index === 0 ? { report_context: { url: "https://app.example.test/settings", app_build: "v1.4.2", browser: "Chrome 130", os: "macOS 15", viewport: "1440x900", captured_at: "2026-10-13T12:00:00Z" } } : {}),
+          ...(pagination && index === 3 ? { verification: { state: "pending" as const } } : {}),
           ...(index % 4 === 3 ? {} : { priority: index % 4 }),
           labels: index % 3 === 0 ? [LABELS[index % LABELS.length]!, "effort:medium"] : [],
           assignees: ASSIGNEES[index % ASSIGNEES.length] === "" ? [] : [ASSIGNEES[index % ASSIGNEES.length]!],
@@ -588,7 +594,7 @@ export function createWorkMock(options: {
           base_sha: pad(1).slice(0, 40),
           head_sha: head,
           merge_base_sha: pad(1).slice(0, 40),
-          repository: "digitaldrywood/detent",
+          repository: "example-org/example-project",
           code: {
             kind: "code",
             uri: `artifact://artifact_${pad(issue.number)}`,
@@ -602,7 +608,7 @@ export function createWorkMock(options: {
           external: {
             provider: "github",
             id: String(issue.number + 9),
-            url: `https://github.com/digitaldrywood/detent/pull/${issue.number + 9}`,
+            url: `https://github.com/example-org/example-project/pull/${issue.number + 9}`,
           },
           version_id: `version_${pad(issue.number)}`,
           change_id: `change_${pad(issue.number)}`,
@@ -1105,6 +1111,7 @@ export function createWorkMock(options: {
             older.labels = ["older-label", `choice-${choice}`];
             older.assignees = [`operator-${choice}`];
             older.priority = choice === "a" ? 0 : 1;
+            older.actor = { kind: "human", principal_id: choice === "a" ? "fixture-principal" : "other-principal" };
           }
           const active = issues.find((issue) => issue.title === "Observed later-page worker");
           if (active !== undefined) active.updated_at = new Date(now).toISOString();
@@ -1341,25 +1348,29 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort"], ["state", "label", "assignee", "priority"]);
+        const problem = validateQuery(url, ["type", "state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort", "created_by"], ["type", "state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
         }
-        const completedWindow = url.searchParams.get("completed_window") ?? "48h";
-        const hours: Record<string, number> = { "48h": 48, "7d": 7 * 24, "14d": 14 * 24 };
-        if (completedWindow !== "all" && hours[completedWindow] === undefined) {
-          invalid(response, "completed_window supports 48h,7d,14d,all");
+        const hours: Record<string, number> = { "1h": 1, "24h": 24, "7d": 7 * 24 };
+        const requestedWindow = url.searchParams.get("completed_window") ?? "";
+        const completedWindow = ["", "48h", "14d", "all"].includes(requestedWindow) ? "24h" : requestedWindow;
+        if (hours[completedWindow] === undefined) {
+          invalid(response, "completed_window supports 1h,24h,7d");
           return true;
         }
         const state = url.searchParams.getAll("state");
+        const type = url.searchParams.getAll("type");
         const label = url.searchParams.getAll("label");
         const assignee = url.searchParams.getAll("assignee");
         const priority = url.searchParams.getAll("priority");
+        const createdBy = url.searchParams.get("created_by");
+        const filer = createdBy === "me" ? (pagination ? "fixture-principal" : "tok_mock") : createdBy;
         const boardIncluded = url.searchParams.get("include") === "board";
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), boardIncluded ? 2000 : 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
-        const cursorScope = JSON.stringify([projectId, state, label, assignee, priority, q, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
+        const cursorScope = JSON.stringify([projectId, state, type, label, assignee, priority, q, createdBy, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -1373,6 +1384,8 @@ export function createWorkMock(options: {
         }
         const baseFiltered = scoped
           .filter(() => url.searchParams.get("archived") !== "true")
+          .filter((issue) => filer === null || issue.actor.principal_id === filer)
+          .filter((issue) => type.length === 0 || issue.type !== undefined && type.includes(issue.type))
           .filter((issue) => label.length === 0 || label.some((value) => issue.labels.includes(value)))
           .filter((issue) => assignee.length === 0 || assignee.some((value) => issue.assignees.includes(value)))
           .filter((issue) => priority.length === 0 || priority.includes(String(issue.priority ?? "")))
@@ -1383,6 +1396,14 @@ export function createWorkMock(options: {
         const filtered = baseFiltered
           .filter((issue) => !url.searchParams.has("open") || issue.terminal === (url.searchParams.get("open") === "false"))
           .filter((issue) => state.length === 0 || state.includes(issue.state));
+        const closedIn = (issues: readonly MockIssue[], state: string, window: string) => issues.filter((issue) => issue.state === state
+          && Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[window]! * 3_600_000
+          && Date.parse(terminalEntries.get(issue.work_item_id) ?? "") < now).length;
+        const shippedSummary = (issues: readonly MockIssue[], selected: string) => ({
+          completed: closedIn(issues, "Done", selected),
+          cancelled: closedIn(issues, "Cancelled", selected),
+          shipped_windows: Object.keys(hours).map((window) => ({ window, shipped: closedIn(issues, "Done", window), cancelled: closedIn(issues, "Cancelled", window) })),
+        });
         const ordered = filtered.toSorted((a, b) => url.searchParams.get("sort") === "closed"
           ? Date.parse(terminalEntries.get(b.work_item_id) ?? "1970-01-01") - Date.parse(terminalEntries.get(a.work_item_id) ?? "1970-01-01") || a.number - b.number
           : a.number - b.number);
@@ -1396,6 +1417,15 @@ export function createWorkMock(options: {
           || Number(STATES.find((state) => state.name === b.state)?.dispatchable ?? false)
             - Number(STATES.find((state) => state.name === a.state)?.dispatchable ?? false)
           || b.number - a.number);
+        if (url.searchParams.get("fields") === "picker") {
+          json(response, 200, {
+            total: filtered.length,
+            items: page.map((issue) => ({ work_item_id: issue.work_item_id, number: issue.number, title: issue.title,
+              state: issue.state, terminal: issue.terminal, priority: issue.priority })),
+            ...(last !== undefined && matching.length > page.length ? { next_cursor: String(last.number) } : {}),
+          });
+          return true;
+        }
         json(response, 200, {
           total: filtered.length,
           items: workIncluded ? page.map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })) : page,
@@ -1407,8 +1437,7 @@ export function createWorkMock(options: {
                 status: detail.summary.status, external: detail.versions.at(-1)?.external } };
           }) } : {}),
           ...(workIncluded ? { work: {
-            completed: workFiltered.filter((issue) => issue.terminal && (completedWindow === "all"
-              || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= now - hours[completedWindow]! * 3_600_000)).length,
+            ...shippedSummary(workFiltered, completedWindow),
             items: open.slice(0, limit).map((issue) => ({ ...issue, closed_at: issue.terminal ? terminalEntries.get(issue.work_item_id) : undefined, body: "" })),
             lanes: [...new Set(workFiltered.map((issue) => issue.state))].map((state) => ({
               state, total: workFiltered.filter((issue) => issue.state === state).length,
@@ -1571,6 +1600,44 @@ export function createWorkMock(options: {
         if (!issue.terminal && STATES.find((state) => state.name === target)?.terminal) terminalEntries.set(issue.work_item_id, new Date(now).toISOString());
         issue.state = target;
         issue.terminal = STATES.find((candidate) => candidate.name === target)?.terminal ?? false;
+        issue.revision = String(Number(issue.revision) + 1);
+        issue.updated_at = new Date().toISOString();
+        bump();
+        json(response, 200, issue);
+        return true;
+      }
+
+      if (action === "verification" && method === "POST") {
+        const body = await readBody();
+        const key = String(body.idempotency_key ?? "");
+        if (key.length === 0 || key.length > 128) {
+          invalid(response, "An idempotency key of at most 128 bytes is required");
+          return true;
+        }
+        if (String(body.expected_revision ?? "") !== issue.revision) {
+          json(response, 409, { code: "revision_conflict", message: "The requested operation is unavailable" });
+          return true;
+        }
+        if (issue.state !== "Done" || issue.verification?.state !== "pending") {
+          invalid(response, "Issue is not awaiting verification");
+          return true;
+        }
+        const result = String(body.result ?? "");
+        if (result === "verified") {
+          issue.verification = { state: "verified", verified_by: { kind: "human", principal_id: "tok_mock" }, verified_at: new Date().toISOString() };
+        } else if (result === "not_fixed") {
+          if (typeof body.comment !== "string" || body.comment.trim().length === 0) {
+            invalid(response, "not_fixed requires a comment describing what is still broken");
+            return true;
+          }
+          delete issue.verification;
+          issue.state = "Todo";
+          issue.terminal = false;
+          terminalEntries.delete(issue.work_item_id);
+        } else {
+          invalid(response, "result must be verified or not_fixed");
+          return true;
+        }
         issue.revision = String(Number(issue.revision) + 1);
         issue.updated_at = new Date().toISOString();
         bump();

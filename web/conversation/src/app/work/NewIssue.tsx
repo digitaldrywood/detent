@@ -22,7 +22,7 @@ import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { AttachmentEditor } from "./components/AttachmentEditor.tsx";
 import { toastManager } from "../../components/ui/toast.tsx";
-import type { AccountProject } from "../../contracts/account.ts";
+import type { AccountProject, ReporterTemplates } from "../../contracts/account.ts";
 import { ControlError, NativeSelect } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { newKey } from "../account/idempotency.ts";
@@ -31,9 +31,16 @@ import { useSidebarData } from "../adapters/sidebarData.tsx";
 
 export const ISSUE_CREATION_NEEDS_WRITE = "You need write access to a project to create issues";
 
+function newIssueStates(project: AccountProject | undefined, role?: string) {
+  return project?.states.filter((state) => project.profile !== "native" ||
+    (role === "reporter" ? state.name === "Triage" : state.name !== "Triage")) ?? [];
+}
+
 /** The lane a new issue starts in when nobody chose one. */
-export function firstIssueState(project: AccountProject | undefined): string {
-  if (project?.profile === "native") return project.states[0]?.name ?? "";
+export function firstIssueState(project: AccountProject | undefined, role?: string): string {
+  if (project?.profile === "native") {
+    return newIssueStates(project, role)[0]?.name ?? "";
+  }
   return (
     project?.states.find((state) => state.dispatchable === true && state.terminal !== true)
       ?.name ??
@@ -43,11 +50,11 @@ export function firstIssueState(project: AccountProject | undefined): string {
 }
 
 /** The requested lane when the project has it, otherwise the project's first working lane. */
-export function newIssueState(project: AccountProject | undefined, requested: string | null): string {
-  if (requested !== null && project?.states.some((state) => state.name === requested) === true) {
+export function newIssueState(project: AccountProject | undefined, requested: string | null, role?: string): string {
+  if (requested !== null && newIssueStates(project, role).some((state) => state.name === requested)) {
     return requested;
   }
-  return firstIssueState(project);
+  return firstIssueState(project, role);
 }
 
 /**
@@ -58,10 +65,11 @@ export function newIssueState(project: AccountProject | undefined, requested: st
 export function newIssueProjects(
   projects: readonly AccountProject[],
   state: string | null,
+  role?: string,
 ): readonly AccountProject[] {
   return projects.filter(
     (project) =>
-      project.can_write && (state === null || project.states.some((entry) => entry.name === state)),
+      project.can_write && (state === null || newIssueStates(project, role).some((entry) => entry.name === state)),
   );
 }
 
@@ -96,19 +104,45 @@ export function NewIssueDialog({
   readonly onCreated: (input: { readonly projectId: string; readonly title: string }) => void;
 }): React.ReactElement {
   const api = useAccountApi();
+  const role = useAccountBootstrap()?.actor.role;
+  const reporter = role === "reporter";
+  const [issueType, setIssueType] = React.useState<"" | "bug" | "change_request">("");
   const [target, setTarget] = React.useState(() => newIssueProject(projects, projectId)?.id ?? "");
   const project = projects.find((candidate) => candidate.id === target);
+  const states = newIssueStates(project, role);
   const [title, setTitle] = React.useState("");
 	const [githubIssueUrl, setGithubIssueUrl] = React.useState("");
   const [body, setBody] = React.useState("");
+  const [templates, setTemplates] = React.useState<ReporterTemplates | null>(null);
+  const templateBody = issueType === "" || templates === null
+    ? "" : templates[issueType].map((heading) => `## ${heading}\n\n`).join("\n");
+  const previousTemplate = React.useRef("");
+  React.useEffect(() => {
+    if (!open || project?.profile !== "native") return;
+    let active = true;
+    setTemplates(null);
+    void api.reporterTemplates(target).then((result) => {
+      if (active) setTemplates(result.reporter_templates);
+    }).catch(() => {
+      if (active) setTemplates(null);
+    });
+    return () => { active = false; };
+  }, [api, open, target, project?.profile]);
+  React.useEffect(() => {
+    const next = templateBody;
+    const previous = previousTemplate.current;
+    setBody((current) => current.trim() === "" || current === previous ? next : current);
+    previousTemplate.current = next;
+  }, [templateBody]);
   const [uploading, setUploading] = React.useState(false);
-  const [state, setState] = React.useState(() => newIssueState(project, requestedState));
+  const [state, setState] = React.useState(() => newIssueState(project, requestedState, role));
   const key = React.useRef(newKey());
   const create = useMutation(async () => {
-    if (uploading) return;
+    if (uploading || reporter && project?.profile === "native" && issueType === "") return;
     const created = await api.createFirstIssue({
       projectId: target,
 	  githubIssueUrl: githubIssueUrl.trim() || undefined,
+      type: project?.profile === "native" && issueType !== "" ? issueType : undefined,
       title: title.trim(),
       body: body.trim(),
       state,
@@ -117,6 +151,7 @@ export function NewIssueDialog({
     key.current = newKey();
     const createdTitle = title.trim() || githubIssueUrl.trim();
     setTitle("");
+    setIssueType("");
     setBody("");
 	setGithubIssueUrl("");
     onOpenChange(false);
@@ -157,6 +192,7 @@ export function NewIssueDialog({
                       newIssueState(
                         projects.find((candidate) => candidate.id === next),
                         requestedState,
+                        role,
                       ),
                     );
                   }}
@@ -173,6 +209,17 @@ export function NewIssueDialog({
               />
               <p className="text-xs text-muted-foreground">Link an issue from this project's repository. The runner imports its context before the first run.</p>
             </div>
+            {project?.profile === "native" ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="new-issue-type">{reporter ? "Type" : "Type (optional)"}</Label>
+                <NativeSelect
+                  id="new-issue-type"
+                  value={issueType}
+                  options={[{ value: "", label: "Choose a type" }, { value: "bug", label: "Bug" }, { value: "change_request", label: "Change request" }]}
+                  onValueChange={(value) => setIssueType(value as typeof issueType)}
+                />
+              </div>
+            ) : null}
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="new-issue-title">Title</Label>
               <Input
@@ -194,13 +241,13 @@ export function NewIssueDialog({
                 onChange={setBody}
               />
             </div>
-            {project !== undefined && project.states.length > 1 ? (
+            {project !== undefined && states.length > 1 ? (
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="new-issue-state">Lane</Label>
                 <NativeSelect
                   id="new-issue-state"
                   value={state}
-                  options={project.states.map((entry) => ({
+                  options={states.map((entry) => ({
                     value: entry.name,
                     label: entry.name,
                   }))}
@@ -216,7 +263,7 @@ export function NewIssueDialog({
           <Button
             type="submit"
             form="new-issue-form"
-            disabled={uploading || create.pending || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
+            disabled={uploading || create.pending || (reporter && project?.profile === "native" && issueType === "") || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
           >
             {create.pending ? "Creating…" : "Create issue"}
           </Button>
@@ -277,7 +324,8 @@ export function NewIssueProvider({ children }: { readonly children: React.ReactN
   const bootstrap = useAccountBootstrap();
   const activeProjectId = useSidebarData()?.activeProjectId ?? null;
   const allProjects = bootstrap?.projects;
-  const writable = React.useMemo(() => newIssueProjects(allProjects ?? [], null), [allProjects]);
+  const role = bootstrap?.actor.role;
+  const writable = React.useMemo(() => newIssueProjects(allProjects ?? [], null, role), [allProjects, role]);
   const canCreate = writable.length > 0;
   const [request, setRequest] = React.useState<OpenRequest | null>(null);
   const [open, setOpen] = React.useState(false);
@@ -329,7 +377,7 @@ export function NewIssueProvider({ children }: { readonly children: React.ReactN
           key={request.seq}
           open={open}
           onOpenChange={setOpen}
-          projects={newIssueProjects(writable, request.state)}
+          projects={newIssueProjects(writable, request.state, role)}
           projectId={request.projectId}
           state={request.state}
           onCreated={onCreated}

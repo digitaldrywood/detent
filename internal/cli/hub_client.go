@@ -165,10 +165,21 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 			return report
 		},
 		CapacityConfiguration: capacityConfiguration,
-		LocalChecks:           localChecks,
-		GitHubIntake:          github.FetchIssueSnapshot,
-		GitHubDiscovery:       github.DiscoverIssues,
-		Problems:              reportProblems,
+		AvailableCapacity: func(ctx context.Context, capacity int) int {
+			current := cfg
+			if setupOptions.runtimeConfig != nil {
+				current = setupOptions.runtimeConfig()
+			}
+			if constraint := runnerStorageConstraint(ctx, current); constraint != "" {
+				projects.logger.Warn("runner host storage limits capacity", "reason", constraint)
+				return 0
+			}
+			return capacity
+		},
+		LocalChecks:     localChecks,
+		GitHubIntake:    github.FetchIssueSnapshot,
+		GitHubDiscovery: github.DiscoverIssues,
+		Problems:        reportProblems,
 		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 			current := cfg
 			if setupOptions.runtimeConfig != nil {

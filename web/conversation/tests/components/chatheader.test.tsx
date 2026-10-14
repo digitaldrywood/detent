@@ -57,10 +57,10 @@ describe("the header's conversation actions", () => {
   it("offers the issue once the chat is linked, and no second handoff", () => {
     const actions = conversationActions({
       canCreateIssue: false,
-      issueIdentifier: "parable#3363",
+      issueIdentifier: "example-project#3363",
     });
     expect(actions.map((action) => action.name)).toEqual([
-      "Open issue parable#3363",
+      "Open issue example-project#3363",
       "Copy link",
     ]);
   });

@@ -194,16 +194,16 @@ async function assertCardIdentity(card, density) {
     await expect(effort).toBeVisible();
     await expect(effort).not.toHaveText("");
   }
-  await expect(project).toHaveText("digitaldrywood-release-train-platform");
+  await expect(project).toHaveText("example-org-release-train-platform");
   await expect(issue).toBeVisible();
   await expect(pullRequest).toBeVisible();
   await expect(issue).toHaveAttribute(
     "href",
-    "https://github.test/digitaldrywood/release-train-platform/issues/5260",
+    "https://github.test/example-org/release-train-platform/issues/5260",
   );
   await expect(pullRequest).toHaveAttribute(
     "href",
-    "https://github.test/digitaldrywood/release-train-platform/pull/5260",
+    "https://github.test/example-org/release-train-platform/pull/5260",
   );
 
   const layout = await card.evaluate((article) => {

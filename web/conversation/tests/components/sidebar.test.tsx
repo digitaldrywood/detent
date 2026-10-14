@@ -216,8 +216,8 @@ describe("the thread sidebar", () => {
   });
 
   it.each([
-    ["Parable", "All Parable projects"],
-    ["Drywood Creek", "All Drywood Creek projects"],
+    ["Secondary Example Organization", "All Secondary Example Organization projects"],
+    ["Tertiary Example Organization", "All Tertiary Example Organization projects"],
     ["", "All projects"],
   ])("names the %s project scope and reports project and all-project selections", async (organizationName, label) => {
     const onProjectChange = vi.fn();
@@ -237,16 +237,16 @@ describe("the thread sidebar", () => {
 
   it("updates the current scope and reset option when the organization changes", async () => {
     const onProjectChange = vi.fn();
-    const fixture = await renderSidebar({ onProjectChange, organizationName: "Parable" });
-    fixture.setOrganization("Drywood Creek");
-    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Drywood Creek projects");
+    const fixture = await renderSidebar({ onProjectChange, organizationName: "Secondary Example Organization" });
+    fixture.setOrganization("Tertiary Example Organization");
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Tertiary Example Organization projects");
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
     fireEvent.click(await screen.findByRole("option", { name: "beta" }));
-    fixture.setOrganization("Parable");
+    fixture.setOrganization("Secondary Example Organization");
     expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta");
     expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "All Parable projects" }));
+    fireEvent.click(await screen.findByRole("option", { name: "All Secondary Example Organization projects" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("");
   });
 

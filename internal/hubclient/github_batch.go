@@ -5,12 +5,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func (s *Scheduler) startGitHubBatch(ctx context.Context, client *NativeClient, task tracker.GitHubBatchTask) <-chan struct{} {
+	s.mu.Lock()
+	if s.githubBatchRunning {
+		s.mu.Unlock()
+		return nil
+	}
+	s.githubBatchRunning = true
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			s.mu.Lock()
+			s.githubBatchRunning = false
+			s.mu.Unlock()
+		}()
+		if err := s.processGitHubBatch(context.WithoutCancel(ctx), client, task); err != nil {
+			slog.Default().Warn("github intake failed", "project_id", task.ProjectID, "batch_id", task.BatchID, "revision", task.Revision, "error", err)
+		}
+	}()
+	return done
+}
 
 func (s *Scheduler) processGitHubBatch(ctx context.Context, client *NativeClient, task tracker.GitHubBatchTask) error {
 	if task.ProjectID != client.project {

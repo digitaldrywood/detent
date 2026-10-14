@@ -47,12 +47,6 @@ import {
   MenuTrigger,
 } from "../../components/ui/menu.tsx";
 import { ToggleGroup, Toggle } from "../../components/ui/toggle-group.tsx";
-import {
-  Tooltip,
-  TooltipPopup,
-  TooltipProvider,
-  TooltipTrigger,
-} from "../../components/ui/tooltip.tsx";
 import { UsageMeter } from "../../components/ui/usage-meter.tsx";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { validateTenantSearch, type TenantSearch } from "./tenantList.ts";
@@ -65,6 +59,7 @@ import {
   type PlatformOrganization,
   type PlatformTenantDetail,
 } from "./api.ts";
+import { GrantAICreditsDialog, TenantCredits } from "./TenantCredits.tsx";
 import { GrantComplimentaryDialog, TenantPlan } from "./ComplimentaryPlans.tsx";
 import { Problem, useEntryApi } from "./EntryScreens.tsx";
 import {
@@ -195,7 +190,9 @@ function TenantActions({
   detail,
   role,
   onChanged,
+  onGrantCredits,
 }: {
+  readonly onGrantCredits: () => void;
   readonly detail: PlatformTenantDetail;
   readonly role: string;
   readonly onChanged: () => Promise<void>;
@@ -226,18 +223,8 @@ function TenantActions({
       detail.organization.state === "ready" ? (
         <SupportAccess organization={detail.organization} csrf={detail.csrf} />
       ) : null}
-      {canGrant ? (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger render={<span tabIndex={0} />}>
-              <Button size="sm" disabled>
-                Grant AI credits
-              </Button>
-            </TooltipTrigger>
-            <TooltipPopup>AI credit grants are not available yet.</TooltipPopup>
-          </Tooltip>
-        </TooltipProvider>
-      ) : null}
+      {canGrant ? <Button size="sm" onClick={onGrantCredits}>Grant AI credits</Button> : null}
+
       {canGrant || canResume ? (
         <Menu>
           <MenuTrigger
@@ -460,6 +447,13 @@ export function PlatformTenant({
     organization: string;
   };
   const api = useEntryApi();
+  const [creditDialogOpen, setCreditDialogOpen] = React.useState(false);
+  const [creditRevision, setCreditRevision] = React.useState(0);
+  const creditTrigger = React.useRef<HTMLElement | null>(null);
+  const openCreditDialog = () => {
+    creditTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setCreditDialogOpen(true);
+  };
   const { isMobile } = useSidebar();
   const resource = usePlatformResource(
     () => api.platformTenant(organization),
@@ -535,6 +529,7 @@ export function PlatformTenant({
                 detail={detail}
                 role={role}
                 onChanged={resource.refresh}
+                onGrantCredits={openCreditDialog}
               />
             </div>
           ) : (
@@ -544,9 +539,16 @@ export function PlatformTenant({
                 detail={detail}
                 role={role}
                 onChanged={resource.refresh}
+                onGrantCredits={openCreditDialog}
               />
             </PlatformPageActions>
           )}
+          {canGrant ? <GrantAICreditsDialog key={organization} detail={detail} returnFocus={creditTrigger} open={creditDialogOpen} onOpenChange={setCreditDialogOpen}
+            onChanged={async (balance) => {
+              resource.set({ ...detail, credit_balance_micros: balance, ai_credits: detail.ai_credits ? { ...detail.ai_credits, balance_micros: balance } : null });
+              await resource.refresh();
+              setCreditRevision((value) => value + 1);
+            }} /> : null}
           <div className="min-w-0 overflow-x-auto">
             <ToggleGroup
               aria-label="Tenant section"
@@ -629,8 +631,9 @@ export function PlatformTenant({
                   <SettingsRow title="Plan" control="Unavailable" />
                 </SettingsSection>
               )}
+              <TenantCredits detail={detail} canGrant={canGrant} onGrant={openCreditDialog} />
               <TenantUsage detail={detail} />
-              <TenantActivity detail={detail} recent />
+              <TenantActivity key={creditRevision} detail={detail} recent />
             </>
           ) : selected === "billing" ? (
             detail.entitlements ? (
@@ -648,12 +651,10 @@ export function PlatformTenant({
               </SettingsSection>
             )
           ) : selected === "credits" ? (
-            <SettingsSection title="AI credits">
-              <SettingsRow title="AI credit management will be available here." />
-            </SettingsSection>
+            <TenantCredits detail={detail} canGrant={canGrant} onGrant={openCreditDialog} history />
           ) : selected === "activity" ? (
             <>
-              <TenantActivity detail={detail} />
+              <TenantActivity key={creditRevision} detail={detail} />
               <SettingsSection
                 title="Provisioning timeline"
                 aria-label="Provisioning timeline"

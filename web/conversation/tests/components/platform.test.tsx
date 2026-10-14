@@ -36,14 +36,14 @@ afterEach(() => {
 });
 
 const organizations = {
-  email: "admin@detent.build",
+  email: "admin@example.com",
   csrf: "staff-csrf",
   can_support: true,
   unavailable: ["plan", "grants", "member_count", "runner_count"],
   organizations: [
     {
       id: "org_alpha", name: "Alpha", state: "ready", step: "publish", attempts: 0, error_code: "", managed: true,
-      creator_email: "dana@example.test", created_at: "2026-09-20T10:00:00Z", updated_at: "2026-09-20T10:05:00Z",
+      creator_email: "member@example.test", created_at: "2026-09-20T10:00:00Z", updated_at: "2026-09-20T10:05:00Z",
       billing: { available: true, status: "active" }, can_support: true, plan: null, grants: null, member_count: null, runner_count: null,
     },
     {
@@ -57,7 +57,7 @@ const organizations = {
 const allowlist = {
   self_service: true,
   open: false,
-  allowed_emails: ["dana@example.test"],
+  allowed_emails: ["member@example.test"],
   allowed_domains: ["example.org"],
   source: { file: "/etc/detent/cloud.yaml", keys: ["allocation.allowed_emails", "allocation.allowed_domains"] },
 };
@@ -86,7 +86,7 @@ const entitlements = {
     {
       id: "comp_existing", plan: { id: "comp_team", version: 1 }, scope: ["hosted_artifacts", "projects"],
       starts_at: "2026-09-20T10:00:00Z", expires_at: "2026-12-31T23:59:59Z", reason: "design partner",
-      granted_by: "plans@detent.build", granted_at: "2026-09-20T10:00:00Z",
+      granted_by: "plans@example.com", granted_at: "2026-09-20T10:00:00Z",
     },
   ],
   plans: [
@@ -99,8 +99,8 @@ const administrator = { ...organizations, can_grant: true };
 
 function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
   const api: EntryApi = {
-    organizations: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", organizations: [], pending: [], can_create: false, platform_role: "admin" })),
-    session: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", can_create: false, platform_role: "admin" })),
+    organizations: vi.fn(async () => ({ email: "admin@example.com", csrf: "staff-csrf", organizations: [], pending: [], can_create: false, platform_role: "admin" })),
+    session: vi.fn(async () => ({ email: "admin@example.com", csrf: "staff-csrf", can_create: false, platform_role: "admin" })),
     provisioning: vi.fn(async () => ({ id: "", name: "", state: "", step: "", error: "", can_resume: false })),
     createOrganization: vi.fn(async () => ({ next: "/" })),
     resume: vi.fn(async () => ({ next: "/" })),
@@ -108,17 +108,18 @@ function fakeApi(overrides: Partial<EntryApi> = {}): EntryApi {
       organization: organizations.organizations.find((item) => item.id === id)!,
       csrf: "staff-csrf", can_grant: true, can_resume: id === "org_beta", unavailable: [],
       credit_balance_micros: null,
-      members: [{ id: "owner", email: "dana@example.test", role: "owner" }],
+      members: [{ id: "owner", email: "member@example.test", role: "owner" }],
       runners: [{ id: "runner_one", name: "Mac Studio", health: "online" }],
       projects: [{ id: "prj_one", name: "Detent" }],
       events: [{ event: "requested", generation: 1, recorded_at: "2026-09-20T10:00:00Z" }],
       entitlements: await api.platformEntitlements(id),
     })),
+    adjustPlatformAICredits: vi.fn(async () => ({ organization_id: "org_alpha", balance_micros: 0 })),
     resumePlatformTenant: vi.fn(async () => ({ next: "/platform/tenants" })),
     platformUsers: vi.fn(async () => ({ users: [], unsearched: [] })),
     platformOrganizations: vi.fn(async () => organizations),
     platformAllowlist: vi.fn(async () => allowlist),
-    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@detent.build", role: "admin" } })),
+    platformMembers: vi.fn(async () => ({ members: [], revision: 1, self: { email: "admin@example.com", role: "admin" } })),
     changePlatformMember: vi.fn(async () => ({ email: "new@example.test", role: "viewer", revision: 2 })),
     platformAudit: vi.fn(async () => ({ rows: [], events: [], tenants: [], next_cursor: "" })),
     platformHealth: vi.fn(async () => health),
@@ -133,16 +134,34 @@ function renderWith(api: EntryApi, element: React.ReactElement) {
   return render(<EntryApiContext.Provider value={api}>{element}</EntryApiContext.Provider>);
 }
 
-function renderPlatform(api: EntryApi, path = "/platform/tenants") {
+async function renderPlatform(api: EntryApi, path = "/platform/tenants") {
   const router = makeEntryRouter(createMemoryHistory({ initialEntries: [path] }));
-  renderWith(api, <RouterProvider router={router} />);
+  await act(async () => {
+    renderWith(api, <RouterProvider router={router} />);
+    await router.load();
+  });
   return router;
+}
+
+const credits = {
+  balance_micros: 100_000_000, spent_micros: 750_000, month: "2026-10", auto_enabled: false,
+  history: [
+    { amount_micros: 100_000_000, kind: "complimentary", actor: "staff@example.test", reason: "Pilot credits", at: "2026-10-09T12:00:00Z" },
+    { amount_micros: 5_000_000, kind: "purchase", actor: "", reason: "", at: "2026-10-08T12:00:00Z" },
+  ],
+};
+
+function creditApi(overrides: Partial<EntryApi> = {}): EntryApi {
+  const api = fakeApi(overrides);
+  const read = api.platformTenant;
+  api.platformTenant = vi.fn(async (id) => ({ ...await read(id), credit_balance_micros: credits.balance_micros, ai_credits: credits }));
+  return api;
 }
 
 describe("platform console", () => {
   it("debounces URL-backed user search and rejects short queries", async () => {
     const search = vi.fn(async () => userResults);
-    const router = renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
+    const router = await renderPlatform(fakeApi({ platformUsers: search }), "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
     const navigate = vi.spyOn(router, "navigate");
     let allowNavigation!: (blocked: boolean) => void;
@@ -183,7 +202,7 @@ describe("platform console", () => {
 
   it("restores search and selected user on back and reload with explicit empty sections", async () => {
     const api = fakeApi({ platformUsers: vi.fn(async () => userResults) });
-    const router = renderPlatform(api, "/platform/users?q=example.test");
+    const router = await renderPlatform(api, "/platform/users?q=example.test");
     const input = await screen.findByRole("searchbox") as HTMLInputElement;
     expect(input.value).toBe("example.test");
     fireEvent.click(await screen.findByRole("link", { name: "alex+test@example.test" }));
@@ -198,7 +217,7 @@ describe("platform console", () => {
     await act(async () => { router.history.back(); });
     expect((await screen.findByRole("searchbox") as HTMLInputElement).value).toBe("example.test");
     cleanup();
-    renderPlatform(api, selected);
+    await renderPlatform(api, selected);
     expect((await screen.findByRole("region", { name: "Account" })).textContent).toContain("alex+test@example.test");
     expect(api.platformUsers).toHaveBeenLastCalledWith("alex+test@example.test");
     fireEvent.click(within(screen.getByRole("heading", { level: 1 })).getByRole("link", { name: "Users" }));
@@ -211,7 +230,7 @@ describe("platform console", () => {
     let invitationsResult = [invitation, { ...invitation, expires_at: "2026-10-14T00:00:00Z" }, invitation];
     const errors = vi.spyOn(console, "error");
     const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: [{ ...original, invitations: invitationsResult }] })) });
-    const router = renderPlatform(api, "/platform/users/sam%40example.test");
+    const router = await renderPlatform(api, "/platform/users/sam%40example.test");
     const account = await screen.findByRole("region", { name: "Account" });
     expect(account.textContent).toContain("user_01HX_sam");
     expect(within(account).getByRole("link", { name: "Manage in Staff" }).getAttribute("href")).toBe("/platform/staff");
@@ -240,7 +259,7 @@ describe("platform console", () => {
       ...userResults,
       users: query === "missing" ? [] : Array.from({ length: 50 }, (_, index) => ({ ...userResults.users[0]!, email: `user${index}@example.test` })),
     })) });
-    renderPlatform(api, "/platform/users?q=example.test");
+    await renderPlatform(api, "/platform/users?q=example.test");
     expect(await screen.findByText("Showing up to 50 users. Refine your search to find other users.")).toBeTruthy();
     const input = screen.getByRole("searchbox");
     fireEvent.change(input, { target: { value: "missing" } });
@@ -252,11 +271,11 @@ describe("platform console", () => {
 
   it("keeps user pages staff-only and hides Staff management from non-admin staff", async () => {
     const search = vi.fn(async () => userResults);
-    renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "person@example.test", csrf: "c", platform_role: "" })) }), "/platform/users/sam%40example.test");
+    await renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "person@example.test", csrf: "c", platform_role: "" })) }), "/platform/users/sam%40example.test");
     expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
     expect(search).not.toHaveBeenCalled();
     cleanup();
-    renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "support@example.test", csrf: "c", platform_role: "support" })) }), "/platform/users/sam%40example.test");
+    await renderPlatform(fakeApi({ platformUsers: search, session: vi.fn(async () => ({ email: "support@example.test", csrf: "c", platform_role: "support" })) }), "/platform/users/sam%40example.test");
     await screen.findByRole("region", { name: "Account" });
     expect(screen.queryByRole("link", { name: "Manage in Staff" })).toBeNull();
   });
@@ -266,7 +285,7 @@ describe("platform console", () => {
     const search = vi.fn().mockImplementationOnce(() => new Promise<typeof userResults>((_, reject) => { refuse = reject; })).mockResolvedValue(userResults);
     const api = fakeApi({ platformUsers: search });
     const user = userEvent.setup();
-    const router = renderPlatform(api, "/platform/users");
+    const router = await renderPlatform(api, "/platform/users");
     const input = await screen.findByRole("searchbox", { name: "Search by email" });
     await user.type(input, "member");
     await waitFor(() => expect(api.platformUsers).toHaveBeenCalledExactlyOnceWith("member"));
@@ -286,7 +305,7 @@ describe("platform console", () => {
   });
   it.each(["admin", "support", "billing", "viewer"])("shows the shell and readable navigation for %s", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "member@example.test", csrf: "c", platform_role: role })) });
-    renderPlatform(api);
+    await renderPlatform(api);
     const nav = await screen.findByRole("navigation", { name: "Platform navigation" });
     await screen.findByRole("heading", { name: "Tenants", level: 1 });
     expect(within(nav).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(
@@ -302,13 +321,13 @@ describe("platform console", () => {
 
   it("opens the account's organizations and preserves the header when navigating", async () => {
     const api = fakeApi({ organizations: vi.fn(async () => ({
-      email: "admin@detent.build", csrf: "c", platform_role: "admin",
+      email: "admin@example.com", csrf: "c", platform_role: "admin",
       organizations: [
         { id: "org_alpha", name: "My Alpha", url: "/organizations/org_alpha/organization" },
         { id: "org_beta", name: "My Beta", url: "/organizations/org_beta/work" },
       ],
     })) });
-    const router = renderPlatform(api);
+    const router = await renderPlatform(api);
     const nav = await screen.findByRole("navigation", { name: "Your organizations" });
     expect(within(nav).getByRole("link", { name: "My Alpha" }).getAttribute("href")).toBe("/organizations/org_alpha/organization");
     expect(within(nav).getByRole("link", { name: "My Beta" }).getAttribute("href")).toBe("/organizations/org_beta/work");
@@ -325,7 +344,7 @@ describe("platform console", () => {
 
   it.each(["support", "billing", "viewer"])("refuses a direct Staff route for %s inside the shell", async (role) => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "c", platform_role: role })) });
-    renderPlatform(api, "/platform/staff");
+    await renderPlatform(api, "/platform/staff");
     expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
     expect(screen.getByText("Platform")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Staff" })).toBeNull();
@@ -334,14 +353,14 @@ describe("platform console", () => {
   });
 
   it("lists newest tenants first with human status, owner and explicit unavailable values", async () => {
-    renderPlatform(fakeApi());
+    await renderPlatform(fakeApi());
     const table = await screen.findByRole("table", { name: "Tenants" });
     await within(table).findByRole("link", { name: "Alpha" });
     const rows = within(table).getAllByRole("row");
     expect(within(rows[1]!).getByText("Beta")).toBeTruthy();
     expect(within(rows[1]!).getByText("Failed")).toBeTruthy();
     expect(within(rows[1]!).getByText("Tenant files")).toBeTruthy();
-    expect(within(rows[2]!).getByText("dana@example.test")).toBeTruthy();
+    expect(within(rows[2]!).getByText("member@example.test")).toBeTruthy();
     expect(within(rows[2]!).getByText("Ready")).toBeTruthy();
     expect(within(rows[2]!).getByText("2026-09-20")).toBeTruthy();
     expect(within(table).getAllByText("Unavailable").length).toBeGreaterThan(0);
@@ -355,10 +374,10 @@ describe("platform console", () => {
     const user = userEvent.setup();
     const data = { ...organizations, unavailable: [], organizations: organizations.organizations.map((tenant) => ({ ...tenant, plan: "starter", grants: 1 })) };
     const api = fakeApi({ platformOrganizations: vi.fn(async () => data) });
-    const router = renderPlatform(api, "/platform/tenants?q=dana&segment=complimentary&plan=starter&status=Ready&sort=name&direction=desc");
+    const router = await renderPlatform(api, "/platform/tenants?q=member&segment=complimentary&plan=starter&status=Ready&sort=name&direction=desc");
     const table = await screen.findByRole("table", { name: "Tenants" });
     const link = await within(table).findByRole("link", { name: "Alpha" });
-    expect((screen.getByRole("textbox", { name: "Search tenants" }) as HTMLInputElement).value).toBe("dana");
+    expect((screen.getByRole("textbox", { name: "Search tenants" }) as HTMLInputElement).value).toBe("member");
     expect(screen.getByRole("combobox", { name: "Plan" }).textContent).toContain("Starter");
     expect(screen.getByRole("combobox", { name: "Status" }).textContent).toContain("Ready");
     expect(within(table).getByText("Until 2026-12-31")).toBeTruthy();
@@ -367,10 +386,10 @@ describe("platform console", () => {
     fireEvent.click(link);
     await screen.findByRole("heading", { name: "Alpha" });
     expect(router.state.location.pathname).toBe("/platform/tenants/org_alpha");
-    expect(router.state.location.search).toMatchObject({ q: "dana", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc" });
+    expect(router.state.location.search).toMatchObject({ q: "member", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc" });
     fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
     await screen.findByRole("region", { name: "Members" });
-    expect(router.state.location.search).toMatchObject({ q: "dana", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc", section: "members" });
+    expect(router.state.location.search).toMatchObject({ q: "member", segment: "complimentary", plan: "starter", status: "Ready", sort: "name", direction: "desc", section: "members" });
     fireEvent.click(within(screen.getByRole("main")).getByRole("link", { name: /^Tenants$/ }));
     await within(await screen.findByRole("table", { name: "Tenants" })).findByRole("link", { name: "Alpha" });
     await user.click(screen.getByRole("combobox", { name: "Plan" }));
@@ -385,7 +404,7 @@ describe("platform console", () => {
     await waitFor(() => expect(router.state.location.search).toMatchObject({ q: "org_beta", segment: "attention", sort: "created", direction: "desc" }));
     const url = router.state.location.href;
     cleanup();
-    renderPlatform(api, url);
+    await renderPlatform(api, url);
     const reloaded = await screen.findByRole("table", { name: "Tenants" });
     expect(await within(reloaded).findByRole("link", { name: "Beta" })).toBeTruthy();
     expect(within(reloaded).queryByRole("link", { name: "Alpha" })).toBeNull();
@@ -412,14 +431,14 @@ describe("platform console", () => {
     });
     const original = api.platformTenant;
     api.platformTenant = vi.fn(async (id) => ({ ...await original(id), runners: [{ id: "one", name: "One", health: "offline" }, { id: "two", name: "Two", health: "offline" }] }));
-    renderPlatform(api, "/platform/tenants?segment=attention");
+    await renderPlatform(api, "/platform/tenants?segment=attention");
     const table = await screen.findByRole("table", { name: "Tenants" });
     expect(await within(table).findByRole("link", { name: "Alpha" })).toBeTruthy();
     expect(within(table).getByRole("link", { name: "Beta" })).toBeTruthy();
     expect(within(table).getByText("0 online")).toBeTruthy();
     cleanup();
     api.platformTenant = vi.fn(async () => { throw new AccountError({ status: 503, code: "unavailable", message: "Unavailable" }); });
-    renderPlatform(api);
+    await renderPlatform(api);
     const incomplete = await screen.findByRole("table", { name: "Tenants" });
     expect(await within(incomplete).findByRole("link", { name: "Alpha" })).toBeTruthy();
     expect(screen.getByText(/Not shown: runner health/)).toBeTruthy();
@@ -429,7 +448,7 @@ describe("platform console", () => {
     let reject: ((error: AccountError) => void) | undefined;
     const pending = new Promise<typeof organizations>((_resolve, fail) => { reject = fail; });
     const read = vi.fn(() => pending);
-    renderPlatform(fakeApi({ platformOrganizations: read }));
+    await renderPlatform(fakeApi({ platformOrganizations: read }));
     const table = await screen.findByRole("table", { name: "Tenants" });
     expect(table.getAttribute("aria-busy")).toBe("true");
     expect(screen.queryByText("No tenants yet")).toBeNull();
@@ -475,7 +494,7 @@ describe("platform console", () => {
     });
     const original = api.platformTenant;
     api.platformTenant = vi.fn(async (id) => ({ ...await original(id), credit_balance_micros: id === "org_alpha" ? 10_250_000 : 0 }));
-    renderPlatform(api);
+    await renderPlatform(api);
     expect(await screen.findByText("$10.25")).toBeTruthy();
     const table = await screen.findByRole("table", { name: "Tenants" });
     expect(within(table).getByText("$10.25")).toBeTruthy();
@@ -488,7 +507,7 @@ describe("platform console", () => {
 
   it("requires support confirmation and submits the reason, note and CSRF token", async () => {
     const user = userEvent.setup();
-    renderPlatform(fakeApi(), "/platform/tenants/org_alpha");
+    await renderPlatform(fakeApi(), "/platform/tenants/org_alpha");
     const start = await screen.findByRole("button", { name: "Support access" });
     expect(screen.queryByRole("button", { name: "Start support access" })).toBeNull();
     fireEvent.click(start);
@@ -518,10 +537,10 @@ describe("platform console", () => {
 
   it("shows restricted access with individual rows and filters both allowlists live", async () => {
     const api = fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist,
-      allowed_domains: ["example.org", "detent.build"],
-      allowed_emails: ["dana@example.test", "cory@detent.build", "operator@example.test"],
+      allowed_domains: ["example.org", "example.com"],
+      allowed_emails: ["member@example.test", "staff@example.com", "operator@example.test"],
     })) });
-    renderPlatform(api, "/platform/allowlist");
+    await renderPlatform(api, "/platform/allowlist");
     const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
     const access = within(panel).getByRole("region", { name: "Access" });
     expect(within(access).getByRole("heading", { name: "Who can sign up" })).toBeTruthy();
@@ -533,12 +552,12 @@ describe("platform console", () => {
     const emails = within(panel).getByRole("region", { name: "Individual emails" });
     expect(within(domains).getByText("2")).toBeTruthy();
     expect(within(emails).getByText("3")).toBeTruthy();
-    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.org", "detent.build"]);
-    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["dana@example.test", "cory@detent.build", "operator@example.test"]);
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.org", "example.com"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["member@example.test", "staff@example.com", "operator@example.test"]);
     const filter = within(panel).getByRole("searchbox", { name: "Filter domains and emails" });
-    fireEvent.change(filter, { target: { value: " DETENT " } });
-    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["detent.build"]);
-    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["cory@detent.build"]);
+    fireEvent.change(filter, { target: { value: " COM " } });
+    expect(within(domains).getAllByRole("row").map((row) => row.textContent)).toEqual(["example.com"]);
+    expect(within(emails).getAllByRole("row").map((row) => row.textContent)).toEqual(["staff@example.com"]);
     expect(within(domains).getByText("1")).toBeTruthy();
     expect(within(emails).getByText("1")).toBeTruthy();
     fireEvent.change(filter, { target: { value: "no-match" } });
@@ -558,7 +577,7 @@ describe("platform console", () => {
     { self_service: true, open: undefined, mode: "Open", description: "Any verified account may create an organization." },
     { self_service: false, open: undefined, mode: "Disabled", description: "Self-service organization creation is not configured." },
   ])("shows $mode access without list sections for $self_service self-service and $open open mode", async ({ self_service, open, mode, description }) => {
-    renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, self_service, open,
+    await renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, self_service, open,
       allowed_domains: [], allowed_emails: [],
     })) }), "/platform/allowlist");
     const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
@@ -570,7 +589,7 @@ describe("platform console", () => {
   });
 
   it.each(["allowed_domains", "allowed_emails"] as const)("keeps restricted access when only %s is configured", async (list) => {
-    renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, open: undefined,
+    await renderPlatform(fakeApi({ platformAllowlist: vi.fn(async () => ({ ...allowlist, open: undefined,
       allowed_domains: [], allowed_emails: [], [list]: allowlist[list],
     })) }), "/platform/allowlist");
     const panel = await screen.findByRole("region", { name: "Sign-up allowlist" });
@@ -580,7 +599,7 @@ describe("platform console", () => {
   });
 
   it("shows registry, tenant and admission health", async () => {
-    renderPlatform(fakeApi(), "/platform/health");
+    await renderPlatform(fakeApi(), "/platform/health");
     const panel = await screen.findByRole("alert", { name: "Service health" });
     expect(panel.getAttribute("data-variant")).toBe("error");
     expect(panel.textContent).toContain("Registry reachable. 1 of 2 tenant Hubs running.");
@@ -616,7 +635,7 @@ describe("platform console", () => {
       tenant_hubs: health.tenant_hubs.map((hub) => ({ ...hub, running: true })),
       admission,
     };
-    renderPlatform(fakeApi({ platformHealth: vi.fn(async () => value) }), "/platform/health");
+    await renderPlatform(fakeApi({ platformHealth: vi.fn(async () => value) }), "/platform/health");
     const panel = await screen.findByRole("region", { name: "Capacity" });
     const meter = within(panel).getByRole("meter", { name: label });
     expect(meter.getAttribute("aria-valuenow")).toBe(String(reading));
@@ -630,7 +649,7 @@ describe("platform console", () => {
     const api = fakeApi();
     const read = vi.mocked(api.platformHealth);
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-    const view = renderPlatform(api, "/platform/health");
+    const view = await renderPlatform(api, "/platform/health");
     await screen.findByRole("table", { name: "Tenant Hubs" });
     const before = read.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
@@ -664,7 +683,7 @@ describe("platform console", () => {
     const refused = vi.fn(async () => {
       throw new AccountError({ status: 403, code: "forbidden", message: "limited" });
     });
-    renderPlatform(fakeApi({ platformOrganizations: refused }));
+    await renderPlatform(fakeApi({ platformOrganizations: refused }));
     expect((await screen.findByRole("alert")).textContent).toContain("limited to Detent staff");
     expect(screen.queryByRole("table")).toBeNull();
   });
@@ -680,13 +699,13 @@ describe("platform console", () => {
     const expired = vi.fn(async () => {
       throw new AccountError({ status: 401, code: "unauthenticated", message: "Sign in" });
     });
-    renderPlatform(fakeApi({ platformOrganizations: vi.fn(async () => administrator), [method]: expired }), path);
+    await renderPlatform(fakeApi({ platformOrganizations: vi.fn(async () => administrator), [method]: expired }), path);
     await waitFor(() => expect(assign).toHaveBeenCalledWith(SIGN_IN_PLATFORM));
   });
 
-  it.each(["alp", "org_alpha", "dana@"])('finds a tenant by "%s" and opens its addressable detail', async (query) => {
+  it.each(["alp", "org_alpha", "member@"])('finds a tenant by "%s" and opens its addressable detail', async (query) => {
     const user = userEvent.setup();
-    const router = renderPlatform(fakeApi());
+    const router = await renderPlatform(fakeApi());
     await screen.findByRole("table", { name: "Tenants" });
     fireEvent.keyDown(window, { key: "k", metaKey: true });
     const dialog = await screen.findByRole("dialog", { name: "Find tenant or user" });
@@ -702,7 +721,7 @@ describe("platform console", () => {
   it("opens a selected user with results loaded without reloading the shell", async () => {
     const user = userEvent.setup();
     const api = fakeApi({ platformUsers: vi.fn(async () => ({ ...userResults, users: userResults.users.filter((user) => user.email.startsWith("alex")) })) });
-    const router = renderPlatform(api);
+    const router = await renderPlatform(api);
     await screen.findByRole("table", { name: "Tenants" });
     fireEvent.click(screen.getByRole("button", { name: /Find tenant or user/ }));
     const dialog = await screen.findByRole("dialog", { name: "Find tenant or user" });
@@ -719,7 +738,7 @@ describe("platform console", () => {
     [{ registry: { ok: true }, tenants: { expected: 2, running: 1 } }, "Down"],
     [{ registry: { ok: false } }, "Down"],
   ])("renders the endpoint health status as %s", async (health, label) => {
-    renderPlatform(fakeApi({ platformHealth: vi.fn(async () => health) }));
+    await renderPlatform(fakeApi({ platformHealth: vi.fn(async () => health) }));
     const nav = await screen.findByRole("navigation", { name: "Platform navigation" });
     expect(await within(nav).findByText(label)).toBeTruthy();
     expect(within(nav).getByText(label).getAttribute("data-slot")).toBe("badge");
@@ -729,7 +748,7 @@ describe("platform console", () => {
 
   it("keeps the shell for a non-staff account without calling platform APIs", async () => {
     const api = fakeApi({ session: vi.fn(async () => ({ email: "customer@example.test", csrf: "c", platform_role: "" })) });
-    renderPlatform(api);
+    await renderPlatform(api);
     await screen.findByText("You don't have access to this page");
     expect(screen.getByText("The platform console is limited to Detent staff.")).toBeTruthy();
     expect(api.platformOrganizations).not.toHaveBeenCalled();
@@ -744,21 +763,126 @@ describe("platform console", () => {
 });
 
 describe("complimentary plans", () => {
+  it.each(["create", "base", "subscription", "end_subscription"])(
+    "submits an audited %s plan change from the tenant console",
+    async (operation) => {
+      const api = fakeApi({
+        platformOrganizations: vi.fn(async () => administrator),
+      });
+      if (operation === "subscription" || operation === "end_subscription") {
+        const detail = api.platformTenant;
+        api.platformTenant = vi.fn(async (id) => {
+          const value = await detail(id);
+          return {
+            ...value,
+            organization: { ...value.organization, billing: { available: false } },
+          };
+        });
+      }
+      await renderPlatform(api);
+      fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
+      const plan = await screen.findByRole("region", {
+        name: "Plan for Alpha",
+      });
+      fireEvent.click(
+        within(plan).getByRole("button", {
+          name:
+            operation === "create"
+              ? "Create plan version"
+              : "Change base or subscription",
+        }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name:
+          operation === "create"
+            ? "Create plan version for Alpha"
+            : "Change base or subscription for Alpha",
+      });
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: operation === "create" ? "Create version" : "Apply plan",
+        }),
+      );
+      expect((await within(dialog).findByRole("alert")).textContent).toContain(
+        "Give a reason",
+      );
+      expect(api.changePlatformEntitlement).not.toHaveBeenCalled();
+      if (operation === "create") {
+        fireEvent.change(within(dialog).getByLabelText("Plan ID"), {
+          target: { value: "extended_capacity" },
+        });
+        fireEvent.change(within(dialog).getByLabelText("projects"), {
+          target: { value: "50" },
+        });
+      } else {
+        fireEvent.change(within(dialog).getByLabelText("Plan"), {
+          target: { value: "comp_team@1" },
+        });
+        if (operation === "base") {
+          expect(
+            within(dialog).queryByRole("option", { name: "Subscription" }),
+          ).toBeNull();
+          expect(
+            within(dialog).queryByRole("option", { name: "End subscription" }),
+          ).toBeNull();
+        } else {
+          fireEvent.change(within(dialog).getByLabelText("Apply as"), {
+            target: { value: operation },
+          });
+          if (operation === "subscription") {
+            fireEvent.change(within(dialog).getByLabelText("Expires"), {
+              target: { value: "2027-01-31" },
+            });
+          }
+        }
+      }
+      fireEvent.change(within(dialog).getByLabelText("Reason"), {
+        target: { value: "Capacity adjustment" },
+      });
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: operation === "create" ? "Create version" : "Apply plan",
+        }),
+      );
+      await waitFor(() =>
+        expect(api.changePlatformEntitlement).toHaveBeenCalledTimes(1),
+      );
+      const call = vi.mocked(api.changePlatformEntitlement).mock.calls[0]![0];
+      expect(call.organization).toBe("org_alpha");
+      expect(call.change).toMatchObject({
+        action: operation === "create" ? "create_plan" : operation,
+        expected_revision: 3,
+        reason: "Capacity adjustment",
+        plan:
+          operation === "create"
+            ? { id: "extended_capacity", version: 2 }
+            : { id: "comp_team", version: 1 },
+      });
+      if (call.change.action === "create_plan")
+        expect(call.change.definition.allowances).toEqual({ projects: 50 });
+      if (call.change.action === "subscription")
+        expect(call.change.expires_at).toBe("2027-01-31T23:59:59Z");
+      expect(call.change.idempotency_key).not.toBe("");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    },
+  );
+
   it("is hidden from staff who are not entitlement administrators", async () => {
     const api = fakeApi();
-    renderPlatform(api);
+    await renderPlatform(api);
     await screen.findByRole("table", { name: "Tenants" });
     expect(screen.queryByRole("region", { name: "Complimentary plans" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Change plan" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Grant model choice" })).toBeNull();
+    for (const name of ["Change plan", "Grant complimentary plan", "Grant model choice", "Create plan version", "Change base or subscription"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
   });
 
   it.each(["admin", "billing"])("shows base, effective plan and active grants of ready organizations to %s", async (role) => {
     const api = fakeApi({
-      session: vi.fn(async () => ({ email: "admin@detent.build", csrf: "staff-csrf", platform_role: role })),
+      session: vi.fn(async () => ({ email: "admin@example.com", csrf: "staff-csrf", platform_role: role })),
       platformOrganizations: vi.fn(async () => administrator),
     });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     await within(plan).findByText("Team");
@@ -767,7 +891,7 @@ describe("complimentary plans", () => {
     const billing = await screen.findByRole("region", { name: "Plan for Alpha" });
     const grants = await within(billing).findByRole("table", { name: "Grant history for Alpha" });
     expect(within(grants).getByText("design partner")).toBeTruthy();
-    expect(within(grants).getByText("plans@detent.build")).toBeTruthy();
+    expect(within(grants).getByText("plans@example.com")).toBeTruthy();
     expect(within(grants).getByText(/31st December 2026/)).toBeTruthy();
     expect(within(grants).getByText("Hosted artifacts, Projects")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Plan for Beta" })).toBeNull();
@@ -776,7 +900,7 @@ describe("complimentary plans", () => {
 
   it("requires a reason and posts the grant with the revision and an idempotency key", async () => {
     const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator) });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
@@ -815,7 +939,7 @@ describe("complimentary plans", () => {
         return { action: "grant", grant_id: "model_grant" };
       }),
     });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     const user = userEvent.setup();
@@ -847,7 +971,7 @@ describe("complimentary plans", () => {
       return { action: "grant", grant_id: "grant_retry" };
     });
     const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator), changePlatformEntitlement: change });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
@@ -873,7 +997,7 @@ describe("complimentary plans", () => {
         return entitlements(organization);
       }),
     });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
@@ -888,7 +1012,7 @@ describe("complimentary plans", () => {
       throw new AccountError({ status: 409, code: "revision_conflict", message: "Resource has changed" });
     });
     const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator), changePlatformEntitlement: stale });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     fireEvent.click(await within(plan).findByRole("button", { name: "Change plan" }));
@@ -901,7 +1025,7 @@ describe("complimentary plans", () => {
 
   it("revokes a grant only with a reason", async () => {
     const api = fakeApi({ platformOrganizations: vi.fn(async () => administrator) });
-    renderPlatform(api);
+    await renderPlatform(api);
     fireEvent.click(await screen.findByRole("link", { name: "Alpha" }));
     const plan = await screen.findByRole("region", { name: "Plan for Alpha" });
     fireEvent.click(await within(plan).findByRole("button", { name: "Revoke grant" }));
@@ -931,7 +1055,7 @@ describe("tenant discovery and detail", () => {
       { ...organizations.organizations[0]!, plan: "growth", created_at: "2026-09-22T10:00:00Z" },
       { ...organizations.organizations[1]!, plan: "free" },
     ];
-    renderPlatform(fakeApi({ platformOrganizations: vi.fn(async () => ({ ...organizations, organizations: values })) }));
+    await renderPlatform(fakeApi({ platformOrganizations: vi.fn(async () => ({ ...organizations, organizations: values })) }));
     const table = await screen.findByRole("table", { name: "Tenants" });
     await within(table).findByRole("link", { name: "Alpha" });
     const names = () => within(table).getAllByRole("row").slice(1).map((row) => within(row).getByRole("link").textContent);
@@ -949,7 +1073,7 @@ describe("tenant discovery and detail", () => {
       expect(within(table).getByRole("columnheader", { name: header }).getAttribute("aria-sort")).toBe(header === "Created" ? "ascending" : "descending");
     }
     const search = screen.getByRole("textbox", { name: "Search tenants" });
-    for (const query of ["DANA", "org_alpha", "alpha"]) {
+    for (const query of ["MEMBER", "org_alpha", "alpha"]) {
       fireEvent.change(search, { target: { value: query } });
       await waitFor(() => expect(names()).toEqual(["Alpha"]));
     }
@@ -966,7 +1090,7 @@ describe("tenant discovery and detail", () => {
   });
 
   it("updates counts, empty results and unavailable cells", async () => {
-    renderPlatform(fakeApi());
+    await renderPlatform(fakeApi());
     const table = await screen.findByRole("table", { name: "Tenants" });
     await within(table).findByRole("link", { name: "Alpha" });
     expect(within(table).getAllByText("Unavailable")).toHaveLength(8);
@@ -980,22 +1104,129 @@ describe("tenant discovery and detail", () => {
   });
 
   it.each(["viewer", "support", "billing", "admin"])("opens a tenant page with role-gated actions for %s", async (role) => {
-    const api = fakeApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
-    renderPlatform(api, "/platform/tenants/org_alpha");
+    const api = creditApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
+    await renderPlatform(api, "/platform/tenants/org_alpha");
     const organization = await screen.findByRole("region", { name: "Organization" });
-    expect(within(organization).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
+    expect(within(organization).getByRole("link", { name: "member@example.test" }).getAttribute("href")).toBe("/platform/users/member%40example.test");
     expect(screen.queryByRole("dialog", { name: "Alpha" })).toBeNull();
+    expect(within(screen.getByRole("region", { name: "AI credits" })).getByText("$100.00")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Support access" }) !== null).toBe(role === "support" || role === "admin");
     for (const name of ["Change plan", "Grant model choice", "Revoke grant"]) expect(screen.queryByRole("button", { name }) !== null).toBe(role === "billing" || role === "admin");
+    expect(screen.queryByRole("button", { name: "Grant AI credits" }) !== null).toBe(role === "billing" || role === "admin");
+    expect(screen.queryByRole("button", { name: "Grant credits" }) !== null).toBe(role === "billing" || role === "admin");
     expect(screen.queryByRole("button", { name: "Resume provisioning" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Members 1" }));
     const members = await screen.findByRole("region", { name: "Members" });
-    expect(within(members).getByRole("link", { name: "dana@example.test" }).getAttribute("href")).toBe("/platform/users/dana%40example.test");
+    expect(within(members).getByRole("link", { name: "member@example.test" }).getAttribute("href")).toBe("/platform/users/member%40example.test");
     expect(within(members).getByText("Owner")).toBeTruthy();
   });
 
+  it.each(["", "0", "-5", "1.0000001", "1e3", "Infinity"])("rejects invalid credit amount %s", async (amount) => {
+    const api = creditApi();
+    await renderPlatform(api, "/platform/tenants/org_alpha");
+    fireEvent.click(await screen.findByRole("button", { name: "Grant AI credits" }));
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    fireEvent.change(within(dialog).getByLabelText("Amount (USD)"), { target: { value: amount } });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Pilot credits" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Grant credits" }));
+    expect(await within(dialog).findByText(/Enter a positive dollar amount/)).toBeTruthy();
+    expect(api.adjustPlatformAICredits).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { role: "billing", amount: "25.00", amountMicros: 25_000_000, balance: 100_000_000, balanceText: "$100.00", spent: 750_000, spentText: "$0.75", after: 125_000_000, afterText: "$125.00", submit: "Grant $25.00", adjustmentText: "+$25.00" },
+    { role: "admin", amount: "25.00", amountMicros: 25_000_000, balance: 100_000_000, balanceText: "$100.00", spent: 750_000, spentText: "$0.75", after: 125_000_000, afterText: "$125.00", submit: "Grant $25.00", adjustmentText: "+$25.00" },
+    { role: "billing", amount: "0.000001", amountMicros: 1, balance: 100_000_001, balanceText: "$100.000001", spent: 1, spentText: "$0.000001", after: 100_000_002, afterText: "$100.000002", submit: "Grant $0.000001", adjustmentText: "+$0.000001" },
+    { role: "admin", amount: "0.001234", amountMicros: 1234, balance: 100_000_001, balanceText: "$100.000001", spent: 1, spentText: "$0.000001", after: 100_001_235, afterText: "$100.001235", submit: "Grant $0.001234", adjustmentText: "+$0.001234" },
+  ])("grants and refreshes credit balance and history in place for $role ($amount)", async ({ role, amount, amountMicros, balance, balanceText, spent, spentText, after, afterText, submit, adjustmentText }) => {
+    const api = creditApi({ session: vi.fn(async () => ({ email: "staff@example.test", csrf: "staff-csrf", platform_role: role })) });
+    const initial = api.platformTenant;
+    let applied = false;
+    api.platformTenant = vi.fn(async (id) => ({ ...await initial(id), credit_balance_micros: applied ? after : balance,
+      ai_credits: { ...credits, balance_micros: applied ? after : balance, spent_micros: spent, history: applied ? [{ ...credits.history[0]!, amount_micros: amountMicros, reason: "Extra pilot credits" }, ...credits.history] : credits.history } }));
+    api.adjustPlatformAICredits = vi.fn(async () => { applied = true; return { organization_id: "org_alpha", balance_micros: after }; });
+    const router = await renderPlatform(api, "/platform/tenants/org_alpha");
+    const section = await screen.findByRole("region", { name: "AI credits" });
+    expect(within(section).getByText("Spent in October")).toBeTruthy();
+    expect(within(section).getByText(spentText)).toBeTruthy();
+    expect(within(section).getByText("Off")).toBeTruthy();
+    fireEvent.click(within(section).getByRole("button", { name: "Grant credits" }));
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    expect(within(dialog).getByText(balanceText)).toBeTruthy();
+    if (amount === "25.00") fireEvent.click(within(dialog).getByRole("button", { name: "$25" }));
+    else fireEvent.change(within(dialog).getByLabelText("Amount (USD)"), { target: { value: amount } });
+    expect(within(dialog).getByText(afterText)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    expect(await within(dialog).findByText("Give a reason for this adjustment.")).toBeTruthy();
+    expect(api.adjustPlatformAICredits).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: " Extra pilot credits " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.adjustPlatformAICredits).toHaveBeenCalledWith({ organization: "org_alpha", csrf: "staff-csrf", change: { amount_usd: amount, reason: "Extra pilot credits", idempotency_key: expect.any(String) } });
+    expect(within(screen.getByRole("region", { name: "AI credits" })).getByText(afterText)).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "AI credits" })).getByText(/Extra pilot credits/)).toBeTruthy();
+    expect(api.platformAudit).toHaveBeenCalledTimes(2);
+    expect(router.state.location.pathname).toBe("/platform/tenants/org_alpha");
+    fireEvent.click(screen.getByRole("link", { name: "All adjustments" }));
+    const history = await screen.findByRole("region", { name: "Adjustment history" });
+    expect(within(history).getByText(adjustmentText, { exact: false })).toBeTruthy();
+    expect(within(history).getByText("Purchased")).toBeTruthy();
+    expect(within(history).getByText(/Pilot credits/)).toBeTruthy();
+    expect(api.resumePlatformTenant).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { amount: "10.00", preview: "$90.00", submit: "Remove $10.00", payload: "-10.00" },
+    { amount: "0.000001", preview: "$99.999999", submit: "Remove $0.000001", payload: "-0.000001" },
+  ])("replays an unknown removal of $amount with the same key after reopening and gives an edited command a fresh key", async ({ amount, preview, submit, payload }) => {
+    const adjust = vi.fn().mockRejectedValue(new AccountError({ status: 502, code: "tenant_unavailable", message: "Hub unavailable" }));
+    const api = creditApi({ adjustPlatformAICredits: adjust });
+    await renderPlatform(api, "/platform/tenants/org_alpha?section=credits");
+    fireEvent.click(await screen.findByRole("button", { name: "Grant AI credits" }));
+    let dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove credits" }));
+    fireEvent.change(within(dialog).getByLabelText("Amount (USD)"), { target: { value: amount } });
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "Correct duplicate grant" } });
+    expect(within(dialog).getByText(preview)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    await within(dialog).findByText(/The result is unknown/);
+    expect(adjust.mock.calls[0]![0].change.amount_usd).toBe(payload);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Grant AI credits" }));
+    dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    fireEvent.click(within(dialog).getByRole("button", { name: submit }));
+    await waitFor(() => expect(adjust).toHaveBeenCalledTimes(2));
+    await within(dialog).findByText(/The result is unknown/);
+    expect(adjust.mock.calls[1]![0]).toEqual(adjust.mock.calls[0]![0]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "$25" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove $25.00" }));
+    await waitFor(() => expect(adjust).toHaveBeenCalledTimes(3));
+    expect(adjust.mock.calls[2]![0].change.idempotency_key).not.toBe(adjust.mock.calls[0]![0].change.idempotency_key);
+  });
+
+  it("renders unavailable credit history and disables grants without a balance", async () => {
+    const api = fakeApi();
+    await renderPlatform(api, "/platform/tenants/org_alpha?section=credits");
+    expect(await screen.findByText("History unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Grant AI credits" }));
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    expect((within(dialog).getByRole("button", { name: "Grant credits" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.adjustPlatformAICredits).not.toHaveBeenCalled();
+  });
+
+  it("returns keyboard focus to the credit action after cancelling", async () => {
+    const user = userEvent.setup();
+    await renderPlatform(creditApi(), "/platform/tenants/org_alpha");
+    const trigger = await screen.findByRole("button", { name: "Grant AI credits" });
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Grant AI credits" });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
   it("restores URL sections, navigates sections and redirects old tenant links", async () => {
-    const router = renderPlatform(fakeApi(), "/platform/tenants/org_alpha?section=runners");
+    const router = await renderPlatform(fakeApi(), "/platform/tenants/org_alpha?section=runners");
     const runners = await screen.findByRole("region", { name: "Runners" });
     expect(within(runners).getByText("Mac Studio")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Runners 1" }).getAttribute("aria-pressed")).toBe("true");
@@ -1009,7 +1240,7 @@ describe("tenant discovery and detail", () => {
 
   it("disables plan grants when no other plan exists and explains why", async () => {
     const api = fakeApi({ platformEntitlements: vi.fn(async () => ({ ...entitlements, plans: [entitlements.plans[0]!] })) });
-    renderPlatform(api, "/platform/tenants/org_alpha");
+    await renderPlatform(api, "/platform/tenants/org_alpha");
     const grant = await screen.findByRole("button", { name: "Change plan" });
     expect((grant as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(document, { key: "Tab" });
@@ -1040,7 +1271,7 @@ describe("tenant discovery and detail", () => {
       { ...auditRow, event: "support_requested", detail: "customer-request · Ticket 123", id: "two" },
       { ...auditRow, event: "organization_ready", detail: "generation 7", id: "three" },
     ], events: [], tenants: [], next_cursor: "" }));
-    renderPlatform(api, "/platform/tenants/org_alpha");
+    await renderPlatform(api, "/platform/tenants/org_alpha");
     const rawValues = /pilot_free|comp_team|paid_business|hosted_artifacts|model_choice|collaboration_bytes|artifact_retained_bytes|plan_granted|support_requested|organization_ready|customer-request|\d{4}-\d{2}-\d{2}T|generation/;
     expect((await screen.findByRole("meter", { name: "Projects" })).getAttribute("aria-valuetext")).toBe("2 of 20");
     expect(screen.getByRole("meter", { name: "Workspace data" }).getAttribute("aria-valuetext")).toBe("390 MB of 1 GB");
@@ -1079,7 +1310,7 @@ describe("tenant discovery and detail", () => {
     const api = fakeApi();
     const original = api.platformTenant;
     api.platformTenant = vi.fn(async (id) => ({ ...await original(id), members: null, projects: null }));
-    renderPlatform(api, "/platform/tenants/org_beta?section=members");
+    await renderPlatform(api, "/platform/tenants/org_beta?section=members");
     expect((await screen.findByRole("region", { name: "Members" })).textContent).toContain("Unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Projects" }));
     expect((await screen.findByRole("region", { name: "Projects" })).textContent).toContain("Unavailable");
@@ -1102,7 +1333,7 @@ const listing: PlatformMembers = { revision: 4, self: { email: "admin@example.te
   member("admin@example.test", "admin"), member("bootstrap@example.test", "admin", true), member("support@example.test", "support"),
 ] };
 
-function openStaff(overrides: Partial<EntryApi> = {}) {
+async function openStaff(overrides: Partial<EntryApi> = {}) {
   let current = listing;
   const api: EntryApi = { ...makeEntryApi(),
     session: vi.fn(async () => ({ email: "admin@example.test", csrf: "staff-csrf", platform_role: "admin" })),
@@ -1116,8 +1347,7 @@ function openStaff(overrides: Partial<EntryApi> = {}) {
       return { email: change.email, role: change.role ?? "", revision: current.revision };
     }), ...overrides,
   };
-  const router = makeEntryRouter(createMemoryHistory({ initialEntries: ["/platform/staff"] }));
-  render(<EntryApiContext.Provider value={api}><RouterProvider router={router} /></EntryApiContext.Provider>);
+  await renderPlatform(api, "/platform/staff");
   return api;
 }
 
@@ -1132,7 +1362,7 @@ function reason(dialog: HTMLElement, value = "  staffing change  ") {
 
 describe("platform staff", () => {
   it("adds a normalized email with a reason and uses the refreshed revision for removal", async () => {
-    const api = openStaff();
+    const api = await openStaff();
     const staff = await screen.findByRole("region", { name: "Staff members" });
     expect(within(staff).getByText("3")).toBeTruthy();
     const roles = screen.getByRole("region", { name: "Roles" });
@@ -1170,7 +1400,7 @@ describe("platform staff", () => {
   });
 
   it("keeps the old role until confirmation, supports cancellation and requires a reason", async () => {
-    const api = openStaff();
+    const api = await openStaff();
     await screen.findByRole("region", { name: "Staff members" });
     await selectRole("Role for support@example.test", "Billing");
     let dialog = await screen.findByRole("dialog");
@@ -1195,7 +1425,7 @@ describe("platform staff", () => {
     { name: "bootstrap", value: listing, email: "bootstrap@example.test", tooltip: "The bootstrap admin cannot be demoted" },
     { name: "last admin", value: { ...listing, self: { email: "reader@example.test", role: "admin" }, members: [member("last@example.test", "admin")] }, email: "last@example.test", tooltip: "At least one admin is required" },
   ])("protects the $name row", async ({ value, email, tooltip }) => {
-    openStaff({ platformMembers: vi.fn(async () => value) });
+    await openStaff({ platformMembers: vi.fn(async () => value) });
     const row = await screen.findByRole("group", { name: email });
     expect(row.textContent).toContain(`Added 2026-10-07 by ${value.members.find((member) => member.email === email)!.added_by} · changed 2026-10-09`);
     if (value.self.email === email) {
@@ -1211,7 +1441,7 @@ describe("platform staff", () => {
   });
 
   it("shows a duplicate error inline and allows correction", async () => {
-    const api = openStaff({ changePlatformMember: vi.fn(async () => { throw new AccountError({ status: 409, code: "already_member", message: "Already a member" }); }) });
+    const api = await openStaff({ changePlatformMember: vi.fn(async () => { throw new AccountError({ status: 409, code: "already_member", message: "Already a member" }); }) });
     await screen.findByRole("region", { name: "Staff members" });
     fireEvent.click(screen.getByRole("button", { name: "Add staff member" }));
     const dialog = await screen.findByRole("dialog");
@@ -1225,7 +1455,7 @@ describe("platform staff", () => {
 
   it("shows the stale toast, blocks edits and reloads the staff list", async () => {
     let current = listing;
-    const api = openStaff({ platformMembers: vi.fn(async () => current), changePlatformMember: vi.fn(async () => {
+    const api = await openStaff({ platformMembers: vi.fn(async () => current), changePlatformMember: vi.fn(async () => {
       current = { ...listing, revision: 7, members: listing.members.map((member) => member.email === "support@example.test" ? { ...member, role: "viewer" } : member) };
       throw new AccountError({ status: 409, code: "revision_conflict", message: "changed" });
     }) });
@@ -1244,7 +1474,7 @@ describe("platform staff", () => {
 
   it("retries an unconfirmed write with the same key and input", async () => {
     const write = vi.fn(async () => { throw new AccountError({ status: 503, code: "unavailable", message: "Retry to verify" }); });
-    openStaff({ changePlatformMember: write });
+    await openStaff({ changePlatformMember: write });
     await screen.findByRole("region", { name: "Staff members" });
     await selectRole("Role for support@example.test", "Billing");
     const dialog = await screen.findByRole("dialog");
@@ -1265,7 +1495,7 @@ const audit: PlatformAudit = {
       id: "1",
       source: "audit",
       at: "2026-10-01T12:00:00Z",
-      actor: "admin@detent.build",
+      actor: "admin@example.com",
       event: "support_started",
       organization_id: "org_alpha",
       organization_name: "Alpha",
@@ -1295,7 +1525,7 @@ const audit: PlatformAudit = {
 describe("platform audit", () => {
   it("restores shared filters, updates the URL, clears and handles history", async () => {
     const api = fakeApi({ platformAudit: vi.fn(async () => audit) });
-    const router = renderPlatform(
+    const router = await renderPlatform(
       api,
       "/platform/audit?tenant=org_alpha&actor=admin&event=support_started&from=2026-09-01&to=2026-10-01",
     );
@@ -1348,7 +1578,7 @@ describe("platform audit", () => {
   });
 
   it("uses searchable tenant and stored event choices in the URL", async () => {
-    const router = renderPlatform(
+    const router = await renderPlatform(
       fakeApi({ platformAudit: vi.fn(async () => audit) }),
       "/platform/audit",
     );
@@ -1398,7 +1628,7 @@ describe("platform audit", () => {
         .mockResolvedValueOnce(audit)
         .mockResolvedValueOnce({ ...audit, rows: [old], next_cursor: "" }),
     });
-    renderPlatform(api, "/platform/audit?actor=admin");
+    await renderPlatform(api, "/platform/audit?actor=admin");
     const table = await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     expect(
       within(table).getByRole("link", { name: "Alpha" }).getAttribute("href"),
@@ -1449,7 +1679,7 @@ describe("platform audit", () => {
           next_cursor: "",
         }),
     });
-    renderPlatform(api, "/platform/audit");
+    await renderPlatform(api, "/platform/audit");
     await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     fireEvent.click(screen.getByRole("button", { name: "Load older events" }));
     expect(
@@ -1490,7 +1720,7 @@ describe("platform audit", () => {
         code: "denied",
         message: "Audit denied",
       });
-      renderPlatform(
+      await renderPlatform(
         fakeApi({
           platformAudit: vi.fn(async () => {
             throw error;
@@ -1509,7 +1739,7 @@ describe("platform audit", () => {
 
   it("debounces actor typing and cancels a pending draft on clear", async () => {
     const api = fakeApi({ platformAudit: vi.fn(async () => ({ ...audit, next_cursor: "" })) });
-    const router = renderPlatform(api, "/platform/audit?tenant=org_alpha&event=support_started");
+    const router = await renderPlatform(api, "/platform/audit?tenant=org_alpha&event=support_started");
     await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     fireEvent.click(screen.getByRole("button", { name: "Actor: Anyone" }));
     const input = screen.getByLabelText("Actor");
@@ -1563,7 +1793,7 @@ describe("platform audit", () => {
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = revokeObjectURL; });
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    renderPlatform(api, "/platform/audit?tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01");
+    await renderPlatform(api, "/platform/audit?tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01");
     const table = await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     expect(table.textContent).toContain("Plan granted");
     expect(table.textContent).toContain("Growth (version 1) until Dec 31, 2026");
@@ -1573,8 +1803,8 @@ describe("platform audit", () => {
     await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
     const csv = await exported.text();
     expect(csv).toBe('"When (UTC)","Action","Tenant","By","Details","Reason"\r\n' +
-      '"2026-10-01T12:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1) until Dec 31, 2026","customer, ""pilot"""\r\n' +
-      '"2026-09-30T10:00:00Z","Plan granted","Alpha","admin@detent.build","Growth (version 1)","\'=customer reason"\r\n');
+      '"2026-10-01T12:00:00Z","Plan granted","Alpha","admin@example.com","Growth (version 1) until Dec 31, 2026","customer, ""pilot"""\r\n' +
+      '"2026-09-30T10:00:00Z","Plan granted","Alpha","admin@example.com","Growth (version 1)","\'=customer reason"\r\n');
     expect(api.platformAudit).toHaveBeenNthCalledWith(2, "tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200", expect.any(AbortSignal));
     expect(api.platformAudit).toHaveBeenLastCalledWith("tenant=org_alpha&actor=admin&event=plan_granted&from=2026-09-01&to=2026-10-01&limit=200&cursor=older-cursor", expect.any(AbortSignal));
     expect((click.mock.instances[0] as unknown as HTMLAnchorElement).download).toBe("audit-log.csv");
@@ -1595,7 +1825,7 @@ describe("platform audit", () => {
     const createObjectURL = vi.fn((blob: Blob) => { exported = blob; return "blob:audit"; });
     vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    renderPlatform(api, "/platform/audit?actor=admin");
+    await renderPlatform(api, "/platform/audit?actor=admin");
     await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
     if (total === 10_000) {
@@ -1629,7 +1859,7 @@ describe("platform audit", () => {
     const createObjectURL = vi.fn(() => "blob:audit");
     vi.stubGlobal("URL", class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    renderPlatform(api, "/platform/audit?actor=admin");
+    await renderPlatform(api, "/platform/audit?actor=admin");
     await screen.findByRole("table", { name: "Audit events" }, { timeout: 5000 });
     fireEvent.click(screen.getByRole("button", { name: "Export CSV" }));
     await screen.findByRole("button", { name: "Cancel export" });
@@ -1650,7 +1880,7 @@ describe("platform audit", () => {
   });
 
   it("shows an empty state for filters with no matches", async () => {
-    renderPlatform(fakeApi(), "/platform/audit?actor=nobody");
+    await renderPlatform(fakeApi(), "/platform/audit?actor=nobody");
     await screen.findByText("No events match these filters.");
     expect(screen.queryByRole("table")).toBeNull();
   });

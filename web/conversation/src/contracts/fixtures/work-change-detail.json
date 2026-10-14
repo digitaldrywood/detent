@@ -19,7 +19,7 @@
       "base_sha": "1111111111111111111111111111111111111111",
       "head_sha": "a41f0c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b",
       "merge_base_sha": "1111111111111111111111111111111111111111",
-      "repository": "digitaldrywood/detent",
+      "repository": "example-org/example-project",
       "code": {
         "kind": "code",
         "uri": "artifact://artifact_aa11bb22cc33dd44ee55ff6677889900",
@@ -33,7 +33,7 @@
       "external": {
         "provider": "github",
         "id": "3372",
-        "url": "https://github.com/digitaldrywood/detent/pull/3372"
+        "url": "https://github.com/example-org/example-project/pull/3372"
       },
       "version_id": "version_aabbccddeeff00112233445566778899",
       "change_id": "change_9988776655443322110011223344556677",

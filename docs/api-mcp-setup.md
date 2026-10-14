@@ -311,6 +311,46 @@ A concise agent handoff is:
 
 ## MCP agent handoff
 
+Hosted allowance refusals are MCP tool results with `isError: true`, rather than
+transport failures. Their JSON content includes `code: "allowance_exhausted"`,
+`http_status: 429`, `resource`, `allowance`, `consumption`, a safe message and
+recovery guidance. Current MCP versions also return this as `structuredContent`.
+Inspect `billing_usage.hosted_plan_page` with owner/admin authority or
+`billing_usage.billing_export` with owner authority and resolve the affected
+allowance before submitting another business action. A refusal does not report a
+successful write. `policy_mismatch` directs callers to `get_project_policy` to
+refresh approved policy inputs; uncertain mutation outcomes still require resource
+inspection before retrying. Unexpected failures remain redacted as
+`service_unavailable` with a correlation ID.
+
+Native `verify_fix` answers a Done issue whose `verification.state` is `pending`: `result: verified` records the verifier, and `result: not_fixed` requires `comment`, which may embed `upload_attachment` references, and reopens the issue to Todo. Only the filer, or a member and above, may answer. `work_list created_by=me verification=pending` lists the caller's issues awaiting verification.
+
+Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
+
+Native `file_issue` also accepts an optional `report_context` object with `url` (at most 2048 bytes) and `app_build`, `browser`, `os`, `viewport` and `captured_at` (at most 256 bytes each), all single-line strings. Unknown keys, oversized or non-string values are refused with `invalid_request`, and the refusal never repeats the submitted values. `work_item` returns the stored context; list and board reads omit it. A Reporter bug whose `report_context` carries `browser` and `app_build` satisfies the template's Environment section. Upload network HAR exports (`.har`) with `detent attach` or the REST attachment upload API, because `upload_attachment` accepts only about 44 KB; use `upload_attachment` for small console log exports (`.log`). Read either back with `read_attachment`.
+
+Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. The New issue form pre-fills these headings when a type is selected.
+
+Projects can override either template in WORKFLOW, using the same list syntax as the engineering issue contract:
+
+```markdown
+## Reporter Contract
+### bug
+- **Steps to reproduce** — A reproducible sequence.
+- Expected
+- Actual
+- Where
+- Environment
+
+### change_request
+- Current behavior
+- Desired behavior
+- Why
+```
+
+An omitted type keeps its default template. Triage is exempt from the engineering issue contract; after promotion into the configured admission lane, the existing contract check requires the member-authored engineering sections and uses the existing Blocked human-action recovery when they are missing or unconfirmed. Preserve the Reporter sections as evidence.
+
+
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
 and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
@@ -494,6 +534,13 @@ hidden 404, check current membership, role, key scope and project grants. Local
 and self-hosted daemon instructions remain expandable on the same settings page.
 
 ## Native work-item list results
+
+Native `work_list` accepts `created_by` as a principal ID or `me`. `me` selects
+issues filed by the calling human, including through that human's personal key;
+service keys and worker credentials cannot use `me`. The selector combines with
+state, label, query and archived filters within the caller's authorized project.
+`work_item` and `work_list` expose the available filer's display identity in
+`actor.display_name` beside the stable principal ID.
 
 Native `work_list` accepts item limits through 200 and returns summaries in
 `data.items` with an opaque `data.next_cursor` when more matching items remain.

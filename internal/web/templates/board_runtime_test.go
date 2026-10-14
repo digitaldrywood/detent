@@ -24,7 +24,7 @@ func TestBoardRuntimePrecedesTrackerSnapshot(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data := boardTestData()
-			issue := telemetry.Issue{ID: "2610", Identifier: "digitaldrywood/detent#2610", ProjectID: "detent", State: "Todo", Title: "Live runtime"}
+			issue := telemetry.Issue{ID: "2610", Identifier: "example-org/example-project#2610", ProjectID: "detent", State: "Todo", Title: "Live runtime"}
 			now := at.Add(tt.age)
 			data.Snapshot = telemetry.Snapshot{GeneratedAt: now, Project: telemetry.Project{ID: "detent"}, BoardIssues: []telemetry.Issue{issue}, Tracker: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, ObservedAt: at, Complete: true}, Runtime: telemetry.SnapshotSection{Source: telemetry.SnapshotSourceLive, ObservedAt: now, Complete: true}, SchedulerDecisions: []telemetry.SchedulerDecision{{ProjectID: "detent", IssueID: issue.ID, Lane: "Todo", Result: "skipped", Reason: "global_capacity_full", DecisionAt: at}}}
 			if tt.session {
@@ -64,7 +64,7 @@ func TestBoardDeferredCompletionIsNotRunning(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			data := boardTestData()
-			issue := telemetry.Issue{ID: "2610", Identifier: "digitaldrywood/detent#2610", ProjectID: "detent", State: "In Progress", Title: "Deferred completion"}
+			issue := telemetry.Issue{ID: "2610", Identifier: "example-org/example-project#2610", ProjectID: "detent", State: "In Progress", Title: "Deferred completion"}
 			data.Snapshot = telemetry.Snapshot{
 				GeneratedAt: at,
 				Project:     telemetry.Project{ID: issue.ProjectID},

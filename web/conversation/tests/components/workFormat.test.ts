@@ -75,7 +75,7 @@ describe("the remaining formatters", () => {
   });
 
   it("takes the number off the end of an identifier", () => {
-    expect(issueNumber("parable#3363")).toBe("#3363");
+    expect(issueNumber("example-project#3363")).toBe("#3363");
     expect(issueNumber("Browser collaboration#2")).toBe("#2");
     expect(issueNumber("anything", 41)).toBe("#41");
     expect(issueNumber("no-number-here")).toBe("no-number-here");

@@ -4,10 +4,10 @@
       "id": "1",
       "source": "audit",
       "at": "2026-10-01T15:21:00Z",
-      "actor": "cory@detent.build",
+      "actor": "staff@example.com",
       "event": "support_started",
       "organization_id": "org_alpha",
-      "organization_name": "Parable",
+      "organization_name": "Secondary Example Organization",
       "organization_deleted": false,
       "detail": "troubleshooting"
     },
@@ -15,10 +15,10 @@
       "id": "2",
       "source": "audit",
       "at": "2026-10-01T15:20:00Z",
-      "actor": "cory@detent.build",
+      "actor": "staff@example.com",
       "event": "support_requested",
       "organization_id": "org_alpha",
-      "organization_name": "Parable",
+      "organization_name": "Secondary Example Organization",
       "organization_deleted": false,
       "detail": "troubleshooting"
     },
@@ -26,10 +26,10 @@
       "id": "1",
       "source": "entitlement_changes",
       "at": "2026-09-30T09:02:00Z",
-      "actor": "billing@detent.build",
+      "actor": "billing@example.com",
       "event": "plan_granted",
       "organization_id": "org_beta",
-      "organization_name": "Drywood Creek",
+      "organization_name": "Tertiary Example Organization",
       "organization_deleted": false,
       "detail": "growth v1 until 2026-12-31T23:59:59Z \u00b7 pilot"
     },
@@ -37,12 +37,12 @@
       "id": "1",
       "source": "platform_member_changes",
       "at": "2026-09-29T18:40:00Z",
-      "actor": "cory@detent.build",
+      "actor": "staff@example.com",
       "event": "member_added",
       "organization_id": "",
       "organization_name": "",
       "organization_deleted": false,
-      "detail": "support@detent.build as support \u00b7 new hire"
+      "detail": "support@example.com as support \u00b7 new hire"
     },
     {
       "id": "1",
@@ -78,12 +78,12 @@
   "tenants": [
     {
       "id": "org_alpha",
-      "name": "Parable",
+      "name": "Secondary Example Organization",
       "deleted": false
     },
     {
       "id": "org_beta",
-      "name": "Drywood Creek",
+      "name": "Tertiary Example Organization",
       "deleted": false
     },
     {

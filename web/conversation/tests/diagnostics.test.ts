@@ -41,6 +41,7 @@ describe("diagnostics read", () => {
       { kind: "issue", work_item_id: "wi_prj_first", project_id: "prj_first" },
       { kind: "issue", work_item_id: "wi_prj_second", project_id: "prj_second" },
     ]);
+    expect(findingsFromRead(read)[0]?.subject.project_id).toBe("prj_second");
     expect(read.last_tick_at).toBe(healthFixture.last_tick_at);
     const query = options.state === "resolved" ? "state=resolved&since=2026-10-07T10%3A00%3A00Z" : "state=open";
     expect(requests.toSorted()).toEqual([

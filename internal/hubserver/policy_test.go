@@ -410,11 +410,11 @@ func TestProjectPolicyIsolationAndRestart(t *testing.T) {
 	b := newNativeFixture(t, service, a.project.OrganizationID, "automatic")
 	human := hubTestPolicy()
 	human.Gates.Kind, human.Gates.AutomatedReview = "human_review", ""
-	human.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Plan Review"})}
+	human.Workflow = &policy.Workflow{Source: "WORKFLOW.md", States: append(a.project.States, tracker.NativeState{Name: "Plan Review"})}
 	human = human.WithID()
 	automatic := hubTestPolicy()
 	automatic.Gates.AutoPromote, automatic.Gates.MergeMethod = true, "rebase"
-	automatic.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(nativeFixtureStates(), tracker.NativeState{Name: "Repair", Dispatchable: true})}
+	automatic.Workflow = &policy.Workflow{Source: "detent.yaml", States: append(b.project.States, tracker.NativeState{Name: "Repair", Dispatchable: true})}
 	automatic = automatic.WithID()
 	approveHubTestPolicy(t, service, a.base+"/policy", human)
 	approveHubTestPolicy(t, service, b.base+"/policy", automatic)

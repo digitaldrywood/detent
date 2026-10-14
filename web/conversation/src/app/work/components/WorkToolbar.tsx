@@ -1,6 +1,7 @@
 import { FilterIcon, KanbanIcon, LayoutListIcon } from "lucide-react";
 import React from "react";
 
+import { Badge } from "../../../components/ui/badge.tsx";
 import { Button } from "../../../components/ui/button.tsx";
 import {
   Menu,
@@ -58,11 +59,11 @@ export function WorkToolbar({
   facets,
   totals,
 }: WorkToolbarProps): React.ReactElement {
-  const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : view);
+  const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : { ...view, type: [] });
   const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
   const visibleLanes = boardLanes.filter((lane) => laneVisible(view, lane)).length;
 
-  const values = (key: FilterKey): readonly string[] => [...new Set([...facets[key], ...view[key]])].toSorted();
+  const values = (key: FilterKey): readonly string[] => [...new Set([...(key === "type" ? ["bug", "change_request"] : facets[key]), ...view[key]])].toSorted();
 
   return (
     <div data-testid="work-toolbar" className="flex shrink-0 items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-3 sm:px-5">
@@ -81,9 +82,19 @@ export function WorkToolbar({
           ) : null}
         </MenuTrigger>
         <MenuPopup align="start" className="w-64">
+          <MenuCheckboxItem
+            checked={view.createdBy === "me"}
+            onCheckedChange={() => {
+              const { createdBy, ...rest } = view;
+              onChange(createdBy === "me" ? rest : { ...rest, createdBy: "me" });
+            }}
+          >
+            Filed by me
+          </MenuCheckboxItem>
+          <MenuSeparator />
           {/* Every label is inside a `MenuGroup`: Base UI's `GroupLabel`
               reads its group's context and throws without one. */}
-          {FILTER_KEYS.filter((key) => view.view === "board" || key !== "state").map((key) => (
+          {FILTER_KEYS.filter((key) => view.view === "board" ? key !== "type" : key !== "state").map((key) => (
             <React.Fragment key={key}>
               <MenuGroup>
                 <MenuGroupLabel>{FILTER_LABELS[key]}</MenuGroupLabel>
@@ -99,7 +110,7 @@ export function WorkToolbar({
                       data-testid={`filter-${key}-${value}`}
                       onCheckedChange={() => onChange(toggleFilter(view, key, value))}
                     >
-                      {value}
+                      {key === "type" ? value === "bug" ? "Bug" : "Change request" : value}
                     </MenuCheckboxItem>
                   ))
                 )}
@@ -205,7 +216,7 @@ export function WorkToolbar({
                 onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
               >
                 {lane.name}
-                {totals === undefined ? null : <span className="ml-auto text-muted-foreground tabular-nums">{totals[lane.name] ?? 0}</span>}
+                {totals === undefined ? null : <Badge variant="secondary" className="ml-auto tabular-nums">{totals[lane.name] ?? 0}</Badge>}
               </MenuCheckboxItem>
             ))}
           </MenuGroup>

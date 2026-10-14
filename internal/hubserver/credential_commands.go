@@ -49,7 +49,7 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 		if s.config.Hosted == nil || issuer.Hosted == nil || issuer.Hosted.SupportActor != "" || issuer.HostedKeyScope != "" {
 			return tokenResponse{}, nativeInvalid("Sign in as an organization member to create an API key")
 		}
-		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope) {
+		if request.Scope != apiScopeOperator && request.Scope != apiScopeAdmin || (request.Scope == apiScopeAdmin) != (request.KeyScope == apikey.ScopeAdmin) || !hostedRoleAllows(issuer.HostedRole, request.KeyScope, "credentials") {
 			return tokenResponse{}, nativeInvalid("Select a scope allowed by your current role")
 		}
 		if request.ExpiresAt != nil && (!request.ExpiresAt.After(now) || request.ExpiresAt.After(now.Add(90*24*time.Hour))) {
@@ -79,7 +79,7 @@ func (s *Service) createAPITokenFor(ctx context.Context, request tokenRequest) (
 			return tokenResponse{}, auth.ErrHostedIdentity
 		}
 		var local string
-		if err := tx.QueryRowContext(ctx, "SELECT role FROM hosted_members WHERE user_id=? AND membership_id=? AND active=1", issuer.Hosted.Subject, issuer.HostedMembership).Scan(&local); err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, current.Role.Slug), request.KeyScope) {
+		if err := tx.QueryRowContext(ctx, "SELECT role FROM hosted_members WHERE user_id=? AND membership_id=? AND active=1", issuer.Hosted.Subject, issuer.HostedMembership).Scan(&local); err != nil || !auth.ValidOrganizationRole(local) || !hostedRoleAllows(lesserHostedRole(local, current.Role.Slug), request.KeyScope, "credentials") {
 			return tokenResponse{}, auth.ErrHostedIdentity
 		}
 		user, organization, membership, keyScope = issuer.Hosted.Subject, s.config.Hosted.OrganizationID, issuer.HostedMembership, string(request.KeyScope)
@@ -212,5 +212,8 @@ func (s *Service) createNativeOrganizationFor(ctx context.Context, name string) 
 	}
 	organization := nativeOrganization{ID: tracker.OrganizationID(newNativeID("org")), Name: name}
 	_, err := s.database.db.ExecContext(ctx, "INSERT INTO organizations(id,name,created_at) VALUES(?,?,?)", organization.ID, organization.Name, formatHubTime(s.config.now()))
+	if err == nil {
+		err = s.database.db.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", organization.ID).Scan(&organization.Slug)
+	}
 	return organization, err
 }

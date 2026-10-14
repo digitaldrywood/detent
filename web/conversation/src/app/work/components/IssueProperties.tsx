@@ -98,6 +98,8 @@ export interface IssuePropertiesProps {
   /** The project's other work items, for "Add related…". */
   readonly relatedCandidates: readonly RelatedCandidate[];
   readonly onAddRelated: (workItemId: string) => void;
+  /** The related picker's search text, for a hub-side search beyond the first page. */
+  readonly onRelatedQuery?: (query: string) => void;
   readonly onOpenPullRequest: (() => void) | null;
   /** Opens the issue's Change Request page; null where there is none. */
   readonly onOpenChangeRequest?: (() => void) | null;
@@ -654,6 +656,10 @@ function LabelPicker(
 }
 
 function RelatedPicker(props: PickerProps): React.ReactElement {
+  const { open, query, onRelatedQuery } = props;
+  React.useEffect(() => {
+    if (open) onRelatedQuery?.(query);
+  }, [open, query, onRelatedQuery]);
   const groups = relatedSections({
     candidates: props.relatedCandidates,
     relatedIds: props.related.map((entry) => entry.key.split(":").at(-1) ?? ""),

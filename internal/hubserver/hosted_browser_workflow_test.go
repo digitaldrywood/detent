@@ -99,6 +99,7 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 		{Name: "Done", Terminal: true},
 	}, strings.Repeat("c", 40), false)
 	pendingSource := *source
+	pendingSource.DefaultBranchHead = applied.Workflow.Revision
 	pendingSource.Commit, pendingSource.DefaultBranchReachable = pending.Workflow.Revision, false
 	client, err := hubclient.New(hubclient.Config{URL: "https://workflow-browser.example.test", TokenSource: func() string { return credential }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
 	if err != nil {

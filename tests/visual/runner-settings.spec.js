@@ -87,6 +87,8 @@ test("organization project rank persists and viewers cannot edit it", async ({ p
   await page.goto(new URL("/settings/general", hub.fixture.url).toString());
   const list = page.getByRole("list", { name: "Project rank", exact: true });
   await expect(list).toBeVisible();
+  // Rows show the project id until the project names load.
+  await expect(list.getByText(/prj_[0-9a-f]{32}/)).toHaveCount(0);
   const before = await list.getByRole("listitem").allTextContents();
   await list.getByRole("listitem").nth(1).getByRole("button", { name: / up$/ }).click();
   const reordered = await list.getByRole("listitem").allTextContents();

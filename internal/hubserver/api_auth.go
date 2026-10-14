@@ -181,10 +181,12 @@ func (s *Service) authenticateAPIToken(ctx context.Context, token, renewalRunner
 }
 
 func (s *Service) authenticateAPIHash(ctx context.Context, hash, renewalRunner, renewalOrganization string) (apiCredential, int, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var credential apiCredential
 	var storedHash, createdAt, operations string
 	var revokedAt, expiresAt, lastUsedAt sql.NullString
-	err := s.database.auth().QueryRowContext(ctx, `
+	err := s.database.auth().QueryRowContext(readCtx, `
 SELECT t.id, t.name, t.scope, t.token_hash, t.revoked_at, t.native_only, t.expires_at, t.created_at, t.last_used_at,
 coalesce(r.id, ''), coalesce(r.machine_id, ''), coalesce(r.organization_id, ''), coalesce(r.operations_json, '[]'), coalesce(r.scope, 'projects')
 FROM api_tokens t LEFT JOIN runner_identities r ON r.token_id = t.id

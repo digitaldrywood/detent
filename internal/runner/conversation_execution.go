@@ -122,6 +122,7 @@ type ConversationExecution interface {
 type ConversationSession interface {
 	// ConversationID identifies the bound conversation.
 	ConversationID() string
+	Continuation() bool
 	// ResumeThreadID is the provider thread the conversation last used, or
 	// empty when there is none. The runner prefers its own resume state.
 	ResumeThreadID() string

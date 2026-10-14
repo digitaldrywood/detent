@@ -1162,8 +1162,11 @@ make generate   # go generate, templ, sqlc, Tailwind, and the client build
 
 `make generate` runs `make assets`, including `make app`, which installs the
 locked dependencies with `npm ci` and then runs the Vite build, emitting `static/app/conversation/`: the shell
-`index.html`, the entry `app.js`, `app.css`, code-split `chunks/` and `assets/`,
-and `THIRD_PARTY_LICENSES.txt`.
+`index.html`, the entry `app.js`, `app.css`, content-hashed route and library
+chunks under `chunks/` and `assets/`, `THIRD_PARTY_LICENSES.txt`, and a `.br` and
+`.gz` sibling for each compressible file. The hub serves the hashed files as
+immutable, revalidates every other static file by ETag, and answers with the
+precompressed sibling the request's `Accept-Encoding` admits.
 The client output and `static/css/output.css` are ignored build artifacts.
 Use `make build` to prepare both before compiling a runnable UI, or `make assets`
 before a custom Go build. A plain checkout compiles with Go alone but needs

@@ -14,7 +14,7 @@ func TestPilotSelfHostedStaysFree(t *testing.T) {
 	t.Run("local token authentication", func(t *testing.T) {
 		t.Parallel()
 		service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "local.db")})
-		if service.billing != nil || service.database.hostedPlans != nil || service.database.hostedBilling {
+		if service.billing != nil || service.database.plans() != nil || service.database.hostedBilling {
 			t.Fatal("self-hosted Hub enabled plans or billing")
 		}
 		for _, test := range []struct{ method, path string }{

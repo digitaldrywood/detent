@@ -61,12 +61,14 @@ func (s *Service) projectMonthlyCosts(c echo.Context) error {
 }
 
 func (s *Service) organizationMonthlyCosts(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	organization := c.Param("organization")
 	if s.config.Hosted != nil && organization != s.config.Hosted.OrganizationID {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	var exists int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM organizations WHERE id=?", organization).Scan(&exists); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM organizations WHERE id=?", organization).Scan(&exists); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if exists != 1 {
@@ -76,7 +78,7 @@ func (s *Service) organizationMonthlyCosts(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	report, err := s.database.monthlyCosts(c.Request().Context(), organization, "organization", nil, window, s.config.now())
+	report, err := s.database.monthlyCosts(ctx, organization, "organization", nil, window, s.config.now())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

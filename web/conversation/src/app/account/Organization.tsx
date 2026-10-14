@@ -1,4 +1,3 @@
-import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -23,17 +22,18 @@ import {
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
-import type { Invitation, Member, MembersResponse, ProjectGrant } from "../../contracts/account.ts";
+import type { Invitation, Member, ProjectGrant } from "../../contracts/account.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
-import { useMutation, useResource } from "./useResource.ts";
+import { behindSharedEntry } from "../entry/shared.ts";
+import { useOrganizationMembers } from "./OrganizationMembers.tsx";
+import { useMutation } from "./useResource.ts";
 import { signInPath } from "../../runtime/basePath.ts";
-import { behindSharedEntry, ENTRY_CREATE_ORGANIZATION, ENTRY_ORGANIZATIONS, useSharedOrganizations } from "../entry/shared.ts";
 
-const ROLES = ["owner", "admin", "member", "viewer"] as const;
+const ROLES = ["owner", "admin", "member", "reporter", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((role) => ({
   value: role,
   label: role.charAt(0).toUpperCase() + role.slice(1),
@@ -161,50 +161,6 @@ export function SupportBanner({
   );
 }
 
-export function CreateOrganizationCard({
-  onCreate,
-  pending = false,
-  error = null,
-}: {
-  readonly onCreate: (name: string) => void;
-  readonly pending?: boolean;
-  readonly error?: string | null;
-}): React.ReactElement {
-  const [name, setName] = React.useState("");
-  return (
-    <SettingsSection title="Create an organization">
-      <SettingsRow
-        title="Your first organization"
-        description="An organization owns the projects, the runners and the plan. You will sign in again once it exists, because the session is scoped to one organization."
-      >
-        <form
-          className="flex flex-col gap-2 pt-2 pb-3 sm:flex-row"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const value = name.trim();
-            if (value.length > 0) onCreate(value);
-          }}
-        >
-          <Label htmlFor="org-create-name" className="sr-only">
-            Organization name
-          </Label>
-          <Input
-            id="org-create-name"
-            value={name}
-            placeholder="Threefold Solutions"
-            onChange={(event) => setName(event.currentTarget.value)}
-            className="flex-1"
-          />
-          <Button type="submit" disabled={pending || name.trim().length === 0}>
-            {pending ? "Creating…" : "Create organization"}
-          </Button>
-        </form>
-        <ControlError message={error} />
-      </SettingsRow>
-    </SettingsSection>
-  );
-}
-
 function RemoveMemberDialog({
   member,
   onConfirm,
@@ -303,19 +259,22 @@ export function MembersTable({
               </TableCell>
               <TableCell>
                 {canManage ? (
-                  <NativeSelect
-                    aria-label={`Role for ${identity}`}
-                    value={member.role}
-                    disabled={busy}
-                    options={ROLE_OPTIONS.map((option) => ({
-                      ...option,
-                      // Only an owner may make another owner: the hub refuses
-                      // it, so the option is not offered to an admin either.
-                      disabled: option.value === "owner" && actorRole !== "owner",
-                    }))}
-                    onValueChange={(role) => onRoleChange(member, role)}
-                    className="min-w-[130px]"
-                  />
+                  <div className="flex flex-col gap-1.5">
+                    <NativeSelect
+                      aria-label={`Role for ${identity}`}
+                      value={member.role}
+                      disabled={busy}
+                      options={ROLE_OPTIONS.map((option) => ({
+                        ...option,
+                        // Only an owner may make another owner: the hub refuses
+                        // it, so the option is not offered to an admin either.
+                        disabled: option.value === "owner" && actorRole !== "owner",
+                      }))}
+                      onValueChange={(role) => onRoleChange(member, role)}
+                      className="min-w-[130px]"
+                    />
+                    {member.role === "reporter" ? <p className="text-sm text-muted-foreground">Reads issues and files new ones into Triage.</p> : null}
+                  </div>
                 ) : (
                   <span className="text-sm capitalize text-muted-foreground">{member.role}</span>
                 )}
@@ -404,6 +363,7 @@ export function InviteForm({
           onValueChange={setRole}
           className="min-w-[130px]"
         />
+        {role === "reporter" ? <p className="text-sm text-muted-foreground">Reads issues and files new ones into Triage.</p> : null}
       </div>
       <ProjectAccess
         projects={projects}
@@ -459,10 +419,10 @@ export function OrganizationSwitcher({
   );
 }
 
-export function OrganizationRoute(): React.ReactElement {
+export function OrganizationMembersRoute(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
-  const members = useResource<MembersResponse>(() => api.members(), [api]);
+  const members = useOrganizationMembers();
   const [removing, setRemoving] = React.useState<Member | null>(null);
   const [busyMember, setBusyMember] = React.useState<string | null>(null);
   const [memberErrors, setMemberErrors] = React.useState<Record<string, string>>({});
@@ -472,10 +432,6 @@ export function OrganizationRoute(): React.ReactElement {
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
-  const sharedListing = useSharedOrganizations();
-  const shared = sharedListing.error ? [] : sharedListing.value;
-  const sharedEntry = behindSharedEntry();
-  const organizations = shared ?? bootstrap?.organizations ?? [];
   const projects = React.useMemo(
     () => bootstrap?.projects ?? [],
     [bootstrap],
@@ -540,27 +496,6 @@ export function OrganizationRoute(): React.ReactElement {
     },
   );
 
-  const create = useMutation(async (name: string) => {
-    if (sharedEntry) {
-      globalThis.location?.assign(ENTRY_CREATE_ORGANIZATION);
-      return null;
-    }
-    const result = await api.createOrganization({ name, key: newKey() });
-    globalThis.location?.assign(result.next);
-    return result;
-  });
-
-  const switchTo = useMutation(async (organization: string) => {
-    const target = shared?.find((candidate) => candidate.id === organization);
-    if (target !== undefined) {
-      globalThis.location?.assign(target.url);
-      return null;
-    }
-    const result = await api.switchOrganization({ organization, key: newKey() });
-    globalThis.location?.assign(result.next);
-    return result;
-  });
-
   const exitSupport = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
@@ -569,38 +504,9 @@ export function OrganizationRoute(): React.ReactElement {
 
   const removeError = removing === null ? null : (memberErrors[removing.id] ?? null);
 
-  if (members.error !== null && members.error.isAccessError && organizations.length === 0) {
-    // A subject with no organization at all: the only thing to offer is the
-    // first one (§12, "Organization").
-    return (
-      <SettingsPageContainer>
-        <h2 className="px-3 text-xl font-semibold tracking-[-0.01em] sm:px-4">Organization</h2>
-        <CreateOrganizationCard
-          onCreate={(name) => void create.call(name)}
-          pending={create.pending}
-          error={create.error?.message ?? null}
-        />
-      </SettingsPageContainer>
-    );
-  }
-
   return (
     <SettingsPageContainer>
-      <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
-        <h2 className="text-xl font-semibold tracking-[-0.01em]">
-          {bootstrap?.organization.name ?? "Organization"}
-        </h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <OrganizationSwitcher
-            organizations={organizations}
-            onSwitch={(id) => void switchTo.call(id)}
-            pending={switchTo.pending}
-          />
-          {sharedEntry ? (
-            <Button size="sm" variant="outline" render={<a href={ENTRY_ORGANIZATIONS}>All organizations</a>} />
-          ) : null}
-        </div>
-      </div>
+      <h2 className="px-3 text-xl font-semibold tracking-tight sm:px-4">Members</h2>
 
       {bootstrap?.support == null ? null : (
         <SupportBanner
@@ -612,17 +518,7 @@ export function OrganizationRoute(): React.ReactElement {
         />
       )}
 
-      {organizations.length === 0 ? (
-        <CreateOrganizationCard
-          onCreate={(name) => void create.call(name)}
-          pending={create.pending}
-          error={create.error?.message ?? null}
-        />
-      ) : null}
-
-      <ModelSelectionSettings canManage={bootstrap?.actor.can_manage ?? false} />
-
-      <SettingsSection title="Members" variant="plain">
+      <SettingsSection id="settings-organization-members" title="Members" variant="plain">
         {members.loading && members.value === undefined ? (
           <p role="status" className="px-3 py-6 text-sm text-muted-foreground sm:px-4">
             Loading the members.
@@ -664,7 +560,7 @@ export function OrganizationRoute(): React.ReactElement {
         )}
       </SettingsSection>
 
-      <SettingsSection title="Invitations">
+      <SettingsSection id="settings-organization-invitations" title="Invitations">
         <ControlError message={editInvitation.error?.message ?? null} />
         {(members.value?.invitations ?? []).map((invitation) => (
           <SettingsRow
@@ -788,4 +684,38 @@ export function OrganizationRoute(): React.ReactElement {
       />
     </SettingsPageContainer>
   );
+}
+
+export function SlugSettings({ projectId, canManage }: { readonly projectId?: string; readonly canManage: boolean }): React.ReactElement {
+  const api = useAccountApi();
+  const shared = behindSharedEntry();
+  const [current, setCurrent] = React.useState("");
+  const [draft, setDraft] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    let active = true;
+    void api.slug(projectId, shared).then(({ slug }) => { if (active) { setCurrent(slug); setDraft(slug); } }).catch((error: unknown) => { if (active) setError(String(error)); });
+    return () => { active = false; };
+  }, [api, projectId, shared]);
+  async function save(): Promise<void> {
+    setBusy(true); setError(null);
+    try {
+      await api.saveSlug(draft, current, projectId, shared);
+      window.location.reload();
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  }
+  return <SettingsSection title="URL slug">
+    <p className="text-sm text-muted-foreground">Earlier slugs keep redirecting to the current address.</p>
+    <SettingsRow title={projectId === undefined ? "Organization slug" : "Project slug"}>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <Input aria-label={projectId === undefined ? "Organization slug" : "Project slug"} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!canManage || busy || current === ""} maxLength={80} />
+          {canManage ? <Button size="sm" disabled={busy || current === "" || draft === current} onClick={() => void save()}>{busy ? "Saving…" : "Save slug"}</Button> : null}
+        </div>
+        <ControlError message={error} />
+      </div>
+    </SettingsRow>
+  </SettingsSection>;
 }

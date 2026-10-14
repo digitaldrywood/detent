@@ -4,11 +4,11 @@
   "seq": 12,
   "role": "assistant",
   "kind": "status",
-  "text": "Linked to parable#3363.",
+  "text": "Linked to example-project#3363.",
   "data": {
     "issue": {
       "id": "wi_3363",
-      "identifier": "parable#3363",
+      "identifier": "example-project#3363",
       "title": "Checkout lock renewal waits on a healthy handoff",
       "state": "Todo",
       "lane": "Todo",

@@ -103,7 +103,7 @@ func (l *LocalGit) PrepareMerge(
 		return l.prepareResolvedMerge(ctx, normalized, issue, opts)
 	}
 	originalHead := strings.TrimSpace(localHead)
-	if _, err := runGitAt(ctx, normalized.Path, "rebase", targetRef); err != nil {
+	if _, err := l.runCommit(ctx, normalized.Path, nil, "rebase", targetRef); err != nil {
 		conflicts, conflictErr := runGitAt(ctx, normalized.Path, "diff", "--name-only", "--diff-filter=U", "-z")
 		var conflictPaths []string
 		if conflictErr == nil && conflicts != "" {
@@ -445,7 +445,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
-	result.Evidence = validationEnvironment(ctx, cmd)
+	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
+	if !result.Evidence.Environment.Known() {
+		result.Evidence = validationEnvironment(ctx, cmd)
+	}
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
 	result.StartedAt = started.UTC()
@@ -472,9 +475,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 
 func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.CommandEvidence {
 	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
-	probe := exec.CommandContext(ctx, "go", "env", "-json", "GOHOSTOS", "GOHOSTARCH", "GOVERSION")
-	probe.Dir, probe.Env = command.Dir, command.Env
-	probe.WaitDelay = workspaceCommandWaitDelay
+	probe := validationProbe(ctx, command, "go env -json")
+	if probe == nil {
+		return evidence
+	}
 	var observed struct {
 		OS           string `json:"GOHOSTOS"`
 		Architecture string `json:"GOHOSTARCH"`

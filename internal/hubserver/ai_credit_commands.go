@@ -20,18 +20,22 @@ type creditFundingInput struct {
 }
 
 func (s *Service) creditAvailable() bool {
-	if s.config.Hosted == nil || s.config.Hosted.Billing == nil || s.billing == nil || s.database.aiCreditMode == "" {
+	cfg := s.hostedBillingConfig()
+	if s.config.Hosted == nil || cfg == nil || s.billing == nil || s.database.aiCreditMode == "" {
 		return false
 	}
-	_, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
+	_, ok := cfg.Provider.(billing.CreditProvider)
 	return ok
 }
 
 func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthorization, priceID, requestID string) (billingDestination, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	cfg := s.hostedBillingConfig()
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
 	}
-	if !s.creditAvailable() {
+	if cfg == nil || !s.creditAvailable() {
 		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "AI credit purchases are unavailable")
 	}
 	s.billing.mu.Lock()
@@ -53,22 +57,22 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	}
 	key := "detent-credit-" + s.config.newLeaseID()
 	if requestID != "" {
-		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + s.config.Hosted.Billing.mode() + "\x00" + requestID))
+		digest := sha256.Sum256([]byte(s.config.Hosted.OrganizationID + "\x00" + cfg.mode() + "\x00" + requestID))
 		key = fmt.Sprintf("detent-credit-%x", digest)
 	}
 	var raw string
 	var cents, at int64
 	var price, mode, state string
-	err = s.database.db.QueryRowContext(ctx, "SELECT price_id,usd_cents,created_at,session_json,mode,state FROM ai_credit_purchases WHERE purchase_key=? AND organization_id=? AND automatic=0", key, binding.OrganizationID).Scan(&price, &cents, &at, &raw, &mode, &state)
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT price_id,usd_cents,created_at,session_json,mode,state FROM ai_credit_purchases WHERE purchase_key=? AND organization_id=? AND automatic=0", key, binding.OrganizationID).Scan(&price, &cents, &at, &raw, &mode, &state)
 	if errors.Is(err, sql.ErrNoRows) {
-		price, cents, at, mode, state = pack.PriceID, pack.USDCents, s.config.now().UnixMicro(), s.config.Hosted.Billing.mode(), "pending"
+		price, cents, at, mode, state = pack.PriceID, pack.USDCents, s.config.now().UnixMicro(), cfg.mode(), "pending"
 		_, err = s.database.db.ExecContext(ctx, "INSERT INTO ai_credit_purchases(purchase_key,organization_id,mode,price_id,usd_cents,automatic,created_at) VALUES(?,?,?,?,?,0,?)", key, binding.OrganizationID, mode, price, cents, at)
 		raw = "{}"
 	}
 	if err != nil {
 		return billingDestination{}, err
 	}
-	if price != pack.PriceID || cents != pack.USDCents || mode != s.config.Hosted.Billing.mode() {
+	if price != pack.PriceID || cents != pack.USDCents || mode != cfg.mode() {
 		return billingDestination{}, billingFailure(http.StatusConflict, "The purchase key already refers to another credit pack")
 	}
 	var session billing.Session
@@ -79,7 +83,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		if state != "pending" || s.config.now().Sub(time.UnixMicro(at)) >= 23*time.Hour {
 			return billingDestination{}, billingFailure(http.StatusConflict, "This purchase needs billing review")
 		}
-		provider, ok := s.config.Hosted.Billing.Provider.(billing.CreditProvider)
+		provider, ok := cfg.Provider.(billing.CreditProvider)
 		if !ok {
 			return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "AI credit purchases are unavailable")
 		}
@@ -99,10 +103,13 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 }
 
 func (s *Service) configureCreditFunding(ctx context.Context, authorize billingAuthorization, request creditFundingInput, key string) (creditFundingInput, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if _, err := authorize(ctx); err != nil {
 		return creditFundingInput{}, err
 	}
-	if s.config.Hosted == nil || s.config.Hosted.Billing == nil || s.billing == nil || s.database.aiCreditMode == "" || request.Enabled && !s.creditAvailable() {
+	cfg := s.hostedBillingConfig()
+	if s.config.Hosted == nil || cfg == nil || s.billing == nil || s.database.aiCreditMode == "" || request.Enabled && !s.creditAvailable() {
 		return creditFundingInput{}, billingFailure(http.StatusServiceUnavailable, "AI credit purchases are unavailable")
 	}
 	s.billing.mu.Lock()
@@ -111,7 +118,6 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 	if err != nil {
 		return creditFundingInput{}, err
 	}
-	cfg := s.config.Hosted.Billing
 	command := hostedCommand{actor: credential.ID, operation: "billing.credit_auto_fund", key: key, input: struct {
 		Account, Mode string
 		Settings      creditFundingInput
@@ -139,7 +145,7 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 		if !ok || request.Threshold <= 0 || request.Threshold >= pack.USDCents {
 			return creditFundingInput{}, billingFailure(http.StatusBadRequest, "Choose a threshold greater than zero and smaller than the credit pack")
 		}
-		if err := s.database.db.QueryRowContext(ctx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&method); err != nil {
 			return creditFundingInput{}, err
 		}
 		binding, err := s.database.hostedBillingBinding(ctx, cfg)

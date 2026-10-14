@@ -5,6 +5,8 @@ import {
   createRoute,
   createRouter,
   RouterProvider,
+  Outlet,
+  useLocation,
 } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +15,8 @@ import * as Schema from "effect/Schema";
 import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
 import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
 import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
+import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
+import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { ClientContext } from "../../src/app/client.ts";
@@ -65,6 +69,8 @@ describe("which sections an actor gets", () => {
       "General",
       "API keys",
       "Organization",
+      "Members",
+      "Models",
       "Appearance",
       "Projects",
       "Providers & runners",
@@ -151,21 +157,24 @@ describe("which sections an actor gets", () => {
   });
 });
 
-function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT, content: React.ReactNode = null) {
+function renderSidebarNav(pathname = "/settings/projects", account: unknown = OWNER_ACCOUNT, content: React.ReactNode = null, served = false) {
   const navigated: string[] = [];
-  const root = createRootRoute();
+  const root = createRootRoute({ component: served ? () => {
+    const current = useLocation({ select: (location) => location.pathname });
+    return <OrganizationMembersProvider><SidebarProvider><SettingsSidebarNav pathname={current} /><Outlet /></SidebarProvider></OrganizationMembersProvider>;
+  } : undefined });
   const section = createRoute({
     getParentRoute: () => root,
     path: "/settings/$section",
     component: () => (
-      <SidebarProvider>
+      <OrganizationMembersProvider><SidebarProvider>
         <SettingsSidebarNav pathname={pathname} />
         {content}
-      </SidebarProvider>
+      </SidebarProvider></OrganizationMembersProvider>
     ),
   });
   const router = createRouter({
-    routeTree: root.addChildren([section]),
+    routeTree: root.addChildren(served ? accountRoutes(root) : [section, createRoute({ getParentRoute: () => root, path: "/settings/organization/$organizationPage", component: section.options.component })]),
     history: createMemoryHistory({ initialEntries: [pathname] }),
   });
   const subscribe = router.subscribe("onResolved", (event) => {
@@ -176,7 +185,7 @@ function renderSidebarNav(pathname = "/settings/projects", account: unknown = OW
       <RouterProvider router={router as never} />
     </ClientContext.Provider>,
   );
-  return { navigated, subscribe };
+  return { navigated, subscribe, router };
 }
 
 const OWNER_ACCOUNT = {
@@ -184,23 +193,57 @@ const OWNER_ACCOUNT = {
   account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 };
 
+describe("issue notification preference", () => {
+  it.each([false, true])("loads the saved preference (%s) and persists a toggle", async (enabled) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("issue-notification-preference")) {
+        return new Response(JSON.stringify({ enabled: init?.method === "PUT" ? !enabled : enabled }));
+      }
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Notify me about issues I filed or commented on" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(enabled)));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe(String(!enabled)));
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("issue-notification-preference") && init?.method === "PUT" && init.body === JSON.stringify({ enabled: !enabled }) && (init.headers as Record<string, string>)["X-CSRF-Token"] === accountFixture.csrf_token)).toBe(true);
+  });
+
+  it("keeps the saved preference and shows a failed save", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("issue-notification-preference")) {
+        return init?.method === "PUT"
+          ? new Response(JSON.stringify({ code: "unavailable", message: "Notification preference could not be saved" }), { status: 503 })
+          : new Response(JSON.stringify({ enabled: true }));
+      }
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Notify me about issues I filed or commented on" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(toggle);
+    await screen.findByText("Notification preference could not be saved");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
 describe("MCP setup", () => {
   const account = accountFixture as unknown as AccountBootstrap;
 
   it.each([
-    ["dedicated", "", "https://threefold.detent.cloud/", "https://threefold.detent.cloud/mcp"],
-    ["shared origin", "/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["shared entry", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["shared trailing slash", "/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["mounted public URL without runtime mount", "", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["another organization's URL", "/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
-    ["another organization's URL without runtime mount", "", "https://app.detent.cloud/organizations/org_parable", null],
-    ["another organization's mount", "/organizations/org_parable", "https://app.detent.cloud", null],
-    ["conflicting public path", "/organizations/org_threefold", "https://app.detent.cloud/projects/proj_parable", null],
-    ["HTTP", "", "http://threefold.detent.cloud", null],
-    ["credentials in URL", "/organizations/org_threefold", "https://user:secret@threefold.detent.cloud", null],
-    ["query credential", "/organizations/org_threefold", "https://threefold.detent.cloud?token=secret", null],
-    ["fragment", "/organizations/org_threefold", "https://threefold.detent.cloud#secret", null],
+    ["dedicated", "", "https://organization.example.com/", "https://organization.example.com/mcp"],
+    ["shared origin", "/organizations/org_example", "https://app.example.org", "https://app.example.org/organizations/org_example/mcp"],
+    ["shared entry", "/organizations/org_example", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
+    ["shared trailing slash", "/organizations/org_example/", "https://app.example.org/organizations/org_example/", "https://app.example.org/organizations/org_example/mcp"],
+    ["mounted public URL without runtime mount", "", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
+    ["another organization's URL", "/organizations/org_example", "https://app.example.org/organizations/org_secondary_example", null],
+    ["another organization's URL without runtime mount", "", "https://app.example.org/organizations/org_secondary_example", null],
+    ["another organization's mount", "/organizations/org_secondary_example", "https://app.example.org", null],
+    ["conflicting public path", "/organizations/org_example", "https://app.example.org/projects/proj_example_project", null],
+    ["HTTP", "", "http://organization.example.com", null],
+    ["credentials in URL", "/organizations/org_example", "https://user:secret@organization.example.com", null],
+    ["query credential", "/organizations/org_example", "https://organization.example.com?token=secret", null],
+    ["fragment", "/organizations/org_example", "https://organization.example.com#secret", null],
     ["malformed", "", "not a URL", null],
   ])("uses only a safe canonical %s organization endpoint", (_name, mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
@@ -209,16 +252,16 @@ describe("MCP setup", () => {
   });
 
   it("matches the active organization's identity rather than another directory entry", () => {
-    expect(organizationMCPEndpoint({ ...account, organizations: [...account.organizations].reverse() })).toBe("https://threefold.detent.cloud/mcp");
+    expect(organizationMCPEndpoint({ ...account, organizations: [...account.organizations].reverse() })).toBe("https://organization.example.com/mcp");
     expect(organizationMCPEndpoint({ ...account, organization: { id: "org_unknown", name: "Unknown" } })).toBeNull();
     expect(organizationMCPEndpoint(null)).toBeNull();
   });
 
   it.each([
-    ["", "https://threefold.detent.cloud", "https://threefold.detent.cloud/mcp"],
-    ["/organizations/org_threefold", "https://app.detent.cloud", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold", "https://app.detent.cloud/organizations/org_threefold/mcp"],
-    ["/organizations/org_threefold", "https://app.detent.cloud/organizations/org_parable", null],
+    ["", "https://organization.example.com", "https://organization.example.com/mcp"],
+    ["/organizations/org_example", "https://app.example.org", "https://app.example.org/organizations/org_example/mcp"],
+    ["/organizations/org_example", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
+    ["/organizations/org_example", "https://app.example.org/organizations/org_secondary_example", null],
   ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples using shared key metadata", async (mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -231,7 +274,7 @@ describe("MCP setup", () => {
       csrf_token: "private-csrf-credential",
       token: "private-api-credential",
     };
-    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     if (mount) {
       await screen.findByText("Manage your keys in account settings");
       expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
@@ -410,7 +453,7 @@ describe("MCP setup", () => {
   it("offers manual copying when clipboard access fails", async () => {
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
     vi.spyOn(console, "error").mockImplementation(() => {});
-    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_threefold", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
+    renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: account.csrf_token }, account, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Copy MCP endpoint" })).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
     await waitFor(() => expect(screen.getByRole("status", { name: "MCP endpoint copy status" }).textContent).toContain("Select the text"));
@@ -538,6 +581,9 @@ describe("the settings navigation in the sidebar", () => {
       "General",
       "API keys",
       "Organization",
+      "Overview",
+      "Members",
+      "Models",
       "Appearance",
       "Projects",
       "Providers & runners",
@@ -638,7 +684,7 @@ describe("the rows a section is built from", () => {
   it("draws the grouped card with its heading and its header action", () => {
     render(
       <SettingsSection title="Projects" headerAction={<button type="button">New project</button>}>
-        <SettingsRow title="parable" description="native · 5 workflow states" status="Set up" />
+        <SettingsRow title="example-project" description="native · 5 workflow states" status="Set up" />
       </SettingsSection>,
     );
     expect(screen.getByRole("heading", { name: "Projects" })).toBeTruthy();
@@ -998,5 +1044,180 @@ describe("plan billing usage", () => {
 
   it("does not recommend a tier whose storage has the same limit", () => {
     expect(nextFittingPlan({ ...planFixture, usage: { ...planFixture.usage, collaboration_bytes: 1000000000 } }, usageFixture.comparison_plans)).toBeUndefined();
+  });
+});
+
+
+describe("organization settings pages", () => {
+  const account = { ...OWNER_ACCOUNT.account, organization: { id: "org_example", name: "Example team" }, organizations: [
+    { id: "org_example", name: "Example team", public_url: "", current: true, role: "owner" },
+    { id: "org_second", name: "Second team", public_url: "", current: false, role: "member" },
+  ] };
+  const client = { ...OWNER_ACCOUNT, account, bootstrap: account };
+  function stubOrganizationApi(options: { canCreate?: boolean; dialogCanCreate?: boolean; sessionError?: boolean; renameRetry?: boolean; removableMember?: boolean; freeSlotUsed?: boolean } = {}) {
+    let sessionReads = 0;
+    let renameAttempts = 0;
+    let removed = false;
+    const reload = vi.fn();
+    const assign = vi.fn();
+    vi.stubGlobal("location", { reload, assign });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/members")) return Response.json({ member_count: removed ? 2 : 3, members: options.removableMember && !removed ? [{ id: "mem_example", user_id: "user_example", email: "member@example.test", role: "member", status: "active", grants: [] }] : [], invitations: [] });
+      if (input.endsWith("/members/mem_example") && init?.method === "DELETE") { removed = true; return Response.json({}); }
+      if (input.endsWith("/slug")) return Response.json({ slug: "example-team" });
+      if (input.endsWith("/model-selection")) return Response.json({ revision: "1", selection: null, effective: { enabled: true, normal_model: "gpt-6.1-sol" } });
+      if (input.endsWith("/name")) { renameAttempts++; return options.renameRetry && renameAttempts === 1 ? Response.json({ code: "unavailable", message: "Try again" }, { status: 503 }) : Response.json({ name: "Renamed team" }); }
+      if (input.endsWith("/switch")) return Response.json({ next: "/auth/oidc/start?organization=org_second" });
+      if (input.endsWith("/api/v2/organizations") && init?.method === "POST") return Response.json({ organization: { id: "org_new", name: "New team", public_url: "" }, next: "/auth/oidc/start?organization=org_new" });
+      if (input === "/api/cloud/session") { sessionReads++; return options.sessionError ? Response.json({ message: "Eligibility unavailable" }, { status: 503 }) : Response.json({ email: "owner@example.test", csrf: "entry-csrf", can_create: sessionReads > 1 ? options.dialogCanCreate ?? options.canCreate ?? true : options.canCreate ?? true, free_slot_used: options.freeSlotUsed ?? true, creation_prices: [{ id: "price_team", label: "Team" }] }); }
+      if (input === "/api/cloud/organizations") return Response.json({ email: "owner@example.test", csrf: "entry-csrf", organizations: account.organizations.map((item) => ({ ...item, url: `/organizations/${item.id}` })) });
+      if (input === "/organizations" && init?.method === "POST") return Response.json({ next: "/organizations/org_new/provisioning" });
+      throw new Error(`Unexpected organization request: ${input}`);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    return { fetcher, reload, assign, writeText };
+  }
+
+  it("shows Overview rows, copies the ID, saves the name and switches from the list", async () => {
+    const { fetcher, reload, assign, writeText } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    await screen.findByRole("heading", { name: "Example team", level: 2 });
+    await screen.findByText("You are the owner · 3 members · 2 projects");
+    expect(screen.getByText("Organization ID")).toBeTruthy();
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Organization slug" }) as HTMLInputElement).value).toBe("example-team"));
+    expect(screen.getByText("Current")).toBeTruthy();
+    expect(screen.queryByText("Your first organization")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Copy organization ID" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("org_example"));
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Organization name" }), { target: { value: " Renamed team " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    const savedName = fetcher.mock.calls.find(([url]) => url.endsWith("/name"))?.[1];
+    expect(savedName?.method).toBe("PUT");
+    expect(JSON.parse(savedName!.body as string)).toMatchObject({ name: "Renamed team", idempotency_key: expect.any(String) });
+    fireEvent.click(screen.getByRole("button", { name: "Switch to Second team" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/oidc/start?organization=org_second"));
+  });
+
+  it("creates only through the dialog and preserves re-sign-in", async () => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { assign, fetcher } = stubOrganizationApi({ freeSlotUsed: false });
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
+    await waitFor(() => expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create organization" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
+    expect(new URLSearchParams(String(fetcher.mock.calls.find(([url]) => url === "/organizations")![1]!.body)).get("name")).toBe("New team");
+  });
+
+  it("hides bootstrap-only creation in a provisioned dedicated organization", async () => {
+    const { fetcher } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    await screen.findByText("You are the owner · 3 members · 2 projects");
+    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByText("New organization")).toBeNull();
+    expect(fetcher.mock.calls.some(([url]) => url === "/api/cloud/session" || url === "/api/v2/organizations")).toBe(false);
+    expect(screen.getByRole("button", { name: "Switch to Second team" })).toBeTruthy();
+  });
+
+  it("requires a paid plan when the shared owner's Free slot is used", async () => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { fetcher, assign } = stubOrganizationApi();
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
+    await within(dialog).findByText(/Your Free organization slot is used/);
+    expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Paid plan" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Team" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create organization" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/organizations/org_new/provisioning"));
+    expect(String(fetcher.mock.calls.find(([url]) => url === "/organizations")![1]!.body)).toContain("price=price_team");
+  });
+
+  it.each([{ canCreate: false }, { sessionError: true }])("hides shared creation when eligibility is unavailable: %o", async (options) => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { fetcher } = stubOrganizationApi(options);
+    renderSidebarNav("/settings/organization", client, null, true);
+    await screen.findByRole("button", { name: "Switch to Second team" });
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => url === "/api/cloud/session")).toBe(true));
+    if (options.sessionError) await screen.findByText("Eligibility unavailable");
+    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
+    expect(screen.queryByText("New organization")).toBeNull();
+  });
+
+  it("refuses creation if eligibility changes while opening the dialog", async () => {
+    applyHubPaths({ base_path: "/organizations/org_example" });
+    const { fetcher, assign } = stubOrganizationApi({ dialogCanCreate: false, freeSlotUsed: false });
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Organization name" }), { target: { value: "New team" } });
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === "/api/cloud/session")).toHaveLength(2));
+    expect((within(dialog).getByRole("button", { name: "Create organization" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.submit(within(dialog).getByRole("textbox", { name: "Organization name" }).closest("form")!);
+    expect(fetcher.mock.calls.some(([url]) => url === "/organizations")).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("reuses the rename key after a failed request", async () => {
+    const { fetcher, reload } = stubOrganizationApi({ renameRetry: true });
+    renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Organization name" }), { target: { value: "Renamed team" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Try again");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    const requests = fetcher.mock.calls.filter(([url]) => url.endsWith("/name"));
+    expect(requests).toHaveLength(2);
+    expect(requests[1]![1]!.body).toBe(requests[0]![1]!.body);
+  });
+
+  it("refreshes sidebar and Overview counts after removing a member", async () => {
+    stubOrganizationApi({ removableMember: true });
+    const { router } = renderSidebarNav("/settings/organization/members", client, null, true);
+    await screen.findByRole("button", { name: "Members 3 members" });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await screen.findByRole("button", { name: "Members 2 members" });
+    expect(screen.queryByText("member@example.test")).toBeNull();
+    await router.navigate({ to: "/settings/organization" });
+    await screen.findByText("You are the owner · 2 members · 2 projects");
+  });
+
+  it.each(["member", "viewer"])("keeps %s views read-only", async (role) => {
+    stubOrganizationApi();
+    renderSidebarNav("/settings/organization", { ...client, account: { ...account, actor: { ...account.actor, can_manage: false, role } } }, null, true);
+    await screen.findByRole("heading", { name: "Example team", level: 2 });
+    expect(screen.queryByRole("textbox", { name: "Organization name" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Plan & usage" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Copy organization ID" })).toBeTruthy();
+  });
+
+  it.each([["/settings/organization/members", "Members", "Invite somebody"], ["/settings/organization/models", "Models", "Model selection"]])("serves the deep link %s and marks its sidebar row", async (path, label, content) => {
+    stubOrganizationApi();
+    renderSidebarNav(path!, client, null, true);
+    await screen.findByText(content!);
+    expect(screen.getByRole("button", { name: label === "Members" ? "Members 3 members" : label }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByText("Your organizations")).toBeNull();
+    if (label === "Members") expect(screen.queryByRole("heading", { name: "Model selection" })).toBeNull();
+    else expect(screen.queryByRole("heading", { name: "Invitations" })).toBeNull();
+  });
+
+  it.each([["invitations", "/settings/organization/members"], ["model selection", "/settings/organization/models"]])("searches %s on its new page", async (query, path) => {
+    stubOrganizationApi();
+    const { router } = renderSidebarNav("/settings/organization", client, null, true);
+    fireEvent.change(await screen.findByRole("combobox", { name: "Search settings" }), { target: { value: query } });
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search settings" }), { key: "Enter" });
+    await waitFor(() => expect(router.state.location.pathname).toBe(path));
   });
 });

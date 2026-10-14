@@ -18,7 +18,7 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 	if err != nil {
 		return ctx, nativeScope{}, err
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: request.ProjectID, ResourceKind: "work_item", ResourceID: request.Identifier})
+	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: operatortool.MoveItem, ProjectID: request.ProjectID, ResourceKind: "work_item", ResourceID: request.Identifier})
 	if err != nil {
 		return ctx, nativeScope{}, err
 	}
@@ -31,7 +31,9 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 		return ctx, nativeScope{}, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(request.ProjectID)
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
+	scope.action = operatortool.MoveItem
+	scope.actionItem, scope.actionTarget = request.Identifier, request.TargetState
+	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
 	if err != nil {
 		return ctx, nativeScope{}, hubSafeChangeError(err)
 	}
@@ -42,11 +44,11 @@ func (e nativeOperatorExecutor) workflowAuthority(ctx context.Context, raw json.
 }
 
 func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nativeScope, request operatortool.MoveItemArguments) (chat.Action, error) {
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
+	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
 	if err != nil {
 		return chat.Action{}, hubSafeChangeError(err)
 	}
-	project, err := readNativeProject(ctx, e.service.database.db, scope)
+	project, err := readNativeProject(ctx, e.service.database.reader, scope)
 	if err != nil {
 		return chat.Action{}, hubSafeChangeError(err)
 	}
@@ -71,7 +73,7 @@ func (e nativeOperatorExecutor) workflowTransition(ctx context.Context, call ope
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Identifier)
+	issue, err := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Identifier)
 	if err != nil {
 		return operatortool.Result{}, hubSafeChangeError(err)
 	}

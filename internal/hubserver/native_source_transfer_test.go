@@ -23,13 +23,15 @@ func TestNativeSourceTransfer(t *testing.T) {
 	for _, test := range []struct {
 		name                                                                 string
 		dirty, running, expired, released, denied, stale, cancel, concurrent bool
-		uncertain, prestart, cleanEffect, held, staleVersion                 bool
+		uncertain, prestart, cleanEffect, held, staleVersion, historical     bool
 		status                                                               int
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
 		{name: "concurrent transfer revisions", released: true, concurrent: true, status: http.StatusOK},
+		{name: "released historical running attempt", historical: true, released: true, status: http.StatusOK},
+		{name: "released selected running attempt", running: true, released: true, status: http.StatusUnprocessableEntity},
 		{name: "active execution", running: true, status: http.StatusUnprocessableEntity},
 		{name: "partition and lease expiry do not prove quiescence", running: true, expired: true, status: http.StatusUnprocessableEntity},
 		{name: "terminal execution still owns lease", status: http.StatusUnprocessableEntity},
@@ -56,8 +58,29 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
-			event := nativeStartedEvent(lease)
 			itemPath := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			var historical tracker.NativeAttempt
+			if test.historical {
+				start := nativeStartedEvent(lease)
+				start.IdempotencyKey = "historical-start"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, start), http.StatusOK)
+				checkpoint := start
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "historical-checkpoint", 2
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, checkpoint), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/attempts/"+start.Data.AttemptID, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &historical)
+				if historical.Status != "interrupted" || historical.Outcome != "" || historical.Current || historical.ClaimReleasedAt == nil || historical.Checkpoint == nil {
+					t.Fatalf("historical attempt did not retain interrupted custody: %#v", historical)
+				}
+				claim.SessionID = "latest-source"
+				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &lease)
+			}
+			event := nativeStartedEvent(lease)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
 			event.Data.Handoff = nativeTestCheckpoint()
@@ -108,6 +131,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, recoveryRead, http.StatusOK)
 			var observed sourceRecoveryView
 			decodeHubResponse(t, recoveryRead, &observed)
+			if test.historical && (!observed.Quiesced || observed.AttemptID != event.Data.AttemptID) {
+				t.Errorf("released historical attempt contradicts terminal released source: %#v", observed)
+			}
 			if observed.SourceRunnerName != "Source Air" {
 				t.Fatalf("scoped source runner name missing: %q", observed.SourceRunnerName)
 			}
@@ -165,6 +191,19 @@ func TestNativeSourceTransfer(t *testing.T) {
 			if current.State != f.issue.State || current.Archived != f.issue.Archived || !reflect.DeepEqual(current.Labels, f.issue.Labels) {
 				t.Fatal("transfer changed workflow state or archive hold")
 			}
+			if test.historical {
+				response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/attempts/"+historical.AttemptID, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var retained tracker.NativeAttempt
+				decodeHubResponse(t, response, &retained)
+				if !reflect.DeepEqual(retained, historical) {
+					t.Fatal("transfer rewrote historical outcome or checkpoint")
+				}
+				stored, err := readChangeVersion(t.Context(), f.service.database.db, version.ChangeID, version.ID)
+				if err != nil || !reflect.DeepEqual(stored, version) {
+					t.Fatalf("transfer replaced immutable source version: %v", err)
+				}
+			}
 			if test.name == "transfer and duplicate request" {
 				body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}, "name": operatortool.TransferItem, "arguments": map[string]any{"project_id": f.project.ID, "identifier": f.issue.WorkItemID, "request_id": "mcp-transfer", "expected_revision": strconv.FormatInt(int64(view.Revision), 10), "version_id": version.ID, "destination_runner_id": b.binding.RunnerID}}}
 				path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
@@ -214,7 +253,16 @@ func TestNativeSourceTransfer(t *testing.T) {
 				claim.MachineID, claim.SessionID = b.binding.MachineID, "destination-before-start"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim), http.StatusOK)
 				request.IdempotencyKey, request.ExpectedRevision, request.DestinationRunnerID = "cancel-active", view.Revision, ""
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/source-recovery", token, request), http.StatusUnprocessableEntity)
+				for _, advance := range []time.Duration{0, 91 * time.Second} {
+					now = now.Add(advance)
+					response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/source-recovery", f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &observed)
+					if observed.Quiesced {
+						t.Fatal("unreleased claim without an attempt became quiesced")
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/source-recovery", token, request), http.StatusUnprocessableEntity)
+				}
 				return
 			}
 			if test.cancel {
