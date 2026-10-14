@@ -36,7 +36,7 @@ func TestConnectionActions(t *testing.T) {
 			service := newTestService(nil, nil, executor)
 			identity := operatortool.Identity{PrincipalID: "operator", OrganizationID: "organization", CredentialID: "credential"}
 			revoked := false
-			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: "connection", Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
+			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{ID: "connection", Identity: identity, Origin: "verified origin", Resolve: func(context.Context) (operatortool.Authority, error) {
 				if revoked || scenario.revoked || scenario.expired {
 					return operatortool.Authority{}, operatortool.ErrAccessDenied
 				}
@@ -49,8 +49,8 @@ func TestConnectionActions(t *testing.T) {
 			}})
 			store := &connectionIdentityStore{}
 			connection := operatortool.CurrentConnection(ctx)
-			resolve := func(ctx context.Context, stored operatortool.Identity) (operatortool.Authority, error) {
-				if stored != identity {
+			resolve := func(ctx context.Context, stored operatortool.Identity, origin string) (operatortool.Authority, error) {
+				if stored != identity || origin != connection.Origin {
 					return operatortool.Authority{}, operatortool.ErrAccessDenied
 				}
 				return connection.Resolve(ctx)
@@ -80,6 +80,17 @@ func TestConnectionActions(t *testing.T) {
 				ctx, err = service.OriginatingContext(t.Context(), connection.ID, identity.PrincipalID, identity.OrganizationID)
 				if err != nil {
 					t.Fatal(err)
+				}
+			}
+			if scenario.restored {
+				changed := operatortool.CurrentConnection(ctx)
+				changed.Origin = "another origin"
+				changedContext := operatortool.WithConnection(ctx, changed)
+				if err := service.AttachConnection(changedContext); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("rebind origin: %v", err)
+				}
+				if err := service.CheckConnection(changedContext); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("changed origin: %v", err)
 				}
 			}
 			if scenario.idle {

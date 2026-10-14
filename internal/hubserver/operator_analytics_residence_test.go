@@ -70,6 +70,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 			}
 		}
 	}
+	projectTestAnalytics(t, f.service, tx)
 	for _, test := range []struct {
 		name                      string
 		from, to                  int
@@ -91,6 +92,11 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, report, projected)
 			residence := report.LaneResidence
 			for name, pair := range map[string][2]float64{"system": {residence.SystemTotal.Seconds, test.system * 3600}, "held": {residence.HeldTotal.Seconds, test.held * 3600}, "queue": {report.QueueTime.Seconds, test.queue * 3600}, "lead": {residence.LeadTotal.Seconds, test.lead * 3600}} {
 				if pair[0] != pair[1] {
@@ -146,7 +152,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 					t.Fatalf("terminal items aging %#v", residence.Aging)
 				}
 				for _, item := range residence.Aging.Items {
-					if item.WorkItemID == ids["c"] && (item.Lane != "Todo" || item.Hours != 21 || item.LaneP90Hours == nil || math.Abs(*item.LaneP90Hours-test.todoP90) > 0.001) {
+					if item.WorkItemID == ids["c"] && (item.Lane != "Todo" || item.Hours != 21 || item.LaneP90Hours == nil || math.Abs(*item.LaneP90Hours-test.todoP90) > 0.001 || item.SinceTodoHours == nil || *item.SinceTodoHours != 21) {
 						t.Fatalf("open lane aging %#v", item)
 					}
 				}
@@ -220,6 +226,12 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 			if err != nil {
 				t.Fatal(err)
 			}
+			projectTestAnalytics(t, f.service, tx)
+			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, report, projected)
 			residence := report.LaneResidence
 			population := "residence_" + kind
 			cursor := report.PopulationCursors[population]

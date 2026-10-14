@@ -533,7 +533,7 @@ const assistantCitationChip: GalleryDoc = {
 // --- Conversation: pull request link preview ----------------------------------
 
 const ACTORS: Record<string, PullRequestActor | null> = {
-  "avatar": { login: "mvisser", name: "Michael Visser", avatarUrl: svgImage("M", "#0f766e", "#22c55e", 64, 64) },
+  "avatar": { login: "example-owner", name: "Example Owner", avatarUrl: svgImage("M", "#0f766e", "#22c55e", 64, 64) },
   "no avatar": { login: "runner-bot", name: null, avatarUrl: null },
   "deleted user": null,
 };

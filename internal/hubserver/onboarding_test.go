@@ -69,15 +69,16 @@ func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, kind  string
-		auto, match bool
+		name, kind, scope string
+		auto, match       bool
 	}{
-		{"human review", "human_review", false, true},
-		{"auto merge missing tag", "command", true, false},
+		{"human review", "human_review", "projects", false, true},
+		{"auto merge missing tag", "command", "projects", true, false},
+		{"organization runner without project grant", "human_review", "organization", false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", tt.name)
-			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r := prepareRunnerForScope(t, f, tt.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			descriptor := hubTestPolicy()
 			descriptor.Gates.Kind, descriptor.Gates.AutoPromote = tt.kind, tt.auto
@@ -101,6 +102,17 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			}
 			if strings.Contains(response.Body.String(), r.redemption.Credential) || len(setup.Runners[0].Runner.Leases) != 0 {
 				t.Fatal("private runner data exposed")
+			}
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", other.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
+			if tt.scope == "organization" {
+				if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
+					t.Fatalf("organization runner missing from ungranted project: %+v", setup.Runners)
+				}
+			} else if len(setup.Runners) != 0 {
+				t.Fatalf("project-scoped runner exposed to ungranted project: %+v", setup.Runners)
 			}
 		})
 	}
@@ -201,84 +213,120 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 
 func TestHostedRunnerCheckoutAssociation(t *testing.T) {
 	t.Parallel()
-	backend := &scriptedReconcileBackend{}
-	f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) {
-		cfg.ReconcileBackend = backend
-	})
-	grantAppRunners(t, f)
-	runner := enrollAppRunner(t, f, "Private checkout host", "test")
-	base := browserHostedOrganizationBase + "/projects/" + f.project
-	request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": "Acme/Private", "source": "runner_checkout"}
-	var available ProjectIntegration
-	response := f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &available)
-	if available.GitHubTransportAvailable == nil || *available.GitHubTransportAvailable || available.RepositoryEnabled {
-		t.Fatalf("hosted transport = %+v", available)
-	}
-
 	for _, test := range []struct {
-		name, account string
-		status        int
-		message       string
+		name, report, bound string
+		status              int
+		appBinding          bool
 	}{
-		{"viewer cannot associate", "viewer", http.StatusNotFound, ""},
-		{"missing local checkout", "owner", http.StatusUnprocessableEntity, "Start an enrolled runner"},
+		{name: "new project without checkout", status: http.StatusOK},
+		{name: "matching checkout", report: "Acme/Private", status: http.StatusOK},
+		{name: "other checkout does not prevent clone", report: "Other/Repository", status: http.StatusOK},
+		{name: "existing binding is immutable", bound: "Other/Repository", status: http.StatusUnprocessableEntity},
+		{name: "existing GitHub App binding is immutable", appBinding: true, status: http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := f.setupRequest(t, test.account, http.MethodPost, base+"/onboarding/repository", request)
+			t.Parallel()
+			backend := &scriptedReconcileBackend{}
+			f := newBrowserHostedFixtureServing(t, true, "org_browser_preview", false, func(cfg *Config) {
+				cfg.ReconcileBackend = backend
+			})
+			grantAppRunners(t, f)
+			runner := enrollAppRunner(t, f, "Private checkout host", "test")
+			base := browserHostedOrganizationBase + "/projects/" + f.project
+			path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
+			heartbeat := map[string]any{"display_name": "Private checkout host", "capacity": 1, "version": "test", "checkout_repository": test.report}
+			if test.report != "" {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
+			}
+			if test.bound != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", test.bound, f.project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.appBinding {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO repositories(id, github_node_id, github_owner, github_name, created_at, updated_at) VALUES(1, 'repo_other', 'Other', 'Repository', ?, ?)", formatHubTime(time.Now()), formatHubTime(time.Now())); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id=1 WHERE id=?", f.project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := map[string]any{"idempotency_key": "checkout-association", "expected_revision": "1", "repository": "Acme/Private", "source": "runner_checkout"}
+			requireNativeStatus(t, f.setupRequest(t, "viewer", http.MethodPost, base+"/onboarding/repository", request), http.StatusNotFound)
+			response := f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
 			requireNativeStatus(t, response, test.status)
-			if test.message != "" && !strings.Contains(response.Body.String(), test.message) {
-				t.Fatalf("error did not explain next action: %s", response.Body.String())
+			if test.status != http.StatusOK {
+				return
+			}
+			response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var integration ProjectIntegration
+			decodeHubResponse(t, response, &integration)
+			if integration.CheckoutRepository != "Acme/Private" || integration.RepositoryEnabled || integration.Repository != "" || integration.Revision != 2 {
+				t.Fatalf("association = %+v", integration)
+			}
+			if integration.GitHubTransportAvailable == nil || *integration.GitHubTransportAvailable {
+				t.Fatalf("hosted transport = %+v", integration)
+			}
+			if integration.CheckoutVerified != (test.report == "Acme/Private") {
+				t.Fatalf("checkout verified = %v before runner report", integration.CheckoutVerified)
+			}
+			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request), http.StatusOK)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/org_browser_preview/projects/"+f.project, runner.Credential, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var definition tracker.NativeProject
+			decodeHubResponse(t, response, &definition)
+			if definition.Repository != "Acme/Private" || definition.CloneURL != "https://github.com/Acme/Private.git" {
+				t.Fatalf("runner project = %+v", definition)
+			}
+			heartbeat["checkout_repository"] = "https://alice:private-secret@github.com/Acme/Private.git"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat)
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			if strings.Contains(response.Body.String(), "private-secret") || strings.Contains(response.Body.String(), runner.Credential) {
+				t.Fatal("invalid checkout report exposed credentials")
+			}
+			heartbeat["checkout_repository"] = "Acme/Private"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
+			var reported string
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT repository FROM runner_checkout_repositories WHERE runner_id=? AND project_id=?", runner.RunnerID, f.project).Scan(&reported); err != nil || reported != "Acme/Private" {
+				t.Fatalf("checkout report = %q: %v", reported, err)
+			}
+			response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &integration)
+			if !integration.CheckoutVerified {
+				t.Fatal("matching checkout was not verified")
+			}
+			if test.report == "" {
+				for _, observation := range []struct {
+					name, sql string
+					value     string
+				}{
+					{name: "revoked runner", sql: "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", value: formatHubTime(time.Now())},
+					{name: "stale checkout", sql: "UPDATE runner_checkout_repositories SET reported_at=? WHERE runner_id=?", value: formatHubTime(time.Now().Add(-10 * time.Minute))},
+				} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), observation.sql, observation.value, runner.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+					response = f.setupRequest(t, "owner", http.MethodGet, base+"/integration", nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &integration)
+					if integration.CheckoutVerified {
+						t.Fatalf("%s verified a checkout", observation.name)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=NULL WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", runner.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var count int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM repositories").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("GitHub repository projection count = %d: %v", count, err)
+			}
+			if calls := backend.Requests(); len(calls) != 0 {
+				t.Fatalf("hosted checkout association called GitHub: %+v", calls)
 			}
 		})
-	}
-
-	path := base + "/machines/" + string(runner.MachineID) + "/heartbeat"
-	heartbeat := map[string]any{"display_name": "Private checkout host", "capacity": 1, "version": "test", "checkout_repository": "Other/Repository"}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
-	response = f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
-	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-	if !strings.Contains(response.Body.String(), "matching GitHub origin") {
-		t.Fatalf("mismatch did not explain next action: %s", response.Body.String())
-	}
-
-	heartbeat["checkout_repository"] = "https://alice:private-secret@github.com/Acme/Private.git"
-	response = performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat)
-	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-	if strings.Contains(response.Body.String(), "private-secret") || strings.Contains(response.Body.String(), runner.Credential) {
-		t.Fatal("invalid checkout report exposed credentials")
-	}
-	heartbeat["checkout_repository"] = "Acme/Private"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, runner.Credential, heartbeat), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=? WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", formatHubTime(time.Now()), runner.RunnerID); err != nil {
-		t.Fatal(err)
-	}
-	response = f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
-	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-	if !strings.Contains(response.Body.String(), "Start an enrolled runner") {
-		t.Fatalf("revoked runner error did not explain next action: %s", response.Body.String())
-	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at=NULL WHERE id=(SELECT token_id FROM runner_identities WHERE id=?)", runner.RunnerID); err != nil {
-		t.Fatal(err)
-	}
-	response = f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request)
-	requireNativeStatus(t, response, http.StatusOK)
-	var integration ProjectIntegration
-	decodeHubResponse(t, response, &integration)
-	if integration.CheckoutRepository != "Acme/Private" || integration.RepositoryEnabled || integration.Repository != "" || integration.Revision != 2 {
-		t.Fatalf("association = %+v", integration)
-	}
-	if strings.Contains(response.Body.String(), runner.Credential) || strings.Contains(response.Body.String(), "private-secret") {
-		t.Fatal("credential leaked in association response")
-	}
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, base+"/onboarding/repository", request), http.StatusOK)
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM repositories").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("GitHub repository projection count = %d: %v", count, err)
-	}
-	if calls := backend.Requests(); len(calls) != 0 {
-		t.Fatalf("hosted checkout association called GitHub: %+v", calls)
 	}
 }
 
@@ -444,7 +492,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 		t.Fatalf("observed policies = %v, want %v (approved %+v)", ids, want, approved)
 	}
 	project, err := readNativeProject(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
-	if err != nil || !reflect.DeepEqual(project.States, nativeFixtureStates()) {
+	if err != nil || !reflect.DeepEqual(project.States, f.project.States) {
 		t.Fatalf("unapproved runner report changed workflow: %#v, %v", project, err)
 	}
 
@@ -470,6 +518,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	if ids, _ = observedIDs(t); len(ids) != 0 {
 		t.Fatalf("removed runners retain actionable reports: %v", ids)
 	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: changed.ID}), http.StatusUnprocessableEntity)
 }
 
 func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
@@ -551,7 +600,27 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 			if test.selected && len(read(f.base, f.token).ObservedPolicies) != 0 {
 				t.Fatal("selected project's candidate leaked into the default project")
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: setup.Policy.Policy.ID, Policy: pending.Policy}), http.StatusOK)
+			for _, invalid := range []struct {
+				name   string
+				change policy.Change
+				status int
+			}{
+				{"unknown observation", policy.Change{ExpectedID: original.ID, ObservedPolicyID: "policy_" + strings.Repeat("f", 64)}, http.StatusUnprocessableEntity},
+				{"stale approval", policy.Change{ObservedPolicyID: pending.Policy.ID}, http.StatusConflict},
+				{"ambiguous input", policy.Change{ExpectedID: original.ID, ObservedPolicyID: pending.Policy.ID, Policy: pending.Policy}, http.StatusUnprocessableEntity},
+			} {
+				t.Run(invalid.name, func(t *testing.T) {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, invalid.change), invalid.status)
+				})
+			}
+			change := policy.Change{ExpectedID: setup.Policy.Policy.ID, ObservedPolicyID: pending.Policy.ID}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", runner.redemption.Credential, change), http.StatusForbidden)
+			if test.selected {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, change), http.StatusUnprocessableEntity)
+			}
+			for range 2 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, target.base+"/onboarding/policy", testHubAdminToken, change), http.StatusOK)
+			}
 			if err := check(); err != nil {
 				t.Fatalf("same runner cannot load the approved candidate: %v", err)
 			}

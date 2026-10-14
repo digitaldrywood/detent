@@ -409,12 +409,12 @@ func TestStateSnapshotCarriesIssueAuthor(t *testing.T) {
 	state := newState(normalizeConfig(Config{}))
 	state.BoardIssues = []connector.Issue{{
 		ID:       "issue-1581",
-		AuthorID: "corylanou",
+		AuthorID: "example-user",
 	}}
 
 	snapshot := state.Snapshot(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
-	if got := snapshot.BoardIssues[0].AuthorID; got != "corylanou" {
-		t.Fatalf("BoardIssues[0].AuthorID = %q, want corylanou", got)
+	if got := snapshot.BoardIssues[0].AuthorID; got != "example-user" {
+		t.Fatalf("BoardIssues[0].AuthorID = %q, want example-user", got)
 	}
 }
 
@@ -1191,12 +1191,12 @@ func TestStateSnapshotFiltersRuntimeRowsUsingCurrentAuthorization(t *testing.T) 
 	issue := func(id, state string, authorized bool) connector.Issue {
 		labels := []string{"bug"}
 		if authorized {
-			labels = append(labels, "detent:cory")
+			labels = append(labels, "detent:operator")
 		}
-		return connector.Issue{ID: id, Identifier: "getparable/parable#" + id, State: state, Labels: labels}
+		return connector.Issue{ID: id, Identifier: "example-org/example-project#" + id, State: state, Labels: labels}
 	}
 	state := newState(normalizeConfig(Config{
-		Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:cory"}}},
+		Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"detent:operator"}}},
 	}))
 	state.BoardIssues = []connector.Issue{
 		issue("authorized-queue", "Todo", true),
@@ -1210,21 +1210,21 @@ func TestStateSnapshotFiltersRuntimeRowsUsingCurrentAuthorization(t *testing.T) 
 	state.Blocked["unauthorized-blocked"] = Blocked{Issue: issue("unauthorized-blocked", "Blocked", false), Attempt: 1, BlockedAt: now.Add(-time.Hour)}
 	state.Blocked["authorized-dependency-wait"] = Blocked{
 		Issue:     issue("authorized-dependency-wait", "Todo", true),
-		Reason:    "waiting for getparable/parable#2230 Open",
+		Reason:    "waiting for example-org/example-project#2230 Open",
 		Source:    BlockedSourceDependency,
 		BlockedAt: now.Add(-time.Hour),
 	}
 	state.Blocked["unauthorized-dependency-wait"] = Blocked{
 		Issue:     issue("unauthorized-dependency-wait", "Todo", false),
-		Reason:    "waiting for getparable/parable#2230 Open",
+		Reason:    "waiting for example-org/example-project#2230 Open",
 		Source:    BlockedSourceDependency,
 		BlockedAt: now.Add(-time.Hour),
 	}
 	state.Completed["authorized-completed"] = Completed{Issue: issue("authorized-completed", "Done", true), CompletedAt: now.Add(-time.Hour)}
 	state.Completed["unauthorized-completed"] = Completed{Issue: issue("unauthorized-completed", "Done", false), CompletedAt: now.Add(-time.Hour)}
 	state.WorkAttempts = []telemetry.WorkAttempt{
-		{AttemptID: 1, IssueID: "authorized-completed", Identifier: "getparable/parable#authorized-completed", Status: string(store.WorkAttemptStatusTerminal), CompletedAt: timePointer(now.Add(-time.Hour))},
-		{AttemptID: 2, IssueID: "unauthorized-completed", Identifier: "getparable/parable#unauthorized-completed", Status: string(store.WorkAttemptStatusTerminal), CompletedAt: timePointer(now.Add(-time.Hour))},
+		{AttemptID: 1, IssueID: "authorized-completed", Identifier: "example-org/example-project#authorized-completed", Status: string(store.WorkAttemptStatusTerminal), CompletedAt: timePointer(now.Add(-time.Hour))},
+		{AttemptID: 2, IssueID: "unauthorized-completed", Identifier: "example-org/example-project#unauthorized-completed", Status: string(store.WorkAttemptStatusTerminal), CompletedAt: timePointer(now.Add(-time.Hour))},
 	}
 
 	snapshot := state.Snapshot(now)

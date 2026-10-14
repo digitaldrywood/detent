@@ -47,6 +47,7 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		resumeCase       string
 	}{
 		{name: "automatic handoff"},
+		{name: "workspace hook failure before provider", failure: "workspace"},
 		{name: "abandon deferred planner and recover", abandon: true},
 		{name: "provider failure settles before lease retirement", failure: "provider"},
 		{name: "refused start retains fenced accounting", failure: "refused"},
@@ -88,7 +89,12 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	source := nativeChangeSourceRepo(t)
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 	nativeChangeGit(t, source, "config", "url."+source+".insteadOf", nativeChangeRepository)
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	hooks := workspace.Hooks{}
+	if failure == "workspace" {
+		t.Setenv("WORKSPACE_TEST_PRIVATE_VALUE", "correcthorsebatterystaple")
+		hooks.AfterCreate = "printf '%s\\n' \"$WORKSPACE_TEST_PRIVATE_VALUE\"; exit 127"
+	}
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Hooks: hooks, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +262,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1,
 		ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Human Review"}, TerminalStates: []string{"Done"},
 	}
-	if abandon {
+	if abandon || failure == "workspace" {
 		orchCfg.PollInterval = time.Hour
 	}
 	var runBackend runner.Backend = agent
@@ -339,7 +345,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		}
 		wantStates = []string{"Human Review"}
 	}
-	if failure == "refused" || failure == "cleanup" {
+	if failure == "refused" || failure == "cleanup" || failure == "workspace" {
 		wantStates = []string{"Todo"}
 	}
 	var refusalAttemptID int64
@@ -384,11 +390,27 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		}
 	}
 	changes := h.changes(t, issue.ID)
+	if failure == "workspace" {
+		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(current.Attempts) != 1 || provider.calls.Load() != 0 || len(changes) != 0 {
+			t.Fatalf("setup failure lost receipt or started provider: attempts=%+v changes=%v calls=%d err=%v", current.Attempts, changes, provider.calls.Load(), err)
+		}
+		a := current.Attempts[0]
+		if a.Identity != nil || a.Status != "failed" || a.TerminalFailure == nil || a.TerminalFailure.Error != "workspace hook after_create failed (exit status 127)" || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ObservedAt.IsZero() || a.Runtime == nil || a.Runtime.LocalAttemptID == 0 || a.Runtime.Generation == 0 || a.Runtime.Activity != nil {
+			t.Fatalf("setup failure diagnostic or identity incorrect: %+v", a)
+		}
+		state, err := orch.State(t.Context())
+		if err != nil || state.FailureBreaker.Count != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 {
+			t.Fatalf("setup failure charged issue failure allowance: %+v err=%v", state, err)
+		}
+		return
+	}
 	if planningRecovery {
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || current.Issue.State != "Blocked" || !reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts) || !reflect.DeepEqual(current.Change, preservedRecovery.Change) || !reflect.DeepEqual(current.ChangeDetail, preservedRecovery.ChangeDetail) || provider.calls.Load() != 0 || !reflect.DeepEqual(changes, preservedChanges) {
+		if err != nil || current.Issue.State != "Blocked" || (len(current.Attempts) != len(preservedRecovery.Attempts)+1 || !reflect.DeepEqual(current.Attempts[:len(current.Attempts)-1], preservedRecovery.Attempts)) || !reflect.DeepEqual(current.Change, preservedRecovery.Change) || !reflect.DeepEqual(current.ChangeDetail, preservedRecovery.ChangeDetail) || provider.calls.Load() != 0 || !reflect.DeepEqual(changes, preservedChanges) {
 			t.Errorf("planning refusal changed preserved evidence: state=%s receipt_unchanged=%v change_unchanged=%v calls=%d changes=%d error=%v", current.Issue.State, reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts), reflect.DeepEqual(current.Change, preservedRecovery.Change), provider.calls.Load(), len(changes), err)
 		}
+		assertSetupRefusalReceipt(t, current.Attempts)
 		if resumeCase == "identity" && provider.resumeVerified.Load() != 1 || resumeCase == "policy" && provider.resumeVerified.Load() != 0 {
 			t.Fatalf("resume refusal did not exercise the intended boundary: case=%s verification_calls=%d", resumeCase, provider.resumeVerified.Load())
 		}
@@ -416,9 +438,10 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Fatal("recovery fixture has no preserved checkpoint")
 		}
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Status != "interrupted" || current.Attempts[0].Checkpoint == nil || *current.Attempts[0].Checkpoint != *preserved || provider.calls.Load() != 0 || len(changes) != 0 {
+		if err != nil || len(current.Attempts) != 2 || current.Attempts[0].Status != "interrupted" || current.Attempts[0].Checkpoint == nil || *current.Attempts[0].Checkpoint != *preserved || provider.calls.Load() != 0 || len(changes) != 0 {
 			t.Fatalf("recovery refusal fabricated or replaced a receipt: attempts=%+v changes=%v calls=%d error=%v", current.Attempts, changes, provider.calls.Load(), err)
 		}
+		assertSetupRefusalReceipt(t, current.Attempts)
 		for range 2 {
 			if candidates := h.candidates(t); len(candidates) != 0 {
 				t.Fatalf("permanent recovery refusal reclaimed: %+v", candidates)
@@ -646,4 +669,15 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	t.finished <- nativePlanFinish{state: issue.State, err: err}
 	return response, nil
+}
+
+func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt) {
+	t.Helper()
+	if len(attempts) == 0 {
+		t.Fatal("setup refusal receipt absent")
+	}
+	a := attempts[len(attempts)-1]
+	if a.Identity != nil || a.Status != "failed" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "issue" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
+		t.Fatalf("setup refusal replaced source or lost diagnostic: %+v", a)
+	}
 }

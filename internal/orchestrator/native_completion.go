@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -62,6 +63,39 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
+	if !humanReview && nativeSourceReviewWait(event) {
+		states, err := reader.WorkflowStates(ctx)
+		if err != nil {
+			return handoff(fmt.Errorf("read native workflow states: %w", err))
+		}
+		target, allowed := connector.CompletionLane(states, issue.State, "Blocked", true)
+		resume, resumable := connector.LandingRefusalLane(states, target, cfg.ReworkState, true)
+		if !allowed || dispatchableState(states, target) || !resumable {
+			return handoff(fmt.Errorf("native workflow allows no operator evidence recovery from %s", issue.State))
+		}
+		remedy := fmt.Sprintf("Observe the unavailable source-review evidence for Change %s version %s at head %s, then explicitly resume in %s. Preserve the current source and all human, permission and prerequisite holds.", change.ChangeID, change.VersionID, change.HeadSHA, resume)
+		metadata := workflowLaneMetadata{ReasonDetail: remedy, BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerOperator, Cause: "completed_active_review_transition", CauseFingerprint: blockedCauseHash(change.ChangeID + "\x00" + change.VersionID + "\x00" + change.HeadSHA), Predicate: blockedRecoveryPredicateManaged, TargetState: resume, RunMode: runpkg.RunModeImplement, HoldReason: "Independent source-review evidence is unavailable; implementation is complete.", OperatorRemedy: remedy, WorkAttemptID: running.WorkAttemptID, AttemptError: change.ImplementationReviewError}}
+		if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition", metadata); err != nil {
+			return handoff(fmt.Errorf("hold native source review for operator evidence: %w", err))
+		}
+		heldIssue := cloneIssue(issue)
+		heldIssue.State = target
+		state.Blocked[issueID] = Blocked{Issue: heldIssue, Recovery: metadata.BlockedRecovery}
+		o.observeNativeCompletion(ctx, event, false)
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			return handoff(err)
+		}
+		terminal := terminalStateForRun(event.Err, finalState)
+		class := runnerWorkAttemptErrorClass(event.Err)
+		if change.ImplementationReviewError != "" {
+			terminal = store.WorkAttemptTerminalCancelled
+			class = workAttemptErrorInterrupted
+		}
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, errorString(event.Err), "completed", "source preserved; independent review awaits operator evidence", nativeChangeMetadata(change))
+		o.recordCompletionUsage(ctx, state, event, issue)
+		o.releaseClaim(state, issueID)
+		return true
+	}
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
 		if preProvider && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
@@ -189,7 +223,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 		target, ok = connector.CompletionLane(states, issue.State, normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock).TargetState, true)
 	}
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
-	unfinished := validatorRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
+	implementationRework := change != nil && change.ImplementationReview != nil && change.ImplementationReview.Verdict == gate.ValidatorVerdictRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
+	unfinished := validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
 			target, ok = rework, true
@@ -488,4 +523,19 @@ func shortCommit(sha string) string {
 		return "its base"
 	}
 	return sha
+}
+
+func nativeSourceReviewWait(event runpkg.Completion) bool {
+	change := event.Result.NativeChange
+	if change == nil || !change.Changed || change.ChangeID == "" || change.VersionID == "" || change.HeadSHA == "" || change.Error != "" || change.VersionError != "" || event.Err != nil && change.ImplementationReviewError == "" {
+		return false
+	}
+	disposition := runpkg.NativeDispositionFromMessage(event.Result.FinalMessage)
+	if disposition == nil || disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
+		return false
+	}
+	if review := change.ImplementationReview; review != nil && review.VersionID == change.VersionID && review.HeadSHA == change.HeadSHA && review.Verdict == gate.ValidatorVerdictRework {
+		return false
+	}
+	return change.ImplementationReviewError != "" || change.ImplementationReview != nil && change.ImplementationReview.VersionID == change.VersionID && change.ImplementationReview.HeadSHA == change.HeadSHA && change.ImplementationReview.Verdict == gate.ValidatorVerdictWait
 }

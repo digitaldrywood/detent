@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -155,6 +156,9 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 		Organization: organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
+		ResolveKey: func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+			return s.resolveTenantKey(ctx, organization, origin)
+		},
 		Check: func(ctx context.Context) error {
 			return s.checkTenant(ctx, organization)
 		},
@@ -197,6 +201,10 @@ func (s *Service) dueOrganizations(ctx context.Context) ([]Organization, error) 
 func (s *Service) provision(ctx context.Context, organization Organization) {
 	for organization.State == "requested" || organization.State == "allocating" {
 		step := nextStep(organization.Step)
+		if step == "publish" {
+			s.reloadMu.Lock()
+			defer s.reloadMu.Unlock()
+		}
 		err := s.runStep(ctx, &organization, step)
 		if ctx.Err() != nil {
 			return
@@ -324,6 +332,9 @@ func (s *Service) runStep(ctx context.Context, organization *Organization, step 
 		}
 		return nil
 	case "publish":
+		if err := s.publishTenantRuntime(ctx, *organization); err != nil {
+			return err
+		}
 		organization.State = "ready"
 		return nil
 	}

@@ -456,7 +456,7 @@ func (s *session) execute(ctx context.Context, call operatortool.Call) (operator
 		return operatortool.Result{}, err
 	}
 	if len(result.Content) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, operatortool.ErrResultTooLarge
+		return operatortool.Result{}, &operatortool.ResultTooLargeError{SizeBytes: len(result.Content), LimitBytes: operatortool.MaxResultBytes}
 	}
 	if !isJSONObject(result.Content) {
 		return operatortool.Result{}, errors.New("operator tool result is not a JSON object")
@@ -549,7 +549,7 @@ func (s *session) write(message response) error {
 		return fmt.Errorf("encode MCP response: %w", err)
 	}
 	if len(frame) > MaxHTTPResponseBytes {
-		frame = marshalHTTPResponse(response{JSONRPC: "2.0", ID: message.ID, Error: &rpcError{Code: codeInternalError, Message: "MCP response exceeds the size limit"}})
+		frame = marshalHTTPResponse(oversizedResponse(message.ID, len(frame)))
 	}
 	frame = append(frame, '\n')
 
@@ -637,6 +637,9 @@ func safeToolError(err error) string {
 }
 
 func (s *session) toolFailure(ctx context.Context, version, name string, id json.RawMessage, err error) toolCallResult {
+	if errors.Is(err, operatortool.ErrResultTooLarge) {
+		return failedToolCallResult(version, err)
+	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
 		payload, encodeErr := json.Marshal(refusal)
@@ -646,7 +649,8 @@ func (s *session) toolFailure(ctx context.Context, version, name string, id json
 	}
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
-	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) {
+	var allowance *operatortool.AllowanceError
+	if safeToolError(err) == "Operator tool is unavailable" && !errors.As(err, &conflict) && !errors.As(err, &request) && !errors.As(err, &allowance) {
 		correlation := uuid.NewString()
 		identity := operatortool.ConnectionIdentity(ctx)
 		s.logger.ErrorContext(ctx, "operator tool failed", "tool", name, "correlation_id", correlation, "organization_id", identity.OrganizationID, "principal_id", identity.PrincipalID, "request_id", string(id), "error", fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), err), "error_class", ErrorClass(err))
@@ -660,12 +664,22 @@ func ErrorClass(err error) string { return logging.ErrorClass(err) }
 func failedToolCallResult(protocolVersion string, err error) toolCallResult {
 	var conflict *operatortool.ConflictError
 	var request *operatortool.RequestError
+	var allowance *operatortool.AllowanceError
 	var detail any
 	switch {
+	case errors.Is(err, operatortool.ErrResultTooLarge):
+		tooLarge := &operatortool.ResultTooLargeError{LimitBytes: operatortool.MaxResultBytes}
+		errors.As(err, &tooLarge)
+		detail = struct {
+			Code string `json:"code"`
+			*operatortool.ResultTooLargeError
+		}{"result_too_large", tooLarge}
 	case errors.As(err, &conflict):
 		detail = conflict
 	case errors.As(err, &request):
 		detail = request
+	case errors.As(err, &allowance):
+		detail = allowance
 	}
 	if detail != nil {
 		if result, encodeErr := operatortool.EncodeResult(detail); encodeErr == nil {

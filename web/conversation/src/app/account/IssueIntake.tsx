@@ -21,28 +21,46 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
   const [selection, setSelection] = React.useState<readonly number[]>([]);
   const [numbers, setNumbers] = React.useState("");
   const [destination, setDestination] = React.useState("");
+  const [closeSource, setCloseSource] = React.useState(false);
   const [dispatch, setDispatch] = React.useState(false);
+  const [ignoreLaneLabels, setIgnoreLaneLabels] = React.useState(false);
+  const [laneOverrides, setLaneOverrides] = React.useState<Readonly<Record<string, string>>>({});
   const batch = resource.value?.batch;
   const lanes = resource.value?.lanes ?? [];
   const laneName = destination || lanes.find(lane => !lane.dispatchable && !lane.terminal)?.name || "";
   const lane = lanes.find(lane => lane.name === laneName);
+  const dispatchAuthorized = lane?.dispatchable === true && dispatch;
+  const targetLanes = lanes.filter(item => !item.terminal && (!item.dispatchable || dispatchAuthorized));
+  const sourceLane = (label: string) => lanes.find(item => !item.terminal && [item.name, item.name.replaceAll(" ", "-")].some(name => `detent:${name}`.toLowerCase() === label.toLowerCase()));
+  const laneLabels = [...(batch?.page.issues ?? []).filter(issue => selection.includes(issue.number)).flatMap(issue => issue.labels).filter(label => sourceLane(label) !== undefined)
+    .reduce((counts, label) => counts.set(label, (counts.get(label) ?? 0) + 1), new Map<string, number>())];
+  const labelTarget = (label: string) => {
+    const chosen = laneOverrides[label];
+    if (chosen !== undefined && targetLanes.some(item => item.name === chosen)) return chosen;
+    const source = sourceLane(label);
+    return source !== undefined && targetLanes.some(item => item.name === source.name) ? source.name : laneName;
+  };
   const command = useMutation(async (input: Omit<IntakeCommand, "revision">) => {
     const body = { ...input, revision: batch?.revision ?? 0 };
     const key = await setupKey(`/projects/${projectId}/onboarding/issue-intake`, body);
     const result = await api.commandIssueIntake(projectId, body, key.key);
     retireKey(key.storageKey);
     resource.set(result);
-    if (input.action === "discover") { setSelection([]); setNumbers(""); }
+    if (input.action === "discover") { setSelection([]); setNumbers(""); setCloseSource(false); setLaneOverrides({}); setIgnoreLaneLabels(false); }
+    if (input.action === "close_source") setCloseSource(false);
     return result;
   });
   const busy = command.pending;
   const working = batch?.status === "discovering" || batch?.status === "importing";
   const completed = batch?.items.filter(item => item.status === "completed").length ?? 0;
   const skipped = batch?.items.filter(item => item.status === "skipped").length ?? 0;
+  const closeable = batch?.items.filter(item => item.status === "completed" && !item.source_close_requested && batch.page.issues.some(issue => issue.number === item.number && !issue.closed)).length ?? 0;
+  const closeRequested = batch?.items.filter(item => item.source_close_requested).length ?? 0;
   const failed = batch?.items.filter(item => item.status === "failed").length ?? 0;
   return <section aria-label="Import GitHub issues" className="mb-3 flex min-w-0 flex-col gap-3 rounded-xl border border-border/60 bg-muted p-4">
     <h3 className="text-sm font-medium">Import existing GitHub issues</h3>
-    <p className="text-sm text-muted-foreground">Read selected issues from {repository} using your runner. Discussion and workflow continue in Hub after import. GitHub stays a historical link; this does not close issues or keep syncing.</p>
+    <p className="text-sm text-muted-foreground">Read selected issues from {repository} using your runner. Discussion and workflow continue in Hub after import. GitHub stays a historical link; source issues stay open unless you explicitly close them after import.</p>
+    {runners.length === 0 ? <p className="text-sm text-muted-foreground">Connect a runner to this repository in project setup before previewing issues.</p> : null}
     <label className="text-sm">Runner
       <NativeSelect aria-label="Import runner" value={runner || batch?.runner_id || runners[0]?.id || ""} onValueChange={setRunner} options={runners.map(item => ({ value: item.id, label: item.name }))} />
     </label>
@@ -78,14 +96,28 @@ export function GitHubIssueIntake({ projectId, repository, runners }: {
         <NativeSelect aria-label="Import destination lane" value={laneName} onValueChange={value => { setDestination(value); setDispatch(false); }} disabled={busy} options={[{ value: "", label: "Select a lane" }, ...lanes.map(item => ({ value: item.name, label: `${item.name}${item.dispatchable ? " (dispatchable)" : ""}` }))]} />
       </label>
       {lane?.dispatchable ? <label className="flex items-center gap-2 text-sm"><Checkbox aria-label="Authorize dispatch of selected issues" checked={dispatch} onCheckedChange={value => setDispatch(value === true)} disabled={busy} />I authorize execution of these selected issues in {laneName}.</label> : null}
+      {laneLabels.length > 0 ? <div className="flex flex-col gap-2 rounded-lg border border-border bg-background p-3">
+        <p className="text-sm font-medium">Lane labels from GitHub</p>
+        <p className="text-xs text-muted-foreground">These selected issues carry Detent lane labels from the previous board. Choose where each lands, or ignore them.</p>
+        <label className="flex items-center gap-2 text-sm"><Checkbox aria-label="Ignore lane labels" checked={ignoreLaneLabels} onCheckedChange={value => setIgnoreLaneLabels(value === true)} disabled={busy} />Ignore lane labels and import every issue into {laneName || "the selected lane"}</label>
+        {ignoreLaneLabels ? null : laneLabels.map(([label, count]) => <label key={label} className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="min-w-0 break-words">{label} · {count} {count === 1 ? "issue" : "issues"}</span>
+          <NativeSelect aria-label={`Lane for ${label}`} value={labelTarget(label)} onValueChange={value => setLaneOverrides(current => ({ ...current, [label]: value }))} disabled={busy} options={targetLanes.map(item => ({ value: item.name, label: item.name }))} />
+        </label>)}
+      </div> : null}
       <p className="text-sm">Import {selection.length} selected issues into {laneName || "a selected lane"}. Already linked issues will be skipped. {lane?.dispatchable ? "These issues can start execution." : "Move imported issues to a dispatchable lane when you want execution."}</p>
-      <Button disabled={busy || selection.length === 0 || !lane || (lane.dispatchable && !dispatch)} onClick={() => void command.call({ action: "apply", numbers: selection, destination: laneName, allow_dispatch: dispatch })}>Import selected issues</Button>
+      <Button disabled={busy || selection.length === 0 || !lane || (lane.dispatchable && !dispatch)} onClick={() => void command.call({ action: "apply", numbers: selection, destination: laneName, allow_dispatch: dispatch, ...(laneLabels.length > 0 ? { ignore_lane_labels: ignoreLaneLabels, ...(ignoreLaneLabels ? {} : { label_lanes: Object.fromEntries(laneLabels.map(([label]) => [label, labelTarget(label)])) }) } : {}) })}>Import selected issues</Button>
     </> : null}
     {batch && batch.items.length > 0 ? <>
       <p role="status" className="text-sm">{completed} completed · {skipped} skipped · {failed} incomplete · {batch.items.filter(item => item.status === "pending").length} pending · Destination: {batch.destination}</p>
       {batch.items.filter(item => item.error).map(item => <p key={item.number} className="text-sm text-destructive">#{item.number}: {item.error}{item.retry_at ? ` · Retry after ${item.retry_at}` : ""}</p>)}
     </> : null}
     {(failed > 0 || batch?.status === "discovery_failed") && !working ? <Button variant="outline" disabled={busy} onClick={() => void command.call({ action: "retry", runner_id: runner || batch?.runner_id })}>Retry incomplete intake</Button> : null}
+    {batch?.status === "finished" && closeable > 0 ? <div className="flex flex-col gap-2">
+      <label className="flex items-start gap-2 text-sm"><Checkbox aria-label="Close imported GitHub source issues" checked={closeSource} onCheckedChange={value => setCloseSource(value === true)} disabled={busy} />Close the {closeable} successfully imported GitHub issues with a “Tracked in Detent” link. Skipped and failed issues stay open.</label>
+      <Button variant="outline" disabled={busy || !closeSource} onClick={() => void command.call({ action: "close_source" })}>Close source issues</Button>
+    </div> : null}
+    {closeRequested > 0 ? <p role="status" className="text-sm">Link and close requested for {closeRequested} GitHub issues. GitHub delivery continues in the background.</p> : null}
     <ControlError message={command.error?.message ?? resource.error?.message ?? null} />
   </section>;
 }

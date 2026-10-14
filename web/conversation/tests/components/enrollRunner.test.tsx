@@ -69,6 +69,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
     handles: new Map(),
   } as unknown as ConversationClient;
   const onEnrolled = vi.fn<(entry: PendingEnrollment) => void>();
+  const onConnected = vi.fn<(entry: PendingEnrollment) => void>();
   const router = createRouter({
     routeTree: createRootRoute({ component: RunnersSettings }),
     history: createMemoryHistory({ initialEntries: ["/"] }),
@@ -76,7 +77,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
   function DirectDialog() {
     const api = useAccountApi();
     const fleet = useResource(() => api.fleet(), [api]);
-    return <EnrollRunnerDialog open onOpenChange={() => undefined} onEnrolled={onEnrolled} fleet={fleet} {...(projectIds === undefined ? {} : { projectIds })} />;
+    return <EnrollRunnerDialog open onOpenChange={() => undefined} onEnrolled={onEnrolled} onConnected={onConnected} fleet={fleet} {...(projectIds === undefined ? {} : { projectIds })} />;
   }
   render(
     <ClientContext.Provider value={client}>
@@ -91,10 +92,30 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
   if (!settings && initialFleetRead === undefined && selectTier) {
     await waitFor(() => expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(false));
   }
-  return { onEnrolled, enrollmentRequests, projects: client.account?.projects ?? [], fleetReads, setRunners: (next: readonly FleetRunner[]) => { runners = next; } };
+  return { onEnrolled, onConnected, enrollmentRequests, projects: client.account?.projects ?? [], fleetReads, setRunners: (next: readonly FleetRunner[]) => { runners = next; } };
 }
 
 describe("the Enroll dialog", () => {
+  it.each([false, true])("warns when a connected runner reports no providers (providers: %s)", async (hasProviders) => {
+    const { setRunners } = await mountDialog();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
+    vi.useFakeTimers();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Create command" })));
+    const runner = { ...fleetFixture.runners[0]!, id: "rnr_new", display_name: "Build host", provider_capacity: hasProviders ? fleetFixture.runners[0]!.provider_capacity : [] } as FleetRunner;
+    setRunners([runner]);
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByText("Build host is connected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    if (hasProviders) {
+      expect(screen.queryByRole("alert")).toBeNull();
+    } else {
+      const warning = screen.getByRole("alert");
+      expect(warning.textContent).toContain("No providers reported");
+      expect(warning.textContent).toContain("service PATH");
+      expect(warning.textContent).toContain("runner service logs");
+    }
+  });
+
   it("waits for a delayed initial fleet baseline before matching a new runner", async () => {
     let release!: (response: Response) => void;
     const initial = new Promise<Response>((resolve) => { release = resolve; });
@@ -114,23 +135,67 @@ describe("the Enroll dialog", () => {
     expect(enrollmentRequests).toHaveBeenCalledOnce();
     await act(() => vi.advanceTimersByTimeAsync(2_000));
     expect(screen.queryByText("Build host is connected")).toBeNull();
-    setRunners([existing, { ...existing, id: "rnr_new" }]);
+    setRunners([existing, { ...existing, id: "rnr_new", has_heartbeat: true }]);
     await act(() => vi.advanceTimersByTimeAsync(2_000));
     expect(screen.getByText("Build host is connected")).toBeTruthy();
   });
 
-  it("keeps creation unavailable after an initial fleet error and retries the existing read", async () => {
-    const initial = Promise.resolve(new Response(JSON.stringify({ code: "unavailable", message: "Fleet unavailable" }), { status: 503 }));
+  it("waits for a heartbeat and Next, preserves navigation, and never re-shows a redeemed token", async () => {
+    userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    const { setRunners, onEnrolled, onConnected, enrollmentRequests } = await mountDialog();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
+    vi.useFakeTimers();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Create command" })));
+    fireEvent.click(screen.getByRole("button", { name: "Show token" }));
+    expect(document.body.textContent).toContain("det_enroll_secret");
+    const enrolled = { ...fleetFixture.runners[0]!, id: "rnr_new", display_name: "Build host", has_heartbeat: false } as FleetRunner;
+    setRunners([enrolled]);
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByRole("status").textContent).toContain("Build host is enrolled, waiting for the runner to start");
+    expect(screen.getByRole("list").querySelector('[aria-current="step"]')?.textContent).toContain("Run the command");
+    expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(onEnrolled).toHaveBeenCalledOnce();
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Show token" })).toBeNull();
+    expect(document.body.textContent).not.toContain("det_enroll_secret");
+    fireEvent.click(screen.getByRole("button", { name: "Copy the register command" }));
+    expect(writeText).toHaveBeenLastCalledWith(expect.stringContaining("--token 'detent_••••••••'"));
+    expect(writeText.mock.calls.at(-1)![0]).not.toContain("det_enroll_secret");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).matches(":disabled")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Create command" })).toBeNull();
+    setRunners([{ ...enrolled, has_heartbeat: true, last_heartbeat_at: "2026-10-12T16:00:01Z" }]);
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByRole("list").querySelector('[aria-current="step"]')?.textContent).toContain("Set it up");
+    expect(onConnected).toHaveBeenCalledOnce();
+    expect(onConnected).toHaveBeenCalledWith(onEnrolled.mock.calls[0]![0]);
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("status").textContent).toBe("Build host is connected");
+    expect(screen.getByRole("button", { name: "Copy the register command" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("list").querySelector('[aria-current="step"]')?.textContent).toContain("Connected");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: "Copy the register command" })).toBeTruthy();
+    expect(document.body.textContent).not.toContain("det_enroll_secret");
+    expect(screen.queryByRole("button", { name: "Show token" })).toBeNull();
+    expect(enrollmentRequests).toHaveBeenCalledOnce();
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(onConnected).toHaveBeenCalledOnce();
+  });
+
+  it.each([400, 503])("keeps creation unavailable after an initial fleet error (%s) and retries the existing read", async (status) => {
+    const initial = Promise.resolve(new Response(JSON.stringify({ code: "unavailable", message: "Fleet unavailable" }), { status }));
     const { enrollmentRequests, fleetReads } = await mountDialog(undefined, false, [], initial);
     const create = screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement;
-    await screen.findByText("Fleet unavailable");
+    await screen.findByText("unavailable: Fleet unavailable");
     expect(create.disabled).toBe(true);
     fireEvent.click(create);
     expect(enrollmentRequests).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Retry runner read" }));
     await waitFor(() => expect(create.disabled).toBe(false));
     expect(fleetReads).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("Fleet unavailable")).toBeNull();
+    expect(screen.queryByText("unavailable: Fleet unavailable")).toBeNull();
     fireEvent.click(create);
     await screen.findByRole("button", { name: "Copy the register command" });
     expect(enrollmentRequests).toHaveBeenCalledOnce();
@@ -192,12 +257,14 @@ describe("the Enroll dialog", () => {
     const { onEnrolled, enrollmentRequests, projects } = await mountDialog(undefined, false, [], undefined, false, "v1.2.3", false);
     const create = await screen.findByRole("button", { name: "Create command" }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
+    expect(screen.getByText("Choose Sandbox or Full access to create a command.")).toBeTruthy();
     expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-checked")).toBe("false");
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("false");
     fireEvent.click(create);
     expect(enrollmentRequests).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("radio", { name: label }));
     await waitFor(() => expect(create.disabled).toBe(false));
+    expect(screen.queryByText("Choose Sandbox or Full access to create a command.")).toBeNull();
     expect(projects.length).toBeGreaterThan(1);
     expect((screen.getByLabelText("Concurrency") as HTMLInputElement).value).toBe("1");
     expect(screen.getByText(/each with its own workspace and agent/)).toBeDefined();
@@ -297,11 +364,14 @@ describe("the Enroll dialog", () => {
     expect(dialog.queryByText(`${displayName} is connected`)).toBeNull();
 
     if (finish === "connected") {
-      setRunners([existing, { ...existing, id: "rnr_new" }]);
+      setRunners([existing, { ...existing, id: "rnr_new", has_heartbeat: true }]);
       const before = fleetReads.mock.calls.length;
       await act(() => vi.advanceTimersByTimeAsync(2_000));
       expect(fleetReads).toHaveBeenCalledTimes(before + 1);
       expect(dialog.getByText(`${displayName} is connected`)).toBeTruthy();
+      expect(dialog.getByRole("button", { name: "Copy the register command" })).toBeTruthy();
+      expect(dialog.getByRole("list").querySelector('[aria-current="step"]')?.textContent).toContain("Run the command");
+      fireEvent.click(dialog.getByRole("button", { name: "Next" }));
       expect(dialog.getByText(existing.hostname)).toBeTruthy();
       expect(dialog.getByText(`${existing.os} / ${existing.architecture}`)).toBeTruthy();
       expect(dialog.getByText(String(existing.reported_capacity))).toBeTruthy();
@@ -324,13 +394,45 @@ describe("the Enroll dialog", () => {
     cleanup();
     const only = seeded.projects[0]!.id;
     const { enrollmentRequests } = await mountDialog([only]);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });
     fireEvent.click(document.getElementById("enroll-runner-service")!);
     fireEvent.click(screen.getByRole("button", { name: "Create command" }));
     const copy = await screen.findByRole("button", { name: "Copy the register command" });
     const command = copy.parentElement?.querySelector("code")?.textContent ?? "";
     expect(command).not.toContain("--service");
-    expect(command).toContain("--name 'Unnamed runner'");
+    expect(command).toContain("--name 'Build host'");
+    expect(command).toContain("--isolation-tier sandbox");
+    expect(enrollmentRequests.mock.calls[0]![0].scope).toBe("projects");
     expect(enrollmentRequests.mock.calls[0]![0].project_ids).toEqual([only]);
+  });
+
+  it.each([
+    { body: { code: "invalid_request", message: "Enrollment projects must be unique and belong to the organization" }, status: 422, code: "invalid_request" },
+    { body: { message: "Invalid enrollment request" }, status: 400, code: "invalid" },
+  ])("shows the server reason when enrollment fails with $status", async ({ body, status, code }) => {
+    const { onEnrolled } = await mountDialog(["project_build"]);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify(body), { status }));
+    fireEvent.click(screen.getByRole("button", { name: "Create command" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(`${code}: ${body.message}`);
+    expect(onEnrolled).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Copy the register command" })).toBeNull();
+  });
+
+  it("shows the server reason when a Sprites token check fails", async () => {
+    await mountDialog(["project_build"]);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ code: "secret_unavailable", message: "The Sprites token could not be read" }), { status: 400 }));
+    fireEvent.click(screen.getByRole("radio", { name: "A Fly Sprite" }));
+    expect((await screen.findByText(/secret_unavailable: The Sprites token could not be read/)).textContent).toContain("Could not check the Sprites token");
+  });
+
+  it("reports a failed fleet refresh without clearing the enrollment command", async () => {
+    await mountDialog(["project_build"]);
+    vi.useFakeTimers();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Create command" })));
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ code: "unavailable", message: "Fleet refresh failed" }), { status: 400 }));
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByRole("alert").textContent).toContain("unavailable: Fleet refresh failed");
+    expect(screen.getByRole("button", { name: "Copy the register command" })).toBeTruthy();
   });
 
   it("refuses to create a command with no project or an impossible capacity", async () => {

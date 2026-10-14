@@ -23,14 +23,17 @@ const (
 // (INV-17) and remembers the newest pushed checkpoint so every Hub checkpoint
 // names it. A failed push is logged and retried at the next trigger.
 type checkpointRefs struct {
+	backend   workspace.Backend
 	publisher workspace.CheckpointRefPublisher
 	execution Execution
 	info      workspace.Info
 	issue     workspace.Issue
 
-	mu     sync.Mutex
-	last   workspace.CheckpointRef
-	failed bool
+	mu       sync.Mutex
+	last     workspace.CheckpointRef
+	failed   bool
+	saved    *tracker.NativeCheckpoint
+	captured *tracker.NativeCheckpoint
 
 	nudge chan struct{}
 	stop  func()
@@ -73,9 +76,15 @@ func newCheckpointRefs(backend workspace.Backend, execution Execution, info work
 	if !ok || execution == nil {
 		return nil
 	}
-	c := &checkpointRefs{publisher: publisher, execution: execution, info: info, issue: issue, nudge: make(chan struct{}, 1), stop: func() {}}
+	c := &checkpointRefs{backend: backend, publisher: publisher, execution: execution, info: info, issue: issue, nudge: make(chan struct{}, 1), stop: func() {}}
 	if issue.Checkpoint != nil {
 		c.last = *issue.Checkpoint
+		if previous := execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint.GitRef() {
+			saved := *previous.Checkpoint
+			if saved.Ref == c.last.Ref && saved.CommitSHA == c.last.CommitSHA && saved.BaseSHA == c.last.BaseSHA && saved.TreeSHA == c.last.TreeSHA {
+				c.saved = &saved
+			}
+		}
 		if state != nil {
 			c.last.HeadSHA = state.HeadSHA
 		}
@@ -88,10 +97,19 @@ func (c *checkpointRefs) apply(checkpoint *tracker.NativeCheckpoint) {
 		return
 	}
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.failed && c.saved != nil {
+		checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.WorktreeState = c.saved.HeadSHA, c.saved.WorkspaceDigest, c.saved.WorktreeState
+		checkpoint.Storage, checkpoint.Availability = c.saved.Storage, c.saved.Availability
+		checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = c.saved.Ref, c.saved.CommitSHA, c.saved.BaseSHA, c.saved.TreeSHA
+		return
+	}
 	last := c.last
-	c.mu.Unlock()
 	if last.CommitSHA == "" {
 		return
+	}
+	if c.captured != nil {
+		checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.WorktreeState = c.captured.HeadSHA, c.captured.WorkspaceDigest, c.captured.WorktreeState
 	}
 	checkpoint.Storage, checkpoint.Availability = "git_ref", "available"
 	checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = last.Ref, last.CommitSHA, last.BaseSHA, last.TreeSHA
@@ -113,6 +131,11 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 	}
 	if pushed {
 		c.last = next
+		state := r.workspaceRecoveryState(c.backend, pushCtx, c.info, c.issue, "checkpoint_ref")
+		if state != nil {
+			checkpoint := executionCheckpoint(state)
+			c.captured = &checkpoint
+		}
 		r.logWorkerEvent(req.Issue, "worker_checkpoint_ref_pushed", "reason", reason, "ref", next.Ref, "commit_sha", next.CommitSHA, "head_sha", next.HeadSHA)
 	}
 	return pushed
@@ -179,7 +202,7 @@ func (r *Runner) startCheckpointRefs(ctx context.Context, c *checkpointRefs, req
 			state := r.workspaceRecoveryState(backend, loopCtx, c.info, c.issue, "checkpoint_ref")
 			checkpoint := executionCheckpointPreservingPublication(c.execution, state)
 			c.apply(&checkpoint)
-			if err := c.execution.Checkpoint(loopCtx, checkpoint); err != nil && loopCtx.Err() == nil {
+			if err := recordCheckpointRef(loopCtx, c, c.execution, checkpoint); err != nil && loopCtx.Err() == nil {
 				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_checkpoint_ref_unrecorded", "error", err)
 			}
 		}
@@ -192,10 +215,6 @@ func (c *checkpointRefs) halt() {
 	}
 }
 
-// sameMachineWorkspaceRetained reports whether the previous attempt ran on this
-// runner and its workspace is still here. That workspace is at least as new as
-// the pushed checkpoint, which cannot hold an unmerged index, so this runner
-// continues in it; every other runner restores the checkpoint ref.
 func sameMachineWorkspaceRetained(backend workspace.Backend, recovery tracker.NativeRecovery, issue workspace.Issue) bool {
 	previous := recovery.SourceAttempt()
 	if previous == nil || previous.MachineID == "" || previous.MachineID != recovery.Lease.MachineID {
@@ -209,4 +228,19 @@ func sameMachineWorkspaceRetained(backend workspace.Backend, recovery tracker.Na
 	}
 	_, err := local.Existing(issue)
 	return err == nil
+}
+
+func recordCheckpointRef(ctx context.Context, c *checkpointRefs, execution Execution, checkpoint tracker.NativeCheckpoint) error {
+	err := execution.Checkpoint(ctx, checkpoint)
+	if c != nil {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if err != nil {
+			c.failed = true
+		} else if checkpoint.GitRef() {
+			saved := checkpoint
+			c.saved = &saved
+		}
+	}
+	return err
 }

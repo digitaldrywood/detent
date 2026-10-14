@@ -113,6 +113,18 @@ target with `X-Detent-Organization` for `/api/v2/projects` and
 and existing per-org MCP endpoints also accept a key that reaches that org.
 Browser-only settings routes continue to require browser sessions.
 
+Personal keys act as their human owner. Saving an issue body through REST,
+MCP `edit_item`, or a CLI using a personal key confirms its issue-contract
+sections. Collaboration actors record `kind: human`, the owner's principal,
+and `via_key`; audit records retain the owner and key ID. Service, runner and
+worker credentials cannot confirm issue contracts. Revoking a key refuses
+subsequent calls without removing earlier human confirmations.
+
+Historical cards with unconfirmed sections require an authorized human to
+save the current body through the web UI or a personal key. An unchanged body
+save confirms those sections. Key migration does not backfill confirmations;
+service, runner and worker keys cannot perform this confirmation.
+
 Org owners/admins manage service keys at
 `/api/cloud/organizations/:organization/service-keys`, using the same creation
 fields with one organization and selected or project context. Service keys are
@@ -155,6 +167,12 @@ endpoints. Shared Cloud uses the account key screen for newly issued personal
 keys and the org screen for service keys. Existing org keys remain available
 through `GET /api/v2/organizations/:organization/api-keys` and can be revoked
 through `DELETE /api/v2/organizations/:organization/api-keys/:key`.
+
+Existing keys created from a member's account settings are personal keys;
+runner and worker credentials remain service credentials. Per-organization
+key creation accepts `kind: personal` (the default for signed-in account
+creation) or `kind: service`. Both retain the existing permission,
+organization and project grant checks. Returned key metadata includes `kind`.
 
 On dedicated deployments, sign in to the intended Cloud organization and open **Settings → API & MCP**.
 Existing `/settings/mcp` bookmarks open this same page. Create a named key,
@@ -293,14 +311,57 @@ A concise agent handoff is:
 
 ## MCP agent handoff
 
+Hosted allowance refusals are MCP tool results with `isError: true`, rather than
+transport failures. Their JSON content includes `code: "allowance_exhausted"`,
+`http_status: 429`, `resource`, `allowance`, `consumption`, a safe message and
+recovery guidance. Current MCP versions also return this as `structuredContent`.
+Inspect `billing_usage.hosted_plan_page` with owner/admin authority or
+`billing_usage.billing_export` with owner authority and resolve the affected
+allowance before submitting another business action. A refusal does not report a
+successful write. `policy_mismatch` directs callers to `get_project_policy` to
+refresh approved policy inputs; uncertain mutation outcomes still require resource
+inspection before retrying. Unexpected failures remain redacted as
+`service_unavailable` with a correlation ID.
+
+Native `verify_fix` answers a Done issue whose `verification.state` is `pending`: `result: verified` records the verifier, and `result: not_fixed` requires `comment`, which may embed `upload_attachment` references, and reopens the issue to Todo. Only the filer, or a member and above, may answer. `work_list created_by=me verification=pending` lists the caller's issues awaiting verification.
+
+Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
+
+Native `file_issue` also accepts an optional `report_context` object with `url` (at most 2048 bytes) and `app_build`, `browser`, `os`, `viewport` and `captured_at` (at most 256 bytes each), all single-line strings. Unknown keys, oversized or non-string values are refused with `invalid_request`, and the refusal never repeats the submitted values. `work_item` returns the stored context; list and board reads omit it. A Reporter bug whose `report_context` carries `browser` and `app_build` satisfies the template's Environment section. Upload network HAR exports (`.har`) with `detent attach` or the REST attachment upload API, because `upload_attachment` accepts only about 44 KB; use `upload_attachment` for small console log exports (`.log`). Read either back with `read_attachment`.
+
+Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. The New issue form pre-fills these headings when a type is selected.
+
+Projects can override either template in WORKFLOW, using the same list syntax as the engineering issue contract:
+
+```markdown
+## Reporter Contract
+### bug
+- **Steps to reproduce** — A reproducible sequence.
+- Expected
+- Actual
+- Where
+- Environment
+
+### change_request
+- Current behavior
+- Desired behavior
+- Why
+```
+
+An omitted type keeps its default template. Triage is exempt from the engineering issue contract; after promotion into the configured admission lane, the existing contract check requires the member-authored engineering sections and uses the existing Blocked human-action recovery when they are missing or unconfirmed. Preserve the Reporter sections as evidence.
+
+
 For native `file_issue` with `github_issue_url`, read `get_project_integration`
 and `get_native_project` for the selected project. The URL must match its
 attached repository or associated runner checkout. A missing association returns
 `invalid_request` with the existing setup owner: an administrator uses
 `bind_native_repository` with the observed integration `expected_revision`,
-`repository` and `source: "runner_checkout"`. This requires a currently enrolled,
-authorized runner reporting that matching checkout; Cloud needs no repository
-credentials and GitHub tracker mode stays disabled. Choose a configured
+`repository` and `source: "runner_checkout"`. The association supplies the
+repository and clone URL to authorized runners, which clone using their own Git
+credentials and report the matching origin. The integration read returns
+`checkout_verified` once an active runner has reported that checkout recently;
+a binding alone does not verify it. Cloud needs no repository credentials and
+GitHub tracker mode stays disabled. Choose a configured
 nonterminal, non-dispatchable destination such as Backlog. Linked creation
 records pending source context for existing runner intake, and repeated source
 URLs reuse the native work item. Cross-repository requests retain their refusal.
@@ -474,6 +535,13 @@ and self-hosted daemon instructions remain expandable on the same settings page.
 
 ## Native work-item list results
 
+Native `work_list` accepts `created_by` as a principal ID or `me`. `me` selects
+issues filed by the calling human, including through that human's personal key;
+service keys and worker credentials cannot use `me`. The selector combines with
+state, label, query and archived filters within the caller's authorized project.
+`work_item` and `work_list` expose the available filer's display identity in
+`actor.display_name` beside the stable principal ID.
+
 Native `work_list` accepts item limits through 200 and returns summaries in
 `data.items` with an opaque `data.next_cursor` when more matching items remain.
 The requested limit is a maximum: the existing issue page owner may return fewer
@@ -513,7 +581,12 @@ version and record boundary and is rejected if the current head changes.
 An omitted record is not passing evidence. `section: "versions"` traverses
 historical versions excluding the selected version already returned by the
 default read; `version_id` selects exact historical evidence. Existing
-`get_change_version` reads remain available. Bounded Change reads return command
+`get_change_version` reads remain available. Bounded Change reads retain policy
+identity, digests, gate requirements and review/check expectations, while omitting
+authored file contents, runtime configuration and workflow definitions.
+`read.policy_details_omitted` discloses this projection; retrieve the full immutable
+policy through `get_change_version`. Policy omission never establishes approval.
+Bounded Change reads return command
 output as UTF-8 excerpts of at most 4 KiB, setting `output_truncated: true` when
 output is shortened and preserving any existing truncation flag. Verdicts,
 criteria, findings, command results and receipt identities remain complete;
@@ -526,9 +599,12 @@ budget remains 256 KiB.
 Native workers use the same projection through the Change HTTP read with
 `view=bounded` and the same section, cursor, version and limit selectors.
 
-Native `work_item`, `work_attempt_receipt` and `get_change` include a bounded
-`validation_audit` projection of recorded local commands and scheduled failure
-occurrences. Scheduled failures retain their existing issue/comment owner;
+Native `work_attempt_receipt` includes a bounded `validation_audit` projection of
+recorded local commands and project scheduled failure occurrences. A `work_item`
+whose body contains scheduled check evidence includes only that item's scheduled
+reports and their candidate comparisons. Ordinary work-item and bounded Change
+reads omit this audit; their own content and command receipts remain available.
+Scheduled failures retain their existing issue/comment owner;
 comparisons name those source records, their authors, and the run, job, attempt, Change and
 version identities. The projection reads the selected project's database only
 and makes no forge requests. `partial` identifies truncated records or candidate

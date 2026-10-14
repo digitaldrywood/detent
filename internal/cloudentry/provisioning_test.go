@@ -194,7 +194,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 	seed[1] = 7
 	root := shortTempDir(t)
 	f := &provisioningFixture{provider: newFakeProvider(), state: t.TempDir(), roots: [2]string{filepath.Join(root, "t"), filepath.Join(root, "s")}, key: ed25519.NewKeyFromSeed(seed), timeout: provisioningFixtureTimeout}
-	for _, user := range []string{"dana", "eve", "fay"} {
+	for _, user := range []string{"member", "eve", "fay"} {
 		f.provider.users["user_"+user] = user + "@example.test"
 	}
 	f.launcher = &processLauncher{provider: f.provider, key: f.key, running: map[string]func(){}, transports: map[string]*http.Transport{}, useUnix: socketFixtureFits(root)}
@@ -271,41 +271,41 @@ func TestProvisioningSelfServiceJourney(t *testing.T) {
 
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil)
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
-	_, chooser := dana.get("/organizations")
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
+	_, chooser := member.get("/organizations")
 	if !strings.Contains(chooser, `href="/organizations/new"`) {
 		t.Fatal("chooser does not offer organization creation")
 	}
-	response, body := dana.get("/organizations/new")
+	response, body := member.get("/organizations/new")
 	_, rest, _ := strings.Cut(body, `name="creation_key" value="`)
 	key, _, _ := strings.Cut(rest, `"`)
 	form := url.Values{"name": {"Delta"}, "creation_key": {key}, "csrf": {csrfFrom(t, body)}}
-	first := dana.do(http.MethodPost, "/organizations", form, nil)
+	first := member.do(http.MethodPost, "/organizations", form, nil)
 	if response.StatusCode != http.StatusOK || first.StatusCode != http.StatusSeeOther {
 		t.Fatalf("create = %d: %s", first.StatusCode, first.Body)
 	}
 	id := organizationFromLocation(t, first.Header.Get("Location"))
-	if again := dana.do(http.MethodPost, "/organizations", form, nil); again.Header.Get("Location") != first.Header.Get("Location") {
+	if again := member.do(http.MethodPost, "/organizations", form, nil); again.Header.Get("Location") != first.Header.Get("Location") {
 		t.Fatalf("retried intent created %q, want %q", again.Header.Get("Location"), first.Header.Get("Location"))
 	}
 	changed := url.Values{"name": {"Other"}, "creation_key": {key}, "csrf": form["csrf"]}
-	if conflict := dana.do(http.MethodPost, "/organizations", changed, nil); conflict.StatusCode != http.StatusConflict {
+	if conflict := member.do(http.MethodPost, "/organizations", changed, nil); conflict.StatusCode != http.StatusConflict {
 		t.Fatalf("changed intent status = %d", conflict.StatusCode)
 	}
 	ready := f.waitState(t, id, "ready")
 	if f.provider.creates != 1 || ready.ProviderID != "porg_"+id || ready.Generation != 1 {
 		t.Fatalf("provider creates = %d, organization = %+v", f.provider.creates, ready)
 	}
-	if status, _ := dana.get("/organizations/" + id + "/provisioning"); status.StatusCode != http.StatusSeeOther {
+	if status, _ := member.get("/organizations/" + id + "/provisioning"); status.StatusCode != http.StatusSeeOther {
 		t.Fatalf("ready provisioning page = %d", status.StatusCode)
 	}
-	dana.login("/organizations/"+id+"/organization", "user_dana:porg_"+id)
-	response, body = dana.get("/organizations/" + id + "/organization")
+	member.login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	response, body = member.get("/organizations/" + id + "/organization")
 	if response.StatusCode != http.StatusOK || !strings.Contains(body, "Delta") || !strings.Contains(body, `/organizations/`+id+`/delete`) {
 		t.Fatalf("owner page = %d %s", response.StatusCode, body)
 	}
-	if quota := f.create(t, dana, "Second"); quota.StatusCode != http.StatusUnprocessableEntity {
+	if quota := f.create(t, member, "Second"); quota.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("second organization without a paid plan status = %d", quota.StatusCode)
 	}
 	eve := newBrowser(t, f.service.Handler())
@@ -316,16 +316,16 @@ func TestProvisioningSelfServiceJourney(t *testing.T) {
 	if denied, _ := eve.get("/organizations/" + id + "/delete"); denied.StatusCode != http.StatusForbidden {
 		t.Fatalf("non-owner delete page = %d", denied.StatusCode)
 	}
-	_, deletePage := dana.get("/organizations/" + id + "/delete")
-	if wrong := dana.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil); wrong.StatusCode != http.StatusUnprocessableEntity {
+	_, deletePage := member.get("/organizations/" + id + "/delete")
+	if wrong := member.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil); wrong.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unconfirmed delete = %d", wrong.StatusCode)
 	}
-	deleted := dana.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"Delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil)
+	deleted := member.do(http.MethodPost, "/organizations/"+id+"/delete", url.Values{"confirm": {"Delta"}, "csrf": {csrfFrom(t, deletePage)}}, nil)
 	if deleted.StatusCode != http.StatusSeeOther {
 		t.Fatalf("delete = %d: %s", deleted.StatusCode, deleted.Body)
 	}
 	f.waitState(t, id, "deleted")
-	if gone, _ := dana.get("/organizations/" + id + "/organization"); gone.StatusCode != http.StatusNotFound {
+	if gone, _ := member.get("/organizations/" + id + "/organization"); gone.StatusCode != http.StatusNotFound {
 		t.Fatalf("deleted organization still routes: %d", gone.StatusCode)
 	}
 	if _, err := os.Stat(filepath.Join(f.roots[0], id, "hub.db")); err != nil {
@@ -343,22 +343,22 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 
 	t.Parallel()
 	f := newProvisioningFixture(t, 1, func(a *AllocationConfig) { a.RetryLimit = 1 })
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
 	f.provider.mu.Lock()
 	f.provider.createFailures = 1
 	f.provider.mu.Unlock()
-	created := f.create(t, dana, "Delta")
+	created := f.create(t, member, "Delta")
 	id := organizationFromLocation(t, created.Header.Get("Location"))
 	failed := f.waitState(t, id, "failed")
 	if failed.ErrorCode != "provider_organization_failed" {
 		t.Fatalf("failure = %+v", failed)
 	}
-	_, status := dana.get("/organizations/" + id + "/provisioning")
+	_, status := member.get("/organizations/" + id + "/provisioning")
 	if !strings.Contains(status, "Resume setup") {
 		t.Fatalf("failed status page = %s", status)
 	}
-	if resumed := dana.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil); resumed.StatusCode != http.StatusSeeOther {
+	if resumed := member.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil); resumed.StatusCode != http.StatusSeeOther {
 		t.Fatalf("resume = %d", resumed.StatusCode)
 	}
 	f.waitState(t, id, "ready")
@@ -369,7 +369,7 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	if capacity.ErrorCode != "capacity" || capacity.ProviderID != "" {
 		t.Fatalf("capacity failure = %+v", capacity)
 	}
-	if response, _ := dana.get("/organizations/" + id + "/organization"); response.StatusCode == http.StatusNotFound {
+	if response, _ := member.get("/organizations/" + id + "/organization"); response.StatusCode == http.StatusNotFound {
 		t.Fatal("capacity refusal disturbed a ready organization")
 	}
 	if err := f.service.Close(); err != nil {
@@ -450,14 +450,14 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = tc.retryLimit; a.Launcher = launcher }, func(f *provisioningFixture) {
 				f.timeout = 100 * time.Millisecond
 			})
-			dana := newBrowser(t, f.service.Handler())
-			dana.login("/auth/oidc/start", "user_dana:")
-			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+			member := newBrowser(t, f.service.Handler())
+			member.login("/auth/oidc/start", "user_member:")
+			id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 			failed := f.waitState(t, id, "failed")
 			if failed.ErrorCode != "tenant_start_failed" || failed.Step != "tenant_files" || failed.ErrorDetail != tc.wantDetail || failed.Attempts != tc.retryLimit && tc.failure == nil || tc.failure != nil && failed.Attempts != 1 {
 				t.Fatalf("failure = %+v", failed)
 			}
-			status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+			status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 			var body struct {
 				State     string `json:"state"`
 				Error     string `json:"error"`
@@ -472,8 +472,8 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 			launcher.mu.Lock()
 			launcher.err = nil
 			launcher.mu.Unlock()
-			_, page := dana.get("/organizations/" + id + "/provisioning")
-			if resumed := dana.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, page)}}, nil); resumed.StatusCode != http.StatusSeeOther {
+			_, page := member.get("/organizations/" + id + "/provisioning")
+			if resumed := member.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, page)}}, nil); resumed.StatusCode != http.StatusSeeOther {
 				t.Fatalf("resume = %d", resumed.StatusCode)
 			}
 			f.waitState(t, id, "failed")
@@ -504,9 +504,9 @@ func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
 			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) {
 				f.timeout = 100 * time.Millisecond
 			})
-			dana := newBrowser(t, f.service.Handler())
-			dana.login("/auth/oidc/start", "user_dana:")
-			organization := f.waitState(t, organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location")), "failed")
+			member := newBrowser(t, f.service.Handler())
+			member.login("/auth/oidc/start", "user_member:")
+			organization := f.waitState(t, organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location")), "failed")
 			organization.State = tc.state
 			err := f.service.runStep(t.Context(), &organization, "tenant_start")
 			if err == nil || !strings.Contains(failureDetail(err), "did not become healthy within 100ms") {
@@ -529,15 +529,15 @@ func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
 	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 2; a.Launcher = launcher }, func(f *provisioningFixture) {
 		f.timeout = 20 * time.Second
 	})
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
-	id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
+	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	failed := f.waitState(t, id, "failed")
 	want := "the tenant Hub exited 2 times in a row without staying up (last: exit status 1)"
 	if failed.ErrorCode != "tenant_start_failed" || failed.ErrorDetail != want || failed.Attempts > 2 {
 		t.Fatalf("failure = %+v", failed)
 	}
-	status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 	var body struct {
 		State     string `json:"state"`
 		Error     string `json:"error"`
@@ -610,11 +610,11 @@ func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
 			}
 			launcher := &silentLauncher{err: errors.New("no tenant in this test"), running: map[string]bool{}}
 			f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 1; a.Launcher = launcher }, func(f *provisioningFixture) { f.now = now })
-			dana := newBrowser(t, f.service.Handler())
-			dana.login("/auth/oidc/start", "user_dana:")
-			id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+			member := newBrowser(t, f.service.Handler())
+			member.login("/auth/oidc/start", "user_member:")
+			id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 			poll := func() page {
-				return dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+				return member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 			}
 			if first := poll(); first.StatusCode != http.StatusOK {
 				t.Fatalf("first poll = %d", first.StatusCode)
@@ -631,8 +631,8 @@ func TestProvisioningPollsReuseProviderSessionVerification(t *testing.T) {
 			clock = clock.Add(tc.advance)
 			mu.Unlock()
 			if tc.mutate {
-				_, body := dana.get("/organizations/" + id + "/provisioning")
-				dana.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, body)}}, nil)
+				_, body := member.get("/organizations/" + id + "/provisioning")
+				member.do(http.MethodPost, "/organizations/"+id+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, body)}}, nil)
 			}
 			last := page{}
 			for range tc.polls {
@@ -658,9 +658,9 @@ func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, func(a *AllocationConfig) { a.AllowedDomains = []string{"allowed.test"} })
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
-	if response := f.create(t, dana, "Delta"); response.StatusCode != http.StatusForbidden {
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
+	if response := f.create(t, member, "Delta"); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("ineligible create = %d", response.StatusCode)
 	}
 	for _, config := range []*AllocationConfig{
@@ -681,9 +681,9 @@ func TestProvisioningResumesInterruptedDeletionAndMemoryFloor(t *testing.T) {
 
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil)
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
-	id := organizationFromLocation(t, f.create(t, dana, "Delta").Header.Get("Location"))
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
+	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
 	f.waitState(t, id, "ready")
 	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET state = 'deleting' WHERE id = ?", id); err != nil {
 		t.Fatal(err)
@@ -723,14 +723,14 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 	if response := stranger.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"}); response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("organizations JSON without a session = %d", response.StatusCode)
 	}
-	dana := newBrowser(t, f.service.Handler())
-	dana.login("/auth/oidc/start", "user_dana:")
+	member := newBrowser(t, f.service.Handler())
+	member.login("/auth/oidc/start", "user_member:")
 	for _, path := range []string{"/organizations", "/organizations/new"} {
-		if response, body := dana.get(path); response.StatusCode != http.StatusOK || !strings.Contains(body, "detent-surface") {
+		if response, body := member.get(path); response.StatusCode != http.StatusOK || !strings.Contains(body, "detent-surface") {
 			t.Fatalf("%s shell = %d", path, response.StatusCode)
 		}
 	}
-	listing := dana.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	listing := member.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
 	var chooser struct {
 		CSRF      string               `json:"csrf"`
 		CanCreate bool                 `json:"can_create"`
@@ -740,7 +740,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 		t.Fatalf("organizations JSON = %s %v", listing.Body, err)
 	}
 	jsonHeaders := map[string]string{"Accept": "application/json", "X-CSRF-Token": chooser.CSRF}
-	created := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Delta"}, "creation_key": {"key_0123456789abcdef"}}, jsonHeaders)
+	created := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Delta"}, "creation_key": {"key_0123456789abcdef"}}, jsonHeaders)
 	var result struct {
 		Next         string            `json:"next"`
 		Organization map[string]string `json:"organization"`
@@ -758,7 +758,7 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 				Label string `json:"label"`
 			} `json:"creation_prices"`
 		}
-		response := dana.do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
+		response := member.do(http.MethodGet, path, nil, map[string]string{"Accept": "application/json"})
 		if err := json.Unmarshal([]byte(response.Body), &limited); err != nil || !limited.CanCreate {
 			t.Fatalf("%s with a used Free slot = %s %v", path, response.Body, err)
 		}
@@ -766,27 +766,27 @@ func TestEntryServesClientAndJSON(t *testing.T) {
 			t.Fatalf("creation plans JSON = %s", response.Body)
 		}
 	}
-	if response, body := dana.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
+	if response, body := member.get("/organizations/" + id + "/provisioning"); response.StatusCode == http.StatusOK && !strings.Contains(body, "detent-surface") {
 		t.Fatalf("provisioning shell = %s", body)
 	}
-	quota := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, jsonHeaders)
+	quota := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, jsonHeaders)
 	if quota.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(quota.Body, `"code":"paid_plan_required"`) {
 		t.Fatalf("JSON paid plan required = %d %s", quota.StatusCode, quota.Body)
 	}
-	missing := dana.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, map[string]string{"Accept": "application/json"})
+	missing := member.do(http.MethodPost, "/organizations", url.Values{"name": {"Echo"}, "creation_key": {"key_fedcba9876543210"}}, map[string]string{"Accept": "application/json"})
 	if missing.StatusCode != http.StatusForbidden || !strings.Contains(missing.Body, `"code":"invalid_csrf"`) {
 		t.Fatalf("JSON missing CSRF = %d %s", missing.StatusCode, missing.Body)
 	}
 	f.waitState(t, id, "ready")
-	status := dana.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
+	status := member.do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
 	if !strings.Contains(status.Body, `"next":"/organizations/`+id+`/work"`) {
 		t.Fatalf("ready provisioning JSON = %s", status.Body)
 	}
-	session := dana.do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})
+	session := member.do(http.MethodGet, "/api/cloud/session", nil, map[string]string{"Accept": "application/json"})
 	if session.StatusCode != http.StatusOK || !strings.Contains(session.Body, `"csrf":"`+chooser.CSRF+`"`) {
 		t.Fatalf("session JSON = %d %s", session.StatusCode, session.Body)
 	}
-	ready := dana.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
+	ready := member.do(http.MethodGet, "/api/cloud/organizations", nil, map[string]string{"Accept": "application/json"})
 	if !strings.Contains(ready.Body, `"id":"`+id+`"`) || !strings.Contains(ready.Body, `"role":"owner"`) {
 		t.Fatalf("ready organizations JSON = %s", ready.Body)
 	}

@@ -24,7 +24,7 @@ import { HostCard } from "./HostCard.tsx";
 import { RunnerDetailSheet, type RunnerProject } from "./RunnerDetailSheet.tsx";
 import { NativeSelect } from "../account/controls.tsx";
 import { formatLocalTime } from "./format.ts";
-import { fleetHosts } from "./capacity.ts";
+import { CapacityPanel } from "./CapacityPanel.tsx";
 
 export interface ProviderRow {
   readonly provider: string;
@@ -113,48 +113,6 @@ export function ProviderSummary({ runners }: { readonly runners: readonly FleetR
         </tbody>
       </table>
     </div>
-  );
-}
-
-const SLOT_TONES = {
-  running: "border-primary bg-primary",
-  free: "border-border bg-background",
-  unavailable: "border-dashed border-warning bg-warning/10",
-};
-
-function Capacity({ runners, onOpen }: { readonly runners: readonly FleetRunner[]; readonly onOpen: (runner: FleetRunner) => void }): React.ReactElement {
-  const hosts = fleetHosts(runners);
-  const used = hosts.reduce((count, host) => count + host.used, 0);
-  const total = hosts.reduce((count, host) => count + host.capacity, 0);
-  const unavailable = hosts.reduce((count, host) => count + Math.max(0, host.capacity - host.used - host.free), 0);
-  return (
-    <SettingsSection title="Capacity right now" variant="plain">
-      <div className="space-y-5 rounded-xl border border-border/60 bg-card/40 p-4">
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <p className="text-base font-medium tabular-nums">{used} of {total} slots running work</p>
-          {unavailable > 0 ? <p className="text-xs text-warning-foreground">{unavailable} slots can't take work</p> : null}
-        </div>
-        <div className="flex flex-wrap gap-x-8 gap-y-4">
-          {hosts.map((host) => (
-            <button key={host.runner.machine_id} type="button" onClick={() => onOpen(host.runner)} aria-label={"Open " + host.runner.display_name} className="min-w-0 max-w-full space-y-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" data-testid="runner-capacity">
-              <span className="block break-words text-xs text-muted-foreground">{host.runner.display_name}</span>
-              <span className="flex flex-wrap gap-1.5">
-                {Array.from({ length: host.capacity }, (_, index) => {
-                  const lease = host.leases[index];
-                  const state = index < host.used ? "running" : index < host.used + host.free ? "free" : "unavailable";
-                  return <span key={index} data-slot-state={state} title={lease ? "#" + lease.work_item_id + " " + lease.title : state === "running" ? "Running work" : state === "free" ? "Free slot" : "Can't take work"} className={cn("size-5 shrink-0 rounded-sm border", SLOT_TONES[state])} />;
-                })}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground" aria-label="Slot legend">
-          {([["running", "Running work"], ["free", "Free"], ["unavailable", "Can't take work"]] as const).map(([state, label]) => (
-            <span key={state} className="flex items-center gap-2"><span aria-hidden="true" className={cn("size-3 rounded-sm border", SLOT_TONES[state])} />{label}</span>
-          ))}
-        </div>
-      </div>
-    </SettingsSection>
   );
 }
 
@@ -279,7 +237,7 @@ export function RunnersSectionView({
       )}
       {fleet.runners.length > 0 ? <details className="space-y-4">
         <summary className="cursor-pointer text-sm text-muted-foreground">Fleet capacity and providers</summary>
-        <Capacity runners={fleet.runners} onOpen={openRunner} />
+        <CapacityPanel runners={fleet.runners} onOpen={openRunner} />
         <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
           {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
         </SettingsSection>

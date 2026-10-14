@@ -25,7 +25,7 @@ func TestOperatorToolAPIUsesSharedReadOnlyExecutor(t *testing.T) {
 		LastKnown:      true,
 		LastKnownUntil: expiresAt,
 		BoardIssues: []telemetry.Issue{
-			{ID: "issue-1", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", State: "Todo"},
+			{ID: "issue-1", Identifier: "example-org/example-project#1", ProjectID: "detent", State: "Todo"},
 		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)

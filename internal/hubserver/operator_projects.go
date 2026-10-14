@@ -218,11 +218,7 @@ func (e hubProjectExecutor) actionResult(action chatpkg.Action) (operatortool.Re
 }
 
 func hubProjectResult(value any) (operatortool.Result, error) {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, errProjectServiceUnavailable
-	}
-	return operatortool.Result{Content: raw}, nil
+	return operatortool.EncodeResult(value)
 }
 func projectToolError(err error) error {
 	if errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.Is(err, mutation.ErrConflict) {
@@ -235,13 +231,10 @@ func projectToolError(err error) error {
 	if errors.As(err, &failure) && failure.Code == "invalid_request" && failure.publicMessage {
 		return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
 	}
-	if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
-		return &operatortool.ConflictError{Code: failure.Code, Message: failure.Message}
-	}
 	if errors.As(err, &failure) && (failure.Code == "revision_conflict" || failure.Code == "idempotency_conflict") {
 		return mutation.ErrConflict
 	}
-	return err
+	return hubSafeChangeError(err)
 }
 func (e hubProjectExecutor) ExecuteAction(ctx context.Context, action chatpkg.Action) (chatpkg.ActionExecution, error) {
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: projectToolScope(string(action.Kind), false), OrganizationID: action.OrganizationID, ProjectID: action.ProjectID})
@@ -425,7 +418,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
 		feature = "github_integration"
-		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled, States: r.Input.States, WorkflowMarkdown: r.Input.WorkflowMarkdown}
+		request := updateProjectIntegrationRequest{Mutation: tracker.Mutation{IdempotencyKey: r.RequestID}, ExpectedRevision: r.Input.ExpectedRevision, Intake: r.Input.Intake, Projection: r.Input.Projection, RepositoryEnabled: r.Input.RepositoryEnabled, DuplicateChallenge: r.Input.DuplicateChallenge, States: r.Input.States, WorkflowMarkdown: r.Input.WorkflowMarkdown}
 		input = request
 		operation = s.updateProjectIntegrationOperation(request)
 	case "start_git_hub_import":
@@ -466,10 +459,10 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			return nil, err
 		}
 		projectID, requestID = r.ProjectID, r.RequestID
-		if r.Input.Policy.Validate() != nil {
+		if r.Input.ObservedPolicyID == "" && r.Input.Policy.Validate() != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy descriptor is invalid or its identity digest does not match. Pass the entire local_project_configuration.selected_policy object unchanged as input.policy, including authored, profile, configuration, workflow and gates.human_review when returned"}
 		}
-		if workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
+		if r.Input.ObservedPolicyID == "" && workflowconfig.ValidateSharedPolicy(r.Input.Policy) != nil {
 			return nil, &operatortool.RequestError{Code: "invalid_request", Message: "Policy configuration is invalid or its digest does not match the descriptor"}
 		}
 		input = r.Input
@@ -478,7 +471,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 			if err != nil {
 				return nil, err
 			}
-			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, Policy: r.Input.Policy})
+			return s.database.approvePolicyInTx(ctx, tx, policyScope, scope.credential.ID, policy.Change{ExpectedID: r.Input.ExpectedID, ObservedPolicyID: r.Input.ObservedPolicyID, Policy: r.Input.Policy})
 		}
 	case "revoke_project_policy":
 		r, err := projectCommandInput[operatortool.PolicyRevokeInput](call.Arguments)

@@ -55,14 +55,14 @@ func (p *Project) Evaluate() {
 		p.Steps = append(p.Steps, Step{Name: name, State: state, Detail: detail})
 	}
 	enrolled := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool { return r.Runner.Health == "online" && r.Runner.State == "active" })
-	add("Execution runner", enrolled, "Enroll a host, then prepare its project checkout, detent.yaml and WORKFLOW.md. Enrollment does not require policy approval.")
+	add("Execution runner", enrolled, "Connect a computer to do this project's work. Click Enroll a runner, then paste the command it gives you into a terminal on that machine.")
 	validated := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
 		return r.Runner.Health == "online" && r.Runner.State == "active" && r.LocalChecks != nil && r.LocalChecks.Passed()
 	})
-	add("Local validation", validated, "The runner reports checkout, detent doctor and selected provider sign-in checks. Fix failures on that host, then restart the runner to report fresh results. Credentials stay local.")
-	add("Repository configuration", p.Policy != nil, "Review the policy reported by the runner and explicitly approve it before dispatch.")
+	add("Local validation", validated, "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks.")
+	add("Repository configuration", p.Policy != nil, "The project configuration tells Detent how to work on your code. Review the settings sent by your runner, then click Approve to allow work to start.")
 	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool { return len(r.Exclusions) == 0 })
-	artifactDetail := "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access."
+	artifactDetail := "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage."
 	add("Artifact history", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
 	p.Ready = matching && !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
 }

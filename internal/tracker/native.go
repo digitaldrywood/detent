@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -39,6 +40,8 @@ const NativeProjectConfigurationCapability = "runner_project_configuration"
 const NativeRunnerCapacityCapability = "runner_capacity_configuration"
 const NativeLocalChecksCapability = "runner_local_checks"
 const NativeProjectCheckoutCapability = "runner_project_checkout"
+const NativeRunnerCommitPolicyCapability = "runner_commit_policy"
+
 const NativeRunnerSetupCapability = "runner_project_setup"
 const NativeRunnerSetupDeclarationCapability = "runner_setup_declaration"
 
@@ -67,6 +70,8 @@ type NativeReference struct {
 type Actor struct {
 	Kind        string `json:"kind"`
 	PrincipalID string `json:"principal_id"`
+	ViaKey      string `json:"via_key,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type Provenance struct {
@@ -87,8 +92,12 @@ type NativeIssue struct {
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
+	Type               string              `json:"type,omitempty"`
+	ReportContext      *ReportContext      `json:"report_context,omitempty"`
+	Verification       *NativeVerification `json:"verification,omitempty"`
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
+	Snippet            string              `json:"snippet,omitempty"`
 	State              string              `json:"state"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
@@ -209,14 +218,19 @@ type Mutation struct {
 
 type CreateIssue struct {
 	Mutation
-	GitHubIssueURL string      `json:"github_issue_url,omitempty"`
-	Title          string      `json:"title"`
-	Body           string      `json:"body"`
-	State          string      `json:"state"`
-	Priority       *int        `json:"priority,omitempty"`
-	Labels         []string    `json:"labels"`
-	Assignees      []string    `json:"assignees"`
-	Provenance     *Provenance `json:"provenance,omitempty"`
+	ChallengeToken      string                          `json:"challenge_token,omitempty"`
+	NotDuplicateOf      []int                           `json:"not_duplicate_of,omitempty"`
+	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
+	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
+	Type                string                          `json:"type,omitempty"`
+	ReportContext       *ReportContext                  `json:"report_context,omitempty"`
+	Title               string                          `json:"title"`
+	Body                string                          `json:"body"`
+	State               string                          `json:"state"`
+	Priority            *int                            `json:"priority,omitempty"`
+	Labels              []string                        `json:"labels"`
+	Assignees           []string                        `json:"assignees"`
+	Provenance          *Provenance                     `json:"provenance,omitempty"`
 }
 
 // PriorityPatch is the priority member of UpdateIssue.
@@ -307,6 +321,7 @@ func (p PriorityPatch) MarshalJSON() ([]byte, error) {
 type UpdateIssue struct {
 	Mutation
 	ExpectedRevision Revision      `json:"expected_revision,string"`
+	Type             *string       `json:"type,omitempty"`
 	Title            *string       `json:"title,omitempty"`
 	Body             *string       `json:"body,omitempty"`
 	Priority         PriorityPatch `json:"priority,omitzero"`
@@ -326,6 +341,26 @@ type UpdateComment struct {
 	Body             string   `json:"body"`
 }
 
+const (
+	VerificationPending  = "pending"
+	VerificationVerified = "verified"
+	VerifyResultVerified = "verified"
+	VerifyResultNotFixed = "not_fixed"
+)
+
+type NativeVerification struct {
+	State      string     `json:"state"`
+	VerifiedBy *Actor     `json:"verified_by,omitempty"`
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+}
+
+type VerifyFix struct {
+	Mutation
+	ExpectedRevision Revision `json:"expected_revision,string,omitempty"`
+	Result           string   `json:"result"`
+	Comment          string   `json:"comment,omitempty"`
+}
+
 type Transition struct {
 	Mutation
 	PolicyID         string   `json:"policy_id,omitempty"`
@@ -338,6 +373,7 @@ type Transition struct {
 
 type DependencyMutation struct {
 	Mutation
+	RelationshipType  string           `json:"relationship_type,omitempty"`
 	ExpectedRevision  Revision         `json:"expected_revision,string"`
 	RelatedWorkItemID NativeWorkItemID `json:"related_work_item_id"`
 	Operation         string           `json:"operation"`
@@ -377,6 +413,7 @@ type CollaborationData struct {
 	ToState           string                   `json:"to_state,omitempty"`
 	Reason            string                   `json:"reason,omitempty"`
 	ReasonDetail      string                   `json:"reason_detail,omitempty"`
+	Verification      string                   `json:"verification,omitempty"`
 }
 
 type Page[T any] struct {
@@ -406,11 +443,19 @@ type NativeIssuePage struct {
 }
 
 type NativeWorkSummary struct {
-	Completed int              `json:"completed"`
-	Items     []NativeIssue    `json:"items"`
-	Lanes     []NativeWorkLane `json:"lanes"`
-	Truncated bool             `json:"truncated"`
-	AsOf      time.Time        `json:"as_of"`
+	Completed      int                   `json:"completed"`
+	Cancelled      int                   `json:"cancelled"`
+	ShippedWindows []NativeShippedWindow `json:"shipped_windows,omitempty"`
+	Items          []NativeIssue         `json:"items"`
+	Lanes          []NativeWorkLane      `json:"lanes"`
+	Truncated      bool                  `json:"truncated"`
+	AsOf           time.Time             `json:"as_of"`
+}
+
+type NativeShippedWindow struct {
+	Window    string `json:"window"`
+	Shipped   int    `json:"shipped"`
+	Cancelled int    `json:"cancelled"`
 }
 
 type NativeWorkLane struct {
@@ -424,6 +469,7 @@ type NativeState = policy.State
 type NativeProject struct {
 	CloneURL            string          `json:"clone_url,omitempty"`
 	Repository          string          `json:"repository,omitempty"`
+	Slug                string          `json:"slug"`
 	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
 	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
 	ID                  ProjectID       `json:"project_id"`

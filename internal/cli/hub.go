@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubgithub"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -156,6 +157,25 @@ func newHubServeCommand(version string, lookupEnv func(string) string, run hubRu
 			hosted, _, err := readHostedConfig(hostedConfigPath, lookupEnv)
 			if err != nil {
 				return err
+			}
+			marker := os.Getenv(entryauthority.BootstrapEnvironment)
+			if marker != "" {
+				if err := os.Unsetenv(entryauthority.BootstrapEnvironment); err != nil {
+					return err
+				}
+				if hosted == nil || hosted.SharedEntry == nil {
+					return errors.New("entry authority bootstrap requires shared hosted configuration")
+				}
+				authority, err := entryauthority.Open(cmd.Context(), marker, entryauthority.Binding{Issuer: hosted.SharedEntry.Issuer, Organization: hosted.OrganizationID, Generation: hosted.SharedEntry.Generation}, 3*time.Second)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					if err := authority.Close(); err != nil {
+						logger.Warn("close entry authority channel", "error", err)
+					}
+				}()
+				hosted.SharedEntry.ResolveKey = authority.Resolve
 			}
 			var conversation *hubserver.ConversationConfig
 			if hosted != nil {

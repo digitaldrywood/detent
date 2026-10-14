@@ -11,7 +11,7 @@ func TestStopRunDialogPreservesConfiguredDefault(t *testing.T) {
 	html := renderBoardComponent(t, StopRunDialogContent(StopRunDialogData{
 		ProjectID:   "detent",
 		IssueID:     "issue-1354",
-		Identifier:  "digitaldrywood/detent#1354",
+		Identifier:  "example-org/example-project#1354",
 		Destination: "Paused",
 		CanSubmit:   true,
 	}))

@@ -211,10 +211,10 @@ func TestEvaluateClassifiesBlockedCauseUnrecorded(t *testing.T) {
 		Enabled: true,
 		Lanes:   []LaneThreshold{{State: "Blocked", Threshold: 48 * time.Hour}},
 	}, Input{
-		ProjectID: "parable",
+		ProjectID: "example-project",
 		Items: []Item{{
 			ID:                     "1898",
-			Identifier:             "getparable/parable#1898",
+			Identifier:             "example-org/example-project#1898",
 			State:                  "Blocked",
 			EnteredAt:              now.Add(-72 * time.Hour),
 			BlockedCauseUnrecorded: true,

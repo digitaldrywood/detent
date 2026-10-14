@@ -19,6 +19,7 @@
 
 - Follow [AGENTS.md issue authoring](AGENTS.md#issue-authoring) for new work: use the selected project's supplied tracker authority and supported context. Repository identity and PR landing do not select the issue tracker.
 - Work from a Detent-created worktree branch, never directly on `develop` or `main`. Branch from and target `develop`; `main` is production (see [docs/branching.md](docs/branching.md)).
+- Always cut and freeze a release branch from `develop`. Land fixes on `develop` first, then cherry-pick with `-x` through release-branch PRs. Tag only after that release branch passes the full suite; deploy the tag to staging, pass smoke, then production. No operator develop prerelease or source-gate-only release path is permitted, including urgent recovery. Follow [release branches](docs/branching.md#release-branches).
 - Keep generated files and runtime output inside the current worktree.
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/develop`.
@@ -67,6 +68,10 @@ interactions are the main source of incidents, so the set may not grow.
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
+- This project has no human review step. Never move a Detent issue to Human
+  Review. An operator session that recovers or hand-lands work moves the issue
+  to Done once its PR merges into `develop`; work that needs a human goes to
+  Blocked with a `human_action`.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
   around a mechanism. Fix the mechanism.
 - Machine-filed issues carry an origin stamp and a fingerprint; never file a

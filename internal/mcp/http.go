@@ -562,11 +562,7 @@ func (r *httpResponseRouter) Write(frame []byte) (int, error) {
 		return len(frame), nil
 	}
 	if len(trimmed) > MaxHTTPResponseBytes {
-		trimmed = marshalHTTPResponse(response{
-			JSONRPC: "2.0",
-			ID:      responseID(message.ID),
-			Error:   &rpcError{Code: codeInternalError, Message: "MCP response exceeds the size limit"},
-		})
+		trimmed = marshalHTTPResponse(oversizedResponse(responseID(message.ID), len(trimmed)))
 	}
 	r.mu.Lock()
 	responses := r.pending[key]
@@ -577,6 +573,17 @@ func (r *httpResponseRouter) Write(frame []byte) (int, error) {
 	}
 	responses <- append([]byte(nil), trimmed...)
 	return len(frame), nil
+}
+
+func oversizedResponse(id json.RawMessage, size int) response {
+	return response{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &rpcError{Code: codeInternalError, Message: "MCP response exceeds the size limit", Data: struct {
+			Code string `json:"code"`
+			*operatortool.ResultTooLargeError
+		}{"result_too_large", &operatortool.ResultTooLargeError{SizeBytes: size, LimitBytes: MaxHTTPResponseBytes}}},
+	}
 }
 
 func (r *httpResponseRouter) stop() {

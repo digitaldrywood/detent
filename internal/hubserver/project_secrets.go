@@ -55,7 +55,9 @@ func readSecretRows(ctx context.Context, db nativeQueryer) ([]projectSecretRow, 
 }
 
 func (d *database) checkProjectSecretKeys(ctx context.Context, keys *hubsecrets.Keyring) error {
-	rows, err := readSecretRows(ctx, d.db)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := readSecretRows(ctx, d.reader)
 	if err != nil {
 		return err
 	}
@@ -96,11 +98,13 @@ func canManageProjectSecrets(credential apiCredential) bool {
 }
 
 func (s *Service) projectSecretMetadata(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if c.Param("kind") != flySpritesToken {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	scope := nativeRequestScope(c)
-	status, err := readSecretStatus(c.Request().Context(), s.database.db, scope)
+	status, err := readSecretStatus(ctx, s.database.reader, scope)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -242,7 +246,7 @@ func (s *Service) secretMutation(ctx context.Context, scope nativeScope, operati
 			err = errors.Join(err, rollback)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return err
 	}
 	if err := operation(tx); err != nil {

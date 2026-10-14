@@ -4,18 +4,18 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 140 entries; by kind: 52 primitive, 81 composition, 7 surface; by status: 140 available, 0 proposed, 0 exception.
+Catalog totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception.
 
 ## Actions
 
 ### Button
 
-Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.
+Every clickable action: form submission, toolbar and composer actions, icon-only actions. `size="compact"` is the toolbar size family; `touch` keeps a 44px target at every breakpoint; `icon*` sizes need an accessible name. `ghost-destructive` is the low-emphasis destructive action in menus and toolbars; `media-close` and `media-navigation` belong to media viewers; `sm-multiline` lets a small button wrap. `InlineButton` is a text action inside a sentence, with `tone` default, muted, destructive or picker (a dotted underline that opens a menu). `SplitButton` groups two primary Buttons into a joined 40px control: a main action and a 44px-wide MenuTrigger rendered as an icon Button. Label the group and the menu trigger; Menu owns the popup and keyboard behavior.
 
 - Kind: Primitive; status: available; id: `button`.
 - Import: `import { Button, buttonVariants, InlineButton, SplitButton, ButtonSize, ButtonVariant } from "~/components/ui/button";`
 - Source: [src/components/ui/button.tsx](../../web/conversation/src/components/ui/button.tsx).
-- Variants: `variant`: `default`, `secondary`, `outline`, `ghost`, `ghost-muted`, `ghost-destructive`, `destructive`, `destructive-outline`, `warning-outline`, `glass`, `overlay`, `link`, `media-close`, `media-navigation`; `size`: `micro`, `compact`, `xs`, `sm`, `sm-multiline`, `default`, `lg`, `xl`, `icon-tiny`, `icon-micro`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`, `icon-xl`; `tone`: `default`, `muted`, `destructive`, `picker`.
+- Variants: `variant`: `default`, `secondary`, `outline`, `ghost`, `ghost-muted`, `ghost-destructive`, `destructive`, `destructive-outline`, `warning-outline`, `glass`, `overlay`, `link`, `media-close`, `media-navigation`; `size`: `micro`, `compact`, `xs`, `sm`, `sm-multiline`, `default`, `lg`, `touch`, `xl`, `icon-tiny`, `icon-micro`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`, `icon-xl`; `tone`: `default`, `muted`, `destructive`, `picker`.
 - States: hover, focus-visible, pressed, disabled.
 - Keyboard: Native button: Tab focuses, Enter and Space activate. With `render`, the rendered element must stay focusable and keep button semantics.
 - Avoid: Restyling with arbitrary radius, fill or font classes, or calling `buttonVariants` from app code to dress a non-button. Use Badge for static status and a link for navigation that is not an action.
@@ -327,7 +327,7 @@ A small contextual interaction anchored to its trigger: a filter, a short form, 
 
 ### Menu
 
-A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives rows a 40px height for touch; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
+A list of actions or toggles behind a trigger: overflow menus, row actions, lane menus. `density="touch"` gives item and radio rows a 44px height on phones and 40px from the small breakpoint; a `ghost` item is a quiet action row; `MenuItemLabel` holds an item's text beside its icon.
 
 - Kind: Primitive; status: available; id: `menu`.
 - Import: `import { MenuCreateHandle, Menu, MenuPortal, MenuTrigger, MenuPopup, MenuGroup, MenuItem, MenuCheckboxItem, MenuRadioGroup, MenuRadioItem, MenuRadioItemIndicator, MenuGroupLabel, MenuSeparator, MenuShortcut, MenuSub, MenuSubTrigger, MenuSubPopup, DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, MenuItemLabel } from "~/components/ui/menu";`
@@ -446,12 +446,12 @@ A placeholder with the shape of content that is loading, using the shared steppe
 
 ### Empty state
 
-Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
+Explaining why a region has no content and offering the relevant next action. `size="compact"` fits panels and popovers; `hero` is a first-run page. `entry` is a compact, left-aligned invitation or creation panel; `panel="dashed"` adds its quiet boundary. Optional features not set up stay neutral, with one Set up action and no Needs attention contribution; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 
 - Kind: Primitive; status: available; id: `empty`.
 - Import: `import { Empty, EmptyHeader, EmptyTitle, EmptyDescription, EmptyContent, EmptyMedia } from "~/components/ui/empty";`
 - Source: [src/components/ui/empty.tsx](../../web/conversation/src/components/ui/empty.tsx).
-- Variants: `variant`: `default`, `icon`; `size`: `compact`, `default`, `hero`.
+- Variants: `variant`: `default`, `icon`; `panel`: `none`, `dashed`; `size`: `compact`, `default`, `hero`, `entry`.
 - States: none of its own.
 - Keyboard: Not interactive itself; EmptyContent holds focusable actions.
 - Avoid: Errors and unavailable capabilities that are not simply absence (use Alert).
@@ -495,6 +495,19 @@ The building blocks of Detent's app sidebar: provider, rail, groups and SidebarM
 - Keyboard: SidebarTrigger and menu buttons are native buttons or links; the rail is a resize handle. On narrow viewports the sidebar opens as a Sheet with dialog focus handling.
 - Avoid: Using it for in-page navigation lists; settings use SettingsSidebarNav, which composes these blocks.
 - Related: [Thread sidebar](#thread-sidebar), [App sidebar layout](#app-sidebar-layout), [Settings sidebar nav](#settings-sidebar-nav).
+
+### Tabs
+
+Sections of one page that share a header, such as the Reports Overview, Flow, Quality, Cost and Failures tabs. The list scrolls horizontally on narrow screens; when each tab has its own URL, select the tab from the route and navigate in `onValueChange`.
+
+- Kind: Primitive; status: available; id: `tabs`.
+- Import: `import { Tabs, TabsList, TabsTab, TabsPanel } from "~/components/ui/tabs";`
+- Source: [src/components/ui/tabs.tsx](../../web/conversation/src/components/ui/tabs.tsx).
+- Variants: none.
+- States: selected, hover, focus-visible, disabled.
+- Keyboard: Base UI tabs: Tab enters the list, arrow keys move between tabs and select them, Home and End jump to the ends; the panel follows the list in reading order.
+- Avoid: A small set of view options inside a section (use ToggleGroup), right-panel surfaces (use Right panel tabs) and settings sections (use the settings navigation).
+- Related: [Toggle group](#toggle-group), [Right panel tabs](#right-panel-tabs), [Workspace page header](#workspace-page-header).
 
 ## Structure
 
@@ -616,6 +629,32 @@ Tabular data such as usage and billing rows: labels left-aligned, comparable num
 - Avoid: Layout grids and lists of navigable entities (use rows or cards from the owning composition).
 - Related: [Usage page](#usage-page).
 
+### Metric tile
+
+A headline number with its label, an optional change against the prior period and one line of detail. `MetricTileGroup` joins tiles into one divided panel (two per row on phones); `size="compact"` is the bare value-over-label form for dense pages such as Diagnostics. Pass `value={null}` for an unrecorded value and `delta={null}` when the prior period has no data: the value renders a dash with a Not recorded hint and the delta reads No prior data, never a zero. A delta pairs its colour with an arrow and reads to screen readers as words, such as "up 38, worse".
+
+- Kind: Primitive; status: available; id: `metric-tile`.
+- Import: `import { MetricTile, MetricTileGroup, MetricDelta, deltaDescription } from "~/components/ui/metric-tile";`
+- Source: [src/components/ui/metric-tile.tsx](../../web/conversation/src/components/ui/metric-tile.tsx).
+- Variants: `size`: `default`, `compact`.
+- States: value, not recorded, delta up, delta down, delta not recorded.
+- Keyboard: Static text; not focusable.
+- Avoid: Plan allowances (use Usage meter), statuses (use Badge) and values that need a chart to be understood.
+- Related: [Chart](#chart), [Usage meter](#usage-meter), [Badge](#badge).
+
+### Chart
+
+Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`.
+
+- Kind: Primitive; status: available; id: `chart`.
+- Import: `import { Chart, ChartLegend, ChartPanel, ChartSwatch, ProportionBar, BarMeter, ChartCategory, ChartSeries, ChartLegendItem, chartTicks } from "~/components/ui/chart";`
+- Source: [src/components/ui/chart.tsx](../../web/conversation/src/components/ui/chart.tsx).
+- Variants: none.
+- States: hover, focus-visible, empty.
+- Keyboard: The plot is one focus stop; Left and Right move the readout between categories and Escape clears it.
+- Avoid: Per-provider usage (use Usage provider chart), new chart palettes and tables of numbers that read better as a Table.
+- Related: [Metric tile](#metric-tile), [Usage provider chart](#usage-provider-chart), [Table](#table).
+
 ### Keyboard key
 
 Showing a keyboard shortcut in tooltips, menus and the command palette.
@@ -643,6 +682,19 @@ A bordered list of icon, title and description rows for discovering integrations
 - Related: [Settings layout](#settings-layout).
 
 ## Entry
+
+### Navigation list
+
+A divided list of destinations with a monogram, name and optional secondary text. NavigationListLink owns the whole-row link; create is a muted add row and quiet is a separate bordered destination. NavigationMonogram derives a stable categorical tint from identity, uses neutral ink without identity, or a dashed plus slot for create.
+
+- Kind: Primitive; status: available; id: `navigation-list`.
+- Import: `import { NavigationList, NavigationListLink, NavigationMonogram } from "~/components/ui/navigation-list";`
+- Source: [src/components/ui/navigation-list.tsx](../../web/conversation/src/components/ui/navigation-list.tsx).
+- Variants: `variant`: `default`, `create`, `quiet`.
+- States: hover, focus-visible.
+- Keyboard: Native links: Tab reaches each row in reading order; Enter navigates. Each row has one focus target and a visible inset ring.
+- Avoid: Actions that submit or mutate data (use Button), workspace navigation (use the existing sidebar), and selectable options (use Select or Combobox).
+- Related: [Button](#button), [Empty state](#empty-state).
 
 ### Standalone page
 
@@ -904,6 +956,19 @@ The runner update control in the sidebar footer, for readers who manage runners;
 - Keyboard: A focusable button with the status as its accessible name; Enter or Space checks for updates or opens the runner settings.
 - Avoid: Announcing other updates with it; SidebarProviderUpdatePill and SidebarUpdateArchitectureWarning render nothing here, so use a toast or a composer notice instead.
 - Related: [Sidebar chrome](#sidebar-chrome), [Refresh icon](#refresh-icon).
+
+### Capacity panel
+
+Live host capacity in Settings and Diagnostics, with one shared used/free/unavailable derivation and compact host rows.
+
+- Kind: Composition; status: available; id: `capacity-panel`.
+- Import: `import { CapacityPanel } from "~/app/fleet/CapacityPanel";`
+- Source: [src/app/fleet/CapacityPanel.tsx](../../web/conversation/src/app/fleet/CapacityPanel.tsx), with [src/app/fleet/capacity.ts](../../web/conversation/src/app/fleet/capacity.ts).
+- Variants: none.
+- States: running, free, unavailable, offline, draining, no runners.
+- Keyboard: Tab reaches runner destinations; Enter opens existing runner settings or the runner detail sheet.
+- Avoid: Historical charts, project eligibility decisions or inferred provider pacing; use their existing owners.
+- Related: [Workspace page container](#workspace-page-container), [Badge](#badge), [Button](#button).
 
 ### Activity page
 
@@ -1244,7 +1309,7 @@ The tab strip that switches right-panel surfaces (Diff, Files, Terminal, Output,
 - Variants: none.
 - States: selected, hover, focus-visible.
 - Keyboard: Tabs are focusable; surface shortcuts switch tabs; each tab's close button is separately focusable.
-- Avoid: Page-level tabs (use ToggleGroup).
+- Avoid: Page-level sections (use Tabs).
 - Related: [Panel tab close button](#panel-tab-close-button), [Right panel workspace](#right-panel-workspace).
 
 ### Right panel sheet
@@ -1513,16 +1578,16 @@ Showing a secret such as an API key redacted until revealed.
 
 ### Reports page
 
-Project flow, throughput, stage and cost reports from recorded analytics, with source coverage.
+Project or organization reports in five tabs (Overview, Flow, Quality, Cost and Failures), each chart first with its rows below. The project (or All projects), a preset or custom range, the comparison and every filter chip live in the URL, so a copied link reproduces the view.
 
 - Kind: Composition; status: available; id: `reports-page`.
 - Import: `import { ReportsRoute, ReportsView } from "~/app/reports/ReportsPage";`
 - Source: [src/app/reports/ReportsPage.tsx](../../web/conversation/src/app/reports/ReportsPage.tsx).
 - Variants: none.
-- States: loading, empty, error, partial, unavailable.
-- Keyboard: Time and range controls, refresh and issue Diagnostics links in reading order.
-- Avoid: Point-in-time snapshots as historical flow metrics or unrecorded values as zeroes.
-- Related: [Usage page](#usage-page), [Table](#table), [Toggle group](#toggle-group), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
+- States: loading, empty, error, not recorded, filtered, no prior data.
+- Keyboard: Project, range, custom range, comparison and refresh controls, then the section tabs, the filter chips (each a Combobox, with a clear button once set), the view toggles and each card's links and expandable rows in reading order.
+- Avoid: Point-in-time snapshots as historical flow metrics, unrecorded values as zeroes, or a 0% delta when the prior period has no data.
+- Related: [Tabs](#tabs), [Metric tile](#metric-tile), [Chart](#chart), [Toggle group](#toggle-group), [Combobox](#combobox), [Calendar](#calendar), [Popover](#popover), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
 
 ### Usage page
 

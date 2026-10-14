@@ -21,6 +21,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -62,7 +63,7 @@ func (s *Service) claims(organization Organization, kind, method, path string, b
 	}
 	now := s.config.now()
 	return cloudassert.Claims{
-		Issuer: s.config.Issuer, Audience: organization.ID, Generation: organization.Generation, Kind: kind,
+		OrganizationSlug: organization.Slug, Issuer: s.config.Issuer, Audience: organization.ID, Generation: organization.Generation, Kind: kind,
 		Method: method, Path: path, BodyDigest: cloudassert.BodyDigest(body), IssuedAt: now, ExpiresAt: now.Add(assertionLifetime), ID: id,
 	}, nil
 }
@@ -75,14 +76,17 @@ func (s *Service) browserFailure(c echo.Context, organization string, status int
 		}
 		return s.browserUnavailable(c, status)
 	}
-	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.HasPrefix(request.URL.Path, "/api/") && status == http.StatusUnauthorized {
+	if (request.Method == http.MethodGet || request.Method == http.MethodHead) && !strings.Contains(request.URL.Path, "/api/") && !wantsJSON(c) &&
+		request.Header.Get("Sec-Fetch-Mode") == "navigate" && request.Header.Get("Sec-Fetch-Dest") == "document" &&
+		request.Header.Get("HX-Request") != "true" && request.Header.Get("X-Requested-With") == "" &&
+		!strings.Contains(request.Header.Get("Accept"), "text/event-stream") && status == http.StatusUnauthorized {
 		query := url.Values{"organization": {organization}}
 		if validReturnPath(request.URL.Path, organization) {
 			query.Set("return", request.URL.Path)
 		}
 		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+query.Encode())
 	}
-	if strings.HasPrefix(request.URL.Path, "/api/") || request.Header.Get("Accept") == "application/json" {
+	if strings.HasPrefix(request.URL.Path, "/api/") || wantsJSON(c) {
 		return c.JSON(status, map[string]string{"code": "unauthorized", "message": "Sign in to this organization to continue"})
 	}
 	if status == http.StatusUnauthorized {
@@ -208,7 +212,7 @@ func (s *Service) verifiedAccess(ctx context.Context, authorized authorization) 
 	// even if the browser gives up on this request.
 	detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken)
+	access, rotated, err := s.config.Provider.RefreshAccess(detached, tokens.RefreshToken, current.Identity.OrganizationID)
 	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
 		if rotated.RefreshToken != "" {
 			if err := s.auth.storeTokens(detached, authorized.Binding, rotated); err != nil {
@@ -260,15 +264,15 @@ func (s *Service) proxy(c echo.Context) error {
 	}
 	organization, err := s.readyOrganization(ctx, c.Param("organization"))
 	if err != nil {
+		if c.Get("readable_url") == true {
+			return readableNotFound(c)
+		}
 		if pending, lookupErr := s.registry.Organization(ctx, c.Param("organization")); lookupErr == nil && pending.Managed && (pending.State == "requested" || pending.State == "allocating" || pending.State == "failed") && request.Method == http.MethodGet && !strings.HasPrefix(request.URL.Path, "/api/") {
 			return c.Redirect(http.StatusSeeOther, "/organizations/"+pending.ID+"/provisioning")
 		}
 		return c.JSON(http.StatusNotFound, map[string]string{"code": "not_found", "message": "Resource was not found"})
 	}
-	limit := int64(cloudassert.MaxBodyBytes)
-	if diffUploadRequest(request) {
-		limit = 6*tracker.MaxDiffBytes + (1 << 20)
-	}
+	limit := hubserver.SharedEntryRequestBodyLimit(request.Method, request.URL.Path)
 	body, err := io.ReadAll(io.LimitReader(request.Body, limit+1))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "Request body could not be read"})
@@ -305,6 +309,9 @@ func (s *Service) proxy(c echo.Context) error {
 		verification = verified
 		if err != nil {
 			defer s.logProxied(c, organization.ID, verification, started)
+			if c.Get("readable_url") == true {
+				return readableNotFound(c)
+			}
 			return s.browserFailure(c, organization.ID, status)
 		}
 	}
@@ -325,7 +332,14 @@ func (s *Service) proxy(c echo.Context) error {
 		claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
 	}
 	authorized := time.Since(started)
-	defer func() { s.logProxied(c, organization.ID, verification, started, "auth_ms", authorized.Milliseconds()) }()
+	var responseError string
+	defer func() {
+		fields := []any{"auth_ms", authorized.Milliseconds()}
+		if responseError != "" {
+			fields = append(fields, "error", responseError)
+		}
+		s.logProxied(c, organization.ID, verification, started, fields...)
+	}()
 	assertion, err := cloudassert.Sign(s.config.SigningKey, claims)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Service is temporarily unavailable"})
@@ -338,6 +352,7 @@ func (s *Service) proxy(c echo.Context) error {
 		}
 		return c.JSON(http.StatusBadGateway, map[string]string{"code": "tenant_unavailable", "message": "The organization is temporarily unavailable"})
 	}
+	static := strings.HasPrefix(request.URL.Path, "/organizations/"+organization.ID+"/static/")
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -354,6 +369,9 @@ func (s *Service) proxy(c echo.Context) error {
 			r.Out.ContentLength = int64(len(body))
 		},
 		ModifyResponse: func(response *http.Response) error {
+			if response.StatusCode >= http.StatusBadRequest {
+				responseError = http.StatusText(response.StatusCode)
+			}
 			if request.Method != http.MethodGet && request.Method != http.MethodHead && response.StatusCode < http.StatusBadRequest {
 				if err := s.refreshGitHubRoutes(c.Request().Context(), organization); err != nil {
 					return err
@@ -366,11 +384,14 @@ func (s *Service) proxy(c echo.Context) error {
 				return err
 			}
 			response.Header.Del("Set-Cookie")
-			response.Header.Set("Cache-Control", "no-store")
+			if !static || !tenantCachePolicy(response) {
+				response.Header.Set("Cache-Control", "no-store")
+			}
 			response.Header.Set("Content-Security-Policy", contentSecurity)
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			w.Header().Set("Cache-Control", "no-store")
 			s.config.Logger.Warn("shared entry tenant proxy failed", "organization", organization.ID, "error", err)
 			if wantsHTMLNavigation(c) {
 				if err := s.browserUnavailable(c, http.StatusBadGateway); err != nil {
@@ -382,6 +403,9 @@ func (s *Service) proxy(c echo.Context) error {
 			w.WriteHeader(http.StatusBadGateway)
 			_, _ = w.Write([]byte(`{"code":"tenant_unavailable","message":"The organization is temporarily unavailable"}`))
 		},
+	}
+	if static {
+		c.Response().Header().Del("Cache-Control")
 	}
 	proxy.ServeHTTP(c.Response(), request)
 	return nil
@@ -509,4 +533,16 @@ func (s *Service) acceptInvitationID(ctx context.Context, organization Organizat
 		return errors.Join(errors.New("tenant rejected the invitation"), err)
 	}
 	return nil
+}
+
+// tenantCachePolicy reports whether a tenant answered a request for its
+// embedded static tree with a cache policy of its own, which the entry keeps:
+// those files are the same build artifacts for every reader and carry no
+// tenant data.
+func tenantCachePolicy(response *http.Response) bool {
+	switch response.StatusCode {
+	case http.StatusOK, http.StatusNotModified, http.StatusPartialContent:
+		return response.Header.Get("Cache-Control") != ""
+	}
+	return false
 }

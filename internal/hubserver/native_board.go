@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,10 +19,26 @@ import (
 const nativeBoardReplayLimit = 2048
 
 func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
+	readOnly, err := queryOnlyTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if readOnly {
+		return tx.Commit()
+	}
+	d.refreshAnalyticsRollups(ctx, tx)
 	if err := refreshNativeBoard(ctx, tx, d.now()); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var readOnly bool
+	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&readOnly); err != nil {
+		return false, fmt.Errorf("read transaction mode: %w", err)
+	}
+	return readOnly, nil
 }
 
 func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {

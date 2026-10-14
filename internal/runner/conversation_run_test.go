@@ -98,6 +98,7 @@ func (e *conversationTestExecution) BindConversation(_ context.Context, capabili
 }
 
 type fakeConversationSession struct {
+	continuation       bool
 	pendingAttachments []AgentAttachment
 	mu                 sync.Mutex
 	commands           chan AgentControl
@@ -120,6 +121,8 @@ type fakeConversationSession struct {
 func newFakeConversationSession() *fakeConversationSession {
 	return &fakeConversationSession{commands: make(chan AgentControl, 4)}
 }
+
+func (s *fakeConversationSession) Continuation() bool { return s.continuation }
 
 func (*fakeConversationSession) ConversationID() string              { return "conv_1" }
 func (s *fakeConversationSession) ResumeThreadID() string            { return s.resume }

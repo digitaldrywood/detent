@@ -198,6 +198,37 @@ func TestOperatorChangePublication(t *testing.T) {
 	}
 }
 
+func TestOperatorMutationRefusalPrecedence(t *testing.T) {
+	limit := &hostedLimitError{Resource: "collaboration_bytes", Allowance: 10, Consumption: 11}
+	for _, projection := range []struct {
+		name    string
+		project func(error) error
+	}{
+		{"work", safeNativeWorkError},
+		{"Change", hubSafeChangeError},
+		{"project", projectToolError},
+		{"workspace", safeWorkspaceError},
+	} {
+		for _, test := range []struct {
+			name      string
+			err, want error
+		}{
+			{"uncertain outcome", errors.Join(mutation.ErrUncertain, limit), mutation.ErrUncertain},
+			{"access denied", errors.Join(operatortool.ErrAccessDenied, limit), operatortool.ErrAccessDenied},
+			{"native access denied", errors.Join(&nativeError{Code: "access_denied", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
+			{"denied revision", errors.Join(&nativeError{Code: "revision_conflict", status: http.StatusForbidden}, limit), operatortool.ErrAccessDenied},
+		} {
+			t.Run(projection.name+"/"+test.name, func(t *testing.T) {
+				projected := projection.project(test.err)
+				var allowance *operatortool.AllowanceError
+				if !errors.Is(projected, test.want) || errors.As(projected, &allowance) {
+					t.Fatalf("projected refusal=%v want=%v without quota details", projected, test.want)
+				}
+			})
+		}
+	}
+}
+
 // Catches discovery bypass reaching foreign nested resources, stale review
 // identities, and replay repeating discussion effects after reconnect.
 func TestOperatorChangeCommands(t *testing.T) {
@@ -220,6 +251,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 		{"foreign item", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ItemID = "wi_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign change", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.ChangeID = "change_foreign" }, operatortool.ErrAccessDenied},
 		{"foreign version", operatortool.GetChangeVersion, func(a *operatortool.ChangeArguments) { a.VersionID = "version_foreign" }, operatortool.ErrAccessDenied},
+		{"foreign selected version", operatortool.GetChange, func(a *operatortool.ChangeArguments) { a.VersionID = "version_foreign"; a.Section = "discussion" }, operatortool.ErrAccessDenied},
 		{"missing publication identity", operatortool.PublishChangeVersion, nil, operatortool.ErrInvalidArguments},
 		{"worker landing", "land_change", nil, operatortool.ErrUnknownTool},
 		{"worker CI", "submit_change_check", nil, operatortool.ErrUnknownTool},
@@ -255,6 +287,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", stamp, report.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	report.Body = stamp
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	registered := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	registered.enroll(t)
@@ -277,6 +310,18 @@ func TestOperatorChangeCommands(t *testing.T) {
 	}{
 		{name: "missing local evidence", want: "missing_local_evidence", edit: func(r *tracker.NativeLandingReceipt) { r.Gate = nil }},
 		{name: "nonzero local result", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.ExitCode = 7 }},
+		{name: "long public timeout receipt", want: "local_nonzero", edit: func(r *tracker.NativeLandingReceipt) {
+			r.Gate.ReceiptID = "receipt_timeout"
+			r.Gate.ExitCode = 2
+			r.Gate.Output = strings.Repeat("ok example.org/other/package\n", 300) +
+				"panic: test timed out after 1m0s\nrunning tests:\n\tTestGateReceipt/世界 (1m0s)\n\n" +
+				"github.com/example-org/example-project/internal/worker.TestGateReceipt(0xc000001)\n\t/Users/private/project/worker_test.go:42\n" +
+				"Authorization: Bearer private-bearer\nDEPLOY_TOKEN=private-token\nhttps://private.example/log?secret=private-url\n" +
+				strings.Repeat("goroutine 99 [select]:\n\t/home/private/project/worker.go:12 世界\n", 300) +
+				"FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s\n"
+			public := tracker.PublicGateResult(*r.Gate)
+			r.Gate = &public
+		}},
 		{name: "different checked content", want: "different_content", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.TreeSHA = strings.Repeat("a", 40) }},
 		{name: "scope differs", want: "different_check_scope", edit: func(r *tracker.NativeLandingReceipt) {
 			r.Gate.Evidence.Checks[0].Scope = "unit-short"
@@ -300,17 +345,26 @@ func TestOperatorChangeCommands(t *testing.T) {
 			if err := persistAttemptLanding(t.Context(), tx, nativeAttempt, receipt); err != nil {
 				t.Fatal(err)
 			}
+			if test.name == "long public timeout receipt" {
+				raw, err := json.Marshal(receipt.Gate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.validation', json(?)) WHERE id=?", raw, nativeAttempt); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, base))
 			var value operatortool.ChangeResult
-			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit == nil || len(value.ValidationAudit.Occurrences) != 1 {
-				t.Fatalf("audit=%s %v", result.Content, err)
+			if err != nil || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit != nil {
+				t.Fatalf("Change read repeated project audit: %v", err)
 			}
 			if test.name == "same content and check passes locally" {
 				want := *receipt.Gate
-				want.Output, want.OutputTruncated = strings.Repeat("界", 1365), true
+				want.Output, want.OutputTruncated = "[earlier output truncated]\n"+strings.Repeat("界", 1356), true
 				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil || !reflect.DeepEqual(value.Detail.Versions[0].Landing.Gate, &want) {
 					t.Fatal("landing receipt lost identity or explicit output excerpt")
 				}
@@ -319,7 +373,25 @@ func TestOperatorChangeCommands(t *testing.T) {
 					t.Fatalf("bounded landing read changed canonical output: %v", err)
 				}
 			}
-			occurrence := value.ValidationAudit.Occurrences[0]
+			if test.name == "long public timeout receipt" {
+				if len(value.Detail.Versions) != 1 || value.Detail.Versions[0].Landing == nil {
+					t.Fatal("missing public landing receipt")
+				}
+				got := value.Detail.Versions[0].Landing.Gate
+				if !reflect.DeepEqual(got, receipt.Gate) || !got.OutputTruncated || len(got.Output) > 4096 || !utf8.ValidString(got.Output) || strings.Contains(got.Output, "private") {
+					t.Fatal("Change read lost bounded public failure evidence or receipt identity")
+				}
+				for _, diagnostic := range []string{"panic: test timed out after 1m0s", "TestGateReceipt/世界", "internal/worker.TestGateReceipt", "FAIL\tgithub.com/example-org/example-project/internal/worker\t61.366s", "truncated"} {
+					if !strings.Contains(got.Output, diagnostic) {
+						t.Fatalf("Change failure excerpt missing %q", diagnostic)
+					}
+				}
+			}
+			projectAudit, err := readValidationAudit(ctx, f.service.database.db, scope, "", "", f.change.ID, "")
+			if err != nil || len(projectAudit.Occurrences) != 1 {
+				t.Fatalf("audit=%+v %v", projectAudit, err)
+			}
+			occurrence := projectAudit.Occurrences[0]
 			if occurrence.Source.WorkItemID != report.WorkItemID || occurrence.Source.Actor.PrincipalID == "" || len(occurrence.Comparisons) != 1 {
 				t.Fatalf("source/candidates=%+v", occurrence)
 			}
@@ -345,11 +417,18 @@ func TestOperatorChangeCommands(t *testing.T) {
 				result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: read.name, Arguments: raw})
 				var envelope struct {
 					Data struct {
-						Audit *tracker.ValidationAudit `json:"validation_audit"`
+						Audit   *tracker.ValidationAudit `json:"validation_audit"`
+						Attempt *tracker.NativeAttempt   `json:"attempt"`
 					} `json:"data"`
 				}
 				if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.Audit == nil || len(envelope.Data.Audit.Occurrences) != 1 || envelope.Data.Audit.Occurrences[0].Comparisons[0].Outcome != test.want {
 					t.Fatalf("%s projection=%s %v", read.name, result.Content, err)
+				}
+				if test.name == "long public timeout receipt" && read.name == operatortool.WorkAttemptReceipt {
+					attempt := envelope.Data.Attempt
+					if attempt == nil || attempt.AttemptID != nativeAttempt || attempt.Runtime == nil || attempt.Runtime.Landing == nil || !reflect.DeepEqual(attempt.Runtime.Landing.Gate, receipt.Gate) || !reflect.DeepEqual(attempt.Runtime.Validation, receipt.Gate) {
+						t.Fatal("MCP attempt projection lost original public failure evidence or identity")
+					}
 				}
 			}
 			audit, err := readValidationAudit(t.Context(), f.service.database.db, scope, string(report.WorkItemID), "", "", "")
@@ -581,6 +660,37 @@ func TestOperatorChangeCommands(t *testing.T) {
 		if err != nil || len(policyBytes) < 48000 || len(policyBytes) > 60000 {
 			t.Fatalf("unrealistic policy bytes=%d: %v", len(policyBytes), err)
 		}
+		for i := range 3 {
+			unrelated := f.create(t, "unrelated scheduled failure")
+			record := scheduled
+			record.OccurrenceKey = policy.Digest([]byte(strconv.Itoa(i)))
+			record.RunID = strconv.Itoa(200 + i)
+			record.RunURL = "https://github.com/example-org/example-project/actions/runs/" + record.RunID
+			body := issueorigin.Stamp("Scheduled job failed"+record.Stamp(), issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: record.RunURL, Fingerprint: record.OccurrenceKey})
+			if _, err := f.service.database.db.ExecContext(ctx, "UPDATE issues SET body=? WHERE native_id=?", body, unrelated.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, item := range []tracker.NativeIssue{f.issue, report} {
+			raw, err := json.Marshal(map[string]string{"project_id": string(f.project.ID), "reference": string(item.WorkItemID)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := (hostedOperatorExecutor{service: f.service}).Execute(ctx, operatortool.Call{Name: operatortool.WorkItem, Arguments: raw})
+			var envelope struct {
+				Data operatortool.NativeItem `json:"data"`
+			}
+			if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.WorkItemID != item.WorkItemID || envelope.Data.Body != item.Body {
+				t.Fatalf("selected work item lost content: %v", err)
+			}
+			if item.WorkItemID == f.issue.WorkItemID {
+				if envelope.Data.ValidationAudit != nil {
+					t.Fatal("ordinary work item repeats project validation audit")
+				}
+			} else if audit := envelope.Data.ValidationAudit; audit == nil || len(audit.Occurrences) != 1 || audit.Occurrences[0].Source.WorkItemID != report.WorkItemID || !strings.Contains(audit.Occurrences[0].Comparisons[0].Attribution, "unverified") {
+				t.Fatal("scheduled work item lost its own evidence or included unrelated reports")
+			}
+		}
 		insert := func(ctx context.Context, kind, versionID string, record any) {
 			t.Helper()
 			raw, err := json.Marshal(record)
@@ -594,13 +704,19 @@ func TestOperatorChangeCommands(t *testing.T) {
 		assertVersion := func(got tracker.ChangeVersion) {
 			t.Helper()
 			want := versions[got.ID]
+			if want.Policy.Authored != nil {
+				authored := *want.Policy.Authored
+				authored.Files = nil
+				want.Policy.Authored = &authored
+			}
+			want.Policy.Configuration, want.Policy.Workflow = nil, nil
 			if want.Validation != nil {
 				command := *want.Validation
-				command.Output, command.OutputTruncated = strings.Repeat("界", 1365), true
+				command.Output, command.OutputTruncated = "[earlier output truncated]\n"+strings.Repeat("界", 1356), true
 				want.Validation = &command
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatal("version identity or validation receipt changed beyond explicit output excerpt")
+				t.Fatal("version identity, gate requirements or validation receipt changed beyond disclosed policy details and output excerpt")
 			}
 		}
 		actor := current.Actor
@@ -620,7 +736,11 @@ func TestOperatorChangeCommands(t *testing.T) {
 					validator.Commands = append(validator.Commands, gate.CommandResult{ReceiptID: "receipt_" + strconv.Itoa(command), Command: "check " + strconv.Itoa(command), HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("d", 40), ExitCode: command % 2, DurationNS: 1, Output: output, OutputTruncated: command >= 3})
 				}
 			}
-			insert(ctx, "review", current.ID, tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: validator})
+			review := tracker.ChangeReview{ID: "review_" + id, VersionID: current.ID, Decision: "commented", Body: strings.Repeat("é<\n", 5000), Actor: actor, CreatedAt: at, Validator: validator}
+			if i%2 == 0 {
+				review.ImplementationReview, review.Validator = review.Validator, nil
+			}
+			insert(ctx, "review", current.ID, review)
 			insert(ctx, "check", current.ID, tracker.ChangeCheck{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_" + id, HeadSHA: current.HeadSHA, Conclusion: "failure", Evidence: []tracker.ChangeArtifact{current.Code}}, Actor: actor, ReceivedAt: at})
 			insert(ctx, "discussion", current.ID, tracker.ChangeDiscussion{ID: "discussion_" + id, VersionID: current.ID, Body: strings.Repeat("世界<\n", 5000), Actor: actor, CreatedAt: at})
 		}
@@ -644,7 +764,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			t.Helper()
 			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, args))
 			var value operatortool.ChangeResult
-			if err != nil || len(result.Content) > operatortool.MaxResultBytes || !utf8.Valid(result.Content) || json.Unmarshal(result.Content, &value) != nil || value.Read == nil || !reflect.DeepEqual(value.Detail.Summary, full.Summary) {
+			if err != nil || len(result.Content) > operatortool.MaxResultBytes || !utf8.Valid(result.Content) || json.Unmarshal(result.Content, &value) != nil || value.ValidationAudit != nil || value.Read == nil || !value.Read.PolicyDetailsOmitted || !reflect.DeepEqual(value.Detail.Summary, full.Summary) {
 				t.Fatalf("bounded read bytes=%d error=%v", len(result.Content), err)
 			}
 			params := url.Values{"view": {"bounded"}, "section": {args.Section}, "cursor": {args.Cursor}, "version_id": {args.VersionID}}
@@ -661,6 +781,25 @@ func TestOperatorChangeCommands(t *testing.T) {
 			return value
 		}
 		one := base
+		one.Section, one.Limit = "discussion", 1
+		focused := read(one)
+		focusedBytes, err := json.Marshal(focused)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("discussion_limit_1_bytes=%d", len(focusedBytes))
+		if focused.ValidationAudit != nil || focused.Detail.Versions[0].Policy.Configuration != nil || focused.Detail.Versions[0].Policy.Workflow != nil || focused.Detail.Versions[0].Policy.Authored != nil && len(focused.Detail.Versions[0].Policy.Authored.Files) != 0 {
+			t.Fatal("selected discussion repeats policy details or unrelated scheduled comparisons")
+		}
+		if len(focusedBytes) > 16<<10 || len(focused.Detail.Discussion) != 1 || !reflect.DeepEqual(focused.Detail.Discussion[0], full.Discussion[0]) || focused.Read.Sections["discussion"].Complete || focused.Read.Sections["discussion"].NextCursor == "" {
+			t.Fatal("focused discussion lost evidence or continuation")
+		}
+		one.Cursor = focused.Read.Sections["discussion"].NextCursor
+		continued := read(one)
+		if len(continued.Detail.Discussion) != 1 || !reflect.DeepEqual(continued.Detail.Discussion[0], full.Discussion[1]) {
+			t.Fatal("focused discussion continuation lost evidence")
+		}
+		one.Cursor = ""
 		one.Section, one.Limit = "reviews", 1
 		selected := read(one)
 		if len(selected.Detail.Reviews) != 1 || selected.Detail.Reviews[0].ID != "review_0" {
@@ -694,15 +833,23 @@ func TestOperatorChangeCommands(t *testing.T) {
 								continue
 							}
 							want := stored
-							validator := *stored.Validator
+							result := stored.Validator
+							if stored.ImplementationReview != nil {
+								result = stored.ImplementationReview
+							}
+							validator := *result
 							validator.Commands = append([]gate.CommandResult(nil), validator.Commands...)
 							for i := range validator.Commands {
 								if i < 4 {
-									validator.Commands[i].Output = strings.Repeat("界", 1365)
+									validator.Commands[i].Output = "[earlier output truncated]\n" + strings.Repeat("界", 1356)
 									validator.Commands[i].OutputTruncated = true
 								}
 							}
-							want.Validator = &validator
+							if stored.ImplementationReview != nil {
+								want.ImplementationReview = &validator
+							} else {
+								want.Validator = &validator
+							}
 							if !reflect.DeepEqual(r, want) {
 								t.Fatal("review verdict, criteria, receipt identity or output disclosure changed")
 							}
@@ -801,8 +948,13 @@ func TestOperatorChangeCommands(t *testing.T) {
 		}
 		args = base
 		args.VersionID = version.ID
-		if _, err := executor.Execute(ctx, changeToolCall(operatortool.GetChangeVersion, args)); err != nil {
-			t.Fatalf("exact historical version blocked by oversized current evidence: %v", err)
+		for _, id := range []string{version.ID, current.ID} {
+			args.VersionID = id
+			result, err := executor.Execute(ctx, changeToolCall(operatortool.GetChangeVersion, args))
+			var exact operatortool.ChangeResult
+			if err != nil || json.Unmarshal(result.Content, &exact) != nil || exact.Version == nil || !reflect.DeepEqual(*exact.Version, versions[id]) {
+				t.Fatalf("exact version lost full policy or receipt: %v", err)
+			}
 		}
 		input := current.ChangeVersionInput
 		input.HeadSHA, input.Source, input.Validation = strings.Repeat("7", 40), nil, nil

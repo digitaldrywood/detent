@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -322,6 +324,7 @@ func TestWorkItemConversationLookup(t *testing.T) {
 	f := newConversationAPIFixture(t, nil)
 	issue := f.nativeFixture.create(t, "ordinary issue")
 	created := f.create(t, f.token, map[string]any{"title": "Private history"})
+	requireNativeStatus(t, f.command(t, f.token, created.Conversation.ID, conversation.Command{Key: "history", Kind: conversation.CommandMessage, Text: "private message sentinel"}), http.StatusOK)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET work_item_id = ?, linked_at = created_at WHERE id = ?", issue.WorkItemID, created.Conversation.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -356,6 +359,87 @@ func TestWorkItemConversationLookup(t *testing.T) {
 				t.Fatalf("lookup disclosed inaccessible conversation: %s", result.Content)
 			}
 		})
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done') WHERE native_id = ?", f.project.ID, issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	var generation int64
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id, dispatch_generation FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&state, &generation); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	f.service.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	for _, fault := range []bool{false, true} {
+		if fault {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET actor_json = '["credential sentinel"]' WHERE conversation_id = ?`, created.Conversation.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, transport := range []string{"stdio", "http"} {
+			t.Run(strconv.FormatBool(fault)+"/"+transport, func(t *testing.T) {
+				for principal, token := range []string{f.token, f.other} {
+					ctx := workspaceOperatorContext(t, f.service, token, string(f.project.OrganizationID), "snapshot-"+transport+"-"+strconv.FormatBool(fault)+"-"+strconv.Itoa(principal))
+					call := hostedContextProtocol(t, f.service, ctx, transport)
+					for _, tool := range []string{"get_work_item_conversation", "get_conversation"} {
+						args := map[string]any{"project_id": f.project.ID}
+						if tool == "get_work_item_conversation" {
+							args["work_item_id"] = issue.WorkItemID
+						} else {
+							args["conversation_id"] = created.Conversation.ID
+						}
+						logs.Reset()
+						if fault && token == f.token {
+							_, err := workspaceOperatorCall(t, f.service, ctx, tool, args)
+							var cause *json.UnmarshalTypeError
+							if !errors.Is(err, errWorkspaceOperationUnavailable) || !errors.As(err, &cause) {
+								t.Fatalf("lost snapshot error chain: %v", err)
+							}
+						}
+						reply := call("tools/call", tool, args)
+						var result struct {
+							IsError bool                    `json:"isError"`
+							Content []struct{ Text string } `json:"content"`
+						}
+						if err := json.Unmarshal(reply.Result, &result); err != nil || len(result.Content) != 1 {
+							t.Fatalf("snapshot response=%s err=%v", reply.Result, err)
+						}
+						if !fault && token == f.token {
+							if result.IsError || !strings.Contains(result.Content[0].Text, created.Conversation.ID) || !strings.Contains(result.Content[0].Text, "private message sentinel") {
+								t.Fatalf("completed item snapshot=%s", reply.Result)
+							}
+							continue
+						}
+						if !result.IsError || strings.Contains(string(reply.Result), "credential sentinel") || strings.Contains(string(reply.Result), "private message sentinel") || strings.Contains(string(reply.Result), "cannot unmarshal") {
+							t.Fatalf("snapshot fault leaked=%s", reply.Result)
+						}
+						if token != f.token {
+							if strings.Contains(string(reply.Result), created.Conversation.ID) || strings.Contains(logs.String(), "cannot unmarshal") || strings.Contains(logs.String(), "credential sentinel") || strings.Contains(logs.String(), "private message sentinel") {
+								t.Fatalf("private snapshot reached store: response=%s logs=%s", reply.Result, logs.Bytes())
+							}
+							continue
+						}
+						var entry struct {
+							Tool          string `json:"tool"`
+							CorrelationID string `json:"correlation_id"`
+							Error         string `json:"error"`
+							ErrorClass    string `json:"error_class"`
+						}
+						if err := json.Unmarshal(logs.Bytes(), &entry); err != nil || entry.Tool != tool || entry.CorrelationID == "" || entry.ErrorClass != "*json.UnmarshalTypeError" || !strings.Contains(entry.Error, "list messages: decode message") || !strings.Contains(entry.Error, "cannot unmarshal array") {
+							t.Fatalf("lost snapshot cause: logs=%s err=%v", logs.Bytes(), err)
+						}
+						if want := "Operator tool is unavailable (reason_code service_unavailable, correlation_id " + entry.CorrelationID + ")"; result.Content[0].Text != want {
+							t.Fatalf("fault response=%s want=%s", reply.Result, want)
+						}
+					}
+				}
+			})
+		}
+	}
+	var afterState string
+	var afterGeneration int64
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT workflow_state_id, dispatch_generation FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&afterState, &afterGeneration); err != nil || afterState != state || afterGeneration != generation {
+		t.Fatalf("snapshot read changed completed item: state=%s/%s generation=%d/%d err=%v", state, afterState, generation, afterGeneration, err)
 	}
 }
 
@@ -597,6 +681,23 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 // Catches oversized history losing its continuation cursor. Both projections
 // must retain newest messages without truncating individual message content.
 func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
+	for _, snapshot := range []bool{false, true} {
+		t.Run("unpageable/"+strconv.FormatBool(snapshot), func(t *testing.T) {
+			var value any = conversationMessagesPage{Messages: []conversationMessageResource{{Seq: 1, Text: strings.Repeat("x", operatortool.MaxResultBytes)}}}
+			if snapshot {
+				value = conversationSnapshot{Conversation: conversationResource{Title: strings.Repeat("x", operatortool.MaxResultBytes)}}
+			}
+			raw, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bounded, err := boundedOperatorHistory(raw, snapshot, nil)
+			var size *operatortool.ResultTooLargeError
+			if len(bounded) != 0 || !errors.As(safeWorkspaceError(err), &size) || size.SizeBytes != len(raw) || size.LimitBytes != operatortool.MaxResultBytes/2 {
+				t.Fatalf("unpageable history bytes=%d error=%v", len(bounded), err)
+			}
+		})
+	}
 	messages := []conversationMessageResource{}
 	for i := int64(1); i <= 20; i++ {
 		messages = append(messages, conversationMessageResource{Seq: i, Text: strings.Repeat("x", 16000)})
@@ -677,20 +778,21 @@ func TestWorkspaceOperatorHistoryBudget(t *testing.T) {
 // internal errors, even when discovery is bypassed.
 func TestWorkspaceOperatorUnavailable(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		err  error
-		want string
+		name    string
+		err     error
+		want    string
+		wantErr error
 	}{
-		{"revision projection", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`},
-		{"stale projection", &nativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`},
-		{"internal", errors.New("credential-secret"), ""},
-		{"unrelated conflict", &nativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusConflict}, ""},
-		{"denied revision", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusForbidden}, ""},
+		{"revision projection", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, Details: map[string]any{"credential": "credential-secret"}, status: http.StatusConflict}, `{"code":"revision_conflict","current_revision":"4"}`, nil},
+		{"stale projection", &nativeError{Code: "stale_execution", Message: "credential-secret", Details: map[string]any{"credential": "credential-secret", "expected_attempt_id": conversationOptional("att_old"), "current_attempt_id": conversationOptional("att_current")}, status: http.StatusConflict}, `{"code":"stale_execution","details":{"expected_attempt_id":"att_old","current_attempt_id":"att_current"}}`, nil},
+		{"internal", errors.New("credential-secret"), "", errWorkspaceOperationUnavailable},
+		{"unrelated conflict", &nativeError{Code: "internal-conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusConflict}, "", errWorkspaceOperationUnavailable},
+		{"denied revision", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 4, status: http.StatusForbidden}, "", operatortool.ErrAccessDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := safeWorkspaceError(test.err)
 			if test.want == "" {
-				if !errors.Is(err, errWorkspaceOperationUnavailable) {
+				if !errors.Is(err, test.wantErr) {
 					t.Fatalf("unsafe projection=%v", err)
 				}
 				return

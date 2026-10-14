@@ -108,6 +108,19 @@ describe("hubPath", () => {
     expect(routerBasePath("")).toBe("/");
     expect(routerBasePath(SHARED)).toBe(SHARED);
   });
+
+  it("keeps authenticated API paths when the browser uses an organization slug", () => {
+    setShellMeta(SHARED, "/organizations");
+    const meta = document.createElement("meta");
+    meta.name = "detent-router-base";
+    meta.content = "/example-org";
+    document.head.append(meta);
+    expect(hubPath("/app/bootstrap")).toBe(`${SHARED}/app/bootstrap`);
+    expect(routerBasePath()).toBe("/example-org");
+    expect(withoutBasePath("/example-org/settings", routerBasePath())).toBe("/settings");
+    const router = makeRouter(createMemoryHistory({ initialEntries: ["/example-org/settings"] }));
+    expect(router.options.basepath).toBe("/example-org");
+  });
 });
 
 describe("sign-in path", () => {

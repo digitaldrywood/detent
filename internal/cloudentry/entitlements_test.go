@@ -17,12 +17,12 @@ import (
 func pilotSupportSession(t *testing.T, p *sharedOriginPilot, organization string) *pilotBrowser {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
-	hosted := auth.HostedIdentity{Subject: "user_dana", OrganizationID: "porg_" + organization, SessionID: "impersonation_" + organization, CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour), SupportActor: "staff@example.test", SupportReason: "troubleshooting"}
+	hosted := auth.HostedIdentity{Subject: "user_member", OrganizationID: "porg_" + organization, SessionID: "impersonation_" + organization, CreatedAt: now.Add(-time.Second), ExpiresAt: now.Add(time.Hour), SupportActor: "staff@example.test", SupportReason: "troubleshooting"}
 	p.provider.mu.Lock()
 	p.provider.sessions[hosted.SessionID] = hosted
 	p.provider.mu.Unlock()
 	token := "impersonation-token-" + organization
-	if err := p.service.auth.createSession(t.Context(), apikey.HashToken(token), "impersonation-csrf", auth.Identity{Subject: "user_dana", Email: "staff@example.test", EmailVerified: true, Hosted: &hosted}); err != nil {
+	if err := p.service.auth.createSession(t.Context(), apikey.HashToken(token), "impersonation-csrf", auth.Identity{Subject: "user_member", Email: "staff@example.test", EmailVerified: true, Hosted: &hosted}); err != nil {
 		t.Fatal(err)
 	}
 	b := p.browser(t)
@@ -61,10 +61,10 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	p := newSharedOriginPilot(t, 2, 1)
 	p.provider.users["user_staff"] = "staff@example.test"
 	p.provider.users["user_ops"] = "ops@example.test"
-	dana := p.browser(t)
-	pilotStatus(t, "dana sign-in", dana.login("/auth/oidc/start", "user_dana:"), http.StatusSeeOther)
-	created := dana.createOrganization("Alpha Labs")
-	pilotStatus(t, "dana create", created, http.StatusSeeOther)
+	member := p.browser(t)
+	pilotStatus(t, "member sign-in", member.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
+	created := member.createOrganization("Alpha Labs")
+	pilotStatus(t, "member create", created, http.StatusSeeOther)
 	organization := organizationFromLocation(t, created.location)
 	p.waitState(t, organization, "ready")
 	path := "/api/cloud/platform/organizations/" + organization + "/entitlements"
@@ -113,7 +113,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 		want    int
 	}{
 		{"anonymous", anonymous, "", http.StatusUnauthorized},
-		{"customer owner", dana, "", http.StatusForbidden},
+		{"customer owner", member, "", http.StatusForbidden},
 		{"support session", support, "impersonation-csrf", http.StatusForbidden},
 		{"other staff", ops, csrf[ops], http.StatusForbidden},
 		{"administrator without csrf", admin, "", http.StatusForbidden},
@@ -157,7 +157,7 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	response = admin.get(path)
 	pilotStatus(t, "entitlements after grant", response, http.StatusOK)
 	pilotDecode(t, response, &state)
-	if len(state.Grants) != 1 || state.Revision != revision+1 || slices.Contains(state.Features, "model_choice") != (feature != "") {
+	if len(state.Grants) != 1 || len(state.GrantHistory) != 1 || state.GrantHistory[0].GrantedBy != "staff@example.test" || state.Revision != revision+1 || slices.Contains(state.Features, "model_choice") != (feature != "") {
 		t.Fatalf("entitlements after grant = %+v", state)
 	}
 	var detail platformTenantDetail
@@ -186,13 +186,13 @@ func testPlatformEntitlement(t *testing.T, feature, planID string) {
 	revoke := entitlementChange{Action: "revoke", IdempotencyKey: "comp-alpha-revoke", ExpectedRevision: state.Revision, GrantID: granted.ID}
 	pilotStatus(t, "revoke without reason", admin.json(http.MethodPost, path, csrf[admin], revoke), http.StatusUnprocessableEntity)
 	revoke.Reason = "pilot ended"
-	for _, browser := range []*pilotBrowser{dana, ops, support} {
+	for _, browser := range []*pilotBrowser{member, ops, support} {
 		pilotStatus(t, "non-administrator revoke", browser.json(http.MethodPost, path, csrf[browser], revoke), http.StatusForbidden)
 	}
 	pilotStatus(t, "revoke", admin.json(http.MethodPost, path, csrf[admin], revoke), http.StatusOK)
 	response = admin.get(path)
 	pilotDecode(t, response, &state)
-	if len(state.Grants) != 0 || state.Revision != revision+2 || slices.Contains(state.Features, "model_choice") {
+	if len(state.Grants) != 0 || len(state.GrantHistory) != 1 || state.GrantHistory[0].RevokedAt == nil || state.GrantHistory[0].GrantedBy != "staff@example.test" || state.Revision != revision+2 || slices.Contains(state.Features, "model_choice") {
 		t.Fatalf("entitlements after revoke = %+v", state)
 	}
 

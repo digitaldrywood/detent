@@ -22,6 +22,7 @@ import { moveItem, useBoard, useWorkHttp } from "./lib/useWork.ts";
 import { useViewState } from "./lib/useViewState.ts";
 import { effectiveSort, laneVisible, tabMatches, toggleCollapsed, WORK_TABS, type WorkTab, type WorkViewState } from "./lib/viewState.ts";
 import { BoardLane } from "./components/BoardLane.tsx";
+import { ImportIssuesDialog } from "./ImportIssues.tsx";
 import { FirstRunPanel } from "./components/FirstRun.tsx";
 import {
   ISSUE_CREATION_NEEDS_WRITE,
@@ -40,6 +41,9 @@ import { useShell } from "../App.tsx";
 import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 import { allProjectsLabel } from "../lib/projectScope.ts";
+import { prefetchIssue } from "./lib/issueQuery.ts";
+
+const HOVER_INTENT_MS = 150;
 
 function applyFilters(
   items: readonly WorkItemView[],
@@ -50,6 +54,8 @@ function applyFilters(
     if (view.view === "list" && !tabMatches(view.tab, item)) return false;
     if (view.view === "board" && view.state.length > 0 && !view.state.includes(item.state)) return false;
     if (view.priority.length > 0 && (item.priority === null || !view.priority.includes(item.priority)))
+      return false;
+    if (view.view === "list" && view.type.length > 0 && (item.type === undefined || !view.type.includes(item.type)))
       return false;
     if (view.label.length > 0 && !view.label.some((label) => item.labels.includes(label)))
       return false;
@@ -75,6 +81,7 @@ function narrowed(view: WorkViewState): boolean {
     view.q.trim().length > 0 ||
     view.state.length > 0 ||
     view.priority.length > 0 ||
+    (view.view === "list" && view.type.length > 0) ||
     view.label.length > 0 ||
     view.assignee.length > 0
   );
@@ -178,6 +185,27 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     [navigate],
   );
 
+  // Hover intent: a card's first-paint read starts after the pointer rests on
+  // it briefly, and is cancelled when the pointer leaves first.
+  const pending = React.useRef<{ timer: ReturnType<typeof setTimeout>; controller: AbortController } | null>(null);
+  const intentEnd = React.useCallback(() => {
+    if (pending.current === null) return;
+    clearTimeout(pending.current.timer);
+    pending.current.controller.abort();
+    pending.current = null;
+  }, []);
+  const intent = React.useCallback((item: WorkItemView) => {
+    intentEnd();
+    const controller = new AbortController();
+    pending.current = {
+      controller,
+      timer: setTimeout(() => prefetchIssue(http, item.id, item.projectId, controller.signal), HOVER_INTENT_MS),
+    };
+  }, [http, intentEnd]);
+  React.useEffect(() => () => {
+    if (pending.current !== null) clearTimeout(pending.current.timer);
+  }, []);
+
   const move = React.useCallback(
     (item: WorkItemView, toState: string) => {
       if (item.state === toState) return;
@@ -245,14 +273,16 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const creatable = newIssueProjects(
     (accountBootstrap?.projects ?? []).filter((project) => projectId === null || project.id === projectId),
     null,
+    accountBootstrap?.actor.role,
   );
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
   const firstRun =
     noProjects ||
     (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
       !board.hasMore && !board.backlogHasMore && (board.totals?.total ?? 0) === 0);
+  const [importProject, setImportProject] = React.useState<string | null>(null);
   const firstRunPanel = firstRun ? (
-    <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} />
+    <FirstRunPanel projectId={projectId} issues={board.items.length} onIssueCreated={board.reload} onImport={setImportProject} />
   ) : null;
 
   const ask = () => {
@@ -269,7 +299,9 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         <div className="flex shrink-0 items-center gap-1">
           <LiveCounter count={board.resolved ? stats.running : null} loading={board.loading} />
           <CompletedCounter
-            count={board.totals?.completed ?? (view.completedWindow === "all" ? stats.completed : null)}
+            count={board.totals?.completed ?? null}
+            cancelled={board.totals?.cancelled ?? null}
+            windows={board.totals?.shippedWindows ?? null}
             completedWindow={view.completedWindow}
             onCompletedWindowChange={(completedWindow) => setView({ ...view, completedWindow })}
             loading={board.loading}
@@ -410,6 +442,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
             onLoadMore={board.loadMore}
             showProject={projectId === null}
             onOpen={open}
+            onIntent={intent}
+            onIntentEnd={intentEnd}
             movesFor={movesFor}
             onMove={move}
           />
@@ -432,6 +466,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   loadingMore={board.backlogLoading}
                   showProject={projectId === null}
                   onOpen={open}
+                  onIntent={intent}
+                  onIntentEnd={intentEnd}
                   movesFor={movesFor}
                   onMove={move}
                   movingIds={moving}
@@ -449,7 +485,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   onCreate={
                     newIssue.canCreate &&
                     !lane.terminal &&
-                    newIssueProjects(creatable, lane.name).length > 0
+                    newIssueProjects(creatable, lane.name, accountBootstrap?.actor.role).length > 0
                       ? () => newIssue.openNewIssue({ projectId, state: lane.name })
                       : null
                   }
@@ -459,7 +495,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
           </div>
         ))}
       </div>
-
+      {importProject === null ? null : <ImportIssuesDialog key={importProject} projectId={importProject} onClose={() => { setImportProject(null); board.reload(); }} />}
     </>
   );
 }

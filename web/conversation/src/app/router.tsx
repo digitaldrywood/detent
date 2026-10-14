@@ -1,3 +1,4 @@
+import { resolveReadable, redirectLegacyIssue, redirectLegacyProject } from "./work/readableRoutes.ts";
 // Routes.
 //
 // The hub serves the application shell for every non-API path
@@ -13,20 +14,15 @@ import {
   lazyRouteComponent,
   Outlet,
   redirect,
-  useParams,
   useRouterState,
   type AnyRoute,
   type RouterHistory,
 } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 
-import { ConversationRoute, NewChat, ProjectNewChat, Shell } from "./App.tsx";
+import { Shell } from "./App.tsx";
 import { accountRoutes } from "./routes.account.tsx";
 import { SupportRoute } from "./account/Support.tsx";
-import { ChangeRequestPage } from "./work/ChangeRequestPage.tsx";
-import { ChangesPage } from "./work/ChangesPage.tsx";
-import { IssuePage } from "./work/IssuePage.tsx";
-import { WorkBoard } from "./work/WorkBoard.tsx";
 import { routerBasePath, withoutBasePath } from "../runtime/basePath.ts";
 import { plainSearchOptions } from "./lib/searchParams.ts";
 
@@ -62,17 +58,23 @@ export function designSystemRoutes(parent: AnyRoute, dev: boolean): AnyRoute[] {
 
 /** The Shell everywhere except the dev-only gallery, which brings its own chrome. */
 function DevRoot(): ReactElement {
-  const pathname: string = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+  const pathname: string = useRouterState({ select: (state) => withoutBasePath(state.location.pathname, routerBasePath()) });
   return isDesignSystemPath(pathname) ? <Outlet /> : <Shell />;
 }
 
 const rootRoute = createRootRoute({ component: import.meta.env.DEV ? DevRoot : Shell });
 
-/** Reads the project out of the path so the board stays a pure component. */
-function WorkProjectBoard() {
-  const { projectId } = useParams({ from: "/work/p/$projectId" });
-  return <WorkBoard projectId={projectId} />;
-}
+// Each screen is its own chunk, fetched the first time its route matches, so
+// the entry carries the shell and nothing a reader has not opened yet.
+const NewChat = lazyRouteComponent(() => import("./ChatRoutes.tsx"), "NewChat");
+const ConversationRoute = lazyRouteComponent(() => import("./ChatRoutes.tsx"), "ConversationRoute");
+const ProjectNewChat = lazyRouteComponent(() => import("./ChatRoutes.tsx"), "ProjectNewChat");
+const AllProjectsWorkBoard = lazyRouteComponent(() => import("./work/WorkRoutes.tsx"), "AllProjectsWorkBoard");
+const ProjectWorkBoard = lazyRouteComponent(() => import("./work/WorkRoutes.tsx"), "ProjectWorkBoard");
+const ReadableProjectBoard = lazyRouteComponent(() => import("./work/WorkRoutes.tsx"), "ReadableProjectWorkBoard");
+const ChangesPage = lazyRouteComponent(() => import("./work/ChangesPage.tsx"), "ChangesPage");
+const IssuePage = lazyRouteComponent(() => import("./work/IssuePage.tsx"), "IssuePage");
+const ChangeRequestPage = lazyRouteComponent(() => import("./work/ChangeRequestPage.tsx"), "ChangeRequestPage");
 
 // `/` is not a screen of its own: Work is the application's home (§12, "the
 // hub redirects a successful sign-in to /work"), so the root sends the reader
@@ -90,7 +92,7 @@ const homeRoute = createRoute({
 const newChatRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/chat",
-  component: () => <NewChat />,
+  component: NewChat,
 });
 
 const conversationRoute = createRoute({
@@ -134,7 +136,7 @@ const projectRoute = createRoute({
 const workRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work",
-  component: () => <WorkBoard projectId={null} />,
+  component: AllProjectsWorkBoard,
 });
 
 const workChangesRoute = createRoute({
@@ -146,13 +148,15 @@ const workChangesRoute = createRoute({
 const workProjectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/p/$projectId",
-  component: WorkProjectBoard,
+  component: ProjectWorkBoard,
+  beforeLoad: ({ params, search }) => redirectLegacyProject(params.projectId, search),
 });
 
 const workItemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/i/$workItemId",
   component: IssuePage,
+  beforeLoad: ({ params, search }) => redirectLegacyIssue(params.workItemId, search),
 });
 
 // One Change Request, under the issue it belongs to: the hub addresses a
@@ -161,6 +165,7 @@ const workChangeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/i/$workItemId/changes/$changeId",
   component: ChangeRequestPage,
+  beforeLoad: ({ params, search }) => redirectLegacyIssue(params.workItemId, search, params.changeId),
 });
 
 // --- Support ----------------------------------------------------------------
@@ -181,7 +186,12 @@ const supportOrganizationRoute = createRoute({
   component: SupportRoute,
 });
 
+const readableProjectRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug", component: ReadableProjectBoard, beforeLoad: ({ params }) => resolveReadable(params.projectSlug) });
+const readableIssueRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number", component: IssuePage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
+const readableChangeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number/changes/$changeId", component: ChangeRequestPage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
+
 const routeTree = rootRoute.addChildren([
+  readableProjectRoute, readableIssueRoute, readableChangeRoute,
   homeRoute,
   newChatRoute,
   conversationRoute,

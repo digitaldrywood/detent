@@ -14,9 +14,9 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		t.Fatal("missing Sprite onboarding guidance")
 	}
 	intake := coordinatorInstructions[start:end]
-	for _, phrase := range []string{"I want to add sprites", "add a runner", "I need more capacity", "set up Fly", "hosted runner", "more capacity", "AI guided conversation pre-seeded from the Runners page"} {
+	for _, phrase := range []string{"I want to add sprites", "set up Fly", "AI guided conversation pre-seeded from the Runners page"} {
 		t.Run(phrase, func(t *testing.T) {
-			if !strings.Contains(intake, phrase) || !strings.Contains(intake, "as intake intent") || !strings.Contains(intake, "Start the same guided intake") {
+			if !strings.Contains(intake, phrase) || !strings.Contains(intake, "as Sprites intake intent") || !strings.Contains(intake, "Start the same guided intake") {
 				t.Fatalf("ordinary wording %q must start Sprite intake", phrase)
 			}
 		})
@@ -33,6 +33,7 @@ func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 		name string
 		want []string
 	}{
+		{"fleet before Sprites", []string{"First inspect get_project_fleet", "never default capacity questions to Sprites", "Enter this Sprites intake only when the user selects Sprites or the project uses only Sprites"}},
 		{"read instead of asking", []string{"token presence/validation", "current floor/ceiling", "bootstrap_configured", "connected_runners", "provider_readiness", "never ask the user for information this read provides", "If already valid, skip token setup"}},
 		{"one unanswered question", []string{"never repeat an answered question", "one at a time", "accepted with one word", "default to All projects", "default 1/1"}},
 		{"missing token waits", []string{"use set_sprites_token", "wait for the user to save it before continuing", "Read get_sprite_pool again"}},

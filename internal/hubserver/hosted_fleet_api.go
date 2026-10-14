@@ -48,6 +48,7 @@ type hostedFleetRunner struct {
 	Hostname           string                                     `json:"hostname"`
 	ConnectionHealth   string                                     `json:"connection_health"`
 	Health             string                                     `json:"health"`
+	CapacityHealth     string                                     `json:"capacity_health,omitempty"`
 	State              string                                     `json:"state"`
 	OS                 string                                     `json:"os"`
 	Architecture       string                                     `json:"architecture"`
@@ -58,6 +59,7 @@ type hostedFleetRunner struct {
 	CapacityLimit      int                                        `json:"capacity_limit"`
 	ReportedCapacity   int                                        `json:"reported_capacity"`
 	ProviderCapacity   []providercapacity.View                    `json:"provider_capacity"`
+	HasHeartbeat       bool                                       `json:"has_heartbeat"`
 	LastHeartbeatAt    time.Time                                  `json:"last_heartbeat_at"`
 	Leases             []hostedFleetLease                         `json:"leases"`
 	IsolationTier      string                                     `json:"isolation_tier"`
@@ -152,14 +154,17 @@ func readHostedRunnerNames(ctx context.Context, query nativeQueryer, organizatio
 
 // hostedFleet answers GET /fleet for any member of the organization.
 func (s *Service) hostedFleet(c echo.Context) error {
-	credential, _, err := s.hostedCredential(c.Request().Context(), c)
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	var result any
 	if c.QueryParam("include") == "names" {
 		var names map[string]hostedRunnerName
-		names, err = readHostedRunnerNames(c.Request().Context(), s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
+		names, err = readHostedRunnerNames(readCtx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else if c.QueryParam("include") == "host_metrics" {
 		var from, to time.Time
@@ -174,20 +179,22 @@ func (s *Service) hostedFleet(c echo.Context) error {
 				}
 			}
 		}
-		result, err = s.readHostedRunnerHostHistory(c.Request().Context(), credential, c.QueryParam("runner_id"), from, to)
+		result, err = s.readHostedRunnerHostHistory(ctx, credential, c.QueryParam("runner_id"), from, to)
 	} else {
-		result, err = s.readHostedFleet(c.Request().Context(), credential)
+		result, err = s.readHostedFleet(ctx, credential)
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.hostedAudit(c.Request().Context(), credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
+	if err := s.hostedAudit(ctx, credential.Hosted, "action", "GET "+c.Path(), "", http.StatusOK); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential) (hostedFleetResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	readable, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return hostedFleetResponse{}, err
@@ -226,17 +233,17 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
 	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json, r.created_at FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
 		return nil, fmt.Errorf("list runners: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	type listed struct{ id, version, checks string }
+	type listed struct{ id, version, checks, created string }
 	runners := []listed{}
 	for rows.Next() {
 		var entry listed
-		if err := rows.Scan(&entry.id, &entry.version, &entry.checks); err != nil {
+		if err := rows.Scan(&entry.id, &entry.version, &entry.checks, &entry.created); err != nil {
 			return nil, fmt.Errorf("scan runner: %w", err)
 		}
 		runners = append(runners, entry)
@@ -252,7 +259,12 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 		if err != nil {
 			return nil, fmt.Errorf("read runner %s: %w", entry.id, err)
 		}
+		createdAt, err := parseTimeValue(entry.created)
+		if err != nil {
+			return nil, fmt.Errorf("read runner enrollment time: %w", err)
+		}
 		view := hostedFleetRunnerView(runner, entry.version, visible, s.config.now())
+		view.HasHeartbeat = runner.LastHeartbeatAt.After(createdAt)
 		var checks map[tracker.ProjectID]runnerauth.LocalChecks
 		if err := json.Unmarshal([]byte(entry.checks), &checks); err != nil {
 			return nil, err
@@ -334,7 +346,15 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
 	}
+	if len(runner.Problems) > 0 && !slices.ContainsFunc(runner.Problems, func(problem runnerauth.Problem) bool { return problem.ProjectID == "" }) {
+		capacityRunner := runner
+		capacityRunner.Health = runner.ConnectionHealth
+		view.CapacityHealth = capacityRunner.Status(now)
+	}
 	if view.Update.Status == "refused" || view.Update.Status == "uncertain" {
+		if view.CapacityHealth == "" {
+			view.CapacityHealth = view.Health
+		}
 		view.Health = "needs_attention"
 	}
 	view.Problems = slices.Clone(runner.Problems)
@@ -354,7 +374,7 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 // A hub without hosted plans reports an empty window rather than failing.
 func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error) {
 	usage := hostedFleetUsage{Allowances: map[string]hostedFleetAllowance{}}
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return usage, nil
 	}
 	entitlement, err := s.database.hostedPlanUsage(ctx, s.config.now(), hostedAllowanceNames()...)
@@ -373,6 +393,8 @@ func (s *Service) hostedFleetUsage(ctx context.Context) (hostedFleetUsage, error
 // hostedVisibleReservations reads the live provider reservations held by
 // leases in projects the reader can see.
 func (s *Service) hostedVisibleReservations(ctx context.Context, visible map[tracker.ProjectID]bool) ([]scopedProviderAccount, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, ''), coalesce(lr.runner_id, '') FROM provider_reservations p
 JOIN leases l ON l.lease_id = p.lease_id JOIN issues i ON i.id = l.issue_id
 LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
@@ -436,6 +458,8 @@ func scopeProviderUsage(runners []hostedFleetRunner, reservations []scopedProvid
 }
 
 func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential apiCredential, runnerID string, from, to time.Time) ([]runnerHostHour, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if runnerID == "" {
 		return nil, nativeInvalid("Runner ID is required for host history")
 	}

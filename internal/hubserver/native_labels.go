@@ -85,10 +85,12 @@ func labelColor(name string) string {
 
 // listNativeLabels answers GET {nativeBase}/labels.
 func (s *Service) listNativeLabels(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	if err := validateNativeQuery(c.QueryParams()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	labels, err := readNativeLabels(c.Request().Context(), s.database.db, nativeRequestScope(c))
+	labels, err := readNativeLabels(ctx, s.database.reader, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

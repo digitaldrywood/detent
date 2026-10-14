@@ -17,15 +17,22 @@ func (f *workosFixture) refresh(w http.ResponseWriter, r *http.Request, request 
 	if r.Method != http.MethodPost || request["client_id"] != "client_detent" || request["client_secret"] != "fixture-secret" {
 		f.t.Error("incorrect refresh request")
 	}
+	organization := "org_customer"
+	if mode == "refresh-other-org" {
+		organization = "org_other"
+	}
+	if request["organization_id"] != organization {
+		f.t.Errorf("refresh organization = %q, want %q", request["organization_id"], organization)
+	}
 	if mode == "refresh-revoked" || request["refresh_token"] != "refresh_customer" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	claims := map[string]any{
 		"iss": f.apiURL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
-		"org_id": "org_customer", "role": "member", "iat": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix(),
+		"org_id": organization, "role": "member", "iat": f.now.Unix(), "exp": f.now.Add(5 * time.Minute).Unix(),
 	}
-	response := map[string]any{"user": map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true}, "organization_id": "org_customer", "refresh_token": "refresh_rotated"}
+	response := map[string]any{"user": map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true}, "organization_id": organization, "refresh_token": "refresh_rotated"}
 	switch mode {
 	case "refresh-no-org":
 		delete(claims, "org_id")
@@ -128,25 +135,27 @@ func TestWorkOSRefreshAccess(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		mode     string
-		token    string
-		wantRole string
-		reason   string
+		name         string
+		mode         string
+		token        string
+		organization string
+		wantRole     string
+		reason       string
 	}{
-		{name: "rotates", mode: "valid", token: "refresh_customer", wantRole: "member"},
-		{name: "member removed", mode: "refresh-no-org", token: "refresh_customer"},
-		{name: "revoked session", mode: "refresh-revoked", token: "refresh_customer", reason: auth.HostedReasonProviderRejected},
-		{name: "unknown token", mode: "valid", token: "refresh_other", reason: auth.HostedReasonProviderRejected},
-		{name: "missing rotation", mode: "refresh-missing-rotation", token: "refresh_customer", reason: auth.HostedReasonProviderInvalid},
-		{name: "subject mismatch", mode: "refresh-wrong-user", token: "refresh_customer", reason: auth.HostedReasonProviderInvalid},
-		{name: "empty token", mode: "valid", token: "", reason: auth.HostedReasonSessionInvalid},
+		{name: "rotates", mode: "valid", token: "refresh_customer", organization: "org_customer", wantRole: "member"},
+		{name: "selects another organization", mode: "refresh-other-org", token: "refresh_customer", organization: "org_other", wantRole: "member"},
+		{name: "member removed", mode: "refresh-no-org", token: "refresh_customer", organization: "org_customer"},
+		{name: "revoked session", mode: "refresh-revoked", token: "refresh_customer", organization: "org_customer", reason: auth.HostedReasonProviderRejected},
+		{name: "unknown token", mode: "valid", token: "refresh_other", organization: "org_customer", reason: auth.HostedReasonProviderRejected},
+		{name: "missing rotation", mode: "refresh-missing-rotation", token: "refresh_customer", organization: "org_customer", reason: auth.HostedReasonProviderInvalid},
+		{name: "subject mismatch", mode: "refresh-wrong-user", token: "refresh_customer", organization: "org_customer", reason: auth.HostedReasonProviderInvalid},
+		{name: "empty token", mode: "valid", token: "", organization: "org_customer", reason: auth.HostedReasonSessionInvalid},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			f := newWorkOSFixture(t)
 			f.mode.Store(test.mode)
-			access, tokens, err := f.provider(t).RefreshAccess(t.Context(), test.token)
+			access, tokens, err := f.provider(t).RefreshAccess(t.Context(), test.token, test.organization)
 			if test.reason != "" {
 				if auth.HostedIdentityReason(err) != test.reason {
 					t.Fatalf("reason = %q (%v), want %q", auth.HostedIdentityReason(err), err, test.reason)
@@ -159,8 +168,12 @@ func TestWorkOSRefreshAccess(t *testing.T) {
 			if tokens.RefreshToken != "refresh_rotated" || tokens.AccessToken == "" || access.Subject != "user_customer" || access.SessionID != "session_customer" || access.Role != test.wantRole {
 				t.Fatalf("access = %+v tokens = %+v", access, tokens)
 			}
-			if test.mode == "refresh-no-org" && access.OrganizationID != "" {
-				t.Fatalf("organization = %q, want none", access.OrganizationID)
+			wantOrganization := test.organization
+			if test.mode == "refresh-no-org" {
+				wantOrganization = ""
+			}
+			if access.OrganizationID != wantOrganization {
+				t.Fatalf("organization = %q, want %q", access.OrganizationID, wantOrganization)
 			}
 		})
 	}

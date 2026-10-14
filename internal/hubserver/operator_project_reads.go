@@ -17,6 +17,8 @@ import (
 )
 
 func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if operatortool.IsModelSelection(call.Name) {
 		return e.readModelSelection(ctx, call)
 	}
@@ -42,7 +44,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 	case "list_projects":
 		value, err = s.operatorProjectList(ctx, scope, r)
 	case "get_native_project":
-		value, err = readNativeProject(ctx, s.database.db, scope)
+		value, err = readNativeProject(ctx, s.database.reader, scope)
 	case "get_onboarding":
 		value, err = s.projectOnboarding(ctx, scope)
 	case "get_git_hub_batch":
@@ -52,11 +54,11 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 			value, err = boundedProjectBatch(view, r)
 		}
 	case "get_project_integration":
-		value, err = s.projectIntegration(ctx, s.database.db, scope)
+		value, err = s.projectIntegration(ctx, s.database.reader, scope)
 	case "get_cutover_receipt":
 		value, err = s.readCutoverReceipt(ctx, scope)
 		if errors.Is(err, sql.ErrNoRows) {
-			if _, err = readNativeProject(ctx, s.database.db, scope); err == nil {
+			if _, err = readNativeProject(ctx, s.database.reader, scope); err == nil {
 				err = &operatortool.RequestError{Code: "not_found", Message: "No cutover receipt exists for this project"}
 			}
 		}
@@ -65,7 +67,7 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		var job GitHubImport
-		job, err = readGitHubImport(ctx, s.database.db, scope, r.ImportID)
+		job, err = readGitHubImport(ctx, s.database.reader, scope, r.ImportID)
 		if job.LastError != "" {
 			job.LastError = "Import transport is unavailable"
 		}
@@ -74,13 +76,16 @@ func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (o
 		value, err = s.readProjectImportRecords(ctx, scope, r)
 	case "get_project_policy":
 		var policyScope string
-		policyScope, err = operatorPolicyScope(ctx, s.database.db, scope, r.RepositoryPolicy)
+		policyScope, err = operatorPolicyScope(ctx, s.database.reader, scope, r.RepositoryPolicy)
 		if err == nil {
-			value, err = readProjectPolicyHistory(ctx, s.database.db, policyScope, r.Limit, r.After, false)
+			value, err = readProjectPolicyHistory(ctx, s.database.reader, policyScope, r.Limit, r.After, false)
+			if errors.Is(err, errNoApprovedRepositoryPolicy) {
+				return operatortool.Result{}, &operatortool.ConflictError{Code: "policy_mismatch", Message: "No approved repository policy exists for this project"}
+			}
 		}
 	case "project_secret_metadata":
 		var status projectSecretStatus
-		status, err = readSecretStatus(ctx, s.database.db, scope)
+		status, err = readSecretStatus(ctx, s.database.reader, scope)
 		value = struct {
 			Metadata projectSecretStatus `json:"metadata"`
 			SetupURL string              `json:"setup_url"`
@@ -166,14 +171,33 @@ type operatorProjectPage struct {
 }
 
 type projectBatchPage struct {
-	githubBatchView
-	NextCursor string `json:"next_cursor,omitempty"`
+	Batch      *projectBatch         `json:"batch"`
+	Lanes      []tracker.NativeState `json:"lanes"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+}
+
+type projectBatch struct {
+	tracker.GitHubBatch
+	Page projectBatchIssues `json:"page"`
+}
+
+type projectBatchIssues struct {
+	Issues     []projectBatchIssue `json:"issues"`
+	Total      int                 `json:"total"`
+	NextCursor string              `json:"next_cursor"`
+}
+
+type projectBatchIssue struct {
+	Number int      `json:"number"`
+	Title  string   `json:"title"`
+	Labels []string `json:"labels"`
+	Status string   `json:"status"`
 }
 
 // Stored runner diagnostics are provider text. Keep the application's checkpoint
 // and status while returning a bounded page and opaque transport diagnostics.
 func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadRequest) (projectBatchPage, error) {
-	page := projectBatchPage{githubBatchView: view}
+	page := projectBatchPage{Lanes: view.Lanes}
 	after := 0
 	if request.After != "" {
 		var err error
@@ -185,7 +209,8 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 	if view.Batch == nil {
 		return page, nil
 	}
-	batch := view.Batch
+	batch := *view.Batch
+	batch.Items = slices.Clone(batch.Items)
 	if batch.Error != "" {
 		batch.Error = "Import transport is unavailable"
 	}
@@ -203,10 +228,21 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 	}
 	batch.Page.Issues = batch.Page.Issues[min(after, len(batch.Page.Issues)):min(after+limit, len(batch.Page.Issues))]
 	batch.Items = batch.Items[min(after, len(batch.Items)):min(after+limit, len(batch.Items))]
+	issues := make([]projectBatchIssue, 0, len(batch.Page.Issues))
+	for _, issue := range batch.Page.Issues {
+		status := "open"
+		if issue.Closed {
+			status = "closed"
+		}
+		issues = append(issues, projectBatchIssue{Number: issue.Number, Title: issue.Title, Labels: issue.Labels, Status: status})
+	}
+	page.Batch = &projectBatch{GitHubBatch: batch, Page: projectBatchIssues{Issues: issues, Total: batch.Page.Total, NextCursor: batch.Page.NextCursor}}
 	return page, nil
 }
 
 func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (operatorProjectPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	ids := []string{}
 	if s.config.Hosted != nil {
 		projects, err := s.hostedReadableProjects(ctx, scope.credential)
@@ -218,7 +254,7 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 		}
 		slices.Sort(ids)
 	} else {
-		rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id=? ORDER BY id", scope.organization)
+		rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM projects WHERE deleted_at IS NULL AND organization_id=? ORDER BY id", scope.organization)
 		if err != nil {
 			return operatorProjectPage{}, err
 		}
@@ -255,7 +291,7 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 			break
 		}
 		scope.project = tracker.ProjectID(id)
-		p, err := readNativeProject(ctx, s.database.db, scope)
+		p, err := readNativeProject(ctx, s.database.reader, scope)
 		if err != nil {
 			return page, err
 		}
@@ -264,9 +300,11 @@ func (s *Service) operatorProjectList(ctx context.Context, scope nativeScope, r 
 	return page, nil
 }
 func (s *Service) readCutoverReceipt(ctx context.Context, scope nativeScope) (CutoverReceipt, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var raw string
 	var result CutoverReceipt
-	err := s.database.db.QueryRowContext(ctx, "SELECT c.receipt_json FROM github_cutovers c JOIN projects p ON p.id=c.project_id WHERE p.organization_id=? AND p.id=?", scope.organization, scope.project).Scan(&raw)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT c.receipt_json FROM github_cutovers c JOIN projects p ON p.id=c.project_id WHERE p.organization_id=? AND p.id=?", scope.organization, scope.project).Scan(&raw)
 	if err != nil {
 		return result, err
 	}
@@ -280,11 +318,13 @@ type projectImportRecordPage struct {
 }
 
 func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScope, r operatortool.ProjectReadRequest) (projectImportRecordPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	result := projectImportRecordPage{Records: []GitHubImportRecord{}}
 	if r.ImportID == "" {
 		return result, operatortool.ErrInvalidArguments
 	}
-	if _, err := readGitHubImport(ctx, s.database.db, scope, r.ImportID); err != nil {
+	if _, err := readGitHubImport(ctx, s.database.reader, scope, r.ImportID); err != nil {
 		return result, err
 	}
 	after := int64(0)
@@ -299,7 +339,7 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScop
 	if limit == 0 {
 		limit = 100
 	}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT sequence,record_json,current_dependency FROM github_import_records WHERE import_id=? AND sequence>? ORDER BY sequence LIMIT ?", r.ImportID, after, limit+1)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT sequence,record_json,current_dependency FROM github_import_records WHERE import_id=? AND sequence>? ORDER BY sequence LIMIT ?", r.ImportID, after, limit+1)
 	if err != nil {
 		return result, err
 	}
@@ -329,7 +369,7 @@ func (s *Service) readProjectImportRecords(ctx context.Context, scope nativeScop
 	return result, rows.Err()
 }
 func (s *Service) projectRepositoryFreshness(ctx context.Context, scope nativeScope) (repositoryFreshnessResponse, error) {
-	integration, err := readProjectIntegration(ctx, s.database.db, scope)
+	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
 		return repositoryFreshnessResponse{}, err
 	}

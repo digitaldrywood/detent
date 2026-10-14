@@ -31,12 +31,15 @@ func TestScheduledFinalizer(t *testing.T) {
 		differentSeries     bool
 		releaseRun          bool
 		newerFailure        bool
+		preflightSkipped    bool
 	}{
 		{name: "missing release dispatch recovered without recreating tag", repository: "digitaldrywood/detent", unchanged: true},
 		{name: "existing release workflow is not redispatched", repository: "digitaldrywood/detent", unchanged: true, releaseRun: true},
 		{name: "newer release failure blocks existing tag dispatch", repository: "digitaldrywood/detent", unchanged: true, newerFailure: true},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
 		{name: "develop records evidence without tagging", repository: "digitaldrywood/detent", develop: true},
+		{name: "preflight skip reports activity without validation publication", repository: "digitaldrywood/detent", develop: true, preflightSkipped: true},
+		{name: "skipped reporting failure retains evidence without release", repository: "digitaldrywood/detent", develop: true, preflightSkipped: true, unavailable: true},
 		{name: "moved release head does not tag", repository: "digitaldrywood/detent", staleHead: true},
 		{name: "new release series starts at patch zero", repository: "digitaldrywood/detent", newSeries: true},
 		{name: "older series tag does not suppress new series", repository: "digitaldrywood/detent", newSeries: true, unchanged: true, differentSeries: true},
@@ -53,6 +56,12 @@ func TestScheduledFinalizer(t *testing.T) {
 			var jobs []job
 			for id := range 15 {
 				jobs = append(jobs, job{ID: int64(id + 1), Name: "Validation", Conclusion: "success"})
+			}
+			if tt.preflightSkipped {
+				jobs[0].Name = "preflight"
+				for i := 1; i < len(jobs); i++ {
+					jobs[i].Conclusion = "skipped"
+				}
 			}
 			if tt.failed {
 				jobs[0].Conclusion = "failure"
@@ -129,6 +138,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			command.Dir = root
 			command.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "TMPDIR="+dir, "GITHUB_REPOSITORY="+tt.repository, "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=123", "GITHUB_RUN_ATTEMPT=1", "CI_DEVELOP_SHA="+scheduledEnv("CI_DEVELOP_SHA"), "FIXTURE_LOG="+filepath.Join(dir, "calls"), "FIXTURE_JOBS="+filepath.Join(dir, "jobs"), "FIXTURE_REPORTS="+filepath.Join(dir, "reports"), "FIXTURE_UNCHANGED="+map[bool]string{true: "true", false: "false"}[tt.unchanged], "FIXTURE_UNAVAILABLE="+map[bool]string{true: "true", false: "false"}[tt.unavailable])
 			command.Env = append(command.Env, "FIXTURE_CONCLUSION="+map[bool]string{true: "cancelled", false: "null"}[tt.cancelledRun], "WORKFLOW_CANCELLED="+map[bool]string{true: "true", false: "false"}[tt.workflowCancelled])
+			command.Env = append(command.Env, "CI_SHOULD_RUN="+map[bool]string{true: "false", false: "true"}[tt.preflightSkipped])
 			releaseBranch := "release/v1.2"
 			if tt.differentSeries {
 				releaseBranch = "release/v1.3"
@@ -171,6 +181,15 @@ test "$FIXTURE_UNAVAILABLE" = false
 				}
 			} else if !strings.Contains(text, "forge issue close 42") || strings.Contains(text, "native run") {
 				t.Fatalf("GitHub behavior changed: %s", text)
+			}
+			if tt.preflightSkipped {
+				if strings.Count(text, "native run ./tools/cifailure") != 1 || strings.Contains(text, "repository ") || strings.Contains(text, "/statuses/") || strings.Contains(text, "/dispatches") || strings.Contains(text, "forge issue") {
+					t.Fatalf("skipped execution published validation or release evidence: %s", text)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "scheduled-ci-publisher-jobs.json")); !os.IsNotExist(err) {
+					t.Fatal("skipped report failure became a publisher failure")
+				}
+				return
 			}
 			if tt.unchanged && !tt.differentSeries {
 				if strings.Contains(text, "tag -a ") || strings.Contains(text, "/statuses/") {

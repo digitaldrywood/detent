@@ -31,11 +31,12 @@ import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { ClientContext } from "../../src/app/client.ts";
 import { WorkBoard } from "../../src/app/work/WorkBoard.tsx";
+import { IssuePage } from "../../src/app/work/IssuePage.tsx";
 import { SidebarSearchProvider } from "../../src/app/adapters/sidebarData.tsx";
 import { Input } from "../../src/components/ui/input.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import { DEFAULT_VIEW_STATE, parseViewState, serializeViewState } from "../../src/app/work/lib/viewState.ts";
-import { clearBoardCache } from "../../src/app/work/lib/boardStore.ts";
+import { clearBoardCache, confirmWorkItem } from "../../src/app/work/lib/boardStore.ts";
 import { useBoard, useNow } from "../../src/app/work/lib/useWork.ts";
 import { resetRunnerNamesForTests } from "../../src/app/work/lib/runnerNames.ts";
 import { workPaginationFixture } from "../workPaginationFixture.ts";
@@ -78,7 +79,7 @@ const ATTEMPT_DIFF = attemptDiffFixture as unknown as AttemptDiff;
 
 function item(overrides: Partial<WorkItemView> = {}): WorkItemView {
   return {
-    ...toWorkItemView(itemFixture as unknown as NativeIssue, "parable"),
+    ...toWorkItemView(itemFixture as unknown as NativeIssue, "example-project"),
     ...overrides,
   };
 }
@@ -125,7 +126,7 @@ describe("the board card", () => {
     expect(metadata.textContent).toBe(expectedMetadata);
     expect(metadata.children).toHaveLength(attemptNumber === 4 ? 2 : 1);
     expect(within(metadata).getByTestId("issue-age")).not.toBeNull();
-    expect(screen.getByTestId("issue-card").textContent).toBe(`parable#3363${value.title}${expectedStatus}${expectedMetadata}`);
+    expect(screen.getByTestId("issue-card").textContent).toBe(`example-project#3363${value.title}${expectedStatus}${expectedMetadata}`);
     expect(screen.queryByTestId("worker-strip")).toBeNull();
   });
 
@@ -134,7 +135,7 @@ describe("the board card", () => {
       <IssueCard item={item()} showProject now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />,
     );
     expect(screen.getByTestId("project-dot")).not.toBeNull();
-    expect(screen.getByText("parable")).not.toBeNull();
+    expect(screen.getByText("example-project")).not.toBeNull();
     unmount();
 
     render(
@@ -191,7 +192,7 @@ describe("the board card", () => {
   }) => {
     const issue = toWorkItemView(
       { ...itemFixture as unknown as NativeIssue, state, terminal: true },
-      "parable",
+      "example-project",
       { attempts: [{ ...ATTEMPTS[0]!, status: attemptStatus }] },
     );
     const closed = { ...issue, priority };
@@ -222,10 +223,10 @@ describe("the board card", () => {
     expect(isBlocked(closed)).toBe(false);
     if (showProject) {
       expect(screen.getByTestId("project-dot").getAttribute("style")).toBeNull();
-      expect(screen.getByText("parable")).not.toBeNull();
+      expect(screen.getByText("example-project")).not.toBeNull();
     } else {
       expect(card.querySelector(".grayscale")).not.toBeNull();
-      expect(screen.getByText("parable").className).toBe("sr-only");
+      expect(screen.getByText("example-project").className).toBe("sr-only");
     }
     const open = screen.getByTestId("issue-card-open");
     expect(open.className).toContain("focus-visible:ring-2");
@@ -269,7 +270,7 @@ describe("the board card", () => {
       updated_at: "2026-09-09T10:00:00Z",
       provenance: { provider: "github", external_id: "91", author_id: "source_author", observed_at: "2026-09-09T08:00:00Z", ...sourceDates },
     };
-    const imported = toWorkItemView(native, "parable");
+    const imported = toWorkItemView(native, "example-project");
     expect(imported.createdAt).toBe(native.created_at);
     expect(imported.updatedAt).toBe(native.updated_at);
     expect(imported.source).toEqual({ externalId: "91", createdAt: sourceDates.created_at ?? null, updatedAt: sourceDates.updated_at ?? null, observedAt: native.provenance.observed_at });
@@ -328,10 +329,10 @@ describe("the board card", () => {
     const { rerender } = render(surface(item()));
     expect(screen.queryByTestId("pr-chip")).toBeNull();
     const linked = toWorkItemView({ ...itemFixture as unknown as NativeIssue,
-      pull_request: { number: 3372, url: "https://github.com/digitaldrywood/detent/pull/3372" } }, "parable");
+      pull_request: { number: 3372, url: "https://github.com/example-org/example-project/pull/3372" } }, "example-project");
     rerender(surface(linked));
     const link = screen.getByRole("link", { name: "PR #3372" });
-    expect(link.getAttribute("href")).toBe("https://github.com/digitaldrywood/detent/pull/3372");
+    expect(link.getAttribute("href")).toBe("https://github.com/example-org/example-project/pull/3372");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     fireEvent.click(link);
@@ -609,12 +610,8 @@ describe("completed counts", () => {
     const stats = boardStats(items, lanes);
     expect(stats.completed).toBe(4);
     expect(stats.importedClosed).toBe(2);
-    render(<CompletedCounter count={stats.completed} completedWindow="all" onCompletedWindowChange={vi.fn()} loading={false} />);
     expect(stats.running + stats.waiting + stats.needAttention + stats.backlog).toBe(stats.open);
     expect(stats.open).toBe(10);
-    expect(screen.getByTestId("stat-completed").textContent).toBe("4 completed · All time");
-    expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("including cancelled and custom terminal states");
-    expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
 
   it("partitions server lane totals with custom holding lanes and matches the local fallback", async () => {
@@ -646,30 +643,32 @@ describe("completed counts", () => {
       }
       if (url.pathname.endsWith("/work-items")) {
         return Response.json({ ...await response.json(), work: {
-          lanes, completed: 9, total: 43, as_of: "2026-10-07T12:00:00Z", truncated: false, items: [],
+          lanes, completed: 9, cancelled: 2, total: 43, as_of: "2026-10-07T12:00:00Z", truncated: false, items: [],
+          shipped_windows: [{ window: "1h", shipped: 1, cancelled: 0 }, { window: "24h", shipped: 9, cancelled: 2 }, { window: "7d", shipped: 30, cancelled: 5 }],
         } });
       }
       return response;
     });
     let current!: ReturnType<typeof useBoard>;
-    function Probe() { current = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all" }); return <div />; }
+    function Probe() { current = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "24h" }); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
     expect(current.error).toBeNull();
-    expect(current.totals).toMatchObject({ running: 4, waiting: 11, needAttention: 9, backlog: 10, open: 34, completed: 9, total: 43 });
+    expect(current.totals).toMatchObject({ running: 4, waiting: 11, needAttention: 9, backlog: 10, open: 34, completed: 9, cancelled: 2, total: 43,
+      shippedWindows: { "1h": { shipped: 1, cancelled: 0 }, "24h": { shipped: 9, cancelled: 2 }, "7d": { shipped: 30, cancelled: 5 } } });
     const localItems = lanes.flatMap((lane) => Array.from({ length: lane.total }, (_, index) => item({
       id: `${lane.state}-${index}`, state: lane.state,
       terminal: ["Done", "Cancelled"].includes(lane.state),
       attempt: index < lane.running ? toAttemptView(ATTEMPTS) : null,
     })));
     const fallback = boardStats(localItems, current.lanes);
-    for (const key of ["running", "waiting", "needAttention", "backlog", "open", "completed", "total"] as const) {
+    for (const key of ["running", "waiting", "needAttention", "backlog", "open", "total"] as const) {
       expect(fallback[key]).toBe(current.totals![key]);
     }
     expect(fallback.running + fallback.waiting + fallback.needAttention + fallback.backlog).toBe(34);
 
     let filtered!: ReturnType<typeof useBoard>;
-    function FilteredProbe() { filtered = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, completedWindow: "all", state: ["In Progress", "Rework"] }); return <div />; }
+    function FilteredProbe() { filtered = useBoard("proj_alpha", { ...DEFAULT_VIEW_STATE, state: ["In Progress", "Rework"] }); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><FilteredProbe /></ClientContext.Provider>);
     await waitFor(() => expect(filtered.resolved).toBe(true));
     expect(filtered.totals?.running).toBe(2);
@@ -680,11 +679,11 @@ describe("completed counts", () => {
     const props = { count: totals.completed, loading: false, onCompletedWindowChange: vi.fn() };
     const mounted = render(<CompletedCounter {...props} />);
     const counts = screen.getByTestId("stat-completed");
-    expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
+    expect(counts.textContent).toContain(`${totals.completed} shipped · 24h`);
     expect(within(counts).queryByRole("button", { name: /^Load / })).toBeNull();
     mounted.rerender(<CompletedCounter {...props} loading />);
     expect(counts.closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("true");
-    expect(counts.textContent).toContain(`${totals.completed} completed · 48h`);
+    expect(counts.textContent).toContain(`${totals.completed} shipped · 24h`);
     mounted.rerender(<CompletedCounter {...props} />);
     expect(screen.queryByRole("button", { name: /^Load / })).toBeNull();
   });
@@ -735,7 +734,7 @@ describe("the Diff surface", () => {
     );
     expect(screen.queryByTestId("diff-attempt")).toBeNull();
     // What it does have is shown instead of nothing.
-    expect(screen.getByText("digitaldrywood/detent")).not.toBeNull();
+    expect(screen.getByText("example-org/example-project")).not.toBeNull();
     expect(screen.getByTestId("diff-pr-link").textContent).toContain("3372");
   });
 
@@ -877,7 +876,17 @@ describe("the Diff surface's source order", () => {
 });
 
 vi.mock("../../src/app/App.tsx", () => ({
-  useShell: () => ({ connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+  useShell: () => ({ conversations: [], connection: { tone: "dc-ok", label: "Connected", detail: null, tooltip: "Fixture" } }),
+}));
+
+vi.mock("../../src/app/components/ChatWorkspace.tsx", () => ({
+  ChatWorkspace: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useWorkspacePanel: () => ({ open: false, active: null, activate: vi.fn(), close: vi.fn() }),
+}));
+
+vi.mock("../../src/app/work/IssueAsk.tsx", () => ({
+  useIssueAsk: () => ({ threads: [], selected: null, loading: false, pending: false, error: null }),
+  IssueAskPanel: () => null,
 }));
 
 afterEach(() => { vi.unstubAllGlobals(); globalThis.localStorage.clear(); resetRunnerNamesForTests(); });
@@ -888,12 +897,13 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
   vi.stubGlobal("fetch", wrapFetch?.(fixture.fetch) ?? fixture.fetch);
   const root = createRootRoute({ component: () => <SidebarProvider><SidebarSearchProvider work><aside className="dc-side"><Input nativeInput type="search" aria-label="Search threads" /></aside><Outlet /></SidebarSearchProvider></SidebarProvider> });
   const all = createRoute({ getParentRoute: () => root, path: "/work", component: () => <WorkBoard projectId={null} /> });
+  const issue = createRoute({ getParentRoute: () => root, path: "/work/i/$workItemId", component: IssuePage });
   const project = createRoute({ getParentRoute: () => root, path: "/work/p/$projectId", component: () => {
     const { projectId } = project.useParams();
     return <WorkBoard projectId={projectId} />;
   } });
   const history = createMemoryHistory({ initialEntries: [path] });
-  const router = createRouter({ routeTree: root.addChildren([all, project]), history, ...plainSearchOptions });
+  const router = createRouter({ routeTree: root.addChildren([all, project, issue]), history, ...plainSearchOptions });
   const mounted = render(<ClientContext.Provider value={fixture.client}><RouterProvider router={router} /></ClientContext.Provider>);
   const setOrganization = (name?: string) => {
     const organization = { ...fixture.client.bootstrap.organization, name: name ?? "" };
@@ -1235,14 +1245,105 @@ describe("the live Work continuation intent", () => {
 });
 
 describe("the filter-first Work surface", () => {
+  it.each(["/work", "/work/p/proj_alpha"])("selects Change request from the visible list filter in %s", async (path) => {
+    const fixture = await pagedWork(`${path}?view=list&tab=all&completed_window=all`);
+    await settledWork();
+    expect(screen.getAllByText("Queue item 1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Queue item 2").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Queue item 3").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Change request" }));
+    await waitFor(() => expect(parseViewState(fixture.router.state.location.searchStr).type).toEqual(["change_request"]));
+    await settledWork();
+    await waitFor(() => expect(screen.queryByText("Queue item 1")).toBeNull());
+    expect(screen.getAllByText("Queue item 2").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Queue item 3")).toBeNull();
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("type"))
+      .toEqual(["change_request"]);
+    expect(screen.getByRole("menuitemcheckbox", { name: "Change request" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it.each([
+    { title: "Queue item 1", badge: "Bug", context: [["URL", "https://app.example.test/settings"], ["App build", "v1.4.2"], ["Browser", "Chrome 130"], ["OS", "macOS 15"], ["Viewport", "1440x900"], ["Captured", "2026-10-13T12:00:00Z"]] },
+    { title: "Queue item 2", badge: "Change request", context: null },
+    { title: "Queue item 3", badge: null, context: null },
+  ])("renders the issue type beside $title only when classified and its report context only when supplied", async ({ title, badge, context }) => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all");
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    const issue = page.items.find((item) => item.title === title)!;
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: issue.work_item_id } }));
+    const heading = await screen.findByRole("heading", { level: 1, name: title });
+    const header = within(heading.closest("header")!);
+    if (badge === null) {
+      expect(header.queryByText("Bug")).toBeNull();
+      expect(header.queryByText("Change request")).toBeNull();
+    } else {
+      expect(header.getByText(badge)).not.toBeNull();
+    }
+    const block = screen.queryByTestId("issue-report-context");
+    if (context === null) {
+      expect(block).toBeNull();
+    } else {
+      const region = within(screen.getByRole("region", { name: "Report context" }));
+      expect(region.getAllByRole("term").map((term) => term.textContent)).toEqual(context.map(([label]) => label));
+      expect(region.getAllByRole("definition").map((value) => value.textContent)).toEqual(context.map(([, value]) => value));
+    }
+  });
+
+  it.each([
+    { result: "verified", filer: true },
+    { result: "not_fixed", filer: true },
+    { result: null, filer: false },
+  ] as const)("answers a pending fix verification ($result) only as its filer without a known role", async ({ result, filer }) => {
+    const sent: Record<string, unknown>[] = [];
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
+      if (String(input).endsWith("/verification")) sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const response = await fetch(input, init);
+      if (!filer || (init?.method ?? "GET") !== "GET" || !/\/work-items\/wi_[^/]+$/.test(new URL(input, "http://fixture.test").pathname)) return response;
+      const issue = await response.json() as NativeIssue;
+      return Response.json(issue.verification?.state === "pending" ? { ...issue, actor: { ...issue.actor, principal_id: "fixture-principal" } } : issue, { status: response.status });
+    });
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    const pending = page.items.find((item) => item.verification?.state === "pending")!;
+    const done = page.items.find((item) => item.state === "Done" && item.verification === undefined)!;
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: done.work_item_id } }));
+    await screen.findByRole("heading", { level: 1, name: done.title });
+    expect(screen.queryByTestId("issue-verification")).toBeNull();
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: pending.work_item_id } }));
+    await screen.findByRole("heading", { level: 1, name: pending.title });
+    if (result === null) {
+      expect(screen.queryByTestId("issue-verification")).toBeNull();
+      return;
+    }
+    const controls = within(await screen.findByTestId("issue-verification"));
+    if (result === "verified") {
+      fireEvent.click(controls.getByRole("button", { name: "Verified" }));
+    } else {
+      fireEvent.click(controls.getByRole("button", { name: "Still broken" }));
+      const submit = controls.getByTestId("verification-still-broken-submit");
+      expect(submit.hasAttribute("disabled")).toBe(true);
+      fireEvent.change(controls.getByLabelText("What is still broken?"), { target: { value: "Saving still loses the change." } });
+      expect(submit.hasAttribute("disabled")).toBe(false);
+      fireEvent.click(submit);
+    }
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject(result === "verified" ? { result } : { result, comment: "Saving still loses the change." });
+    expect(sent[0]!.expected_revision).toBe(pending.revision);
+    await waitFor(() => expect(screen.queryByTestId("issue-verification")).toBeNull());
+  });
+
   it("names the organization, follows organization changes and preserves project scope", async () => {
     const fixture = await pagedWork();
     await settledWork();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Fixture projects");
-    fixture.setOrganization("Parable");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Parable projects");
-    fixture.setOrganization("Drywood Creek");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Drywood Creek projects");
+    fixture.setOrganization("Secondary Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Secondary Example Organization projects");
+    fixture.setOrganization("Tertiary Example Organization");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All Tertiary Example Organization projects");
     fixture.setOrganization("");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("All projects");
     fixture.setOrganization();
@@ -1250,7 +1351,7 @@ describe("the filter-first Work surface", () => {
     await act(() => fixture.router.navigate({ to: "/work/p/$projectId", params: { projectId: "proj_alpha" } }));
     await settledWork();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
-    fixture.setOrganization("Parable");
+    fixture.setOrganization("Secondary Example Organization");
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("alpha");
     expect(fixture.router.state.location.pathname).toBe("/work/p/proj_alpha");
   });
@@ -1258,8 +1359,8 @@ describe("the filter-first Work surface", () => {
   it("reveals the full scope title on keyboard focus", async () => {
     const fixture = await pagedWork();
     await settledWork();
-    const title = "All Parable and Drywood Creek Collaborative Research Organization projects";
-    fixture.setOrganization("Parable and Drywood Creek Collaborative Research Organization");
+    const title = "All Example Collaborative Collaborative Research Organization projects";
+    fixture.setOrganization("Example Collaborative Collaborative Research Organization");
     const heading = screen.getByRole("heading", { level: 1, name: title });
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
@@ -1296,9 +1397,26 @@ describe("the filter-first Work surface", () => {
     fireEvent.change(search, { target: { value: "42" } });
     await settledWork();
     expect(parseViewState(fixture.router.state.location.searchStr)).toEqual({
-      archived: true, view: "list", tab: "all", q: "42", state: ["42"], label: ["true"],
+      archived: true, view: "list", tab: "all", q: "42", type: [], state: ["42"], label: ["true"],
       assignee: ["null"], priority: ["4"], sort: "title", lanes: ["false"], collapsed: ["0"], completedWindow: "7d",
     });
+  });
+
+  it("offers 1 hour, 24 hours and 7 days with their counts, the cancelled line and a Reports link", async () => {
+    const windows = { "1h": { shipped: 6, cancelled: 2 }, "24h": { shipped: 87, cancelled: 41 }, "7d": { shipped: 301, cancelled: 96 } };
+    const onChange = vi.fn();
+    const counter = () => <CompletedCounter count={6} cancelled={2} windows={windows} completedWindow="1h" onCompletedWindowChange={onChange} loading={false} />;
+    render(<RouterProvider router={createRouter({ routeTree: createRootRoute({ component: counter }), history: createMemoryHistory({ initialEntries: ["/"] }) })} />);
+    const trigger = await screen.findByTestId("stat-completed");
+    expect(trigger.textContent).toBe("6 shipped · 1h");
+    fireEvent.click(trigger);
+    expect(await screen.findByText("Shipped in the last")).toBeTruthy();
+    expect(screen.getAllByRole("menuitemradio").map((option) => option.textContent)).toEqual(["1 hour6", "24 hours87", "7 days301"]);
+    expect(screen.getByRole("menuitemradio", { name: /^1 hour/ }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("shipped-cancelled").textContent).toBe("Plus 2 cancelled in 1 hour");
+    expect(screen.getByRole("menuitem", { name: /Open in Reports/ }).getAttribute("href")).toBe("/reports?range=24h");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /^7 days/ }));
+    expect(onChange).toHaveBeenCalledWith("7d");
   });
 
   it("opens the completed window menu and requests a fresh count for the selection", async () => {
@@ -1307,11 +1425,11 @@ describe("the filter-first Work surface", () => {
     expect(within(screen.getByTestId("work-toolbar")).queryByText(/Completed/)).toBeNull();
     expect(screen.getByTestId("stat-completed").tagName).toBe("BUTTON");
     fireEvent.click(screen.getByTestId("stat-completed"));
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7 days$/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /^7 days/ }));
     await settledWork();
     expect(parseViewState(router.state.location.searchStr).completedWindow).toBe("7d");
     expect(requests.filter((request) => request.url.pathname.endsWith("/work-items")).some((request) => request.url.searchParams.get("completed_window") === "7d")).toBe(true);
-    expect(screen.getByTestId("stat-completed").textContent).toContain("completed · 7d");
+    expect(screen.getByTestId("stat-completed").textContent).toContain("shipped · 7d");
   });
 
   it.each(["Todo", ""])("ignores the %s board lane scope in the Active list", async (lanes) => {
@@ -1369,14 +1487,14 @@ describe("the filter-first Work surface", () => {
     expect((screen.getByRole("searchbox", { name: "Search issues" }) as HTMLInputElement).value).toBe(q);
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" || q === "3421" ? "1 completed · 48h" : "2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" || q === "3421" ? "1 shipped · 24h" : "2 shipped · 24h");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
     if (q === "Older title needle") {
       fireEvent.change(screen.getByRole("searchbox", { name: "Search issues" }), { target: { value: "Older title needle b" } });
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
-      expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Choose the completed window.");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
+      expect(screen.getByTestId("stat-completed").getAttribute("title")).toContain("Choose the shipped window.");
     }
   });
 
@@ -1386,15 +1504,15 @@ describe("the filter-first Work surface", () => {
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
     expect(screen.getByText("Older title needle b")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     fireEvent.click(screen.getByTestId("filters-trigger"));
     for (const filter of ["label-choice-b", "assignee-operator-b", "priority-High"]) {
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
       fireEvent.click(await screen.findByTestId(`filter-${filter}`));
       await settledWork();
-      expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+      expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     }
     fireEvent.keyDown(document, { key: "Escape" });
     const reads = fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items"));
@@ -1411,16 +1529,41 @@ describe("the filter-first Work surface", () => {
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).length).toBeGreaterThan(reads.length);
   });
 
+  it("filters by the caller and retains that filter through URLs, cache reads and updates", async () => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&q=Older+title+needle");
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Filters" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Filed by me" }));
+    await settledWork();
+    expect(screen.getByText("Older title needle a")).not.toBeNull();
+    expect(screen.queryByText("Older title needle b")).toBeNull();
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
+    expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBe("me");
+    const request = fixture.requests.findLast(({ url }) => url.pathname.endsWith("/work-items"))!;
+    expect(request.url.searchParams.get("created_by")).toBe("me");
+    expect(request.url.searchParams.get("q")).toBe("Older title needle");
+    const response = await fixture.fetch(`${fixture.client.http.apiBase}/projects/proj_alpha/work-items?q=Older+title+needle`);
+    const other = (await response.json()).items.find((issue: NativeIssue) => issue.title === "Older title needle b");
+    act(() => confirmWorkItem({ ...other, revision: "900" }));
+    expect(screen.queryByText("Older title needle b")).toBeNull();
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Filed by me" }));
+    await settledWork();
+    expect(screen.getByText("Older title needle b")).not.toBeNull();
+    expect(parseViewState(fixture.router.state.location.searchStr).createdBy).toBeUndefined();
+  });
+
   it("keeps a second filter choice available after the first narrows results", async () => {
     const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&q=Older+title+needle");
     await settledWork();
     fireEvent.click(screen.getByTestId("filters-trigger"));
     fireEvent.click(await screen.findByTestId("filter-label-choice-a"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("1 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("1 shipped · 24h");
     fireEvent.click(await screen.findByTestId("filter-label-choice-b"));
     await settledWork();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/work-items"))!.url.searchParams.getAll("label"))
       .toEqual(["choice-a", "choice-b"]);
   });
@@ -1474,7 +1617,7 @@ describe("the filter-first Work surface", () => {
     const fixture = await pagedWork('/work?view=list&tab=all&q=older-label&pages=legacy-cursor');
     await settledWork();
     expect(screen.getByText("Older title needle a")).not.toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("2 completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("2 shipped · 24h");
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/work-items")).every((request) =>
       !request.url.searchParams.has("cursor"))).toBe(true);
   });
@@ -1508,7 +1651,7 @@ describe("the filter-first Work surface", () => {
     expect(await screen.findByTestId("work-error")).not.toBeNull();
     expect(screen.queryByTestId("issue-card")).toBeNull();
     expect(screen.queryByTestId("work-list-row")).toBeNull();
-    expect(screen.getByTestId("stat-completed").textContent).toBe("— completed · 48h");
+    expect(screen.getByTestId("stat-completed").textContent).toBe("— shipped · 24h");
   });
 
   it("finishes a slow first read and retains usable work during continuous activity", async () => {
@@ -1555,7 +1698,7 @@ describe("the filter-first Work surface", () => {
     expect(screen.getAllByText("Queue item 1")).toHaveLength(2);
   });
 
-  it.each(["gap", "grant change"])("reconnects from the last sequence and reloads for %s", async (invalidation) => {
+  it.each(["gap", "grant change", "expired session", "revoked access", "unavailable"])("checks access before reconnecting for %s", async (invalidation) => {
     const sources: (EventTarget & { readyState: number; url: string })[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -1564,7 +1707,11 @@ describe("the filter-first Work surface", () => {
     });
     const fixture = workPaginationFixture();
     await fixture.control();
+    let accessStatus = 200;
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/projects/proj_alpha") && accessStatus !== 200) {
+        return Response.json({ code: "unauthorized", message: "Project access ended" }, { status: accessStatus });
+      }
       const response = await fixture.fetch(String(input), init);
       if (!String(input).includes("/work-items")) return response;
       return Response.json({ ...await response.json(), grant_version: "original-grants" });
@@ -1578,18 +1725,32 @@ describe("the filter-first Work surface", () => {
     const card = page.cards[0];
     act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 40, grant_version: "original-grants", gap: false, deltas: [] }) })));
     const before = fixture.requests.length;
+    accessStatus = invalidation === "expired session" ? 401 : invalidation === "revoked access" ? 403 : invalidation === "unavailable" ? 503 : 200;
     vi.useFakeTimers();
     act(() => { sources[0]!.readyState = 2; sources[0]!.dispatchEvent(new Event("error")); });
     act(() => vi.advanceTimersByTime(3000));
     vi.useRealTimers();
+    if (accessStatus === 401 || accessStatus === 403) {
+      await waitFor(() => expect(current.error).toBe("Access to the board is no longer available."));
+      expect(current.items).toHaveLength(0);
+      expect(current.live).toBe(false);
+      vi.useFakeTimers();
+      act(() => vi.advanceTimersByTime(30_000));
+      vi.useRealTimers();
+      expect(sources).toHaveLength(1);
+      return;
+    }
+    await waitFor(() => expect(sources).toHaveLength(2));
     expect(new URL(sources[1]!.url, "http://fixture.test").searchParams.get("since")).toBe("40");
     act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 41, gap: false,
       deltas: [{ sequence: 41, previous: card, current: { ...card, issue: { ...card.issue, title: "Missed delta", revision: "900" } } }] }) })));
     expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Missed delta");
-    expect(fixture.requests).toHaveLength(before);
+    if (accessStatus === 503) return;
+    expect(fixture.requests.slice(before).map(({ url }) => url.pathname)).toEqual(["/api/v2/organizations/org_mock/projects/proj_alpha"]);
+    const afterReconnect = fixture.requests.length;
     act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: invalidation === "gap" ? 3000 : 41, grant_version: invalidation === "gap" ? "original-grants" : "changed-grants",
       gap: invalidation === "gap", deltas: [] }) })));
-    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(before));
+    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(afterReconnect));
     await waitFor(() => expect(current.refreshing).toBe(false));
   });
 

@@ -1,6 +1,7 @@
 import { KeyRoundIcon } from "lucide-react";
 import React from "react";
 
+import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import {
@@ -20,6 +21,7 @@ import type { FleetResponse, FleetRunner } from "../../contracts/account.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { NativeSelect } from "../account/controls.tsx";
 import { ControlError } from "../account/controls.tsx";
+import { AccountError } from "../account/api.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
@@ -30,6 +32,11 @@ const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "eve
 
 /** The hub refuses anything over 900 (`runnerauth.MaxEnrollmentTTL`). */
 const ENROLLMENT_TTL_SECONDS = 900;
+
+function enrollmentError(error: unknown): string | null {
+  if (error instanceof AccountError) return `${error.code}: ${error.message}`;
+  return error instanceof Error ? error.message : null;
+}
 
 export interface PendingEnrollment {
   readonly id: string;
@@ -241,9 +248,9 @@ export function EnrollRunnerDialog({
       try {
         const secret = await api.spritesSecret(id);
         const present = secret.present || (id !== "" && (await api.spritesSecret("")).present);
-        return { id, present };
-      } catch {
-        return { id, present: null };
+        return { id, present, error: null };
+      } catch (error) {
+        return { id, present: null, error: enrollmentError(error) };
       }
     }));
   }, [api, open, location, selectedKey, scope]);
@@ -256,6 +263,8 @@ export function EnrollRunnerDialog({
     ? `${LATEST_RELEASE_COMMAND} && bash sprite-runner-bootstrap.sh --version "$detent_release"`
     : `bash sprite-runner-bootstrap.sh --version ${pin.release}`;
   const [showToken, setShowToken] = React.useState(false);
+  const [step, setStep] = React.useState(0);
+  const [enrolledRunner, setEnrolledRunner] = React.useState<FleetRunner | null>(null);
   const [connected, setConnected] = React.useState<FleetRunner | null>(null);
 
   // Reopening starts a fresh enrollment: the previous token was shown once and
@@ -272,6 +281,8 @@ export function EnrollRunnerDialog({
     setEnrollment(null);
     setShowToken(false);
     setConnected(null);
+    setEnrolledRunner(null);
+    setStep(0);
     setSelected(initialSelection());
     setScope(projectIds === undefined ? "organization" : "projects");
   }, [open, initialSelection, initialName]);
@@ -280,11 +291,17 @@ export function EnrollRunnerDialog({
     if (!open || enrollment === null || connected !== null) return;
     const runner = fleet.value?.runners.find((entry) =>
       !enrollment.existingRunnerIds.includes(entry.id) &&
-      entry.display_name === enrollment.name && entry.last_heartbeat_at !== "",
+      entry.display_name === enrollment.name,
     );
     if (runner === undefined) return;
+    setEnrolledRunner(runner);
+    setShowToken(false);
+    if (enrollment.command !== enrollment.maskedCommand) {
+      setEnrollment({ ...enrollment, command: enrollment.maskedCommand });
+    }
+    if (runner.has_heartbeat !== true) return;
     setConnected(runner);
-    onConnected?.(enrollment);
+    onConnected?.({ id: enrollment.id, expiresAt: enrollment.expiresAt, name: enrollment.name });
   }, [open, enrollment, connected, fleet.value, onConnected]);
 
   React.useEffect(() => {
@@ -318,6 +335,7 @@ export function EnrollRunnerDialog({
       name: name.trim() || "Unnamed runner",
     };
     if (generation.current === mine) {
+      setStep(1);
       const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, isolationTier, service: location === "machine" && service };
       setEnrollment({
         ...entry,
@@ -334,7 +352,6 @@ export function EnrollRunnerDialog({
   const spriteNameFits = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name.trim());
   const ready = fleet.value !== undefined && (scope === "organization" || selected.length > 0) && capacity !== null && isolationTier !== null && nameFits && (location === "machine" || spriteNameFits);
   const baselinePending = enrollment === null && fleet.value === undefined;
-  const step = connected !== null ? 2 : enrollment !== null ? 1 : 0;
   const minimumVersion = fleet.value?.minimum_runner_version ?? "";
   const installInstructions = <div className="flex flex-col gap-2">
     <h3 className="text-[13px] font-medium">Install Detent</h3>
@@ -380,7 +397,7 @@ export function EnrollRunnerDialog({
               </li>
             ))}
           </ol>
-          {connected !== null ? (
+          {step === 2 && connected !== null ? (
             <section className="flex flex-col gap-3" aria-labelledby="enroll-connected">
               <h3 id="enroll-connected" role="status" className="text-sm font-medium">
                 {connected.display_name} is connected
@@ -393,9 +410,17 @@ export function EnrollRunnerDialog({
                 <dt className="text-muted-foreground">Providers</dt>
                 <dd>{[...new Set(connected.provider_capacity.map((provider) => provider.provider))].join(", ") || "None reported"}</dd>
               </dl>
+              {connected.provider_capacity.length === 0 ? (
+                <Alert variant="warning">
+                  <AlertTitle>No providers reported</AlertTitle>
+                  <AlertDescription>
+                    This runner cannot take work yet. Check that its provider CLIs are installed, signed in, and available on the service PATH, then check the runner service logs.
+                  </AlertDescription>
+                </Alert>
+              ) : null}
             </section>
-          ) : enrollment === null ? (
-            <>
+          ) : step === 0 ? (
+            <fieldset disabled={enrollment !== null} className="flex flex-col gap-4">
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend id="enroll-agent-access" className="pb-1 font-medium">Agent access</legend>
                 <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setIsolationTier(value as RunnerAccessTier)}>
@@ -406,6 +431,7 @@ export function EnrollRunnerDialog({
                     </label>
                   ))}
                 </RadioGroup>
+                {isolationTier === null ? <p className="text-xs text-muted-foreground">Choose Sandbox or Full access to create a command.</p> : null}
               </fieldset>
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend className="pb-1 font-medium">Where will it run?</legend>
@@ -427,6 +453,7 @@ export function EnrollRunnerDialog({
                 {sprites.loading ? <p className="text-xs text-muted-foreground">Checking Sprites tokens…</p> : sprites.value?.filter((entry) => entry.present !== true).map((entry) => (
                   <p key={entry.id} className="text-xs text-warning">
                     {entry.present === false ? "No Sprites token is set" : "Could not check the Sprites token"} for {entry.id === "" ? "the organization" : projects.find((project) => project.id === entry.id)?.name}. Without it the Hub cannot wake the Sprite.{entry.id === "" ? "" : " You can uncheck the project to continue without it."}{" "}
+                    {entry.error === null ? null : <>{entry.error}{" "}</>}
                     <a className="underline" href={`${bootstrap?.base_path ?? ""}/settings/integrations${entry.id === "" ? "" : `?project=${encodeURIComponent(entry.id)}`}#sprites`}>Set a Sprites token</a>
                   </p>
                 ))}
@@ -538,8 +565,8 @@ export function EnrollRunnerDialog({
                   </span>
                 </span>
               </label> : null}
-            </>
-          ) : (
+            </fieldset>
+          ) : enrollment !== null ? (
             <section className="flex flex-col gap-2" aria-labelledby="enroll-run-command">
               {location === "sprite" ? (
                 <>
@@ -583,7 +610,7 @@ export function EnrollRunnerDialog({
                 displayValue={showToken ? enrollment.command : enrollment.maskedCommand}
                 label="the register command"
               />
-              <Button
+              {enrolledRunner === null ? <Button
                 size="xs"
                 variant="outline"
                 className="self-start"
@@ -591,28 +618,34 @@ export function EnrollRunnerDialog({
                 onClick={() => setShowToken((current) => !current)}
               >
                 {showToken ? "Hide token" : "Show token"}
-              </Button>
+              </Button> : null}
               </>}
               <p role="status" className="text-[13px] text-muted-foreground">
-                Waiting for {enrollment.name || "the runner"} to check in. The command works once, until{" "}
-                {new Date(enrollment.expiresAt).toLocaleTimeString()}.
+                {connected !== null ? `${connected.display_name} is connected` : enrolledRunner !== null
+                  ? `${enrollment.name} is enrolled, waiting for the runner to start.`
+                  : <>Waiting for {enrollment.name || "the runner"} to check in. The command works once, until{" "}
+                    {new Date(enrollment.expiresAt).toLocaleTimeString()}.</>}
               </p>
+              {enrolledRunner !== null ? <p className="text-xs text-muted-foreground">The one-time token has been used and is no longer available. You can still copy the command with the token masked.</p> : null}
               <p className="text-xs text-muted-foreground">
                 Closing this dialog clears the command from the page. The runner still connects if you already ran it.
               </p>
             </section>
-          )}
+          ) : null}
           {baselinePending && fleet.error === null ? (
             <p role="status" className="text-xs text-muted-foreground">Reading runners before creating a command…</p>
           ) : null}
-          <ControlError message={create.error?.message ?? (baselinePending ? fleet.error?.message : null) ?? null} />
+          <ControlError message={enrollmentError(create.error ?? fleet.error)} />
           {baselinePending && fleet.error !== null ? (
             <Button variant="outline" disabled={fleet.loading} onClick={() => void fleet.refresh()}>Retry runner read</Button>
           ) : null}
         </DialogPanel>
         <DialogFooter>
           <DialogClose render={<Button variant="outline">{connected !== null ? "Done" : enrollment === null ? "Cancel" : "Close"}</Button>} />
-          {enrollment === null ? (
+          {step > 0 ? <Button variant="outline" onClick={() => setStep((current) => current - 1)}>Back</Button> : null}
+          {enrollment !== null && step < 2 ? (
+            <Button disabled={step === 1 && connected === null} onClick={() => setStep((current) => current + 1)}>Next</Button>
+          ) : enrollment === null ? (
             <Button disabled={!ready || create.pending} onClick={() => void create.call(fleet.value!)}>
               {create.pending ? "Creating…" : "Create command"}
             </Button>

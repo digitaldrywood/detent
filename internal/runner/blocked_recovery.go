@@ -31,7 +31,7 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 			snapshot.Health = "tool_unavailable:" + blockedRecoveryHash(err.Error())
 		}
 	}
-	reader, ok := r.workspace.(workspace.IssueRecoveryStateProvider)
+	reader, ok := r.workspaceSnapshot().(workspace.IssueRecoveryStateProvider)
 	if !ok {
 		snapshot.WorkspaceStatus = "unavailable"
 		return snapshot

@@ -131,9 +131,14 @@ func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (resu
 		defer stop()
 		ctx = guarded
 		defer func() {
+			var reviewErr *runnerpkg.NativeImplementationReviewError
+			reviewFailed := errors.As(runErr, &reviewErr)
 			outcome := "succeeded"
 			if runErr != nil || result.FinalState != runnerpkg.FinalStateCompleted {
 				outcome = "failed"
+			}
+			if reviewFailed {
+				outcome = "interrupted"
 			}
 			if ctx.Err() != nil {
 				outcome = "interrupted"
@@ -142,8 +147,14 @@ func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (resu
 			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			runErr = errors.Join(runErr, request.Execution.Finish(finishCtx, outcome))
-			if changes, ok := request.Execution.(runnerpkg.ChangeExecution); ok && runErr == nil {
-				result.NativeChange = changes.NativeChange()
+			if changes, ok := request.Execution.(runnerpkg.ChangeExecution); ok && (runErr == nil || reviewFailed) {
+				if change := changes.NativeChange(); change != nil {
+					copy := *change
+					if reviewFailed {
+						copy.ImplementationReviewError = reviewErr.Error()
+					}
+					result.NativeChange = &copy
+				}
 			}
 		}()
 	}
@@ -346,7 +357,7 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 		defer closeProxy()
 		connection.Address = address
 	}
-	deps, err := buildRunnerDependencies(boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, runnerpkg.SSHSessionStore{Peer: peer}, logger, connection)
+	deps, err := buildRunnerDependenciesWithIdentity(ctx, boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, runnerpkg.SSHSessionStore{Peer: peer}, logger, connection, workspace.CommitIdentity{})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", runnerpkg.ErrWorkspacePreparation, err)
 	}

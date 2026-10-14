@@ -120,7 +120,9 @@ export const PlanReference = Schema.Struct({ id: Schema.String, version: Schema.
 export type PlanReference = typeof PlanReference.Type;
 
 export const EntitlementPlan = Schema.Struct({
+  monthly_usd_cents: Schema.optional(Schema.Number),
   id: Schema.String,
+  name: Schema.optional(Schema.String),
   version: Schema.Number,
   features: Schema.NullOr(Schema.Array(Schema.String)),
   allowances: Schema.NullOr(Schema.Record(Schema.String, Schema.Number)),
@@ -136,6 +138,7 @@ export const EntitlementGrant = Schema.Struct({
   reason: Schema.String,
   granted_by: Schema.String,
   granted_at: Schema.NullOr(Schema.String),
+  revoked_at: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type EntitlementGrant = typeof EntitlementGrant.Type;
 
@@ -147,15 +150,37 @@ export const OrganizationEntitlements = Schema.Struct({
   revision: Schema.Number,
   features: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   grants: Schema.Array(EntitlementGrant),
+  grant_history: Schema.optional(Schema.NullOr(Schema.Array(EntitlementGrant))),
   plans: Schema.Array(EntitlementPlan),
 });
 export type OrganizationEntitlements = typeof OrganizationEntitlements.Type;
 
+export const PlatformAICredits = Schema.Struct({
+  balance_micros: Schema.Number,
+  spent_micros: Schema.Number,
+  month: Schema.String,
+  auto_enabled: Schema.Boolean,
+  history: Schema.Array(Schema.Struct({
+    amount_micros: Schema.Number,
+    kind: Schema.String,
+    actor: Schema.optional(Schema.String),
+    reason: Schema.optional(Schema.String),
+    at: Schema.String,
+  })),
+});
+export type PlatformAICredits = typeof PlatformAICredits.Type;
+
 export const PlatformTenantDetail = Schema.Struct({
   organization: PlatformOrganization,
+  credit_balance_micros: Schema.NullOr(Schema.Number),
+  ai_credits: Schema.optional(Schema.NullOr(PlatformAICredits)),
   csrf: Schema.String,
   can_grant: Schema.Boolean,
   can_resume: Schema.Boolean,
+  usage: Schema.optional(Schema.NullOr(Schema.Struct({
+    window_ends_at: Schema.String,
+    allowances: Schema.Record(Schema.String, Schema.Struct({ used: Schema.Number, limit: Schema.NullOr(Schema.Number) })),
+  }))),
   unavailable: Schema.Array(Schema.String),
   members: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String }))),
   runners: Schema.NullOr(Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, health: Schema.String }))),
@@ -166,6 +191,22 @@ export const PlatformTenantDetail = Schema.Struct({
 export type PlatformTenantDetail = typeof PlatformTenantDetail.Type;
 
 export type EntitlementChange =
+  | {
+      readonly action: "create_plan";
+      readonly definition: EntitlementPlan;
+      readonly plan: PlanReference;
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly reason: string;
+    }
+  | {
+      readonly action: "base" | "subscription" | "end_subscription";
+      readonly plan: PlanReference;
+      readonly expires_at: string | null;
+      readonly idempotency_key: string;
+      readonly expected_revision: number;
+      readonly reason: string;
+    }
   | {
       readonly action: "grant";
       readonly feature: "model_choice";
@@ -293,11 +334,12 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
   const fetchImpl: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const origin = options.origin ?? "";
 
-  async function read<A>(schema: Schema.Codec<A, any, never, never>, path: string): Promise<A> {
+  async function read<A>(schema: Schema.Codec<A, any, never, never>, path: string, signal?: AbortSignal): Promise<A> {
     const response = await fetchImpl(`${origin}${path}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
+      ...(signal ? { signal } : {}),
     });
     if (!response.ok) throw await decodeFailure(response);
     return Schema.decodeUnknownSync(schema)(await response.json());
@@ -348,6 +390,9 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
       submit(NextResult, `/organizations/${encodeURIComponent(input.organization)}/provisioning/resume`, input.csrf, {}),
     platformOrganizations: () => read(PlatformOrganizations, "/api/cloud/platform/organizations"),
     platformTenant: (organization: string) => read(PlatformTenantDetail, `/api/cloud/platform/organizations/${encodeURIComponent(organization)}`),
+    adjustPlatformAICredits: (input: { organization: string; csrf: string; change: { idempotency_key: string; amount_usd: string; reason: string } }) =>
+      post(Schema.Struct({ organization_id: Schema.String, balance_micros: Schema.Number }),
+        `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/ai-credits`, input.csrf, input.change),
     resumePlatformTenant: (input: { organization: string; csrf: string }) =>
       submit(NextResult, `/api/cloud/platform/organizations/${encodeURIComponent(input.organization)}/resume`, input.csrf, {}),
     platformAllowlist: () => read(PlatformAllowlist, "/api/cloud/platform/allowlist"),
@@ -361,7 +406,7 @@ export function makeEntryApi(options: { readonly fetch?: FetchLike; readonly ori
     },
     platformHealth: () => read(PlatformHealth, "/api/cloud/platform/health"),
     platformUsers: (query: string) => read(PlatformUsers, `/api/cloud/platform/users?q=${encodeURIComponent(query)}`),
-    platformAudit: (query: string) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`),
+    platformAudit: (query: string, signal?: AbortSignal) => read(PlatformAudit, `/api/cloud/platform/audit${query === "" ? "" : `?${query}`}`, signal),
     platformEntitlements: (organization: string) => read(OrganizationEntitlements, entitlementsPath(organization)),
     changePlatformEntitlement: (input: { organization: string; csrf: string; change: EntitlementChange }) =>
       post(EntitlementChangeResult, entitlementsPath(input.organization), input.csrf, input.change),

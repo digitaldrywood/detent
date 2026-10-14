@@ -1,19 +1,28 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { DiagnosticsRoute } from "../../src/app/diagnostics/DiagnosticsPage.tsx";
+import { DiagnosticsRoute, DiagnosticsView } from "../../src/app/diagnostics/DiagnosticsPage.tsx";
+import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
+import { decodeFleet, type AccountProject } from "../../src/contracts/account.ts";
+import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import { decodeDiagnostics, decodeHealthFindings } from "../../src/contracts/diagnostics.ts";
 import report from "../../src/contracts/fixtures/diagnostics.json";
 import health from "../../src/contracts/fixtures/health-findings.json";
 
 const mocks = vi.hoisted(() => ({
   api: { diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
-  bootstrap: { organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", profile: "native" }] },
+  bootstrap: { actor: { can_manage: false }, organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }] },
   http: { eventsUrl: () => "/events" },
 }));
 vi.mock("../../src/app/account/context.ts", () => ({ useAccountApi: () => mocks.api, useAccountBootstrap: () => mocks.bootstrap }));
 vi.mock("../../src/app/work/lib/useWork.ts", () => ({ useWorkHttp: () => mocks.http }));
 vi.mock("../../src/app/pageTitle.ts", () => ({ usePageTitle: () => {} }));
+vi.mock("../../src/app/diagnostics/FindingAsk.tsx", () => ({
+  FindingAskWorkspace: ({ finding, project, children }: { finding: { id: string; summary: string }; project: { name: string }; children: (controls: React.ReactNode) => React.ReactNode }) => <>
+    {children(null)}
+    <section aria-label="Ask about this finding">{project.name}: {finding.id}: {finding.summary}</section>
+  </>,
+}));
 vi.mock("@tanstack/react-router", () => ({ Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a> }));
 
 class FindingEvents extends EventTarget {
@@ -21,7 +30,8 @@ class FindingEvents extends EventTarget {
   close = vi.fn();
   constructor() { super(); FindingEvents.current = this; }
 }
-const original = decodeHealthFindings(health).items[0]!;
+const healthFinding = decodeHealthFindings(health).items[0]!;
+const original = { ...healthFinding, subject: { ...healthFinding.subject, project_id: "prj_fixture" } };
 const next = { ...original, id: "new_finding", summary: "New finding" };
 const tick = "2026-10-07T10:00:00Z";
 let open = [original];
@@ -38,12 +48,89 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FindingEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   open = [original];
+  mocks.bootstrap.projects[0]!.can_write = true;
   resolved = [];
   mocks.api.diagnostics.mockResolvedValue(decodeDiagnostics(report));
   mocks.api.fleet.mockResolvedValue({ runners: [] });
   mocks.api.healthFindings.mockImplementation(async (_projects, options) => ({ items: options?.state === "resolved" ? resolved : open, last_tick_at: options ? tick : health.last_tick_at }));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+const projects: readonly AccountProject[] = [
+  { id: "prj_main", name: "Example project", profile: "native", can_write: true, can_manage_runners: true, states: [] },
+  { id: "prj_optional", name: "Optional project", profile: "native", can_write: true, can_manage_runners: true, states: [] },
+];
+const base = decodeFleet(fleetFixture).runners[0]!;
+const raw = "policy_digest git error_output ".repeat(200);
+const problem = { code: "settings_invalid", project_id: "prj_optional", subject: "workflow", check: "load settings", message: raw, error_output: raw, fix_hint: raw, first_seen: "2026-10-07T10:00:00Z" };
+const runners = [
+  { ...base, id: "runner_one", machine_id: "host_one", display_name: "Example desktop", hostname: "desktop", state: "active", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 8, host_used: 1, capacity_limit: 8, reported_capacity: 8, problems: [problem] },
+  { ...base, id: "runner_two", machine_id: "host_two", display_name: "Example laptop", hostname: "laptop", state: "active", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 4, host_used: 1, capacity_limit: 4, reported_capacity: 4, problems: [{ ...problem, code: "policy_mismatch", project_id: "prj_main" }] },
+  { ...base, id: "runner_three", machine_id: "host_three", display_name: "Example build host", hostname: "builder", state: "draining", health: "online", capacity_health: "online", connection_health: "online", claim_refusal_reason: "", provider_capacity: [], host_capacity: 8, host_used: 1, capacity_limit: 8, reported_capacity: 8, update: { status: "draining", desired: { version: "v1.0.0" } }, problems: [problem] },
+];
+const viewProps = { report: decodeDiagnostics(report), runners, findings: [], pending: false, error: null, scope: "Example organization", range: "24h" as const, projects, onRangeChange: vi.fn(), onRefresh: vi.fn() };
+
+it("puts shared host totals and every runner before grouped typed findings without raw debug payloads", () => {
+  const view = render(<DiagnosticsView {...viewProps} canManage />);
+  const live = screen.getByRole("region", { name: "Capacity right now" });
+  const attention = screen.getByRole("region", { name: "Needs attention" });
+  expect(live.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  for (const name of ["Example desktop", "Example laptop", "Example build host"]) {
+    expect(within(live).getByRole("link", { name }).getAttribute("href")).toBe("/settings/runners");
+  }
+  expect(within(live).getByText("3 of 20 slots running work")).toBeTruthy();
+  expect(within(live).getByText("10 free")).toBeTruthy();
+  expect(within(live).getByText("Finishing work before updating")).toBeTruthy();
+  const settings = within(attention).getByText("Project settings could not be loaded").closest("article")!;
+  expect(within(settings).getByText("Optional project", { exact: false })).toBeTruthy();
+  expect(within(settings).getAllByRole("link").map((link) => link.textContent)).toEqual(["Example desktop", "Example build host"]);
+  expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/integrations?project=prj_main");
+  expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
+  for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
+  const totals = live.textContent;
+  const slots = [...live.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
+  view.unmount();
+  render(<RunnersSectionView fleet={{ ...decodeFleet(fleetFixture), runners }} />);
+  const settingsLive = screen.getByRole("region", { name: "Capacity right now", hidden: true });
+  expect(settingsLive.textContent).toBe(totals);
+  expect([...settingsLive.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
+});
+
+it("keeps read-only policy review with its administrator and does not group unrelated checks", () => {
+  render(<DiagnosticsView {...viewProps} runners={[...runners, { ...runners[0]!, id: "runner_four", machine_id: "host_four", display_name: "Example worker", problems: [{ ...problem, check: "different check" }] }]} />);
+  const attention = screen.getByRole("region", { name: "Needs attention" });
+  expect(within(attention).queryByRole("link", { name: "Review policy" })).toBeNull();
+  expect(within(attention).getByText("Organization administrator: review the project's approved policy in Settings → Integrations.")).toBeTruthy();
+  expect(within(attention).getAllByText("Project settings could not be loaded")).toHaveLength(2);
+  expect(screen.queryByRole("button", { name: /Approve|Update runner|Remove runner/ })).toBeNull();
+});
+
+it.each([null, []])("keeps unavailable capacity distinct from no enrolled runners (%j)", (empty) => {
+  render(<DiagnosticsView {...viewProps} runners={empty} findings={null} detectorTick={null} report={{ ...viewProps.report, capacity: null, partial: true, busy_percent: null }} />);
+  expect(screen.getByText(empty === null ? "Runner capacity is unavailable. Refresh to try again." : "No runners enrolled.")).toBeTruthy();
+  expect(screen.getByText(/Findings are unavailable until/)).toBeTruthy();
+  expect(screen.getByText("Hourly capacity is unavailable.")).toBeTruthy();
+  expect(screen.queryByText(/0 of 0 slots/)).toBeNull();
+});
+
+it.each([20, 19])("shows active utilization without attention when %i of 20 slots are working", (used) => {
+  render(<DiagnosticsView {...viewProps} runners={runners.map((runner, index) => ({ ...runner, state: "active", update: undefined, problems: [], host_used: runner.host_capacity - (index === 2 ? 20 - used : 0), leases: Array.from({ length: runner.host_capacity - (index === 2 ? 20 - used : 0) }, (_, lease) => ({ ...base.leases[0]!, lease_id: `${runner.id}-${lease}` })) }))} />);
+  expect(screen.getByText(`${used} of 20 slots running work`)).toBeTruthy();
+  expect(screen.getByText("No open findings.")).toBeTruthy();
+  expect(screen.queryByText("Needs attention", { selector: "[data-slot=badge]" })).toBeNull();
+});
+
+it.each([
+  ["offline", "Offline"],
+  ["unknown", "Status unavailable"],
+] as const)("keeps %s runner observations honest", (health, label) => {
+  render(<DiagnosticsView {...viewProps} runners={[{ ...runners[0]!, health, capacity_health: health, connection_health: health, problems: [] }]} />);
+  const live = screen.getByRole("region", { name: "Capacity right now" });
+  expect(within(live).getByText(label)).toBeTruthy();
+  expect(within(live).getByText("1 of 8 slots running work")).toBeTruthy();
+  expect(within(live).getByText("0 free")).toBeTruthy();
+  expect(within(live).queryByText("Online")).toBeNull();
+});
 
 it("updates findings in place, retains resolutions until reload, and restores reopened findings", async () => {
   render(<DiagnosticsRoute />);
@@ -108,7 +195,7 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   expect(screen.getByText("Resolved")).toBeTruthy();
   mocks.api.healthFindings.mockRejectedValueOnce(new Error("offline"));
   act(() => emit("failed"));
-  await act(async () => {});
+  await screen.findByText(/Unable to refresh findings/);
   expect(screen.getByText("Resolved")).toBeTruthy();
   const source = FindingEvents.current;
   view.unmount();
@@ -116,4 +203,23 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   mocks.api.healthFindings.mockClear();
   act(() => { emit("unmounted"); document.dispatchEvent(new Event("visibilitychange")); });
   expect(mocks.api.healthFindings).not.toHaveBeenCalled();
+});
+
+it("opens the selected finding in its project chat from every Needs attention row", async () => {
+  open = [original, next];
+  render(<DiagnosticsRoute />);
+  await screen.findByRole("button", { name: `Ask about ${original.summary}` });
+  for (const finding of open) {
+    fireEvent.click(screen.getByRole("button", { name: `Ask about ${finding.summary}` }));
+    expect(screen.getByRole("region", { name: "Ask about this finding" }).textContent).toBe(`Example project: ${finding.id}: ${finding.summary}`);
+  }
+});
+
+it("keeps Ask visible but unavailable when the viewer cannot write project chat", async () => {
+  mocks.bootstrap.projects[0]!.can_write = false;
+  render(<DiagnosticsRoute />);
+  const ask = await screen.findByRole("button", { name: `Ask about ${original.summary}` });
+  expect(ask.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(ask);
+  expect(screen.queryByRole("region", { name: "Ask about this finding" })).toBeNull();
 });

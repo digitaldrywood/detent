@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -17,6 +18,8 @@ type workViewPreference struct {
 
 func (s *Service) workViewPreference(c echo.Context) error {
 	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
@@ -29,7 +32,7 @@ func (s *Service) workViewPreference(c echo.Context) error {
 		project:      tracker.ProjectID(c.Param("project")), credential: credential,
 	}
 	if scope.project != "" {
-		if err := s.requireHostedProject(ctx, s.database.db, scope, false); err != nil {
+		if err := s.requireHostedProject(readCtx, s.database.reader, scope, false); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
@@ -37,7 +40,7 @@ func (s *Service) workViewPreference(c echo.Context) error {
 	switch c.Request().Method {
 	case http.MethodGet:
 		var query string
-		err = s.database.db.QueryRowContext(ctx, `SELECT view_query FROM hosted_work_view_preferences WHERE organization_id = ? AND user_id = ? AND scope = ?`, scope.organization, credential.Hosted.Subject, scope.project).Scan(&query)
+		err = s.database.reader.QueryRowContext(readCtx, `SELECT view_query FROM hosted_work_view_preferences WHERE organization_id = ? AND user_id = ? AND scope = ?`, scope.organization, credential.Hosted.Subject, scope.project).Scan(&query)
 		if err == nil {
 			value.Query = &query
 		} else if errors.Is(err, sql.ErrNoRows) {

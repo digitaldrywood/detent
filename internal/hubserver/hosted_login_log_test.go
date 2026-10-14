@@ -186,6 +186,8 @@ func TestHostedLogsKeepWriterTiming(t *testing.T) {
 	}{
 		{"request timing kept", "hub request timing", []any{"method", "POST", "route", "/api/v2/organizations/:organization/projects/:project/leases/:lease/renew", "status", 200, "duration_ms", int64(5200), "writer_hold_ms", int64(4900), "writer_txs", int64(2)},
 			map[string]any{"msg": "hub request timing", "method": "POST", "route": "/api/v2/organizations/:organization/projects/:project/leases/:lease/renew", "status": float64(200), "duration_ms": float64(5200), "writer_hold_ms": float64(4900), "writer_txs": float64(2)}},
+		{"read spans kept", "hub request timing", []any{"route", "/api/v2/organizations/:organization/reports", "duration_ms", int64(900), "db_ms", int64(700), slog.Group("spans_ms", slog.Int64("reports_analytics", 600), slog.Int64("reports_prior", 90))},
+			map[string]any{"msg": "hub request timing", "route": "/api/v2/organizations/:organization/reports", "duration_ms": float64(900), "db_ms": float64(700), "spans_ms": map[string]any{"reports_analytics": float64(600), "reports_prior": float64(90)}}},
 		{"writer waits kept", "hub writer waits", []any{"waits", int64(40), "wait_ms", int64(9000), "in_use", 1, "interval_s", int64(60)},
 			map[string]any{"msg": "hub writer waits", "waits": float64(40), "wait_ms": float64(9000), "in_use": float64(1), "interval_s": float64(60)}},
 		{"tenant content dropped from timing", "hub request timing", []any{"route", "/work/tenant title sentinel", "method", "tenant method sentinel", "secret", "attribute-sentinel", "duration_ms", "9"},

@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -173,6 +174,23 @@ func TestNativeIssueContract(t *testing.T) {
 				requireNativeStatus(t, response, expected)
 			}
 			check(test.claimable)
+			if test.machine && !test.claimable {
+				runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+				runner.enroll(t)
+				for name, credential := range map[string]string{"worker": worker, "runner": runner.redemption.Credential} {
+					edit := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: name + "-confirm"}, ExpectedRevision: issue.Revision, Body: &body}
+					response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), credential, edit)
+					if response.Code < 400 {
+						var edited tracker.NativeIssue
+						decodeHubResponse(t, response, &edited)
+						if len(edited.IssueContract.ConfirmedSections) != 0 {
+							t.Fatalf("%s confirmed its contract: %+v", name, edited.IssueContract)
+						}
+						issue = edited
+					}
+					check(false)
+				}
+			}
 			if test.claimable || strings.Contains(test.body, "detent:no-dispatch") {
 				return
 			}

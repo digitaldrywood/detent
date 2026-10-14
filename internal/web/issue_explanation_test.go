@@ -25,8 +25,8 @@ func TestIssueExplanationAPIReferences(t *testing.T) {
 		reference string
 	}{
 		{name: "issue ID", reference: "issue-1639"},
-		{name: "canonical identifier", reference: "digitaldrywood/detent#1639"},
-		{name: "URL", reference: "https://github.com/digitaldrywood/detent/issues/1639?notification=thread#event"},
+		{name: "canonical identifier", reference: "example-org/example-project#1639"},
+		{name: "URL", reference: "https://github.com/example-org/example-project/issues/1639?notification=thread#event"},
 		{name: "bare number", reference: "1639"},
 		{name: "hash number", reference: "#1639"},
 	}
@@ -40,7 +40,7 @@ func TestIssueExplanationAPIReferences(t *testing.T) {
 				Schema:       explain.SchemaVersion,
 				Found:        true,
 				ObservedAt:   observedAt,
-				Identity:     explain.Identity{ProjectID: "detent", IssueID: "issue-1639", Identifier: "digitaldrywood/detent#1639"},
+				Identity:     explain.Identity{ProjectID: "detent", IssueID: "issue-1639", Identifier: "example-org/example-project#1639"},
 				CurrentLane:  explain.Lane{Name: "In Progress", Freshness: explain.SourceLive},
 				Eligibility:  explain.Eligibility{State: explain.EligibilityEligible, Refusals: []explain.EligibilityDecision{}, Source: explain.SourceAvailable},
 				Sessions:     explain.Sessions{Source: explain.SourceAvailable},
@@ -184,7 +184,7 @@ func TestIssueExplanationAPIAcknowledgesCurrentParkSequence(t *testing.T) {
 	t.Cleanup(func() { _ = backend.Close() })
 	fake := &fakeIssueExplainer{result: explain.IssueExplanation{
 		Schema:      explain.SchemaVersion,
-		Identity:    explain.Identity{ProjectID: "detent", IssueID: "issue-1639", Identifier: "digitaldrywood/detent#1639"},
+		Identity:    explain.Identity{ProjectID: "detent", IssueID: "issue-1639", Identifier: "example-org/example-project#1639"},
 		ParkSummary: explain.ParkSummary{ParkCount: 4, Causes: []explain.ParkCauseSummary{}},
 	}}
 	deps := testDeps(t)
@@ -242,7 +242,7 @@ func TestIssueExplanationAPICreditsAcceptedProgress(t *testing.T) {
 	creditedAt := time.Date(2026, 8, 28, 12, 34, 56, 0, time.UTC)
 	fake := &fakeIssueExplainer{result: explain.IssueExplanation{
 		Schema:   explain.SchemaVersion,
-		Identity: explain.Identity{ProjectID: "detent", IssueID: "issue-2015", Identifier: "digitaldrywood/detent#2015", IssueURL: "https://github.com/digitaldrywood/detent/issues/2015"},
+		Identity: explain.Identity{ProjectID: "detent", IssueID: "issue-2015", Identifier: "example-org/example-project#2015", IssueURL: "https://github.com/example-org/example-project/issues/2015"},
 	}}
 	deps := testDeps(t)
 	deps.Store = backend
@@ -263,7 +263,7 @@ func TestIssueExplanationAPICreditsAcceptedProgress(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got.Identifier != "digitaldrywood/detent#2015" || !got.CreditedAt.Equal(creditedAt) {
+	if got.Identifier != "example-org/example-project#2015" || !got.CreditedAt.Equal(creditedAt) {
 		t.Fatalf("response = %#v, want credited issue at %s", got, creditedAt)
 	}
 	persisted, err := backend.(store.ProgressCreditStore).IssueProgressCredit(t.Context(), store.IssueIdentity{ProjectID: "detent", IssueID: "issue-2015"})

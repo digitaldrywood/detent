@@ -29,6 +29,7 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
+	AvailableCapacity     func(context.Context, int) int
 	RefreshProjects       func(context.Context, *Scheduler) error
 	Skills                func(project string) []skills.ProviderSkill
 	PrepareProject        func(context.Context, string) error
@@ -56,6 +57,7 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	availableCapacity     func(context.Context, int) int
 	hostMetrics           *hostmetrics.Collector
 	hostMetricsMu         sync.Mutex
 	refreshProjects       func(context.Context, *Scheduler) error
@@ -78,6 +80,7 @@ type Scheduler struct {
 	nativeProjects        map[string]*NativeConnector
 	nativeClaims          map[string]nativeClaim
 	nativeHeartbeats      map[tracker.ProjectID]time.Time
+	configHeartbeats      map[tracker.ProjectID]time.Time
 	checkoutRepository    func(project string) string
 	reportedPolicies      map[string]string
 	client                *Client
@@ -94,6 +97,7 @@ type Scheduler struct {
 	leaseHold             func(context.Context) (func(), error)
 	leaseHoldRelease      func()
 	leaseHoldPending      bool
+	githubBatchRunning    bool
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -117,6 +121,7 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
+		availableCapacity:     config.AvailableCapacity,
 		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
 		runnerSetupDeclared:   config.RunnerSetupDeclared,
@@ -146,7 +151,8 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 			return nil, err
 		}
 		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
-			return scheduler.processGitHubBatch(ctx, native, task)
+			scheduler.startGitHubBatch(ctx, native, task)
+			return nil
 		}
 		scheduler.nativeProjects[project] = &NativeConnector{client: native}
 	}
@@ -348,7 +354,12 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		retain := false
 		if native.execution != nil {
 			native.execution.mu.Lock()
-			retain = s.client.runner != nil && (native.execution.data.Outcome == "" || native.execution.data.Outcome == "interrupted")
+			data := native.execution.data
+			finalization := data.Finalization
+			completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
+				finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
+				finalization.VersionError == "" && finalization.Error == ""
+			retain = s.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 			native.execution.mu.Unlock()
 		}
 		if !retain {
@@ -650,7 +661,8 @@ func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, proje
 			return err
 		}
 		native.githubBatch = func(ctx context.Context, task tracker.GitHubBatchTask) error {
-			return s.processGitHubBatch(ctx, native, task)
+			s.startGitHubBatch(ctx, native, task)
+			return nil
 		}
 		s.nativeProjects[name] = &NativeConnector{client: native}
 	}
@@ -658,12 +670,16 @@ func (s *Scheduler) SetNativeProjects(organization tracker.OrganizationID, proje
 	defer s.mu.Unlock()
 	for name, value := range checks {
 		previous, ok := s.localChecks[name]
+		if value.CommitSigning == "" {
+			value.CommitName, value.CommitEmail, value.CommitSigning = previous.CommitName, previous.CommitEmail, previous.CommitSigning
+		}
 		if !ok || !reflect.DeepEqual(previous, value) {
 			if s.localChecks == nil {
 				s.localChecks = make(map[string]runnerauth.LocalChecks)
 			}
 			s.localChecks[name] = value
 			delete(s.nativeHeartbeats, projects[name])
+			delete(s.configHeartbeats, projects[name])
 		}
 	}
 	return nil

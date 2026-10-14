@@ -22,19 +22,22 @@ const runnerIdentitySelect = `SELECT r.id, r.organization_id, r.machine_id, r.to
 r.reported_capacity, r.os, r.architecture, r.last_heartbeat_at, r.revision, r.operations_json, r.routing_settings_json,
 m.hostname, m.display_name, m.capacity, m.routing_revision, t.created_at, t.expires_at, t.revoked_at,
 (SELECT json_group_array(project_id) FROM (SELECT project_id FROM token_grants WHERE token_id = r.token_id ORDER BY project_id)),
-r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.project_configuration_json, r.scope
-FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id`
+r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings_rejected, r.capacity_configuration_json, r.provider_reports_json, r.update_observation_json, r.project_configuration_json, r.scope,
+m.version, o.urgent_runner_update_json
+FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id JOIN organizations o ON o.id = r.organization_id`
 
-func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
+func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time, extra ...any) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
 	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw, configurationRaw string
+	var version, urgentRaw string
 	var protocol int
 	var rejected bool
 	var revoked sql.NullString
-	err := row.Scan(&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
+	destinations := []any{&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw, &r.Scope)
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw, &r.Scope, &version, &urgentRaw}
+	err := row.Scan(append(destinations, extra...)...)
 	if err != nil {
 		return r, nil, time.Time{}, err
 	}
@@ -75,6 +78,11 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
 		return r, nil, time.Time{}, err
 	}
+	var urgent urgentRunnerUpdate
+	if err := json.Unmarshal([]byte(urgentRaw), &urgent); err != nil {
+		return r, nil, time.Time{}, err
+	}
+	applyUrgentRunnerRouting(&r, urgent, version)
 	var reports []providercapacity.Report
 	if err := json.Unmarshal([]byte(capacityRaw), &r.CapacityConfig); err != nil {
 		return r, nil, time.Time{}, err
@@ -95,9 +103,6 @@ func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tra
 		return r, err
 	}
 	if err := applyRunnerPolicyProblems(ctx, db, &r); err != nil {
-		return r, err
-	}
-	if err := applyUrgentRunnerRouting(ctx, db, &r); err != nil {
 		return r, err
 	}
 	r.ProjectRanks, err = readRunnerProjectRanks(ctx, db, r.RunnerID, r.OrganizationID)
@@ -201,9 +206,6 @@ func unmarshalRunnerSettings(raw string, routing *runnerauth.Routing) error {
 func readRunnerRoutingSnapshot(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.RoutingSnapshot, error) {
 	runner, _, _, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), func() time.Time { return now })
 	if err == nil {
-		err = applyUrgentRunnerRouting(ctx, db, &runner)
-	}
-	if err == nil {
 		runner.ProjectRanks, err = readRunnerProjectRanks(ctx, db, runner.RunnerID, runner.OrganizationID)
 	}
 	return runnerauth.RoutingSnapshot{RunnerID: id, Revision: runner.Revision, Routing: runner.Routing}, err
@@ -223,18 +225,20 @@ func (s *Service) getRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runnerID string) (runnerauth.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	credential := scope.credential
 	if credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != apiScopeAdmin || credential.NativeOnly) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
 	var visible bool
-	if err := s.database.db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND removed_at IS NULL)", scope.organization, runnerID).Scan(&visible); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM runner_identities WHERE organization_id = ? AND id = ? AND removed_at IS NULL)", scope.organization, runnerID).Scan(&visible); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	return readRunnerWithClock(ctx, s.database.db, scope.organization, runnerID, s.config.now)
+	return readRunnerWithClock(ctx, s.database.reader, scope.organization, runnerID, s.config.now)
 }
 
 type runnerRoutingRequest struct {
@@ -433,13 +437,15 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 }
 
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	query := "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id"
 	args := []any{organization}
 	if limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, limit, offset)
 	}
-	rows, err := s.database.db.QueryContext(ctx, query, args...)
+	rows, err := s.database.reader.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -459,7 +465,7 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 	}
 	result := []runnerauth.Runner{}
 	for _, id := range ids {
-		r, err := readRunnerWithClock(ctx, s.database.db, organization, id, s.config.now)
+		r, err := readRunnerWithClock(ctx, s.database.reader, organization, id, s.config.now)
 		if err != nil {
 			return nil, err
 		}

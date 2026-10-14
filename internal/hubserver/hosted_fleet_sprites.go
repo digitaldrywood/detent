@@ -15,8 +15,10 @@ import (
 )
 
 func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential apiCredential, view *hostedFleetRunner, runner runnerauth.Runner, visible map[tracker.ProjectID]bool) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var name, failed string
-	if err := s.database.db.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), ''), COALESCE(json_extract(capabilities_json, '$.sprite_wake_failed_at'), '') FROM machines WHERE id=? AND organization_id=?`, runner.MachineID, runner.OrganizationID).Scan(&name, &failed); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), ''), COALESCE(json_extract(capabilities_json, '$.sprite_wake_failed_at'), '') FROM machines WHERE id=? AND organization_id=?`, runner.MachineID, runner.OrganizationID).Scan(&name, &failed); err != nil {
 		return err
 	}
 	if name == "" || name != runner.Hostname || !validSpritesSlug(name) {
@@ -32,7 +34,7 @@ func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credenti
 				continue
 			}
 			scope := nativeScope{organization: runner.OrganizationID, project: project, credential: credential}
-			scope, organization, envelope, err := resolveSpritesSecret(ctx, s.database.db, scope)
+			scope, organization, envelope, err := resolveSpritesSecret(ctx, s.database.reader, scope)
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}

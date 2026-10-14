@@ -45,12 +45,37 @@ type platformTenantSections struct {
 
 type platformTenantDetail struct {
 	platformTenantSections
-	Organization platformOrganization        `json:"organization"`
-	Events       []platformOrganizationEvent `json:"events"`
-	Unavailable  []string                    `json:"unavailable"`
-	CSRF         string                      `json:"csrf"`
-	CanGrant     bool                        `json:"can_grant"`
-	CanResume    bool                        `json:"can_resume"`
+	Usage               *platformTenantUsage        `json:"usage"`
+	Organization        platformOrganization        `json:"organization"`
+	Events              []platformOrganizationEvent `json:"events"`
+	Unavailable         []string                    `json:"unavailable"`
+	CSRF                string                      `json:"csrf"`
+	CanGrant            bool                        `json:"can_grant"`
+	CanResume           bool                        `json:"can_resume"`
+	AICredits           *platformTenantCredits      `json:"ai_credits"`
+	CreditBalanceMicros *int64                      `json:"credit_balance_micros"`
+}
+
+type platformTenantCredits struct {
+	BalanceMicros *int64 `json:"balance_micros"`
+	SpentMicros   int64  `json:"spent_micros"`
+	Month         string `json:"month"`
+	AutoEnabled   bool   `json:"auto_enabled"`
+	History       []struct {
+		AmountMicros int64  `json:"amount_micros"`
+		Kind         string `json:"kind"`
+		Actor        string `json:"actor"`
+		Reason       string `json:"reason"`
+		At           string `json:"at"`
+	} `json:"history"`
+}
+
+type platformTenantUsage struct {
+	WindowEndsAt string `json:"window_ends_at"`
+	Allowances   map[string]struct {
+		Used  int64  `json:"used"`
+		Limit *int64 `json:"limit"`
+	} `json:"allowances"`
 }
 
 func (s *Service) platformTenantSections(ctx context.Context, organization Organization, parallel bool) (platformTenantSections, platformBilling) {
@@ -166,8 +191,29 @@ func (s *Service) platformOrganizationJSON(c echo.Context) error {
 	item.CanSupport = item.State == "ready" && s.supportActor(ctx, session.Email)
 	if organization.State == "ready" {
 		var billing platformBilling
-		detail.platformTenantSections, billing = s.platformTenantSections(ctx, organization, true)
+		var wait sync.WaitGroup
+		wait.Go(func() {
+			detail.platformTenantSections, billing = s.platformTenantSections(ctx, organization, true)
+		})
+		wait.Go(func() {
+			call, cancel := context.WithTimeout(ctx, platformCallTimeout)
+			defer cancel()
+			var result platformTenantCredits
+			if s.readPlatformSection(call, organization, "ai-credits/balance", &result) {
+				detail.CreditBalanceMicros = result.BalanceMicros
+				if result.BalanceMicros != nil && result.Month != "" && result.History != nil {
+					detail.AICredits = &result
+				}
+			}
+		})
+		wait.Wait()
 		item.applySections(detail.platformTenantSections, billing)
+		var usage platformTenantUsage
+		call, cancel := context.WithTimeout(ctx, platformCallTimeout)
+		defer cancel()
+		if s.readPlatformSection(call, organization, "usage", &usage) {
+			detail.Usage = &usage
+		}
 	}
 	if s.config.Billing != nil {
 		var customer string
@@ -183,7 +229,9 @@ func (s *Service) platformOrganizationJSON(c echo.Context) error {
 		name        string
 		unavailable bool
 	}{
+		{"ai_credits", detail.CreditBalanceMicros == nil},
 		{"members", detail.Members == nil}, {"runners", detail.Runners == nil}, {"projects", detail.Projects == nil}, {"entitlements", detail.Entitlements == nil}, {"billing", !item.Billing.Available},
+		{"usage", detail.Usage == nil},
 	} {
 		if section.unavailable {
 			detail.Unavailable = append(detail.Unavailable, section.name)
@@ -214,5 +262,5 @@ func (s *Service) resumePlatformProvisioning(c echo.Context) error {
 	if _, err := s.resumeOrganization(ctx, organization); err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"code": "unavailable", "message": "Setup could not be resumed"})
 	}
-	return c.JSON(http.StatusOK, map[string]string{"next": "/platform/tenants?tenant=" + organization.ID})
+	return c.JSON(http.StatusOK, map[string]string{"next": "/platform/tenants/" + organization.ID})
 }

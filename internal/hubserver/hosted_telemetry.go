@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -53,6 +54,10 @@ func (s *Service) reserveHostedInvitation(ctx context.Context, email string) err
 // already held belongs to an earlier pending invitation, so a failed attempt
 // must leave it in place.
 func (s *Service) reserveHostedInvitationSeat(ctx context.Context, email string) (bool, error) {
+	runtimePlans := s.database.plans()
+	if runtimePlans == nil {
+		return false, errors.New("hosted entitlements are disabled")
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -74,7 +79,7 @@ func (s *Service) reserveHostedInvitationSeat(ctx context.Context, email string)
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members WHERE email = ? AND active = 1", email).Scan(&active); err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_member_reservations(email,expires_at) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM hosted_members WHERE email = ? AND active = 1) ON CONFLICT(email) DO UPDATE SET expires_at = excluded.expires_at`, email, now.Add(time.Duration(s.database.hostedPlans.InvitationSeconds)*time.Second).Unix(), email); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO hosted_member_reservations(email,expires_at) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM hosted_members WHERE email = ? AND active = 1) ON CONFLICT(email) DO UPDATE SET expires_at = excluded.expires_at`, email, now.Add(time.Duration(runtimePlans.InvitationSeconds)*time.Second).Unix(), email); err != nil {
 		return false, err
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {

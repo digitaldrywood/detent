@@ -29,11 +29,12 @@ type GitHubDiscoveryPage struct {
 }
 
 type GitHubBatchItem struct {
-	Number     int              `json:"number"`
-	WorkItemID NativeWorkItemID `json:"work_item_id,omitempty"`
-	Status     string           `json:"status"`
-	Error      string           `json:"error,omitempty"`
-	RetryAt    string           `json:"retry_at,omitempty"`
+	Number               int              `json:"number"`
+	WorkItemID           NativeWorkItemID `json:"work_item_id,omitempty"`
+	Status               string           `json:"status"`
+	Error                string           `json:"error,omitempty"`
+	RetryAt              string           `json:"retry_at,omitempty"`
+	SourceCloseRequested bool             `json:"source_close_requested,omitempty"`
 }
 
 // GitHubBatch persists intake intent and checkpoints, without execution state.
@@ -43,6 +44,7 @@ type GitHubBatch struct {
 	HubOwned      bool                `json:"hub_owned,omitempty"`
 	AllowDispatch bool                `json:"allow_dispatch,omitempty"`
 	LabelLanes    map[string]string   `json:"label_lanes,omitempty"`
+	IgnoreLanes   bool                `json:"ignore_lane_labels,omitempty"`
 	Limit         int                 `json:"limit,omitempty"`
 	ID            string              `json:"id"`
 	Revision      int64               `json:"revision"`
@@ -67,6 +69,7 @@ type GitHubBatchCommand struct {
 	Numbers       []int             `json:"numbers"`
 	Destination   string            `json:"destination"`
 	AllowDispatch bool              `json:"allow_dispatch"`
+	IgnoreLanes   bool              `json:"ignore_lane_labels"`
 }
 
 type GitHubBatchTask struct {

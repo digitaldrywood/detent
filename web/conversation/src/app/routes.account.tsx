@@ -13,20 +13,21 @@
 // `/projects/:project/settings`. They stay as routes rather than being dropped
 // because they are what links, bookmarks and the end-to-end specs already
 // point at.
-import { createRoute, redirect, type AnyRoute } from "@tanstack/react-router";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { createRoute, lazyRouteComponent, redirect, type AnyRoute } from "@tanstack/react-router";
 import React from "react";
 
 import { LoginRoute } from "./account/Login.tsx";
 import { writeLastProject } from "./client.ts";
-import { SetupRoute } from "./account/Setup.tsx";
-import { SettingsRoute } from "./settings/Settings.tsx";
-import { DEFAULT_SECTION, isSettingsSectionId } from "./settings/sections.tsx";
-import { UsageRoute } from "./usage/UsagePage.tsx";
-import { ActivityRoute } from "./activity/ActivityPage.tsx";
-import { DiagnosticsRoute } from "./diagnostics/DiagnosticsPage.tsx";
-import { ReportsRoute } from "./reports/ReportsPage.tsx";
+import { DEFAULT_SECTION } from "./settings/sections.tsx";
 import { usePageTitle } from "./pageTitle.ts";
+
+const SettingsScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SettingsScreen");
+const SetupScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SetupScreen");
+const UsageRoute = lazyRouteComponent(() => import("./usage/UsagePage.tsx"), "UsageRoute");
+const ActivityRoute = lazyRouteComponent(() => import("./activity/ActivityPage.tsx"), "ActivityRoute");
+const DiagnosticsRoute = lazyRouteComponent(() => import("./diagnostics/DiagnosticsPage.tsx"), "DiagnosticsRoute");
+const ReportsRoute = lazyRouteComponent(() => import("./reports/ReportsPage.tsx"), "ReportsRoute");
+const REPORT_TAB_PATHS = new Set(["flow", "quality", "cost", "failures"]);
 
 /**
  * The navigation the screens take. It is passed in rather than imported so the
@@ -45,32 +46,9 @@ export function navigationTarget(to: string): { readonly to: string; readonly se
   return { to: to.slice(0, at), search: Object.fromEntries(new URLSearchParams(to.slice(at + 1))) };
 }
 
-function useGo(): (to: string) => void {
-  const navigate = useNavigate();
-  return React.useCallback(
-    (to: string) => {
-      void navigate(navigationTarget(to) as never);
-    },
-    [navigate],
-  );
-}
-
-function SettingsScreen(): React.ReactElement {
-  const { section } = useParams({ strict: false }) as { section?: string };
-  const search = useSearch({ strict: false }) as { project?: string };
-  const id = section !== undefined && isSettingsSectionId(section) ? section : DEFAULT_SECTION;
-  return <SettingsRoute section={id} project={search.project ?? null} onNavigate={useGo()} />;
-}
-
 function LoginScreen(): React.ReactElement {
   usePageTitle("Sign in");
   return <LoginRoute />;
-}
-
-function SetupScreen(): React.ReactElement {
-  const { project } = useParams({ strict: false }) as { project?: string };
-  usePageTitle("Project setup");
-  return <SetupRoute projectId={project ?? ""} onNavigate={useGo()} />;
 }
 
 /** The paths this file registers, for the router and for a test. */
@@ -81,6 +59,7 @@ export const ACCOUNT_ROUTE_PATHS = [
   "/settings/$section",
   "/usage",
   "/reports",
+  "/reports/$tab",
   "/diagnostics",
   "/projects/$project/settings",
   "/projects/$project/setup",
@@ -119,6 +98,15 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
     createRoute({ getParentRoute, path: "/settings/$section", component: SettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
     createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
+    createRoute({
+      getParentRoute,
+      path: "/reports/$tab",
+      beforeLoad: ({ params, search }) => {
+        const { tab } = params as { tab: string };
+        if (!REPORT_TAB_PATHS.has(tab)) throw redirect({ to: "/reports", search: search as never });
+      },
+      component: ReportsRoute,
+    }),
     createRoute({ getParentRoute, path: "/activity", component: ActivityRoute }),
     createRoute({ getParentRoute, path: "/diagnostics", component: DiagnosticsRoute }),
     createRoute({

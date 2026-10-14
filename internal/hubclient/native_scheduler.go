@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type nativeClaim struct {
@@ -92,10 +93,10 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.nativeHeartbeatMu[project] = heartbeat
 	}
 	now := s.now()
-	previous := s.nativeHeartbeats[project]
+	previousConfiguration := s.configHeartbeats[project]
 	s.mu.Unlock()
 	var ownerView *runnerauth.ProjectConfiguration
-	if projectOwner != nil && (previous.IsZero() || !now.Before(previous.Add(s.heartbeatInterval))) {
+	if projectOwner != nil && (previousConfiguration.IsZero() || !now.Before(previousConfiguration.Add(s.heartbeatInterval))) {
 		supported, err := source.client.HubFeature(ctx, tracker.NativeProjectConfigurationCapability)
 		if err != nil {
 			return err
@@ -212,10 +213,6 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		break
 	}
 	s.mu.Lock()
-	if current := s.nativeHeartbeats[project]; !current.IsZero() && s.now().Before(current.Add(s.heartbeatInterval)) {
-		s.mu.Unlock()
-		return nil
-	}
 	s.machine.Update = update
 	s.machine.CapacityConfig = capacityConfig
 	if capacityConfig != nil {
@@ -230,6 +227,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	s.machine.Problems = problems
 	machine := s.machine
 	s.mu.Unlock()
+	if s.availableCapacity != nil {
+		machine.Capacity = max(0, min(machine.Capacity, s.availableCapacity(ctx, machine.Capacity)))
+	}
 	machine.ProjectConfiguration = projectConfig
 	machine.LocalChecks = localChecks
 	machine.Admission = admission
@@ -258,6 +258,12 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	machine.HostMetrics = nil
 	s.mu.Lock()
 	s.nativeHeartbeats[project] = s.now()
+	if projectConfig != nil {
+		if s.configHeartbeats == nil {
+			s.configHeartbeats = make(map[tracker.ProjectID]time.Time)
+		}
+		s.configHeartbeats[project] = s.now()
+	}
 	s.mu.Unlock()
 	heartbeat.Unlock()
 	locked = false
@@ -656,4 +662,23 @@ func nativeAuthorityLost(err error) bool {
 	var apiErr *APIError
 	return nativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
 		(apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
+}
+
+func (s *Scheduler) CommitIdentity() workspace.CommitIdentity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return workspace.CommitIdentity{Name: "Detent runner", Email: string(s.machine.ID) + "@runners.detent.invalid"}
+}
+
+func (s *Scheduler) ReportCommitPolicy(project string, report workspace.CommitReport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.localChecks == nil {
+		s.localChecks = make(map[string]runnerauth.LocalChecks)
+	}
+	checks := s.localChecks[project]
+	checks.CommitName = report.Identity.Name
+	checks.CommitEmail = report.Identity.Email
+	checks.CommitSigning = report.Signing
+	s.localChecks[project] = checks
 }

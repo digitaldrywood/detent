@@ -22,7 +22,7 @@ func TestINV13BoardCardContent(t *testing.T) {
 	}{
 		{name: "running", view: boardCardView{Running: true}, card: projectKanbanCard{CIStatus: "fail"}, want: "Running"},
 		{name: "blocked", card: projectKanbanCard{Blockers: []string{"repo#1"}}, want: "Blocked · 1"},
-		{name: "dependency", view: boardCardView{DispatchStatus: "Waiting"}, card: projectKanbanCard{Blockers: []string{"digitaldrywood/pyroapex#2129 [native] (Rework)"}}, want: "Waiting on #2129"},
+		{name: "dependency", view: boardCardView{DispatchStatus: "Waiting"}, card: projectKanbanCard{Blockers: []string{"example-org/pyroapex#2129 [native] (Rework)"}}, want: "Waiting on #2129"},
 		{name: "CI red", card: projectKanbanCard{CIStatus: "fail"}, want: "CI failed"},
 		{name: "scheduler dependency", view: boardCardView{DispatchStatus: "Waiting", ExtraText: "Waiting on owner/repo#2064 · observed yesterday"}, want: "Waiting on #2064"},
 		{name: "CI running before sync", view: boardCardView{Work: workItemMetadata{SyncKey: "error", Sync: "Error"}}, card: projectKanbanCard{CIStatus: "pending"}, want: "CI running"},
@@ -89,7 +89,7 @@ func TestINV13SheetObservations(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 16, 16, 0, 0, 0, time.UTC)
 	data := DashboardData{Snapshot: telemetry.Snapshot{GeneratedAt: now, Tracker: telemetry.SnapshotSection{ObservedAt: now.Add(-time.Minute)}}}
-	card := projectKanbanCard{ProjectID: "detent", IssueID: "2805", Identifier: "digitaldrywood/detent#2805", Stage: "Todo"}
+	card := projectKanbanCard{ProjectID: "detent", IssueID: "2805", Identifier: "example-org/example-project#2805", Stage: "Todo"}
 	rendered := renderBoardComponent(t, BoardCardSheetCore(data, card, false))
 	for _, want := range []string{"Tracker snapshot", "2026-09-16T15:59:00Z", "Current condition", "Scheduler evidence unavailable"} {
 		if !strings.Contains(rendered, want) {

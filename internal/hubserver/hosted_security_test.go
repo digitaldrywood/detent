@@ -358,14 +358,19 @@ func (f hostedSecurityFixture) user(t *testing.T, name, role, email, grant, supp
 
 func (f hostedSecurityFixture) grant(t *testing.T, user hostedSecurityUser, write, runner bool) {
 	t.Helper()
+	f.grantContext(t.Context(), t, user, write, runner)
+}
+
+func (f hostedSecurityFixture) grantContext(ctx context.Context, t *testing.T, user hostedSecurityUser, write, runner bool) {
+	t.Helper()
 	var principal string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id = ?", user.identity.Subject).Scan(&principal); err != nil {
+	if err := f.service.database.db.QueryRowContext(ctx, "SELECT principal_id FROM hosted_members WHERE user_id = ?", user.identity.Subject).Scan(&principal); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,'org_security',?,?,?) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner", user.identity.Subject, f.project, write, runner); err != nil {
+	if _, err := f.service.database.db.ExecContext(ctx, "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,'org_security',?,?,?) ON CONFLICT(user_id,project_id) DO UPDATE SET can_write=excluded.can_write,manage_runner=excluded.manage_runner", user.identity.Subject, f.project, write, runner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_security',?) ON CONFLICT DO NOTHING", principal, f.project); err != nil {
+	if _, err := f.service.database.db.ExecContext(ctx, "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_security',?) ON CONFLICT DO NOTHING", principal, f.project); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -657,7 +662,7 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	reader := f.user(t, "reader", "viewer", "reader@example.test", "read", "")
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
-	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "cached-private-sentinel", State: "Todo"}
+	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "Receipt reconnect", State: "Todo"}
 	created := f.request(t, writer, http.MethodPost, f.base+"/work-items", command)
 	requireNativeStatus(t, created, http.StatusOK)
 	// Simulate a pre-upgrade receipt: its session suffix must not let a
@@ -694,7 +699,9 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	changed.Title = "changed"
 	requireNativeStatus(t, f.request(t, secondSession, http.MethodPost, f.base+"/work-items", changed), http.StatusConflict)
 	other := f.user(t, "other-writer", "member", "other-writer@example.test", "write", "")
-	distinct := f.request(t, other, http.MethodPost, f.base+"/work-items", command)
+	distinct := createIndependentNativeIssue(t, command, func(request tracker.CreateIssue) *httptest.ResponseRecorder {
+		return f.request(t, other, http.MethodPost, f.base+"/work-items", request)
+	})
 	requireNativeStatus(t, distinct, http.StatusOK)
 	var first, second tracker.NativeIssue
 	decodeHubResponse(t, created, &first)

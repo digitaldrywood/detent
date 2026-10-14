@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
@@ -447,6 +448,46 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
+	if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id='org_alpha'"); err != nil {
+		t.Fatal(err)
+	}
+	allocation, err := f.service.registry.Organization(t.Context(), "org_alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originFor := func(key accessKey) entryauthority.Origin {
+		stored, err := f.service.activeAccessKey(t.Context(), apikey.HashToken(key.Token))
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims, err := f.service.keyClaims(t.Context(), stored, allocation, http.MethodPost, "/internal/v1/keys/call", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entryauthority.Origin{KeyID: stored.ID, CredentialBinding: claims.Key.CredentialBinding, Subject: claims.Subject, Issuer: claims.Issuer, Generation: claims.Generation}
+	}
+	origin := originFor(key)
+	if _, err := f.service.resolveTenantKey(t.Context(), allocation, origin); err != nil {
+		t.Fatalf("current managed authority: %v", err)
+	}
+	for _, changed := range []entryauthority.Origin{
+		{KeyID: origin.KeyID, Subject: origin.Subject, Issuer: origin.Issuer, Generation: origin.Generation},
+		{KeyID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Subject: "other_subject", Issuer: origin.Issuer, Generation: origin.Generation},
+		{KeyID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Subject: origin.Subject, Issuer: "other_entry", Generation: origin.Generation},
+		{KeyID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Subject: origin.Subject, Issuer: origin.Issuer, Generation: origin.Generation + 1},
+	} {
+		if _, err := f.service.resolveTenantKey(t.Context(), allocation, changed); err == nil {
+			t.Fatal("changed origin accepted")
+		}
+	}
+	other, err := f.service.registry.Organization(t.Context(), "org_beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.resolveTenantKey(t.Context(), other, origin); err == nil {
+		t.Fatal("independent tenant accepted managed authority")
+	}
+
 	client := newBrowser(t, f.service.Handler())
 	headers := map[string]string{"Authorization": "Bearer " + key.Token, "X-Detent-Organization": "org_alpha"}
 	response := attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
@@ -470,6 +511,14 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	if rotated.Code != http.StatusCreated || json.Unmarshal(rotated.Body.Bytes(), &replacement) != nil || replacement.ID != key.ID || replacement.Token == key.Token {
 		t.Fatalf("rotate=%d %s", rotated.Code, rotated.Body.String())
 	}
+	if _, err := f.service.resolveTenantKey(t.Context(), allocation, origin); err == nil {
+		t.Fatal("rotated credential restored async authority")
+	}
+	origin = originFor(replacement)
+	if _, err := f.service.resolveTenantKey(t.Context(), allocation, origin); err != nil {
+		t.Fatalf("replacement authority: %v", err)
+	}
+
 	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("old token still accepted=%d", response.Code)
@@ -483,14 +532,23 @@ func TestAccessKeyLifecycleAndREST(t *testing.T) {
 	if revoked.Code != http.StatusNoContent {
 		t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
 	}
+	if _, err := f.service.resolveTenantKey(t.Context(), allocation, origin); err == nil {
+		t.Fatal("revoked credential restored async authority")
+	}
+
 	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "key_inactive") {
 		t.Fatalf("revoked key=%d %s", response.Code, response.Body.String())
 	}
 	expiring := createTestAccessKey(t, owner, "global", nil, "")
+	expiredOrigin := originFor(expiring)
 	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET expires_at=? WHERE id=?", formatTime(time.Now().Add(-time.Second)), expiring.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.service.resolveTenantKey(t.Context(), allocation, expiredOrigin); err == nil {
+		t.Fatal("expired key restored async authority")
+	}
+
 	headers["Authorization"] = "Bearer " + expiring.Token
 	response = attachmentRequest(t, client, http.MethodGet, "/api/v2/projects", nil, headers)
 	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "key_inactive") {

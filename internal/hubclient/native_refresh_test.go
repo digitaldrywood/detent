@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,70 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+func TestNativeStateRefreshOversizedIssuePages(t *testing.T) {
+	for _, state := range []string{"Todo", "Human Review"} {
+		t.Run(state, func(t *testing.T) {
+			items := make([]tracker.NativeIssue, 182)
+			for index := range items {
+				items[index] = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_%d", index)), Number: index + 1, Revision: 3}, State: state, Body: strings.Repeat("x", 12<<10)}
+			}
+			reads := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads++
+				if !strings.HasSuffix(r.URL.Path, "/work-items") || r.URL.Query().Get("state") != state {
+					t.Errorf("unexpected refresh request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+				if err != nil || limit < 1 {
+					t.Error("invalid limit")
+					return
+				}
+				start := 0
+				if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+					start, err = strconv.Atoi(cursor)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				end := min(start+limit, len(items))
+				page := tracker.Page[tracker.NativeIssue]{Items: items[start:end]}
+				if end < len(items) {
+					page.NextCursor = strconv.Itoa(end)
+				}
+				_ = json.NewEncoder(w).Encode(page)
+			}))
+			defer server.Close()
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			connector, err := NewNativeConnector(native)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := connector.FetchIssuesByStates(t.Context(), []string{state})
+			if err != nil || len(got) != len(items) {
+				t.Fatalf("refresh count=%d want=%d error=%v", len(got), len(items), err)
+			}
+			for index, issue := range got {
+				if issue.ID != string(items[index].WorkItemID) || issue.Description != items[index].Body || issue.State != state {
+					t.Fatalf("refresh lost issue %d", index)
+				}
+			}
+			if reads < 3 || reads > 10 {
+				t.Fatalf("unexpected page reads=%d", reads)
+			}
+		})
+	}
+}
 
 func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 	t.Parallel()

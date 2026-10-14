@@ -360,6 +360,17 @@ func (c *NativeClient) HeartbeatMachine(ctx context.Context, machine Machine) er
 			machine.LocalChecks = nil
 		}
 	}
+	if machine.LocalChecks != nil && machine.LocalChecks.CommitSigning != "" {
+		supported, err := c.HubFeature(ctx, tracker.NativeRunnerCommitPolicyCapability)
+		if err != nil {
+			return err
+		}
+		if !supported {
+			checks := *machine.LocalChecks
+			checks.CommitName, checks.CommitEmail, checks.CommitSigning = "", "", ""
+			machine.LocalChecks = &checks
+		}
+	}
 	if machine.LocalChecks != nil && (machine.LocalChecks.CheckoutMessage != "" || machine.LocalChecks.CheckoutFix != "") {
 		supported, err := c.HubFeature(ctx, tracker.NativeProjectCheckoutCapability)
 		if err != nil {

@@ -26,6 +26,14 @@ func nativeIssueContract(ctx context.Context, q nativeQueryer, scope nativeScope
 	return config.ResolvePolicyIssueContract(approval.Policy)
 }
 
+func nativeReporterContracts(ctx context.Context, q nativeQueryer, scope nativeScope) (config.ReporterContracts, error) {
+	contract, err := nativeIssueContract(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	return config.ResolveReporterContracts(contract.Context)
+}
+
 func nativeContractIssue(issue tracker.NativeIssue) connector.Issue {
 	return connector.Issue{Title: issue.Title, Description: issue.Body, IssueContract: issue.IssueContract}
 }
@@ -57,7 +65,7 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" {
 		return true, "", nil
 	}
-	if issue.IssueContract.Exempt {
+	if strings.EqualFold(issue.State, "Triage") || issue.IssueContract.Exempt {
 		return true, "", nil
 	}
 	cfg, err := nativeIssueContractConfig(ctx, q, scope)
@@ -87,6 +95,9 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 }
 
 func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) error {
+	if strings.EqualFold(issue.State, "Triage") {
+		return nil
+	}
 	cfg, err := nativeIssueContractConfig(ctx, q, scope)
 	if err != nil {
 		return nil
@@ -122,7 +133,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if len(evidence) != 1 || evidence[0].RunURL != origin.Source {
 		return nil
 	}
-	approval, err := readProjectPolicy(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	if err != nil || approval.Policy.Authored == nil {
 		return nil
 	}
@@ -130,7 +141,7 @@ func (s *Service) observeScheduledRepair(ctx context.Context, scope nativeScope,
 	if err != nil || contract.ScheduledRepairBody() == "" {
 		return nil
 	}
-	repository, err := policyRepository(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	if err != nil || !strings.EqualFold(repository, "digitaldrywood/detent") || !strings.EqualFold(repository, evidence[0].Repository) {
 		return nil
 	}

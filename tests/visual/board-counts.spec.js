@@ -12,8 +12,8 @@ for (const state of [
   { name: "partial", count: "2", note: " (1 project unknown)", waiting: "8+" },
   { name: "unknown", count: "unknown", note: " (3 projects unknown)", waiting: "8+" },
   { name: "single-cached", count: "unknown", note: " (1 project unknown)", waiting: "8" },
-  { name: "complete-degraded", count: "2", note: " (1 project unknown)", waiting: "8", project: "parable", reason: "Tracker refresh failed with complete sections retained." },
-  { name: "paused-complete", count: "3", note: "", waiting: "8", project: "parable", reason: "Paused: Operator maintenance" },
+  { name: "complete-degraded", count: "2", note: " (1 project unknown)", waiting: "8", project: "example-project", reason: "Tracker refresh failed with complete sections retained." },
+  { name: "paused-complete", count: "3", note: "", waiting: "8", project: "example-project", reason: "Paused: Operator maintenance" },
 ]) {
   test(`board header with ${state.name} projects`, async ({ page }) => {
     await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": `board-counts-${state.name}` });
@@ -22,7 +22,7 @@ for (const state of [
     await expect(page.locator("#fig-blocked")).toHaveText(`${state.count} blocked${state.note}`);
     await expect(page.locator("#fig-waiting")).toHaveText(`${state.waiting} waiting`);
     if (state.name === "partial") {
-      const project = page.locator('[data-help-term="sidebar-project-parable"]');
+      const project = page.locator('[data-help-term="sidebar-project-example-project"]');
       await expect(project).toContainText("unknown");
       await project.hover();
       const tooltip = page.locator("#help-tooltip");

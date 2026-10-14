@@ -75,6 +75,47 @@ events supply no instruction-origin provenance, so `causal_attribution` remains
 partial coverage. Older profiles lack structured actions and cannot be repaired
 from discarded evidence; absent causal attribution is unknown.
 
+## Hub API latency
+
+Every authenticated `/api/v2` response carries a `Server-Timing` header with
+`db`, `compute`, `encode` and `total` durations in milliseconds. `db` is the
+time spent executing SQLite statements and stepping their rows on any pool,
+`encode` is JSON encoding, and `compute` is the remainder of `total`. The
+`db` span leaves out `BEGIN`, `COMMIT` and the wait for a pool connection;
+that time falls into `compute`.
+Reads made of several sub-reads add one named span per sub-read after
+`total`, such as `reports_analytics`, `reports_diagnostics`,
+`reports_completion`, `reports_residence`, `reports_prior` and the
+`analytics_*` parts of the analytics read; spans of concurrent project reads
+add up. The `hub request timing` log line of a slow request carries `db_ms`
+and the same spans in `spans_ms`. Neither appears in any UI.
+Unauthenticated responses carry no timing. One header is a single sample; it
+never establishes a trend.
+
+The tenant request-metrics store records per-route latency history: route
+template, status class, request count, p50, p95 and max, in hourly buckets
+kept for 90 days. Requests only update an in-memory batch, which is flushed to
+the metrics store and never to the tenant writer. Organization administrators
+read the history through `route_latency` in the `time_series` MCP tool and the
+request diagnostics API ([Hub API](hub-api.md)). Slowdown and regression
+claims cite this history.
+
+| Read | p95 budget |
+|---|---|
+| Board and issue reads | under 200 ms |
+| Activity | under 300 ms |
+| Reports and Diagnostics | under 500 ms |
+
+`TestHotReadQueryPlans` runs `EXPLAIN QUERY PLAN` on every statement that
+Activity, the work-items list, board lanes, projects, Reports and Diagnostics
+issue. A hot read never fully scans `native_attempts`,
+`collaboration_events`, `change_requests`, `attempt_usage`,
+`analytics_hourly_rollups` or the rollup views, and never sorts rows of those
+tables in a temporary B-tree. `TestAnalyticsRollupReportPlans` applies the
+same rules to Reports over production-shaped tenants and logs their times. A statement that currently breaks
+a rule is listed in the test's known-failing table with the issue that fixes
+it, and the entry is removed when that fix lands.
+
 ## GitHub usage timing and privacy
 
 The existing `github rest scope usage` event now includes a bounded `timings`

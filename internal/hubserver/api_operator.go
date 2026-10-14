@@ -197,8 +197,10 @@ func operatorAPIError(c echo.Context, err error) error {
 }
 
 func (d *database) workItemRepositoryID(ctx context.Context, id tracker.WorkItemID) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var repositoryID int64
-	if err := d.db.QueryRowContext(ctx, "SELECT repository_id FROM issues WHERE id = ?", id).Scan(&repositoryID); err != nil {
+	if err := d.reader.QueryRowContext(ctx, "SELECT repository_id FROM issues WHERE id = ?", id).Scan(&repositoryID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return 0, fmt.Errorf("%w: %d", tracker.ErrWorkItemNotFound, id)
 		}

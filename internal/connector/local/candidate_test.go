@@ -55,9 +55,11 @@ func TestConnectorReadCandidatesUsesDeterministicBoundedOrder(t *testing.T) {
 func TestConnectorReadCandidatesSelectsAnyLabel(t *testing.T) {
 	t.Parallel()
 
+	at := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	c, err := New(Config{
 		Path:      filepath.Join(t.TempDir(), "candidate-label.db"),
 		ProjectID: "detent",
+		Now:       func() time.Time { return at },
 		Issues: []connector.Issue{
 			{ID: "1", Identifier: "DD-1", State: "Backlog", Labels: []string{"needs-decision"}},
 			{ID: "2", Identifier: "DD-2", State: "Todo", Labels: []string{"SENTRY"}},

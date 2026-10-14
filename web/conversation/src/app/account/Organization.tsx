@@ -33,7 +33,7 @@ import { useMutation, useResource } from "./useResource.ts";
 import { signInPath } from "../../runtime/basePath.ts";
 import { behindSharedEntry, ENTRY_CREATE_ORGANIZATION, ENTRY_ORGANIZATIONS, useSharedOrganizations } from "../entry/shared.ts";
 
-const ROLES = ["owner", "admin", "member", "viewer"] as const;
+const ROLES = ["owner", "admin", "member", "reporter", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((role) => ({
   value: role,
   label: role.charAt(0).toUpperCase() + role.slice(1),
@@ -191,7 +191,7 @@ export function CreateOrganizationCard({
           <Input
             id="org-create-name"
             value={name}
-            placeholder="Threefold Solutions"
+            placeholder="Your company name"
             onChange={(event) => setName(event.currentTarget.value)}
             className="flex-1"
           />
@@ -303,19 +303,22 @@ export function MembersTable({
               </TableCell>
               <TableCell>
                 {canManage ? (
-                  <NativeSelect
-                    aria-label={`Role for ${identity}`}
-                    value={member.role}
-                    disabled={busy}
-                    options={ROLE_OPTIONS.map((option) => ({
-                      ...option,
-                      // Only an owner may make another owner: the hub refuses
-                      // it, so the option is not offered to an admin either.
-                      disabled: option.value === "owner" && actorRole !== "owner",
-                    }))}
-                    onValueChange={(role) => onRoleChange(member, role)}
-                    className="min-w-[130px]"
-                  />
+                  <div className="flex flex-col gap-1.5">
+                    <NativeSelect
+                      aria-label={`Role for ${identity}`}
+                      value={member.role}
+                      disabled={busy}
+                      options={ROLE_OPTIONS.map((option) => ({
+                        ...option,
+                        // Only an owner may make another owner: the hub refuses
+                        // it, so the option is not offered to an admin either.
+                        disabled: option.value === "owner" && actorRole !== "owner",
+                      }))}
+                      onValueChange={(role) => onRoleChange(member, role)}
+                      className="min-w-[130px]"
+                    />
+                    {member.role === "reporter" ? <p className="text-sm text-muted-foreground">Reads issues and files new ones into Triage.</p> : null}
+                  </div>
                 ) : (
                   <span className="text-sm capitalize text-muted-foreground">{member.role}</span>
                 )}
@@ -404,6 +407,7 @@ export function InviteForm({
           onValueChange={setRole}
           className="min-w-[130px]"
         />
+        {role === "reporter" ? <p className="text-sm text-muted-foreground">Reads issues and files new ones into Triage.</p> : null}
       </div>
       <ProjectAccess
         projects={projects}
@@ -472,7 +476,8 @@ export function OrganizationRoute(): React.ReactElement {
 
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
-  const shared = useSharedOrganizations();
+  const sharedListing = useSharedOrganizations();
+  const shared = sharedListing.error ? [] : sharedListing.value;
   const sharedEntry = behindSharedEntry();
   const organizations = shared ?? bootstrap?.organizations ?? [];
   const projects = React.useMemo(
@@ -585,6 +590,7 @@ export function OrganizationRoute(): React.ReactElement {
 
   return (
     <SettingsPageContainer>
+      <SlugSettings canManage={bootstrap?.actor.can_manage ?? false} />
       <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
         <h2 className="text-xl font-semibold tracking-[-0.01em]">
           {bootstrap?.organization.name ?? "Organization"}
@@ -787,4 +793,38 @@ export function OrganizationRoute(): React.ReactElement {
       />
     </SettingsPageContainer>
   );
+}
+
+export function SlugSettings({ projectId, canManage }: { readonly projectId?: string; readonly canManage: boolean }): React.ReactElement {
+  const api = useAccountApi();
+  const shared = behindSharedEntry();
+  const [current, setCurrent] = React.useState("");
+  const [draft, setDraft] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    let active = true;
+    void api.slug(projectId, shared).then(({ slug }) => { if (active) { setCurrent(slug); setDraft(slug); } }).catch((error: unknown) => { if (active) setError(String(error)); });
+    return () => { active = false; };
+  }, [api, projectId, shared]);
+  async function save(): Promise<void> {
+    setBusy(true); setError(null);
+    try {
+      await api.saveSlug(draft, current, projectId, shared);
+      window.location.reload();
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+    finally { setBusy(false); }
+  }
+  return <SettingsSection title="URL slug">
+    <p className="text-sm text-muted-foreground">Earlier slugs keep redirecting to the current address.</p>
+    <SettingsRow title={projectId === undefined ? "Organization slug" : "Project slug"}>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <Input aria-label={projectId === undefined ? "Organization slug" : "Project slug"} value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!canManage || busy || current === ""} maxLength={80} />
+          {canManage ? <Button size="sm" disabled={busy || current === "" || draft === current} onClick={() => void save()}>{busy ? "Saving…" : "Save slug"}</Button> : null}
+        </div>
+        <ControlError message={error} />
+      </div>
+    </SettingsRow>
+  </SettingsSection>;
 }

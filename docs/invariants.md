@@ -181,7 +181,9 @@ run in the full suite: hourly on pinned `develop` commits, and on every push
 or dispatch to `release/*`. Develop receives one full suite per SHA across
 scheduled and manual runs. Develop preflight skips completed non-cancelled
 runs regardless of conclusion; manual `force: true` or a non-`none` `fail_job`
-runs it again. Release runs always validate their event SHA, independently of
+runs it again. The finalizer reports skipped scheduled activity without
+publishing green validation or release evidence. Release runs always validate
+their event SHA, independently of
 develop and other release branches. Release evidence is the green full suite
 on the release branch head, never develop evidence reused after cherry-picks.
 Successful develop validation publishes `develop-full-ci`. Release validation
@@ -190,7 +192,13 @@ On a release branch, the finalizer verifies the validated SHA is still the branc
 an annotated `vX.Y.Z` provenance tag within that branch's `release/vX.Y` series,
 and dispatches the existing release workflow. Green develop commits select
 future cuts but do not publish stable tags. Cuts are weekly by default or
-operator-dispatched. Automatic selection uses the newest green develop ancestor
+operator-dispatched. Automatic cuts proceed only when no cut, release
+validation, signed build or deployment is active and
+no successful production deployment and smoke completed within one cadence
+derived from the cut workflow's UTC cron. Explicit manual SHA cuts remain
+available within that window. Actions history owns admission; API failures are
+errors, and inactive branches alone do not defer newer uncovered source.
+Automatic source selection uses the newest green develop ancestor
 not already covered by a release series or stable tag, or unreleased develop tip
 if none exists; it succeeds without cutting when develop is already covered.
 Explicit covered sources remain errors. Picks are develop-to-release only, with
@@ -202,13 +210,12 @@ a failed smoke stops promotion. Operators promote the validated tag tree to
 `main` through a reviewed PR. A commit already tagged in that series receives no
 new stable tag or replacement status. A retry authenticates the original tag
 evidence, refuses superseded evidence, and resumes dispatch only when no release
-run exists for that tag. Operator-landed
-Cloud deploys may dispatch the existing release workflow on a pinned develop commit:
-its successful `make check-land` Actions check is authenticated by the existing
-provenance owner, and the workflow publishes a signed next-patch `op.<sha12>`
-prerelease before deploying the same version and binary through staging and
-production. These prereleases do not replace stable installer or package feeds;
-enrolled runners follow the Hub through the existing coordinated update owner.
+run exists for that tag. Every release, including operator recovery, starts from
+a frozen develop snapshot on a release branch. Fixes land on develop first and
+are cherry-picked with `-x` through release-branch PRs. No develop prerelease or
+source-gate-only deployment path is permitted. Staging and production deploy
+the same validated version and binary; enrolled runners follow the Hub through
+the existing coordinated update owner.
 Every failing scheduled job is reported through the
 selected native owner at least High into Todo under a stable job fingerprint,
 following [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting);

@@ -20,8 +20,11 @@ The release workflow owns both staging and production deployment. It serializes
 the complete sequence without cancelling an active release when newer work
 arrives. Staging consumes the release's signed build artifact; develop pushes
 cannot replace it during smoke validation. Stable production installations and
-releases use validated version tags. An operator may also deploy a pinned develop
-commit through the same workflow's operator prerelease path below.
+releases use validated version tags. Every release starts by cutting and freezing
+a `release/vX.Y` branch from develop. Fixes land on develop first and reach the
+frozen branch only through reviewed `git cherry-pick -x` PRs. Only a green full
+suite on that release branch permits tagging, staging and then production.
+There is no operator develop prerelease or direct develop deployment path.
 
 Genuine source/test failures blocking deployment or a validated release require
 at least High priority in this repository's native reporting context, preserving
@@ -48,36 +51,6 @@ respective legacy Hub hostname alias. Do not give either key an unrestricted
 shell. `DETENT_API_KEY` must authorize the selected native reporter in both
 environments; Cloud failure reporting never falls back to GitHub issue writes.
 
-## Operator-landed Cloud deploys
-
-Dispatch `.github/workflows/release.yml` on `develop` with `operator_landed`
-enabled. The workflow pins the dispatch commit, verifies its develop ancestry,
-and runs `make check-land`. It binds the completed source-validation Actions
-check to the existing release provenance owner, including authenticated develop
-ruleset requirements. This release path uses that check instead of the scheduled
-full-suite requirement; it does not publish a local-gate status or change the
-scheduled stable-release policy.
-
-The workflow derives `v<next-patch>-op.<sha12>` from the latest published stable
-release and the pinned commit, creates an annotated provenance tag, verifies its
-evidence, and publishes it through the existing GoReleaser signing workflow.
-The prerelease stays out of the stable latest-release installer path and package
-manager feeds. Its signed runner archives and the deployed Hub binary come from
-the same build. Staging deploy and smoke still precede production deploy and
-smoke. Deployment environments must permit operator dispatches from `develop`
-in addition to release tags.
-
-The Hub reports the semver prerelease version. Officially installed enrolled
-runners follow it through their existing verified update and coordinated drain:
-new claims pause, in-flight work finishes, then the service restarts. A later
-stable release of the same patch sorts above the prerelease. Operator builds are
-Cloud deployments only; they do not become standalone stable releases.
-
-Retry failed release or deployment jobs without rerunning a successful source
-validation job. Provenance tags are immutable, and the existing evidence verifier
-rejects an annotation superseded by a newer source check. Do not overwrite an
-existing operator tag or publish signed artifacts from a workstation.
-
 ## Release branches
 
 ### Cut
@@ -87,6 +60,41 @@ existing operator tag or publish signed artifacts from a workstation.
 `version` (`vX.Y`) and a develop `sha`; both may be omitted. The default version
 is the next minor after the highest stable tag or existing release series, or
 `v0.1` when neither exists. An existing branch is never overwritten.
+
+Before selecting source and again immediately before branch creation, the cut
+owner checks durable Actions history. Automatic cuts (scheduled runs and manual
+dispatches without an explicit SHA) succeed as a no-op when another cut, a
+release-branch full suite, or the release workflow is queued, requested, pending,
+running or waiting for approval. The release workflow covers signed builds and
+both deployments. The current cut run and ordinary develop CI are excluded.
+The existing `release-cut` concurrency group serializes cut decisions; the
+`validated-release` group continues to serialize deployment without cancellation.
+Each no-op prints its reason and the existing run URL, source/tag and SHA. An
+Actions API read failure fails the cut instead of reporting a no-op.
+
+A successful production deployment, origin smoke and MCP smoke also satisfy an
+automatic release opportunity for one release cadence, even when newer develop
+commits have arrived. Admission reads the production job of the successful
+`release.yml` run's current attempt, rather than treating a branch, tag, cut or
+artifact upload as production success. Failed or cancelled attempts do not start
+the window; retrying an existing release retains its immutable evidence rules.
+An inactive leftover branch only covers its own source and does not block newer
+uncovered develop work.
+
+The rolling UTC window is `(decision time - cadence, decision time]`: completion
+at the lower boundary is expired, and completion at the decision time counts.
+Cadence comes from the single numeric five-field cron in `release-cut.yml`, as
+the elapsed time between its two latest scheduled occurrences at or before the
+decision time. The current weekly cron therefore supplies seven days, rather
+than an independent hourly setting. The window and cron appear in Actions output;
+an invalid or unsupported cadence fails admission.
+
+For a needed newer fix during this window, manually dispatch the cut with an
+explicit develop SHA. That request bypasses automatic admission while retaining
+source coverage, immutable branches and full release-head validation. To recover
+a failed existing series, retry its failed CI or release jobs instead of cutting
+the covered source again. Scheduled no-ops do not suppress the hourly develop
+suite for a newly untested SHA, and never hold develop landings.
 
 The default source is the newest develop ancestor not already contained in an
 existing release series or stable version tag, with successful full-suite CI
@@ -103,9 +111,9 @@ creating the branch.
 
 Coverage includes a release series still awaiting its first release. An explicit
 SHA already contained in a release series or stable version tag is refused;
-the cut never substitutes a different commit for an explicit request. Operator
-prerelease tags do not prevent the first stable release of their source. Every
-new cut still runs the full suite on its release branch before stable tagging.
+the cut never substitutes a different commit for an explicit request. Historical
+operator prerelease tags do not prevent the first stable release of their source.
+Every new cut still runs the full suite on its release branch before stable tagging.
 
 ```bash
 gh workflow run release-cut.yml --ref develop

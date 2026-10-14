@@ -34,8 +34,6 @@ Run `make check-land` before reporting source work complete, fix failures in the
 same run, and report its printed wall time. It uses the scheduled lint version
 and configuration, vet and baseline-aware NilAway, `go build ./...`,
 `go test -short ./...`, invariants, migration and generated-source checks.
-Affected browser journeys run for UI changes; shared UI infrastructure widens
-that selection to the full browser suite.
 Conversation typecheck, vitest and build run when `web/conversation` differs
 from the merge base with `origin/develop`, including staged, unstaged and
 untracked changes. Set `CHECK_LAND_BASE` to the actual landing base when it
@@ -59,8 +57,10 @@ its output. Full browser, race, repository-wide NilAway and integration checks
 stay in the scheduled suite and never hold landing. The host also uses the
 approved short command during source finalization, so its durable receipt proves
 that command. The full source gate remains the worker's completion requirement.
-Affected browser checks run before landing; interactions introduced by combining
-UI changes remain a risk covered by the scheduled full suite.
+Browser journeys run in the scheduled full suite. For an explicit focused
+diagnostic, run `bash scripts/check-browser.sh "$TEST_PROCS" false tests/visual/<journey>.spec.js`;
+use `true` when the current conversation assets
+are already prepared.
 Focused diagnostics and full scheduled
 suites do not publish a required local commit status. The
 scheduled suite validates pinned develop commits and release branch heads;
@@ -73,11 +73,22 @@ matching Backlog intake moves to Todo through the native workflow owner, while
 active and review lanes remain intact. Other unknown instance diagnostics remain
 in nondispatchable Backlog. A red suite receives no release tag.
 
-Several worktrees usually run gates on the same host at once. Every `make`
-test, lint, vet, and build target is capped by `TEST_PROCS` (default 4): it
-sets `go test -p`, `GOMAXPROCS` for the test binaries, `golangci-lint
---concurrency`, and vitest workers, so one worktree's gate leaves the machine
-usable for the others. Raise it for a solo run with `TEST_PROCS=8 make test`.
+Several worktrees usually run gates on the same host at once. `TEST_PROCS`
+(default 4) supplies each invocation's process budget. `make check-landing`
+runs its stages sequentially. Go builds and tests use at most `TEST_PROCS`
+concurrent package processes with `GOMAXPROCS=1` in each, so their package and
+scheduler budgets multiply to at most `TEST_PROCS`. Lint uses one runtime with
+`GOMAXPROCS=TEST_PROCS` and at most `TEST_PROCS` workers. Asset and documentation
+preparation inherit `GOMAXPROCS=1` and run through `make -j1`.
+The landing short-test deadline is three minutes for each whole package,
+including all its tests and fixtures; it is not a per-test allowance. Assertion
+failures still fail the gate, and a hung package still hits the deadline.
+This package allowance provides margin for legitimate aggregate suite costs
+under shared-host contention and remains below the source gate's ten-minute
+short-package allowance. It applies to every selected package without exceptions.
+Standalone diagnostic targets set package, scheduler, lint and vitest worker
+limits from `TEST_PROCS`; these separate limits do not by themselves bound their
+product. Raise the budget per invocation when appropriate.
 `make check-land` generates docs and checks SQL output once before overlapping
 lint, vet, build and short tests. It divides `TEST_PROCS` among these stages,
 running them in batches when the budget is below four. Unchanged conversation
@@ -269,6 +280,66 @@ provenance and existing publication transaction. A Git-only `ls-tree` or
 Do not advance the site's pinned upstream release to this layout until that
 companion source update is available. Site publication remains separate from
 Detent's build and scheduled validation.
+
+## Hub analytics rollups
+
+Diagnostics, Reports and `analytics_dashboard` read the persisted
+`analytics_hourly_rollups` model through the WAL reader pool. Ready decisions,
+skip reasons, merge entries and lease capacity have additive hourly values.
+Residence reads subtract accumulated per-issue lane and queue durations from
+hourly snapshots. Indexed state-boundary samples supply exact partial-hour
+edges, Todo depths and population clipping. Open spans contribute elapsed time
+from their recorded start without a timer or event replay. Completion samples
+retain the accumulated durations at Done for completion quantiles and throughput.
+Claim waits have additive hourly durations; indexed claim and skip samples retain
+bounded population cursors. The same model retains current issue, attempt and
+usage facts for exact quantiles and distinct populations. It excludes observation-event
+payload history. Landing and refusal identities remain bounded drill-downs.
+
+The existing native commit path projects changed work items before committing.
+Triggers on events, issues, attempts, leases and usage mark items in
+`analytics_rollup_dirty`; project, policy and workflow-state changes do not.
+A commit projects at most `analyticsBackfillBatch` dirty items from their
+per-item event sequence positions; the rest stay marked for the next commit or
+the existing maintenance tick. Every projection statement is scoped by
+organization and project and looks up the work item through an index;
+`TestAnalyticsCommitPlans` fails on a full scan or on an index lookup bounded
+only by organization or project. Residence maintenance resumes from the last stored per-issue
+sequence and processes only new transitions and claims. Event rows hold the
+event identity, time and the decision and transition fields the counters use;
+payloads stay in `collaboration_events` and are joined by id. Unchanged lease
+snapshots do not rewrite capacity buckets. Lease capacity buckets extend at most
+24 hours past the projecting commit and a renewal reprojects them, so a lease
+that is neither renewed nor released for more than 24 hours stops adding
+capacity until its next write.
+
+Each work item projects inside its own savepoint: analytics failure does not
+roll back an event, claim or lane transition, or another item's projection. A
+failed item keeps its last sequence position and is marked failed. It is
+retried on its next change and hourly on the existing maintenance tick, which
+rotates through failed items in batches, not on every commit. While a project has a failed item, its reads use the raw
+computation.
+
+The migration only creates the schema. Existing projects are listed for
+backfill, and the existing maintenance tick backfills them after startup in
+batches of at most `analyticsBackfillBatch` work items and
+`analyticsBackfillEvents` events, each in its own short write transaction, through the same projector and positions. Until a project's
+backfill completes, its reads use the raw computation, and commits skip its
+unprojected items.
+
+`rebuildAnalyticsRollups` rebuilds one organization/project in a caller-owned
+transaction from the raw sources, including the hourly counters, residence
+snapshots, completion and decision samples, and lease buckets. It replaces the
+project's rollups and sequence positions atomically and is the test oracle.
+A migration that changes a metric definition deletes the affected projects'
+rollups and positions and lists those projects for backfill again.
+
+Compaction does not delete rollups. Scheduler claim samples retain their exact
+predecessor before raw observation rows can be compacted. A rebuild after
+compaction cannot recreate deleted predecessor evidence: a sequence gap makes
+that capacity-wait interval unavailable. It must not infer adjacency from the
+next surviving earlier event. Current runtime observations and usage remain
+rebuildable from their durable source records.
 
 ## Conversation assets
 

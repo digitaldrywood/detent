@@ -93,7 +93,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"endpoint":     {"https://api.github.com/graphql"},
 				"api_key":      {"$GITHUB_TOKEN"},
 				"project_slug": {"PVT_project"},
-				"repo":         {"digitaldrywood/detent"},
+				"repo":         {"example-org/example-project"},
 			},
 			wantStatus: http.StatusOK,
 			wantContent: []string{
@@ -119,7 +119,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"endpoint":                   {"https://api.github.com/graphql"},
 				"api_key":                    {"$GITHUB_TOKEN"},
 				"project_slug":               {"PVT_project"},
-				"repo":                       {"digitaldrywood/detent"},
+				"repo":                       {"example-org/example-project"},
 				"workspace_root":             {"~/code/detent-workspaces"},
 				"max_concurrent_agents":      {"5"},
 				"max_turns":                  {"20"},
@@ -280,7 +280,7 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `PVT_project`.",
 			},
 			unwanted: []string{
-				"repository: digitaldrywood/detent",
+				"repository: example-org/example-project",
 				"status_field:",
 				"status_label_prefix:",
 			},
@@ -296,16 +296,16 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 			want: []string{
 				"tracker:\n  kind: github",
 				"  github_status_source: issue_field",
-				"repository: digitaldrywood/detent",
+				"repository: example-org/example-project",
 				`status_field: "Team: Status #2"`,
-				"You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `digitaldrywood/detent`.",
+				"You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `example-org/example-project`.",
 			},
 			unwanted: []string{
 				"project_slug:",
 				"status_label_prefix:",
 				"ProjectV2",
 			},
-			wantRepo:  "digitaldrywood/detent",
+			wantRepo:  "example-org/example-project",
 			wantField: "Team: Status #2",
 		},
 		{
@@ -318,16 +318,16 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 			want: []string{
 				"tracker:\n  kind: github",
 				"  github_status_source: label",
-				"repository: digitaldrywood/detent",
+				"repository: example-org/example-project",
 				`status_label_prefix: "detent:"`,
-				"You are working on GitHub issue `{{ issue.identifier }}` with status labels in `digitaldrywood/detent`.",
+				"You are working on GitHub issue `{{ issue.identifier }}` with status labels in `example-org/example-project`.",
 			},
 			unwanted: []string{
 				"project_slug:",
 				"status_field:",
 				"ProjectV2",
 			},
-			wantRepo:   "digitaldrywood/detent",
+			wantRepo:   "example-org/example-project",
 			wantPrefix: "detent:",
 		},
 	}
@@ -538,7 +538,7 @@ func TestOnboardingAgentStepExplainsKanbanPermissionChecks(t *testing.T) {
 		"github_status_source": {workflowconfig.GitHubStatusSourceLabel},
 		"endpoint":             {"https://api.github.com/graphql"},
 		"api_key":              {"$GITHUB_TOKEN"},
-		"repo":                 {"digitaldrywood/detent"},
+		"repo":                 {"example-org/example-project"},
 		"status_label_prefix":  {"detent:"},
 	})
 
@@ -744,14 +744,14 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 		BoardIssues: []telemetry.Issue{
 			{
 				ID:         "issue-todo",
-				Identifier: "digitaldrywood/detent#646",
+				Identifier: "example-org/example-project#646",
 				ProjectID:  "detent",
 				State:      "Todo",
 				Labels:     []string{"detent:todo", "enhancement"},
 			},
 			{
 				ID:         "issue-review",
-				Identifier: "digitaldrywood/detent#645",
+				Identifier: "example-org/example-project#645",
 				ProjectID:  "detent",
 				State:      "Human Review",
 				Labels:     []string{"detent:human-review"},
@@ -790,14 +790,14 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 			BoardIssues: []telemetry.Issue{
 				{
 					ID:         "issue-todo",
-					Identifier: "digitaldrywood/detent#646",
+					Identifier: "example-org/example-project#646",
 					ProjectID:  "detent",
 					State:      "Todo",
 					Labels:     []string{"detent:todo", "enhancement"},
 				},
 				{
 					ID:         "issue-review",
-					Identifier: "digitaldrywood/detent#645",
+					Identifier: "example-org/example-project#645",
 					ProjectID:  "detent",
 					State:      "Human Review",
 					Labels:     []string{"detent:human-review"},
@@ -806,7 +806,7 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 			Running: []telemetry.Running{{
 				Issue: telemetry.Issue{
 					ID:         "issue-running",
-					Identifier: "digitaldrywood/detent#647",
+					Identifier: "example-org/example-project#647",
 					ProjectID:  "detent",
 					State:      "In Progress",
 					Labels:     []string{"detent:in-progress"},
@@ -848,7 +848,7 @@ func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
 		"reload: observed project detent",
 		"refresh: advanced",
 		"candidate counts: expected status labels matched",
-		"dispatch: started digitaldrywood/detent#647",
+		"dispatch: started example-org/example-project#647",
 		"worktree: present",
 		"Workpad: present, status block: present",
 		"/api/v1/refresh: reflected in project state",
@@ -886,7 +886,7 @@ func TestOnboardingWriteCloseoutVerifierReportsStalledReload(t *testing.T) {
 		Running: []telemetry.Running{{
 			Issue: telemetry.Issue{
 				ID:         "issue-active",
-				Identifier: "digitaldrywood/detent#640",
+				Identifier: "example-org/example-project#640",
 				ProjectID:  "detent",
 				State:      "In Progress",
 			},
@@ -932,7 +932,7 @@ func TestOnboardingWriteCloseoutVerifierReportsStalledReload(t *testing.T) {
 		"reload: stalled",
 		"refresh: stalled",
 		"dispatch: no new running issue observed",
-		"active agents: digitaldrywood/detent#640 session=session-640 pid=31337 worker=worker-b worktree=/tmp/detent-640",
+		"active agents: example-org/example-project#640 session=session-640 pid=31337 worker=worker-b worktree=/tmp/detent-640",
 		"restart requires operator confirmation",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -1087,7 +1087,7 @@ func validOnboardingForm() url.Values {
 		"endpoint":                        {"https://api.github.com/graphql"},
 		"api_key":                         {"$GITHUB_TOKEN"},
 		"project_slug":                    {"PVT_project"},
-		"repo":                            {"digitaldrywood/detent"},
+		"repo":                            {"example-org/example-project"},
 		"workspace_root":                  {"~/code/detent-workspaces"},
 		"max_concurrent_agents":           {"5"},
 		"max_turns":                       {"20"},

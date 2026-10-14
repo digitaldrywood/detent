@@ -36,6 +36,7 @@ type Claims struct {
 	Key                  *apikey.KeyAuthority `json:"key,omitempty"`
 	Issuer               string               `json:"iss"`
 	Audience             string               `json:"aud"`
+	OrganizationSlug     string               `json:"organization_slug,omitempty"`
 	Generation           int64                `json:"gen"`
 	Kind                 string               `json:"kind"`
 	Subject              string               `json:"sub,omitempty"`
@@ -171,7 +172,7 @@ func validKind(claims Claims) bool {
 
 func validRole(role string) bool {
 	switch role {
-	case "owner", "admin", "member", "viewer":
+	case "owner", "admin", "member", "reporter", "viewer":
 		return true
 	default:
 		return false

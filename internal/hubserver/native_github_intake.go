@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -19,11 +18,25 @@ func nativeTriageStates(states []tracker.NativeState) []tracker.NativeState {
 	triage := tracker.NativeState{Name: "Triage", Transitions: []string{}}
 	result := make([]tracker.NativeState, 0, len(states)+1)
 	for _, state := range states {
-		if slices.Contains([]string{"Backlog", "Todo", "Cancelled"}, state.Name) {
+		if state.Name == "Triage" {
+			triage.Transitions = append(triage.Transitions, state.Transitions...)
+			continue
+		}
+		result = append(result, state)
+	}
+	for _, state := range result {
+		if slices.Contains([]string{"Backlog", "Todo", "Cancelled"}, state.Name) && !slices.Contains(triage.Transitions, state.Name) {
 			triage.Transitions = append(triage.Transitions, state.Name)
 		}
-		if state.Name != "Triage" {
-			result = append(result, state)
+	}
+	if len(triage.Transitions) == 0 {
+		for _, state := range result {
+			if !state.OperatorOnly && (len(triage.Transitions) == 0 || !state.Terminal) {
+				triage.Transitions = []string{state.Name}
+				if !state.Terminal {
+					break
+				}
+			}
 		}
 	}
 	return append([]tracker.NativeState{triage}, result...)
@@ -57,7 +70,7 @@ func linkedSourceNumber(source string) int {
 func (s *Service) linkedSourceContext(ctx context.Context) context.Context {
 	base := ""
 	if s.config.Hosted != nil {
-		base = s.config.Hosted.PublicURL + s.hostedBase()
+		base = s.config.Hosted.PublicURL
 	}
 	return context.WithValue(ctx, linkedSourceURLKey{}, base)
 }
@@ -70,7 +83,11 @@ func enqueueLinkedSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !ok || base == "" {
 		return nil
 	}
-	target := base + "/work/i/" + url.PathEscape(string(issue.WorkItemID))
+	path, err := readIssueBrowserPath(ctx, tx, string(issue.WorkItemID))
+	if err != nil {
+		return err
+	}
+	target := base + path
 	body, reason := "Tracked in Detent: "+target, ""
 	if closeSource {
 		body, reason = "Cancelled in Detent: "+target, "not_planned"
@@ -92,7 +109,7 @@ func (s *Service) fetchLinkedSnapshot(ctx context.Context, scope nativeScope, so
 	if err != nil {
 		return nil, nativeInvalid(err.Error())
 	}
-	integration, err := readProjectIntegration(ctx, s.database.db, scope)
+	integration, err := readProjectIntegration(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}

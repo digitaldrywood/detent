@@ -44,12 +44,13 @@ type SpriteUsageInput struct {
 	Observations []usagecost.Observation `json:"observations"`
 }
 type IntegrationInput struct {
-	WorkflowMarkdown  *string                `json:"workflow_markdown,omitempty"`
-	States            *[]tracker.NativeState `json:"states,omitempty"`
-	ExpectedRevision  tracker.Revision       `json:"expected_revision,string"`
-	Intake            string                 `json:"intake,omitempty"`
-	Projection        string                 `json:"projection"`
-	RepositoryEnabled bool                   `json:"repository_enabled"`
+	DuplicateChallenge *bool                  `json:"duplicate_challenge,omitempty"`
+	WorkflowMarkdown   *string                `json:"workflow_markdown,omitempty"`
+	States             *[]tracker.NativeState `json:"states,omitempty"`
+	ExpectedRevision   tracker.Revision       `json:"expected_revision,string"`
+	Intake             string                 `json:"intake,omitempty"`
+	Projection         string                 `json:"projection"`
+	RepositoryEnabled  bool                   `json:"repository_enabled"`
 }
 type RepositoryInput struct {
 	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
@@ -89,7 +90,8 @@ type CutoverInput struct {
 
 type PolicyApprovalInput struct {
 	ExpectedID       string            `json:"expected_policy_id"`
-	Policy           policy.Descriptor `json:"policy"`
+	ObservedPolicyID string            `json:"observed_policy_id,omitempty"`
+	Policy           policy.Descriptor `json:"policy,omitempty,omitzero"`
 	RepositoryPolicy bool              `json:"repository_policy,omitempty"`
 }
 
@@ -151,8 +153,10 @@ func projectWrite[T any](name string, destructive, openWorld bool) Definition {
 	schema["required"] = []string{"project_id", "request_id", "input"}
 	if name == "approve_project_policy" {
 		input := schemaObject(schemaObject(schema["properties"])["input"])
+		input["oneOf"] = []map[string]any{{"required": []string{"policy"}}, {"required": []string{"observed_policy_id"}}}
 		descriptor := schemaObject(schemaObject(input["properties"])["policy"])
-		descriptor["description"] = "The complete selected_policy object returned by local_project_configuration, unchanged. Preserve every returned field, including authored, profile, configuration, workflow and gates.human_review when present; policy_id covers the descriptor's identity inputs. Do not reconstruct a subset or recompute policy_id. Authorized approval executes directly."
+		descriptor["description"] = "Alternatively to observed_policy_id, the complete selected_policy object returned by local_project_configuration, unchanged. Preserve every returned field, including authored, profile, configuration, workflow and gates.human_review when present; policy_id covers the descriptor's identity inputs. Do not reconstruct a subset or recompute policy_id. Authorized approval executes directly."
+		schemaObject(schemaObject(input["properties"])["observed_policy_id"])["description"] = "Approve the stored observed_policies[].policy.policy_id returned by get_onboarding without echoing the descriptor or authored files. Supply expected_policy_id for the current approval and omit policy. Current administrator authority is required."
 	}
 	if name == "import_sprite_usage" {
 		input := schemaObject(schemaObject(schema["properties"])["input"])
@@ -233,7 +237,11 @@ func projectSchema(t reflect.Type) map[string]any {
 // DecodeProjectArguments applies bounds before application services or approval
 // are reached, including recursive fields that JSON schema cannot enforce alone.
 func DecodeProjectArguments(raw json.RawMessage, target any) error {
-	if err := DecodeArguments(raw, target); err != nil {
+	limit := MaxArgumentBytes
+	if _, ok := target.(*ProjectRequest[IntegrationInput]); ok {
+		limit += 6 * 128 * 1024
+	}
+	if err := decodeArgumentsWithLimit(raw, target, limit); err != nil {
 		return err
 	}
 	var value any
@@ -313,6 +321,8 @@ func DecodeProjectArguments(raw json.RawMessage, target any) error {
 
 func projectStringLimit(key string) int {
 	switch key {
+	case "workflow_markdown":
+		return 128 * 1024
 	case "rate_source", "evidence_source", "resource_name":
 		return 512
 	case "prompt", "shared_prompt", "agents_prompt", "files":

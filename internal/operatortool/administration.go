@@ -39,7 +39,7 @@ const (
 // or a model-selected identity/mode. Adapters advertise only installed services.
 func AdministrationCatalog() []Definition {
 	id := `{"type":"string","minLength":1,"maxLength":256}`
-	role := `{"type":"string","enum":["owner","admin","member","viewer"]}`
+	role := `{"type":"string","enum":["owner","admin","member","reporter","viewer"]}`
 	projects := `{"type":"array","maxItems":200,"items":` + id + `}`
 	grants := `{"type":"array","maxItems":200,"items":{"type":"object","properties":{"project_id":` + id + `,"write":{"type":"boolean"},"runner":{"type":"boolean"}},"required":["project_id"],"additionalProperties":false}}`
 	scopes := `{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string","enum":["read","write","admin"]}}`
@@ -109,7 +109,7 @@ func AdministrationScope(name string) apikey.Scope {
 }
 
 func AdministrationRequirement(name string) Requirement {
-	requirement := Requirement{Scope: AdministrationScope(name)}
+	requirement := Requirement{Scope: AdministrationScope(name), Action: name}
 	if strings.HasPrefix(name, "credential_") {
 		requirement.ResourceKind = "credentials"
 	}

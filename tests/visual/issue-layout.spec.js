@@ -199,7 +199,7 @@ for (const source of ["available", "unavailable", "wrong head", "empty files"]) 
       latest: fixture.diff,
     });
     await page.getByTestId("issue-resources").getByRole("button", { name: /Change fallback/ }).click();
-    await expect.poll(() => new URL(page.url()).pathname).toBe(`/work/i/${hub.fixture.work_item}/changes/${fixture.change.change_id}`);
+    await expect(page).toHaveURL(new RegExp(`/local-organization/browser-collaboration/issues/2/changes/${fixture.change.change_id}$`));
     await expect(page.getByTestId("diff-file-section")).toHaveAttribute(
       "data-diff-path",
       "src/fallback.ts",
@@ -219,7 +219,7 @@ for (const latest of [null, "wrong head"]) {
       attemptUnavailable: true,
       latest: latest === null ? null : { ...fixture.diff, head_sha: "another-head" },
     });
-    await page.goto(new URL(`/work/i/${hub.fixture.work_item}/changes/${fixture.change.change_id}`, hub.fixture.url).toString());
+    await page.getByTestId("issue-resources").getByRole("button", { name: /Change missing/ }).click();
     await expect(page.getByTestId("change-diff-empty")).toContainText(
       "No stored diff is available for this round",
     );

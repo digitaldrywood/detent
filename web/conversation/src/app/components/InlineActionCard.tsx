@@ -30,7 +30,12 @@ export function InlineActionCard({ proposal, text }: {
         headers: { "Content-Type": "application/json", "X-CSRF-Token": client.bootstrap.csrf_token },
         body: JSON.stringify(proposal.action),
       });
-      if (!response.ok) throw new Error(`The change could not be applied (${response.status}).`);
+      if (!response.ok) {
+        const failure: unknown = await response.json().catch(() => null);
+        const message = typeof failure === "object" && failure !== null && "message" in failure && typeof failure.message === "string"
+          ? failure.message : "The change could not be applied";
+        throw new Error(`${message} (${response.status}).`);
+      }
       setStatus("completed");
       try { localStorage.setItem(resultKey, "completed"); } catch { }
     } catch (failure) {
@@ -49,7 +54,7 @@ export function InlineActionCard({ proposal, text }: {
         : value]))
     : argumentsValue;
   return <section className="rounded-lg border p-3 space-y-3" data-testid="operator-action-card">
-    <p className="text-sm">{text}</p>
+    <p className="text-sm whitespace-pre-wrap break-words">{text}</p>
     <OperatorActionPreview action={proposal.action} />
     <details><summary className="text-xs cursor-pointer">Proposed change</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(change, null, 2)}</pre></details>
     {requiresApproval ? null : <label className="flex items-center gap-2 text-xs"><input type="checkbox" disabled={requiresConfirmation} checked={requiresConfirmation || confirm} onChange={(event) => {

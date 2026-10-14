@@ -14,7 +14,7 @@ import (
 func TestProjectRunRowsRenderEfficiencyReceipt(t *testing.T) {
 	t.Parallel()
 
-	issue := telemetry.Issue{ID: "issue-1205", Identifier: "digitaldrywood/detent#1205", ProjectID: "detent"}
+	issue := telemetry.Issue{ID: "issue-1205", Identifier: "example-org/example-project#1205", ProjectID: "detent"}
 	rows := projectRunRowsWithReceipts(telemetry.Snapshot{Completed: []telemetry.Completed{{Issue: issue, CompletedAt: time.Now()}}}, []efficiency.Receipt{{
 		ProjectID:         "detent",
 		IssueID:           issue.ID,
@@ -44,7 +44,7 @@ func TestProjectRunRowsRenderEfficiencyReceipt(t *testing.T) {
 func TestProjectRunRowsRenderLiveEfficiencyReceipt(t *testing.T) {
 	t.Parallel()
 
-	issue := telemetry.Issue{ID: "issue-1926", Identifier: "digitaldrywood/detent#1926", ProjectID: "detent"}
+	issue := telemetry.Issue{ID: "issue-1926", Identifier: "example-org/example-project#1926", ProjectID: "detent"}
 	rows := projectRunRowsWithReceipts(telemetry.Snapshot{Running: []telemetry.Running{{Issue: issue}}}, []efficiency.Receipt{{
 		ProjectID:    "detent",
 		IssueID:      issue.ID,
@@ -158,7 +158,7 @@ func TestProjectRunRows(t *testing.T) {
 		GeneratedAt: now,
 		Running: []telemetry.Running{
 			{
-				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#502", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/502", Title: "Running issue"},
+				Issue:          telemetry.Issue{Identifier: "example-org/example-project#502", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/502", Title: "Running issue"},
 				TurnCount:      2,
 				RuntimeSeconds: 120,
 				Tokens:         telemetry.Tokens{Total: 42_000, ModelContextWindow: &runningContextWindow},
@@ -166,7 +166,7 @@ func TestProjectRunRows(t *testing.T) {
 		},
 		Completed: []telemetry.Completed{
 			{
-				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#500", ProjectID: "detent", Title: "Older done"},
+				Issue:          telemetry.Issue{Identifier: "example-org/example-project#500", ProjectID: "detent", Title: "Older done"},
 				SessionID:      "s-1",
 				CompletedAt:    now.Add(-2 * time.Hour),
 				FinalState:     "Done",
@@ -174,7 +174,7 @@ func TestProjectRunRows(t *testing.T) {
 				RuntimeSeconds: 300,
 			},
 			{
-				Issue:          telemetry.Issue{Identifier: "digitaldrywood/detent#501", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/501", Title: "Newer failed"},
+				Issue:          telemetry.Issue{Identifier: "example-org/example-project#501", ProjectID: "detent", URL: "https://github.com/example-org/example-project/issues/501", Title: "Newer failed"},
 				SessionID:      "s-2",
 				CompletedAt:    now.Add(-time.Hour),
 				FinalState:     "failed",
@@ -191,7 +191,7 @@ func TestProjectRunRows(t *testing.T) {
 	if !rows[0].StateLive || rows[0].StateText != "In progress" {
 		t.Fatalf("first row should be the live session: %+v", rows[0])
 	}
-	if rows[0].DomID != "run-digitaldrywood-detent-502" {
+	if rows[0].DomID != "run-example-org-example-project-502" {
 		t.Fatalf("running row id = %q, want full identifier slug", rows[0].DomID)
 	}
 	if rows[0].Context != "50%" || rows[0].ContextKind != primitives.KindOK {
@@ -200,10 +200,10 @@ func TestProjectRunRows(t *testing.T) {
 	if rows[1].Ref != "#501" {
 		t.Fatalf("completed rows should be newest first, got %q", rows[1].Ref)
 	}
-	if rows[0].URL != "https://github.com/digitaldrywood/detent/issues/502" || rows[1].URL != "https://github.com/digitaldrywood/detent/issues/501" {
+	if rows[0].URL != "https://github.com/example-org/example-project/issues/502" || rows[1].URL != "https://github.com/example-org/example-project/issues/501" {
 		t.Fatalf("run URLs = %q/%q", rows[0].URL, rows[1].URL)
 	}
-	if rows[1].DomID != "run-digitaldrywood-detent-501-s-2" {
+	if rows[1].DomID != "run-example-org-example-project-501-s-2" {
 		t.Fatalf("completed row id = %q, want full identifier slug plus session", rows[1].DomID)
 	}
 	if rows[1].StateKind != primitives.KindErr || rows[1].StateText != "Failed" {
@@ -248,13 +248,13 @@ func TestProjectSlugLabel(t *testing.T) {
 	}{
 		{
 			name: "scoped snapshot url",
-			data: DashboardData{ProjectID: "detent", Snapshot: telemetry.Snapshot{Project: telemetry.Project{URL: "https://github.com/digitaldrywood/detent"}}},
-			want: "digitaldrywood/detent",
+			data: DashboardData{ProjectID: "detent", Snapshot: telemetry.Snapshot{Project: telemetry.Project{URL: "https://github.com/example-org/example-project"}}},
+			want: "example-org/example-project",
 		},
 		{
 			name: "registry issues url",
-			data: DashboardData{ProjectID: "detent", Projects: []ProjectSmallMultiple{{ID: "detent", URL: "https://github.com/digitaldrywood/detent/issues"}}},
-			want: "digitaldrywood/detent",
+			data: DashboardData{ProjectID: "detent", Projects: []ProjectSmallMultiple{{ID: "detent", URL: "https://github.com/example-org/example-project/issues"}}},
+			want: "example-org/example-project",
 		},
 		{
 			name: "falls back to project id",

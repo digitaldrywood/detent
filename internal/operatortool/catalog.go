@@ -97,7 +97,7 @@ func LocalProjectCatalog() []Definition {
 // Registry is the canonical protocol registry; deployments filter by application availability.
 func Registry() []Definition {
 	definitions := append(Catalog(), WorkReadCatalog()...)
-	for _, catalog := range [][]Definition{CommandCatalog(), AttachmentCatalog(), ProjectCatalog(), LocalProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog(), HostedContextCatalog(), PlatformCreditCatalog()} {
+	for _, catalog := range [][]Definition{CommandCatalog(), AttachmentCatalog(), ProjectCatalog(), LocalProjectCatalog(), WorkspaceCatalog(), OperatorChatCatalog(), ChangeCatalog(), AdministrationCatalog(), HostedContextCatalog(), PlatformCreditCatalog(), PlatformEntitlementCatalog()} {
 		definitions = append(definitions, catalog...)
 	}
 	return definitions

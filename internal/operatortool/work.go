@@ -25,16 +25,19 @@ const (
 	OrderItem              = "order_item"
 	SetQueuePriority       = "set_queue_priority"
 	TransferItem           = "transfer_item"
+	VerifyFix              = "verify_fix"
 )
 
 // WorkArguments are application inputs only. Connection authority, actor,
 // approval and native worker fencing cannot be supplied by a tool caller.
 type WorkArguments struct {
+	RelationshipType    string    `json:"relationship_type,omitempty"`
 	DestinationRunnerID string    `json:"destination_runner_id,omitempty"`
 	VersionID           string    `json:"version_id,omitempty"`
 	ProjectID           string    `json:"project_id"`
 	Identifier          string    `json:"identifier"`
 	ExpectedRevision    int64     `json:"expected_revision,string,omitempty"`
+	Type                *string   `json:"type,omitempty"`
 	Title               *string   `json:"title,omitempty"`
 	Body                *string   `json:"body,omitempty"`
 	Labels              *[]string `json:"labels,omitempty"`
@@ -54,6 +57,8 @@ type WorkArguments struct {
 	BaseSHA             string    `json:"base_sha,omitempty"`
 	HeadSHA             string    `json:"head_sha,omitempty"`
 	FindingID           string    `json:"finding_id,omitempty"`
+	Result              string    `json:"result,omitempty"`
+	Comment             string    `json:"comment,omitempty"`
 	Evidence            string    `json:"evidence,omitempty"`
 }
 
@@ -65,16 +70,17 @@ func WorkCatalog() []Definition {
 	definitions := []Definition{
 		commandDefinition(TransferItem, "Select a recovery runner for a verified retained source version after the owner finishes and releases its lease. Requires runner management. Forced transfer of active or partitioned execution and uncaptured pending source is refused. Omit destination_runner_id to restore automatic routing. Workflow and delivery holds remain.", selector+revision+`,"version_id":{"type":"string","minLength":1,"maxLength":256},"destination_runner_id":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","expected_revision","version_id"`, true),
 		commandDefinition(SetQueuePriority, "Set a compatibility work-item queue priority using the existing dashboard command.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"queue_priority":{"type":"string","enum":["urgent","high","normal","low","none"]}`, `"identifier","queue_scope","state","queue_priority"`, false),
-		commandDefinition(EditItem, "Edit native work-item content, labels and priority with an expected revision. GitHub-backed editing is unavailable when the dashboard does not offer it.", selector+revision+body+`,"title":{"type":"string","minLength":1,"maxLength":500},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":0,"maximum":3}`, `"identifier","expected_revision"`, true),
+		commandDefinition(EditItem, "Edit native work-item type, content, labels and priority with an expected revision. GitHub-backed editing is unavailable when the dashboard does not offer it.", selector+revision+body+`,"type":{"type":"string","enum":["bug","change_request"]},"title":{"type":"string","minLength":1,"maxLength":500},"labels":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200}},"priority":{"type":"integer","minimum":0,"maximum":3}`, `"identifier","expected_revision"`, true),
 		commandDefinition(AddComment, "Add an issue or supported pull-request comment through the dashboard application command. Embed upload_attachment reference in body to attach a file.", selector+body+`,"target":{"type":"string","enum":["issue","pr"]},"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1}`, `"identifier","body"`, false),
 		commandDefinition(EditComment, "Edit a permitted comment; native comments require their expected revision.", selector+revision+body+comment, `"identifier","comment_id","body"`, false),
 		commandDefinition(DeleteComment, "Delete a permitted local comment using current write authority. Native comment deletion is unavailable.", selector+comment, `"identifier","comment_id"`, true),
-		commandDefinition(SetDependency, "Add or remove a dashboard-supported dependency. Native requests require the issue's expected revision.", selector+revision+`,"related":{"type":"string","minLength":1,"maxLength":256},"operation":{"type":"string","enum":["add","remove"]}`, `"identifier","related","operation"`, false),
+		commandDefinition(SetDependency, "Add or remove a dependency, or a symmetric nonblocking related link on native issues with relationship_type=related. Omitted relationship_type keeps dependency behavior. Native requests require the issue's expected revision.", selector+revision+`,"relationship_type":{"type":"string","enum":["dependency","related"]},"related":{"type":"string","minLength":1,"maxLength":256},"operation":{"type":"string","enum":["add","remove"]}`, `"identifier","related","operation"`, false),
 		commandDefinition(ArchiveItem, "Archive native work using current authority. Active work must be finished or stopped.", selector+revision, `"identifier","expected_revision"`, true),
 		commandDefinition(RestoreItem, "Restore archived native work with an expected revision.", selector+revision, `"identifier","expected_revision"`, false),
 		commandDefinition(RemoveItem, "Remove board membership through the orchestrator using current authority; tracker capability restrictions remain.", selector, `"identifier"`, true),
 		commandDefinition(AcknowledgeParks, "Acknowledge the item's existing park summary through the dashboard command.", selector, `"identifier"`, false),
 		commandDefinition(DisposeSecurityFinding, "Record a false-positive disposition for the exact trusted security finding using current authority.", selector+`,"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1},"base_sha":{"type":"string","minLength":1,"maxLength":256},"head_sha":{"type":"string","minLength":1,"maxLength":256},"finding_id":{"type":"string","minLength":1,"maxLength":256},"evidence":{"type":"string","minLength":1,"maxLength":4096}`, `"identifier","repository","pull_request","base_sha","head_sha","finding_id","evidence"`, true),
+		commandDefinition(VerifyFix, "Answer whether the fix works for a native issue awaiting verification: verification pending on an issue in Done that a person filed. Only the filer, or a member and above, may answer; a Reporter answers only on issues they filed. result verified records who verified and when, and the issue stays in Done. result not_fixed requires comment describing what is still broken (embed upload_attachment references to attach screenshots), adds it to the issue, and moves the issue from Done back to Todo through the workflow owner. Optional expected_revision refuses a stale answer.", selector+revision+`,"result":{"type":"string","enum":["verified","not_fixed"]},"comment":{"type":"string","minLength":1,"maxLength":32768}`, `"identifier","result"`, false),
 		commandDefinition(OrderItem, "Set queue ordering where the deployment dashboard offers it.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"rank":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","queue_scope","state","rank"`, false),
 	}
 	for _, name := range []string{ListComments, WorkflowTimeline} {
@@ -147,8 +153,11 @@ func DecodeWorkArguments(name string, raw json.RawMessage) (WorkArguments, error
 			}
 		}
 	}
-	if name == EditItem && request.Title == nil && request.Body == nil && request.Labels == nil && request.Priority == nil {
-		return request, invalidArgument("title, body, labels, priority", "at least one field is required")
+	if name == EditItem && request.Type == nil && request.Title == nil && request.Body == nil && request.Labels == nil && request.Priority == nil {
+		return request, invalidArgument("type, title, body, labels, priority", "at least one field is required")
+	}
+	if name == VerifyFix && request.Result == "not_fixed" && request.Comment == "" {
+		return request, invalidArgument("comment", "is required when result is not_fixed")
 	}
 	if (name == AddComment || name == EditComment) && strings.TrimSpace(*request.Body) == "" {
 		return request, invalidArgument("body", "must not be blank")

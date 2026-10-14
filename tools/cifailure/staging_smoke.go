@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,9 +34,9 @@ var smokeSkipped = strings.Fields(`
  session_logout organization_switch organization_create organization_delete resume_provisioning
  organization_project_rank_update invitation_accept invitation_send invitation_edit invitation_resend invitation_revoke
  member_remove member_role member_grant credential_create credential_rotate credential_revoke credential_grant support_start
- platform_adjust_ai_credits
+ platform_adjust_ai_credits platform_change_entitlement
  refresh capacity_clear tracker_availability_clear forge_availability_clear failure_breaker_canary update_apply
- mark_urgent_runner_update issue_progress_credit acknowledge_staleness_warnings recover_work_attempt transfer_item
+ mark_urgent_runner_update issue_progress_credit acknowledge_staleness_warnings recover_work_attempt transfer_item verify_fix
  create_runner_enrollment revoke_runner_enrollment revoke_runner_identity
  update_runner_capacity update_runner_routing update_runner_host update_fleet_runner update_fleet_host
  create_workspace delete_workspace create_conversation post_conversation_command link_conversation patch_conversation
@@ -48,11 +49,12 @@ var smokeWrites = strings.Fields(`file_issue edit_item add_comment edit_comment 
 var errSmokeFixture = errors.New("smoke resource fixture unavailable")
 
 var smokeReadSkips = map[string]string{
-	operatortool.GetChange:        "operator-only Change detail read is outside the dedicated project smoke key's authority",
-	operatortool.GetChangeVersion: "operator-only Change version read is outside the dedicated project smoke key's authority",
-	operatortool.GetNativeRun:     "operator-only native run read is outside the dedicated project smoke key's authority",
-	"get_git_hub_import":          "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
-	"list_git_hub_import_records": "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
+	operatortool.PlatformEntitlements: "platform entitlement administration is outside the dedicated project smoke key's authority",
+	operatortool.GetChange:            "operator-only Change detail read is outside the dedicated project smoke key's authority",
+	operatortool.GetChangeVersion:     "operator-only Change version read is outside the dedicated project smoke key's authority",
+	operatortool.GetNativeRun:         "operator-only native run read is outside the dedicated project smoke key's authority",
+	"get_git_hub_import":              "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
+	"list_git_hub_import_records":     "native smoke projects have no GitHub import; importing requires an external tracker and cutover",
 }
 
 var smokeKnownGaps = map[string]map[string]string{
@@ -184,7 +186,9 @@ func (s *mcpSmoke) call(ctx context.Context, name string, args map[string]any) (
 		return nil, fmt.Errorf("%s schema: %w", name, err)
 	}
 	if _, accepts := schema.Properties["request_id"]; accepts {
-		args["request_id"] = fmt.Sprintf("%s-%d", s.prefix, s.sequence)
+		if _, supplied := args["request_id"]; !supplied {
+			args["request_id"] = fmt.Sprintf("%s-%d", s.prefix, s.sequence)
+		}
 	}
 	var payload any
 	err := s.mcp.call(ctx, name, args, &payload)
@@ -422,6 +426,43 @@ func (s *mcpSmoke) mutate(ctx context.Context, name string, args map[string]any,
 	if err != nil {
 		return nil, previous, err
 	}
+	if name == operatortool.FileIssue {
+		if data, ok := result["data"].(map[string]any); ok && data["possible_duplicates"] != nil {
+			var challenge struct {
+				Token   string `json:"challenge_token"`
+				Matches []struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					State  string `json:"state"`
+				} `json:"possible_duplicates"`
+			}
+			raw, encodeErr := json.Marshal(data)
+			if encodeErr != nil {
+				return nil, previous, fmt.Errorf("file_issue: duplicate challenge: %w", encodeErr)
+			}
+			if err := json.Unmarshal(raw, &challenge); err != nil || challenge.Token == "" || len(challenge.Matches) == 0 {
+				return nil, previous, errors.New("file_issue: invalid duplicate challenge")
+			}
+			numbers := make([]int, 0, len(challenge.Matches))
+			for _, match := range challenge.Matches {
+				synthetic := strings.HasPrefix(match.Title, "MCP staging smoke ")
+				if args["title"] == "MCP smoke dependency" {
+					synthetic = match.Title == "MCP smoke dependency" && slices.ContainsFunc(s.states, func(state tracker.NativeState) bool {
+						return state.Name == match.State && state.Terminal
+					})
+				}
+				if match.Number <= 0 || !synthetic {
+					return nil, previous, errors.New("file_issue: duplicate challenge is not limited to disposable smoke fixtures")
+				}
+				numbers = append(numbers, match.Number)
+			}
+			args["challenge_token"], args["not_duplicate_of"] = challenge.Token, numbers
+			result, err = s.call(ctx, name, args)
+			if err != nil {
+				return nil, previous, err
+			}
+		}
+	}
 	if _, refused := result["expected_refusal"]; refused {
 		return result, previous, nil
 	}
@@ -461,7 +502,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 	s.fixtures["organization_id"] = string(project.OrganizationID)
 	first, second := "", ""
 	for _, from := range s.states {
-		if from.Dispatchable || from.Terminal || from.OperatorOnly {
+		if from.Name == "Triage" || from.Dispatchable || from.Terminal || from.OperatorOnly {
 			continue
 		}
 		for _, to := range s.states {
@@ -502,6 +543,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 	s.fixtures["work_item_id"] = related
 	s.fixtures["identifier"] = s.item
 	var failures []error
+	contractBody := "## Acceptance criteria\nPersonal-key body saves confirm the contract.\n## Must not break\nService and runner keys cannot confirm contracts.\n## How we know it worked\nThe MCP smoke checks the confirmed sections."
 	if _, err := s.call(ctx, operatortool.WorkItem, map[string]any{"project_id": s.project, "reference": related}); err != nil {
 		failures = append(failures, err)
 	}
@@ -509,7 +551,7 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 		name string
 		args map[string]any
 	}{
-		{operatortool.EditItem, map[string]any{"title": "MCP staging smoke edited " + s.prefix}},
+		{operatortool.EditItem, map[string]any{"title": "MCP staging smoke edited " + s.prefix, "body": contractBody}},
 		{operatortool.SetDependency, map[string]any{"related": related, "operation": "add"}},
 		{operatortool.SetDependency, map[string]any{"related": related, "operation": "remove"}},
 		{operatortool.MoveItem, map[string]any{"target_state": second}},
@@ -522,12 +564,19 @@ func (s *mcpSmoke) run(ctx context.Context) error {
 				continue
 			}
 		}
-		_, next, stepErr := s.mutate(ctx, step.name, step.args, s.revision)
+		result, next, stepErr := s.mutate(ctx, step.name, step.args, s.revision)
 		if stepErr != nil {
 			failures = append(failures, stepErr)
 			break
 		}
 		s.revision = next
+		if step.name == operatortool.EditItem {
+			raw, err := json.Marshal(result["data"])
+			var issue tracker.NativeIssue
+			if err != nil || json.Unmarshal(raw, &issue) != nil || issue.IssueContract == nil || !maps.Equal(issue.IssueContract.ConfirmedSections, config.IssueContractSectionDigests(contractBody)) {
+				failures = append(failures, errors.New("edit_item: personal smoke key did not confirm issue_contract.confirmed_sections"))
+			}
+		}
 	}
 	comment, commentRevision, commentErr := s.mutate(ctx, operatortool.AddComment, map[string]any{"body": "MCP staging smoke comment"}, 0)
 	if commentErr != nil {

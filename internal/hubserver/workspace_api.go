@@ -286,7 +286,7 @@ func (w *workspaceService) presentWorkspace(ctx context.Context, scope nativeSco
 	if !workspaceAuditReadable(scope, record) {
 		return resource
 	}
-	sessions, err := readWorkspaceRelaySessions(ctx, w.server.database.db, record.ID)
+	sessions, err := readWorkspaceRelaySessions(ctx, w.server.database.reader, record.ID)
 	if err != nil {
 		w.logger.Warn("workspace.relay_sessions_unavailable", "workspace_id", record.ID, "error", err)
 		return resource
@@ -334,7 +334,7 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope nativeScope, 
 	}
 	var closed workspaceRecord
 	err = s.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
-		if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
 		record, err := service.readWorkspaceForActor(ctx, tx, scope, id)
@@ -356,6 +356,8 @@ func (s *Service) commandCloseWorkspace(ctx context.Context, scope nativeScope, 
 }
 
 func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, state string, limit int) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return nil, err
@@ -366,11 +368,11 @@ func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, s
 	}
 	item = strings.TrimSpace(item)
 	if item != "" {
-		if _, _, err := readNativeIssue(ctx, s.database.db, scope, item); err != nil {
+		if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 			return nil, err
 		}
 	}
-	records, err := listWorkspaceRows(ctx, s.database.db, scope, item, state, limit)
+	records, err := listWorkspaceRows(ctx, s.database.reader, scope, item, state, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +382,7 @@ func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, s
 			// The listing follows the issue's read rule one row at a time, so
 			// a reader who can see some of a project's issues sees exactly
 			// the workspaces on those.
-			if _, _, err := readNativeIssue(ctx, s.database.db, scope, record.SubjectWorkItemID); err != nil {
+			if _, _, err := readNativeIssue(ctx, s.database.reader, scope, record.SubjectWorkItemID); err != nil {
 				if isNativeNotFound(err) {
 					continue
 				}
@@ -393,11 +395,13 @@ func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, s
 }
 
 func (s *Service) readWorkspace(ctx context.Context, scope nativeScope, id string) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	service, err := s.requireWorkspaces()
 	if err != nil {
 		return nil, err
 	}
-	record, err := service.readWorkspaceForActor(ctx, s.database.db, scope, id)
+	record, err := service.readWorkspaceForActor(ctx, s.database.reader, scope, id)
 	if err != nil {
 		return nil, err
 	}

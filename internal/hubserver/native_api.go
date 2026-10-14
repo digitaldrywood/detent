@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,6 +26,10 @@ const nativeBase = "/api/v2/organizations/:organization/projects/:project"
 const nativeOrganizationIssuePath = "/api/v2/organizations/:organization/work-items/:item"
 
 type nativeScope struct {
+	action                string
+	actionItem            string
+	actionTarget          string
+	actionComment         string
 	scheduledRepair       *nativeScheduledRepair
 	sourceActor           *tracker.Actor
 	organization          tracker.OrganizationID
@@ -161,6 +166,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/restore", s.restoreNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/source-intake", s.intakeLinkedIssue, worker)
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
+	e.POST(nativeBase+"/work-items/:item/verification", s.verifyNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)
 	e.POST(nativeBase+"/work-items/:item/comments", s.createNativeComment, write)
@@ -240,13 +246,15 @@ func (s *Service) requireInstanceAdmin() echo.MiddlewareFunc {
 func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return s.requireAPIScope(roles...)(func(c echo.Context) error {
+			readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+			defer cancelRead()
 			credential, ok := c.Get("hub_api_credential").(apiCredential)
 			if !ok {
 				return s.nativeAPIError(c, nativeNotFound())
 			}
 			scope := nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project")), credential: credential}
 			if c.Path() == nativeOrganizationIssuePath {
-				err := s.database.auth().QueryRowContext(c.Request().Context(), "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
+				err := s.database.auth().QueryRowContext(readCtx, "SELECT project_id FROM issues WHERE organization_id = ? AND native_id = ?", scope.organization, c.Param("item")).Scan(&scope.project)
 				if err != nil {
 					return s.nativeAPIError(c, err)
 				}
@@ -258,10 +266,32 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				}
 			} else {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
-				if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), scope, write); err != nil {
+				if write && credential.HostedRole == "reporter" {
+					switch c.Request().Method + " " + c.Path() {
+					case "POST " + nativeBase + "/work-items":
+						scope.action = operatortool.FileIssue
+					case "POST " + nativeBase + "/work-items/:item/comments":
+						scope.action = operatortool.AddComment
+					case "PATCH " + nativeBase + "/work-items/:item/comments/:comment":
+						scope.action = operatortool.EditComment
+					case "POST " + nativeBase + "/work-items/:item/workflow":
+						scope.action = operatortool.MoveItem
+					case "POST " + nativeBase + "/work-items/:item/test-items":
+					case "POST " + nativeBase + "/work-items/:item/verification":
+						scope.action = operatortool.VerifyFix
+					case "POST " + attachmentMetadataBase, "POST " + attachmentMetadataBase + "/check":
+						scope.action = operatortool.UploadAttachment
+					case "POST " + attachmentMetadataBase + "/:attachment/reference":
+						scope.action = operatortool.ReferenceAttachment
+					}
+					if !hostedRoleAllows(credential.HostedRole, apikey.ScopeWrite, scope.action) {
+						return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+					}
+				}
+				if err := s.requireHostedProject(readCtx, s.database.auth(), scope, write); err != nil {
 					return s.nativeAPIError(c, err)
 				}
-				if err := s.database.authorizeNativeProject(c.Request().Context(), scope); err != nil {
+				if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
@@ -317,13 +347,26 @@ func (scope nativeScope) actor() tracker.Actor {
 		return *scope.sourceActor
 	}
 	kind := "human"
-	if scope.credential.Scope == apiScopeWorker {
+	if scope.credential.Scope == apiScopeWorker || scope.credential.Runner.RunnerID != "" {
 		kind = "runner"
-	}
-	if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" {
+	} else if scope.credential.EntryKey != nil && scope.credential.EntryKey.Kind == "service" || scope.credential.HostedKeyScope != "" && scope.credential.HostedKeyKind == "service" {
 		kind = "integration"
 	}
-	return tracker.Actor{Kind: kind, PrincipalID: operatorIdentity(scope.credential, string(scope.organization)).PrincipalID}
+	principal := operatorIdentity(scope.credential, string(scope.organization)).PrincipalID
+	if kind == "integration" && scope.credential.HostedKeyKind == "service" {
+		principal = scope.credential.ID
+	}
+	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.viaKey()}
+}
+
+func (credential apiCredential) viaKey() string {
+	if credential.EntryKey != nil {
+		return credential.EntryKey.ID
+	}
+	if credential.HostedKeyScope != "" {
+		return credential.ID
+	}
+	return ""
 }
 
 func newNativeID(prefix string) string {
@@ -362,6 +405,13 @@ type nativeCommandOptions struct {
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
 	ctx = s.linkedSourceContext(ctx)
+	actor := scope.actor()
+	if metadata, ok := mutation.FromContext(ctx); ok {
+		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
+		ctx = mutation.WithContext(ctx, metadata)
+	} else if actor.ViaKey != "" {
+		ctx = mutation.WithContext(ctx, mutation.Metadata{PrincipalID: actor.PrincipalID, ActorKind: actor.Kind, ViaKey: actor.ViaKey, OrganizationID: string(scope.organization), ProjectID: string(scope.project), ResourceID: options.Item, Action: options.OperationID, Source: "api", Confirmation: "none", CorrelationID: newNativeID("api")})
+	}
 	if strings.TrimSpace(command.IdempotencyKey) == "" || len(command.IdempotencyKey) > 128 {
 		return nil, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -383,7 +433,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		if err := s.recheckHostedArtifactReader(ctx, tx, scope); err != nil {
 			return nil, err
 		}
-	} else if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	} else if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return nil, err
 	}
 	if options.RunnerAdministration {
@@ -427,7 +477,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	completion := options.Completion
 	event, runEvent := input.(tracker.NativeRunEvent)
-	consolidateRunEvent := runEvent && !completion && s.database.hostedPlans != nil
+	consolidateRunEvent := runEvent && !completion && s.database.plans() != nil
 	var runEventState hostedRunEventState
 	if consolidateRunEvent {
 		runEventState, err = readHostedRunEventState(ctx, tx, event)
@@ -462,6 +512,15 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	} else if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return nil, err
 	}
+	if metadata, ok := mutation.FromContext(ctx); ok && (metadata.Source == "mcp" || metadata.Source == "api") {
+		route := metadata.Action
+		if metadata.Source == "mcp" {
+			route = "mcp " + route
+		}
+		if err := s.hostedAuditWith(ctx, tx, scope.credential.Hosted, "action", route, string(scope.project), http.StatusOK); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.database.commit(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -469,6 +528,8 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	return json.RawMessage(response), nil
 }
 func (s *Service) requireCompatibilityResource(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	var query string
 	path := c.Path()
 	switch {
@@ -482,7 +543,7 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 		return nil
 	}
 	var count int
-	if err := s.database.db.QueryRowContext(c.Request().Context(), query, c.Param("id")).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, query, c.Param("id")).Scan(&count); err != nil {
 		return fmt.Errorf("check compatibility resource: %w", err)
 	}
 	if count != 0 {
@@ -518,6 +579,8 @@ func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope native
 // External-read commands consult the same receipt before fetching a provider.
 // Current application authority is rechecked even when returning a replay.
 func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, false, nativeInvalid("An idempotency key of at most 128 bytes is required")
 	}
@@ -525,12 +588,12 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	if err != nil {
 		return nil, false, err
 	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, false, err
 	}
 	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return nil, false, err
 	}
 	response, found, err := nativeCommandReceipt(ctx, tx, scope, operation, key, hash)

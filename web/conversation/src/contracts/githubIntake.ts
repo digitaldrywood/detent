@@ -15,13 +15,13 @@ export const IssueIntake = Schema.Struct({
       next_cursor: Schema.String,
       issues: Schema.Array(Schema.Struct({ number: Schema.Number, id: Schema.String, url: Schema.String, title: Schema.String, body: Schema.String, closed: Schema.Boolean, labels: Schema.Array(Schema.String) })),
     }),
-    items: Schema.Array(Schema.Struct({ number: Schema.Number, work_item_id: Schema.optional(Schema.String), status: Schema.String, error: Schema.optional(Schema.String), retry_at: Schema.optional(Schema.String) })),
+    items: Schema.Array(Schema.Struct({ number: Schema.Number, work_item_id: Schema.optional(Schema.String), status: Schema.String, error: Schema.optional(Schema.String), retry_at: Schema.optional(Schema.String), source_close_requested: Schema.optional(Schema.Boolean) })),
   })),
   lanes: Schema.Array(Schema.Struct({ name: Schema.String, dispatchable: Schema.Boolean, terminal: Schema.Boolean })),
 });
 export type IssueIntake = typeof IssueIntake.Type;
 export interface IntakeCommand {
-  readonly action: "discover" | "more" | "apply" | "retry";
+  readonly action: "discover" | "more" | "apply" | "retry" | "close_source";
   readonly revision: number;
   readonly runner_id?: string;
   readonly labels?: readonly string[];
@@ -29,4 +29,6 @@ export interface IntakeCommand {
   readonly numbers?: readonly number[];
   readonly destination?: string;
   readonly allow_dispatch?: boolean;
+  readonly label_lanes?: Readonly<Record<string, string>>;
+  readonly ignore_lane_labels?: boolean;
 }

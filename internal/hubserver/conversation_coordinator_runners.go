@@ -42,15 +42,17 @@ type coordinatorRunnerChange struct {
 }
 
 func (s *Service) coordinatorRunner(ctx context.Context, scope nativeScope, id string) (runnerauth.Runner, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var visible bool
-	err := s.database.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)))`, scope.organization, id, scope.project).Scan(&visible)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runner_identities r WHERE r.organization_id=? AND r.id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)))`, scope.organization, id, scope.project).Scan(&visible)
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	return readRunnerWithClock(ctx, s.database.db, scope.organization, id, s.config.now)
+	return readRunnerWithClock(ctx, s.database.reader, scope.organization, id, s.config.now)
 }
 
 func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -121,7 +123,9 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 		if limit == 0 {
 			limit = 20
 		}
-		rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)) ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelRead()
+		rows, err := s.database.reader.QueryContext(readCtx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?)) ORDER BY r.id LIMIT ? OFFSET ?`, scope.organization, scope.project, limit, args.Offset)
 		if err != nil {
 			return nil, err
 		}
@@ -147,9 +151,9 @@ func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversation
 			return nil, err
 		}
 		problems := slices.DeleteFunc(slices.Clone(r.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
-		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth})
+		views = append(views, map[string]any{"runner_id": r.RunnerID, "display_name": r.DisplayName, "revision": r.Revision, "scope": r.Scope, "isolation_tier": r.IsolationTier, "backend_isolation": r.BackendIsolation, "problems": problems, "health": r.Health, "connection_health": r.ConnectionHealth, "last_heartbeat_at": r.LastHeartbeatAt})
 	}
-	return map[string]any{"runners": views}, nil
+	return map[string]any{"runners": views, "observed_at": s.config.now().UTC()}, nil
 }
 
 func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {

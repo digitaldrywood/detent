@@ -136,6 +136,8 @@ func (d *database) GetWorkItemRecords(ctx context.Context, ids []tracker.WorkIte
 }
 
 func (d *database) readWorkItemRecords(ctx context.Context, statement string, args []any) (records []tracker.Record, resultErr error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	tx, err := d.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("begin hub tracker read: %w", err)

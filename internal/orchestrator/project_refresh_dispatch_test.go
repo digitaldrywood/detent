@@ -304,7 +304,7 @@ func TestProjectRefreshInstanceSelectorCandidateDelivery(t *testing.T) {
 				labels = append(labels, map[string]string{"name": "detent:macbook-air-1"})
 			}
 		}
-		return map[string]any{"__typename": "Issue", "id": fmt.Sprintf("I%d", n), "number": n, "state": "OPEN", "title": "Task", "body": "Task", "repository": map[string]string{"nameWithOwner": "getparable/parable"}, "labels": map[string]any{"totalCount": len(labels), "pageInfo": map[string]any{"hasNextPage": false}, "nodes": labels}, "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
+		return map[string]any{"__typename": "Issue", "id": fmt.Sprintf("I%d", n), "number": n, "state": "OPEN", "title": "Task", "body": "Task", "repository": map[string]string{"nameWithOwner": "example-org/example-project"}, "labels": map[string]any{"totalCount": len(labels), "pageInfo": map[string]any{"hasNextPage": false}, "nodes": labels}, "comments": map[string]any{"totalCount": 0, "nodes": []any{}}, "blockedBy": map[string]any{"nodes": []any{}}}
 	}
 	rest := map[string]int{}
 	hydratedIDs := map[string]int{}
@@ -361,7 +361,7 @@ func TestProjectRefreshInstanceSelectorCandidateDelivery(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	tracker, err := github.NewConnector(github.Config{Endpoint: server.URL + "/graphql", Repository: "getparable/parable", ProjectSlug: "PVT_1", TokenSource: github.StaticTokenSource("fixture"), HTTPClient: server.Client(), ActiveStates: []string{"Todo"}, RESTFanoutMaxRequests: 500})
+	tracker, err := github.NewConnector(github.Config{Endpoint: server.URL + "/graphql", Repository: "example-org/example-project", ProjectSlug: "PVT_1", TokenSource: github.StaticTokenSource("fixture"), HTTPClient: server.Client(), ActiveStates: []string{"Todo"}, RESTFanoutMaxRequests: 500})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,12 +384,12 @@ func TestProjectRefreshInstanceSelectorCandidateDelivery(t *testing.T) {
 		t.Fatalf("delivered=%v want exactly five", delivered)
 	}
 	for _, n := range numbers[:5] {
-		id := fmt.Sprintf("getparable/parable#%d", n)
+		id := fmt.Sprintf("example-org/example-project#%d", n)
 		if delivered[id] != 1 || hydratedIDs[fmt.Sprintf("I%d", n)] != 1 {
 			t.Errorf("%s delivered=%d hydration=%v", id, delivered[id], hydratedIDs)
 		}
 	}
-	if len(hydratedIDs) != 5 || len(rest) != 1 || rest["/repos/getparable/parable/pulls"] != 1 {
+	if len(hydratedIDs) != 5 || len(rest) != 1 || rest["/repos/example-org/example-project/pulls"] != 1 {
 		t.Fatalf("hydration=%v REST=%v; want five batched targets and one repository PR list", hydratedIDs, rest)
 	}
 }

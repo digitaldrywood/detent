@@ -31,6 +31,8 @@ type nativeCompletionState struct {
 	PreparedOutcome          string                         `json:"prepared_outcome"`
 	PreparedMessage          string                         `json:"prepared_message"`
 	PreparedDisposition      *tracker.NativeDisposition     `json:"prepared_disposition,omitempty"`
+	PreparedFinalization     *tracker.NativeFinalization    `json:"prepared_finalization,omitempty"`
+	PreparedFailure          *tracker.NativeTerminalFailure `json:"prepared_failure,omitempty"`
 }
 
 func (e *nativeExecution) CompletionState() json.RawMessage {
@@ -45,7 +47,8 @@ func (e *nativeExecution) CompletionState() json.RawMessage {
 		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
 		RecoveredSource: e.recoveredSource,
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
-		PreparedDisposition: e.preparedDisposition,
+		PreparedDisposition:  e.preparedDisposition,
+		PreparedFinalization: e.preparedFinalization(), PreparedFailure: e.preparedFailure,
 	})
 	if err != nil {
 		return nil
@@ -166,6 +169,22 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		repository:      state.Repository, conversationContinuation: state.ConversationContinuation,
 		role: state.Data.Identity.Role, preparedOutcome: state.PreparedOutcome,
 		preparedMessage: state.PreparedMessage, preparedDisposition: state.PreparedDisposition,
+		preparedFailure: state.Data.TerminalFailure,
+	}
+	if state.PreparedFailure != nil {
+		execution.preparedFailure = state.PreparedFailure
+	}
+	if finalization := state.PreparedFinalization; finalization != nil {
+		execution.change = &runner.NativeChange{
+			Changed: finalization.Changed, Files: finalization.Files,
+			ChangeID: finalization.ChangeID, VersionID: finalization.VersionID,
+			BaseSHA: finalization.BaseSHA, HeadSHA: finalization.HeadSHA,
+			Reviewed: finalization.Reviewed, VersionError: finalization.VersionError,
+			VersionCode: finalization.VersionCode, Error: finalization.Error,
+		}
+		execution.settled = finalization.Settled
+		execution.finalizationSource = finalization.SourceVersion
+		execution.finalizationAttempt = finalization.SourceAttemptID
 	}
 	claim.execution = execution
 	s.mu.Lock()

@@ -18,16 +18,25 @@ export const SORT_LABELS: Readonly<Record<WorkSort, string>> = {
   closed: "Closed",
 };
 
-export const COMPLETED_WINDOWS = ["48h", "7d", "14d", "all"] as const;
+export const COMPLETED_WINDOWS = ["1h", "24h", "7d"] as const;
 export type CompletedWindow = (typeof COMPLETED_WINDOWS)[number];
+export const DEFAULT_COMPLETED_WINDOW: CompletedWindow = "24h";
+
+export const COMPLETED_WINDOW_LABELS: Readonly<Record<CompletedWindow, string>> = {
+  "1h": "1 hour",
+  "24h": "24 hours",
+  "7d": "7 days",
+};
 
 export interface WorkViewState {
   readonly completedWindow: CompletedWindow;
   readonly view: WorkViewMode;
   readonly tab: WorkTab;
   readonly archived?: boolean;
+  readonly createdBy?: "me";
   readonly q: string;
   readonly state: readonly string[];
+  readonly type: readonly string[];
   readonly label: readonly string[];
   readonly assignee: readonly string[];
   readonly priority: readonly string[];
@@ -41,21 +50,23 @@ export const DEFAULT_VIEW_STATE: WorkViewState = {
   tab: "active",
   q: "",
   state: [],
+  type: [],
   label: [],
   assignee: [],
   priority: [],
   sort: "default",
   lanes: null,
   collapsed: ["Backlog"],
-  completedWindow: "48h",
+  completedWindow: DEFAULT_COMPLETED_WINDOW,
 };
 
 /** The multi-valued filters, in the order the Filters menu renders them. */
-export const FILTER_KEYS = ["state", "label", "assignee", "priority"] as const;
+export const FILTER_KEYS = ["state", "type", "label", "assignee", "priority"] as const;
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
 export const FILTER_LABELS: Readonly<Record<FilterKey, string>> = {
   state: "State",
+  type: "Type",
   label: "Label",
   assignee: "Assignee",
   priority: "Priority",
@@ -86,14 +97,16 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     tab: WORK_TABS.find((tab) => tab === params.get("tab")) ?? "active",
     ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
+    ...(params.get("created_by") === "me" ? { createdBy: "me" as const } : {}),
     state: readList(params.get("state")),
+    type: readList(params.get("type")).filter((value) => value === "bug" || value === "change_request"),
     label: readList(params.get("label")),
     assignee: readList(params.get("assignee")),
     priority: readList(params.get("priority")),
     sort: WORK_SORTS.find((candidate) => candidate === sort) ?? DEFAULT_VIEW_STATE.sort,
     lanes: lanes === null ? null : readList(lanes),
     collapsed: params.has("collapsed") ? readList(params.get("collapsed")) : DEFAULT_VIEW_STATE.collapsed,
-    completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? "48h",
+    completedWindow: COMPLETED_WINDOWS.find((window) => window === params.get("completed")) ?? DEFAULT_COMPLETED_WINDOW,
   };
 }
 
@@ -104,6 +117,7 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
 export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
   if (state.archived === true) params.set("archived", "true");
+  if (state.createdBy === "me") params.set("created_by", "me");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
   if (state.tab !== DEFAULT_VIEW_STATE.tab) params.set("tab", state.tab);
   if (state.q.trim().length > 0) params.set("q", state.q.trim());
@@ -114,7 +128,7 @@ export function serializeViewState(state: WorkViewState): string {
   if (state.sort !== DEFAULT_VIEW_STATE.sort) params.set("sort", state.sort);
   if (state.lanes !== null) params.set("lanes", writeList(state.lanes));
   if (writeList(state.collapsed) !== writeList(DEFAULT_VIEW_STATE.collapsed)) params.set("collapsed", writeList(state.collapsed));
-  if (state.completedWindow !== "48h") params.set("completed", state.completedWindow);
+  if (state.completedWindow !== DEFAULT_COMPLETED_WINDOW) params.set("completed", state.completedWindow);
   return params.toString();
 }
 
@@ -125,7 +139,7 @@ export function isDefaultViewState(state: WorkViewState): boolean {
 
 /** How many filter values are active, for the Filters button's count badge. */
 export function activeFilterCount(state: WorkViewState): number {
-  return FILTER_KEYS.reduce((total, key) => total + state[key].length, 0);
+  return FILTER_KEYS.reduce((total, key) => total + state[key].length, state.createdBy === "me" ? 1 : 0);
 }
 
 /** Adds or removes one value from one multi-valued filter. */

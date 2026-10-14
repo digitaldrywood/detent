@@ -654,6 +654,14 @@ INSERT INTO github_outbox (
 
 func performHubAPIRequest(t *testing.T, service *Service, method string, path string, token string, payload any) *httptest.ResponseRecorder {
 	t.Helper()
+	request := newHubAPIRequest(t, method, path, token, payload)
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, request)
+	return response
+}
+
+func newHubAPIRequest(t *testing.T, method, path, token string, payload any) *http.Request {
+	t.Helper()
 	var body []byte
 	var err error
 	if payload != nil {
@@ -669,9 +677,7 @@ func performHubAPIRequest(t *testing.T, service *Service, method string, path st
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, request)
-	return response
+	return request
 }
 
 func decodeHubResponse(t *testing.T, response *httptest.ResponseRecorder, target any) {

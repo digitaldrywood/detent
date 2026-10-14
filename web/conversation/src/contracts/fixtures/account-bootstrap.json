@@ -1,34 +1,34 @@
 {
   "organization": {
-    "id": "org_threefold",
-    "name": "Threefold Solutions"
+    "id": "org_example",
+    "name": "Example Organization"
   },
   "organizations": [
     {
-      "id": "org_threefold",
-      "name": "Threefold Solutions",
-      "public_url": "https://threefold.detent.cloud",
+      "id": "org_example",
+      "name": "Example Organization",
+      "public_url": "https://organization.example.com",
       "current": true
     },
     {
-      "id": "org_parable",
-      "name": "Parable",
-      "public_url": "https://parable.detent.cloud",
+      "id": "org_secondary_example",
+      "name": "Secondary Example Organization",
+      "public_url": "https://secondary.example.org",
       "current": false
     }
   ],
   "actor": {
     "principal_id": "tok_01J9",
-    "subject": "user_michael",
-    "email": "michael@threefold.solutions",
+    "subject": "user_owner",
+    "email": "owner@example.com",
     "role": "owner",
     "can_manage": true,
     "can_manage_runners": true
   },
   "projects": [
     {
-      "id": "proj_parable",
-      "name": "parable",
+      "id": "proj_example_project",
+      "name": "example-project",
       "profile": "native",
       "can_write": true,
       "can_manage_runners": true,
@@ -70,7 +70,7 @@
     },
     {
       "id": "proj_marketing",
-      "name": "threefold-marketing",
+      "name": "example-marketing",
       "profile": "github_compatible",
       "can_write": false,
       "can_manage_runners": false,
@@ -107,6 +107,6 @@
     "source": "base",
     "window_ends_at": "2026-09-10T21:00:00Z"
   },
-  "api_base": "/api/v2/organizations/org_threefold",
+  "api_base": "/api/v2/organizations/org_example",
   "version": "v0.108.0"
 }

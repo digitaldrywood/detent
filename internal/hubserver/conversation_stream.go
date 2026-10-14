@@ -82,13 +82,16 @@ func (s *conversationStream) closed(reason string) error {
 
 // replay writes every committed event after cursor in pages and returns the
 // new cursor.
-func (s *conversationStream) replay(ctx context.Context, store *conversationStore, reader *sql.DB, conversationID string, cursor int64) (int64, error) {
-	for {
+func (s *conversationStream) replay(ctx context.Context, store *conversationStore, reader *sql.DB, conversationID string, cursor, through int64) (int64, error) {
+	for cursor < through {
 		events, err := store.replayEvents(ctx, reader, conversationID, cursor)
 		if err != nil {
 			return cursor, err
 		}
 		for _, event := range events {
+			if event.Seq > through {
+				return cursor, nil
+			}
 			if err := s.event(event); err != nil {
 				return cursor, err
 			}
@@ -98,6 +101,7 @@ func (s *conversationStream) replay(ctx context.Context, store *conversationStor
 			return cursor, nil
 		}
 	}
+	return cursor, nil
 }
 
 // streamConversationEvents implements GET /conversations/:conversation/events.
@@ -112,7 +116,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	}
 	service := s.conversations
 	ctx := c.Request().Context()
-	record, err := service.loadConversation(ctx, s.database.db, scope, c.Param("conversation"))
+	record, err := service.loadConversation(ctx, s.database.reader, scope, c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -130,13 +134,13 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 	for {
 		// The re-read proves the stream may continue: a settled conversation
 		// keeps streaming, only a revoked audience closes it.
-		_, err := s.reauthorizeConversationStream(c, &scope, record.ID)
+		authorized, err := s.reauthorizeConversationStream(c, &scope, record.ID)
 		if err != nil {
 			reason := conversationStreamCloseReason(err)
 			service.logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.closed(reason)
 		}
-		if cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor); err != nil {
+		if cursor, err = stream.replay(ctx, service.store, s.database.reader, record.ID, cursor, authorized.EventSeq); err != nil {
 			if errors.Is(err, errConversationCursorExpired) {
 				return stream.closed(conversationClosedCursorExpired)
 			}
@@ -169,13 +173,15 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 // record.
 func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeScope, conversationID string) (conversationRecord, error) {
 	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if scope.credential.Hosted != nil {
-		credential, _, err := s.hostedCredential(c.Request().Context(), c)
+		credential, _, err := s.hostedCredential(ctx, c)
 		if err != nil {
 			return conversationRecord{}, err
 		}
 		scope.credential = credential
-		if err := s.requireHostedProject(ctx, s.database.db, *scope, false); err != nil {
+		if err := s.requireHostedProject(readCtx, s.database.reader, *scope, false); err != nil {
 			return conversationRecord{}, err
 		}
 	} else {
@@ -189,7 +195,7 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 	if err := s.database.authorizeNativeProject(ctx, *scope); err != nil {
 		return conversationRecord{}, err
 	}
-	return s.conversations.loadConversation(ctx, s.database.db, *scope, conversationID)
+	return s.conversations.loadConversation(readCtx, s.database.reader, *scope, conversationID)
 }
 
 // conversationStreamCloseReason tells a denial apart from a failure. A

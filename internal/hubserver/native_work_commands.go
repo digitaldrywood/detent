@@ -20,7 +20,30 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
+	if request.ScheduledValidation != nil {
+		scope.action = ""
+		return s.recordScheduledValidation(ctx, scope, request)
+	}
+	if err := validateNativeIssueType(request.Type, scope.credential.HostedRole == "reporter"); err != nil {
+		return nil, err
+	}
+	if err := validateNativeReportContext(request.ReportContext); err != nil {
+		return nil, err
+	}
+	if request.ReportContext != nil {
+		request.ReportContext = request.ReportContext.Normalized()
+	}
+	scope.action = operatortool.FileIssue
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
+	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
+		return nil, nativeInvalid("Supply a duplicate challenge token and one to five issue numbers together")
+	}
+	if request.ChallengeToken != "" {
+		if request.GitHubIssueURL != "" || request.Provenance != nil {
+			return nil, nativeInvalid("Duplicate confirmation requires an unlinked native issue")
+		}
+		options.OperationID += "/duplicate-confirmation"
+	}
 	scope.scheduledRepair = s.observeScheduledRepair(ctx, scope, request)
 	var snapshot *tracker.GitHubIssueSnapshot
 	var sourceRepository *RepositorySource
@@ -29,14 +52,16 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			return s.nativeIssueJSON(replay)
+			return s.nativeIssueJSON(ctx, replay)
 		}
 		canonical, repository, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
 		if err != nil {
 			return nil, nativeInvalid(err.Error())
 		}
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelRead()
 		var exists int
-		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
 			return nil, err
 		}
 		if exists == 0 {
@@ -44,7 +69,11 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			if _, found, err := resolveWebhookRepositoryID(ctx, s.database.db, repository); err != nil {
+			repositoryCtx, cancelRepository := context.WithTimeout(ctx, hubReadTimeout)
+			var found bool
+			_, found, err = resolveWebhookRepositoryID(repositoryCtx, s.database.reader, repository)
+			cancelRepository()
+			if err != nil {
 				return nil, err
 			} else if !found {
 				if s.config.ReconcileBackend == nil {
@@ -67,15 +96,29 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		origin, machine := issueorigin.Parse(request.Body)
+		if machine && scope.credential.HostedRole != "reporter" && request.ChallengeToken != "" {
+			return nil, nativeInvalid("Machine reports do not accept duplicate challenges")
+		}
 		workerReport := machine && origin.Kind == "worker" && request.State == "Backlog" && scope.credential.Runner.RunnerID != "" && request.LeaseID != ""
 		scheduledReport := machine && origin.Kind == "doctor" && origin.Instance == "github-actions" && scope.credential.Scope != apiScopeWorker
-		if request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
-			if origin.Kind == "worker" {
-				if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
-					return nil, err
-				}
-			}
+		if scope.credential.HostedRole != "reporter" && request.GitHubIssueURL == "" && (workerReport || scheduledReport) {
 			return createNativeMachineIntakeTx(ctx, tx, scope, request, now, scheduledReport && string(scope.project) == issueorigin.DetentCloudProjectID)
+		}
+		var related []possibleDuplicate
+		if request.ChallengeToken != "" {
+			var err error
+			related, err = confirmNativeDuplicateTx(ctx, tx, scope, request, now)
+			if err != nil {
+				return nil, err
+			}
+		} else if request.GitHubIssueURL == "" && request.Provenance == nil {
+			if machine && scope.credential.HostedRole != "reporter" {
+				return reportNativeMachineIssueTx(ctx, tx, scope, request, now)
+			}
+			challenge, err := challengeNativeIssueTx(ctx, tx, scope, request, now)
+			if err != nil || challenge.ChallengeToken != "" {
+				return challenge, err
+			}
 		}
 		if sourceRepository != nil {
 			owner, name, node := sourceRepository.Owner, sourceRepository.Name, sourceRepository.NodeID
@@ -85,7 +128,16 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			}
 		}
 		issue, err := createNativeIssueTx(ctx, tx, scope, request, now)
-		if err != nil || snapshot == nil || issue.LinkedSource == nil {
+		if err != nil {
+			return nil, err
+		}
+		for _, match := range related {
+			issue, err = changeNativeDependencyTx(ctx, tx, scope, string(issue.WorkItemID), tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: match.WorkItemID, RelationshipType: "related", Operation: "add"}, now)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if snapshot == nil || issue.LinkedSource == nil {
 			return issue, err
 		}
 		return intakeLinkedIssueTx(ctx, tx, scope, string(issue.WorkItemID), *snapshot, now)
@@ -127,29 +179,25 @@ func createNativeMachineIntakeTx(ctx context.Context, tx *sql.Tx, scope nativeSc
 }
 
 func reportNativeMachineIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	if _, err := validateNativeIssueDraft(ctx, tx, scope, request); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	return reportNativeMachineOccurrenceTx(ctx, tx, scope, request, now, false)
 }
 
 func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, terminalRepair bool) (tracker.NativeIssue, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.body || char(10) || COALESCE((SELECT group_concat(c.body, char(10)) FROM native_comments c WHERE c.work_item_id = i.native_id), '') FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE i.organization_id = ? AND i.project_id = ? AND i.archived = 0 ORDER BY ws.terminal, i.number DESC`, scope.organization, scope.project)
+	if scope.credential.Scope == apiScopeWorker {
+		if _, err := validateRunnerLeaseTx(ctx, tx, scope, request.LeaseID, request.FencingToken, now); err != nil {
+			return tracker.NativeIssue{}, err
+		}
+	}
+	matches, err := resolveNativeDuplicatesTx(ctx, tx, scope, request, now, true)
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	defer rows.Close() // Early-return safety; explicit closes below preserve errors before subsequent transaction queries.
 	var existing string
-	for rows.Next() {
-		var id, body string
-		if err := rows.Scan(&id, &body); err != nil {
-			return tracker.NativeIssue{}, errors.Join(err, rows.Close())
-		}
-		if issueorigin.SameDefect(body, request.Body) {
-			existing = id
-			break
-		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return tracker.NativeIssue{}, err
+	if len(matches) != 0 {
+		existing = string(matches[0].WorkItemID)
 	}
 	if existing != "" {
 		issue, _, err := readNativeIssue(ctx, tx, scope, existing)
@@ -197,6 +245,13 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			return nil, err
 		}
 		fields := []string{}
+		if request.Type != nil {
+			if err := validateNativeIssueType(*request.Type, true); err != nil {
+				return nil, err
+			}
+			issue.Type = *request.Type
+			fields = append(fields, "type")
+		}
 		if request.Title != nil {
 			issue.Title = *request.Title
 			fields = append(fields, "title")
@@ -271,6 +326,9 @@ func changeNativeDependencyTx(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	if request.RelationshipType != "" && request.RelationshipType != "dependency" && request.RelationshipType != "related" {
+		return tracker.NativeIssue{}, nativeInvalid("Relationship type must be dependency or related")
+	}
 	if request.Operation != "add" && request.Operation != "remove" {
 		return tracker.NativeIssue{}, nativeInvalid("Dependency operation must be add or remove")
 	}
@@ -282,6 +340,15 @@ func changeNativeDependencyTx(ctx context.Context, tx *sql.Tx, scope nativeScope
 AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 	if err != nil {
 		return tracker.NativeIssue{}, err
+	}
+	if request.RelationshipType == "related" {
+		if blockerID == dependentID {
+			return tracker.NativeIssue{}, nativeInvalid("An issue cannot be related to itself")
+		}
+		if err := changeRelatedIssuesTx(ctx, tx, blockerID, dependentID, request.Operation, now); err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{RelatedWorkItemID: request.RelatedWorkItemID, Operation: request.Operation, Fields: []string{"related"}}, now)
 	}
 	if blockerID == dependentID {
 		return tracker.NativeIssue{}, nativeInvalid("Dependencies cannot form a cycle")
@@ -313,6 +380,7 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 }
 
 func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeScope, item string, request tracker.CreateComment) (json.RawMessage, error) {
+	scope.action = operatortool.AddComment
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments", Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
@@ -343,6 +411,8 @@ func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeSc
 }
 
 func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeScope, item string, comment string, request tracker.UpdateComment) (json.RawMessage, error) {
+	scope.action = operatortool.EditComment
+	scope.actionItem, scope.actionComment = item, comment
 	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments/" + comment, Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		comment, err := readNativeComment(ctx, tx, scope, item, comment)
@@ -396,7 +466,7 @@ func (s *Service) setNativeArchiveCommand(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) nativeWorkObservation(ctx context.Context, scope nativeScope, item string) (tracker.NativeIssue, error) {
-	issue, _, err := readNativeIssue(ctx, s.database.db, scope, item)
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
 	return s.nativeIssueResponse(issue), err
 }
 
@@ -406,7 +476,7 @@ func (s *Service) nativeWorkComments(ctx context.Context, scope nativeScope, ite
 }
 
 func (s *Service) operatorCreateNativeWork(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
-	project, err := readNativeProject(ctx, s.database.db, scope)
+	project, err := readNativeProject(ctx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -432,9 +502,11 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 	case operatortool.TransferItem:
 		return s.transferNativeSourceCommand(ctx, scope, request.Identifier, sourceTransferRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), VersionID: request.VersionID, DestinationRunnerID: request.DestinationRunnerID})
 	case operatortool.EditItem:
-		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
+		return s.updateNativeIssueCommand(ctx, scope, request.Identifier, tracker.UpdateIssue{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Type: request.Type, Title: request.Title, Body: request.Body, Labels: request.Labels, Priority: tracker.SetPriority(request.Priority)})
 	case operatortool.AddComment:
 		return s.createNativeCommentCommand(ctx, scope, request.Identifier, tracker.CreateComment{Mutation: command, Body: *request.Body})
+	case operatortool.VerifyFix:
+		return s.verifyNativeIssueCommand(ctx, scope, request.Identifier, tracker.VerifyFix{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), Result: request.Result, Comment: request.Comment})
 	case operatortool.EditComment:
 		if request.ExpectedRevision <= 0 {
 			return nil, nativeInvalid("expected revision is required")
@@ -444,7 +516,7 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 		if request.ExpectedRevision <= 0 {
 			return nil, nativeInvalid("expected revision is required")
 		}
-		return s.changeNativeDependencyCommand(ctx, scope, request.Identifier, tracker.DependencyMutation{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), RelatedWorkItemID: tracker.NativeWorkItemID(request.Related), Operation: request.Operation})
+		return s.changeNativeDependencyCommand(ctx, scope, request.Identifier, tracker.DependencyMutation{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision), RelatedWorkItemID: tracker.NativeWorkItemID(request.Related), RelationshipType: request.RelationshipType, Operation: request.Operation})
 	case operatortool.RestoreItem:
 		return s.setNativeArchiveCommand(ctx, scope, request.Identifier, archiveIssueRequest{Mutation: command, ExpectedRevision: tracker.Revision(request.ExpectedRevision)}, false)
 	case operatortool.OrderItem, operatortool.SetQueuePriority:
@@ -455,7 +527,7 @@ func (s *Service) operatorNativeWork(ctx context.Context, scope nativeScope, nam
 }
 
 func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeScope, name string, request operatortool.WorkArguments, command tracker.Mutation) (json.RawMessage, error) {
-	_, id, err := readNativeIssue(ctx, s.database.db, scope, request.Identifier)
+	_, id, err := readNativeIssue(ctx, s.database.reader, scope, request.Identifier)
 	if err != nil {
 		return nil, err
 	}
@@ -474,6 +546,9 @@ func (s *Service) operatorCompatibilityWork(ctx context.Context, scope nativeSco
 				return nil, err
 			}
 			if name == operatortool.SetDependency {
+				if request.RelationshipType == "related" {
+					return nil, nativeInvalid("Related links require native issue authority")
+				}
 				_, relatedID, err := readNativeIssue(ctx, tx, scope, request.Related)
 				if err != nil {
 					return nil, err

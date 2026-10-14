@@ -46,6 +46,8 @@ func (s *Service) operatorAdministration() *operatoradmin.Executor {
 // Resolve through the original authenticated binding again. The effective role
 // supplied by the entry is still capped by the local member role.
 func (a hubAdministration) credential(ctx context.Context) (apiCredential, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	c := operatortool.CurrentConnection(ctx)
 	authority, err := c.Resolve(ctx)
 	if err != nil || authority.Identity != c.Identity {
@@ -74,11 +76,13 @@ func (a hubAdministration) credential(ctx context.Context) (apiCredential, error
 		return credential, err
 	}
 	var credential apiCredential
-	err = s.database.db.QueryRowContext(ctx, "SELECT id,name,token_hash,scope,native_only FROM api_tokens WHERE id=? AND token_hash=? AND revoked_at IS NULL", c.Identity.PrincipalID, c.Identity.CredentialID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Scope, &credential.NativeOnly)
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT id,name,token_hash,scope,native_only FROM api_tokens WHERE id=? AND token_hash=? AND revoked_at IS NULL", c.Identity.PrincipalID, c.Identity.CredentialID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Scope, &credential.NativeOnly)
 	return credential, err
 }
 
 func (a hubAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	credential, err := a.credential(ctx)
 	if err != nil {
 		return operatortool.ErrAccessDenied
@@ -134,11 +138,11 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 				id = resource
 			}
 			var count int
-			if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", id).Scan(&count); err != nil || count != 1 {
+			if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM api_tokens WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", id).Scan(&count); err != nil || count != 1 {
 				return operatortool.ErrAccessDenied
 			}
 			if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
-				if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens WHERE id=? AND revoked_at IS NULL", id).Scan(&count); err != nil || count != 1 {
+				if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM api_tokens WHERE id=? AND revoked_at IS NULL", id).Scan(&count); err != nil || count != 1 {
 					return operatortool.ErrAccessDenied
 				}
 			}
@@ -210,7 +214,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			}
 			return nil
 		}
-		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&count); err != nil || count != 0 && in.RequestID == "" {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&count); err != nil || count != 0 && in.RequestID == "" {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
@@ -230,7 +234,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			return operatortool.ErrAccessDenied
 		}
 		var count int
-		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count); err != nil || count != 1 {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count); err != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
 	}
@@ -251,19 +255,19 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return operatortool.ErrAccessDenied
 	}
 	if name == operatortool.InvitationSend && in.Email != "" {
-		if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
+		if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
 			return err
 		}
 	}
 	if (name == operatortool.InvitationEdit || name == operatortool.InvitationResend) && in.InvitationID != "" {
-		view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, in.InvitationID)
+		view, err := s.pendingHostedInvitationFor(readCtx, s.database.reader, credential, in.InvitationID)
 		if err != nil {
 			return err
 		}
 		if name == operatortool.InvitationEdit {
-			return s.validateHostedInvitationEdit(ctx, s.database.db, credential, view, in.Grants)
+			return s.validateHostedInvitationEdit(readCtx, s.database.reader, credential, view, in.Grants)
 		}
-		if err := s.validateHostedInvitationGrants(ctx, s.database.db, credential, view.Email, view.Grants); err != nil {
+		if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, view.Email, view.Grants); err != nil {
 			return err
 		}
 	}
@@ -282,7 +286,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if invitation != "" {
 		var count int
-		if err := s.database.db.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count); err != nil || count != 1 {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count); err != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
 	}
@@ -290,6 +294,8 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 }
 
 func (a hubAdministration) Read(ctx context.Context, name string, in operatoradmin.Input) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	s := a.service
 	credential, err := a.credential(ctx)
 	if err != nil {
@@ -297,7 +303,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 	}
 	switch name {
 	case operatortool.OrganizationProjectRank:
-		return readOrganizationProjectRank(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+		return readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
 	case operatortool.OrganizationSession:
 		setup := hostedAccountSetup{}
 		if credential.Hosted != nil && credential.SessionHash != "" {
@@ -344,7 +350,7 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 			}
 			return operatoradmin.Page(choices, in), nil
 		}
-		rows, err := s.database.db.QueryContext(ctx, "SELECT id,name,local FROM organizations WHERE id=? OR ?=0 ORDER BY id", operatortool.ConnectionIdentity(ctx).OrganizationID, credential.NativeOnly)
+		rows, err := s.database.reader.QueryContext(ctx, "SELECT id,name,local FROM organizations WHERE id=? OR ?=0 ORDER BY id", operatortool.ConnectionIdentity(ctx).OrganizationID, credential.NativeOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -370,6 +376,8 @@ func (a hubAdministration) Read(ctx context.Context, name string, in operatoradm
 }
 
 func (a hubAdministration) Preview(ctx context.Context, name string, in operatoradmin.Input) (operatoradmin.Preview, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	s := a.service
 	credential, err := a.credential(ctx)
 	if err != nil {
@@ -378,7 +386,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	preview := operatoradmin.Preview{Summary: name, Current: in}
 	switch name {
 	case operatortool.OrganizationProjectRankUpdate:
-		current, err := readOrganizationProjectRank(ctx, s.database.db, tracker.OrganizationID(s.config.Hosted.OrganizationID))
+		current, err := readOrganizationProjectRank(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID))
 		if err != nil {
 			return preview, err
 		}
@@ -388,7 +396,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 			Input operatoradmin.Input     `json:"input"`
 		}{current, in}
 	case operatortool.InvitationEdit, operatortool.InvitationResend:
-		view, err := s.pendingHostedInvitationFor(ctx, s.database.db, credential, in.InvitationID)
+		view, err := s.pendingHostedInvitationFor(ctx, s.database.reader, credential, in.InvitationID)
 		if err != nil {
 			return preview, err
 		}
@@ -412,7 +420,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 		}{view, in}
 	case operatortool.InvitationRevoke:
 		var email, role string
-		err := s.database.db.QueryRowContext(ctx, "SELECT email,role FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", in.InvitationID, s.config.Hosted.OrganizationID).Scan(&email, &role)
+		err := s.database.reader.QueryRowContext(ctx, "SELECT email,role FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", in.InvitationID, s.config.Hosted.OrganizationID).Scan(&email, &role)
 		if err != nil {
 			return preview, err
 		}
@@ -421,7 +429,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	case operatortool.OrganizationSwitch:
 		if s.config.Hosted == nil {
 			var org nativeOrganization
-			err := s.database.db.QueryRowContext(ctx, "SELECT id,name,local FROM organizations WHERE id=?", in.OrganizationID).Scan(&org.ID, &org.Name, &org.Local)
+			err := s.database.reader.QueryRowContext(ctx, "SELECT id,name,local FROM organizations WHERE id=?", in.OrganizationID).Scan(&org.ID, &org.Name, &org.Local)
 			preview.ResourceID = in.OrganizationID
 			preview.Current = org
 			return preview, err
@@ -435,7 +443,7 @@ func (a hubAdministration) Preview(ctx context.Context, name string, in operator
 	case operatortool.InvitationAccept:
 		// The ID identifies the provider invitation, not an identity exchange token.
 		var id, email, role string
-		err := s.database.db.QueryRowContext(ctx, "SELECT i.id,i.email,i.role FROM hosted_invitations i WHERE i.id=? AND i.organization_id=? AND (i.accepted_user_id='' OR i.accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&id, &email, &role)
+		err := s.database.reader.QueryRowContext(ctx, "SELECT i.id,i.email,i.role FROM hosted_invitations i WHERE i.id=? AND i.organization_id=? AND (i.accepted_user_id='' OR i.accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&id, &email, &role)
 		if err != nil {
 			return preview, err
 		}
@@ -681,7 +689,9 @@ func (s *Service) hostedSwitchFor(ctx context.Context, identity *auth.HostedIden
 
 // Metadata deliberately omits token hashes and runner credentials.
 func (s *Service) tokenMetadata(ctx context.Context, in operatoradmin.Input) (any, error) {
-	rows, err := s.database.db.QueryContext(ctx, "SELECT id FROM api_tokens WHERE NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id) ORDER BY id")
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id FROM api_tokens WHERE NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id) ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -713,10 +723,12 @@ func (s *Service) tokenMetadata(ctx context.Context, in operatoradmin.Input) (an
 }
 
 func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var view tokenResponse
 	var created string
 	var revoked sql.NullString
-	err := s.database.db.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at,CASE WHEN hosted_user_id IS NOT NULL THEN operator_project_access ELSE '' END FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked, &view.ProjectAccess)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT id,name,scope,token_fingerprint,created_at,native_only,revoked_at,CASE WHEN hosted_user_id IS NOT NULL THEN operator_project_access ELSE '' END,key_kind FROM api_tokens WHERE id=?", id).Scan(&view.ID, &view.Name, &view.Scope, &view.Fingerprint, &created, &view.NativeOnly, &revoked, &view.ProjectAccess, &view.Kind)
 	if err != nil {
 		return view, err
 	}
@@ -731,7 +743,7 @@ func (s *Service) tokenMetadataByID(ctx context.Context, id string) (tokenRespon
 		}
 		view.RevokedAt = &at
 	}
-	rows, err := s.database.db.QueryContext(ctx, "SELECT organization_id,project_id FROM token_grants WHERE token_id=? ORDER BY organization_id,project_id", id)
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT organization_id,project_id FROM token_grants WHERE token_id=? ORDER BY organization_id,project_id", id)
 	if err != nil {
 		return view, err
 	}

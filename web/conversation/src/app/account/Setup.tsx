@@ -5,28 +5,19 @@
 // forward. What it drives is exactly what `static/js/hosted-setup.js` drove,
 // step for step and payload for payload — the policy approval, the progress
 // save, the runner enrollment and its routing, the artifact binding, the
-// repository bind, the GitHub integration and the first issue.
+// repository bind and the GitHub integration.
 //
-// Two things about that page are kept deliberately:
-//
-//  - The four steps are the hub's, not the wizard's. `onboarding.Evaluate`
-//    decides whether each one is `ready` or `action_required` from the stored
-//    state, so the stepper reports readiness rather than remembering which
-//    button the reader last pressed. Re-opening the wizard on another machine
-//    shows the same truth.
 //  - Idempotency keys live in `sessionStorage`, keyed by request path and body
 //    fingerprint, and are retired only once the hub has answered. A save whose
 //    outcome the browser never learned is retried under the same key, so it
 //    cannot land twice (see `idempotency.ts`).
 //
-// The artifact draws three steps; the hub has four, and the fourth (artifact
-// history) is a real decision with a real endpoint. The stepper follows the
-// hub.
 import React from "react";
 import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
+import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../../components/ui/collapsible.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
@@ -36,8 +27,8 @@ import { cn } from "../../lib/utils.ts";
 import { AccountError } from "./api.ts";
 import { ContextHelp } from "../components/ContextHelp.tsx";
 import { EnrollRunnerDialog } from "../fleet/EnrollRunner.tsx";
-import { ControlError, NativeSelect, StatusDot } from "./controls.tsx";
-import { useAccountApi, useAccountBootstrap } from "./context.ts";
+import { ControlError, StatusDot } from "./controls.tsx";
+import { useAccountApi } from "./context.ts";
 import { DetentCloudLogo } from "./Login.tsx";
 import { retireKey, setupKey } from "./idempotency.ts";
 import { useMutation, useResource } from "./useResource.ts";
@@ -48,10 +39,9 @@ export function firstUnreadyStep(steps: readonly OnboardingStep[]): number {
   return index === -1 ? Math.max(steps.length - 1, 0) : index;
 }
 
-/** The steps in `Evaluate`'s order, filling in any the hub did not send. */
-export function orderedSteps(onboarding: Onboarding | undefined): readonly OnboardingStep[] {
+export function orderedSteps(onboarding: Onboarding | undefined, integration?: ProjectIntegration): readonly OnboardingStep[] {
   const sent = onboarding?.steps ?? [];
-  return ONBOARDING_STEPS.map(
+  const evaluated = ONBOARDING_STEPS.map(
     (name) =>
       sent.find((step) => step.name === name) ?? {
         name,
@@ -59,6 +49,11 @@ export function orderedSteps(onboarding: Onboarding | undefined): readonly Onboa
         detail: "",
       },
   );
+  return [{
+    name: "Repository",
+    state: integration?.checkout_repository || integration?.repository ? "ready" : "action_required",
+    detail: "Bind the project repository before enrolling a runner. The runner uses its own Git credentials to prepare the checkout.",
+  }, ...evaluated];
 }
 
 export function Stepper({
@@ -344,30 +339,44 @@ export function SetupRoute({
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   const api = useAccountApi();
-  const bootstrap = useAccountBootstrap();
-  const project = bootstrap?.projects.find((candidate) => candidate.id === projectId) ?? null;
   const onboarding = useResource<Onboarding>(() => api.onboarding(projectId), [api, projectId]);
   const integration = useResource<ProjectIntegration>(() => api.integration(projectId), [api, projectId]);
 
-  const steps = orderedSteps(onboarding.value);
+  const waitingForSetup = (onboarding.value !== undefined && !onboarding.value.ready)
+    || (Boolean(integration.value?.checkout_repository) && (
+      integration.value?.checkout_verified !== true
+      || (!onboarding.value?.policy && (onboarding.value?.observed_policies?.length ?? 0) === 0)
+    ));
+  React.useEffect(() => {
+    if (!waitingForSetup) return;
+    const timer = window.setInterval(() => {
+      void onboarding.refresh();
+      void integration.refresh();
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [waitingForSetup, onboarding.refresh, integration.refresh]);
+
+  const steps = orderedSteps(onboarding.value, integration.value);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const [settled, setSettled] = React.useState(false);
   React.useEffect(() => {
-    if (onboarding.value === undefined || settled) return;
-    setActiveIndex(firstUnreadyStep(orderedSteps(onboarding.value)));
+    if (onboarding.value === undefined || integration.value === undefined || settled) return;
+    setActiveIndex(firstUnreadyStep(orderedSteps(onboarding.value, integration.value)));
     setSettled(true);
-  }, [onboarding.value, settled]);
+  }, [onboarding.value, integration.value, settled]);
 
   // The editable progress, seeded from the hub and written back whole: the
   // endpoint replaces the object, so sending half of it would clear the rest.
   const progress = onboarding.value?.progress;
+  const savedRepository = progress?.repository;
+  const savedArtifacts = progress?.artifacts;
   const [repository, setRepository] = React.useState("");
   const [artifacts, setArtifacts] = React.useState("");
   React.useEffect(() => {
-    if (progress === undefined) return;
-    setRepository(progress.repository);
-    setArtifacts(progress.artifacts);
-  }, [progress]);
+    if (savedRepository === undefined || savedArtifacts === undefined) return;
+    setRepository(savedRepository);
+    setArtifacts(savedArtifacts);
+  }, [projectId, savedRepository, savedArtifacts]);
 
   const [repositoryName, setRepositoryName] = React.useState("");
   const [pastedPolicy, setPastedPolicy] = React.useState("");
@@ -378,13 +387,6 @@ export function SetupRoute({
   const [serviceId, setServiceId] = React.useState("");
   const [serviceOrigin, setServiceOrigin] = React.useState("");
   const [servicePublisher, setServicePublisher] = React.useState("");
-  const [issueTitle, setIssueTitle] = React.useState("");
-  const [issueBody, setIssueBody] = React.useState("");
-  const [issueState, setIssueState] = React.useState("");
-  React.useEffect(() => {
-    const first = project?.profile === "native" ? project.states[0] : project?.states.find((state) => state.dispatchable) ?? project?.states[0];
-    if (first !== undefined && issueState === "") setIssueState(first.name);
-  }, [project, issueState]);
 
   const base = `${api.apiBase}/projects/${encodeURIComponent(projectId)}`;
 
@@ -521,21 +523,6 @@ export function SetupRoute({
     return bound;
   });
 
-  const createIssue = useMutation(async () => {
-    const body = {
-      title: issueTitle,
-      body: issueBody,
-      state: issueState,
-      labels: [],
-      assignees: [],
-    };
-    const created = await withSetupKey(`${base}/work-items`, body, (key) =>
-      api.createFirstIssue({ projectId, title: issueTitle, body: issueBody, state: issueState, key }),
-    );
-    onNavigate?.("/work");
-    return created;
-  });
-
   if (onboarding.error !== null && onboarding.error.isAccessError) {
     return (
       <WizardCard
@@ -566,6 +553,7 @@ export function SetupRoute({
   }
 
   const step = steps[activeIndex];
+  const needsAction = step?.state === "action_required";
   const eligible = (onboarding.value.runners ?? []).filter(
     (entry) => (entry.exclusions ?? []).length === 0,
   );
@@ -575,53 +563,41 @@ export function SetupRoute({
 
   const next = () => setActiveIndex((index) => Math.min(index + 1, steps.length - 1));
   const back = () => setActiveIndex((index) => Math.max(index - 1, 0));
-  const associatedRepository = integration.value?.checkout_repository || integration.value?.repository;
+  const checkoutRepository = integration.value?.checkout_repository;
+  const associatedRepository = checkoutRepository || integration.value?.repository;
+  const checkoutVerified = integration.value?.checkout_verified === true;
+  const configurationChosen = Boolean(progress?.repository) || Boolean(onboarding.value.policy);
+  const policyApproved = Boolean(onboarding.value.policy) && policyReports.length === 0;
+  const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online");
   const githubApp = integration.value;
   const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
 
   const bodies: Record<string, React.ReactNode> = {
-    "Repository configuration": (
+    "Repository": (
       <>
-        <ChoiceGroup
-          name="setup-repository"
-          legend="Repository configuration"
-          value={repository}
-          onValueChange={setRepository}
-          choices={[
-            {
-              value: "existing",
-              name: "Use an existing repository",
-              help: "Choose this if the execution host already has detent.yaml and WORKFLOW.md. This saves your setup choice; the runner reads those files on the host. Associate separately verifies the runner checkout.",
-              detail: "Detent reads detent.yaml and WORKFLOW.md from it",
-            },
-            {
-              value: "generate",
-              name: "Generate the configuration",
-              help: "Choose this when you need starting detent.yaml and WORKFLOW.md files. This screen records that choice; create the files on the execution host before inspecting and approving the policy. Associate does not generate files.",
-              detail: "Create starting detent.yaml and WORKFLOW.md on the host",
-            },
-          ]}
-        />
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5 sm:flex-row sm:items-end">
           <div className="flex flex-1 flex-col gap-1.5">
             <div className="flex items-center gap-1">
-              <Label htmlFor="setup-repository">Associate the runner checkout</Label>
+              <Label htmlFor="setup-repository">Which repository should Detent work on?</Label>
               <ContextHelp label="Associate the runner checkout">
-                Associate verifies that an enrolled runner’s checkout has a Git origin matching owner/name, including private repositories. Clone the repository on the runner and start it first; GitHub API integration is optional. This does not write configuration files or approve policy.
+                This connects your project to a repository your runner can download using its Git sign-in. Enter owner/name and click Associate; private repositories work too, without a GitHub integration.
               </ContextHelp>
             </div>
             <Input
               id="setup-repository"
               placeholder="owner/name"
-              value={repositoryName}
+              value={checkoutRepository || repositoryName}
               onChange={(event) => setRepositoryName(event.currentTarget.value)}
               disabled={Boolean(integration.value?.checkout_repository)}
             />
             <p className="text-[13px] text-muted-foreground">
-              Clone this repository on an enrolled runner, including private repositories, and start the runner. Its Git origin must match owner/name. GitHub API integration is optional.
+              Enter your repository's owner/name; your runner downloads it using its Git sign-in. Private repositories work too, without a GitHub integration.
             </p>
             {integration.value?.checkout_repository ? (
-              <p className="text-[13px] text-success-foreground">Verified runner checkout: <code className="font-mono">{integration.value.checkout_repository}</code></p>
+              <p role="status" className={`text-[13px] ${checkoutVerified ? "text-success-foreground" : "text-muted-foreground"}`}>
+                {checkoutVerified ? "Verified runner checkout: " : `Waiting for ${preparingRunner?.runner.display_name || "an enrolled runner"} to clone or verify checkout: `}
+                <code className="font-mono">{integration.value.checkout_repository}</code>
+              </p>
             ) : null}
           </div>
           <Button
@@ -647,70 +623,107 @@ export function SetupRoute({
             )}
           </div>
         ) : null}
-        {onboarding.value.observed_policies?.[0] ? (
-          <details className="mb-2.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-            <summary className="cursor-pointer text-sm">{policyConflict ? "Conflicting runner configurations: inspect and approve one shared definition" : "Review runner-reported policy"}</summary>
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(onboarding.value.observed_policies[0].policy, null, 2)}</pre>
-          </details>
+      </>
+    ),
+    "Repository configuration": (
+      <>
+        {checkoutRepository ? (
+          <section className="mt-4" aria-labelledby="setup-configuration-heading">
+            <h2 id="setup-configuration-heading" className="mb-2 text-sm font-medium">Configuration files</h2>
+            {configurationChosen ? (
+              <p className="mb-3 text-sm text-muted-foreground">
+                {progress?.repository === "generate" && policyReports.length === 0 && !policyApproved ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on your runner’s computer so it can send the settings for review.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
+              </p>
+            ) : (
+              <>
+                <p className="mb-3 text-sm text-muted-foreground">Detent needs detent.yaml and WORKFLOW.md in this repository to know how to build, check and deliver your work.</p>
+                <ChoiceGroup
+                  name="setup-repository"
+                  legend="Configuration files"
+                  value={repository}
+                  onValueChange={setRepository}
+                  choices={[
+                    { value: "existing", name: "Use existing configuration files", detail: "detent.yaml and WORKFLOW.md are already in the repository" },
+                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on your runner’s computer before approval" },
+                  ]}
+                />
+                <Button variant="outline" disabled={saveProgress.pending || repository === ""} onClick={() => void saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>
+                  {saveProgress.pending ? "Saving…" : "Save configuration choice"}
+                </Button>
+              </>
+            )}
+          </section>
         ) : null}
-        <div className="mb-2.5 flex flex-col gap-1.5 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-          <div className="flex items-center gap-1">
-            <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
-            <ContextHelp label="Resolved policy descriptor">
-              The CLI resolves detent.yaml and WORKFLOW.md on the execution host into this descriptor. Hub validates it when you approve; runners report the policy they actually resolve. A missing approval or policy mismatch prevents claims.
-            </ContextHelp>
-          </div>
-          <Textarea
-            id="setup-policy-descriptor"
-            rows={3}
-            className="font-mono text-xs"
-            placeholder='{"schema":1,"policy_id":"policy_…"}'
-            value={pastedPolicy}
-            onChange={(event) => setPastedPolicy(event.currentTarget.value)}
-          />
-          <p className="text-[13px] text-muted-foreground">
-            The runner reports its resolved policy above. If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on the execution host and paste its output. Approving records the descriptor you reviewed.
-          </p>
-        </div>
-        <OptionRow
-          label="Approve the resolved policy"
-          name="Approve resolved policy"
-          help="An owner or admin approves this exact resolved descriptor. Hub records its policy identity; runners must resolve a matching policy to claim work. Approval does not run doctor or sign in to a provider."
-          detail={<span className="break-all">{onboarding.value.observed_policies?.[0]?.policy.policy_id ?? onboarding.value.policy?.policy.policy_id ?? "Waiting for the runner to report its policy"}</span>}
-          right={
-            <Button size="sm" disabled={approve.pending || (policyConflict && pastedPolicy.trim().length === 0)} onClick={() => void approve.call()}>
-              {approve.pending ? "Approving…" : "Approve"}
-            </Button>
-          }
-        />
-        <ControlError message={approve.error?.message ?? null} />
+        {checkoutRepository && configurationChosen ? (
+          <section className="mt-4" aria-labelledby="setup-approval-heading">
+            <h2 id="setup-approval-heading" className="mb-2 text-sm font-medium">{policyApproved ? "Settings approved" : "Approve repository settings"}</h2>
+            {policyApproved ? (
+              <p role="status" className="text-sm text-success-foreground">Approved the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
+            ) : (
+              <>
+                <p className="mb-3 text-sm text-muted-foreground">Your approval lets the runner use these settings to start work.</p>
+                {policyReports.length === 0 ? (
+                  <p role="status" className="mb-3 text-sm text-muted-foreground">Waiting for the runner to report the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
+                ) : (
+                  <p className="mb-3 break-words text-sm">Approve the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
+                )}
+                {policyConflict ? <p role="alert" className="mb-3 text-sm text-warning-foreground">Runners reported different settings. Open Advanced policy details to inspect and paste the shared configuration you want to approve.</p> : null}
+              </>
+            )}
+            <Collapsible className="mb-3">
+              <CollapsibleTrigger render={<Button variant="outline" size="sm" />}>Advanced policy details</CollapsibleTrigger>
+              <CollapsiblePanel>
+                <div className="mt-3 flex flex-col gap-2">
+                  {policyReports[0] || onboarding.value.policy ? (
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(policyReports[0]?.policy ?? onboarding.value.policy?.policy, null, 2)}</pre>
+                  ) : null}
+                  <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
+                  <Textarea
+                    id="setup-policy-descriptor"
+                    rows={3}
+                    placeholder='{"schema":1,"policy_id":"policy_…"}'
+                    value={pastedPolicy}
+                    onChange={(event) => setPastedPolicy(event.currentTarget.value)}
+                  />
+                  <p className="break-words text-[13px] text-muted-foreground">If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on your runner’s computer and paste its output. Approval saves the work settings you reviewed.</p>
+                </div>
+              </CollapsiblePanel>
+            </Collapsible>
+            {policyApproved ? null : (
+              <Button disabled={approve.pending || policyReports.length === 0 || (policyConflict && pastedPolicy.trim().length === 0)} onClick={() => void approve.call()}>
+                {approve.pending ? "Approving…" : "Approve settings"}
+              </Button>
+            )}
+            <ControlError message={approve.error?.message ?? null} />
+          </section>
+        ) : null}
       </>
     ),
     "Local validation": (
       <>
         {(onboarding.value.runners ?? []).length === 0 ? (
-          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner to observe checks on its execution host.</p>
+          <p className="mb-3 text-sm text-muted-foreground">Enroll a runner first to check that its computer is ready.</p>
         ) : null}
         {(onboarding.value.runners ?? []).map((entry) => {
           const checks = entry.local_checks;
-          const offline = entry.runner.health !== "online";
+          const offline = (entry.runner.connection_health ?? entry.runner.health) !== "online";
           return (
             <div key={entry.runner.runner_id} className="mb-3">
-              <p className="mb-2 text-sm font-medium">{entry.runner.display_name}{offline ? " · Offline" : ""}</p>
+              <p className="mb-2 text-sm font-medium">{entry.runner.display_name} · {offline ? "Offline" : "Online"}{entry.runner.health === "needs_attention" ? " · Needs attention" : ""}</p>
               {([
-                ["Project checkout and configuration", "The runner checks its project checkout and configuration on the execution host. Prepare the files there, restart the runner, then refresh these observations.", checks?.checkout, "Prepare the checkout with WORKFLOW.md and detent.yaml at the path printed by registration."],
-                ["detent doctor", "The runner runs detent doctor on the execution host and reports a sanitized result. Hub stores this observation, not a browser confirmation. Run doctor locally for details, restart the runner after fixes, then refresh.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on this host for details and fixes."],
-                ["Provider sign-in", "The runner checks sign-in to the configured provider on its execution host. Credentials and account details stay local. Sign in there, restart the runner, then refresh these observations.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the selected provider"} on this host, then restart the runner.`],
+                ["Project checkout and configuration", "Your runner needs a copy of your code with detent.yaml and WORKFLOW.md in the project folder. Put those files on the runner’s computer, restart the runner, then click Refresh runner checks.", checks?.checkout, "Put your code, WORKFLOW.md and detent.yaml in the project folder shown when you enrolled the runner."],
+                ["detent doctor", "detent doctor checks whether Detent is set up correctly on your computer. Run the command below on that computer for details, fix any problems, then restart the runner and refresh the checks.", checks?.doctor, "Run detent doctor --config <global.yaml> --project <project> on your runner’s computer to see what needs fixing."],
+                ["Provider sign-in", "Your runner needs to be signed in to the AI coding tool chosen for this project; your sign-in details stay on that computer. Sign in there, restart the runner, then click Refresh runner checks.", checks?.provider, `Sign in to ${(checks?.provider_kinds ?? []).join(" and ") || "the AI coding tool chosen for this project"} on your runner’s computer, then restart the runner.`],
               ] as const).map(([name, help, state, hint]) => (
                 <OptionRow key={name} label={name} name={name} help={help}
-                  detail={state === "passed" ? "Observed on the execution host" : hint}
+                  detail={state === "passed" ? "Checked on your runner’s computer" : hint}
                   right={<><StatusDot tone={state === "passed" && !offline ? "ok" : "warn"} />{state === "passed" ? "Passed" : state === "failed" ? "Failed" : state === "warning" ? "Warnings" : "Waiting"}</>} />
               ))}
-              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the host to use these results." : "Credentials and command output stay local."}</p> : null}
+              {checks?.observed_at ? <p className="text-xs text-muted-foreground">Reported {new Date(checks.observed_at).toLocaleString()}. {offline ? "Reconnect the runner’s computer to use these results." : "Sign-in details and command output stay on your computer."}</p> : null}
             </div>
           );
         })}
-        <Button variant="outline" onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
+        <Button variant={needsAction ? "default" : "outline"} onClick={() => void onboarding.refresh()}>Refresh runner checks</Button>
       </>
     ),
     "Execution runner": (
@@ -718,10 +731,7 @@ export function SetupRoute({
         <div className="mb-2 flex items-center gap-1 text-sm">
           Runner eligibility
           <ContextHelp label="Runner eligibility">
-            Hub evaluates administrator-approved project access, claim permission, enabled state,
-            policy selectors, runner-reported heartbeat and capacity, shared host capacity, and
-            reported provider capacity. Any listed exclusion prevents new claims; runners also
-            verify that their resolved policy matches approval.
+            A runner is a computer you control, like your laptop or a server, where Detent's agents write and test code. Runners that can take work for this project are listed here; if one can't, the reason is shown next to it.
           </ContextHelp>
         </div>
         {eligible.map((entry) => (
@@ -756,20 +766,19 @@ export function SetupRoute({
                 >
                   Route here
                 </Button>
-                <ContextHelp label="Route here">Add this project to the runner’s routing scope, preserving its other projects. This can resolve missing project access; it does not fix a stale heartbeat, full capacity, disabled runner, or policy mismatch.</ContextHelp>
+                <ContextHelp label="Route here">Allow this runner to work on this project as well as its other projects. If it still cannot start, check the reason shown next to it.</ContextHelp>
               </>
             }
           />
         ))}
         <ControlError message={route.error?.message ?? null} />
         <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-          <div className="text-[14.5px]">Enroll a host</div>
+          <div className="text-[14.5px]">Connect a computer</div>
           <p className="text-[13px] text-muted-foreground">
-            Name the host and copy one command to run on it. The command creates the host's
-            identity there, connects it to this project and writes its configuration.
+            Choose a name for the computer, then paste the enrollment command into a terminal on it. The command connects that computer to this project.
           </p>
           <div>
-            <Button variant="outline" onClick={() => setEnrolling(true)}>
+            <Button variant={needsAction ? "default" : "outline"} onClick={() => setEnrolling(true)}>
               Enroll a runner
             </Button>
           </div>
@@ -796,14 +805,14 @@ export function SetupRoute({
             {
               value: "local",
               name: "Your runner (local history)",
-              help: "Artifacts stay on your runner, the machine in your environment that produced them. Detent stores no artifacts. No separate storage account or fee is needed; access depends on your runner being available. If that machine is lost, so are the artifacts.",
-              detail: "Your runner stores artifacts; no Detent storage or storage fee",
+              help: "Keep logs, screenshots and other run files on your runner, with no separate storage account or fee. You can view them while that computer is available; losing it also loses those files.",
+              detail: "Keep run files on your runner, with no separate storage fee",
             },
             {
               value: "customer",
               name: "Your bucket and gateway",
-              help: "Artifacts go to an S3-compatible bucket and artifact gateway that you run and pay for. Bind its details below. Detent records the binding only and never holds your storage credentials or artifacts. A binding does not verify storage or guarantee offline access.",
-              detail: "Your bucket and gateway, your bill; no Detent artifact storage",
+              help: "Keep run files in storage you run and pay for: an S3-compatible bucket and a gateway, the service that lets you view those files. Enter the details below; connecting it does not check that storage works or ensure access when your runner is offline.",
+              detail: "Keep run files in storage you manage and pay for",
             },
           ]}
         />
@@ -813,7 +822,7 @@ export function SetupRoute({
               <div className="flex items-center gap-1">
                 <Label htmlFor="setup-service-id">Service id</Label>
                 <ContextHelp label="Service id">
-                  The identifier for the artifact service you operate. Binding it associates that service with this project; it does not provision or verify storage.
+                  Enter the ID from the service you set up to store run files. This connects it to the project; it does not create storage or check that it works.
                 </ContextHelp>
               </div>
               <Input
@@ -826,7 +835,7 @@ export function SetupRoute({
               <div className="flex items-center gap-1">
                 <Label htmlFor="setup-service-origin">Gateway origin</Label>
                 <ContextHelp label="Gateway origin">
-                  The HTTP(S) origin of your independent artifact gateway, for example https://artifacts.example.com. Use the gateway address, not the S3 bucket URL.
+                  Enter the web address of your gateway, the service that lets you view stored run files, for example https://artifacts.example.com. Use that address, not the S3 bucket URL.
                 </ContextHelp>
               </div>
               <Input
@@ -840,7 +849,7 @@ export function SetupRoute({
               <div className="flex items-center gap-1">
                 <Label htmlFor="setup-service-token">Publisher token id</Label>
                 <ContextHelp label="Publisher token id">
-                  The id of an existing, unrevoked Hub API token with a grant for this project. Hub checks that grant when binding. Enter its id, not the secret token; your gateway and publisher still need their credentials configured.
+                  Enter the ID of an active Detent API token that has access to this project, not the secret token itself. Set up the sign-in details for your storage service separately.
                 </ContextHelp>
               </div>
               <Input
@@ -851,7 +860,7 @@ export function SetupRoute({
             </div>
             <div>
               <Button
-                variant="outline"
+                variant={needsAction ? "default" : "outline"}
                 disabled={bindArtifacts.pending || serviceId.trim().length === 0}
                 onClick={() => void bindArtifacts.call()}
               >
@@ -860,52 +869,9 @@ export function SetupRoute({
             </div>
             <ControlError message={bindArtifacts.error?.message ?? null} />
             <p className="text-[13px] text-muted-foreground">
-              A binding records where artifacts go. It does not verify the storage and does not
-              promise offline access.
+              Connecting storage saves where your run files will go. Check that your storage service
+              works; connecting it does not ensure access when your runner is offline.
             </p>
-          </div>
-        ) : null}
-        {onboarding.value.ready ? (
-          <div className="mb-2.5 flex flex-col gap-2 rounded-xl border border-border/60 bg-muted px-4 py-3.5">
-            <div className="text-[14.5px]">Your first issue</div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-issue-title">Title</Label>
-              <Input
-                id="setup-issue-title"
-                value={issueTitle}
-                onChange={(event) => setIssueTitle(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-issue-body">What needs doing</Label>
-              <Textarea
-                id="setup-issue-body"
-                rows={3}
-                value={issueBody}
-                onChange={(event) => setIssueBody(event.currentTarget.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="setup-issue-state">Lane</Label>
-              <NativeSelect
-                id="setup-issue-state"
-                value={issueState}
-                options={(project?.states ?? []).map((state) => ({
-                  value: state.name,
-                  label: state.name,
-                }))}
-                onValueChange={setIssueState}
-              />
-            </div>
-            <div>
-              <Button
-                disabled={createIssue.pending || issueTitle.trim().length === 0}
-                onClick={() => void createIssue.call()}
-              >
-                {createIssue.pending ? "Creating…" : "Create the first issue"}
-              </Button>
-            </div>
-            <ControlError message={createIssue.error?.message ?? null} />
           </div>
         ) : null}
       </>
@@ -926,7 +892,7 @@ export function SetupRoute({
       activeIndex={activeIndex}
       onSelectStep={setActiveIndex}
       title={step?.name ?? "Set up this project"}
-      lede={step?.detail ?? ""}
+      lede={step?.name === "Repository configuration" ? "Connect your repository so Detent can work on your code. Prepare its configuration files, then click Approve settings after reviewing the settings sent by your runner." : step?.detail ?? ""}
       footer={
         <>
           {activeIndex > 0 ? (
@@ -934,8 +900,19 @@ export function SetupRoute({
               Back
             </Button>
           ) : null}
-          {onboarding.value.ready && activeIndex === steps.length - 1 ? (
+          {onboarding.value.ready && steps.every((candidate) => candidate.state === "ready") && activeIndex === steps.length - 1 ? (
             <Button onClick={() => onNavigate?.("/work")}>Finish</Button>
+          ) : needsAction ? (
+            <>
+              <Button variant="outline" onClick={saveAndContinue} disabled={saveProgress.pending}>
+                {saveProgress.pending ? "Saving…" : "Skip for now"}
+              </Button>
+              {step.name === "Artifact history" && artifacts !== "customer" ? (
+                <Button onClick={saveAndContinue} disabled={saveProgress.pending || artifacts !== "local"}>
+                  {saveProgress.pending ? "Saving…" : "Save choice"}
+                </Button>
+              ) : null}
+            </>
           ) : (
             <Button onClick={saveAndContinue} disabled={saveProgress.pending}>
               {saveProgress.pending ? "Saving…" : "Continue"}

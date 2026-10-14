@@ -63,7 +63,7 @@ function headerGit(
       : (overrides.status ??
         toVcsStatus({
           status: {
-            branch: "detent/parable_3363",
+            branch: "detent/example-project_3363",
             detached: false,
             remote: "origin",
             upstream: true,
@@ -115,7 +115,7 @@ describe("the header's Open split button", () => {
           local: false,
           linked: true,
         },
-        openTargets: [{ id: "issue", label: "Open parable#3363 in Work", run, external: false }],
+        openTargets: [{ id: "issue", label: "Open example-project#3363 in Work", run, external: false }],
       },
       <OpenInPicker />,
     );

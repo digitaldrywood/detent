@@ -31,6 +31,9 @@ func (s *Service) hostedAdministrator(c echo.Context) (apiCredential, error) {
 func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, _, err := s.authenticateAPIRequest(c)
+		if err == nil && credential.HostedRole == "reporter" && !hostedReadRequest(c) {
+			return s.nativeAPIError(c, operatortool.ErrAccessDenied)
+		}
 		if err != nil || credential.Hosted == nil || c.Param("organization") != s.config.Hosted.OrganizationID {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
@@ -53,7 +56,7 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 			}
 			credential.ManageRunners = true
 		case strings.HasPrefix(c.Path(), enrollmentBase) || strings.HasPrefix(c.Path(), runnerBase) || c.Path() == "/api/v2/organizations/:organization/machines/:machine/routing":
-			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.db, credential); err != nil {
+			if err := s.requireHostedRunnerAdministration(c.Request().Context(), s.database.reader, credential); err != nil {
 				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true
@@ -69,13 +72,17 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 }
 
 func (s *Service) hostedAllUsageGrants(ctx context.Context, credential apiCredential) bool {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var missing int
-	err := s.database.db.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=? AND NOT EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.project_id=p.id AND g.user_id=?)`, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&missing)
 	return err == nil && missing == 0
 }
 
 func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
-	return s.requireHostedRunnerAdministration(ctx, s.database.db, credential) == nil
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	return s.requireHostedRunnerAdministration(ctx, s.database.reader, credential) == nil
 }
 
 func (s *Service) requireHostedRunnerAdministration(ctx context.Context, query nativeQueryer, credential apiCredential) error {
@@ -134,6 +141,9 @@ ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, 
 }
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	credential, err := s.hostedAdministrator(c)
 	role := c.FormValue("role")
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
@@ -143,10 +153,10 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.validateHostedInvitationGrants(c.Request().Context(), s.database.db, credential, email, nil); err != nil {
+	if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, email, nil); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
-	reserved, err := s.reserveHostedInvitationSeat(c.Request().Context(), email)
+	reserved, err := s.reserveHostedInvitationSeat(ctx, email)
 	if err != nil {
 		var limit *hostedLimitError
 		if errors.As(err, &limit) {
@@ -154,7 +164,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 		}
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be reserved")
 	}
-	if _, err := s.sendReservedHostedInvitationFor(c.Request().Context(), credential, email, role, reserved, nil); err != nil {
+	if _, err := s.sendReservedHostedInvitationFor(ctx, credential, email, role, reserved, nil); err != nil {
 		return s.hostedError(c, http.StatusServiceUnavailable, "The invitation could not be sent")
 	}
 
@@ -263,7 +273,7 @@ func (s *Service) hostedGrant(ctx context.Context, credential apiCredential, use
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential}); err != nil {
 		return err
 	}
 	grants := []hostedMemberGrant{{ProjectID: project, Write: write, Runner: runner}}
@@ -334,7 +344,7 @@ func (s *Service) createHostedProjectRecord(ctx context.Context, credential apiC
 	return project, tx.Commit()
 }
 func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, credential apiCredential, name string, states []tracker.NativeState) (project string, resultErr error) {
-	if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
+	if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential, requireHostedAdmin: true}); err != nil {
 		return "", err
 	}
 	if states != nil {
@@ -360,6 +370,10 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	project = newNativeID("prj")
 	if states == nil {
 		states = HostedProjectStates()
+	}
+	states = nativeTriageStates(states)
+	if err := validateNativeStates(states); err != nil {
+		return "", err
 	}
 	now := formatHubTime(s.config.now())
 	encoded, err := marshalNative(states)
@@ -413,12 +427,14 @@ ON CONFLICT(token_id,organization_id,project_id) DO NOTHING`, s.config.Hosted.Or
 // how the orchestrator names its review lane. Migrations 36, 38 and 39 move
 // projects created from the earlier templates onto this one.
 func HostedProjectStates() []tracker.NativeState {
-	return []tracker.NativeState{
-		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
-		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done"}},
-		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress"}},
+	return nativeTriageStates([]tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done", "Cancelled"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done", "Cancelled"}},
+		{Name: "Blocked", Transitions: []string{"Todo", "In Progress", "Done", "Cancelled"}},
+		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Blocked", "Merging", "Cancelled"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Human Review", "In Progress", "Cancelled"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
-	}
+		{Name: "Backlog", Transitions: []string{"Todo", "Cancelled"}},
+		{Name: "Cancelled", Terminal: true, Transitions: []string{"Todo"}},
+	})
 }

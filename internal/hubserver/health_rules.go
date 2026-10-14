@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -29,13 +30,32 @@ type healthSubject struct {
 }
 
 type healthEvidence struct {
-	EventIDs   []string                       `json:"event_ids,omitempty"`
-	AttemptIDs []string                       `json:"attempt_ids,omitempty"`
-	Counts     map[string]int                 `json:"counts,omitempty"`
-	Values     map[string]float64             `json:"values,omitempty"`
-	Queues     map[string]healthQueueEvidence `json:"queues,omitempty"`
-	Signatures []string                       `json:"signatures,omitempty"`
-	Reason     string                         `json:"reason,omitempty"`
+	ScheduledValidation *healthScheduledEvidence       `json:"scheduled_validation,omitempty"`
+	EventIDs            []string                       `json:"event_ids,omitempty"`
+	AttemptIDs          []string                       `json:"attempt_ids,omitempty"`
+	Counts              map[string]int                 `json:"counts,omitempty"`
+	Values              map[string]float64             `json:"values,omitempty"`
+	Queues              map[string]healthQueueEvidence `json:"queues,omitempty"`
+	Signatures          []string                       `json:"signatures,omitempty"`
+	Reason              string                         `json:"reason,omitempty"`
+}
+
+type healthScheduledEvidence struct {
+	LastReportAt   time.Time  `json:"last_report_at"`
+	LastRunURL     string     `json:"last_run_url"`
+	LastGreenAt    *time.Time `json:"last_green_at,omitempty"`
+	CadenceSeconds int        `json:"cadence_seconds"`
+	WindowSeconds  int        `json:"window_seconds"`
+}
+
+type healthScheduledValidation struct {
+	FirstReport time.Time
+	LastReport  time.Time
+	LastGreen   time.Time
+	LastRunURL  string
+	Cadence     time.Duration
+	Failures    int
+	LastFailed  bool
 }
 
 type healthSlackFailure struct {
@@ -96,6 +116,7 @@ type healthRunner struct {
 }
 
 type healthProject struct {
+	Scheduled       healthScheduledValidation
 	ID              string
 	Candidates      int
 	CandidateIDs    map[string]bool
@@ -156,8 +177,44 @@ func deadManFinding(now time.Time, p healthProject) (healthFinding, bool) {
 	if baseline.IsZero() {
 		baseline = p.CandidateSince
 	}
-	active := p.Candidates > 0 && p.FreeSlots > 0 && !baseline.IsZero() && now.Sub(baseline) >= healthFlowWindow
-	return newHealthFinding("dead_man", "flow", "project", p.ID, "No work has landed for thirty minutes despite candidates and a free slot.", "The project operator checks scheduler admission and landing evidence.", []string{p.ID}, healthEvidence{Counts: map[string]int{"candidates": p.Candidates, "free_slots": p.FreeSlots}}), active
+	landing := p.Candidates > 0 && p.FreeSlots > 0 && !baseline.IsZero() && now.Sub(baseline) >= healthFlowWindow
+	scheduled := p.Scheduled
+	window := max(6*time.Hour, 2*scheduled.Cadence)
+	silent := !scheduled.LastReport.IsZero() && now.Sub(scheduled.LastReport) >= window
+	greenBaseline := scheduled.LastGreen
+	if greenBaseline.IsZero() {
+		greenBaseline = scheduled.FirstReport
+	}
+	red := !silent && scheduled.LastFailed && scheduled.Failures >= 2 && !greenBaseline.IsZero() && now.Sub(greenBaseline) >= 24*time.Hour
+	evidence := healthEvidence{Counts: map[string]int{"candidates": p.Candidates, "free_slots": p.FreeSlots, "landing_stalled": 0, "scheduled_silent": 0, "scheduled_red": 0}}
+	reasons := []string{}
+	if landing {
+		evidence.Counts["landing_stalled"] = 1
+		reasons = append(reasons, "No work has landed for thirty minutes despite candidates and a free slot.")
+	}
+	if silent || red {
+		evidence.ScheduledValidation = &healthScheduledEvidence{LastReportAt: scheduled.LastReport, LastRunURL: scheduled.LastRunURL, CadenceSeconds: int(scheduled.Cadence / time.Second), WindowSeconds: int(window / time.Second)}
+		if !scheduled.LastGreen.IsZero() {
+			evidence.ScheduledValidation.LastGreenAt = &scheduled.LastGreen
+		}
+	}
+	if silent {
+		evidence.Counts["scheduled_silent"] = 1
+		reasons = append(reasons, fmt.Sprintf("Scheduled validation is silent; last report at %s (%s).", scheduled.LastReport.UTC().Format(time.RFC3339), scheduled.LastRunURL))
+	}
+	if red {
+		evidence.Counts["scheduled_red"] = 1
+		lastGreen := "never reported"
+		if !scheduled.LastGreen.IsZero() {
+			lastGreen = scheduled.LastGreen.UTC().Format(time.RFC3339)
+		}
+		reasons = append(reasons, "Scheduled validation has stayed red for at least twenty-four hours; last green: "+lastGreen+".")
+	}
+	action := "The project operator checks scheduler admission and landing evidence."
+	if silent || red {
+		action = "The project operator checks the scheduled validation host and linked run evidence and restores reporting or fixes the failing validation."
+	}
+	return newHealthFinding("dead_man", "flow", "project", p.ID, "Delivery stalled. "+strings.Join(reasons, " "), action, []string{p.ID}, evidence), landing || silent || red
 }
 
 func schedulerFinding(now time.Time, p healthProject) (healthFinding, bool) {
@@ -169,12 +226,25 @@ func refusalFinding(p healthProject) (healthFinding, bool) {
 	active := p.Candidates > 0 && p.Claims == 0 && len(p.RefusalReasons) == p.Candidates
 	reason := ""
 	for _, value := range p.RefusalReasons {
-		if value == "" || reason != "" && value != reason {
+		if value == "" || value == "runner_capacity_full" || value == "capacity_full" || reason != "" && value != reason {
 			active = false
 		}
 		reason = value
 	}
-	return newHealthFinding("every_candidate_refused", "instance", "project", p.ID, fmt.Sprintf("Every candidate was refused with the same reason: %s.", reason), "The runner operator corrects the reported capacity or policy refusal.", []string{p.ID}, healthEvidence{EventIDs: p.RefusalEvents, Counts: map[string]int{"candidates": p.Candidates, "claims": p.Claims}}), active
+	summary := "Candidates cannot start work because runners refused every claim."
+	action := "The runner operator checks the claim refusal in the runner's logs."
+	switch reason {
+	case "policy_mismatch":
+		summary = "Candidates cannot start work because runner policy differs from its approval."
+		action = "The organization administrator reviews the project's policy in Settings → Integrations."
+	case "runner_heartbeat_stale":
+		summary = "Candidates cannot start work because their runners are offline."
+		action = "The runner operator checks the runner process and its Hub connection."
+	case "runner_inactive":
+		summary = "Candidates cannot start work because their runners are paused or finishing current work."
+		action = "The runner operator reviews routing in Settings → Providers & runners."
+	}
+	return newHealthFinding("every_candidate_refused", "instance", "project", p.ID, summary, action, []string{p.ID}, healthEvidence{EventIDs: p.RefusalEvents, Counts: map[string]int{"candidates": p.Candidates, "claims": p.Claims}, Reason: reason}), active
 }
 
 func humanWaitFinding(now time.Time, w healthWait) (healthFinding, bool) {

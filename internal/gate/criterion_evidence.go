@@ -67,7 +67,7 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 					entry.Behavior = "Observed attachment and matching host read receipt required"
 				}
 			case EvidenceReceipt:
-				if !entry.matchesReceipts(result.Commands, result.HeadSHA, tree) {
+				if !entry.normalizeReceipts(result.Commands, result.HeadSHA, tree) {
 					entry.Kind = EvidenceNotVerified
 					entry.Behavior = "Missing, failed, or mismatched host command receipt"
 				}
@@ -111,19 +111,20 @@ func (entry CriterionEvidence) matchesAttachmentReads(reads []AttachmentRead, he
 	return true
 }
 
-func (entry CriterionEvidence) matchesReceipts(commands []CommandResult, head, tree string) bool {
-	if entry.Reference == "" || entry.Behavior == "" || head == "" || entry.HeadSHA != head || entry.TreeSHA == "" || tree != "" && entry.TreeSHA != tree {
+func (entry *CriterionEvidence) normalizeReceipts(commands []CommandResult, head, tree string) bool {
+	if entry.Reference == "" || entry.Behavior == "" || head == "" {
 		return false
 	}
-	valid := func(command CommandResult) bool {
-		return command.Command != "" && command.ExitCode == 0 && command.HeadSHA == head && command.TreeSHA == entry.TreeSHA
-	}
 	if len(entry.ReceiptIDs) == 0 {
+		if entry.HeadSHA != head || entry.TreeSHA == "" || tree != "" && entry.TreeSHA != tree {
+			return false
+		}
 		return slices.ContainsFunc(commands, func(command CommandResult) bool {
-			return entry.Reference == command.Command && valid(command)
+			return entry.Reference == command.Command && command.Command != "" && command.ExitCode == 0 && command.HeadSHA == head && command.TreeSHA == entry.TreeSHA
 		})
 	}
 	seen := make(map[string]bool, len(entry.ReceiptIDs))
+	var selected CommandResult
 	for _, id := range entry.ReceiptIDs {
 		if strings.TrimSpace(id) == "" || seen[id] {
 			return false
@@ -134,15 +135,19 @@ func (entry CriterionEvidence) matchesReceipts(commands []CommandResult, head, t
 			if command.ReceiptID != id {
 				continue
 			}
-			if found || !valid(command) {
+			if found || command.Command == "" || command.ExitCode != 0 || command.HeadSHA != head || command.TreeSHA == "" || tree != "" && command.TreeSHA != tree {
 				return false
 			}
+			tree = command.TreeSHA
 			found = true
+			selected = command
 		}
 		if !found {
 			return false
 		}
 	}
+	entry.HeadSHA = selected.HeadSHA
+	entry.TreeSHA = selected.TreeSHA
 	return true
 }
 

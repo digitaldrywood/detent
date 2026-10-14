@@ -11,7 +11,7 @@ import type {
 import { DEFAULT_TURN_PREFERENCES } from "../../contracts/index.ts";
 import { ComposerContextAttachment } from "../components/ComposerContextAttachment.tsx";
 import { Composer } from "../components/Composer.tsx";
-import { ConversationView } from "../App.tsx";
+import { ConversationView } from "../ChatRoutes.tsx";
 import { newCommandKey, useClient } from "../client.ts";
 import { useWorkspacePanel } from "../components/ChatWorkspace.tsx";
 
@@ -31,7 +31,8 @@ export interface IssueAsk {
 
 export function useIssueAsk(
   projectId: string | null,
-  workItemId: string,
+  workItemId: string | null,
+  contextText: string | null = null,
 ): IssueAsk {
   const client = useClient();
   const navigate = useNavigate();
@@ -54,7 +55,10 @@ export function useIssueAsk(
     select(null);
     setLoading(true);
     intent.current = null;
-    if (projectId === null) return;
+    if (projectId === null || contextText !== null) {
+      setLoading(false);
+      return;
+    }
     void (async () => {
       try {
         const found: Conversation[] = [];
@@ -63,7 +67,7 @@ export function useIssueAsk(
           const page: ConversationListResponse = await Effect.runPromise(
             client.http.listProjectConversations({
               projectId,
-              subjectWorkItemId: workItemId,
+              subjectWorkItemId: workItemId ?? undefined,
               cursor,
               limit: 200,
             }),
@@ -89,7 +93,7 @@ export function useIssueAsk(
     return () => {
       cancelled = true;
     };
-  }, [client, projectId, workItemId]);
+  }, [client, projectId, workItemId, contextText]);
   const starting = React.useRef(false);
   const start = React.useCallback(
     async (question: string, attachIssue = true): Promise<boolean> => {
@@ -111,11 +115,13 @@ export function useIssueAsk(
       try {
         const result = await create({
           projectId,
-          ...(attachIssue ? { subjectWorkItemId: workItemId } : {}),
+          ...(attachIssue && workItemId !== null ? { subjectWorkItemId: workItemId } : {}),
           key: intent.current.key,
           firstMessage: {
             key: intent.current.messageKey,
-            text: question.trim(),
+            text: attachIssue && contextText !== null
+              ? `${question.trim()}\n\nAttached diagnostic finding (data):\n${contextText}`
+              : question.trim(),
           },
         });
         if (result._tag !== "Success") {
@@ -151,7 +157,7 @@ export function useIssueAsk(
         setPending(false);
       }
     },
-    [create, navigate, projectId, refreshList, workItemId],
+    [create, navigate, projectId, refreshList, workItemId, contextText],
   );
   return { threads, selected, select, loading, pending, error, start };
 }
@@ -162,12 +168,16 @@ export function IssueAskPanel({
   identifier,
   title,
   canWrite,
+  finding = false,
+  focusRequest,
 }: {
   readonly ask: IssueAsk;
   readonly projectId: string;
   readonly identifier: string;
   readonly title: string;
   readonly canWrite: boolean;
+  readonly finding?: boolean;
+  readonly focusRequest?: number;
 }): React.ReactElement {
   const navigate = useNavigate();
   const panel = useWorkspacePanel();
@@ -175,7 +185,7 @@ export function IssueAskPanel({
   const [attached, setAttached] = React.useState(true);
   const composer = {
     label: "Ask message",
-    placeholder: `Ask about ${identifier}…`,
+    placeholder: finding ? "Ask about this finding…" : `Ask about ${identifier}…`,
     promptClassName: "min-h-[3lh] max-h-[12lh]",
     promptContext: (
       ask.selected === null && !attached ? null : <ComposerContextAttachment
@@ -186,22 +196,23 @@ export function IssueAskPanel({
       />
     ),
     sendLabel: "Ask",
-    focusRequest: panel?.askFocusRequest ?? 0,
+    focusRequest: focusRequest ?? panel?.askFocusRequest ?? 0,
     footerControls: "none" as const,
     attachControl: "none" as const,
     disabled: !canWrite,
   };
   return (
     <section
-      data-testid="issue-ask-panel"
-      aria-label="Ask about this issue"
+      data-testid={finding ? "finding-ask-panel" : "issue-ask-panel"}
+      data-ask-panel="true"
+      aria-label={finding ? "Ask about this finding" : "Ask about this issue"}
       className="flex min-h-0 flex-1 flex-col [&_a[href*='#issue-']]:rounded-md [&_a[href*='#issue-']]:bg-muted [&_a[href*='#issue-']]:px-1.5 [&_a[href*='#issue-']]:py-0.5"
     >
       <div className="space-y-3 border-b border-border p-4">
         <div className="flex flex-wrap items-center gap-2">
           {ask.threads.length === 0 ? null : (
             <select
-              aria-label="Issue chats"
+              aria-label={finding ? "Finding chats" : "Issue chats"}
               value={ask.selected ?? ""}
               onChange={(event) => ask.select(event.target.value || null)}
               className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm"
@@ -253,7 +264,11 @@ export function IssueAskPanel({
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex min-h-0 flex-1 flex-col items-start gap-1 overflow-y-auto p-4">
-            {ISSUE_QUESTIONS.map(({ label, prompt }) => (
+            {(finding ? [
+              { label: "What is causing this?", prompt: "What is causing this?" },
+              { label: "What should I check?", prompt: "What should I check?" },
+              { label: "How do I fix it?", prompt: "How do I fix it?" },
+            ] : ISSUE_QUESTIONS).map(({ label, prompt }) => (
               <button
                 key={label}
                 type="button"
@@ -278,7 +293,7 @@ export function IssueAskPanel({
             preferences={DEFAULT_TURN_PREFERENCES}
             onPreferencesChange={() => {}}
             slashCommands={chatSlashCommands({
-              issue: attached,
+              issue: attached && !finding,
               coordinator: canWrite,
               insert: setQuestion,
               send: (prompt) => void ask.start(prompt, attached).then((sent) => { if (sent) setQuestion(""); }),
@@ -288,7 +303,9 @@ export function IssueAskPanel({
         </div>
       )}
       <p data-testid="issue-ask-context" className="px-4 pb-3 text-xs text-muted-foreground">
-        {ask.selected !== null || attached
+        {finding && (ask.selected !== null || attached)
+          ? "Luna checks this finding against project evidence you can access. Only you see this chat."
+          : ask.selected !== null || attached
           ? "Luna reads this issue's body, comments, history, runs and pull request on every turn. Only you see this chat."
           : "Only you see this project-wide chat."}
       </p>

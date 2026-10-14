@@ -47,7 +47,8 @@ function routeSpecimen(id: string, title: string, note: string, appRoute: NonNul
 export const APP_ROUTES: Readonly<Record<string, GalleryDoc>> = {
   "reports-page": {
     meta: { name: "Reports page", kind: "composition", group: "Usage", source: "src/app/reports/ReportsPage.tsx" },
-    specimens: [routeSpecimen("reports", "Project flow reports", "Recorded flow, throughput, stages, costs and partial source coverage for the selected project.", { path: "/reports" })],
+    specimens: [routeSpecimen("reports", "Overview tab", "Headline tiles, shipped per day, cycle time, top spend and stuck work for the selected project.", { path: "/reports" }),
+      routeSpecimen("reports-cost", "Cost tab", "Spend by stage, the stage and model table and the most expensive issues.", { path: "/reports/cost" })],
   },
   "command-palette": {
     meta: { name: "Command palette", kind: "composition", group: "Workspace", source: "src/app/components/CommandPalette.tsx" },

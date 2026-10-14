@@ -237,6 +237,10 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 	if err := decoder.Decode(&config); err != nil {
 		return cloudentry.Config{}, errors.New("shared entry configuration is invalid")
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return cloudentry.Config{}, errors.New("shared entry configuration must contain one document")
+	}
 	if config.WorkOS.APIKeyEnv == "" {
 		config.WorkOS.APIKeyEnv = "WORKOS_API_KEY"
 	}
@@ -343,6 +347,41 @@ func readCloudConfig(path string, lookupEnv func(string) string) (cloudentry.Con
 			return cloudentry.Config{}, errors.New("shared billing webhook secret is unavailable or invalid")
 		}
 		result.Billing = &cloudentry.BillingConfig{Mode: billingConfig.Mode, AccountID: billingConfig.AccountID, WebhookSecret: []byte(secret), Provider: customers}
+	}
+	if config.Allocation != nil {
+		initial := config
+		result.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(cloudentry.TenantSpec) ([]byte, error) {
+			next := initial
+			allocation := *initial.Allocation
+			allocation.Entitlements = update.Plans
+			if allocation.Billing != nil {
+				nextBilling := *allocation.Billing
+				nextBilling.Prices = update.Prices
+				allocation.Billing = &nextBilling
+			}
+			next.Allocation = &allocation
+			return tenantConfiguration(next)
+		}
+		result.Runtime = &hubserver.HostedRuntimeUpdate{Plans: config.Allocation.Entitlements}
+		if config.Allocation.Billing != nil {
+			result.Runtime.Prices = config.Allocation.Billing.Prices
+		}
+		restartAllocation := *config.Allocation
+		restartAllocation.Entitlements = nil
+		if restartAllocation.Billing != nil {
+			restartBilling := *restartAllocation.Billing
+			restartBilling.Prices = nil
+			restartAllocation.Billing = &restartBilling
+		}
+		config.Allocation = &restartAllocation
+	}
+	result.RestartSettings, err = yaml.Marshal(config)
+	if err != nil {
+		return cloudentry.Config{}, err
+	}
+	result.Reload = func() (cloudentry.Config, error) { return readCloudConfig(path, lookupEnv) }
+	if err := cloudentry.ValidateConfig(result); err != nil {
+		return cloudentry.Config{}, err
 	}
 	return result, nil
 }

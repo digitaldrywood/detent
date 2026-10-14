@@ -45,7 +45,7 @@ func TestBoardDurableProgrammaticCompletion(t *testing.T) {
 	if err := backend.ResolveLaneWrite(t.Context(), write.FenceToken, "applied"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-3618", Identifier: "digitaldrywood/detent#3618", IssueURL: "https://github.com/digitaldrywood/detent/issues/3618", PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Done", Status: "entered", StartedAt: at}); err != nil {
+	if _, err := backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{ProjectID: "detent", IssueID: "issue-3618", Identifier: "example-org/example-project#3618", IssueURL: "https://github.com/example-org/example-project/issues/3618", PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Done", Status: "entered", StartedAt: at}); err != nil {
 		t.Fatal(err)
 	}
 	// A repeated merge receipt retains the original completion time.
@@ -84,7 +84,7 @@ func TestBoardDurableProgrammaticCompletion(t *testing.T) {
 		if err := templates.BoardSnapshot(templates.DashboardData{Snapshot: snapshot, Kanban: templates.KanbanData{States: []string{"Todo", "Done"}, TerminalStates: []string{"Done"}}}).Render(t.Context(), &html); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(html.String(), "Completed digitaldrywood/detent#3618") {
+		if !strings.Contains(html.String(), "Completed example-org/example-project#3618") {
 			t.Fatal("board missing durable programmatic completion without a worker attempt")
 		}
 		figure := regexp.MustCompile(`id="fig-completed"><span[^>]*>1</span>\s+completed · 48h`)
