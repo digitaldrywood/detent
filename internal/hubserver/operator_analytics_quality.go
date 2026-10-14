@@ -18,6 +18,7 @@ type analyticsQualityCounts struct {
 	EscapedVersions int            `json:"escaped_versions"`
 	Escapes         int            `json:"escapes"`
 	Infrastructure  int            `json:"infrastructure"`
+	InfraReturns    int            `json:"infrastructure_returns"`
 	Pending         int            `json:"pending_classification"`
 	ReworkPercent   *float64       `json:"rework_percent"`
 	EscapePercent   *float64       `json:"escape_percent"`
@@ -51,6 +52,13 @@ type analyticsQuality struct {
 	Unavailable []string                                      `json:"unavailable"`
 	Buckets     []analyticsQualityBucket                      `json:"buckets"`
 	Occurrences operatortool.ReadPage[analyticsQualityEscape] `json:"occurrences"`
+	returns     []qualityReturn
+}
+
+type qualityReturn struct {
+	item  string
+	at    time.Time
+	class reportClass
 }
 
 type qualityHistoryEvent struct {
@@ -242,7 +250,7 @@ ORDER BY e.sequence LIMIT ? OFFSET ?`, scope.organization, scope.project, format
 }
 
 func summarizeAnalyticsQuality(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, discussions []qualityDiscussion, w operatortool.AnalyticsWindow) analyticsQuality {
-	out := analyticsQuality{Source: "native_landing_workflow_review_and_escape_evidence", Coverage: "rework: unique_items_returned_before_landing / unique_items_worked_in_window; escape: unique_landed_versions_in_window_with_non_infrastructure_escape_by_window_end / versions_landed_in_window; buckets_use_landing_cohorts; occurrences_and_causes_use_detection_time; pending_classifications_count_as_escapes; infrastructure_excluded_from_escape_rate", Unavailable: []string{}, Buckets: []analyticsQualityBucket{}}
+	out := analyticsQuality{Source: "native_landing_workflow_review_and_escape_evidence", Coverage: "rework: unique_items_returned_before_landing / unique_items_worked_in_window; escape: unique_landed_versions_in_window_with_non_infrastructure_escape_by_window_end / versions_landed_in_window; buckets_use_landing_cohorts; occurrences_and_causes_use_detection_time; pending_classifications_count_as_escapes; infrastructure_excluded_from_escape_rate; infrastructure_returns_excluded_from_rework_rate", Unavailable: []string{}, Buckets: []analyticsQualityBucket{}}
 	byVersion := map[string]nativeAnalyticsLanding{}
 	byItem := map[string][]nativeAnalyticsLanding{}
 	for _, landing := range landings {
@@ -291,6 +299,11 @@ func summarizeAnalyticsQuality(landings []nativeAnalyticsLanding, events []quali
 	})
 	out.Occurrences.Items = items
 	out.analyticsQualityCounts = qualityCounts(landings, events, items, w.From, w.To, w.To)
+	for _, event := range events {
+		if event.Kind == "workflow.transitioned" && event.Data.ToState == "Rework" && qualityReturnedBeforeLanding(landings, event) && nativeAnalyticsBucketIndex(event.At, w) >= 0 {
+			out.returns = append(out.returns, qualityReturn{item: event.Item, at: event.At, class: classifyReworkReason(event.Data.FromState, event.Data.ReasonDetail)})
+		}
+	}
 	for from := w.From; from.Before(w.To); from = from.Add(w.Bucket) {
 		to := minTime(from.Add(w.Bucket), w.To)
 		out.Buckets = append(out.Buckets, analyticsQualityBucket{From: from, To: to, analyticsQualityCounts: qualityCounts(landings, events, items, from, to, w.To)})
@@ -307,6 +320,15 @@ func qualityOccurrence(landing nativeAnalyticsLanding, escape tracker.QualityEsc
 	return analyticsQualityEscape{QualityEscape: escape, ChangeID: landing.ChangeID, VersionID: landing.Landing.VersionID, WorkItemID: item, MergeSHA: landing.Landing.MergeSHA, LandedAt: landing.Landing.LandedAt, DiscussionID: discussion, Actor: actor, Attribution: attribution, LandingContextAvailable: landing.Landing.Quality != nil}
 }
 
+func qualityReturnedBeforeLanding(landings []nativeAnalyticsLanding, event qualityHistoryEvent) bool {
+	for _, landing := range landings {
+		if string(landing.WorkItemID) == event.Item && (event.VersionID == "" || event.VersionID == landing.Landing.VersionID) && !landing.Landing.LandedAt.After(event.At) {
+			return false
+		}
+	}
+	return true
+}
+
 func qualityCounts(landings []nativeAnalyticsLanding, events []qualityHistoryEvent, escapes []analyticsQualityEscape, from, to, observedTo time.Time) analyticsQualityCounts {
 	out := analyticsQualityCounts{Causes: map[string]int{"underspecified_issue": 0, "missing_criterion": 0, "validator_miss": 0, "infrastructure": 0}}
 	worked, reworked, cohort, affected := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -320,15 +342,10 @@ func qualityCounts(landings []nativeAnalyticsLanding, events []qualityHistoryEve
 		if event.At.Before(from) || !event.At.Before(to) {
 			continue
 		}
-		returned := event.Kind == "changes_requested" || event.Data.ToState == "Rework"
-		if returned {
-			for _, landing := range landings {
-				if string(landing.WorkItemID) == event.Item && (event.VersionID == "" || event.VersionID == landing.Landing.VersionID) && !landing.Landing.LandedAt.After(event.At) {
-					returned = false
-				}
-			}
-		}
-		if returned {
+		returned := (event.Kind == "changes_requested" || event.Data.ToState == "Rework") && qualityReturnedBeforeLanding(landings, event)
+		if returned && event.Kind != "changes_requested" && classifyReworkReason(event.Data.FromState, event.Data.ReasonDetail).Kind == reportKindInfrastructure {
+			out.InfraReturns++
+		} else if returned {
 			reworked[event.Item] = true
 		}
 		if returned || event.Kind == "worked" || event.Data.ToState == "In Progress" || event.Data.ToState == "Human Review" || event.Data.ToState == "Merging" {

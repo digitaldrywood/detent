@@ -31,6 +31,7 @@ const QualityCounts = Schema.Struct({
   escaped_versions: Schema.Number,
   escapes: Schema.Number,
   infrastructure: Schema.Number,
+  infrastructure_returns: Schema.Number,
   pending_classification: Schema.Number,
   rework_percent: Schema.NullOr(Schema.Number),
   escape_percent: Schema.NullOr(Schema.Number),
@@ -48,7 +49,16 @@ const Quality = Schema.Struct({
     to: Schema.String,
   })),
 });
+const ClassTotal = Schema.Struct({
+  class: Schema.String,
+  kind: Schema.String,
+  count: Schema.Number,
+  issues: Schema.Number,
+  cost_usd: Schema.Number,
+});
 export const ReportsReport = Schema.Struct({
+  rework_classes: Schema.Array(ClassTotal),
+  failure_classes: Schema.Array(ClassTotal),
   completion: Completion,
   previous: Completion,
   tokens: Schema.Number,

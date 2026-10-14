@@ -31,8 +31,6 @@ import { useSidebarData } from "../adapters/sidebarData.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { formatCount, formatTokens, formatUsd } from "../usage/usageFormat.ts";
 
-import { reworkByCause } from "./rework.ts";
-
 const WINDOWS: readonly { value: ReportsRange; label: string }[] = [
   { value: "24h", label: "Past 24h" },
   { value: "48h", label: "48h" },
@@ -159,11 +157,9 @@ function Metric({
 }
 function Section({
   title,
-  partial = false,
   children,
 }: {
   title: string;
-  partial?: boolean;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -171,14 +167,7 @@ function Section({
       aria-label={title}
       className="flex min-w-0 flex-col gap-3 border-t border-border pt-5"
     >
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-sm font-medium">{title}</h2>
-        {partial && (
-          <Badge variant="warning" size="sm">
-            Partial
-          </Badge>
-        )}
-      </div>
+      <h2 className="text-sm font-medium">{title}</h2>
       {children}
     </section>
   );
@@ -338,11 +327,6 @@ export function ReportsView({
                 <span>
                   {at(p.window.from)} to {at(p.window.to)} · complete hours
                 </span>
-                {(p.partial || completion?.partial) && (
-                  <Badge variant="warning" size="sm">
-                    Partial
-                  </Badge>
-                )}
               </div>
               <section
                 aria-label="Headline metrics"
@@ -418,7 +402,6 @@ export function ReportsView({
                     ? "Where system time goes"
                     : "Where lead time goes"
                 }
-                partial={p.lane_residence.partial}
               >
                 {residenceMissing ? (
                   <Missing />
@@ -439,7 +422,6 @@ export function ReportsView({
               <QualityMetrics quality={p.quality} />
               <Section
                 title="Throughput"
-                partial={unavailable("failed_attempts_complete_population")}
               >
                 <ThroughputChart
                   buckets={report.throughput}
@@ -455,10 +437,6 @@ export function ReportsView({
               </Section>
               <Section
                 title="Aging work in progress"
-                partial={
-                  p.lane_residence.partial ||
-                  p.lane_residence.aging.next_offset !== undefined
-                }
               >
                 {residenceMissing ? (
                   <Missing />
@@ -494,10 +472,6 @@ export function ReportsView({
               </Section>
               <Section
                 title="Stages and models"
-                partial={
-                  unavailable("stage_and_issue_spend_complete_population") ||
-                  unavailable("reports_usage_complete_population")
-                }
               >
                 <StageTable rows={report.stages} usageMissing={usageMissing} />
                 <Missing>
@@ -509,38 +483,24 @@ export function ReportsView({
               </Section>
               <Section
                 title="Rework by cause"
-                partial={p.lane_residence.partial}
               >
                 {residenceMissing ? (
                   <Missing />
-                ) : p.lane_residence.rework_causes.length === 0 ? (
+                ) : report.rework_classes.length === 0 ? (
                   <Missing>
                     No recorded rework transitions in this window.
                   </Missing>
                 ) : (
-                  <div className="flex flex-col gap-2 text-xs">
-                    {reworkByCause(p.lane_residence.rework_causes).map(
-                      (cause) => (
-                        <div
-                          key={cause.label}
-                          className="flex justify-between gap-3"
-                        >
-                          <span className="min-w-0 break-words">
-                            <span title={cause.details}>{cause.label}</span>
-                          </span>
-                          <span className="tabular-nums">{cause.count}</span>
-                        </div>
-                      ),
-                    )}
-                  </div>
+                  <ClassTable
+                    label="Cause"
+                    countLabel="Returns"
+                    rows={report.rework_classes}
+                    usageMissing={usageMissing}
+                  />
                 )}
               </Section>
               <Section
                 title="Cost concentration"
-                partial={
-                  unavailable("stage_and_issue_spend_complete_population") ||
-                  unavailable("reports_usage_complete_population")
-                }
               >
                 {usageMissing ? (
                   <Missing />
@@ -589,117 +549,18 @@ export function ReportsView({
               </Section>
               <Section
                 title="Failure signatures"
-                partial={
-                  unavailable("failure_signatures_complete_population") ||
-                  p.failure_signatures.next_offset !== undefined
-                }
               >
-                {p.failure_signatures.items.length === 0 ? (
+                {report.failure_classes.length === 0 ? (
                   <Missing>
                     No recorded failure signatures in this window.
                   </Missing>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        {[
-                          "Signature",
-                          "Count",
-                          "Issues",
-                          "First / last seen",
-                          "Wasted cost",
-                          "Class",
-                        ].map((h) => (
-                          <TableHead key={h}>{h}</TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {p.failure_signatures.items.map((f) => (
-                        <TableRow key={f.signature}>
-                          <TableCell>
-                            <span className="block max-w-80 break-words">
-                              {f.example}
-                            </span>
-                          </TableCell>
-                          <TableCell className="tabular-nums">
-                            {f.count}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex min-w-40 flex-col gap-1">
-                              {f.work_items.map((id) => (
-                                <IssueLink
-                                  key={id}
-                                  id={id}
-                                  titles={report.titles}
-                                />
-                              ))}
-                              <span className="text-muted-foreground">
-                                {f.work_items_count} issues
-                                {f.work_items_partial ? " · Partial" : ""}
-                              </span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap">
-                            {at(f.first_seen)}
-                            <br />
-                            {at(f.last_seen)}
-                          </TableCell>
-                          <TableCell className="tabular-nums">
-                            {usageMissing ? UNAVAILABLE : formatUsd(f.cost_usd)}
-                          </TableCell>
-                          <TableCell>{f.class}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </Section>
-              <Section title="Source coverage">
-                <div className="grid gap-2 text-xs sm:grid-cols-2">
-                  {report.coverage.map((source) => (
-                    <div
-                      key={source.source}
-                      className="flex flex-wrap items-center justify-between gap-2"
-                    >
-                      <span>{source.source}</span>
-                      <span className="flex items-center gap-2 tabular-nums">
-                        {source.observed ?? "—"} / {source.total ?? "—"}
-                        <Badge
-                          size="sm"
-                          variant={
-                            source.observed === null ||
-                            source.total === null ||
-                            source.observed < source.total ||
-                            p.partial
-                              ? "warning"
-                              : "secondary"
-                          }
-                        >
-                          {source.observed === null
-                            ? "Unavailable"
-                            : source.total === null ||
-                                source.observed < source.total ||
-                                p.partial
-                              ? "Partial"
-                              : "Observed"}
-                        </Badge>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                {report.unavailable.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {report.unavailable.map((key) => (
-                      <Badge key={key} size="sm" variant="outline">
-                        {key.replaceAll("_", " ")} ·{" "}
-                        {key.includes("complete_population") ||
-                        key.includes("partial")
-                          ? "Partial"
-                          : "Unavailable"}
-                      </Badge>
-                    ))}
-                  </div>
+                  <ClassTable
+                    label="Failure"
+                    countLabel="Attempts"
+                    rows={report.failure_classes}
+                    usageMissing={usageMissing}
+                  />
                 )}
               </Section>
             </>
@@ -1043,14 +904,7 @@ function StageTable({
           <TableRow key={`${row.stage}:${row.model}:${row.effort}`}>
             <TableCell>
               <div className="min-w-40">
-                <span className="inline-flex items-center gap-2">
-                  {row.stage}
-                  {!row.disabled && row.usage_observed < row.sessions && (
-                    <Badge variant="warning" size="sm">
-                      Partial
-                    </Badge>
-                  )}
-                </span>
+                {row.stage}
                 {!row.disabled && (
                   <>
                     <br />
@@ -1104,6 +958,65 @@ function StageTable({
   );
 }
 
+const CLASS_KINDS: Readonly<
+  Record<string, { label: string; variant: "info" | "warning" | "secondary" }>
+> = {
+  infrastructure: { label: "Infrastructure", variant: "info" },
+  issue: { label: "Issue", variant: "warning" },
+};
+function ClassTable({
+  label,
+  countLabel,
+  rows,
+  usageMissing,
+}: {
+  label: string;
+  countLabel: string;
+  rows: ReportsReport["failure_classes"];
+  usageMissing: boolean;
+}): React.ReactElement {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>{label}</TableHead>
+          <TableHead>Kind</TableHead>
+          <TableHead className="text-right">{countLabel}</TableHead>
+          <TableHead className="text-right">Issues</TableHead>
+          <TableHead className="text-right">Spend</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => {
+          const kind = CLASS_KINDS[row.kind] ?? {
+            label: "Unknown",
+            variant: "secondary",
+          };
+          return (
+            <TableRow key={row.class}>
+              <TableCell className="whitespace-nowrap">{row.class}</TableCell>
+              <TableCell>
+                <Badge size="sm" variant={kind.variant}>
+                  {kind.label}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {formatCount(row.count)}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {formatCount(row.issues)}
+              </TableCell>
+              <TableCell className="whitespace-nowrap text-right tabular-nums">
+                {usageMissing ? UNAVAILABLE : formatUsd(row.cost_usd)}
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
 const QUALITY_CAUSES = [
   ["underspecified_issue", "Underspecified issue"],
   ["missing_criterion", "Missing criterion"],
@@ -1115,11 +1028,13 @@ export function QualityMetrics({ quality }: {
   quality: ReportsReport["analytics"]["quality"];
 }): React.ReactElement {
   return (
-    <Section title="Rework and escapes" partial={quality?.partial}>
+    <Section title="Rework and escapes">
       {quality === undefined ? <Missing /> : <>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Metric label="Rework rate" value={percent(quality.rework_percent)}
             detail={`${formatCount(quality.reworked_items)} of ${formatCount(quality.worked_items)} worked items returned before landing`} />
+          <Metric label="Returned by infrastructure" value={formatCount(quality.infrastructure_returns)}
+            detail="Attributed to the runner and excluded from the rework rate" />
           <Metric label="Escape rate" value={percent(quality.escape_percent)}
             detail={`${formatCount(quality.escaped_versions)} of ${formatCount(quality.landed_versions)} versions landed in this window`} />
         </div>

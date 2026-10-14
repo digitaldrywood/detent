@@ -7,8 +7,6 @@ import fixture from "../src/contracts/fixtures/reports.json";
 import { ReportsReport } from "../src/contracts/reports.ts";
 import { makeAccountApi } from "../src/app/account/api.ts";
 
-import { reworkByCause } from "../src/app/reports/rework.ts";
-
 describe("Reports read", () => {
   it("decodes recorded metrics and keeps unavailable coverage nullable", () => {
     const report = Schema.decodeUnknownSync(ReportsReport)(fixture);
@@ -29,6 +27,8 @@ describe("Reports read", () => {
     expect(populated).toContain("Validator miss");
     expect(populated).toContain("Total in window");
     expect(populated).toContain("excluded from the escape rate");
+    expect(populated).toContain("Returned by infrastructure");
+    expect(populated).toContain("excluded from the rework rate");
     const pending = renderToStaticMarkup(React.createElement(QualityMetrics, {
       quality: { ...quality, pending_classification: 2 },
     }));
@@ -36,32 +36,6 @@ describe("Reports read", () => {
     const missing = renderToStaticMarkup(React.createElement(QualityMetrics, { quality: undefined }));
     expect(missing).toContain("Not recorded");
     expect(missing).not.toContain("0.0%");
-  });
-  it("groups recorded rework causes and preserves unknown reasons", () => {
-    expect(
-      reworkByCause([
-        { from_state: "Merging", reason_detail: "merge conflict", count: 2 },
-        {
-          from_state: "Merging",
-          reason_detail: "conflict on landing",
-          count: 3,
-        },
-        {
-          from_state: "Human Review",
-          reason_detail: "changes requested",
-          count: 1,
-        },
-        {
-          from_state: "In Progress",
-          reason_detail: "unknown source failure",
-          count: 1,
-        },
-      ]).map(({ label, count }) => ({ label, count })),
-    ).toEqual([
-      { label: "Conflict on landing", count: 5 },
-      { label: "Review transition", count: 1 },
-      { label: "unknown source failure", count: 1 },
-    ]);
   });
   it("requests the selected project and window through the account API", async () => {
     let requested = "";

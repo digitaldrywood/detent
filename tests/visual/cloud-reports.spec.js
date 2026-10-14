@@ -54,13 +54,43 @@ for (const theme of ["light", "dark"]) {
         "Rework by cause",
         "Cost concentration",
         "Failure signatures",
-        "Source coverage",
       ])
         await expect(
           report.getByRole("region", { name, exact: true }),
         ).toBeAttached();
       await expect(report).toContainText("Disabled by project gates");
-      await expect(report).toContainText("285 / 300");
+      await expect(
+        report.getByRole("region", { name: "Source coverage" }),
+      ).toHaveCount(0);
+      for (const raw of ["Partial", "GitHub requires", "goroutine", "hosted_reports.go", "Auto-merging"])
+        await expect(report).not.toContainText(raw);
+      for (const [name, label] of [
+        ["Rework by cause", "Gate failed before landing"],
+        ["Failure signatures", "Finalization gate failed"],
+      ]) {
+        const section = report.getByRole("region", { name, exact: true });
+        await expect(section).toContainText(label);
+        await expect(section).toContainText("Not classified");
+        const lines = await section.getByRole("row").evaluateAll((rows) =>
+          rows.map((row) =>
+            Math.max(
+              ...[...row.cells].map((cell) => {
+                const tops = new Set();
+                const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                  const range = document.createRange();
+                  range.selectNodeContents(node);
+                  for (const rect of range.getClientRects())
+                    if (rect.height > 0) tops.add(Math.round(rect.top));
+                }
+                return tops.size;
+              }),
+            ),
+          ),
+        );
+        expect(lines.length).toBeGreaterThan(0);
+        expect(lines.every((count) => count === 1)).toBe(true);
+      }
       expect(
         await page.evaluate(
           () => document.documentElement.scrollWidth > innerWidth,
@@ -73,8 +103,8 @@ for (const theme of ["light", "dark"]) {
       for (const [name, file] of [
         ["Aging work in progress", "aging"],
         ["Stages and models", "stages"],
+        ["Rework by cause", "causes"],
         ["Failure signatures", "failures"],
-        ["Source coverage", "coverage"],
       ]) {
         const section = report.getByRole("region", { name, exact: true });
         await section.scrollIntoViewIfNeeded();
@@ -105,7 +135,7 @@ test("Reports time and window controls, unavailable state, and issue Diagnostics
   ).toContainText("Held by people");
   await expect(
     page
-      .getByRole("region", { name: "Failure signatures" })
+      .getByRole("region", { name: "Cost concentration" })
       .getByRole("link")
       .first(),
   ).toHaveAttribute("href", "/work/i/wi_old?tab=diagnostics");

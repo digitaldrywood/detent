@@ -75,6 +75,7 @@ type nativeAnalyticsProject struct {
 	pipelineTimings      []gate.PipelineTiming
 	allAttempts          []nativeAnalyticsAttempt
 	allLandings          []nativeAnalyticsLanding
+	failures             []nativeFailure
 	Pipeline             pipelineReport                                `json:"pipeline"`
 	PipelineReceipts     operatortool.ReadPage[gate.PipelineTiming]    `json:"pipeline_receipts"`
 	Quality              analyticsQuality                              `json:"quality"`
@@ -271,6 +272,7 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return out, err
 	}
+	out.failures = failures
 	out.FailureSignatures = nativeFailureSignaturePage(groupNativeFailures(failures), r.RowOffset, r.Limit)
 	out.Partial = partial
 	if partial {
