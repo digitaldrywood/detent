@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,7 +37,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		bind, adopt, nativeRevision                                                           bool
 		history                                                                               int
 		historyLegacy                                                                         string
+		largeHistory                                                                          bool
 	}{
+		{name: "runner current policy with retained authored history", initial: true, autoInitial: true, canonical: true, reachable: true, replay: true, largeHistory: true, status: http.StatusNoContent, applied: true},
 		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
 		{name: "instruction change with legacy policy identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "policy", status: http.StatusNoContent, applied: true},
 		{name: "instruction change with legacy review identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "review", status: http.StatusNoContent, applied: true},
@@ -87,7 +90,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			original := hubTestPolicy()
 			original.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
 			if test.canonical {
-				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+				instructions := "Run the work.\n"
+				if test.largeHistory {
+					instructions = strings.Repeat(instructions, 14000)
+				}
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte(instructions), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -325,13 +332,17 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					} else if !reflect.DeepEqual(detail.Summary, before) {
 						t.Errorf("instruction-only adoption changed summary: before=%#v after=%#v", before, detail.Summary)
 					}
-					var raw string
-					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", historyItems[path]).Scan(&raw); err != nil {
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+					page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}, "limit": {"2000"}})
+					if err != nil {
 						t.Fatal(err)
 					}
 					var card tracker.NativeBoardCard
-					if err := json.Unmarshal([]byte(raw), &card); err != nil {
-						t.Fatal(err)
+					for _, candidate := range page.Cards {
+						if candidate.Issue.WorkItemID == historyItems[path] {
+							card = candidate
+							break
+						}
 					}
 					if card.Change == nil || card.Change.Status != detail.Summary.Status {
 						t.Fatalf("cached summary=%#v, canonical summary=%#v", card.Change, detail.Summary)
@@ -344,9 +355,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					}
 					t.Logf("instruction-only adoption: %s work=%d, retained history=%d", kind, count, test.history)
 					want := 0
-					if kind == "card" && test.historyLegacy != "" {
-						want = test.history
-					}
+
 					if kind == "project" {
 						want = 1
 					}
@@ -486,6 +495,29 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if len(approval.History) != historyCount {
 				t.Fatalf("history count = %d, want %d", len(approval.History), historyCount)
 			}
+			if test.largeHistory {
+				if response.Body.Len() <= 1<<20 {
+					t.Fatalf("retained history did not reproduce oversized response: %d bytes", response.Body.Len())
+				}
+				client, err := hubclient.New(hubclient.Config{URL: "https://policy-history.example.test", TokenSource: func() string { return token }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native(f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err := native.ProjectPolicy(t.Context())
+				if err != nil {
+					t.Fatalf("runner cannot read current policy with retained history: %v", err)
+				}
+				if !reflect.DeepEqual(current.Policy, approval.Policy) || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 || current.HistoryNext != "" {
+					t.Fatal("runner current policy changed approval or included unrelated history")
+				}
+				currentResponse := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", token, nil)
+				requireNativeStatus(t, currentResponse, http.StatusOK)
+				t.Logf("human history response bytes=%d, runner current response bytes=%d", response.Body.Len(), currentResponse.Body.Len())
+			}
 			if test.applied {
 				entry := approval.History[0]
 				previous := ""
@@ -563,11 +595,76 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: "machine_second", SessionID: "second", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				current, err := native.ProjectPolicy(t.Context())
-				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || !reflect.DeepEqual(current.History, approval.History) {
-					t.Fatalf("legacy load rewrote approval or history: %+v %v", current, err)
+				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 {
+					t.Fatalf("legacy load rewrote approval or included history: %+v %v", current, err)
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var retained policy.Approval
+				decodeHubResponse(t, response, &retained)
+				if !reflect.DeepEqual(retained, approval) {
+					t.Fatal("legacy runner load changed operator approval or retained history")
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": original.ID}), http.StatusNoContent)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+			}
+		})
+	}
+}
+
+func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
+	t.Parallel()
+	f := newNativeFixture(t, nil, "", "cloud-guidance")
+	markdown := "---\ntracker:\n  kind: hub_native\ngate:\n  run: make check-landing\n  security_audit:\n    enabled: false\n---\nExisting guidance.\n"
+	resolve := func(content string) policy.Descriptor {
+		t.Helper()
+		workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(content)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
+		descriptor, err := workflowconfig.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return descriptor
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET workflow_markdown=? WHERE id=?", markdown, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := resolve(markdown)
+	approveHubTestPolicy(t, f.service, f.base+"/policy", before)
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	runner.enroll(t)
+	for _, test := range []struct {
+		name, selected, saved string
+		applied               bool
+	}{
+		{"saved guidance", strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), true},
+		{"unsaved guidance", strings.Replace(markdown, "Existing guidance", "Invented guidance", 1), strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), false},
+		{"new security contract", strings.Replace(markdown, "enabled: false", "enabled: true", 1), strings.Replace(markdown, "enabled: false", "enabled: true", 1), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET workflow_markdown=? WHERE id=?", test.saved, f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			selected := resolve(test.selected)
+			prior, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", runner.redemption.Credential, policy.Observation{Descriptor: selected})
+			want := http.StatusNoContent
+			if test.name == "unsaved guidance" {
+				want = http.StatusConflict
+			}
+			requireNativeStatus(t, response, want)
+			after, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.applied && after.Policy.ID != selected.ID || !test.applied && !reflect.DeepEqual(after, prior) {
+				t.Fatalf("adoption=%+v, want applied=%t", after, test.applied)
 			}
 		})
 	}

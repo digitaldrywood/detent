@@ -33,6 +33,23 @@ func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
 	return tx.Commit()
 }
 
+func resetNativeBoardPolicy(ctx context.Context, tx *sql.Tx, scope string) error {
+	var organization, project string
+	var sequence int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json)
+SELECT organization_id,id,NULL,NULL FROM projects WHERE organization_id||'/'||id=? AND profile='native'
+RETURNING organization_id,project_id,sequence`, scope).Scan(&organization, &project, &sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES(?,?,?,?)
+ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, organization, project, sequence, sequence)
+	return err
+}
+
 func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var readOnly bool
 	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&readOnly); err != nil {
@@ -200,7 +217,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_deltas WHERE organization_id=? AND project_id=? AND sequence<=?", scope.organization, scope.project, floor.Int64); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=? WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=MAX(replay_floor,?) WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
 			return err
 		}
 	}
