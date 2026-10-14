@@ -129,7 +129,15 @@ func hostedContextData(t *testing.T, reply hostedContextReply, denied bool) json
 		}
 	}
 	failed := result.IsError || len(reply.Error) > 0
-	if failed != denied || denied && len(result.Data) != 0 || !denied && len(result.Data) == 0 {
+	refusal := len(result.Data) == 0
+	if denied && !refusal {
+		var body map[string]json.RawMessage
+		_ = json.Unmarshal(result.Data, &body)
+		_, hasCode := body["code"]
+		_, hasMessage := body["message"]
+		refusal = hasCode && hasMessage && len(body) == 2
+	}
+	if failed != denied || denied && !refusal || !denied && len(result.Data) == 0 {
 		t.Fatalf("denied=%t response=%s %s", denied, reply.Result, reply.Error)
 	}
 	return result.Data
