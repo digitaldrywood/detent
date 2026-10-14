@@ -121,6 +121,40 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("checkout without CSRF = %d", recorder.Code)
 	}
+	now := f.service.config.now()
+	for _, test := range []struct {
+		name       string
+		expiresAt  time.Time
+		subscribed bool
+		pending    bool
+	}{
+		{"open checkout", now.Add(time.Hour), false, true},
+		{"expired checkout", now, false, false},
+		{"subscription reconciled without webhook", now.Add(time.Hour), true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			intent := hostedCheckout{Key: "checkout_fixture", PriceID: "price_fixture", ExpiresAt: test.expiresAt}
+			if err := f.service.saveHostedCheckout(t.Context(), "user_browser_owner", intent, "checkout_requested"); err != nil {
+				t.Fatal(err)
+			}
+			if test.subscribed {
+				provider.snapshot = activeBillingSnapshot(now)
+			}
+			if err := f.service.billing.reconcile(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"/billing", "/billing?view=usage"} {
+				report := f.billingAPI(t, "owner", http.MethodGet, path, "")
+				requireNativeStatus(t, report, http.StatusOK)
+				var view struct {
+					CheckoutPending bool `json:"checkout_pending"`
+				}
+				if err := json.Unmarshal(report.Body.Bytes(), &view); err != nil || view.CheckoutPending != test.pending {
+					t.Fatalf("%s checkout pending = %t, want %t: %v", path, view.CheckoutPending, test.pending, err)
+				}
+			}
+		})
+	}
 }
 
 func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
