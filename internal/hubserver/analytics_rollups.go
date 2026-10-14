@@ -157,7 +157,7 @@ ORDER BY i.native_id LIMIT ?`, organization, project, analyticsBackfillBatch)
 }
 
 func (d *database) retryFailedAnalyticsRollups(ctx context.Context, now time.Time) error {
-	ids, err := nativePageIDs(ctx, d.db, "SELECT work_item_id FROM analytics_rollup_positions WHERE failed=1 ORDER BY work_item_id LIMIT ?", analyticsBackfillBatch)
+	ids, err := nativePageIDs(ctx, d.reader, "SELECT work_item_id FROM analytics_rollup_positions WHERE failed=1 ORDER BY work_item_id LIMIT ?", analyticsBackfillBatch)
 	if err != nil {
 		return fmt.Errorf("select failed analytics items: %w", err)
 	}
