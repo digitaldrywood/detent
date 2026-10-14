@@ -53,6 +53,7 @@ type database struct {
 	reader                 *sql.DB
 	authReader             *sql.DB
 	claimReader            *sql.DB
+	analytics              analyticsStatements
 	lock                   *instancelock.Lock
 	path                   string
 	schemaVersion          int64
@@ -136,6 +137,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, store.Close())
 	}
 	store.schemaVersion = version
+	store.analytics = prepareAnalyticsStatements(ctx, db, cfg.Logger)
 	if err := store.optimize(ctx, "PRAGMA optimize=0x10002"); err != nil {
 		cfg.Logger.Warn("optimize hub database at startup", "error", err)
 	}
@@ -480,7 +482,7 @@ func (d *database) Close() error {
 		if d.claimReader != nil {
 			claimReaderErr = d.claimReader.Close()
 		}
-		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.db.Close(), d.lock.Close())
+		d.closeErr = errors.Join(readerErr, authErr, claimReaderErr, d.analytics.close(), d.db.Close(), d.lock.Close())
 	})
 	return d.closeErr
 }

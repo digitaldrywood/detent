@@ -364,8 +364,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	page.Total = total
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
-		for _, issue := range work.Items {
-			operational[string(issue.WorkItemID)] = issue
+		for i, issue := range work.Items {
+			work.Items[i] = s.nativeIssueResponse(issue)
+			operational[string(issue.WorkItemID)] = work.Items[i]
 		}
 	}
 	hasMore := len(items) > limit
