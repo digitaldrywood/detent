@@ -209,14 +209,19 @@ func (s *Service) processSlackDelivery(ctx context.Context) (bool, error) {
 	issuePath := ""
 	basePath := s.hostedBase()
 	if s.config.Hosted != nil {
+		slugCtx, cancelSlug := context.WithTimeout(ctx, hubReadTimeout)
 		var slug string
-		if err := s.database.db.QueryRowContext(ctx, "SELECT slug FROM organizations WHERE id=?", organization).Scan(&slug); err != nil {
+		err := s.database.reader.QueryRowContext(slugCtx, "SELECT slug FROM organizations WHERE id=?", organization).Scan(&slug)
+		cancelSlug()
+		if err != nil {
 			return false, err
 		}
 		basePath = "/" + slug
 	}
 	if finding.Subject.Kind == "work_item" {
-		path, pathErr := readIssueBrowserPath(ctx, s.database.db, finding.Subject.ID)
+		pathCtx, cancelPath := context.WithTimeout(ctx, hubReadTimeout)
+		path, pathErr := readIssueBrowserPath(pathCtx, s.database.reader, finding.Subject.ID)
+		cancelPath()
 		if pathErr == nil {
 			issuePath = path
 			basePath = ""

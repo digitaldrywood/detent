@@ -322,6 +322,8 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"tenantRequestMetrics.report":  "Request metrics use their independent database, outside the tenant writer pool.",
 		"tenantRequestMetrics.history": "Request metrics use their independent database, outside the tenant writer pool.",
 		"bindHostedDatabase":           "Startup verifies binding through the connection that installs it.",
+		"createNativeOrganizationFor":  "The slug readback follows the organization insert in this request.",
+		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
 		"collectIssueEmails":                "Queues notification batches and advances their event cursors atomically.",
@@ -399,6 +401,8 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"advanceGitHubBatch":                "The import loop applies its next batch and reads back the update.",
 		"ensureHostedCustomer":              "Billing customer creation reserves its intent and reads back that insertion.",
 		"bindHostedDatabase":                "Startup installs and verifies the hosted binding on the writer.",
+		"syncOrganizationSlug":              "Writes the organization slug received from the shared entry.",
+		"slugSettings":                      "Updates the organization or project slug under current authority; GET uses the reader.",
 	}
 	files, err := filepath.Glob("*.go")
 	if err != nil {

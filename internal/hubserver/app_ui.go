@@ -135,8 +135,10 @@ func (s *Service) appShell(c echo.Context) error {
 	firstSegment := strings.Split(strings.Trim(path, "/"), "/")[0]
 	_, readableShared := c.Get("readable_organization_slug").(string)
 	if path != "/login" && (readableShared || readableurl.Validate(firstSegment) == nil) {
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancelRead()
 		var slug string
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&slug); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&slug); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		shell = []byte(strings.Replace(string(shell), "<head>", `<head><meta name="detent-router-base" content="/`+html.EscapeString(slug)+`">`, 1))

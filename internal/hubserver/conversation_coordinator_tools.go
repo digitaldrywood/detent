@@ -599,7 +599,9 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 		return nil, fmt.Errorf("read issue: %w", err)
 	}
 	issue.Body = boundRunes(issue.Body, coordinatorIssueBodyRunes)
-	issue.URL, err = readIssueBrowserPath(ctx, t.coordinator.service.server.database.db, issue.WorkItemID)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	issue.URL, err = readIssueBrowserPath(readCtx, t.coordinator.service.server.database.reader, issue.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
