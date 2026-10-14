@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -13,6 +14,56 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLocalGitVersionReceiptsDoNotBindShellStartup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("subprocess shell startup integration fixture")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell startup fixture")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("Bash is unavailable")
+	}
+	startup := filepath.Join(t.TempDir(), "startup")
+	if err := os.WriteFile(startup, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BASH_ENV", startup)
+	source := initSourceRepo(t)
+	options := LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true}
+	options.Hooks.Shell = bash
+	backend, err := NewLocalGit(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "shell-startup"}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := backend.Head(t.Context(), info, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.PullRequestHeadSHA = strings.TrimSpace(head)
+	first, err := backend.RunReviewCommand(t.Context(), info, issue, "go version")
+	if err != nil || first.ExitCode != 0 || first.Evidence == nil || first.Evidence.InputsSHA != "" {
+		t.Fatalf("version observation was failed or reusable: %+v %v", first, err)
+	}
+	if err := os.WriteFile(startup, []byte("if [ \"$BASH_EXECUTION_STRING\" = \"go version\" ]; then exit 23; fi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preflight := backend.ReviewCommandEvidence(t.Context(), info, issue, first.Command)
+	if preflight.InputsSHA != "" || preflight.Environment != first.Evidence.Environment {
+		t.Fatalf("unchanged probes did not remain observations: %+v", preflight)
+	}
+	second, err := backend.RunReviewCommand(t.Context(), info, issue, first.Command)
+	if err != nil || second.ExitCode != 23 || second.HeadSHA != first.HeadSHA || second.TreeSHA != first.TreeSHA {
+		t.Fatalf("unchanged probes hid failing startup: %+v %v", second, err)
+	}
+}
 
 func TestLocalGitReviewCommandRerunsExternalRuntimeInputs(t *testing.T) {
 	if testing.Short() {
@@ -301,17 +352,17 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		failedCommand = "echo failed & exit /b 7"
 	}
 	for _, test := range []struct {
-		name, command, head   string
-		exit                  int
-		wantErr               bool
-		toolchainKnown        bool
-		probeOnly             bool
-		unbound, cgo, ignored bool
+		name, command, head string
+		exit                int
+		wantErr             bool
+		toolchainKnown      bool
+		probeOnly           bool
+		cgo, ignored        bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
-		{name: "package runtime inputs are unbound with supported flags", command: "go test ./... -short -count=1", probeOnly: true, unbound: true},
-		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, unbound: true, cgo: true},
-		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, unbound: true, ignored: true},
+		{name: "package runtime inputs are unbound with supported flags", command: "go test ./... -short -count=1", probeOnly: true},
+		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, cgo: true},
+		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, ignored: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
 		{name: "version separated into shell commands is unverified", command: "go\nversion", probeOnly: true},
 		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
@@ -365,11 +416,8 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 				if evidence.Environment.Known() != test.toolchainKnown {
 					t.Fatalf("command toolchain applicability: got %v, want %v", evidence.Environment.Known(), test.toolchainKnown)
 				}
-				if test.unbound && evidence.InputsSHA != "" {
+				if evidence.InputsSHA != "" {
 					t.Fatal("unbound package inputs received a reusable identity")
-				}
-				if test.toolchainKnown && !test.unbound && evidence.InputsSHA == "" {
-					t.Fatal("supported literal Go command lost its input identity")
 				}
 				return
 			}
@@ -393,8 +441,8 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 				if environment.Known() != test.toolchainKnown || (test.toolchainKnown && environment != receipt.Evidence.Environment) {
 					t.Fatalf("command toolchain applicability differs: %+v", environment)
 				}
-				if test.toolchainKnown && (evidence.InputsSHA == "" || evidence.InputsSHA != receipt.Evidence.InputsSHA) {
-					t.Fatal("unchanged host command inputs differ between execution and preflight")
+				if evidence.InputsSHA != "" || receipt.Evidence.InputsSHA != "" {
+					t.Fatal("observed local metadata authorized receipt reuse")
 				}
 			}
 		})
