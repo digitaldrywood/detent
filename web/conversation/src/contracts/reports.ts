@@ -68,6 +68,7 @@ const ClassTotal = Schema.Struct({
   work_items: Schema.optional(Schema.Array(Schema.String)),
   first_seen: Schema.optional(Schema.String),
   last_seen: Schema.optional(Schema.String),
+  tracking_work_item_id: Schema.optional(Schema.String),
 });
 const SeriesBucket = Schema.Struct({
   from: Schema.String,

@@ -997,7 +997,8 @@
         "wi_pages"
       ],
       "first_seen": "2026-10-06T13:20:00Z",
-      "last_seen": "2026-10-12T22:05:00Z"
+      "last_seen": "2026-10-12T22:05:00Z",
+      "tracking_work_item_id": "wi_pages"
     },
     {
       "class": "Agent turn timed out",

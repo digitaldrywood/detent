@@ -161,9 +161,11 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
                       <Dash />
                     )}
                   </span>
-                  <span className="flex flex-wrap items-center gap-1">
-                    Tracking issue: <Dash />
-                  </span>
+                  {row.tracking_work_item_id ? (
+                    <span className="flex flex-wrap items-center gap-1">
+                      Tracking issue: <IssueLink id={row.tracking_work_item_id} report={report} className="text-xs" />
+                    </span>
+                  ) : null}
                 </ExpandRow>
               );
             })}

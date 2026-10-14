@@ -200,6 +200,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
 	reportClassDetails(out.Rework, out.Failures, p.Quality.returns, p.failures)
+	if err := s.reportsTrackingIssues(ctx, scope, out.Failures, p.failures); err != nil {
+		return out, err
+	}
 	out.Series = reportsSeries(timelines, states, p.allAttempts, usage, shipped, w)
 	reportsSeriesClasses(out.Series, p.Quality.returns, p.failures, w)
 	policy, err := diagnosticsPolicyValues(ctx, q, scope)
@@ -264,6 +267,9 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	}
 	for _, class := range slices.Concat(out.Rework, out.Failures) {
 		titleIDs = append(titleIDs, class.WorkItems...)
+		if class.TrackingWorkItemID != "" {
+			titleIDs = append(titleIDs, class.TrackingWorkItemID)
+		}
 	}
 	encodedIDs, err := marshalNative(titleIDs)
 	if err != nil {
