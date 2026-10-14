@@ -131,7 +131,7 @@ func readReportsResidence(ctx context.Context, q nativeQueryer, scope nativeScop
 	at := func(instant time.Time) []reportsOpenIssue {
 		out := make([]reportsOpenIssue, 0, len(frames.ids))
 		for _, id := range frames.ids {
-			sample, ok := frames.samples[instant.UnixNano()][id]
+			sample, ok := frames.sample(instant, id)
 			if !ok || sample.State == "" {
 				continue
 			}

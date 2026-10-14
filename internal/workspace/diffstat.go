@@ -77,7 +77,7 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	if err != nil {
 		return err
 	}
-	remoteHead, err := fetchReviewHead(ctx, normalized.Path, normalized.Branch, issue)
+	remoteHead, err := fetchReviewHead(ctx, normalized.Path, normalized.Branch, issue, true)
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	return err
 }
 
-func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue) (string, error) {
+func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue, allowStalePullRef bool) (string, error) {
 	branch := strings.TrimSpace(issue.PullRequestBranch)
 	if branch == "" {
 		branch = strings.TrimSpace(fallbackBranch)
@@ -139,6 +139,9 @@ func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Iss
 			return remoteHead, nil
 		}
 		sourceErr = errors.Join(sourceErr, refuse(LandRefusalHeadMoved, fmt.Sprintf("review branch head mismatch: fetched %s, expected %s", remoteHead, strings.TrimSpace(issue.PullRequestHeadSHA))))
+		if !allowStalePullRef {
+			return "", sourceErr
+		}
 	}
 	return "", sourceErr
 }

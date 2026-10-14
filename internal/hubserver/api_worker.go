@@ -69,6 +69,7 @@ type claimCandidateQuery struct {
 	// is its own work item kind and not project work (decisions section
 	// 18.1).
 	WorkspaceLane bool
+	PageSize      int
 }
 
 type renewLeaseAPIRequest struct {

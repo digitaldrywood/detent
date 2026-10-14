@@ -15,24 +15,66 @@ type ReviewCommandRunner interface {
 }
 
 func (l *LocalGit) ReviewCommandEnvironment(ctx context.Context, info Info, issue Issue, validation string) gate.CheckEnvironment {
+	return l.ReviewCommandEvidence(ctx, info, issue, validation).Environment
+}
+
+func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue Issue, validation string) *gate.CommandEvidence {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
+	command := commandshell.Command(ctx, "", l.hooks.Shell)
+	command.Dir = normalized.Path
+	command.Env = hookEnv(normalized, issue, l.hooks.StripGitHubTokens)
+	return reviewCommandEvidence(ctx, command, validation)
+}
+
+func directGoValidation(validation string) bool {
 	args := strings.Fields(validation)
-	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\"'`$;&|<>\n\r()%!^") {
-		return gate.CheckEnvironment{}
+	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\\\"'`$;&|<>\n\r()%!^*?[]{}~#") {
+		return false
 	}
 	switch args[1] {
 	case "build", "test", "vet", "version":
 	default:
-		return gate.CheckEnvironment{}
+		return false
 	}
+	if args[1] == "version" && len(args) != 2 {
+		return false
+	}
+	flagsSeen := false
 	for _, arg := range args[2:] {
-		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") {
-			return gate.CheckEnvironment{}
+		if strings.HasPrefix(arg, "-") {
+			flagsSeen = true
+			continue
+		}
+		if flagsSeen || strings.HasPrefix(arg, "/") || arg == ".." || strings.HasPrefix(arg, "../") || strings.Contains(arg, "/../") || strings.HasSuffix(arg, "/..") || strings.HasSuffix(arg, ".go") {
+			return false
 		}
 	}
-	command := commandshell.Command(ctx, "", l.hooks.Shell)
-	command.Dir = info.Path
-	command.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
-	return validationEnvironment(ctx, command).Environment
+	return reusableGoValidationFlags(args[2:])
+}
+
+func reusableGoValidationFlags(args []string) bool {
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "\"'") {
+			return false
+		}
+		if strings.HasPrefix(arg, "--") {
+			arg = "-" + strings.TrimLeft(arg, "-")
+		}
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, _, _ := strings.Cut(arg, "=")
+		name = strings.TrimPrefix(name, "-")
+		switch name {
+		case "a", "n", "x", "v", "race", "msan", "asan", "trimpath", "work", "p", "buildvcs", "buildmode", "tags", "mod", "modcacherw", "installsuffix", "c", "short", "json", "run", "bench", "benchtime", "benchmem", "count", "cpu", "failfast", "fullpath", "list", "parallel", "shuffle", "skip", "timeout", "vet":
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {

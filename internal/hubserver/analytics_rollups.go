@@ -15,9 +15,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+// An attempt rollup is the attempt's own payload with the attempt columns set
+// at its top level, so the analytics_native_attempts view serves it without
+// copying. It leaves out the command output that no analytics read uses and
+// records failed_at, the time a failed attempt or refused landing counts as
+// a failure, so the failure read is ordered by an index.
+const (
+	analyticsAttemptUnread   = `'$.runtime.validation.output','$.runtime.landing.gate.output'`
+	analyticsAttemptFailedAt = `CASE WHEN status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
+THEN CASE WHEN (json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') AND coalesce(json_extract(data_json,'$.runtime.landing.landed'),0)=0) OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
+THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'0001-01-01T00:00:00Z'),updated_at) ELSE updated_at END END`
+)
+
 const (
 	analyticsSourceIssues         = "WITH analytics_source_issues AS " + `(SELECT organization_id,project_id,unixepoch(created_at)/3600*3600 AS hour,'issue' AS metric,native_id AS dimension,1 AS value,json_object('id',id,'native_id',native_id,'title',title,'created_at',created_at,'updated_at',updated_at,'workflow_state_id',workflow_state_id) AS data_json FROM issues WHERE organization_id IS NOT NULL AND project_id IS NOT NULL AND native_id IS NOT NULL)` + "\n"
-	analyticsSourceNativeAttempts = "WITH analytics_source_native_attempts AS " + `(SELECT organization_id,project_id,unixepoch(started_at)/3600*3600 AS hour,'attempt' AS metric,id AS dimension,1 AS value,json_object('id',id,'work_item_id',work_item_id,'lease_id',lease_id,'status',status,'started_at',started_at,'updated_at',updated_at,'data_json',data_json) AS data_json,work_item_id FROM native_attempts WHERE organization_id IS NOT NULL AND project_id IS NOT NULL)` + "\n"
+	analyticsSourceNativeAttempts = "WITH analytics_source_native_attempts AS " + `(SELECT organization_id,project_id,unixepoch(started_at)/3600*3600 AS hour,'attempt' AS metric,id AS dimension,1 AS value,json_set(json_remove(data_json,` + analyticsAttemptUnread + `),'$.id',id,'$.work_item_id',work_item_id,'$.lease_id',lease_id,'$.status',status,'$.started_at',started_at,'$.updated_at',updated_at,'$.failed_at',` + analyticsAttemptFailedAt + `) AS data_json,work_item_id FROM native_attempts WHERE organization_id IS NOT NULL AND project_id IS NOT NULL)` + "\n"
 	analyticsSourceAttemptUsage   = "WITH analytics_source_attempt_usage AS " + `(SELECT organization_id,project_id,unixepoch(period)/3600*3600 AS hour,'usage' AS metric,json_array(attempt_id,period,provider,model,currency) AS dimension,cost_estimate AS value,json_object('attempt_id',attempt_id,'period',period,'provider',provider,'model',model,'input',input,'cached_input',cached_input,'output',output,'cost_estimate',cost_estimate,'currency',currency,'updated_at',updated_at) AS data_json,attempt_id FROM attempt_usage WHERE organization_id IS NOT NULL AND project_id IS NOT NULL)` + "\n"
 	analyticsSourceEvents         = "WITH analytics_source_events AS " + `(SELECT e.organization_id,e.project_id,unixepoch(e.recorded_at)/3600*3600 AS hour,'event' AS metric,e.id AS dimension,1 AS value,
 json_object('work_item_id',e.work_item_id,'sequence',e.sequence,'type',e.type,'recorded_at',e.recorded_at,'outcome',json_extract(e.data_json,'$.decision.outcome'),'source',json_extract(e.data_json,'$.decision.source'),'reason',json_extract(e.data_json,'$.decision.reason'),'to_state',json_extract(e.data_json,'$.to_state')) AS data_json,e.work_item_id,e.sequence
@@ -109,7 +121,7 @@ var analyticsEventTable = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+collaboration_
 
 var analyticsSQLKeywords = map[string]bool{"where": true, "join": true, "left": true, "inner": true, "cross": true, "on": true, "order": true, "group": true, "limit": true, "union": true, "except": true, "intersect": true, "having": true, "window": true, "using": true, "natural": true, "indexed": true, "not": true, "outer": true}
 
-const analyticsEventSource = `(SELECT r.organization_id,r.project_id,r.dimension AS id,json_extract(r.data_json,'$.work_item_id') AS work_item_id,json_extract(r.data_json,'$.sequence') AS sequence,json_extract(r.data_json,'$.type') AS type,json_extract(r.data_json,'$.recorded_at') AS recorded_at,e.data_json FROM analytics_hourly_rollups r JOIN collaboration_events e ON e.id=r.dimension WHERE r.metric='event')`
+const analyticsEventSource = `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.json_work_item_id AS work_item_id,r.json_sequence AS sequence,r.json_type AS type,r.json_recorded_at AS recorded_at,e.data_json FROM analytics_hourly_rollups r JOIN collaboration_events e ON e.id=r.dimension WHERE r.metric='event')`
 
 func analyticsRollupStatement(statement string) string {
 	return analyticsEventTable.ReplaceAllStringFunc(analyticsRollupTables.Replace(statement), func(match string) string {

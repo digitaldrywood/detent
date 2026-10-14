@@ -193,8 +193,14 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
+	t.Setenv("CGO_ENABLED", "0")
 
 	source := initSourceRepo(t)
+	if err := os.WriteFile(filepath.Join(source, ".gitignore"), []byte("package-data/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".gitignore")
+	runGit(t, source, "commit", "-m", "ignored package data fixture")
 	if runtime.GOOS != "windows" {
 		script, err := os.ReadFile("../../scripts/check-evidence.sh")
 		if err != nil {
@@ -231,13 +237,35 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		failedCommand = "echo failed & exit /b 7"
 	}
 	for _, test := range []struct {
-		name, command, head string
-		exit                int
-		wantErr             bool
-		toolchainKnown      bool
-		probeOnly           bool
+		name, command, head   string
+		exit                  int
+		wantErr               bool
+		toolchainKnown        bool
+		probeOnly             bool
+		unbound, cgo, ignored bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "literal packages and supported flags retain identity", command: "go test ./... -short -count=1", probeOnly: true, toolchainKnown: true},
+		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, toolchainKnown: true, unbound: true, cgo: true},
+		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, toolchainKnown: true, unbound: true, ignored: true},
+		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
+		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
+		{name: "double dash vet analyzer is unverified", command: "go vet --vettool=custom ./...", probeOnly: true},
+		{name: "shell escaped vet analyzer is unverified", command: `go vet -vet\tool=custom ./...`, probeOnly: true},
+		{name: "separate vet analyzer operand is unverified", command: "go vet -vettool custom ./...", probeOnly: true},
+		{name: "external compiler configuration is unverified", command: "go build -gcflags=-importcfg=custom ./...", probeOnly: true},
+		{name: "external optimization profile is unverified", command: "go build -pgo=custom ./...", probeOnly: true},
+		{name: "double dash optimization profile is unverified", command: "go build --pgo=custom ./...", probeOnly: true},
+		{name: "forwarded test arguments are unverified", command: "go test ./... -args -config=custom", probeOnly: true},
+		{name: "double dash forwarded test arguments are unverified", command: "go test ./... --args -config=custom", probeOnly: true},
+		{name: "implicit custom test arguments are unverified", command: "go test ./... -config=custom", probeOnly: true},
+		{name: "custom test flag alias is unverified", command: "go test ./pkg -test.tags=tmp/config.json", probeOnly: true},
+		{name: "test flag alias syntax is unverified", command: "go test ./pkg -test.run=Test", probeOnly: true},
+		{name: "forwarded positional test input is unverified", command: "go test ./pkg -v tmp/config.json", probeOnly: true},
+		{name: "packages after flags are unverified", command: "go test -short ./pkg", probeOnly: true},
+		{name: "shell expanded package operands are unverified", command: "go test ./internal/*", probeOnly: true},
+		{name: "external Go source operands are unverified", command: "go test /outside/check_test.go", probeOnly: true},
+		{name: "ignored Go source operands are unverified", command: "go build ./tmp/check.go", probeOnly: true},
 		{name: "package manager toolchain is unverified", command: "pnpm test", probeOnly: true},
 		{name: "make target toolchain is unverified", command: "make check-landing", probeOnly: true},
 		{name: "external Go executor is unverified", command: "go test -exec=custom ./...", probeOnly: true},
@@ -250,9 +278,33 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		{name: "dirty result", command: "echo changed > untracked.txt", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.cgo {
+				t.Setenv("CGO_ENABLED", "1")
+			}
+			if test.ignored {
+				path := filepath.Join(info.Path, "package-data", "fixture.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := os.Remove(path); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
 			if test.probeOnly {
-				if backend.ReviewCommandEnvironment(t.Context(), info, issue, test.command).Known() {
-					t.Fatal("Go metadata was accepted for an unverified command toolchain")
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, issue, test.command)
+				if evidence.Environment.Known() != test.toolchainKnown {
+					t.Fatalf("command toolchain applicability: got %v, want %v", evidence.Environment.Known(), test.toolchainKnown)
+				}
+				if test.unbound && evidence.InputsSHA != "" {
+					t.Fatal("unbound package inputs received a reusable identity")
+				}
+				if test.toolchainKnown && !test.unbound && evidence.InputsSHA == "" {
+					t.Fatal("supported literal Go command lost its input identity")
 				}
 				return
 			}
@@ -271,9 +323,13 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 				t.Fatalf("missing host command environment: %+v", receipt.Evidence)
 			}
 			if !test.wantErr {
-				environment := backend.ReviewCommandEnvironment(t.Context(), info, request, test.command)
+				evidence := backend.ReviewCommandEvidence(t.Context(), info, request, test.command)
+				environment := evidence.Environment
 				if environment.Known() != test.toolchainKnown || (test.toolchainKnown && environment != receipt.Evidence.Environment) {
 					t.Fatalf("command toolchain applicability differs: %+v", environment)
+				}
+				if test.toolchainKnown && (evidence.InputsSHA == "" || evidence.InputsSHA != receipt.Evidence.InputsSHA) {
+					t.Fatal("unchanged host command inputs differ between execution and preflight")
 				}
 			}
 		})
