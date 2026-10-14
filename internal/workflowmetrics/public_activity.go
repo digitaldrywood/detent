@@ -89,6 +89,11 @@ func PublicActivityProfile(p ActivityProfile) ActivityProfile {
 		p.Summary.Hourly = p.Summary.Hourly[1:]
 	}
 	low, high := 0, len(spans)+1
+	p.Spans, p.ProjectionOmitted = spans, omitted
+	publicActivityDetailFrom(&p, detailFrom)
+	if raw, err := json.Marshal(p); err == nil && len(raw) <= 128*1024 {
+		low = len(spans)
+	}
 	for low+1 < high {
 		keep := low + (high-low)/2
 		p.Spans, p.ProjectionOmitted = spans[len(spans)-keep:], omitted+uint64(len(spans)-keep)
