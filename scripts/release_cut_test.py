@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -48,9 +49,27 @@ class ReleaseCutTest(unittest.TestCase):
             "jobs API failure": "2026-10-12T05:00:00Z",
             "recheck completion": "2026-10-12T05:00:00Z",
         }
+        frozen_cases = {
+            "inactive failed release CI": [("v1.1", "green")],
+            "current tagged production failed": [("v1.1", "green")],
+            "current production smoke failed": [("v1.1", "green")],
+            "current deployed head": [("v1.1", "green")],
+            "current branch advanced": [("v1.1", "tip")],
+            "superseded leftover series": [("v1.0", "green")],
+            "newer frozen series": [("v1.0", "green"), ("v1.2", "tip")],
+            "multiple frozen series": [("v1.2", "green"), ("v1.3", "tip")],
+            "manual explicit frozen series": [("v1.1", "green")],
+            "nonstable production cannot complete series": [("v1.1", "green")],
+            "older production rerun recent": [("v1.2", "green")],
+            "recheck branch advanced": [("v1.1", "green")],
+            "recheck frozen branch": [],
+        }
         skipped = set(active_cases) - {"develop CI active", "current cut", "manual explicit active"}
         skipped.update(("recent production newer develop", "UTC inside boundary", "UTC offset boundary", "UTC upper boundary", "old attempt recent retry", "recheck completion"))
-        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication", "legacy develop evidence", "missing release scripts", "legacy CI", "legacy finalizer", "same source unreleased", "advanced series", "stable tag only", "prerelease tag only", "newer uncovered green", "covered tip no green", "stable tip", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "simultaneous triggers", "dispatch failure") + tuple(active_cases) + tuple(completion_cases)
+        frozen_skips = set(frozen_cases) - {"current deployed head", "superseded leftover series", "manual explicit frozen series", "older production rerun recent"}
+        frozen_skips.update(("existing", "same source unreleased", "advanced series", "newer uncovered green", "covered tip no green"))
+        skipped.add("older production rerun recent")
+        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "explicit existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication", "legacy develop evidence", "missing release scripts", "legacy CI", "legacy finalizer", "same source unreleased", "advanced series", "stable tag only", "prerelease tag only", "newer uncovered green", "covered tip no green", "stable tip", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "simultaneous triggers", "dispatch failure", "refs read failure", "recheck refs failure") + tuple(active_cases) + tuple(completion_cases) + tuple(frozen_cases)
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
@@ -100,7 +119,7 @@ class ReleaseCutTest(unittest.TestCase):
                 git("switch", "-c", "unlanded")
                 git("commit", "--allow-empty", "-m", "unlanded")
                 outside = git("rev-parse", "HEAD")
-                if case == "existing":
+                if case in ("existing", "explicit existing"):
                     git("push", "origin", "develop:release/v1.2")
                 if case == "next minor":
                     git("tag", "v1.9.2", green)
@@ -112,6 +131,13 @@ class ReleaseCutTest(unittest.TestCase):
                     tag = "v1.1.0-op.example" if case == "prerelease tag only" else "v1.1.0"
                     git("tag", tag, tip if case == "stable tip" else green)
                     git("push", "origin", tag)
+                if case in frozen_cases:
+                    for series, head in frozen_cases[case]:
+                        git("push", "origin", (tip if head == "tip" else green) + ":refs/heads/release/" + series)
+                    if case not in ("inactive failed release CI", "manual explicit frozen series"):
+                        tag = "v1.2.0" if case == "older production rerun recent" else "v1.1.0"
+                        git("tag", tag, green)
+                        git("push", "origin", tag)
                 runs = [] if case in ("no green", "covered tip no green") else [{"head_sha": green, "html_url": "https://github.com/example-org/example-project/actions/runs/1"}, {"head_sha": tip, "html_url": "https://github.com/example-org/example-project/actions/runs/2"}]
                 if case == "newer uncovered green":
                     runs.append({"head_sha": uncovered, "html_url": "https://github.com/example-org/example-project/actions/runs/5"})
@@ -134,14 +160,19 @@ class ReleaseCutTest(unittest.TestCase):
                     jobs = [{"name": "production / Deploy and smoke production", "status": "completed", "conclusion": "failure" if case == "tag production failed" else "success", "completed_at": completion_cases[case], "steps": [{"name": name, "conclusion": "failure" if (case == "production smoke failed" and name == "Smoke deployed release") or (case == "production MCP smoke failed" and name == "Exercise production MCP tools") else "success"} for name in ("Deploy signed release", "Smoke deployed release", "Exercise production MCP tools")]}]
                     if case == "artifacts only":
                         jobs[0]["name"] = "GoReleaser"
+                if case in frozen_cases and case not in ("inactive failed release CI", "manual explicit frozen series"):
+                    release_runs = [{"id": 90, "status": "completed", "conclusion": "failure" if case == "current tagged production failed" else "success", "head_branch": "develop" if case == "nonstable production cannot complete series" else "v1.2.0" if case == "older production rerun recent" else "v1.1.0", "head_sha": green, "run_attempt": 2, "updated_at": "2026-09-01T00:00:00Z", "html_url": "https://github.com/example-org/example-project/actions/runs/90"}]
+                    jobs = [{"name": "production / Deploy and smoke production", "status": "completed", "conclusion": "success", "completed_at": "2026-09-01T00:00:00Z", "steps": [{"name": name, "conclusion": "failure" if case == "current production smoke failed" and name == "Smoke deployed release" else "success"} for name in ("Deploy signed release", "Smoke deployed release", "Exercise production MCP tools")]}]
+                    if case == "older production rerun recent":
+                        release_runs.append({**release_runs[0], "id": 91, "head_branch": "v1.1.0", "updated_at": "2026-10-12T05:00:00Z", "html_url": "https://github.com/example-org/example-project/actions/runs/91"})
                 fixture = root / "fixture.json"
-                fixture.write_text(json.dumps({"case": case, "runs": runs, "green": green, "uncovered": uncovered, "active": active, "release_runs": release_runs, "jobs": jobs}))
+                fixture.write_text(json.dumps({"case": case, "runs": runs, "green": green, "tip": tip, "remote": str(remote), "uncovered": uncovered, "active": active, "release_runs": release_runs, "jobs": jobs}))
                 date = root / "date"
                 date.write_text("#!/bin/sh\nprintf '%s\\n' '2026-10-12T06:37:00Z'\n")
                 date.chmod(0o700)
                 gh = root / "gh"
                 gh.write_text("#!" + sys.executable + "\n" + r'''
-import json, os, sys
+import json, os, subprocess, sys
 from pathlib import Path
 args = sys.argv[1:]
 with Path(os.environ["CALL_LOG"]).open("a") as f:
@@ -153,6 +184,9 @@ admission_pass = sum("actions/runs?status=queued" in " ".join(call) for call in 
 if "actions/runs?status=" in query:
     if fixture["case"] == "admission API failure" or (fixture["case"] == "recheck API failure" and admission_pass > 1): sys.exit("history unavailable")
     active = fixture["active"]
+    if admission_pass > 1 and fixture["case"] in ("recheck branch advanced", "recheck frozen branch"):
+        branch = "release/v1.1" if fixture["case"] == "recheck branch advanced" else "release/v1.2"
+        subprocess.run([os.environ["REAL_GIT"], "--git-dir", fixture["remote"], "update-ref", "refs/heads/" + branch, fixture["tip"]], check=True)
     if fixture["case"] == "recheck active" and admission_pass == 1:
         active = []
     if fixture["case"] == "simultaneous triggers" and any(call[:2] == ["workflow", "run"] for call in calls):
@@ -165,7 +199,10 @@ elif "workflows/release.yml/runs?" in query:
     print(json.dumps([{"workflow_runs": runs}]))
 elif "/attempts/2/jobs?" in query:
     if fixture["case"] == "jobs API failure": sys.exit("jobs unavailable")
-    print(json.dumps([{"jobs": fixture["jobs"]}]))
+    jobs = fixture["jobs"]
+    if fixture["case"] == "older production rerun recent" and "runs/91/" in query:
+        jobs = [{**jobs[0], "completed_at": "2026-10-12T05:00:00Z"}]
+    print(json.dumps([{"jobs": jobs}]))
 elif "workflows/ci.yml/runs?" in query:
     if fixture["case"] == "api failure": sys.exit(1)
     if "branch=develop" not in query or "status=completed" not in query:
@@ -189,14 +226,27 @@ else:
     sys.exit("unexpected gh call: " + query)
 ''')
                 gh.chmod(0o700)
+                git_wrapper = root / "git"
+                git_wrapper.write_text("#!" + sys.executable + "\n" + r'''
+import os, sys
+from pathlib import Path
+if sys.argv[1:2] == ["ls-remote"]:
+    count_path = Path(os.environ["REF_READS"])
+    count = int(count_path.read_text()) + 1 if count_path.exists() else 1
+    count_path.write_text(str(count))
+    if os.environ["REF_CASE"] == "refs read failure" or os.environ["REF_CASE"] == "recheck refs failure" and count > 1:
+        sys.exit("release refs unavailable")
+os.execv(os.environ["REAL_GIT"], [os.environ["REAL_GIT"], *sys.argv[1:]])
+''')
+                git_wrapper.chmod(0o700)
                 log = root / "calls.jsonl"
-                env.update(PATH=str(root) + os.pathsep + env["PATH"], CALL_LOG=str(log), FIXTURE=str(fixture), GITHUB_REPOSITORY="example-org/example-project", GITHUB_RUN_ID="100", GITHUB_EVENT_NAME="schedule")
+                env.update(REAL_GIT=shutil.which("git"), REF_READS=str(root / "ref-reads"), REF_CASE=case, PATH=str(root) + os.pathsep + env["PATH"], CALL_LOG=str(log), FIXTURE=str(fixture), GITHUB_REPOSITORY="example-org/example-project", GITHUB_RUN_ID="100", GITHUB_EVENT_NAME="schedule")
                 version = "" if case == "next minor" else "bad" if case == "invalid version" else "v1.2"
-                source = tip if case in ("explicit", "next minor", "manual explicit active", "manual explicit recent") else outside if case == "outside develop" else green if case in ("explicit covered series", "explicit covered tag") else ""
+                source = tip if case in ("explicit", "explicit existing", "next minor", "manual explicit active", "manual explicit recent", "manual explicit frozen series") else outside if case == "outside develop" else green if case in ("explicit covered series", "explicit covered tag") else ""
                 if source:
                     env["GITHUB_EVENT_NAME"] = "workflow_dispatch"
                 result = subprocess.run(["bash", str(ROOT / "scripts/release-cut.sh"), version, source], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
-                accepted = case not in ("outside develop", "existing", "invalid version", "api failure", "missing release scripts", "legacy CI", "legacy finalizer", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "jobs API failure", "dispatch failure")
+                accepted = case not in ("outside develop", "explicit existing", "invalid version", "api failure", "missing release scripts", "legacy CI", "legacy finalizer", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "jobs API failure", "dispatch failure", "refs read failure", "recheck refs failure")
                 self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
                 calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
                 writes = [call for call in calls if "POST" in call]
@@ -208,21 +258,27 @@ else:
                         self.assertNotIn("and dispatched", result.stdout)
                     else:
                         self.assertEqual(writes + dispatches, [], "rejected cuts must not create a branch or run CI")
-                    if case in ("admission API failure", "recheck API failure", "jobs API failure"):
+                    if case in ("admission API failure", "recheck API failure", "jobs API failure", "refs read failure", "recheck refs failure"):
                         self.assertIn("Release admission read failed", result.stderr)
                         self.assertNotIn("no-op", result.stdout)
+                    continue
+                if case in frozen_skips:
+                    self.assertEqual(writes + dispatches, [], "unfinished current series must not create a branch or run CI")
+                    self.assertIn("Release admission: no-op; unfinished frozen series", result.stdout)
+                    branch = "v1.3" if case == "multiple frozen series" else "v1.2" if case in ("existing", "newer frozen series", "recheck frozen branch") else "v1.1"
+                    self.assertIn("https://github.com/example-org/example-project/tree/release/" + branch, result.stdout)
                     continue
                 if case in skipped:
                     self.assertEqual(writes + dispatches, [], "satisfied opportunities must not create a branch or run CI")
                     self.assertIn("Release admission: no-op", result.stdout)
-                    self.assertIn("https://github.com/example-org/example-project/actions/runs/90", result.stdout)
+                    self.assertIn("https://github.com/example-org/example-project/actions/runs/" + ("91" if case == "older production rerun recent" else "90"), result.stdout)
                     self.assertIn("(2026-10-05T06:37:00Z, 2026-10-12T06:37:00Z]", result.stdout)
                     continue
-                if case in ("advanced series", "covered tip no green", "stable tip"):
+                if case == "stable tip":
                     self.assertEqual(writes + dispatches, [], "covered develop must not create duplicate releases")
                     self.assertIn("No unreleased develop commits", result.stdout)
                     continue
-                expected = uncovered if case == "newer uncovered green" else tip if case in ("no green", "skipped run", "explicit", "next minor", "superseded green", "release status only", "failed develop publication", "same source unreleased", "stable tag only", "tag production failed", "manual explicit active", "manual explicit recent") else green
+                expected = tip if case in ("no green", "skipped run", "explicit", "next minor", "superseded green", "release status only", "failed develop publication", "stable tag only", "tag production failed", "manual explicit active", "manual explicit recent", "manual explicit frozen series", "current deployed head", "superseded leftover series") else green
                 branch = "release/v1.11" if case == "next minor" else "release/v1.2"
                 self.assertEqual(len(writes), 1)
                 self.assertIn("sha=" + expected, writes[0])

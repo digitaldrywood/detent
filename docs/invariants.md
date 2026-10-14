@@ -196,8 +196,12 @@ operator-dispatched. Automatic cuts proceed only when no cut, release
 validation, signed build or deployment is active and
 no successful production deployment and smoke completed within one cadence
 derived from the cut workflow's UTC cron. Explicit manual SHA cuts remain
-available within that window. Actions history owns admission; API failures are
-errors, and inactive branches alone do not defer newer uncovered source.
+available within that window and bypass frozen-series admission. Actions history
+and remote release heads own admission; API failures are errors. Outside the
+cadence window, an unfinished current or newer frozen series defers automatic
+cuts until its head has a successful stable-tag production deployment and both
+smokes. Older series superseded by a later successful production series do not
+defer newer uncovered source.
 Automatic source selection uses the newest green develop ancestor
 not already covered by a release series or stable tag, or unreleased develop tip
 if none exists; it succeeds without cutting when develop is already covered.

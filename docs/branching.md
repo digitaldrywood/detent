@@ -78,8 +78,15 @@ commits have arrived. Admission reads the production job of the successful
 `release.yml` run's current attempt, rather than treating a branch, tag, cut or
 artifact upload as production success. Failed or cancelled attempts do not start
 the window; retrying an existing release retains its immutable evidence rules.
-An inactive leftover branch only covers its own source and does not block newer
-uncovered develop work.
+After the cadence window expires, the current frozen series still owns release
+work until its branch head has a successful stable-tag production deployment
+and both smokes. Failed or inactive release CI, tagged deployment failure, and
+a branch advanced beyond the last deployed tag all make the automatic cut a
+successful no-op referencing that branch and source SHA. Admission reuses the
+same production receipts outside the cadence window and checks current remote
+branch heads at each decision. A later successfully deployed series supersedes
+older leftover branches, so historical abandoned branches cannot hold future
+cuts indefinitely. Explicit manual SHA requests retain their bypass.
 
 The rolling UTC window is `(decision time - cadence, decision time]`: completion
 at the lower boundary is expired, and completion at the decision time counts.
