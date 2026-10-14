@@ -20,6 +20,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   useSidebar,
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -35,6 +38,8 @@ import {
   useAvailableSettingsSearchItems,
   useSettingsNavItems,
 } from "./useAvailableSettingsSearchItems";
+
+import { useOrganizationMembers } from "../../app/account/OrganizationMembers.tsx";
 
 type SectionIcons = Readonly<Record<string, ComponentType<{ className?: string }>>>;
 
@@ -52,6 +57,8 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const [query, setQuery] = useState("");
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const navItems = useSettingsNavItems();
+  const members = useOrganizationMembers();
+  const memberCount = members.value?.member_count ?? members.value?.members.length;
   const sectionIcons = useMemo<SectionIcons>(
     () => Object.fromEntries(navItems.map((item) => [item.to, item.icon])),
     [navItems],
@@ -262,11 +269,11 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
             </SidebarMenu>
           ) : (
             <SidebarMenu className="ps-px">
-              {navItems.map((item) => {
+              {navItems.filter((item) => !item.id.startsWith("organization/")).map((item) => {
                 const Icon = item.icon;
                 const disabled = item.disabled === true;
                 const isActive =
-                  !disabled && (pathname === item.to || pathname.startsWith(`${item.to}/`));
+                  !disabled && item.id !== "organization" && (pathname === item.to || pathname.startsWith(`${item.to}/`));
                 const row = (
                   <SidebarMenuButton
                     isActive={isActive}
@@ -294,6 +301,16 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                     ) : (
                       row
                     )}
+                    {item.id === "organization" ? <SidebarMenuSub aria-label="Organization settings">
+                      {[{ to: "/settings/organization", label: "Overview" }, { to: "/settings/organization/members", label: "Members" }, { to: "/settings/organization/models", label: "Models" }].map((page) => (
+                        <SidebarMenuSubItem key={page.to}>
+                          <SidebarMenuSubButton className="w-full" render={<button type="button" />} isActive={pathname === page.to} aria-current={pathname === page.to ? "page" : undefined} onClick={() => handleSectionClick(page.to as SettingsPath)}>
+                            <span>{page.label}</span>
+                            {page.label === "Members" && memberCount !== undefined ? <span aria-label={`${memberCount} members`} className="ml-auto text-xs text-sidebar-muted-foreground">{memberCount}</span> : null}
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ))}
+                    </SidebarMenuSub> : null}
                   </SidebarMenuItem>
                 );
               })}

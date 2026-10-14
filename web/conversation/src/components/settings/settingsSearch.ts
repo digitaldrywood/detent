@@ -32,6 +32,9 @@ interface IndexEntry {
 }
 
 const SETTINGS_INDEX: readonly IndexEntry[] = [
+  { section: "organization", title: "Name", keywords: "rename organization" },
+  { section: "organization", title: "Your organizations", keywords: "create switch organization workspace" },
+  { section: "organization/models", targetId: "settings-organization-models", title: "Model selection", keywords: "models effort planning implementation validation defaults" },
   {
     section: "general",
     title: "Organization",
@@ -50,8 +53,8 @@ const SETTINGS_INDEX: readonly IndexEntry[] = [
     targetId: "settings-general-plan",
     keywords: "entitlement allowance tier",
   },
-  { section: "organization", title: "Members", keywords: "people roles owner admin viewer access" },
-  { section: "organization", title: "Invite somebody", keywords: "invitation email join" },
+  { section: "organization/members", targetId: "settings-organization-members", title: "Members", keywords: "people roles owner admin viewer access" },
+  { section: "organization/members", targetId: "settings-organization-invitations", title: "Invite somebody", keywords: "invitations invitation email join" },
   {
     section: "projects",
     title: "Projects",

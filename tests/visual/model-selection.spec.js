@@ -11,7 +11,7 @@ test.afterAll(async () => { await hub?.stop(); });
 
 test("organization model selection saves and survives reload", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
-  await page.goto(`${hub.fixture.url}/settings/organization`);
+  await page.goto(`${hub.fixture.url}/settings/organization/models`);
   await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6.1-sol");
   await expect(page.getByLabel("Plan stage effort ceiling")).toHaveValue("low");
   await expect(page.getByLabel("Validator stage effort ceiling")).toHaveValue("medium");
@@ -52,7 +52,7 @@ test("project overrides org selection and can restore inheritance", async ({ pag
 
 test("viewer can read model selection without editing", async ({ page }) => {
   await page.goto(hub.fixture.accounts.viewer);
-  for (const path of ["/settings/organization", `/settings/integrations?project=${hub.fixture.project_id}`]) {
+  for (const path of ["/settings/organization/models", `/settings/integrations?project=${hub.fixture.project_id}`]) {
     await page.goto(`${hub.fixture.url}${path}`);
     await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6-sol");
     await expect(page.getByLabel("Normal model", { exact: true })).toBeDisabled();

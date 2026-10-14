@@ -238,6 +238,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     slackIntegration: () => send(SlackIntegrationStatus, "GET", `${base}/integrations/slack`),
     saveSlackIntegration: (input: { webhook?: string; channel_name: string }) => send(SlackIntegrationStatus, "PUT", `${base}/integrations/slack`, input),
     testSlackIntegration: () => send(SlackIntegrationStatus, "POST", `${base}/integrations/slack/test`, {}),
+    renameOrganization: (input: { name: string; key: string }) => send(Schema.Struct({ name: Schema.String }), "PUT", `${base}/name`, { name: input.name, idempotency_key: input.key }),
     members: () => send(MembersResponse, "GET", `${base}/members`),
     invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
       send(Schema.Unknown, "POST", `${base}/members/invitations`, {
