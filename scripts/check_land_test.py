@@ -117,7 +117,7 @@ class LandingGateTest(unittest.TestCase):
         cases += [("check-land", 4, "", path) for path in (shared_ui, "web/conversation/src/app/main.tsx", "web/conversation/src/app/router.tsx", "web/conversation/src/components/ui/button.tsx", "tests/visual/cloud-reports.spec.js")]
         cases += [("check-land", 4, failure, shared_ui) for failure in ("app", "lint", "unit-short")]
         for target, budget, failure, changed in cases:
-            with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(dir=scratch) as directory:
+            with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
                 for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh"):
@@ -207,8 +207,9 @@ class LandingGateTest(unittest.TestCase):
                 elif failure:
                     tail = []
                 self.assertEqual(starts[6:], tail)
-                self.assertNotIn("npm", result.stdout)
-                self.assertNotIn("nilaway", result.stdout)
+                output = result.stdout.replace(str(root), "<fixture>")
+                self.assertNotIn("npm", output)
+                self.assertNotIn("nilaway", output)
                 self.assertFalse((root / "static/app/conversation/app.js").exists())
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence:")]
                 expected_scopes = {"generated", "lint", "vet", "build", "unit-short"}
