@@ -6,8 +6,10 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,12 +18,20 @@ import (
 
 // requestTiming splits one API request's wall time into the spans reported
 // in its Server-Timing header. Database statements and JSON encoding record
-// their own spans; compute is the remainder of the total.
+// their own spans; compute is the remainder of the total. Named spans time
+// the parts of one read, such as each Reports sub-read, by wall clock.
 type requestTiming struct {
 	start  time.Time
 	db     atomic.Int64
 	encode atomic.Int64
 	trace  func(query string, args []driver.NamedValue)
+	mu     sync.Mutex
+	spans  []timingSpan
+}
+
+type timingSpan struct {
+	name     string
+	duration time.Duration
 }
 
 type requestTimingKey struct{}
@@ -53,11 +63,67 @@ func (t *requestTiming) statement(start time.Time, query string, args []driver.N
 	}
 }
 
+// span adds the wall time since start to the named span. Concurrent parts
+// of one request, such as the projects of an organization report, add up.
+func (t *requestTiming) span(name string, start time.Time) {
+	if t == nil {
+		return
+	}
+	elapsed := time.Since(start)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range t.spans {
+		if t.spans[i].name == name {
+			t.spans[i].duration += elapsed
+			return
+		}
+	}
+	t.spans = append(t.spans, timingSpan{name, elapsed})
+}
+
+// timeSpan times the named part of the request in ctx until the returned
+// function runs.
+func timeSpan(ctx context.Context, name string) func() {
+	timing, start := requestTimingFrom(ctx), time.Now()
+	return func() { timing.span(name, start) }
+}
+
+func (t *requestTiming) namedSpans() []timingSpan {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]timingSpan(nil), t.spans...)
+}
+
+// logAttrs are the request's db time and named spans in whole milliseconds.
+func (t *requestTiming) logAttrs() []any {
+	if t == nil {
+		return nil
+	}
+	attrs := []any{"db_ms", time.Duration(t.db.Load()).Milliseconds()}
+	spans := t.namedSpans()
+	if len(spans) == 0 {
+		return attrs
+	}
+	group := make([]any, 0, len(spans))
+	for _, span := range spans {
+		group = append(group, slog.Int64(span.name, span.duration.Milliseconds()))
+	}
+	return append(attrs, slog.Group("spans_ms", group...))
+}
+
 func (t *requestTiming) header(now time.Time) string {
 	total := max(0, now.Sub(t.start))
 	db := min(time.Duration(t.db.Load()), total)
 	encode := min(time.Duration(t.encode.Load()), total-db)
-	return fmt.Sprintf("db;dur=%.1f, compute;dur=%.1f, encode;dur=%.1f, total;dur=%.1f", milliseconds(db), milliseconds(total-db-encode), milliseconds(encode), milliseconds(total))
+	var header strings.Builder
+	fmt.Fprintf(&header, "db;dur=%.1f, compute;dur=%.1f, encode;dur=%.1f, total;dur=%.1f", milliseconds(db), milliseconds(total-db-encode), milliseconds(encode), milliseconds(total))
+	for _, span := range t.namedSpans() {
+		fmt.Fprintf(&header, ", %s;dur=%.1f", span.name, milliseconds(span.duration))
+	}
+	return header.String()
 }
 
 func milliseconds(d time.Duration) float64 {
