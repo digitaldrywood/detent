@@ -75,10 +75,13 @@ for (const theme of ["light", "dark"]) {
         await expect(report).not.toContainText("Source coverage");
         await expect(report).not.toContainText("Partial");
         expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+        const height = await report.evaluate((node) => node.scrollHeight + node.getBoundingClientRect().top);
+        await page.setViewportSize({ width, height: Math.max(1100, Math.ceil(height)) });
         await test.info().attach(`cloud-reports-${tab.id}-${theme}-${width}.png`, {
-          body: await page.screenshot({ animations: "disabled", caret: "hide", fullPage: true }),
+          body: await page.screenshot({ animations: "disabled", caret: "hide" }),
           contentType: "image/png",
         });
+        await page.setViewportSize({ width, height: 1100 });
       }
       expect(errors).toEqual([]);
     });
