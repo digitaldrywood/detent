@@ -303,6 +303,10 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	if err != nil {
 		return nil, err
 	}
+	projectClause, projectArg := "u.project_id IN (SELECT value FROM json_each(?))", any(encoded)
+	if len(projects) == 1 {
+		projectClause, projectArg = "u.project_id = ?", projects[0]
+	}
 	query := `SELECT u.attempt_id, u.period, u.provider, u.model, u.input, u.cached_input, u.output, u.cost_estimate, u.currency,
  coalesce(r.id, ''), coalesce(r.display_name, ''), coalesce(a.started_at, ''), coalesce(a.updated_at, '')
 FROM attempt_usage u
@@ -310,9 +314,9 @@ LEFT JOIN native_attempts a ON a.id = u.attempt_id
 LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
- AND u.project_id IN (SELECT value FROM json_each(?))` + scoped + `
+ AND ` + projectClause + scoped + `
 ORDER BY u.period, u.provider, u.model, u.attempt_id LIMIT ? OFFSET ?`
-	args := append([]any{organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), encoded}, scopedArgs...)
+	args := append([]any{organization, window.From.UTC().Format(usagePeriodLayout), window.To.UTC().Format(usagePeriodLayout), projectArg}, scopedArgs...)
 	result, err := queryAnalyticsRows(ctx, database, query, append(args, limit, analyticsPopulationOffset(ctx, "usage"))...)
 	if err != nil {
 		return nil, fmt.Errorf("read usage: %w", err)

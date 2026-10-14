@@ -211,14 +211,20 @@ const slowRequest = 250 * time.Millisecond
 func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		start := time.Now()
-		ctx, timing := withWriterTiming(c.Request().Context())
+		ctx := c.Request().Context()
+		request := requestTimingFrom(ctx)
+		if request == nil {
+			request = &requestTiming{}
+			ctx = withRequestTiming(ctx, request)
+		}
+		ctx, timing := withWriterTiming(ctx)
 		c.SetRequest(c.Request().WithContext(ctx))
 		err := next(c)
 		elapsed := time.Since(start)
 		hold := time.Duration(timing.hold.Load())
 		if elapsed >= slowRequest || hold >= slowRequest/5 {
-			s.config.Logger.Info("hub request timing", "method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
-				"duration_ms", elapsed.Milliseconds(), "writer_hold_ms", hold.Milliseconds(), "writer_txs", timing.txs.Load())
+			s.config.Logger.Info("hub request timing", append([]any{"method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
+				"duration_ms", elapsed.Milliseconds(), "writer_hold_ms", hold.Milliseconds(), "writer_txs", timing.txs.Load()}, request.logAttrs()...)...)
 		}
 		s.logWriterWaits()
 		return err
