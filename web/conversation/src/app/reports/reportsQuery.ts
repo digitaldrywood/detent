@@ -3,7 +3,7 @@ import { prefetchQuery, scopeOf, useQuery } from "../lib/queryCache.ts";
 import type { ReportsRange, ReportsReport } from "../../contracts/reports.ts";
 
 export const REPORTS_STALE_MS = 60_000;
-export const DEFAULT_REPORTS_RANGE: ReportsRange = "48h";
+export const DEFAULT_REPORTS_RANGE: ReportsRange = "7d";
 
 const reportsKey = (api: AccountApi, projectId: string, range: ReportsRange) => ["reports", scopeOf(api), projectId, range] as const;
 

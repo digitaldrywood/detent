@@ -137,6 +137,8 @@ test("Reports shows a dash for unrecorded data, the unavailable state and issue 
   await page.unrouteAll();
   await page.route("**/api/v2/organizations/*/reports?*", (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
   await page.getByRole("button", { name: "Refresh reports" }).click();
+  await expect(headline).toContainText("Not recorded");
+  await page.reload();
   await expect(page.getByTestId("reports-page").getByRole("status")).toHaveText("Reports are temporarily unavailable.");
 });
 

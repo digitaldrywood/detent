@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { DownloadIcon, ListFilterIcon } from "lucide-react";
 
@@ -38,6 +38,7 @@ import {
 } from "./model.ts";
 import { OverviewTab } from "./OverviewTab.tsx";
 import { QualityTab } from "./QualityTab.tsx";
+import { useReports } from "./reportsQuery.ts";
 
 const FILTERS = ["Label", "Priority", "Type", "Filed by"] as const;
 const TAB_FILTERS: Readonly<Record<ReportTab, readonly string[]>> = {
@@ -58,32 +59,7 @@ export function ReportsRoute(): React.ReactElement {
   const tab: ReportTab = isReportTab(params.tab) ? params.tab : "overview";
   const search = parseReportsSearch(rawSearch);
   const project = sidebar?.projects.find((p) => p.id === sidebar.activeProjectId);
-  const range = search.range;
-  const [revision, setRevision] = useState(0);
-  const [state, setState] = useState<{
-    report: ReportsReport | null;
-    pending: boolean;
-    error: string | null;
-    key: string | null;
-  }>({ report: null, pending: true, error: null, key: null });
-  const key = project === undefined ? null : `${project.id}:${range}:${revision}`;
-  useEffect(() => {
-    let current = true;
-    setState({ report: null, pending: project !== undefined, error: null, key });
-    if (project !== undefined)
-      void api.reports(project.id, range).then(
-        (report) => {
-          if (current) setState({ report, pending: false, error: null, key });
-        },
-        () => {
-          if (current) setState({ report: null, pending: false, error: "Reports are temporarily unavailable.", key });
-        },
-      );
-    return () => {
-      current = false;
-    };
-  }, [api, project?.id, range, revision]);
-  const current = state.key === key;
+  const reports = useReports(api, project?.id ?? null, search.range);
   const go = (nextTab: ReportTab, nextSearch: ReportsSearch) => {
     void navigate({
       to: nextTab === "overview" ? "/reports" : "/reports/$tab",
@@ -93,16 +69,16 @@ export function ReportsRoute(): React.ReactElement {
   };
   return (
     <ReportsView
-      report={current ? state.report : null}
-      pending={project !== undefined && (!current || state.pending)}
-      error={current ? state.error : null}
+      report={reports.report}
+      pending={project !== undefined && reports.pending}
+      error={reports.error}
       projects={sidebar?.projects ?? []}
       project={project ?? null}
       onProjectChange={sidebar?.onProjectChange}
       tab={tab}
       search={search}
       onNavigate={go}
-      onRefresh={() => setRevision((value) => value + 1)}
+      onRefresh={() => void reports.refresh()}
     />
   );
 }

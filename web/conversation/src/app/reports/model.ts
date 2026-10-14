@@ -1,6 +1,7 @@
 import type { MetricDelta } from "../../components/ui/metric-tile.tsx";
 import type { ReportsRange, ReportsReport } from "../../contracts/reports.ts";
 import { formatDuration } from "../adapters/usageLimits.ts";
+import { DEFAULT_REPORTS_RANGE } from "./reportsQuery.ts";
 import { formatCount, formatDayShort, formatHourShort, formatUsd } from "../usage/usageFormat.ts";
 
 export const REPORT_TABS = [
@@ -18,7 +19,7 @@ export const REPORT_RANGES: readonly { value: ReportsRange; label: string; long:
   { value: "30d", label: "30d", long: "Last 30 days", prior: "prior 30d" },
   { value: "90d", label: "90d", long: "Last 90 days", prior: "prior 90d" },
 ];
-export const DEFAULT_RANGE: ReportsRange = "7d";
+export const DEFAULT_RANGE: ReportsRange = DEFAULT_REPORTS_RANGE;
 
 export interface ReportsSearch {
   readonly range: ReportsRange;
