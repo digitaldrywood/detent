@@ -8,10 +8,11 @@ import {
   Outlet,
   useLocation,
 } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Schema from "effect/Schema";
 
+import { keySetupPrompt } from "../../src/app/settings/APIKeysMCPSettings.tsx";
 import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
 import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
 import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
@@ -509,13 +510,136 @@ describe("personal keys and org controls", () => {
     const post = fetch.mock.calls.find(([, init]) => init?.method === "POST")!;
     expect(post[0]).toBe(kind === "personal" ? "/api/cloud/account/api-keys" : `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`);
     expect(JSON.parse(String(post[1]?.body))).toMatchObject({ access_context: accessContext, organizations: reachChoice === "global" ? [] : [{ organization_id: account.organization.id, project_access: ["project", "selected"].includes(reachChoice) ? reachChoice : "all", project_ids: ["project", "selected"].includes(reachChoice) ? [account.projects[0]!.id] : [] }] });
+    expect(dialog.getByRole("heading", { name: "Agent key is ready" })).toBeTruthy();
+    expect(dialog.getByText(kind === "personal" ? "Personal · acts as you" : "Service · acts as the organization")).toBeTruthy();
+    expect(dialog.getByRole("heading", { name: kind === "personal" ? "Check it connected as you" : "Check it connected" })).toBeTruthy();
+    expect(dialog.getByText("Waiting for the first call…")).toBeTruthy();
+    expect(dialog.getByText("Copy the key before closing. It cannot be shown again.")).toBeTruthy();
     expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
+    expect(document.body.textContent).not.toContain("private-new-key");
+    fireEvent.click(dialog.getByRole("button", { name: "Reveal" }));
+    expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("text");
+    fireEvent.click(dialog.getByRole("button", { name: "Hide" }));
+    expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
+    for (const [label, expected] of [["Copy key", "private-new-key"], ["Copy as export DETENT_API_KEY=… line", "export DETENT_API_KEY='private-new-key'"]]) {
+      const button = dialog.getByRole("button", { name: label });
+      fireEvent.click(button);
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
+      expect(button.textContent).toBe("Copied");
+      expect(dialog.getByLabelText("Step 1 complete")).toBeTruthy();
+      expect(dialog.getByText("You can close this. The key stays in your list.")).toBeTruthy();
+    }
+    for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST API"]]) {
+      fireEvent.click(dialog.getByRole("button", { name: label }));
+      const preview = dialog.getByLabelText(`${label} setup prompt preview`);
+      expect(preview.textContent).toContain(transport === "mcp" ? "connection_info" : "Authorization: Bearer");
+      const button = dialog.getByRole("button", { name: `Copy ${label} setup prompt` });
+      const copies = writeText.mock.calls.length;
+      fireEvent.click(button);
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
+      expect(button.textContent).toBe("Copied");
+      const copiedPrompt = writeText.mock.lastCall![0];
+      expect(copiedPrompt).toContain(transport === "mcp" ? `Call connection_info and confirm key.kind is "${kind}", matching the key just created before reporting success` : "Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2");
+      expect(copiedPrompt).toContain("DETENT_API_KEY");
+      expect(copiedPrompt).not.toContain("private-new-key");
+    }
+    fireEvent.click(dialog.getByRole("button", { name: "Show full prompt" }));
+    expect(dialog.getByLabelText("REST API setup prompt preview").textContent).toContain("Current membership");
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.queryByLabelText("New API key")).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Copy MCP setup prompt" }));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.lastCall![0]).toContain("Settings → API keys & MCP");
     expect(writeText.mock.lastCall![0]).not.toContain("private-new-key");
+  });
+
+  it.each([undefined, "personal", "service"] as const)("checks connection identity for %s MCP prompts without changing REST setup", (kind) => {
+    const prompt = keySetupPrompt(context.mcp_endpoint, false, kind);
+    expect(prompt).toContain("Call connection_info");
+    expect(prompt).toContain(kind ? `confirm key.kind is "${kind}", matching the key just created before reporting success` : 'confirm key.kind is "personal" or "service" and explain who it acts as before reporting success');
+    const rest = keySetupPrompt(context.mcp_endpoint, true, kind);
+    expect(rest).toContain("Authorization: Bearer");
+    expect(rest).toContain("https://cloud.example.test/api/v2");
+    expect(rest).not.toContain("connection_info");
+  });
+
+  it.each(["key", "export", "prompt"])("keeps the key unsaved and shows an inline error when copying %s fails", async (target) => {
+    const writeText = vi.fn().mockRejectedValue(new Error("Clipboard denied"));
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => new Response(JSON.stringify(
+      String(url).endsWith("key-context") ? context : init?.method === "POST" ? { ...key, token: "private-new-key" } : { keys: [], members: [], invitations: [] },
+    )));
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create personal key" }));
+    await screen.findByLabelText("New API key");
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.click(dialog.getByRole("button", { name: target === "key" ? "Copy key" : target === "export" ? "Copy as export DETENT_API_KEY=… line" : "Copy MCP setup prompt" }));
+    await screen.findByText("Could not copy. Select and save the key privately before closing.");
+    expect(dialog.getByText("Copy the key before closing. It cannot be shown again.")).toBeTruthy();
+    expect(dialog.queryByLabelText("Step 1 complete")).toBeNull();
+    writeText.mockResolvedValue(undefined);
+    fireEvent.click(dialog.getByRole("button", { name: "Copy MCP setup prompt" }));
+    await waitFor(() => expect(dialog.queryByText("Could not copy. Select and save the key privately before closing.")).toBeNull());
+    expect(dialog.getByText("Copy the key before closing. It cannot be shown again.")).toBeTruthy();
+    fireEvent.click(dialog.getByRole("button", { name: "Done" }));
+  });
+
+  it.each([
+    ["personal", "Done", "Example Member"],
+    ["personal", "Close", "member@example.test"],
+    ["service", "Escape", `${account.organization.name} (service)`],
+  ])("polls only the created %s key, preserves its first observed call and stops on %s", async (kind, close, actor) => {
+    let lastUsed: string | null = null;
+    let pending: ((response: Response) => void) | undefined;
+    let defer = false;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const path = String(url);
+      if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (path.endsWith("members")) return new Response(JSON.stringify({ members: [{ id: "membership1", user_id: key.owner, email: key.owner_email, name: close === "Done" ? "Example Member" : "", role: "member", status: "active", grants: [] }], invitations: [] }));
+      if (init?.method === "POST") return new Response(JSON.stringify({ ...key, kind, token: "private-new-key" }));
+      const ownList = kind === "personal" ? path.endsWith("/account/api-keys") : path.endsWith("/service-keys");
+      if (ownList && defer) return new Promise<Response>((resolve) => { pending = resolve; });
+      return new Response(JSON.stringify({ keys: ownList ? [{ ...key, id: "other", kind, last_used_at: new Date().toISOString() }, { ...key, kind, last_used_at: lastUsed }] : [] }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    if (kind === "service") {
+      fireEvent.click(screen.getByRole("radio", { name: "The organization" }));
+    }
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
+    vi.useFakeTimers();
+    try {
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: `Create ${kind} key` })); });
+      const dialog = within(screen.getByRole("dialog"));
+      expect(dialog.getByText("Waiting for the first call…")).toBeTruthy();
+      lastUsed = new Date(Date.now() - 120_000).toISOString();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      const first = dialog.getByText(/First call/).textContent;
+      expect(first).toContain(`acting as ${actor}`);
+      expect(first).toContain("2m ago");
+      lastUsed = new Date().toISOString();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(dialog.getByText(/First call/).textContent).toBe(first);
+      defer = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(pending).toBeDefined();
+      await act(async () => {
+        if (close === "Escape") fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+        else fireEvent.click(dialog.getByRole("button", { name: close }));
+      });
+      const reads = fetch.mock.calls.length;
+      await act(async () => { pending!(new Response(JSON.stringify({ keys: [{ ...key, kind, last_used_at: lastUsed }] }))); await vi.advanceTimersByTimeAsync(15_000); });
+      expect(fetch.mock.calls).toHaveLength(reads);
+      expect(screen.queryByLabelText("New API key")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+      expect(screen.queryByLabelText("New API key")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("redirects the old personal-key URL to the shared page", async () => {
