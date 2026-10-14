@@ -119,10 +119,11 @@ test("Reports keeps the tab and range in the URL and restores them from it", asy
 test("Reports shows a dash for unrecorded data, the unavailable state and issue Diagnostics links", async ({ page }) => {
   await openReports(page);
   const headline = page.getByRole("region", { name: "Headline metrics" });
-  await expect(page.getByRole("region", { name: "Stuck right now" }).getByRole("link").first()).toHaveAttribute(
+  await expect(page.getByRole("region", { name: "Stuck right now" }).getByRole("link", { name: /prove native pilot readiness/ })).toHaveAttribute(
     "href",
     "/work/i/wi_pilot?tab=diagnostics",
   );
+  await expect(page.getByRole("link", { name: "All aging work" })).toHaveAttribute("href", "/reports/flow");
   await page.unrouteAll();
   await routeReports(page, (report) => {
     report.unavailable.push("recorded_usage", "lane_residence_and_unclaimed_waits_unavailable", "landed_first_try");
