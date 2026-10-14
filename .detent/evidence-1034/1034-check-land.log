@@ -1,0 +1,786 @@
+NILAWAY_VERSION="v0.0.0-20260612163715-2d8907f431ca" NILAWAY_INCLUDE_PKGS="github.com/digitaldrywood/detent" bash scripts/check-land.sh "origin/develop" "web/conversation" "4"
+
+> typecheck
+> tsc --noEmit
+
+
+> design:tokens:check
+> node --import tsx scripts/design-tokens.ts --check
+
+design tokens are current
+
+> design:catalog:check
+> node --import tsx scripts/design-catalog.ts --check
+
+design-catalog: verified 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception
+ DEPRECATED  "environmentMatchGlobs" is deprecated. Use `test.projects` to define different configurations instead.
+
+ RUN  v3.2.7 /Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation
+
+ ✓ tests/reconnect.test.ts (3 tests) 20091ms
+   ✓ reconnect > resumes after transport drop without hiding or duplicating messages  8059ms
+   ✓ reconnect > resumes after server_error without hiding or duplicating messages  6018ms
+   ✓ reconnect > resumes after server_shutdown without hiding or duplicating messages  6013ms
+stderr | tests/corrections.test.ts > the event stream survives what it cannot read > skips an undecodable frame instead of tearing the stream down
+Skipping an event this client cannot read: Missing key
+  at ["data"]["id"]
+
+ ✓ tests/corrections.test.ts (17 tests) 4160ms
+   ✓ the event stream survives what it cannot read > comes back after the hub closes the stream with server_error  4017ms
+ ✓ tests/runtime.test.ts (11 tests) 3445ms
+   ✓ conversation runtime > leaves an unknown outcome visible and never retries it  310ms
+   ✓ conversation runtime > leaves the conversation when access is revoked  3012ms
+ ✓ tests/components/boardCache.test.ts (14 tests) 1541ms
+   ✓ the Work snapshot ordering > loads one page per lane and continues only Backlog  414ms
+stdout | tests/perf.test.ts > client performance budgets > decodes and merges a 2,000-message history and a 500-delta burst inside budget
+perf: 2000 messages decoded and merged in 6.4ms (budget 500ms); 500 deltas assembled in 0.5ms (budget 200ms)
+
+ ✓ tests/perf.test.ts (2 tests) 410ms
+ ✓ tests/designCatalog.test.ts (15 tests) 451ms
+   ✓ the committed catalog > validates against the client source  422ms
+ ✓ tests/work.test.ts (48 tests) 169ms
+ ✓ tests/runner.test.ts (6 tests) 128ms
+ ✓ tests/coordinator.test.ts (6 tests) 88ms
+ ✓ tests/workspaceRelay.test.ts (25 tests) 89ms
+ ✓ tests/link.test.ts (4 tests) 75ms
+ ✓ tests/diffContentSecurity.test.ts (3 tests) 73ms
+ ✓ tests/chunkReload.test.ts (4 tests) 55ms
+ ✓ src/contracts/fixtures.test.ts (80 tests) 53ms
+ ✓ tests/conversationFeature.test.ts (2 tests) 47ms
+ ✓ tests/designTokens.test.ts (48 tests) 29ms
+ ✓ tests/terminalStream.test.ts (22 tests) 29ms
+ ✓ tests/actionRuns.test.ts (15 tests) 17ms
+ ✓ tests/reports.test.ts (14 tests) 10ms
+ ✓ tests/usage.test.ts (15 tests) 13ms
+ ✓ tests/components/workFormat.test.ts (10 tests) 15ms
+ ✓ tests/issueQuery.test.ts (3 tests) 14ms
+ ✓ src/components/CommandPalette.logic.test.ts (18 tests) 7ms
+ ✓ tests/recordedActionRuns.test.ts (5 tests) 9ms
+ ✓ tests/components/composerPickers.test.ts (24 tests) 10ms
+ ✓ tests/components/lazyFileTree.test.ts (12 tests) 9ms
+ ✓ tests/components/ui/qr-code.test.tsx (2 tests) 8ms
+ ✓ tests/components/issuePickers.test.ts (30 tests) 5ms
+ ✓ tests/diagnostics.test.ts (7 tests) 7ms
+ ✓ tests/conversationList.test.ts (6 tests) 8ms
+ ✓ tests/projectScripts.test.ts (20 tests) 8ms
+ ✓ tests/workArchive.test.ts (4 tests) 5ms
+ ✓ tests/projectActionKeybindings.test.ts (11 tests) 5ms
+ ✓ tests/activity.test.ts (2 tests) 5ms
+ ✓ tests/headerGit.test.ts (34 tests) 4ms
+ ✓ tests/components/slashCommands.test.ts (24 tests) 6ms
+ ✓ tests/components/boardFreshness.test.ts (9 tests) 3ms
+ ✓ tests/components/diagnostics.test.ts (11 tests) 4ms
+ ✓ src/app/lib/scrollAnchor.test.ts (7 tests) 2ms
+ ✓ src/app/lib/workspaceStatus.test.ts (18 tests) 3ms
+ ✓ tests/components/worklog.test.ts (12 tests) 3ms
+ ✓ tests/projectActions.test.ts (5 tests) 3ms
+ ✓ tests/openIn.test.ts (27 tests) 2ms
+ ✓ tests/drafts.test.ts (7 tests) 3ms
+ ✓ tests/components/ui/toast.logic.test.ts (12 tests) 2ms
+ ✓ tests/components/references.test.ts (7 tests) 2ms
+ ✓ tests/components/workflowDiff.test.ts (5 tests) 2ms
+ ✓ tests/sse.test.ts (6 tests) 3ms
+ ✓ tests/markdownImages.test.ts (7 tests) 2ms
+ ✓ tests/autoFollow.test.ts (3 tests) 2ms
+ ✓ tests/runnerNames.test.ts (4 tests) 2ms
+ ✓ tests/pageTitle.test.ts (5 tests) 1ms
+ ✓ tests/components/ui/sidebar.test.tsx (1 test) 1ms
+ ✓ tests/components/ui/toastHelpers.test.ts (1 test) 1ms
+stderr | tests/components/setupCheckout.test.tsx > uses the runner step's readiness for its primary action (ready: false, unrouted: false)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+stderr | tests/components/setupCheckout.test.tsx > uses the runner step's readiness for its primary action (ready: false, unrouted: false)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+The current testing environment is not configured to support act(...)
+
+ ✓ tests/components/setupCheckout.test.tsx (17 tests) 12404ms
+   ✓ preserves unsaved setup choices and fields through refresh, then saves and switches projects  491ms
+   ✓ shows association progress for a new checkout  5033ms
+   ✓ reveals repository setup actions in order: policy pending  5027ms
+   ✓ uses the runner step's readiness for its primary action (ready: false, unrouted: false)  443ms
+ ✓ tests/components/settings.test.tsx (141 tests) 9230ms
+   ✓ MCP setup > creates and revokes a all key while keeping it out of copied prompts  463ms
+   ✓ MCP setup > creates and revokes a selected key while keeping it out of copied prompts  472ms
+   ✓ MCP setup > creates and revokes a all before projects key while keeping it out of copied prompts  428ms
+   ✓ personal keys and org controls > creates a member key with false management and global reach as personal  302ms
+   ✓ personal keys and org controls > creates a owner key with true management and all reach as personal  357ms
+   ✓ personal keys and org controls > creates a admin key with true management and project reach as personal  432ms
+   ✓ personal keys and org controls > creates a owner key with true management and all reach as service  315ms
+   ✓ personal keys and org controls > creates a admin key with true management and selected reach as service  391ms
+   ✓ personal keys and org controls > creates a owner key with true management and project reach as service  346ms
+   ✓ personal keys and org controls > preserves personal key actions and history through existing endpoints  328ms
+   ✓ personal keys and org controls > preserves service key actions and history through existing endpoints  326ms
+ ✓ tests/components/app.test.tsx (18 tests) 7886ms
+   ✓ the conversation shell > switches sidebar search scope without mixing Work and Chat queries  2582ms
+   ✓ the conversation shell > remembers the last real project through Work and All projects  406ms
+   ✓ the conversation shell > keeps an open chat visible and reconnects after a server_error close  1442ms
+   ✓ the conversation shell > carries a chat through handoff, a runner and a question  764ms
+   ✓ the conversation shell > shows an unlinked chat waiting for a runner, then answering, then stopped  381ms
+   ✓ the conversation shell > offers no archive action, and a settled chat stays writable  306ms
+ ✓ tests/components/platform.test.tsx (138 tests) 8872ms
+   ✓ platform console > handles user search failure 401  357ms
+   ✓ platform console > handles user search failure 403  350ms
+   ✓ platform console > handles user search failure 503  355ms
+   ✓ platform console > round-trips tenant filters and sorting through URLs and Back from the tenant page  312ms
+   ✓ platform audit > restores shared filters, updates the URL, clears and handles history  560ms
+   ✓ platform audit > drops an older page after changing filters and preserves rows on a failed retry  428ms
+ ✓ tests/components/work.test.tsx (128 tests) 8027ms
+   ✓ the filter-first Work surface > selects Change request from the visible list filter in /work  343ms
+stderr | tests/designSystemGallery.test.tsx > design-system gallery specimens > conversation-timeline/transcript renders in light and dark
+A component suspended inside an `act` scope, but the `act` call was not awaited. When testing React components that depend on asynchronous data, you must await the result:
+
+await act(() => ...)
+
+stderr | tests/designSystemGallery.test.tsx > design-system gallery specimens > render-error-boundary/fallback renders in light and dark
+Error: Malformed diff payload
+    at Throws (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/design-system/gallery/specimens/shared.tsx:1192:9)
+    at Object.react_stack_bottom_frame (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:28571:20)
+    at renderWithHooks (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:8030:22)
+    at updateFunctionComponent (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:10569:19)
+    at beginWork (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:12205:18)
+    at runWithFiberInDEV (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:1048:13)
+    at performUnitOfWork (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:19176:22)
+    at workLoopSync (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:19004:41)
+    at renderRootSync (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:18985:11)
+    at performWorkOnRoot (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:18094:35) {
+  [stack]: [Getter/Setter],
+  [message]: 'Malformed diff payload'
+}
+
+The above error occurred in the <Throws> component.
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RenderErrorBoundary.
+
+
+stderr | tests/designSystemGallery.test.tsx > design-system gallery specimens > render-error-boundary/fallback renders in light and dark
+Error: Malformed diff payload
+    at Throws (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/design-system/gallery/specimens/shared.tsx:1192:9)
+    at Object.react_stack_bottom_frame (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:28571:20)
+    at renderWithHooks (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:8030:22)
+    at updateFunctionComponent (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:10569:19)
+    at beginWork (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:12205:18)
+    at runWithFiberInDEV (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:1048:13)
+    at performUnitOfWork (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:19176:22)
+    at workLoopSync (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:19004:41)
+    at renderRootSync (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:18985:11)
+    at performWorkOnRoot (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/react-dom/cjs/react-dom-client.development.js:18094:35) {
+  [stack]: [Getter/Setter],
+  [message]: 'Malformed diff payload'
+}
+
+The above error occurred in the <Throws> component.
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RenderErrorBoundary.
+
+
+ ✓ tests/designSystemGallery.test.tsx (322 tests) 4016ms
+ ✓ tests/components/commandPalette.test.tsx (18 tests) 3148ms
+   ✓ the command palette > offers the platform command only with a platform role (admin)  964ms
+ ✓ tests/components/enrollRunner.test.tsx (25 tests) 3198ms
+   ✓ the Enroll dialog > discards the token and command from the settings page after footer  466ms
+   ✓ the Enroll dialog > discards the token and command from the settings page after Escape  335ms
+   ✓ the Enroll dialog > discards the token and command from the settings page after Close  354ms
+ ✓ tests/components/billing.test.tsx (19 tests) 3127ms
+   ✓ billing screen > re-reads billing after a Checkout return until Stripe confirms it  3011ms
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > saves 'native bound workflow' with only editable intake
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:692:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > saves 'native checkout workflow' with only editable intake
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:692:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > saves 'native unbound workflow' with only editable intake
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:692:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > approves the policy a runner reported with one click (immediate onboarding)
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:752:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > approves the policy a runner reported with one click (deferred onboarding)
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:752:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > names the current approval even while the policy read is still loading
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:752:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+stderr | tests/components/projectPolicy.test.tsx > repository policy after setup > approves a pasted descriptor and refuses one that is not JSON
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at LocationImpl.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/window/Location-impl.js:225:5)
+    at Location.reload (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/node_modules/jsdom/lib/jsdom/living/generated/Location.js:102:36)
+    at Object.<anonymous> (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/ProjectSettings.tsx:752:27)
+    at processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at Object.call (/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/web/conversation/src/app/account/useResource.ts:95:14) undefined
+
+ ✓ tests/components/projectPolicy.test.tsx (14 tests) 2363ms
+   ✓ repository policy after setup > saves 'native bound settings' with only editable intake  462ms
+ ✓ tests/components/attachments.test.tsx (7 tests) 2303ms
+   ✓ the chat dropzone > shows the overlay on a file drag and queues the dropped files as chips  761ms
+   ✓ the chat dropzone > opens a file picker from the paperclip on the draft and on the conversation  307ms
+ ✓ tests/components/fleet.test.tsx (100 tests) 1602ms
+ ✓ tests/components/settingsHelp.test.tsx (43 tests) 1513ms
+ ✓ tests/components/firstRun.test.tsx (49 tests) 1251ms
+   ✓ empty project import > imports from the empty Work view and keeps progress available when cards appear  310ms
+ ✓ tests/components/activityPage.test.tsx (29 tests) 1523ms
+   ✓ keeps the Activity scope and project picker consistent across organization changes  320ms
+   ✓ applies every grouping and sorting option  527ms
+ ✓ tests/components/sidebar.test.tsx (29 tests) 1421ms
+ ✓ tests/components/account.test.tsx (92 tests) 1490ms
+ ✓ tests/components/changeRequest.test.tsx (25 tests) 511ms
+ ✓ tests/components/entry.test.tsx (54 tests) 827ms
+ ✓ tests/components/projectScriptEditor.test.tsx (9 tests) 708ms
+ ✓ tests/components/ui/formsPrimitives.test.tsx (30 tests) 266ms
+ ✓ tests/components/question.test.tsx (17 tests) 396ms
+ ✓ tests/components/filesSurface.test.tsx (23 tests) 489ms
+ ✓ tests/components/usage.test.tsx (20 tests) 360ms
+ ✓ tests/components/spritePool.test.tsx (9 tests) 385ms
+ ✓ tests/components/composer.test.tsx (24 tests) 402ms
+ ✓ tests/detentUpdates.test.tsx (14 tests) 289ms
+ ✓ tests/components/diagnosticsLive.test.tsx (12 tests) 294ms
+ ✓ tests/components/workNav.test.tsx (14 tests) 274ms
+ ✓ tests/legacyProjectRoutes.test.tsx (20 tests) 165ms
+ ✓ tests/components/sourceRecovery.test.tsx (7 tests) 280ms
+ ✓ tests/components/handoff.test.tsx (20 tests) 228ms
+ ✓ tests/basePath.test.tsx (38 tests) 337ms
+   ✓ router basepath > base "" resolves client routes inside it  316ms
+ ✓ tests/components/slugSettings.test.tsx (5 tests) 259ms
+ ✓ tests/components/composerBanners.test.tsx (11 tests) 163ms
+ ✓ tests/components/rightPanelWorkspace.test.tsx (3 tests) 215ms
+ ✓ tests/components/ui/primitiveVariants.test.tsx (49 tests) 192ms
+ ✓ tests/components/timeline.test.tsx (39 tests) 219ms
+ ✓ tests/components/executionStrip.test.tsx (48 tests) 95ms
+ ✓ tests/components/keybindings.test.tsx (34 tests) 81ms
+ ✓ tests/components/linkedIssue.test.tsx (4 tests) 194ms
+stderr | tests/components/markdown.test.tsx > Markdown > renders a fenced block with the code chrome, its language and a copy action
+A component suspended inside an `act` scope, but the `act` call was not awaited. When testing React components that depend on asynchronous data, you must await the result:
+
+await act(() => ...)
+
+ ✓ tests/components/markdown.test.tsx (19 tests) 155ms
+ ✓ tests/components/issueAsk.test.tsx (6 tests) 198ms
+ ✓ tests/components/ui/tooltip.test.tsx (9 tests) 140ms
+ ✓ tests/components/issueIntake.test.tsx (6 tests) 205ms
+ ✓ tests/components/ui/switch.test.tsx (5 tests) 72ms
+ ✓ tests/components/headerGitGroup.test.tsx (7 tests) 101ms
+ ✓ tests/components/workspaces.test.tsx (29 tests) 157ms
+ ✓ tests/components/spritesCard.test.tsx (5 tests) 147ms
+ ✓ tests/account.test.ts (38 tests) 131ms
+ ✓ tests/components/issueComposer.test.tsx (10 tests) 145ms
+ ✓ tests/components/ui/entryPrimitives.test.tsx (13 tests) 111ms
+ ✓ tests/components/inlineAction.test.tsx (11 tests) 109ms
+ ✓ tests/components/outputSurface.test.tsx (11 tests) 92ms
+ ✓ tests/components/chatheader.test.tsx (8 tests) 94ms
+ ✓ tests/components/activity.test.tsx (13 tests) 61ms
+ ✓ tests/components/ui/sidebarRail.test.tsx (8 tests) 87ms
+ ✓ tests/components/ui/layoutPrimitives.test.tsx (14 tests) 63ms
+ ✓ tests/components/useViewState.test.ts (10 tests) 24ms
+ ✓ tests/components/support.test.tsx (12 tests) 54ms
+ ✓ tests/components/composerContextStrip.test.tsx (7 tests) 38ms
+ ✓ tests/components/ui/reportPrimitives.test.tsx (4 tests) 42ms
+ ✓ tests/queryCache.test.tsx (11 tests) 31ms
+ ✓ tests/components/contentSecurity.test.tsx (2 tests) 21ms
+ ✓ tests/components/shortcuts.test.ts (29 tests) 12ms
+ ✓ tests/components/updatePill.test.tsx (2 tests) 8ms
+ ✓ tests/components/workViewState.test.ts (31 tests) 6ms
+
+ Test Files  121 passed (121)
+      Tests  2751 passed (2751)
+   Start at  18:24:33
+   Duration  216.12s (transform 8.89s, setup 1.20s, collect 71.76s, tests 114.44s, environment 12.56s, prepare 3.69s)
+
+
+> build
+> vite build
+
+vite v7.3.6 building client environment for production...
+transforming...
+Found 2 warnings while optimizing generated CSS:
+
+Issue #1:
+[2m│ }[22m
+[2m│ @layer base {[22m
+[2m│[22m   ::highlight(t3-assistant-citation) {
+[2m┆[22m               [33m[2m^--[22m 'highlight' is not recognized as a valid pseudo-element. Did you mean ':highlight' (pseudo-class) or is this a typo?[39m
+[2m┆[22m
+[2m│     background-color: var(--primary);[22m
+[2m│     @supports (color: color-mix(in lab, red, red)) {[22m
+
+Issue #2:
+[2m│     }[22m
+[2m│   }[22m
+[2m│[22m   ::highlight(t3-assistant-citation-comment) {
+[2m┆[22m               [33m[2m^--[22m 'highlight' is not recognized as a valid pseudo-element. Did you mean ':highlight' (pseudo-class) or is this a typo?[39m
+[2m┆[22m
+[2m│     background-color: var(--primary);[22m
+[2m│     @supports (color: color-mix(in lab, red, red)) {[22m
+
+
+../../fonts/Geist-Variable.woff2 referenced in ../../fonts/Geist-Variable.woff2 didn't resolve at build time, it will remain unchanged to be resolved at runtime
+
+../../fonts/GeistMono-Variable.woff2 referenced in ../../fonts/GeistMono-Variable.woff2 didn't resolve at build time, it will remain unchanged to be resolved at runtime
+src/components/ui/button.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/select.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/label.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/badge.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/input.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/popover.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/combobox.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/toggle.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/scroll-area.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/toggle-group.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/toast.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/tabs.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/textarea.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/collapsible.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/sheet.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/dialog.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/command.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/calendar.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/alert-dialog.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/menu.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/toastHelpers.ts (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/switch.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/checkbox.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/autocomplete.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/radio-group.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/group.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/draft-input.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/number-field.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/ui/input-group.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+src/components/AnimatedHeight.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.
+✓ 5892 modules transformed.
+rendering chunks...
+computing gzip size...
+../../static/app/conversation/index.html                                                   0.78 kB │ gzip:   0.37 kB
+../../static/app/conversation/assets/worker-cd9331de.js                                  208.22 kB
+../../static/app/conversation/THIRD_PARTY_LICENSES.txt                                   225.62 kB │ gzip:  14.42 kB
+../../static/app/conversation/assets/wasm-cd10bedf.js                                    622.34 kB
+../../static/app/conversation/app.css                                                    402.00 kB │ gzip:  55.20 kB
+../../static/app/conversation/chunks/workspaceTitlebar-fe87b55f.js                         0.11 kB │ gzip:   0.12 kB
+../../static/app/conversation/chunks/lucideDynamicIcon-649cc08e.js                         0.12 kB │ gzip:   0.13 kB
+../../static/app/conversation/chunks/ellipsis-4193a715.js                                  0.21 kB │ gzip:   0.15 kB
+../../static/app/conversation/chunks/history-b15464ef.js                                   0.23 kB │ gzip:   0.19 kB
+../../static/app/conversation/chunks/external-link-31369a92.js                             0.24 kB │ gzip:   0.19 kB
+../../static/app/conversation/chunks/skeleton-c39923f9.js                                  0.35 kB │ gzip:   0.25 kB
+../../static/app/conversation/chunks/diagnosticsQuery-3b0bae11.js                          0.38 kB │ gzip:   0.27 kB
+../../static/app/conversation/chunks/orchestrationTiming-eddf08f0.js                       0.39 kB │ gzip:   0.26 kB
+../../static/app/conversation/chunks/sparkles-b6044141.js                                  0.49 kB │ gzip:   0.27 kB
+../../static/app/conversation/chunks/scroll-text-054cb496.js                               0.57 kB │ gzip:   0.30 kB
+../../static/app/conversation/chunks/WorkspaceBreadcrumb-6e4f1464.js                       0.65 kB │ gzip:   0.34 kB
+../../static/app/conversation/chunks/RunnerStatusDot-35278d9f.js                           0.74 kB │ gzip:   0.42 kB
+../../static/app/conversation/chunks/capacity-042397a7.js                                  0.77 kB │ gzip:   0.44 kB
+../../static/app/conversation/chunks/WorkspacePageHeader-908a6133.js                       0.83 kB │ gzip:   0.41 kB
+../../static/app/conversation/chunks/html-derivative-95e08311.js                           0.90 kB │ gzip:   0.49 kB
+../../static/app/conversation/chunks/routePrefetch-4f51205b.js                             0.91 kB │ gzip:   0.54 kB
+../../static/app/conversation/chunks/reportsQuery-b3c5b934.js                              0.94 kB │ gzip:   0.51 kB
+../../static/app/conversation/chunks/table-3938b4ce.js                                     1.13 kB │ gzip:   0.45 kB
+../../static/app/conversation/chunks/csv-3a0d3612.js                                       1.14 kB │ gzip:   0.37 kB
+../../static/app/conversation/chunks/usageLimits-ce8feb29.js                               1.18 kB │ gzip:   0.61 kB
+../../static/app/conversation/chunks/activityResource-537f154b.js                          1.67 kB │ gzip:   0.86 kB
+../../static/app/conversation/chunks/addon-fit-ae627f12.js                                 1.80 kB │ gzip:   0.82 kB
+../../static/app/conversation/chunks/alert-dialog-3f02e54a.js                              1.81 kB │ gzip:   0.77 kB
+../../static/app/conversation/chunks/metric-tile-c1d2b5c5.js                               1.98 kB │ gzip:   0.82 kB
+../../static/app/conversation/chunks/usageFormat-58ae2d9c.js                               1.99 kB │ gzip:   0.82 kB
+../../static/app/conversation/chunks/issueQuery-259407f8.js                                2.10 kB │ gzip:   0.98 kB
+../../static/app/conversation/chunks/json-fb434b29.js                                      2.82 kB │ gzip:   0.78 kB
+../../static/app/conversation/chunks/toggle-group-3815fb06.js                              2.89 kB │ gzip:   1.20 kB
+../../static/app/conversation/chunks/jsonl-97b20c3f.js                                     3.01 kB │ gzip:   0.79 kB
+../../static/app/conversation/chunks/jsonc-74f491a5.js                                     3.11 kB │ gzip:   0.80 kB
+../../static/app/conversation/chunks/json5-3e41fab4.js                                     3.25 kB │ gzip:   0.83 kB
+../../static/app/conversation/chunks/WorkTopBar-549e2dae.js                                3.45 kB │ gzip:   1.27 kB
+../../static/app/conversation/chunks/ChangesPage-25e66481.js                               3.63 kB │ gzip:   1.53 kB
+../../static/app/conversation/chunks/glsl-72802d50.js                                      3.63 kB │ gzip:   1.41 kB
+../../static/app/conversation/chunks/hurl-8e40e1be.js                                      3.65 kB │ gzip:   1.16 kB
+../../static/app/conversation/chunks/CompositeRoot-a5857c24.js                             3.72 kB │ gzip:   1.72 kB
+../../static/app/conversation/chunks/CapacityPanel-4404f049.js                             3.81 kB │ gzip:   1.51 kB
+../../static/app/conversation/chunks/toggle-3320a352.js                                    3.87 kB │ gzip:   1.50 kB
+../../static/app/conversation/chunks/http-68892a43.js                                      4.55 kB │ gzip:   1.11 kB
+../../static/app/conversation/chunks/planUsage-bb187c94.js                                 4.69 kB │ gzip:   1.99 kB
+../../static/app/conversation/chunks/wgsl-23a3bea2.js                                      5.14 kB │ gzip:   1.39 kB
+../../static/app/conversation/chunks/IssueAsk-bdf451dd.js                                  5.35 kB │ gzip:   2.36 kB
+../../static/app/conversation/chunks/usageProviders-c5623052.js                            5.38 kB │ gzip:   2.67 kB
+../../static/app/conversation/chunks/xml-23e9af7d.js                                       5.38 kB │ gzip:   1.21 kB
+../../static/app/conversation/chunks/empty-0659e321.js                                     5.48 kB │ gzip:   1.74 kB
+../../static/app/conversation/chunks/jinja-1e7266c2.js                                     5.69 kB │ gzip:   1.39 kB
+../../static/app/conversation/chunks/min-dark-d8ea3e44.js                                  6.29 kB │ gzip:   1.71 kB
+../../static/app/conversation/chunks/checkbox-0e2900fa.js                                  6.41 kB │ gzip:   2.90 kB
+../../static/app/conversation/chunks/postcss-9cbdcc7d.js                                   6.42 kB │ gzip:   1.91 kB
+../../static/app/conversation/chunks/red-3d7efc6c.js                                       6.42 kB │ gzip:   1.63 kB
+../../static/app/conversation/chunks/solarized-light-b612bfca.js                           6.63 kB │ gzip:   1.76 kB
+../../static/app/conversation/chunks/TabsList-3229551c.js                                  6.72 kB │ gzip:   2.75 kB
+../../static/app/conversation/chunks/r-15db78c6.js                                         6.74 kB │ gzip:   1.84 kB
+../../static/app/conversation/chunks/collapsible-b15bce3c.js                               6.89 kB │ gzip:   2.90 kB
+../../static/app/conversation/chunks/chart-6b8b0694.js                                     6.96 kB │ gzip:   2.93 kB
+../../static/app/conversation/chunks/min-light-22f7c862.js                                 6.97 kB │ gzip:   1.89 kB
+../../static/app/conversation/chunks/solarized-dark-abc8d593.js                            7.00 kB │ gzip:   1.83 kB
+../../static/app/conversation/chunks/regexp-e3211b61.js                                    7.99 kB │ gzip:   1.42 kB
+../../static/app/conversation/chunks/monokai-0a400a95.js                                   8.03 kB │ gzip:   1.94 kB
+../../static/app/conversation/chunks/haml-e5f07f56.js                                      8.26 kB │ gzip:   1.81 kB
+../../static/app/conversation/chunks/vue-html-d7d47e1b.js                                  8.47 kB │ gzip:   1.68 kB
+../../static/app/conversation/chunks/horizon-7d7536b3.js                                   8.78 kB │ gzip:   1.96 kB
+../../static/app/conversation/chunks/horizon-bright-9aff3d34.js                            8.79 kB │ gzip:   1.97 kB
+../../static/app/conversation/chunks/andromeeda-0825276e.js                                9.02 kB │ gzip:   2.36 kB
+../../static/app/conversation/chunks/dark-plus-dc5ab0c3.js                                 9.10 kB │ gzip:   2.10 kB
+../../static/app/conversation/chunks/slack-dark-9dd03364.js                                9.12 kB │ gzip:   1.97 kB
+../../static/app/conversation/chunks/smithy-58c37287.js                                    9.13 kB │ gzip:   1.53 kB
+../../static/app/conversation/chunks/sass-2614cadf.js                                      9.29 kB │ gzip:   2.49 kB
+../../static/app/conversation/chunks/plastic-b31717de.js                                   9.30 kB │ gzip:   1.98 kB
+../../static/app/conversation/chunks/slack-ochin-0686fa31.js                               9.43 kB │ gzip:   2.10 kB
+../../static/app/conversation/chunks/jison-224d4cd7.js                                     9.69 kB │ gzip:   1.85 kB
+../../static/app/conversation/chunks/light-plus-01a51dda.js                                9.94 kB │ gzip:   2.27 kB
+../../static/app/conversation/chunks/yaml-5fee0572.js                                     10.51 kB │ gzip:   2.27 kB
+../../static/app/conversation/chunks/IssueCard-70d4751b.js                                10.72 kB │ gzip:   3.93 kB
+../../static/app/conversation/chunks/github-light-452dc73a.js                             11.18 kB │ gzip:   2.51 kB
+../../static/app/conversation/chunks/github-dark-ebeae7f8.js                              11.41 kB │ gzip:   2.55 kB
+../../static/app/conversation/chunks/laserwave-37deba33.js                                11.50 kB │ gzip:   2.58 kB
+../../static/app/conversation/chunks/wasm-d3e3e002.js                                     12.01 kB │ gzip:   2.19 kB
+../../static/app/conversation/chunks/handlebars-2f6745bf.js                               12.15 kB │ gzip:   2.37 kB
+../../static/app/conversation/chunks/vesper-e10e3a42.js                                   12.73 kB │ gzip:   1.98 kB
+../../static/app/conversation/chunks/vitesse-light-308f70b2.js                            13.62 kB │ gzip:   3.04 kB
+../../static/app/conversation/chunks/aurora-x-902226c9.js                                 13.66 kB │ gzip:   2.28 kB
+../../static/app/conversation/chunks/vitesse-black-2687ea8d.js                            13.68 kB │ gzip:   3.06 kB
+../../static/app/conversation/chunks/vitesse-dark-c5b03d09.js                             13.76 kB │ gzip:   3.06 kB
+../../static/app/conversation/chunks/pug-90f120c6.js                                      13.84 kB │ gzip:   2.58 kB
+../../static/app/conversation/chunks/synthwave-84-cf9149df.js                             14.04 kB │ gzip:   2.87 kB
+../../static/app/conversation/chunks/github-light-default-7230acd4.js                     14.16 kB │ gzip:   3.04 kB
+../../static/app/conversation/chunks/github-light-high-contrast-c3f5487a.js               14.28 kB │ gzip:   3.02 kB
+../../static/app/conversation/chunks/github-dark-dimmed-f1b43f6e.js                       14.43 kB │ gzip:   3.13 kB
+../../static/app/conversation/chunks/github-dark-default-7e608625.js                      14.44 kB │ gzip:   3.13 kB
+../../static/app/conversation/chunks/github-dark-high-contrast-3b79c377.js                14.60 kB │ gzip:   3.09 kB
+../../static/app/conversation/chunks/ActivityPage-c486ff2e.js                             15.22 kB │ gzip:   5.37 kB
+../../static/app/conversation/chunks/ChangeRequestPage-d62ee0ef.js                        15.72 kB │ gzip:   5.13 kB
+../../static/app/conversation/chunks/ts-tags-7e2483cf.js                                  16.57 kB │ gzip:   2.06 kB
+../../static/app/conversation/chunks/DiagnosticsPage-80d981e0.js                          16.59 kB │ gzip:   6.03 kB
+../../static/app/conversation/chunks/kanagawa-wave-bbea1b2a.js                            17.12 kB │ gzip:   2.93 kB
+../../static/app/conversation/chunks/kanagawa-lotus-a07128e3.js                           17.12 kB │ gzip:   2.93 kB
+../../static/app/conversation/chunks/kanagawa-dragon-e0ec9bb0.js                          17.12 kB │ gzip:   2.95 kB
+../../static/app/conversation/chunks/graphql-bf3f02bf.js                                  18.00 kB │ gzip:   2.52 kB
+../../static/app/conversation/chunks/svelte-084db575.js                                   18.24 kB │ gzip:   3.13 kB
+../../static/app/conversation/chunks/material-theme-f27c83fc.js                           18.62 kB │ gzip:   3.11 kB
+../../static/app/conversation/chunks/material-theme-darker-3c70e60a.js                    18.63 kB │ gzip:   3.11 kB
+../../static/app/conversation/chunks/material-theme-ocean-49ae0eda.js                     18.63 kB │ gzip:   3.14 kB
+../../static/app/conversation/chunks/material-theme-lighter-45f756d2.js                   18.63 kB │ gzip:   3.11 kB
+../../static/app/conversation/chunks/material-theme-palenight-9462bfb3.js                 18.64 kB │ gzip:   3.13 kB
+../../static/app/conversation/chunks/ayu-dark-360e23c9.js                                 20.08 kB │ gzip:   3.94 kB
+../../static/app/conversation/chunks/ayu-mirage-329fbbc2.js                               20.09 kB │ gzip:   3.94 kB
+../../static/app/conversation/chunks/ayu-light-06439344.js                                20.15 kB │ gzip:   3.93 kB
+../../static/app/conversation/chunks/mdc-508cadf9.js                                      20.18 kB │ gzip:   6.81 kB
+../../static/app/conversation/chunks/snazzy-light-b4e48e52.js                             20.77 kB │ gzip:   3.83 kB
+../../static/app/conversation/chunks/dracula-4dc0b5c6.js                                  21.07 kB │ gzip:   4.00 kB
+../../static/app/conversation/chunks/dracula-soft-976eecd8.js                             21.08 kB │ gzip:   4.04 kB
+../../static/app/conversation/chunks/wit-192c1f40.js                                      21.47 kB │ gzip:   2.89 kB
+../../static/app/conversation/chunks/rose-pine-5223d410.js                                21.74 kB │ gzip:   3.88 kB
+../../static/app/conversation/chunks/rose-pine-moon-93ea4888.js                           21.75 kB │ gzip:   3.90 kB
+../../static/app/conversation/chunks/rose-pine-dawn-93c2ae7c.js                           21.75 kB │ gzip:   3.90 kB
+../../static/app/conversation/chunks/gruvbox-dark-hard-8277b640.js                        22.63 kB │ gzip:   4.18 kB
+../../static/app/conversation/chunks/gruvbox-dark-soft-7671101a.js                        22.63 kB │ gzip:   4.17 kB
+../../static/app/conversation/chunks/gruvbox-light-hard-fa312006.js                       22.64 kB │ gzip:   4.18 kB
+../../static/app/conversation/chunks/gruvbox-light-soft-6b2fe762.js                       22.64 kB │ gzip:   4.18 kB
+../../static/app/conversation/chunks/gruvbox-dark-medium-52b4753a.js                      22.64 kB │ gzip:   4.18 kB
+../../static/app/conversation/chunks/gruvbox-light-medium-045d51a1.js                     22.64 kB │ gzip:   4.18 kB
+../../static/app/conversation/chunks/sql-cd92a59d.js                                      23.43 kB │ gzip:   7.42 kB
+../../static/app/conversation/chunks/astro-38690d65.js                                    24.01 kB │ gzip:   7.54 kB
+../../static/app/conversation/chunks/angular-html-a1d6b756.js                             24.29 kB │ gzip:   4.01 kB
+../../static/app/conversation/chunks/vue-30208ea5.js                                      24.96 kB │ gzip:   3.03 kB
+../../static/app/conversation/chunks/one-light-ba2b76c3.js                                25.30 kB │ gzip:   3.67 kB
+../../static/app/conversation/chunks/marko-07bf56c0.js                                    25.48 kB │ gzip:   3.59 kB
+../../static/app/conversation/chunks/night-owl-light-41348ad0.js                          25.90 kB │ gzip:   4.26 kB
+../../static/app/conversation/chunks/nord-04fad416.js                                     26.72 kB │ gzip:   4.40 kB
+../../static/app/conversation/chunks/UsagePage-821c5511.js                                27.03 kB │ gzip:   7.79 kB
+../../static/app/conversation/chunks/scss-d4de1864.js                                     27.20 kB │ gzip:   4.20 kB
+../../static/app/conversation/chunks/java-69c882ee.js                                     27.22 kB │ gzip:   4.26 kB
+../../static/app/conversation/chunks/coffee-6b7a2e1f.js                                   27.42 kB │ gzip:   6.35 kB
+../../static/app/conversation/chunks/WorkRoutes-8503fd22.js                               28.49 kB │ gzip:   9.81 kB
+../../static/app/conversation/chunks/night-owl-18016e88.js                                28.91 kB │ gzip:   5.16 kB
+../../static/app/conversation/chunks/pierre-dark-4234605e.js                              30.55 kB │ gzip:   4.76 kB
+../../static/app/conversation/chunks/pierre-light-0fff10ab.js                             30.55 kB │ gzip:   4.75 kB
+../../static/app/conversation/chunks/pierre-dark-soft-e5a1ab8c.js                         30.56 kB │ gzip:   4.79 kB
+../../static/app/conversation/chunks/pierre-light-soft-882cfcff.js                        30.56 kB │ gzip:   4.76 kB
+../../static/app/conversation/chunks/pierre-dark-tritanopia-5ee2f044.js                   30.57 kB │ gzip:   4.70 kB
+../../static/app/conversation/chunks/pierre-light-tritanopia-acee6254.js                  30.57 kB │ gzip:   4.70 kB
+../../static/app/conversation/chunks/pierre-dark-protanopia-deuteranopia-35f67385.js      30.60 kB │ gzip:   4.78 kB
+../../static/app/conversation/chunks/pierre-light-protanopia-deuteranopia-ebde3944.js     30.60 kB │ gzip:   4.73 kB
+../../static/app/conversation/chunks/stylus-a8db80e9.js                                   31.07 kB │ gzip:   7.99 kB
+../../static/app/conversation/chunks/julia-a0e2ef50.js                                    31.08 kB │ gzip:   4.33 kB
+../../static/app/conversation/chunks/poimandres-a18fb2c7.js                               33.49 kB │ gzip:   5.50 kB
+../../static/app/conversation/chunks/one-dark-pro-4c5685aa.js                             33.79 kB │ gzip:   5.52 kB
+../../static/app/conversation/chunks/houston-5b12bc73.js                                  35.42 kB │ gzip:   5.78 kB
+../../static/app/conversation/chunks/tokyo-night-475297c5.js                              35.67 kB │ gzip:   6.24 kB
+../../static/app/conversation/chunks/shellscript-acebf4ab.js                              41.48 kB │ gzip:   6.09 kB
+../../static/app/conversation/chunks/pierre-dark-vibrant-8e77b5ec.js                      44.76 kB │ gzip:   5.33 kB
+../../static/app/conversation/chunks/pierre-light-vibrant-cf2f7bcf.js                     44.76 kB │ gzip:   5.31 kB
+../../static/app/conversation/chunks/FirstRun-3244be3e.js                                 46.30 kB │ gzip:  15.69 kB
+../../static/app/conversation/chunks/css-12337b84.js                                      49.04 kB │ gzip:  11.86 kB
+../../static/app/conversation/chunks/imba-82357896.js                                     49.93 kB │ gzip:   9.46 kB
+../../static/app/conversation/chunks/catppuccin-mocha-3ff2c663.js                         50.85 kB │ gzip:   8.49 kB
+../../static/app/conversation/chunks/catppuccin-latte-9a48f275.js                         50.85 kB │ gzip:   8.49 kB
+../../static/app/conversation/chunks/catppuccin-frappe-28e43d66.js                        50.85 kB │ gzip:   8.51 kB
+../../static/app/conversation/chunks/catppuccin-macchiato-370cbee9.js                     50.86 kB │ gzip:   8.50 kB
+../../static/app/conversation/chunks/everforest-dark-fffc9ca4.js                          53.75 kB │ gzip:   8.42 kB
+../../static/app/conversation/chunks/everforest-light-89b50e8a.js                         53.75 kB │ gzip:   8.42 kB
+../../static/app/conversation/chunks/html-7d2cf29d.js                                     57.25 kB │ gzip:  11.69 kB
+../../static/app/conversation/chunks/markdown-6c529ca3.js                                 59.34 kB │ gzip:   5.64 kB
+../../static/app/conversation/chunks/IssuePage-a8c86a60.js                                69.15 kB │ gzip:  21.34 kB
+../../static/app/conversation/chunks/python-983cc133.js                                   69.95 kB │ gzip:   9.13 kB
+../../static/app/conversation/chunks/c-c772f7dd.js                                        72.11 kB │ gzip:  10.51 kB
+../../static/app/conversation/chunks/router-511472ad.js                                   93.78 kB │ gzip:  27.27 kB
+../../static/app/conversation/chunks/less-5065e2bc.js                                     97.63 kB │ gzip:  14.70 kB
+../../static/app/conversation/chunks/blade-8df0d29d.js                                   104.98 kB │ gzip:  28.20 kB
+../../static/app/conversation/chunks/php-226f8a6d.js                                     113.09 kB │ gzip:  28.74 kB
+../../static/app/conversation/chunks/ReportsPage-5d27b835.js                             119.62 kB │ gzip:  36.32 kB
+../../static/app/conversation/chunks/mdx-1132a16e.js                                     136.11 kB │ gzip:  23.35 kB
+../../static/app/conversation/chunks/javascript-def6328c.js                              174.83 kB │ gzip:  16.51 kB
+../../static/app/conversation/chunks/tsx-76eda050.js                                     175.54 kB │ gzip:  16.51 kB
+../../static/app/conversation/chunks/jsx-2c461e88.js                                     177.79 kB │ gzip:  16.61 kB
+../../static/app/conversation/chunks/typescript-b521ffa4.js                              181.08 kB │ gzip:  16.04 kB
+../../static/app/conversation/chunks/angular-ts-7b838c97.js                              183.82 kB │ gzip:  16.63 kB
+../../static/app/conversation/chunks/vue-vine-672ff99f.js                                190.05 kB │ gzip:  17.98 kB
+../../static/app/conversation/chunks/routes.account.screens-cdd194a9.js                  205.55 kB │ gzip:  58.80 kB
+../../static/app/conversation/chunks/xterm-fcaa25a8.js                                   289.66 kB │ gzip:  72.12 kB
+../../static/app/conversation/chunks/DiffSurface-6798ee84.js                             589.44 kB │ gzip: 169.61 kB
+../../static/app/conversation/chunks/wasm-cd10bedf.js                                    622.34 kB │ gzip: 230.29 kB
+../../static/app/conversation/chunks/cpp-fc3b39d4.js                                     785.49 kB │ gzip:  53.19 kB
+../../static/app/conversation/chunks/ChatRoutes-209602b3.js                            1,249.21 kB │ gzip: 382.23 kB
+../../static/app/conversation/app.js                                                   1,419.30 kB │ gzip: 467.14 kB
+
+(!) Some chunks are larger than 700 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 6.98s
+app.js: 1432028 B, brotli 387925 B, gzip 470853 B (budget brotli 383665 B, gzip 465567 B)
+detent-check-evidence: {"scope":"app","command":"make check-app","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:24:18Z","finished_at":"2026-10-14T23:28:22Z","duration_ns":244000000000,"duration_resolution_ns":1000000000}
+go run ./internal/config/cmd/configdoc -root .
+go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 diff -f "sqlc/sqlc.yaml"
+detent-check-evidence: {"scope":"generated","command":"make check-generated","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:28:22Z","finished_at":"2026-10-14T23:28:31Z","duration_ns":9000000000,"duration_resolution_ns":1000000000}
+go vet -p 1 ./...
+Installing github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+ok  	github.com/digitaldrywood/detent	8.273s
+GOTOOLCHAIN="go1.26.9" "/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1034-9eaafad90ceb/tmp/tools/golangci-lint/v2.14.0/go1.26.9/golangci-lint" run --allow-parallel-runners --concurrency=1 --timeout=15m
+detent-check-evidence: {"scope":"build","command":"go build -p 1 ./...","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:28:31Z","finished_at":"2026-10-14T23:29:02Z","duration_ns":31000000000,"duration_resolution_ns":1000000000}
+ok  	github.com/digitaldrywood/detent/cmd/detent	2.193s
+?   	github.com/digitaldrywood/detent/docs/templates	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/activehours	(cached)
+ok  	github.com/digitaldrywood/detent/internal/activity	0.445s
+ok  	github.com/digitaldrywood/detent/internal/admission	0.341s
+?   	github.com/digitaldrywood/detent/internal/admission/model	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/agentidentity	(cached)
+ok  	github.com/digitaldrywood/detent/internal/agentoverride	(cached)
+ok  	github.com/digitaldrywood/detent/internal/aidebug	(cached)
+ok  	github.com/digitaldrywood/detent/internal/apikey	(cached)
+ok  	github.com/digitaldrywood/detent/internal/artifact	0.409s
+ok  	github.com/digitaldrywood/detent/internal/attachment	1.826s
+ok  	github.com/digitaldrywood/detent/internal/auth	(cached)
+ok  	github.com/digitaldrywood/detent/internal/backendcapacity	(cached)
+ok  	github.com/digitaldrywood/detent/internal/billing	(cached)
+ok  	github.com/digitaldrywood/detent/internal/boardsnapshot	0.327s
+ok  	github.com/digitaldrywood/detent/internal/budget	0.264s
+ok  	github.com/digitaldrywood/detent/internal/buildinfo	(cached)
+ok  	github.com/digitaldrywood/detent/internal/changerequest	(cached)
+detent-check-evidence: {"scope":"vet","command":"make vet TEST_PROCS=1","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:28:31Z","finished_at":"2026-10-14T23:29:12Z","duration_ns":41000000000,"duration_resolution_ns":1000000000}
+ok  	github.com/digitaldrywood/detent/internal/chat	0.285s
+ok  	github.com/digitaldrywood/detent/internal/citrigger	0.528s
+ok  	github.com/digitaldrywood/detent/internal/claudecode	0.387s
+0 issues.
+detent-check-evidence: {"scope":"lint","command":"make lint TEST_PROCS=1","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:28:31Z","finished_at":"2026-10-14T23:29:19Z","duration_ns":48000000000,"duration_resolution_ns":1000000000}
+ok  	github.com/digitaldrywood/detent/internal/cli	36.279s
+ok  	github.com/digitaldrywood/detent/internal/cloudassert	(cached)
+ok  	github.com/digitaldrywood/detent/internal/cloudentry	26.115s
+ok  	github.com/digitaldrywood/detent/internal/cloudorigin	(cached)
+ok  	github.com/digitaldrywood/detent/internal/codex	0.580s
+ok  	github.com/digitaldrywood/detent/internal/compute	(cached)
+ok  	github.com/digitaldrywood/detent/internal/config	0.453s
+?   	github.com/digitaldrywood/detent/internal/config/cmd/configdoc	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/config/configdoc	0.210s
+ok  	github.com/digitaldrywood/detent/internal/config/global	0.317s
+ok  	github.com/digitaldrywood/detent/internal/config/watcher	0.665s
+ok  	github.com/digitaldrywood/detent/internal/connector	0.232s
+ok  	github.com/digitaldrywood/detent/internal/connector/factory	(cached)
+ok  	github.com/digitaldrywood/detent/internal/connector/github	0.880s
+ok  	github.com/digitaldrywood/detent/internal/connector/githublocal	0.614s
+ok  	github.com/digitaldrywood/detent/internal/connector/linear	(cached)
+ok  	github.com/digitaldrywood/detent/internal/connector/local	0.283s
+ok  	github.com/digitaldrywood/detent/internal/connector/memory	(cached)
+ok  	github.com/digitaldrywood/detent/internal/conversation	(cached)
+ok  	github.com/digitaldrywood/detent/internal/coordination	(cached)
+ok  	github.com/digitaldrywood/detent/internal/dependencyline	0.193s
+ok  	github.com/digitaldrywood/detent/internal/devruntime	0.323s
+?   	github.com/digitaldrywood/detent/internal/diffbody	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/dispatchpriority	(cached)
+ok  	github.com/digitaldrywood/detent/internal/displayorder	(cached)
+?   	github.com/digitaldrywood/detent/internal/displayorder/testfixture	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/efficiency	(cached)
+ok  	github.com/digitaldrywood/detent/internal/entryauthority	(cached)
+ok  	github.com/digitaldrywood/detent/internal/explain	(cached)
+ok  	github.com/digitaldrywood/detent/internal/forgeavailability	(cached)
+ok  	github.com/digitaldrywood/detent/internal/gate	(cached)
+ok  	github.com/digitaldrywood/detent/internal/genkitbackend	0.362s
+ok  	github.com/digitaldrywood/detent/internal/gobudget	0.232s
+ok  	github.com/digitaldrywood/detent/internal/healthnotify	(cached)
+ok  	github.com/digitaldrywood/detent/internal/hostmetrics	0.188s
+ok  	github.com/digitaldrywood/detent/internal/hostpressure	(cached)
+ok  	github.com/digitaldrywood/detent/internal/hub	(cached)
+ok  	github.com/digitaldrywood/detent/internal/hubclient	20.157s
+ok  	github.com/digitaldrywood/detent/internal/hubgithub	0.557s
+ok  	github.com/digitaldrywood/detent/internal/hubsecrets	(cached)
+ok  	github.com/digitaldrywood/detent/internal/hubserver	8.889s
+ok  	github.com/digitaldrywood/detent/internal/instancelock	(cached)
+ok  	github.com/digitaldrywood/detent/internal/intake	0.241s
+ok  	github.com/digitaldrywood/detent/internal/invariants	0.227s
+ok  	github.com/digitaldrywood/detent/internal/isolation	(cached)
+?   	github.com/digitaldrywood/detent/internal/issuecontract	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/issueorigin	(cached)
+ok  	github.com/digitaldrywood/detent/internal/kanban	(cached)
+ok  	github.com/digitaldrywood/detent/internal/knowledge	0.188s
+ok  	github.com/digitaldrywood/detent/internal/lessons	0.197s
+?   	github.com/digitaldrywood/detent/internal/logging	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/markdownfence	(cached)
+ok  	github.com/digitaldrywood/detent/internal/mcp	(cached)
+ok  	github.com/digitaldrywood/detent/internal/mutation	(cached)
+ok  	github.com/digitaldrywood/detent/internal/notify	(cached)
+ok  	github.com/digitaldrywood/detent/internal/observability	(cached)
+ok  	github.com/digitaldrywood/detent/internal/onboarding	(cached)
+ok  	github.com/digitaldrywood/detent/internal/operations	(cached)
+ok  	github.com/digitaldrywood/detent/internal/operatoradmin	(cached)
+ok  	github.com/digitaldrywood/detent/internal/operatorskill	0.830s
+ok  	github.com/digitaldrywood/detent/internal/operatortool	(cached)
+ok  	github.com/digitaldrywood/detent/internal/orchestrator	3.753s
+ok  	github.com/digitaldrywood/detent/internal/pathsafe	0.185s
+ok  	github.com/digitaldrywood/detent/internal/pause	(cached)
+ok  	github.com/digitaldrywood/detent/internal/piagent	(cached)
+?   	github.com/digitaldrywood/detent/internal/platformusers	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/policy	(cached)
+ok  	github.com/digitaldrywood/detent/internal/procgroup	0.190s
+ok  	github.com/digitaldrywood/detent/internal/procstart	0.294s
+ok  	github.com/digitaldrywood/detent/internal/profiling	0.305s
+ok  	github.com/digitaldrywood/detent/internal/project	3.572s
+ok  	github.com/digitaldrywood/detent/internal/projectcolor	(cached)
+?   	github.com/digitaldrywood/detent/internal/projectsettings	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/provenance	(cached)
+ok  	github.com/digitaldrywood/detent/internal/providercapacity	0.196s
+ok  	github.com/digitaldrywood/detent/internal/publication	(cached)
+?   	github.com/digitaldrywood/detent/internal/readableurl	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/release	(cached)
+ok  	github.com/digitaldrywood/detent/internal/releaseprovenance	(cached)
+ok  	github.com/digitaldrywood/detent/internal/retro	(cached)
+ok  	github.com/digitaldrywood/detent/internal/reviewseverity	(cached)
+ok  	github.com/digitaldrywood/detent/internal/routine	0.232s
+?   	github.com/digitaldrywood/detent/internal/routine/model	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/runner	129.077s
+ok  	github.com/digitaldrywood/detent/internal/runnerauth	0.370s
+ok  	github.com/digitaldrywood/detent/internal/runtimeoutput	(cached)
+ok  	github.com/digitaldrywood/detent/internal/schedulehealth	(cached)
+ok  	github.com/digitaldrywood/detent/internal/scheduleowner	(cached)
+ok  	github.com/digitaldrywood/detent/internal/scheduler	(cached)
+ok  	github.com/digitaldrywood/detent/internal/securityaudit	(cached)
+ok  	github.com/digitaldrywood/detent/internal/selector	(cached)
+ok  	github.com/digitaldrywood/detent/internal/service	1.208s
+ok  	github.com/digitaldrywood/detent/internal/serviceapi	(cached)
+ok  	github.com/digitaldrywood/detent/internal/shadow	(cached)
+ok  	github.com/digitaldrywood/detent/internal/shell	1.345s
+ok  	github.com/digitaldrywood/detent/internal/shutdown	(cached)
+ok  	github.com/digitaldrywood/detent/internal/skillinstall	0.841s
+ok  	github.com/digitaldrywood/detent/internal/skills	0.714s
+ok  	github.com/digitaldrywood/detent/internal/staleness	(cached)
+ok  	github.com/digitaldrywood/detent/internal/staticasset	(cached)
+ok  	github.com/digitaldrywood/detent/internal/statuspage	(cached)
+ok  	github.com/digitaldrywood/detent/internal/store	1.916s
+?   	github.com/digitaldrywood/detent/internal/store/sqlc	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/store/storetest	(cached)
+ok  	github.com/digitaldrywood/detent/internal/telemetry	(cached)
+ok  	github.com/digitaldrywood/detent/internal/testenv	0.487s
+ok  	github.com/digitaldrywood/detent/internal/tmuxstatus	(cached)
+ok  	github.com/digitaldrywood/detent/internal/toolcache	0.551s
+ok  	github.com/digitaldrywood/detent/internal/tracker	(cached)
+ok  	github.com/digitaldrywood/detent/internal/tui	0.954s
+ok  	github.com/digitaldrywood/detent/internal/update	3.844s
+?   	github.com/digitaldrywood/detent/internal/usagecost	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/web	5.197s
+ok  	github.com/digitaldrywood/detent/internal/web/chart	(cached)
+ok  	github.com/digitaldrywood/detent/internal/web/demofixtures	(cached)
+ok  	github.com/digitaldrywood/detent/internal/web/templates	0.474s
+?   	github.com/digitaldrywood/detent/internal/web/ui/components/button	[no test files]
+?   	github.com/digitaldrywood/detent/internal/web/ui/components/dialog	[no test files]
+?   	github.com/digitaldrywood/detent/internal/web/ui/components/icon	[no test files]
+?   	github.com/digitaldrywood/detent/internal/web/ui/components/sheet	[no test files]
+?   	github.com/digitaldrywood/detent/internal/web/ui/components/sidebar	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/web/ui/primitives	(cached)
+?   	github.com/digitaldrywood/detent/internal/web/ui/utils	[no test files]
+ok  	github.com/digitaldrywood/detent/internal/workflowmetrics	(cached)
+ok  	github.com/digitaldrywood/detent/internal/workitem	0.274s
+ok  	github.com/digitaldrywood/detent/internal/workload	(cached)
+ok  	github.com/digitaldrywood/detent/internal/workpad	(cached)
+ok  	github.com/digitaldrywood/detent/internal/workspace	0.779s
+ok  	github.com/digitaldrywood/detent/internal/workspaceexec	0.201s
+ok  	github.com/digitaldrywood/detent/internal/workspacefiles	0.756s
+ok  	github.com/digitaldrywood/detent/internal/workspacegit	(cached)
+ok  	github.com/digitaldrywood/detent/internal/workspacerunner	0.484s
+ok  	github.com/digitaldrywood/detent/internal/workspacesession	(cached)
+ok  	github.com/digitaldrywood/detent/internal/workspaceterminal	0.316s
+ok  	github.com/digitaldrywood/detent/tools/checklock	0.424s
+ok  	github.com/digitaldrywood/detent/tools/cifailure	5.605s
+ok  	github.com/digitaldrywood/detent/tools/covermerge	0.196s
+ok  	github.com/digitaldrywood/detent/tools/invariantcheck	0.213s
+ok  	github.com/digitaldrywood/detent/tools/migrationcheck	0.312s
+ok  	github.com/digitaldrywood/detent/tools/releaseprovenance	1.375s
+ok  	github.com/digitaldrywood/detent/tools/testgate	0.171s
+detent-check-evidence: {"scope":"unit-short","command":"env -u DETENT_API_TOKEN go test -short -p 1 -timeout=10m ./...","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:28:31Z","finished_at":"2026-10-14T23:34:29Z","duration_ns":358000000000,"duration_resolution_ns":1000000000}
+Invariant test references verified
+detent-check-evidence: {"scope":"invariant-manifest","command":"go run -p 4 ./tools/invariantcheck -check-manifest","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:34:29Z","finished_at":"2026-10-14T23:34:29Z","duration_ns":0,"duration_resolution_ns":1000000000}
+ok  	github.com/digitaldrywood/detent/internal/invariants	5.475s
+detent-check-evidence: {"scope":"invariants","command":"env -u DETENT_API_TOKEN go test -p 4 -timeout=60s ./internal/invariants","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:34:29Z","finished_at":"2026-10-14T23:34:36Z","duration_ns":7000000000,"duration_resolution_ns":1000000000}
+go run ./tools/migrationcheck
+Migration versions are unique within each schema and new Hub/store filenames use UTC YYYYMMDDHHMMSS_name.sql timestamps.
+detent-check-evidence: {"scope":"migrations","command":"make check-migrations","head_sha":"cae326adf2d6d295cc05949e488c8f173acdd957","tree_sha":"","environment":{"os":"darwin","architecture":"arm64","go_version":"go1.26.9"},"exit_code":0,"started_at":"2026-10-14T23:34:36Z","finished_at":"2026-10-14T23:34:36Z","duration_ns":0,"duration_resolution_ns":1000000000}
+Landing checks passed.
+check-land finished: exit=0 wall=618s
