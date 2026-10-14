@@ -505,7 +505,7 @@ func TestRunnerSuggestedLimit(t *testing.T) {
 			if i == 17 {
 				h.DiskFreeMinBytes = 0
 			}
-		}), "lower", 6, []string{"CPU stayed at 90% or more in 11 of 91 busy hours.", "Memory pressure or growing swap in 8 of 91 busy hours.", "Free disk fell to 0.0 GB on Oct 11."}},
+		}), "lower", 6, []string{"CPU stayed at 90% or more for 2+ hours running in 11 of 91 busy hours.", "Memory pressure or growing swap in 8 of 91 busy hours.", "Free disk fell to 0.0 GB on Oct 11."}},
 		{"memory pressure alone lowers by one without a clean level", "UTC", 8, hostHours(48, func(i int, h *recommendationHour) {
 			h.Slots = 8
 			if i%4 == 0 {

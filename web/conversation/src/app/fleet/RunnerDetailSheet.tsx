@@ -156,9 +156,9 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                   </div>
                 ) : <p>Jobs at once: {draft.capacity_limit}</p>}
                 <p className="text-xs text-muted-foreground">The runner reports room for {runner.reported_capacity}. The lower of the two wins, and runners on the same machine share its slots. 0 stops new work.</p>
-                {suggestion && suggestion.direction !== "hold" ? <SuggestedLimitBox suggestion={suggestion} {...(canEdit ? { onUse: (limit: number) => update({ capacity_limit: limit }) } : {})} /> : null}
+                {suggestion ? <SuggestedLimitBox suggestion={suggestion} draftLimit={draft.capacity_limit} {...(canEdit ? { onUse: (limit: number) => update({ capacity_limit: limit }) } : {})} /> : null}
               </Section>
-              {loadHostHistory ? <HostLoad runnerId={runner.id} load={loadHostHistory} {...(now !== undefined ? { now } : {})} /> : null}
+              {loadHostHistory ? <HostLoad runnerId={runner.id} load={loadHostHistory} timezone={(runner.routing ?? runner).availability?.timezone || "UTC"} /> : null}
               <Section title="Allowed projects">
                 {canEdit ? <NativeSelect aria-label="Runner scope" disabled={runner.can_edit_projects !== true && !(runner.can_convert_scope === true && savedRouting.scope !== "organization")} value={draft.scope ?? "projects"} onValueChange={(value) => update({ scope: value as "organization" | "projects", project_ids: value === "organization" ? [] : draft.project_ids })} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} /> : null}
                 {draft.scope === "organization" ? <div className="space-y-2">

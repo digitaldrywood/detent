@@ -420,7 +420,7 @@ const SEED_RUNNERS: RunnerEligibilityRow[] = [
 ];
 
 const MOCK_SUGGESTIONS: Record<string, unknown> = {
-  rnr_mock: { limit: 1, current: 2, direction: "lower", hours_covered: 91, saturated_hours: 19, reasons: ["CPU stayed at 90% or more in 11 of 91 busy hours.", "Memory pressure or growing swap in 8 of 91 busy hours.", "Free disk fell to 0.0 GB on Oct 11."] },
+  rnr_mock: { limit: 1, current: 2, direction: "lower", hours_covered: 91, saturated_hours: 19, reasons: ["CPU stayed at 90% or more for 2+ hours running in 11 of 91 busy hours.", "Memory pressure or growing swap in 8 of 91 busy hours.", "Free disk fell to 0.0 GB on Oct 11."] },
   rnr_mock_mini: { current: 2, direction: "insufficient_evidence", hours_covered: 9, saturated_hours: 0, reasons: ["9 of the 24 covered hours needed so far."] },
 };
 

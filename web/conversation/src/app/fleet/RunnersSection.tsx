@@ -10,6 +10,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../../components/ui/dialog.tsx";
 import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting, SuggestedLimit } from "../../contracts/account.ts";
 import type { LoadHostHistory } from "./HostLoad.tsx";
+import { useRunnerSuggestions } from "./runnerSuggestions.ts";
 import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
@@ -275,24 +276,13 @@ export function RunnersSettings(): React.ReactElement {
     else void navigate({ to: "/chat" });
   }
   const fleet = useResource(() => api.fleet(), [api]);
-  const [suggestions, setSuggestions] = React.useState<Readonly<Record<string, SuggestedLimit>>>({});
-  const runnerKey = fleet.value?.runners.map((runner) => `${runner.id}:${runner.revision ?? 0}`).join(",") ?? "";
-  React.useEffect(() => {
-    let current = true;
-    const ids = runnerKey ? runnerKey.split(",").map((entry) => entry.split(":")[0]!) : [];
-    void Promise.allSettled(ids.map(async (id) => [id, (await api.runnerCapacity(id)).recommendation?.suggested_limit] as const)).then((results) => {
-      if (!current) return;
-      const next: Record<string, SuggestedLimit> = {};
-      for (const result of results) if (result.status === "fulfilled" && result.value[1]) next[result.value[0]] = result.value[1];
-      setSuggestions(next);
-    });
-    return () => { current = false; };
-  }, [api, runnerKey]);
   const loadHostHistory = React.useCallback<LoadHostHistory>((runner, from, to) => api.runnerHostHistory(runner, from, to), [api]);
   const [open, setOpen] = React.useState(false);
   const [enrollmentName, setEnrollmentName] = React.useState("");
   const [enrollments, setEnrollments] = React.useState<readonly PendingEnrollment[]>([]);
   const canEnroll = bootstrap?.actor.can_manage_runners ?? false;
+  const runnerRevisions = React.useMemo(() => fleet.value?.runners.map((runner) => ({ id: runner.id, revision: runner.revision ?? 0 })) ?? [], [fleet.value]);
+  const suggestions = useRunnerSuggestions(api.runnerCapacity, runnerRevisions, canEnroll);
   async function reloadRunner(): Promise<void> {
     fleet.set(await api.fleet());
   }

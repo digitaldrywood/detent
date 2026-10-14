@@ -650,7 +650,7 @@ export type FleetRunner = typeof FleetRunner.Type;
 export const SuggestedLimit = Schema.Struct({
   limit: Schema.optional(Schema.Number),
   current: Schema.Number,
-  direction: Schema.String,
+  direction: Schema.Literals(["lower", "raise", "hold", "insufficient_evidence"]),
   hours_covered: Schema.Number,
   saturated_hours: Schema.Number,
   reasons: Schema.Array(Schema.String),

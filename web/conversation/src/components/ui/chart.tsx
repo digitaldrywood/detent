@@ -19,6 +19,12 @@ export interface ChartSeries {
   readonly dashed?: boolean;
 }
 
+export interface ChartMarker {
+  readonly label: string;
+  readonly color: string;
+  readonly at: readonly boolean[];
+}
+
 export interface ChartLegendItem {
   readonly label: string;
   readonly color: string;
@@ -130,6 +136,7 @@ function Chart({
   ariaLabel,
   formatValue = (value: number) => String(Math.round(value * 10) / 10),
   className,
+  marker,
 }: {
   readonly categories: readonly ChartCategory[];
   readonly series: readonly ChartSeries[];
@@ -137,6 +144,7 @@ function Chart({
   readonly ariaLabel: string;
   readonly formatValue?: (value: number) => string;
   readonly className?: string;
+  readonly marker?: ChartMarker;
 }) {
   const [ref, width] = useWidth(640);
   const [active, setActive] = React.useState<number | null>(null);
@@ -161,7 +169,7 @@ function Chart({
   const groupWidth = columns.reduce((sum, _, index) => sum + (index === 0 ? primaryWidth : secondaryWidth + gap), 0);
   const useShort = categories.some((category) => category.shortLabel !== undefined) && slot < 44;
   const labelEvery = Math.max(1, Math.ceil((useShort ? 20 : MIN_LABEL_SPACING) / slot));
-  const sparseLabels = useShort && categories.some((category) => category.shortLabel === "");
+  const sparseLabels = useShort && categories.some((category) => category.shortLabel === "") && categories.some((category) => Boolean(category.shortLabel));
   const empty = series.every((item) => item.values.every((value) => value === null || value === 0));
 
   const readout = active === null ? null : categories[active];
@@ -197,6 +205,7 @@ function Chart({
             </text>
           ))}
         </g>
+        {marker?.at.map((on, index) => on ? <rect key={`marker-${categories[index]?.key ?? index}`} x={AXIS_WIDTH + slot * index} y={TOP} width={slot} height={plotBottom - TOP} fill={marker.color} opacity={0.16} /> : null)}
         {active === null ? null : (
           <rect x={AXIS_WIDTH + slot * active} y={TOP} width={slot} height={plotBottom - TOP} fill="var(--accent)" opacity={0.6} />
         )}
@@ -303,6 +312,12 @@ function Chart({
           }}
         >
           <div className="mb-1 font-medium">{readout.label}</div>
+          {marker?.at[active] ? (
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <ChartSwatch color={marker.color} />
+              {marker.label}
+            </div>
+          ) : null}
           {series.map((item) => {
             const value = item.values[active];
             const upper = item.upper?.[active];
