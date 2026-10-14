@@ -49,6 +49,7 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  * redirect through `/auth/oidc/start` rather than a state change here.
  */
 export const BootstrapOrganization = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   public_url: Schema.String,
@@ -94,6 +95,7 @@ export const ReporterTemplates = Schema.Struct({
 export type ReporterTemplates = typeof ReporterTemplates.Type;
 
 export const AccountProject = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   profile: Schema.String,
@@ -175,6 +177,7 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  */
 export const AccountBootstrap = Schema.Struct({
   organization: Schema.Struct({
+    slug: Schema.optional(Schema.String),
     id: Schema.String,
     name: Schema.String,
     public_url: Schema.optional(Schema.String),

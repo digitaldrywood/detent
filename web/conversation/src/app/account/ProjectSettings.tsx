@@ -1,3 +1,4 @@
+import { SlugSettings } from "./Organization.tsx";
 import { ModelSelectionSettings } from "./ModelSelectionSettings.tsx";
 import React from "react";
 
@@ -810,6 +811,7 @@ export function ProjectSettingsRoute({
       sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /></>}
       workflow={
         <>
+          <SlugSettings projectId={projectId} canManage={canManage && project?.can_write === true} />
           <ModelSelectionSettings projectId={projectId} canManage={canManage && project?.can_write === true} />
           <WorkflowSettings
             integration={integration.value}

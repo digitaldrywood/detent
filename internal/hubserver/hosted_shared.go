@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
+	"github.com/digitaldrywood/detent/internal/readableurl"
 )
 
 const hostedSharedClaimsKey = "hosted_shared_claims"
@@ -117,12 +118,20 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			}
 			request.URL.Path, request.URL.RawPath = path, ""
 		case strings.HasPrefix(path, "/api/v2/organizations/"+organization+"/"):
+		case claims.OrganizationSlug != "" && len(strings.Split(strings.Trim(path, "/"), "/")) >= 2 && readableurl.Validate(strings.Split(strings.Trim(path, "/"), "/")[0]) == nil:
+			first := strings.Split(strings.Trim(path, "/"), "/")[0]
+			path = strings.TrimPrefix(path, "/"+first)
+			request.URL.Path, request.URL.RawPath = path, ""
+			c.Set("readable_organization_slug", first)
 		default:
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 		keyInternal := claims.Kind == cloudassert.KindKey && (path == "/internal/v1/keys/catalog" || path == "/internal/v1/keys/call")
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, nativeNotFound())
+		}
+		if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
+			return s.nativeAPIError(c, err)
 		}
 		c.Set(hostedSharedClaimsKey, claims)
 		if claims.Kind == cloudassert.KindKey {

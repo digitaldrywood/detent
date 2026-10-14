@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -71,7 +70,7 @@ func linkedSourceNumber(source string) int {
 func (s *Service) linkedSourceContext(ctx context.Context) context.Context {
 	base := ""
 	if s.config.Hosted != nil {
-		base = s.config.Hosted.PublicURL + s.hostedBase()
+		base = s.config.Hosted.PublicURL
 	}
 	return context.WithValue(ctx, linkedSourceURLKey{}, base)
 }
@@ -84,7 +83,11 @@ func enqueueLinkedSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !ok || base == "" {
 		return nil
 	}
-	target := base + "/work/i/" + url.PathEscape(string(issue.WorkItemID))
+	path, err := readIssueBrowserPath(ctx, tx, string(issue.WorkItemID))
+	if err != nil {
+		return err
+	}
+	target := base + path
 	body, reason := "Tracked in Detent: "+target, ""
 	if closeSource {
 		body, reason = "Cancelled in Detent: "+target, "not_planned"

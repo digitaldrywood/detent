@@ -56,10 +56,15 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 		}
 		issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return !visible[id] })
 		issue.Blockers = slices.DeleteFunc(issue.Blockers, func(dependency tracker.NativeDependency) bool { return !visible[dependency.ID] })
+		path, err := readIssueBrowserPath(ctx, s.database.db, string(issue.WorkItemID))
+		if err != nil {
+			return nil, err
+		}
+		issue.WebURL = path
 		return json.Marshal(s.nativeIssueResponse(issue))
 	}
 	if recordID == item {
-		return s.nativeIssueJSON(json.RawMessage(body))
+		return s.nativeIssueJSON(ctx, json.RawMessage(body))
 	}
 	return json.RawMessage(body), nil
 }

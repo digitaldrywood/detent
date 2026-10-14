@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/readableurl"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
@@ -62,6 +63,8 @@ func appReserved(path string) bool {
 // none of this. The hosted pages still own the paths they register, so the
 // catch-all serves only the client routes they leave free.
 func (s *Service) registerAppRoutes(e *echo.Echo) {
+	e.GET(hostedOrganizationBase+"/readable/:project_slug", s.resolveReadablePage, s.hostedSessionOnly)
+	e.GET(hostedOrganizationBase+"/readable/:project_slug/issues/:number", s.resolveReadablePage, s.hostedSessionOnly)
 	e.GET("/app/bootstrap", s.appBootstrapPayload)
 	e.GET("/chat/bootstrap", s.appBootstrapPayload)
 	e.GET("/app/updates", s.appUpdates)
@@ -87,6 +90,9 @@ func (s *Service) appShell(c echo.Context) error {
 		// JSON API, which enforces membership. A session is enough here, so
 		// a staff account can still reach the support screen.
 		if _, _, err := s.hostedSession(c.Request().Context(), c); err != nil {
+			if first := strings.Split(strings.Trim(path, "/"), "/")[0]; readableurl.Validate(first) == nil && strings.Contains(strings.Trim(path, "/"), "/") {
+				return s.nativeAPIError(c, nativeNotFound())
+			}
 			return c.Redirect(http.StatusSeeOther, s.hostedSignInPath())
 		}
 		parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -101,6 +107,22 @@ func (s *Service) appShell(c echo.Context) error {
 			}
 		}
 	}
+	if path != "/login" {
+		target, handled, err := s.readableShellPath(c)
+		if err != nil {
+			return s.nativeAPIError(c, nativeNotFound())
+		}
+		original := c.Request().URL.Path
+		if org, ok := c.Get("readable_organization_slug").(string); ok {
+			original = "/" + org + original
+		}
+		if handled && target != original {
+			if query := c.Request().URL.RawQuery; query != "" {
+				target += "?" + query
+			}
+			return c.Redirect(http.StatusPermanentRedirect, target)
+		}
+	}
 	content, err := fs.ReadFile(conversationClientFS, conversationClientShell)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -109,7 +131,17 @@ func (s *Service) appShell(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "client_unavailable", Message: "The application client is not built on this hub"})
 	}
 	c.Response().Header().Set("Cache-Control", "no-cache")
-	return c.HTMLBlob(http.StatusOK, conversationClientShellFor(content, s.hostedBase(), s.hostedSignInPath()))
+	shell := conversationClientShellFor(content, s.hostedBase(), s.hostedSignInPath())
+	firstSegment := strings.Split(strings.Trim(path, "/"), "/")[0]
+	_, readableShared := c.Get("readable_organization_slug").(string)
+	if path != "/login" && (readableShared || readableurl.Validate(firstSegment) == nil) {
+		var slug string
+		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT slug FROM organizations WHERE id=?", s.config.Hosted.OrganizationID).Scan(&slug); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		shell = []byte(strings.Replace(string(shell), "<head>", `<head><meta name="detent-router-base" content="/`+html.EscapeString(slug)+`">`, 1))
+	}
+	return c.HTMLBlob(http.StatusOK, shell)
 }
 
 const conversationClientAssets = "/static/app/conversation/"
@@ -288,6 +320,7 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 
 type appBootstrapOrganization struct {
 	ID        string `json:"id"`
+	Slug      string `json:"slug"`
 	Name      string `json:"name"`
 	PublicURL string `json:"public_url"`
 	Current   bool   `json:"current"`
@@ -305,6 +338,7 @@ type appBootstrapActor struct {
 
 type appBootstrapProject struct {
 	ID               string                        `json:"id"`
+	Slug             string                        `json:"slug"`
 	Name             string                        `json:"name"`
 	Profile          string                        `json:"profile"`
 	CanWrite         bool                          `json:"can_write"`
@@ -456,9 +490,10 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 		SignInPath: s.hostedSignInPath(),
 		Version:    s.config.Version,
 	}
-	if err := s.database.db.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name); err != nil {
+	if err := s.database.db.QueryRowContext(ctx, "SELECT name,slug FROM organizations WHERE id = ?", organization).Scan(&payload.Organization.Name, &payload.Organization.Slug); err != nil {
 		return appBootstrap{}, fmt.Errorf("read organization name: %w", err)
 	}
+	payload.Organization.PublicURL = strings.TrimRight(s.config.Hosted.PublicURL, "/") + "/" + payload.Organization.Slug + "/work"
 	if identity := credential.Hosted; identity.SupportActor != "" {
 		payload.Support = &appBootstrapSupport{Actor: identity.SupportActor, Reason: identity.SupportReason, ExpiresAt: identity.ExpiresAt.UTC().Format(time.RFC3339)}
 	}
@@ -476,6 +511,8 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 	for index := range payload.Organizations {
 		if payload.Organizations[index].Current {
 			payload.Organizations[index].Name = payload.Organization.Name
+			payload.Organizations[index].Slug = payload.Organization.Slug
+			payload.Organizations[index].PublicURL = payload.Organization.PublicURL
 		}
 	}
 	payload.Capabilities.Coordinator = s.conversations != nil && s.conversations.coordinator != nil && s.conversations.coordinator.Available()
@@ -596,7 +633,7 @@ func (s *Service) appBootstrapPlan(ctx context.Context) *appBootstrapPlan {
 // capabilities the client needs to render them.
 func (s *Service) hostedReadableProjects(ctx context.Context, credential apiCredential) ([]appBootstrapProject, error) {
 	projects := []appBootstrapProject{}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.profile, p.states_json, g.can_write, g.manage_runner
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id, p.name, p.slug, p.profile, p.states_json, g.can_write, g.manage_runner
 FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id
 WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.name, p.id`, credential.Hosted.Subject, s.config.Hosted.OrganizationID)
 	if credential.EntryKey != nil {
@@ -612,7 +649,7 @@ WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY 
 			return nil, encodeErr
 		}
 		kind, owner := credential.EntryKey.Kind, credential.Hosted.Subject
-		rows, err = s.database.reader.QueryContext(ctx, `SELECT p.id,p.name,p.profile,p.states_json,
+		rows, err = s.database.reader.QueryContext(ctx, `SELECT p.id,p.name,p.slug,p.profile,p.states_json,
 CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.can_write FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END,
 CASE WHEN ?='service' THEN 1 ELSE COALESCE((SELECT g.manage_runner FROM hosted_project_grants g WHERE g.user_id=? AND g.project_id=p.id),0) END
 FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id=?
@@ -628,7 +665,7 @@ ORDER BY p.name,p.id`, kind, owner, kind, owner, s.config.Hosted.OrganizationID,
 	for rows.Next() {
 		var project appBootstrapProject
 		var states string
-		if err := rows.Scan(&project.ID, &project.Name, &project.Profile, &states, &project.CanWrite, &project.CanManageRunners); err != nil {
+		if err := rows.Scan(&project.ID, &project.Name, &project.Slug, &project.Profile, &states, &project.CanWrite, &project.CanManageRunners); err != nil {
 			return nil, fmt.Errorf("scan project grant: %w", err)
 		}
 		if err := json.Unmarshal([]byte(states), &project.States); err != nil {

@@ -1,3 +1,4 @@
+import { resolveReadable, redirectLegacyIssue, redirectLegacyProject } from "./work/readableRoutes.ts";
 // Routes.
 //
 // The hub serves the application shell for every non-API path
@@ -14,6 +15,7 @@ import {
   Outlet,
   redirect,
   useParams,
+  useRouteContext,
   useRouterState,
   type AnyRoute,
   type RouterHistory,
@@ -62,7 +64,7 @@ export function designSystemRoutes(parent: AnyRoute, dev: boolean): AnyRoute[] {
 
 /** The Shell everywhere except the dev-only gallery, which brings its own chrome. */
 function DevRoot(): ReactElement {
-  const pathname: string = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
+  const pathname: string = useRouterState({ select: (state) => withoutBasePath(state.location.pathname, routerBasePath()) });
   return isDesignSystemPath(pathname) ? <Outlet /> : <Shell />;
 }
 
@@ -147,12 +149,14 @@ const workProjectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/p/$projectId",
   component: WorkProjectBoard,
+  beforeLoad: ({ params, search }) => redirectLegacyProject(params.projectId, search),
 });
 
 const workItemRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/i/$workItemId",
   component: IssuePage,
+  beforeLoad: ({ params, search }) => redirectLegacyIssue(params.workItemId, search),
 });
 
 // One Change Request, under the issue it belongs to: the hub addresses a
@@ -161,6 +165,7 @@ const workChangeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/i/$workItemId/changes/$changeId",
   component: ChangeRequestPage,
+  beforeLoad: ({ params, search }) => redirectLegacyIssue(params.workItemId, search, params.changeId),
 });
 
 // --- Support ----------------------------------------------------------------
@@ -181,7 +186,17 @@ const supportOrganizationRoute = createRoute({
   component: SupportRoute,
 });
 
+function ReadableProjectBoard() {
+  const { resolvedProjectId } = useRouteContext({ strict: false }) as { resolvedProjectId: string };
+  return <WorkBoard projectId={resolvedProjectId} />;
+}
+
+const readableProjectRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug", component: ReadableProjectBoard, beforeLoad: ({ params }) => resolveReadable(params.projectSlug) });
+const readableIssueRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number", component: IssuePage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
+const readableChangeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/$projectSlug/issues/$number/changes/$changeId", component: ChangeRequestPage, beforeLoad: ({ params }) => resolveReadable(params.projectSlug, params.number) });
+
 const routeTree = rootRoute.addChildren([
+  readableProjectRoute, readableIssueRoute, readableChangeRoute,
   homeRoute,
   newChatRoute,
   conversationRoute,
