@@ -33,6 +33,23 @@ func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
 	return tx.Commit()
 }
 
+func resetNativeBoardPolicy(ctx context.Context, tx *sql.Tx, scope string) error {
+	var organization, project string
+	var sequence int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json)
+SELECT organization_id,id,NULL,NULL FROM projects WHERE organization_id||'/'||id=? AND profile='native'
+RETURNING organization_id,project_id,sequence`, scope).Scan(&organization, &project, &sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES(?,?,?,?)
+ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, organization, project, sequence, sequence)
+	return err
+}
+
 func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var readOnly bool
 	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&readOnly); err != nil {

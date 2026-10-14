@@ -299,6 +299,10 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			var sequenceBefore, floorBefore int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceBefore, &floorBefore); err != nil {
+				t.Fatal(err)
+			}
 			succeeded := test.status >= 200 && test.status < 300
 			switch test.mutation {
 			case "review":
@@ -307,6 +311,15 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", token, map[string]string{"expected_policy_id": expected}), test.status)
 			default:
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{ExpectedID: expected, Policy: next}), test.status)
+			}
+			if !succeeded {
+				var sequenceAfter, floorAfter int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceAfter, &floorAfter); err != nil {
+					t.Fatal(err)
+				}
+				if sequenceAfter != sequenceBefore || floorAfter != floorBefore {
+					t.Fatalf("failed approval reset board replay: (%d,%d) -> (%d,%d)", sequenceBefore, floorBefore, sequenceAfter, floorAfter)
+				}
 			}
 			wantPolicy := previous.ID
 			if succeeded && test.mutation == "" {

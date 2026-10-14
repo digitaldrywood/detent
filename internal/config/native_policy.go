@@ -286,6 +286,31 @@ func resolveAuthoredNativePolicy(descriptor policy.Descriptor) (Workflow, policy
 	return shared, resolved, err
 }
 
+func SameSharedPolicyBehavior(approved, selected policy.Descriptor) (bool, error) {
+	if approved.Authored == nil || selected.Authored == nil || len(approved.Authored.Files) == 0 || len(selected.Authored.Files) == 0 {
+		return false, nil
+	}
+	if approved.Gates != selected.Gates || approved.Profile != selected.Profile || !reflect.DeepEqual(approved.Requirements, selected.Requirements) || (approved.Workflow == nil) != (selected.Workflow == nil) {
+		return false, nil
+	}
+	if approved.Workflow != nil && (approved.Workflow.Source != selected.Workflow.Source || !reflect.DeepEqual(approved.Workflow.States, selected.Workflow.States)) {
+		return false, nil
+	}
+	before, _, err := resolveAuthoredNativePolicy(approved)
+	if err != nil {
+		return false, err
+	}
+	after, _, err := resolveAuthoredNativePolicy(selected)
+	if err != nil {
+		return false, err
+	}
+	left, right := nativeProjectBehavior(before.Config), nativeProjectBehavior(after.Config)
+	left.Agent.Effort, right.Agent.Effort = AgentRoleEffort{}, AgentRoleEffort{}
+	left.Agent.InstructionsByState, right.Agent.InstructionsByState = nil, nil
+	left.Agent.InstructionsByTransition, right.Agent.InstructionsByTransition = nil, nil
+	return reflect.DeepEqual(left, right), nil
+}
+
 func ResolveSharedPolicy(descriptor policy.Descriptor) (policy.Descriptor, error) {
 	if err := descriptor.Validate(); err != nil {
 		return policy.Descriptor{}, err

@@ -186,21 +186,33 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	var version tracker.ChangeVersion
 	var lease tracker.NativeLease
 	worker := f.worker(t, "board-worker")
-	assertDelta := func(t *testing.T, status string, count int) {
+	assertDelta := func(t *testing.T, status string, count int, reset ...bool) {
 		t.Helper()
 		frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if frame.Gap || len(frame.Deltas) == 0 {
-			t.Fatalf("frame=%#v", frame)
-		}
-		for _, delta := range frame.Deltas {
-			if delta.Current == nil || delta.Current.Issue.WorkItemID != f.issue.WorkItemID {
-				t.Fatalf("wrong delta=%#v", delta)
+		var card *tracker.NativeBoardCard
+		if len(reset) > 0 && reset[0] {
+			if !frame.Gap || len(frame.Deltas) != 0 {
+				t.Fatalf("policy reset frame=%#v", frame)
 			}
+			page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+			if err != nil || len(page.Cards) != 1 {
+				t.Fatalf("reset page=%#v, error=%v", page, err)
+			}
+			card = &page.Cards[0]
+		} else {
+			if frame.Gap || len(frame.Deltas) == 0 {
+				t.Fatalf("frame=%#v", frame)
+			}
+			for _, delta := range frame.Deltas {
+				if delta.Current == nil || delta.Current.Issue.WorkItemID != f.issue.WorkItemID {
+					t.Fatalf("wrong delta=%#v", delta)
+				}
+			}
+			card = frame.Deltas[len(frame.Deltas)-1].Current
 		}
-		card := frame.Deltas[len(frame.Deltas)-1].Current
 		if card.Issue.WorkItemID != f.issue.WorkItemID {
 			t.Fatalf("wrong card: %s", card.Issue.WorkItemID)
 		}
@@ -276,7 +288,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			now = now.Add(time.Second)
 			test.mutate(t)
-			assertDelta(t, test.status, test.count)
+			assertDelta(t, test.status, test.count, test.name == "review policy requirement" || test.name == "restored review requirement")
 		})
 	}
 	unaffected := f.create(t, "Historical card without Change")
@@ -321,17 +333,28 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			ids, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM policy_dirty_cards ORDER BY work_item_id")
 			want := []string{string(f.issue.WorkItemID), string(historical.WorkItemID)}
 			slices.Sort(want)
-			if err != nil || !slices.Equal(ids, want) {
-				t.Fatalf("policy dirty cards=%v want=%v err=%v", ids, want, err)
+			if err != nil || len(ids) != 0 {
+				t.Fatalf("approval rebuilt historical cards=%v err=%v", ids, err)
+			}
+			frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
+			if err != nil || !frame.Gap {
+				t.Fatalf("policy did not invalidate old replay=%+v, error=%v", frame, err)
+			}
+			since = frame.Sequence
+			page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+			if err != nil {
+				t.Fatal(err)
 			}
 			for _, id := range want {
-				var raw string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&raw); err != nil {
-					t.Fatal(err)
-				}
 				var card tracker.NativeBoardCard
-				if err := json.Unmarshal([]byte(raw), &card); err != nil {
-					t.Fatal(err)
+				for _, candidate := range page.Cards {
+					if string(candidate.Issue.WorkItemID) == id {
+						card = candidate
+						break
+					}
+				}
+				if card.Change == nil {
+					t.Fatalf("missing returned historical/current card %s", id)
 				}
 				wantStatus := "stale_policy"
 				if test.name == "restored policy" || test.name == "instruction-only custom policy" {
@@ -506,19 +529,22 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, project := range projects {
+		scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+		page, err := service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+		if err != nil {
+			t.Fatal(err)
+		}
 		for index, issue := range project.items {
-			var raw string
-			if err := service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", issue.WorkItemID).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
 			var card tracker.NativeBoardCard
-			if err := json.Unmarshal([]byte(raw), &card); err != nil {
-				t.Fatal(err)
+			for _, candidate := range page.Cards {
+				if candidate.Issue.WorkItemID == issue.WorkItemID {
+					card = candidate
+					break
+				}
 			}
 			if card.Issue.State != issue.State || card.Change == nil || card.Change.Status != project.want {
 				t.Fatalf("project %s card lane = %s, Change = %+v, want unchanged lane and %s", project.fixture.project.ID, card.Issue.State, card.Change, project.want)
 			}
-			scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID}
 			detail, err := readChangeDetail(t.Context(), service.database.reader, scope, string(issue.WorkItemID), project.changes[index].ID, service.config.now())
 			if err != nil || detail.Summary.Status != card.Change.Status {
 				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
