@@ -6,11 +6,31 @@ import {
   findingDestination,
   orderedFindings,
 } from "../src/contracts/diagnostics.ts";
+import { readDiagnostics } from "../src/app/diagnostics/diagnosticsQuery.ts";
+import emptyFleet from "../src/contracts/fixtures/account-fleet-empty.json";
+import updatesFixture from "../src/contracts/fixtures/account-updates.json";
 import fixture from "../src/contracts/fixtures/diagnostics.json";
 import healthFixture from "../src/contracts/fixtures/health-findings.json";
 import { makeAccountApi } from "../src/app/account/api.ts";
 
 describe("diagnostics read", () => {
+  it.each([200, 404, 503])("keeps Diagnostics available when the updates read returns %i", async (status) => {
+    const requests: string[] = [];
+    const api = makeAccountApi({
+      origin: "", apiBase: "/api/v2/organizations/org_fixture", csrfToken: "",
+      fetch: async (url) => {
+        requests.push(url);
+        if (url === "/app/updates") return Response.json(status === 200 ? updatesFixture : {}, { status });
+        return Response.json(url.includes("/fleet") ? emptyFleet : fixture);
+      },
+    });
+    const read = await readDiagnostics(api, "24h")();
+    expect(requests).toContain("/app/updates");
+    expect(read.appUpdates).toEqual(status === 200 ? updatesFixture : null);
+    expect(read.report).toEqual(decodeDiagnostics(fixture));
+    expect(read.runners).toEqual([]);
+  });
+
   it.each([{}, { state: "resolved" as const, since: "2026-10-07T10:00:00Z" }])("reads granted projects, follows findings cursors, and deduplicates shared findings (%j)", async (options) => {
     const requests: string[] = [];
     const api = makeAccountApi({

@@ -20,6 +20,7 @@ import {
   CheckoutResponse,
   CreateOrganizationResponse,
   FleetResponse,
+  UpdatesReport,
   FleetNamesResponse,
   RunnerCapacityRead,
   RunnerHostHour,
@@ -545,6 +546,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       }
       return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`, undefined, signal);
     },
+    appUpdates: () => send(UpdatesReport, "GET", hubPath("/app/updates")),
     fleet: (signal?: AbortSignal) => send(FleetResponse, "GET", `${base}/fleet`, undefined, signal),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters) =>

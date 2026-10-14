@@ -16,7 +16,7 @@ import {
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { AccountProject, FleetRunner } from "../../contracts/account.ts";
+import type { AccountProject, FleetRunner, UpdatesReport } from "../../contracts/account.ts";
 import {
   findingDestination,
   findingsFromRead,
@@ -162,6 +162,7 @@ export function DiagnosticsRoute(): React.ReactElement {
   const state = {
     report: reportQuery.data?.report ?? null,
     runners: reportQuery.data?.runners ?? null,
+    appUpdates: reportQuery.data?.appUpdates ?? null,
     ...findingsState,
     pending: reportQuery.pending,
     error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
@@ -225,6 +226,7 @@ function Unavailable({
 
 export function DiagnosticsView({
   report,
+  appUpdates = null,
   runners,
   findings: findingRows = report?.findings ?? null,
   detectorTick = report?.detector_tick ?? null,
@@ -245,6 +247,7 @@ export function DiagnosticsView({
   readonly canManage?: boolean;
   readonly findingsError?: string | null;
   readonly report: DiagnosticsReport | null;
+  readonly appUpdates?: UpdatesReport | null;
   readonly runners: readonly FleetRunner[] | null;
   readonly findings?: readonly DiagnosticFinding[] | null;
   readonly detectorTick?: string | null;
@@ -291,6 +294,10 @@ export function DiagnosticsView({
         </WorkspaceBreadcrumb>
         <div className="ms-auto flex items-center gap-2">
           {panelControls}
+          {appUpdates ? <p className="flex min-w-0 items-baseline gap-1.5 text-xs text-muted-foreground" title={`Hub ${appUpdates.current}`}>
+            <span>Hub</span>
+            <span className="max-w-28 truncate font-mono sm:max-w-none">{appUpdates.current}</span>
+          </p> : null}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -315,11 +322,11 @@ export function DiagnosticsView({
             </div>
           ) : (
             <>
-              {runners === null ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : <CapacityPanel runners={runners} />}
+              {runners === null ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : <CapacityPanel runners={runners} appUpdates={appUpdates} />}
               <Section title="Needs attention">
                 {findingsError ? <Unavailable>{findingsError}</Unavailable> : null}
                 {problems.length > 0 ? <div className="divide-y divide-border">
-                  {problems.map((problem) => <article key={problem.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                  {problems.map((problem) => <article key={problem.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,2.35fr)_minmax(0,1.3fr)]">
                     <div className="min-w-0 space-y-1 break-words">
                       <p className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
                         {problem.runners.map((runner) => <Link key={runner.id} to="/settings/runners" className="break-all hover:underline">{runner.display_name || runner.hostname}</Link>)}
@@ -327,9 +334,8 @@ export function DiagnosticsView({
                       </p>
                       <p className="text-sm font-medium">{problem.summary}</p>
                       <p className="text-xs text-muted-foreground">{problem.impact}</p>
-                      {!problem.destination ? <p className="text-xs text-muted-foreground">{problem.action}</p> : null}
                     </div>
-                    {problem.destination ? <Button variant="outline" size="sm" render={<Link to={problem.destination} />}>{problem.action}</Button> : null}
+                    <div className="min-w-0">{problem.destination ? <Button variant="outline" size="sm" render={<Link to={problem.destination} />}>{problem.action}</Button> : <p className="text-xs text-muted-foreground">{problem.action}</p>}</div>
                   </article>)}
                 </div> : null}
                 {findings === null ? (
@@ -338,7 +344,7 @@ export function DiagnosticsView({
                     them.
                   </Unavailable>
                 ) : findings.length === 0 ? (
-                  <Unavailable>{problems.length === 0 ? "No open findings." : "No additional open findings."}</Unavailable>
+                  <p className="text-xs text-muted-foreground">{problems.length === 0 ? "No open findings." : "No additional open findings."} {detectorTick ? `Findings last checked ${timestamp(detectorTick)}.` : "Findings have not been checked yet."}</p>
                 ) : (
                   <div className="divide-y divide-border">
                     {findings.map((finding) => {
@@ -405,7 +411,7 @@ export function DiagnosticsView({
                   </div>
                 )}
               </Section>
-              <p className="text-xs text-muted-foreground">{detectorTick ? `Findings last checked ${timestamp(detectorTick)}.` : "Findings have not been checked yet."}</p>
+              {findings === null || findings.length > 0 ? <p className="text-xs text-muted-foreground">{detectorTick ? `Findings last checked ${timestamp(detectorTick)}.` : "Findings have not been checked yet."}</p> : null}
               <section aria-label="Capacity and throughput history" className="flex min-w-0 flex-col gap-6 border-t border-border pt-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h2 className="text-sm font-medium">Capacity and throughput history</h2>
