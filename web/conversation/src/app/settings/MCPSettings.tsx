@@ -1,6 +1,6 @@
 import React from "react";
 import { ConnectionValue, SetupPromptControl } from "./keySetup.tsx";
-import { OrganizationAPIKeysSettings } from "./OrganizationAPIKeysSettings.tsx";
+import { APIKeysMCPSettings } from "./APIKeysMCPSettings.tsx";
 import { CheckIcon, CopyIcon, PlugIcon } from "lucide-react";
 
 import type { AccountBootstrap } from "../../contracts/account.ts";
@@ -122,7 +122,7 @@ Initialize MCP, retain the returned Mcp-Session-Id and negotiated protocol versi
 }
 
 export function MCPSettings(): React.ReactElement {
-  return basePath().startsWith("/organizations/") ? <OrganizationAPIKeysSettings /> : <LegacyMCPSettings />;
+  return basePath().startsWith("/organizations/") ? <APIKeysMCPSettings /> : <LegacyMCPSettings />;
 }
 
 function LegacyMCPSettings(): React.ReactElement {

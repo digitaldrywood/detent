@@ -17,6 +17,7 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
+  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -39,6 +40,7 @@ import {
   useSettingsNavItems,
 } from "./useAvailableSettingsSearchItems";
 
+import { useAccountBootstrap } from "../../app/account/context.ts";
 import { useOrganizationMembers } from "../../app/account/OrganizationMembers.tsx";
 
 type SectionIcons = Readonly<Record<string, ComponentType<{ className?: string }>>>;
@@ -57,6 +59,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const [query, setQuery] = useState("");
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const navItems = useSettingsNavItems();
+  const account = useAccountBootstrap();
   const members = useOrganizationMembers();
   const memberCount = members.value?.member_count ?? members.value?.members.length;
   const sectionIcons = useMemo<SectionIcons>(
@@ -270,6 +273,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
           ) : (
             <SidebarMenu className="ps-px">
               {navItems.filter((item) => !item.id.startsWith("organization/")).map((item) => {
+                const groupLabel = item.id === "organization" ? account?.organization.name ?? "Organization" : item.id === "appearance" ? "Your account" : null;
                 const Icon = item.icon;
                 const disabled = item.disabled === true;
                 const isActive =
@@ -289,6 +293,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                 );
                 return (
                   <SidebarMenuItem key={item.to}>
+                    {groupLabel && <SidebarGroupLabel>{groupLabel}</SidebarGroupLabel>}
                     {disabled && item.reason !== undefined ? (
                       <Tooltip>
                         <TooltipTrigger render={<span className="block w-full" />}>
