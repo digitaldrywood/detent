@@ -115,8 +115,19 @@ func TestReportsShippedPopulation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	priorAt := w.From.Add(-2 * time.Hour)
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE attempt_usage SET period=? WHERE attempt_id='attempt_browser_usage_2_1'", priorAt.Format(usagePeriodLayout)); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
+	}
+	var priorCost float64
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE attempt_id='attempt_browser_usage_2_1'").Scan(&priorCost); err != nil || priorCost == 0 {
+		t.Fatalf("prior cost=%v err=%v", priorCost, err)
 	}
 	var shippedCost float64
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE attempt_id LIKE 'attempt_browser_usage_1_%'").Scan(&shippedCost); err != nil || shippedCost == 0 {
@@ -146,6 +157,9 @@ func TestReportsShippedPopulation(t *testing.T) {
 	}
 	if p := report.Previous; p.Done != 1 || p.Cancelled != 0 || p.Partial || p.Cost != 0 {
 		t.Fatalf("previous=%+v", p)
+	}
+	if report.Cancelled != 1 || report.PriorCost != priorCost || report.PriorFailed != 1 || report.PriorFirst != nil {
+		t.Fatalf("cancelled=%d prior cost=%v failed=%d first try=%v, want 1, %v, 1, nil", report.Cancelled, report.PriorCost, report.PriorFailed, report.PriorFirst, priorCost)
 	}
 	board, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{"completed_window": {"48h"}}, to)
 	if err != nil {

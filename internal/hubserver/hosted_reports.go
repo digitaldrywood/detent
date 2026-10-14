@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -73,6 +74,10 @@ type hostedReportsReport struct {
 	Cached      int64                  `json:"cached"`
 	Cost        float64                `json:"cost_usd"`
 	FirstTry    *float64               `json:"first_try_percent"`
+	Cancelled   int                    `json:"cancelled"`
+	PriorCost   float64                `json:"previous_cost_usd"`
+	PriorFirst  *float64               `json:"previous_first_try_percent"`
+	PriorFailed int                    `json:"previous_failed"`
 	Unavailable []string               `json:"unavailable"`
 }
 
@@ -223,6 +228,10 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		out.FirstTry = &rate
 	} else {
 		out.Unavailable = append(out.Unavailable, "landed_first_try")
+	}
+	out.Cancelled = out.Completion.Cancelled
+	if err := s.readReportsPrior(ctx, q, scope, operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From}, &out); err != nil {
+		return out, err
 	}
 	titleIDs := []string{}
 	for _, item := range p.LaneResidence.Aging.Items {
@@ -477,6 +486,29 @@ func reportsAttemptTotals(attempts []nativeAnalyticsAttempt, usage map[string][]
 		return costs[i].Cost > costs[j].Cost
 	})
 	return result, costs
+}
+
+func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope nativeScope, prior operatortool.AnalyticsWindow, out *hostedReportsReport) error {
+	if err := q.QueryRowContext(ctx, `SELECT coalesce(sum(cost_estimate),0) FROM attempt_usage WHERE organization_id=? AND period>=? AND period<? AND project_id=?`, scope.organization, prior.From.UTC().Format(usagePeriodLayout), prior.To.UTC().Format(usagePeriodLayout), scope.project).Scan(&out.PriorCost); err != nil {
+		return fmt.Errorf("read prior spend: %w", err)
+	}
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.status='failed' AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)).Scan(&out.PriorFailed); err != nil {
+		return fmt.Errorf("read prior failed attempts: %w", err)
+	}
+	landings, err := nativeAnalyticsLandings(ctx, q, scope, prior)
+	if err != nil {
+		return fmt.Errorf("read prior landings: %w", err)
+	}
+	population := nativeAnalyticsProject{Partial: len(landings) > maxAnalyticsPopulation}
+	population.Landings.Items = landings
+	rate, available, err := s.reportsFirstTry(ctx, scope, population)
+	if err != nil {
+		return fmt.Errorf("read prior first try: %w", err)
+	}
+	if available {
+		out.PriorFirst = &rate
+	}
+	return nil
 }
 
 func (s *Service) reportsFirstTry(ctx context.Context, scope nativeScope, p nativeAnalyticsProject) (float64, bool, error) {
