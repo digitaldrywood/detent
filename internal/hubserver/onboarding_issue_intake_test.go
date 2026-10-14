@@ -817,7 +817,7 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
 					t.Fatal(err)
 				}
-				if desired.Body != "Tracked in Detent: https://cloud.example/work/i/"+string(f.batch.Items[1].WorkItemID) || desired.StateReason != "" || desired.IssueNumber != 13 {
+				if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/2" || desired.StateReason != "" || desired.IssueNumber != 13 {
 					t.Fatalf("close payload=%+v", desired)
 				}
 			}

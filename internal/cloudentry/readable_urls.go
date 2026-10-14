@@ -14,17 +14,39 @@ import (
 
 func (s *Service) readableProxy(c echo.Context) error {
 	parts := strings.Split(strings.Trim(c.Request().URL.Path, "/"), "/")
-	if len(parts) < 2 || readableurl.Validate(parts[0]) != nil {
+	if readableurl.Validate(parts[0]) != nil {
 		return readableNotFound(c)
 	}
 	var id string
 	if err := s.registry.store.db.QueryRowContext(c.Request().Context(), "SELECT organization_id FROM organization_slugs WHERE slug=?", parts[0]).Scan(&id); err != nil {
 		return readableNotFound(c)
 	}
+	if len(parts) == 1 {
+		return s.readableOrganizationRoot(c, id)
+	}
 	c.SetParamNames("organization")
 	c.SetParamValues(id)
 	c.Set("readable_url", true)
 	return s.proxy(c)
+}
+
+func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
+	if c.Request().Method != http.MethodGet || c.Request().Header.Get(echo.HeaderAuthorization) != "" {
+		return readableNotFound(c)
+	}
+	organization, err := s.readyOrganization(c.Request().Context(), id)
+	if err != nil {
+		return readableNotFound(c)
+	}
+	claims := cloudassert.Claims{}
+	if _, _, err := s.browserClaims(c, organization, &claims); err != nil {
+		return readableNotFound(c)
+	}
+	target := s.organizationHome(organization)
+	if query := c.Request().URL.RawQuery; query != "" {
+		target += "?" + query
+	}
+	return c.Redirect(http.StatusSeeOther, target)
 }
 
 func readableNotFound(c echo.Context) error {

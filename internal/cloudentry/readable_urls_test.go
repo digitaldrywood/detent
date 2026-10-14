@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -100,6 +101,26 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	absent, _ := anonymous.get("/missing/secret-project/issues/1")
 	if denied.StatusCode != http.StatusNotFound || absent.StatusCode != http.StatusNotFound || denied.Body != absent.Body {
 		t.Fatalf("denied=%+v missing=%+v", denied, absent)
+	}
+	f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body></body></html>`)}}
+	for _, test := range []struct{ path, location string }{
+		{"/alpha", "/alpha/work"},
+		{"/alpha/", "/alpha/work"},
+		{"/alpha/?collapsed=Triage", "/alpha/work?collapsed=Triage"},
+		{"/organizations/org_alpha/work?collapsed=Triage", "/alpha/work?collapsed=Triage"},
+		{"/organizations/org_alpha/settings", "/alpha/settings"},
+	} {
+		response, _ := alice.get(test.path)
+		if response.StatusCode/100 != 3 || response.Header.Get("Location") != test.location {
+			t.Fatalf("%s=%+v want %s", test.path, response, test.location)
+		}
+	}
+	for _, path := range []string{"/alpha", "/alpha/"} {
+		denied, _ := anonymous.get(path)
+		absent, _ := anonymous.get("/missing" + strings.TrimPrefix(path, "/alpha"))
+		if denied.StatusCode != http.StatusNotFound || denied.Body != absent.Body || denied.Header.Get("Location") != "" {
+			t.Fatalf("anonymous %s=%+v missing=%+v", path, denied, absent)
+		}
 	}
 	slugPath := "/api/cloud/organizations/org_alpha/slug"
 	for _, test := range []struct {
