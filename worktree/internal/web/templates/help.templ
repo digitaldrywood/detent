@@ -1,0 +1,417 @@
+package templates
+
+templ helpScript() {
+	<script>
+		(() => {
+			const scrollSelector = "[data-preserve-scroll]"
+			const detailsSelector = "details[data-preserve-details]"
+			const positions = new Map()
+			const detailsOpen = new Map()
+
+			function liveSwapTarget(event) {
+				const detailTarget = event.detail && event.detail.target
+				const target = detailTarget instanceof Element ? detailTarget : event.target
+				if (!(target instanceof Element)) return null
+				if (target.id === "snapshot" || target.id === "dashboard-sidebar-live" || target.id === "github-api-health") return target
+				return target.closest("#snapshot, #dashboard-sidebar-live, #github-api-health")
+			}
+
+			function scrollKey(element) {
+				return element.dataset.preserveScroll || element.id || ""
+			}
+
+			function detailsKey(element) {
+				return element.dataset.preserveDetails || element.id || ""
+			}
+
+			function preservedDetails(root) {
+				const elements = []
+				if (root.matches(detailsSelector)) elements.push(root)
+				root.querySelectorAll(detailsSelector).forEach((element) => elements.push(element))
+				return elements
+			}
+
+			function rememberScroll(root) {
+				root.querySelectorAll(scrollSelector).forEach((element) => {
+					const key = scrollKey(element)
+					if (!key) return
+					positions.set(key, {
+						left: element.scrollLeft,
+						top: element.scrollTop,
+					})
+				})
+			}
+
+			function rememberDetails(root) {
+				preservedDetails(root).forEach((element) => {
+					if (!(element instanceof HTMLDetailsElement)) return
+					const key = detailsKey(element)
+					if (!key) return
+					detailsOpen.set(key, element.open)
+				})
+			}
+
+			function restoreDetails(root) {
+				preservedDetails(root).forEach((element) => {
+					if (!(element instanceof HTMLDetailsElement)) return
+					const key = detailsKey(element)
+					const open = key ? detailsOpen.get(key) : undefined
+					if (open === undefined) return
+					element.open = open
+				})
+			}
+
+			function restoreScroll(root) {
+				requestAnimationFrame(() => {
+					root.querySelectorAll(scrollSelector).forEach((element) => {
+						const key = scrollKey(element)
+						const position = key ? positions.get(key) : null
+						if (!position) return
+						element.scrollLeft = position.left
+						element.scrollTop = position.top
+					})
+				})
+			}
+
+			document.addEventListener("htmx:beforeSwap", (event) => {
+				const target = liveSwapTarget(event)
+				if (!target) return
+				rememberScroll(target)
+				rememberDetails(target)
+			})
+
+			document.addEventListener("htmx:afterSettle", (event) => {
+				const target = liveSwapTarget(event)
+				if (!target) return
+				restoreDetails(target)
+				restoreScroll(target)
+			})
+		})();
+
+		(() => {
+			const tooltipID = "help-tooltip"
+			const margin = 16
+			const offset = 10
+			const showDelay = 110
+			const hideDelay = 160
+			let tooltip = null
+			let activeHelpTrigger = null
+			let currentHelpTerm = ""
+			let showTimer = 0
+			let hideTimer = 0
+			let positionFrame = 0
+			let lastPointerType = ""
+
+			function helpTooltip() {
+				if (tooltip && document.documentElement.contains(tooltip)) return tooltip
+				tooltip = document.getElementById(tooltipID)
+				return tooltip
+			}
+
+			function helpTriggerFor(target) {
+				if (!(target instanceof Element)) return null
+				return target.closest("[data-help-trigger]")
+			}
+
+			function helpTermFor(trigger) {
+				return trigger ? trigger.dataset.helpTerm || trigger.dataset.helpTitle || "" : ""
+			}
+
+			function sameHelpTerm(trigger, term) {
+				return helpTermFor(trigger) === term
+			}
+
+			function replacementHelpTrigger(term) {
+				return Array.from(document.querySelectorAll("[data-help-trigger]")).find((trigger) => sameHelpTerm(trigger, term)) || null
+			}
+
+			function containsRelated(root, relatedTarget) {
+				return relatedTarget instanceof Node && root.contains(relatedTarget)
+			}
+
+			function cancelHelpHide() {
+				clearTimeout(hideTimer)
+				hideTimer = 0
+			}
+
+			function clearHelpShow() {
+				clearTimeout(showTimer)
+				showTimer = 0
+			}
+
+			function setActiveHelpTrigger(trigger) {
+				if (activeHelpTrigger && activeHelpTrigger !== trigger) activeHelpTrigger.removeAttribute("aria-describedby")
+				activeHelpTrigger = trigger
+				if (activeHelpTrigger) activeHelpTrigger.setAttribute("aria-describedby", tooltipID)
+			}
+
+			function setHelpContent(trigger) {
+				const tip = helpTooltip()
+				if (!tip || !trigger) return
+
+				const title = tip.querySelector("[data-help-tooltip-title]")
+				const description = tip.querySelector("[data-help-tooltip-description]")
+				if (title) title.textContent = trigger.dataset.helpTitle || ""
+				if (description) description.textContent = trigger.dataset.helpDescription || ""
+			}
+
+			function positionHelpTooltip() {
+				const tip = helpTooltip()
+				const trigger = activeHelpTrigger
+				if (!tip || !trigger || !trigger.isConnected) return
+
+				const runtimeCard = trigger.dataset.helpScope === "runtime-identity" ? trigger.closest("article") : null
+				const runtimeCardRect = runtimeCard ? runtimeCard.getBoundingClientRect() : null
+				const requestedWidth = Number(tip.dataset.helpTooltipWidth || "256")
+				const width = runtimeCardRect
+					? Math.min(Math.max(1, runtimeCardRect.width), Math.max(1, window.innerWidth - margin * 2))
+					: Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))
+				tip.style.width = width + "px"
+
+				const triggerRect = trigger.getBoundingClientRect()
+				const desiredHeight = Math.min(tip.scrollHeight || tip.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))
+				const sidebarRail = trigger.closest("#app-sidebar[data-rail='true']")
+				if (sidebarRail) {
+					const height = Math.min(desiredHeight, Math.max(48, window.innerHeight - margin * 2))
+					const maxLeft = Math.max(margin, window.innerWidth - width - margin)
+					const left = Math.min(Math.max(margin, triggerRect.right + offset), maxLeft)
+					const top = Math.min(Math.max(margin, triggerRect.top + triggerRect.height / 2 - height / 2), Math.max(margin, window.innerHeight - height - margin))
+					tip.style.left = left + "px"
+					tip.style.top = top + "px"
+					tip.style.maxHeight = height + "px"
+					tip.dataset.placement = "right"
+					return
+				}
+				const maxLeft = Math.max(margin, window.innerWidth - width - margin)
+				const anchorRect = runtimeCardRect || triggerRect
+				const left = Math.min(Math.max(margin, anchorRect.left + anchorRect.width / 2 - width / 2), maxLeft)
+				if (runtimeCardRect) {
+					const maxHeight = Math.min(runtimeCardRect.height, Math.max(1, window.innerHeight - margin * 2))
+					tip.style.left = left + "px"
+					tip.style.top = Math.min(Math.max(margin, runtimeCardRect.top), Math.max(margin, window.innerHeight - maxHeight - margin)) + "px"
+					tip.style.maxHeight = maxHeight + "px"
+					tip.dataset.placement = "card"
+					return
+				}
+				const availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)
+				const availableAbove = Math.max(0, triggerRect.top - offset - margin)
+				const useTop = desiredHeight > availableBelow && availableAbove > availableBelow
+				const available = useTop ? availableAbove : availableBelow
+				const maxHeight = Math.max(48, available)
+				const height = Math.min(desiredHeight, maxHeight)
+				let top = triggerRect.bottom + offset
+				let placement = "bottom"
+
+				if (useTop) {
+					top = triggerRect.top - height - offset
+					placement = "top"
+				}
+
+				tip.style.left = left + "px"
+				tip.style.top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)) + "px"
+				tip.style.maxHeight = maxHeight + "px"
+				tip.dataset.placement = placement
+			}
+
+			function requestHelpPosition() {
+				if (positionFrame) return
+				positionFrame = requestAnimationFrame(() => {
+					positionFrame = 0
+					const tip = helpTooltip()
+					if (tip && tip.dataset.open === "true") positionHelpTooltip()
+				})
+			}
+
+			function openHelpTooltip(trigger) {
+				const tip = helpTooltip()
+				if (!tip || !trigger) return
+
+				clearHelpShow()
+				cancelHelpHide()
+				currentHelpTerm = helpTermFor(trigger)
+				setHelpContent(trigger)
+				setActiveHelpTrigger(trigger)
+				tip.style.left = "-9999px"
+				tip.style.top = "-9999px"
+				tip.dataset.open = "true"
+				tip.setAttribute("aria-hidden", "false")
+				positionHelpTooltip()
+			}
+
+			function hideHelpTooltip(term, force) {
+				const tip = helpTooltip()
+				if (!tip) return
+				if (!force && term && currentHelpTerm && term !== currentHelpTerm) return
+				if (!force && activeHelpTrigger && document.activeElement === activeHelpTrigger) return
+
+				clearHelpShow()
+				cancelHelpHide()
+				if (activeHelpTrigger) activeHelpTrigger.removeAttribute("aria-describedby")
+				activeHelpTrigger = null
+				currentHelpTerm = ""
+				tip.removeAttribute("data-open")
+				tip.setAttribute("aria-hidden", "true")
+			}
+
+			function scheduleHelpOpen(trigger, delay) {
+				const tip = helpTooltip()
+				if (!tip || !trigger) return
+
+				cancelHelpHide()
+				if (tip.dataset.open === "true" && currentHelpTerm && sameHelpTerm(trigger, currentHelpTerm)) {
+					openHelpTooltip(trigger)
+					return
+				}
+
+				clearHelpShow()
+				const term = helpTermFor(trigger)
+				showTimer = setTimeout(() => {
+					showTimer = 0
+					const nextTrigger = trigger.isConnected ? trigger : replacementHelpTrigger(term)
+					if (nextTrigger) openHelpTooltip(nextTrigger)
+				}, delay)
+			}
+
+			function scheduleHelpHide(trigger, delay) {
+				const term = helpTermFor(trigger) || currentHelpTerm
+				clearHelpShow()
+				clearTimeout(hideTimer)
+				hideTimer = setTimeout(() => hideHelpTooltip(term, false), delay)
+			}
+
+			document.addEventListener("pointerdown", (event) => {
+				lastPointerType = event.pointerType || ""
+			}, true)
+
+			document.addEventListener("pointerover", (event) => {
+				if (event.pointerType === "touch") return
+				const trigger = helpTriggerFor(event.target)
+				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
+				scheduleHelpOpen(trigger, showDelay)
+			})
+
+			document.addEventListener("pointerout", (event) => {
+				if (event.pointerType === "touch") return
+				const trigger = helpTriggerFor(event.target)
+				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
+				scheduleHelpHide(trigger, hideDelay)
+			})
+
+			document.addEventListener("focusin", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (trigger && lastPointerType !== "touch") openHelpTooltip(trigger)
+			})
+
+			document.addEventListener("focusout", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
+				scheduleHelpHide(trigger, hideDelay)
+			})
+
+			document.addEventListener("click", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (trigger) {
+					if (helpTooltip()?.dataset.open === "true" && activeHelpTrigger === trigger) hideHelpTooltip("", true)
+					else openHelpTooltip(trigger)
+					return
+				}
+				hideHelpTooltip("", true)
+			}, true)
+
+			document.addEventListener("detent:closeHelpTooltip", () => hideHelpTooltip("", true))
+
+			document.addEventListener("keydown", (event) => {
+				if (event.key === "Escape") hideHelpTooltip("", true)
+			})
+
+			document.addEventListener("htmx:afterSettle", () => {
+				if (showTimer) return
+				if (!activeHelpTrigger) return
+				if (!document.documentElement.contains(activeHelpTrigger)) {
+					const replacement = replacementHelpTrigger(currentHelpTerm)
+					if (!replacement) {
+						hideHelpTooltip("", true)
+						return
+					}
+					setActiveHelpTrigger(replacement)
+				}
+				openHelpTooltip(activeHelpTrigger)
+			})
+
+			window.addEventListener("resize", requestHelpPosition)
+			window.addEventListener("scroll", () => hideHelpTooltip("", true), true)
+		})();
+	</script>
+}
+
+templ helpTooltipHost() {
+	<div
+		id="help-tooltip"
+		role="tooltip"
+		class="popover-panel help-tooltip"
+		aria-hidden="true"
+		data-help-tooltip
+		data-help-tooltip-width="256"
+	>
+		<span class="help-tip-title" data-help-tooltip-title></span>
+		<span class="help-tip-description" data-help-tooltip-description></span>
+	</div>
+}
+
+templ helpIcon(term helpTerm, scope string) {
+	if hasHelp(term) {
+		<span class="help-tip inline-flex shrink-0 align-middle" data-help-tip>
+			<button
+				type="button"
+				class="help-tip-button"
+				aria-label={ "Help: " + helpLabel(term) }
+				data-help-trigger
+				data-help-scope={ scope }
+				data-help-term={ string(term) }
+				data-help-title={ helpLabel(term) }
+				data-help-description={ helpDescription(term) }
+			>
+				<span aria-hidden="true">?</span>
+			</button>
+		</span>
+	}
+}
+
+templ panelHeader(iconComponent templ.Component, title string, term helpTerm, scope string) {
+	<div class="flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-2">
+		<div class="inline-flex min-w-0 items-center gap-2">
+			if iconComponent != nil {
+				<span class="inline-flex size-4 shrink-0 items-center justify-center text-accent" aria-hidden="true">
+					@iconComponent
+				</span>
+			}
+			<h2 class="inline-flex min-w-0 items-center gap-1.5 text-sm font-semibold text-text">
+				<span class="truncate">{ title }</span>
+				@helpIcon(term, scope)
+			</h2>
+		</div>
+		<div class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+			{ children... }
+		</div>
+	</div>
+}
+
+templ plainInlineLabel(label string, class string) {
+	<span class={ "inline-flex min-w-0 items-center gap-1.5 " + class }>
+		<span>{ label }</span>
+	</span>
+}
+
+templ helpHeading2(label string, term helpTerm, scope string) {
+	<h2 class="inline-flex min-w-0 items-center gap-2 text-lg font-semibold text-text">
+		<span>{ label }</span>
+		@helpIcon(term, scope)
+	</h2>
+}
+
+templ helpHeading3(label string, term helpTerm, scope string) {
+	<h3 class="inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-text">
+		<span>{ label }</span>
+		@helpIcon(term, scope)
+	</h3>
+}
