@@ -303,13 +303,14 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 }
 
 func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowCreate bool) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	view, err := s.readSpritePool(ctx, scope)
 	if err != nil || view.Revision == 0 {
 		return err
 	}
-	if _, err := s.spritePoolAuthority(ctx, s.database.reader, scope); errors.Is(err, sql.ErrNoRows) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	_, err = s.spritePoolAuthority(readCtx, s.database.reader, scope)
+	cancelRead()
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	} else if err != nil {
 		return err
@@ -317,7 +318,10 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 	for _, member := range view.Members {
 		if member.State == "bootstrapping" {
 			var expires string
-			if err := s.database.reader.QueryRowContext(ctx, `SELECT expires_at FROM runner_enrollments WHERE id=?`, member.EnrollmentID).Scan(&expires); err != nil {
+			readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+			err := s.database.reader.QueryRowContext(readCtx, `SELECT expires_at FROM runner_enrollments WHERE id=?`, member.EnrollmentID).Scan(&expires)
+			cancelRead()
+			if err != nil {
 				return err
 			}
 			end, err := parseTimeValue(expires)
