@@ -178,7 +178,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 		out.Cost += row.Cost
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
-	out.Rework = reportReworkClasses(timelines, p.allAttempts, usage, w.From, w.To)
+	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
 	out.Failures = reportFailureClasses(p.failures)
 	policy, err := diagnosticsPolicyValues(ctx, s.database.reader, scope)
 	if err != nil {
@@ -284,28 +284,18 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 	return out, nil
 }
 
-func reportReworkClasses(timelines []analyticsResidenceTimeline, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, from, to time.Time) []reportClassTotal {
-	type reworkReturn struct {
-		at    time.Time
-		class reportClass
-	}
+func reportReworkClasses(returns []qualityReturn, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow) []reportClassTotal {
 	classes := newReportClassAccumulator()
-	returns := map[string][]reworkReturn{}
-	for _, timeline := range timelines {
-		for _, event := range timeline.rework {
-			if event.at.Before(from) || !event.at.Before(to) {
-				continue
-			}
-			class := classifyReworkReason(event.data.FromState, event.data.ReasonDetail)
-			classes.add(class, timeline.issue.id, 0)
-			returns[timeline.issue.id] = append(returns[timeline.issue.id], reworkReturn{at: event.at, class: class})
-		}
+	byItem := map[string][]qualityReturn{}
+	for _, r := range returns {
+		classes.add(r.class, r.item, 0)
+		byItem[r.item] = append(byItem[r.item], r)
 	}
 	for _, a := range attempts {
-		var latest *reworkReturn
-		for i, r := range returns[a.WorkItemID] {
-			if !r.at.After(a.StartedAt) {
-				latest = &returns[a.WorkItemID][i]
+		var latest *qualityReturn
+		for i, r := range byItem[a.WorkItemID] {
+			if !r.at.After(a.StartedAt) && (latest == nil || r.at.After(latest.at)) {
+				latest = &byItem[a.WorkItemID][i]
 			}
 		}
 		if latest == nil {

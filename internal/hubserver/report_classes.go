@@ -32,9 +32,9 @@ type reportClassRule struct {
 var reportNotClassified = reportClass{Name: "Not classified", Kind: reportKindUnknown}
 
 var reworkClassRules = []reportClassRule{
-	{reportClass{"Review findings to address", reportKindIssue}, []string{"review conversations", "review transition", "changes requested", "review finding"}},
+	{reportClass{"Review findings to address", reportKindIssue}, []string{"review conversations", "changes requested", "review finding"}},
 	{reportClass{"Landing refused: protected base", reportKindInfrastructure}, []string{"base protected", "protected base"}},
-	{reportClass{"Gate failed before landing", reportKindInfrastructure}, []string{"gate failed"}},
+	{reportClass{"Gate failed before landing", reportKindIssue}, []string{"gate failed"}},
 	{reportClass{"Base moved after validation", reportKindInfrastructure}, []string{"base moved", "base branch changed"}},
 	{reportClass{"Conflict on landing", reportKindIssue}, []string{"conflict"}},
 	{reportClass{"Finished without a change", reportKindIssue}, []string{"without work product", "no work product"}},
@@ -44,13 +44,16 @@ var failureClassRules = []reportClassRule{
 	{reportClass{"Review conversations unresolved at merge", reportKindIssue}, []string{"review conversations"}},
 	{reportClass{"Landing refused: protected base", reportKindInfrastructure}, []string{"base protected", "protected base"}},
 	{reportClass{"Conflict on landing", reportKindIssue}, []string{"landing refused: conflict"}},
-	{reportClass{"Finalization gate failed", reportKindInfrastructure}, []string{"source finalization gate failed"}},
-	{reportClass{"Landing gate failed", reportKindInfrastructure}, []string{"landing gate failed"}},
+	{reportClass{"Finalization gate failed", reportKindIssue}, []string{"source finalization gate failed"}},
+	{reportClass{"Merge resolution gate failed", reportKindIssue}, []string{"merge resolution gate failed"}},
+	{reportClass{"Landing gate failed", reportKindIssue}, []string{"landing gate failed"}},
 	{reportClass{"Worker processes left running after stop", reportKindInfrastructure}, []string{"process reap failed", "processes remained after"}},
 	{reportClass{"Hub request timed out", reportKindInfrastructure}, []string{"hub unavailable", "hub request timed out"}},
 	{reportClass{"Hub request failed", reportKindInfrastructure}, []string{"hub request failed"}},
 	{reportClass{"Workspace preparation failed", reportKindInfrastructure}, []string{"workspace preparation failed", "commit squash:"}},
 	{reportClass{"Agent turn interrupted", reportKindInfrastructure}, []string{"interrupted turn"}},
+	{reportClass{"Agent turn timed out", reportKindInfrastructure}, []string{"worker cancellation: deadline exceeded", "agent turn: context deadline exceeded"}},
+	{reportClass{"Instance lock held", reportKindInfrastructure}, []string{"instance lock is held"}},
 	{reportClass{"Finished without a change", reportKindIssue}, []string{"without work product", "no work product"}},
 }
 

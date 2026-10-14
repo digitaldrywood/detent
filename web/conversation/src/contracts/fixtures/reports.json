@@ -746,7 +746,7 @@
   "rework_classes": [
     {
       "class": "Gate failed before landing",
-      "kind": "infrastructure",
+      "kind": "issue",
       "count": 21,
       "issues": 14,
       "cost_usd": 61.2
@@ -790,7 +790,7 @@
   "failure_classes": [
     {
       "class": "Finalization gate failed",
-      "kind": "infrastructure",
+      "kind": "issue",
       "count": 34,
       "issues": 12,
       "cost_usd": 120
