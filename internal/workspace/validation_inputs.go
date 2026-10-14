@@ -73,7 +73,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	if len(args) != 4 {
 		return evidence
 	}
-	base, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "rev-parse", "--verify", args[1]+"^{commit}")
+	_, err = runGitAtWithEnv(ctx, command.Dir, command.Env, "rev-parse", "--verify", args[1]+"^{commit}")
 	if err != nil {
 		return evidence
 	}
