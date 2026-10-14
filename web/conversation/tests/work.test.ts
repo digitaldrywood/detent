@@ -89,6 +89,13 @@ describe("listing work items", () => {
     expect(all.items.length).toBe(32);
   });
 
+  it.each(["bug", "change_request"] as const)("forwards the %s type filter and preserves the classification", async (type) => {
+    const page = await http.listWorkItems({ projectId: PROJECT, type, includeBoard: true, limit: 200 });
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(page.items.every((issue) => issue.type === type)).toBe(true);
+    expect(toWorkItemView(page.items[0]!, "Example").type).toBe(type);
+  });
+
   it("filters by one state on the server", async () => {
     const page = await http.listWorkItems({ projectId: PROJECT, state: "In Review" });
     expect(page.items.length).toBeGreaterThan(0);

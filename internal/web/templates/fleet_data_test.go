@@ -330,14 +330,14 @@ func TestFleetPRLanesUseIdentityIDs(t *testing.T) {
 		Pipeline: []telemetry.Issue{
 			{
 				ID:         "issue-a-7",
-				Identifier: "digitaldrywood/repo-a#7",
+				Identifier: "example-org/repo-a#7",
 				ProjectID:  "aggregate",
 				Title:      "Repo A",
 				State:      "Human Review",
 			},
 			{
 				ID:         "issue-b-7",
-				Identifier: "digitaldrywood/repo-b#7",
+				Identifier: "example-org/repo-b#7",
 				ProjectID:  "aggregate",
 				Title:      "Repo B",
 				State:      "Human Review",
@@ -349,8 +349,8 @@ func TestFleetPRLanesUseIdentityIDs(t *testing.T) {
 	if len(lanes) == 0 || len(lanes[0].Cards) != 2 {
 		t.Fatalf("expected two PR cards, got %+v", lanes)
 	}
-	if lanes[0].Cards[0].DomID != "pr-card-digitaldrywood-repo-a-7" ||
-		lanes[0].Cards[1].DomID != "pr-card-digitaldrywood-repo-b-7" {
+	if lanes[0].Cards[0].DomID != "pr-card-example-org-repo-a-7" ||
+		lanes[0].Cards[1].DomID != "pr-card-example-org-repo-b-7" {
 		t.Fatalf("PR card ids = %+v", lanes[0].Cards)
 	}
 }
@@ -381,7 +381,7 @@ func TestFleetSnapshotShowsNativeMergeQueueDepthAndETA(t *testing.T) {
 		GeneratedAt: now,
 		Pipeline: []telemetry.Issue{{
 			ID:         "native-queued",
-			Identifier: "digitaldrywood/detent#1301",
+			Identifier: "example-org/example-project#1301",
 			ProjectID:  "detent",
 			Title:      "Delegate native merge queue",
 			State:      "Merging",
@@ -477,7 +477,7 @@ func TestFleetMetricsIncludesHighestActiveContext(t *testing.T) {
 	lowerWindow := int64(400_000)
 	higherWindow := int64(300_000)
 	data.Snapshot.Running = append(data.Snapshot.Running, telemetry.Running{
-		Issue:  telemetry.Issue{Identifier: "digitaldrywood/detent#977", URL: "https://github.com/digitaldrywood/detent/issues/977"},
+		Issue:  telemetry.Issue{Identifier: "example-org/example-project#977", URL: "https://github.com/example-org/example-project/issues/977"},
 		Tokens: telemetry.Tokens{Total: 270_000, ModelContextWindow: &higherWindow},
 	})
 	data.Snapshot.Running[0].Tokens.ModelContextWindow = &lowerWindow
@@ -486,7 +486,7 @@ func TestFleetMetricsIncludesHighestActiveContext(t *testing.T) {
 	if !metrics.HasContext {
 		t.Fatalf("expected context rollup: %+v", metrics)
 	}
-	if metrics.ContextValue != "90%" || metrics.ContextRef != "#977" || metrics.ContextURL != "https://github.com/digitaldrywood/detent/issues/977" || metrics.ContextPct != 90 || metrics.ContextKind != primitives.KindWarn {
+	if metrics.ContextValue != "90%" || metrics.ContextRef != "#977" || metrics.ContextURL != "https://github.com/example-org/example-project/issues/977" || metrics.ContextPct != 90 || metrics.ContextKind != primitives.KindWarn {
 		t.Fatalf("context rollup = %q %q %q pct=%d kind=%q", metrics.ContextValue, metrics.ContextRef, metrics.ContextURL, metrics.ContextPct, metrics.ContextKind)
 	}
 }
@@ -636,7 +636,7 @@ func TestFleetSnapshotKeepsBodyDuringDegradedRefresh(t *testing.T) {
 			GeneratedAt: time.Date(2026, 7, 4, 16, 0, 0, 0, time.UTC),
 			Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusDegraded, LastError: "tracker unavailable"},
 			BoardIssues: []telemetry.Issue{
-				{ID: "i1", Identifier: "digitaldrywood/detent#7", ProjectID: "detent", Title: "Prior card", State: "Backlog"},
+				{ID: "i1", Identifier: "example-org/example-project#7", ProjectID: "detent", Title: "Prior card", State: "Backlog"},
 			},
 		},
 		Kanban: KanbanData{States: []string{"Backlog"}},
@@ -659,7 +659,7 @@ func TestFleetSnapshotRendersPartialRefreshData(t *testing.T) {
 			GeneratedAt: time.Date(2026, 9, 3, 16, 0, 0, 0, time.UTC),
 			Refresh:     telemetry.Refresh{Status: telemetry.RefreshStatusPartial, LastError: "pyroapex workflow invalid"},
 			BoardIssues: []telemetry.Issue{
-				{ID: "i1", Identifier: "digitaldrywood/detent#7", ProjectID: "detent", Title: "Healthy project card", State: "Backlog"},
+				{ID: "i1", Identifier: "example-org/example-project#7", ProjectID: "detent", Title: "Healthy project card", State: "Backlog"},
 			},
 		},
 		Kanban: KanbanData{States: []string{"Backlog"}},

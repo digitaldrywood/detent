@@ -35,9 +35,9 @@ test("one open proposal stays off the banner and remains linked in Diagnostics",
   await expect(condition).toHaveCount(1);
   await expect(condition).toHaveAttribute("data-diagnostics-condition-class", "review_queue");
   await expect(condition).toContainText("Admission decision");
-  await expect(condition.getByRole("link", { name: "digitaldrywood/detent#1586" })).toHaveAttribute(
+  await expect(condition.getByRole("link", { name: "example-org/example-project#1586" })).toHaveAttribute(
     "href",
-    "https://github.com/digitaldrywood/detent/issues/1586",
+    "https://github.com/example-org/example-project/issues/1586",
   );
 });
 
@@ -51,9 +51,9 @@ test("several proposals stay off the banner and appear per project in Diagnostic
   await expect(conditions.filter({ hasText: "dogfood" })).toHaveCount(2);
   await expect(conditions.filter({ hasText: "docs-site" })).toHaveCount(1);
   for (const identifier of [
-    "digitaldrywood/detent#1586",
-    "digitaldrywood/detent#1594",
-    "digitaldrywood/docs-site#241",
+    "example-org/example-project#1586",
+    "example-org/example-project#1594",
+    "example-org/docs-site#241",
   ]) {
     await expect(conditions.filter({ hasText: identifier })).toHaveCount(1);
   }

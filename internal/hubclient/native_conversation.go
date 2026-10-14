@@ -220,11 +220,12 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 	if err != nil {
 		return nil, err
 	}
-	e.mu.Lock()
-	e.conversationContinuation = response.Continuation == nil || *response.Continuation
-	e.mu.Unlock()
 	logger := slog.Default().With("work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID)
-	return newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger), nil
+	session := newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger)
+	e.mu.Lock()
+	e.conversationContinuation = session.Continuation()
+	e.mu.Unlock()
+	return session, nil
 }
 
 // leaseCheck reports whether the attempt's lease is still current locally.
@@ -247,6 +248,7 @@ type conversationSession struct {
 	resume       string
 	resumeMode   string
 	threadOrigin string
+	continuation bool
 	preferences  runner.ConversationPreferences
 	pending      string
 	pendingKey   []string
@@ -292,6 +294,7 @@ func newConversationSession(ctx context.Context, client *NativeClient, item trac
 	flushCtx, flushCancel := context.WithCancel(context.WithoutCancel(ctx))
 	s := &conversationSession{
 		client: client, item: item, id: response.ConversationID, identity: identity, resume: response.Resume.ThreadID,
+		continuation: response.Continuation == nil || *response.Continuation,
 		resumeMode:   conversationResumeMode(response),
 		threadOrigin: response.Resume.ThreadOrigin,
 		preferences:  response.Preferences,
@@ -351,6 +354,8 @@ func conversationResumeMode(response ConversationBindResponse) string {
 }
 
 func (s *conversationSession) ConversationID() string { return s.id }
+
+func (s *conversationSession) Continuation() bool { return s.continuation }
 
 func (s *conversationSession) ResumeThreadID() string { return s.resume }
 

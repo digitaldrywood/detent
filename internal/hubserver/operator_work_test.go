@@ -193,7 +193,17 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("rank %d=%s %v", rank, raw, err)
 		}
 	}
-	linkedArgs := map[string]any{"github_issue_url": "github.com/Acme/Orders/issues/12", "state": "Todo"}
+	largeSnapshot := linkedSnapshot()
+	largeSnapshot.Body = strings.Repeat("source body ", 20000)
+	sourceComment := largeSnapshot.Comments[0]
+	largeSnapshot.Comments = nil
+	for index := range 6 {
+		sourceComment.Body = strings.Repeat("source comment ", 4000)
+		sourceComment.Provenance.ExternalID = "comment-" + strconv.Itoa(index)
+		largeSnapshot.Comments = append(largeSnapshot.Comments, sourceComment)
+	}
+	f.service.config.ImportBackend = linkedTestImporter{snapshot: largeSnapshot}
+	linkedArgs := map[string]any{"github_issue_url": largeSnapshot.URL, "state": "Todo"}
 	linkedRaw, failed := call("file_issue", "linked", linkedArgs)
 	var linked tracker.NativeIssue
 	if err := json.Unmarshal(linkedRaw, &linked); err != nil || failed || linked.State != "Triage" || linked.LinkedSource == nil || linked.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
@@ -205,6 +215,47 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("linked retry=%s", replay)
 		}
 	}
+	for _, tool := range []string{operatortool.WorkItem, operatortool.EditItem} {
+		fields := map[string]any{"reference": linked.WorkItemID}
+		key := ""
+		if tool == operatortool.EditItem {
+			fields = map[string]any{"identifier": linked.WorkItemID, "expected_revision": strconv.FormatInt(int64(linked.Revision), 10), "title": "Updated large item"}
+			key = "large-edit"
+		}
+		bounded, failed := call(tool, key, fields)
+		var item struct {
+			tracker.NativeIssue
+			ContentRead struct {
+				TruncatedFields []string `json:"truncated_fields"`
+				FullURL         string   `json:"full_url"`
+			} `json:"content_read"`
+		}
+		if failed || json.Unmarshal(bounded, &item) != nil || item.WorkItemID != linked.WorkItemID || item.State != "Triage" || item.Revision < linked.Revision || len(item.ContentRead.TruncatedFields) == 0 || item.ContentRead.FullURL == "" {
+			t.Fatalf("large %s failed=%t bytes=%d", tool, failed, len(bounded))
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, item.ContentRead.FullURL, f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var full tracker.NativeIssue
+		decodeHubResponse(t, response, &full)
+		if full.Body != largeSnapshot.Body || full.LinkedSource.Snapshot.Body != largeSnapshot.Body {
+			t.Fatal("REST content was truncated by MCP shaping")
+		}
+		if tool == operatortool.WorkItem {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, item.ContentRead.FullURL+"/comments", f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var comments tracker.Page[tracker.NativeComment]
+			decodeHubResponse(t, response, &comments)
+			if len(comments.Items) != len(largeSnapshot.Comments) {
+				t.Fatal("imported comments were lost")
+			}
+			for _, comment := range comments.Items {
+				if comment.Body != largeSnapshot.Comments[0].Body {
+					t.Fatal("REST comment content was truncated")
+				}
+			}
+		}
+	}
+	f.service.config.ImportBackend = linkedTestImporter{snapshot: linkedSnapshot()}
 	if _, failed := call("file_issue", "linked", map[string]any{"github_issue_url": "github.com/acme/orders/issues/13", "state": "Todo"}); !failed {
 		t.Fatal("changed linked creation retry was accepted")
 	}
@@ -465,8 +516,15 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				}
 				return
 			}
-			if _, failed := call(operatortool.PublishChangeVersion, denied.name, arguments); !failed {
+			refusal, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
+			if !failed {
 				t.Fatal("invalid source publication succeeded")
+			}
+			if denied.name == "source stale policy" {
+				var conflict operatortool.ConflictError
+				if json.Unmarshal(refusal, &conflict) != nil || conflict.Code != "policy_mismatch" || !strings.Contains(conflict.Message, "get_project_policy") {
+					t.Fatalf("stale publication policy refusal=%s", refusal)
+				}
 			}
 		})
 	}
@@ -532,10 +590,17 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		t.Fatal("worker request changed workflow")
 	}
 	for _, key := range []string{"operator-move", "operator-move"} {
+		largeMoveBody := strings.Repeat("<", 60000)
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", largeMoveBody, created.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
 		raw, failed = call(operatortool.MoveItem, key, map[string]any{"identifier": id, "expected_revision": listed.Items[0]["revision"], "target_state": "In Progress"})
 		var moved tracker.NativeIssue
 		if err := json.Unmarshal(raw, &moved); err != nil || failed || moved.State != "In Progress" || moved.Revision != current.Revision+1 {
 			t.Fatalf("Hub workflow command=%s %v", raw, err)
+		}
+		if !strings.Contains(string(raw), `"content_read"`) || readWorkItem(t, f, created.WorkItemID, "").Body != largeMoveBody {
+			t.Fatal("large move receipt lost its marker or truncated stored body")
 		}
 	}
 	blocker := f.create(t, "blocker")

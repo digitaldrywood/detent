@@ -1,7 +1,7 @@
 {
   "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
   "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
-  "name": "parable",
+  "name": "example-project",
   "profile": "native",
   "states": [
     { "name": "Backlog", "terminal": false, "dispatchable": false, "transitions": ["Todo"] },

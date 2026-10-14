@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mutation"
@@ -65,11 +64,7 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 		}
 	}
 	result.Detail = &detail
-	result.ValidationAudit, err = readValidationAudit(ctx, query, scope, "", "", change.ID, "")
-	if err != nil {
-		return result, err
-	}
-	result.Read = &operatortool.ChangeRead{VersionID: selection.Version, Complete: true, Sections: map[string]operatortool.ChangeReadPage{}}
+	result.Read = &operatortool.ChangeRead{VersionID: selection.Version, PolicyDetailsOmitted: true, Complete: true, Sections: map[string]operatortool.ChangeReadPage{}}
 	sections := []string{selection.Section}
 	if selection.Section == "current" {
 		sections = []string{"versions", "reviews", "checks", "discussion"}
@@ -187,14 +182,8 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 			if err := json.Unmarshal(row.raw, &review); err != nil {
 				return operatortool.ChangeReadPage{}, err
 			}
-			if review.Validator != nil {
-				validator := *review.Validator
-				validator.Commands = slices.Clone(validator.Commands)
-				for i := range validator.Commands {
-					validator.Commands[i] = *boundedChangeCommand(&validator.Commands[i])
-				}
-				review.Validator = &validator
-			}
+			review.Validator = boundedChangeReviewResult(review.Validator)
+			review.ImplementationReview = boundedChangeReviewResult(review.ImplementationReview)
 			detail.Reviews = append(detail.Reviews, review)
 		case "checks":
 			var check tracker.ChangeCheck
@@ -235,20 +224,23 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 	return operatortool.ChangeReadPage{NextCursor: next}, err
 }
 
+func boundedChangeReviewResult(result *gate.ValidatorResult) *gate.ValidatorResult {
+	if result == nil {
+		return nil
+	}
+	bounded := *result
+	bounded.Commands = slices.Clone(bounded.Commands)
+	for i := range bounded.Commands {
+		bounded.Commands[i] = *boundedChangeCommand(&bounded.Commands[i])
+	}
+	return &bounded
+}
+
 func boundedChangeCommand(command *gate.CommandResult) *gate.CommandResult {
 	if command == nil {
 		return nil
 	}
-	result := *command
-	const outputBytes = 4 << 10
-	if len(result.Output) > outputBytes {
-		end := outputBytes
-		for !utf8.ValidString(result.Output[:end]) {
-			end--
-		}
-		result.Output = result.Output[:end]
-		result.OutputTruncated = true
-	}
+	result := tracker.PublicGateResult(*command)
 	return &result
 }
 
@@ -262,6 +254,13 @@ func boundedChangeLanding(landing *tracker.NativeLandingReceipt) *tracker.Native
 }
 
 func boundedChangeVersion(version tracker.ChangeVersion) tracker.ChangeVersion {
+	if version.Policy.Authored != nil {
+		authored := *version.Policy.Authored
+		authored.Files = nil
+		version.Policy.Authored = &authored
+	}
+	version.Policy.Configuration = nil
+	version.Policy.Workflow = nil
 	version.Validation = boundedChangeCommand(version.Validation)
 	version.Landing = boundedChangeLanding(version.Landing)
 	return version

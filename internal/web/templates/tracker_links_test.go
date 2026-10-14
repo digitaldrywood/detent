@@ -14,8 +14,8 @@ import (
 func TestKnownTrackerReferencesRenderLinks(t *testing.T) {
 	t.Parallel()
 
-	issueURL := "https://github.com/digitaldrywood/detent/issues/1132"
-	prURL := "https://github.com/digitaldrywood/detent/pull/1133"
+	issueURL := "https://github.com/example-org/example-project/issues/1132"
+	prURL := "https://github.com/example-org/example-project/pull/1133"
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
@@ -41,7 +41,7 @@ func TestKnownTrackerReferencesRenderLinks(t *testing.T) {
 		},
 		{
 			name:      "fleet agent",
-			component: AgentActivityPanel([]fleetAgentRow{{ID: "agent-1132", Repo: "digitaldrywood/detent", Number: "#1132", URL: issueURL}}, "1 running", nil, true),
+			component: AgentActivityPanel([]fleetAgentRow{{ID: "agent-1132", Repo: "example-org/example-project", Number: "#1132", URL: issueURL}}, "1 running", nil, true),
 			want:      []string{`href="` + issueURL + `"`, ">#1132</a>"},
 		},
 		{
@@ -49,7 +49,7 @@ func TestKnownTrackerReferencesRenderLinks(t *testing.T) {
 			component: fleetSnapshotBody(DashboardData{Snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				Pipeline: []telemetry.Issue{{
-					Identifier: "digitaldrywood/detent#1132", ProjectID: "detent", State: "Human Review", URL: issueURL,
+					Identifier: "example-org/example-project#1132", ProjectID: "detent", State: "Human Review", URL: issueURL,
 					PullRequest: &telemetry.PullRequest{Number: 1133, URL: prURL},
 				}},
 			}}),
@@ -58,7 +58,7 @@ func TestKnownTrackerReferencesRenderLinks(t *testing.T) {
 		{
 			name: "analytics",
 			component: AnalyticsSnapshotV2(DashboardData{Snapshot: telemetry.Snapshot{WorkAttempts: []telemetry.WorkAttempt{{
-				AttemptID: 1, Identifier: "digitaldrywood/detent#1132", IssueURL: issueURL,
+				AttemptID: 1, Identifier: "example-org/example-project#1132", IssueURL: issueURL,
 			}}}}),
 			want: []string{`href="` + issueURL + `"`, ">#1132</a>"},
 		},
@@ -91,7 +91,7 @@ func TestKnownTrackerReferencesRenderLinks(t *testing.T) {
 			name: "library",
 			component: libraryTableRow(LibraryRow{
 				ID: "library-1133", SourceKind: "pull_request", ArtifactPath: "PR #1133", PullRequestURL: prURL,
-				SourceURL: issueURL, SourceLabel: "digitaldrywood/detent#1132",
+				SourceURL: issueURL, SourceLabel: "example-org/example-project#1132",
 			}),
 			want: []string{`href="` + issueURL + `"`, `href="` + prURL + `"`, ">PR #1133</a>"},
 		},

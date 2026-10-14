@@ -114,6 +114,10 @@ interactions are the main source of incidents, so the set may not grow.
   are attributed to the instance, never to the issue.
 - The orchestrator is the only writer of tracker lane state; workers report
   outcomes and never write lane labels.
+- This project has no human review step. Never move a Detent issue to Human
+  Review. An operator session that recovers or hand-lands work moves the issue
+  to Done once its PR merges into `develop`; work that needs a human goes to
+  Blocked with a `human_action`.
 - Do not add configuration keys, CLI subcommands, or dashboard surfaces to work
   around a mechanism. Fix the mechanism.
 - Machine-filed issues carry an origin stamp and a fingerprint; never file a
@@ -191,6 +195,15 @@ behavior-preserving refactor, or a private function exported only for a test
 are scheduled evidence only; no package, file or aggregate coverage floor
 exists, and no change is made to move a percentage.
 
+Code that creates rows per key, member, organization, project or other entity
+is tested with at least two of those entities in the same database and scope,
+and asserts that both are usable. One row proves nothing about uniqueness.
+Every UNIQUE or PRIMARY KEY column such a row writes derives from its entity,
+never from a fixed label. `TestInsertsNeverWriteConstantUniqueKeys` in each
+SQLite store package refuses an INSERT that writes constants into every column
+of a unique key, except a singleton upsert whose `ON CONFLICT` key is itself
+constant. A new store package adds the same test.
+
 Focused `go test -timeout=60s ./<touched-package>/...`, `go vet`, targeted
 regressions, and [safety-critical fuzzing](CLAUDE.md#safety-critical-orchestrator-validation)
 are available for diagnostics during edits. `make check-land` is the
@@ -202,8 +215,13 @@ Repeat diagnostics only to verify changed behavior or resolve a concrete remaini
 risk. Ordinary submission, completion, admission, and merge do not wait for a
 coverage percentage, fuzz duration, local status, or scheduled run. The scheduled
 full suite validates pinned `develop` commits and every release branch update.
-Only green release branch heads receive stable tags.
-A new validated release deploys staging and passes its smoke before deploying production.
+Every release starts by cutting and freezing a `release/vX.Y` branch from
+`develop`. Fixes land on `develop` first, then reach the release branch through
+reviewed `git cherry-pick -x` PRs. Only the release branch's green full suite
+permits a version tag. That tag deploys staging and passes its smoke before
+production. Never use an operator develop prerelease or source-gate-only release
+path. Follow [the release workflow](docs/branching.md#release-branches), including
+for urgent recovery; ordinary develop landing remains independent.
 
 Other projects using Detent choose their own validation commands, required
 checks, workflow triggers, and release policies. Do not introduce a product-wide
@@ -271,8 +289,12 @@ identity. A new occurrence does not reopen terminal work or clear holds.
 Scheduled infrastructure reporting does not authorize source repair without a
 reproducible test or source diagnostic and does not consume issue failure
 allowance. A historical pinned failure does not prove that the current head
-fails or staging is down; repair workers verify the failure on their current
-base. Staging and production deploy sequentially from newly validated release tags,
+fails or staging is down; repair workers reproduce on their actual implementation-start
+base before edits and retain that SHA, command and observed failure. An unrelated
+later rebase preserves diagnosis provenance; relevant intervening changes require
+reassessment. Validate the integrated candidate and reuse applicable exact-source
+host receipts under [WORKFLOW.md](WORKFLOW.md#scheduled-ci-repair-contract).
+Staging and production deploy sequentially from newly validated release tags,
 which require every configured scheduled job to succeed; no release is tagged
 for a red suite. Repair guidance must not demand a local-gate status, blocking
 CI or CI waiting in ordinary issue merging. Other projects retain their chosen

@@ -499,6 +499,22 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	return nil
 }
 
+func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
+	change := e.change
+	if change == nil {
+		return nil
+	}
+	finalization := (tracker.NativeFinalization{
+		Publication: e.publication,
+		ObservedAt:  e.scheduler.now().UTC(), Settled: e.settled,
+		Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
+		VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
+		Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,
+		Error: change.Error, SourceVersion: e.finalizationSource, SourceAttemptID: e.finalizationAttempt,
+	}).Public()
+	return &finalization
+}
+
 func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -511,21 +527,25 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	if preparationErr != nil {
 		outcome = "failed"
 	}
-	if e.data.Identity == nil || e.data.Outcome != "" {
+	if e.data.Outcome != "" {
 		return preparationErr
+	}
+	if e.data.Identity == nil {
+		if e.preparedFailure == nil || outcome == "succeeded" {
+			return preparationErr
+		}
+		supported, err := e.claim.source.client.HubFeature(ctx, tracker.NativePreProviderFailureCapability)
+		if err != nil || !supported {
+			return errors.Join(preparationErr, err)
+		}
+		e.preparedFailure.Stage = "pre_provider"
+		public := e.preparedFailure.Public()
+		e.preparedFailure = &public
 	}
 	e.data.Disposition = e.preparedDisposition
 	e.data.TerminalFailure = e.preparedFailure
-	if change := e.change; change != nil {
-		finalization := (tracker.NativeFinalization{
-			Publication: e.publication,
-			ObservedAt:  e.scheduler.now().UTC(), Settled: e.settled,
-			Changed: change.Changed, Files: change.Files, ChangeID: change.ChangeID,
-			VersionID: change.VersionID, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA,
-			Reviewed: change.Reviewed, VersionError: change.VersionError, VersionCode: change.VersionCode,
-			Error: change.Error, SourceVersion: e.finalizationSource, SourceAttemptID: e.finalizationAttempt,
-		}).Public()
-		e.data.Finalization = &finalization
+	if finalization := e.preparedFinalization(); finalization != nil {
+		e.data.Finalization = finalization
 	}
 	return errors.Join(preparationErr, e.append(ctx, "run.finished", outcome, nil))
 }
@@ -620,7 +640,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 		e.usageStartedAt = at
 		e.activityBoundary(at, "")
 	}
-	if kind == "run.finished" {
+	if kind == "run.finished" && e.data.Identity != nil {
 		e.activityBoundary(at, outcome)
 	}
 	data := e.data

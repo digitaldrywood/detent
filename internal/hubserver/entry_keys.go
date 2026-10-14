@@ -16,6 +16,8 @@ import (
 )
 
 func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if !s.hostedShared() || claims.Kind != cloudassert.KindKey || claims.Key == nil || !claims.Key.Valid() || !claims.ExpiresAt.After(s.config.now()) || claims.Audience != s.config.Hosted.OrganizationID {
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 	}
@@ -42,7 +44,7 @@ func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Cla
 		return credential, http.StatusOK, nil
 	}
 	var local string
-	err = s.database.auth().QueryRowContext(ctx, `SELECT m.membership_id,m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL`, claims.Subject).Scan(&credential.HostedMembership, &credential.HostedPrincipal, &local)
+	err = s.database.auth().QueryRowContext(readCtx, `SELECT m.membership_id,m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL`, claims.Subject).Scan(&credential.HostedMembership, &credential.HostedPrincipal, &local)
 	if err != nil || !auth.ValidOrganizationRole(local) {
 		return apiCredential{}, http.StatusForbidden, &apikey.Refusal{Code: "membership_denied", Message: "The key owner is not an active organization member"}
 	}
@@ -73,12 +75,14 @@ func (s *Service) entryKeyCatalog(c echo.Context) error {
 }
 
 func (s *Service) entryKeyAdmin(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
 		return c.NoContent(http.StatusForbidden)
 	}
 	var role string
-	err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL", claims.Subject).Scan(&role)
 	if err != nil || role != "owner" && role != "admin" {
 		return c.NoContent(http.StatusForbidden)
 	}
@@ -116,7 +120,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if !hostedKeyAllows(credential.HostedKeyScope, permission) {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "key_permission_denied", Message: "The key permission does not allow this call"})
 	}
-	if !hostedRoleAllows(credential.HostedRole, permission) {
+	if !hostedRoleAllows(credential.HostedRole, permission, call.Name) {
 		return c.JSON(http.StatusForbidden, apikey.Refusal{Code: "role_denied", Message: "The current organization role does not allow this call"})
 	}
 	var selector struct {

@@ -352,6 +352,16 @@ func (e *sshNativeExecution) ValidatorVersion(ctx context.Context) (NativeValida
 	return input, err
 }
 
+func (e *sshNativeExecution) ReviewVersion(ctx context.Context) (NativeValidation, error) {
+	var input NativeValidation
+	err := e.peer.Call(ctx, "execution.ReviewVersion", &input)
+	return input, err
+}
+
+func (e *sshNativeExecution) RecordReview(ctx context.Context, result gate.ValidatorResult) error {
+	return e.peer.Call(ctx, "execution.RecordReview", nil, result)
+}
+
 func (e *sshNativeExecution) RecordValidator(ctx context.Context, result gate.ValidatorResult) error {
 	return e.peer.Call(ctx, "execution.RecordValidator", nil, result)
 }

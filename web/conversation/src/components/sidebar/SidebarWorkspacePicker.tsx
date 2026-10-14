@@ -5,7 +5,7 @@ import { ClientContext } from "../../app/client";
 import { useAccountApi } from "../../app/account/context";
 import { newKey } from "../../app/account/idempotency";
 import { useMutation } from "../../app/account/useResource";
-import { PLATFORM } from "../../app/entry/api";
+import { PLATFORM, SIGN_IN_ORGANIZATIONS } from "../../app/entry/api";
 import {
   behindSharedEntry,
   ENTRY_CREATE_ORGANIZATION,
@@ -44,7 +44,9 @@ export function WorkspacePicker({
   addHref,
   platformHref,
   pending = false,
+  loading = false,
   error = null,
+  signInHref,
 }: {
   readonly current: Workspace;
   readonly organizations: readonly Workspace[];
@@ -52,7 +54,9 @@ export function WorkspacePicker({
   readonly addHref: string;
   readonly platformHref?: string;
   readonly pending?: boolean;
+  readonly loading?: boolean;
   readonly error?: string | null;
+  readonly signInHref?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -147,7 +151,12 @@ export function WorkspacePicker({
               {workspace.id === current.id ? <CheckIcon aria-hidden className="size-3.5" /> : null}
             </MenuItem>
           ))}
-          {filtered.length === 0 ? (
+          {loading ? (
+            <p role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
+              Loading workspaces…
+            </p>
+          ) : null}
+          {filtered.length === 0 && !loading && !error ? (
             <p role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
               No workspaces found.
             </p>
@@ -156,6 +165,11 @@ export function WorkspacePicker({
             <p role="alert" className="px-2 py-1.5 text-xs text-destructive-foreground">
               {error}
             </p>
+          ) : null}
+          {signInHref ? (
+            <MenuItem className="min-h-8 text-xs sm:min-h-8 sm:text-xs" render={<a href={signInHref} />}>
+              Sign in again
+            </MenuItem>
           ) : null}
           <MenuSeparator />
           <MenuItem className="min-h-8 text-xs sm:min-h-8 sm:text-xs" render={<a href={addHref} />}>
@@ -177,8 +191,15 @@ export function WorkspacePicker({
 function AccountWorkspacePicker({ account }: { readonly account: AccountBootstrap }) {
   const api = useAccountApi();
   const shared = useSharedOrganizations();
+  const isShared = behindSharedEntry();
+  const sessionEnded = isShared && shared.error?.status === 401;
+  const listingError = isShared && shared.error
+    ? sessionEnded
+      ? "Your Cloud session has ended."
+      : "Could not load workspaces. Try again shortly."
+    : null;
   const switchTo = useMutation(async (organization: string) => {
-    const target = shared?.find((candidate) => candidate.id === organization);
+    const target = shared.value?.find((candidate) => candidate.id === organization);
     if (target !== undefined) {
       globalThis.location.assign(target.url);
       return null;
@@ -191,11 +212,13 @@ function AccountWorkspacePicker({ account }: { readonly account: AccountBootstra
   return (
     <WorkspacePicker
       current={account.organization}
-      organizations={shared ?? account.organizations}
+      organizations={isShared ? shared.value ?? [] : account.organizations}
       onSelect={(id) => void switchTo.call(id)}
       pending={switchTo.pending}
-      error={switchTo.error?.message ?? null}
-      addHref={behindSharedEntry() ? ENTRY_CREATE_ORGANIZATION : "/organization"}
+      loading={isShared && shared.loading}
+      error={listingError ?? switchTo.error?.message ?? null}
+      signInHref={sessionEnded ? SIGN_IN_ORGANIZATIONS : undefined}
+      addHref={isShared ? ENTRY_CREATE_ORGANIZATION : "/organization"}
       platformHref={account.actor.platform_role ? PLATFORM : undefined}
     />
   );

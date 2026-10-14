@@ -74,9 +74,11 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 }
 
 func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string) (hostedCheckout, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var checkout hostedCheckout
 	var raw string
-	if err := s.database.db.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err != nil {
 		return checkout, err
 	}
 	if err := json.Unmarshal([]byte(raw), &checkout); err != nil {
@@ -169,7 +171,10 @@ func (s *Service) recordBillingAction(ctx context.Context, actor, action string)
 }
 
 func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billing.Binding, error) {
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
+	if cfg == nil {
+		return billing.Binding{}, errHostedBillingUnbound
+	}
 	binding, err := s.database.hostedBillingBinding(ctx, cfg)
 	if !errors.Is(err, errHostedBillingUnbound) {
 		return binding, err
@@ -184,6 +189,7 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO hosted_billing_customer_intents(organization_id,account_id,mode,idempotency_key,state,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?) ON CONFLICT DO NOTHING", organization, cfg.AccountID, cfg.mode(), key, now, now); err != nil {
 		return billing.Binding{}, err
 	}
+	// Read the customer intent just inserted by this request on the writer.
 	var account, mode, state string
 	if err := s.database.db.QueryRowContext(ctx, "SELECT account_id,mode,state FROM hosted_billing_customer_intents WHERE organization_id=?", organization).Scan(&account, &mode, &state); err != nil {
 		return billing.Binding{}, err
@@ -226,7 +232,8 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 	if err := tx.Commit(); err != nil {
 		return billing.Binding{}, err
 	}
-	return s.database.hostedBillingBinding(ctx, cfg)
+	// Read back the customer binding installed by this request on the writer.
+	return readHostedBillingBinding(ctx, s.database.db, s.database.hostedOrganization, cfg)
 }
 
 func hostedBillingAPI(c echo.Context) bool {

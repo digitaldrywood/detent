@@ -20,15 +20,28 @@ describe("diagnostics read", () => {
       fetch: async (url) => {
         requests.push(url);
         const query = new URL(url, "https://example.test");
+        const project = query.pathname.split("/").at(-3)!;
+        const issue = healthFixture.items[1]!;
         return Response.json({
           ...healthFixture,
-          items: query.searchParams.has("cursor") ? [healthFixture.items[1]] : [healthFixture.items[0]],
+          items: query.searchParams.has("cursor")
+            ? [{ ...issue, id: `finding_${project}`, subject: { kind: "work_item", id: `wi_${project}` } }]
+            : [healthFixture.items[0]],
           next_cursor: query.searchParams.has("cursor") ? undefined : "next/page",
         });
       },
     });
     const read = await api.healthFindings(["prj_first", "prj_second"], options);
-    expect(read.items.map((finding) => finding.id)).toEqual(["finding_watch", "finding_attention"]);
+    expect(read.items.map((finding) => finding.id)).toEqual(["finding_watch", "finding_prj_first", "finding_prj_second"]);
+    expect(read.items.filter((finding) => finding.subject.kind === "work_item").map((finding) => finding.subject)).toEqual([
+      { kind: "work_item", id: "wi_prj_first", project_id: "prj_first" },
+      { kind: "work_item", id: "wi_prj_second", project_id: "prj_second" },
+    ]);
+    expect(findingsFromRead(read).filter((finding) => finding.subject.kind === "issue").map((finding) => finding.subject)).toEqual([
+      { kind: "issue", work_item_id: "wi_prj_first", project_id: "prj_first" },
+      { kind: "issue", work_item_id: "wi_prj_second", project_id: "prj_second" },
+    ]);
+    expect(findingsFromRead(read)[0]?.subject.project_id).toBe("prj_second");
     expect(read.last_tick_at).toBe(healthFixture.last_tick_at);
     const query = options.state === "resolved" ? "state=resolved&since=2026-10-07T10%3A00%3A00Z" : "state=open";
     expect(requests.toSorted()).toEqual([

@@ -55,7 +55,7 @@ func (s *Service) requireRunnerAccess(ctx context.Context, tx *sql.Tx, scope nat
 			return operatortool.ErrAccessDenied
 		}
 		scope.credential.ManageRunners = !scope.requireHostedAdmin
-		if err := s.recheckHostedAuthority(ctx, tx, scope, required); err != nil {
+		if err := s.recheckHostedAuthority(ctx, tx, &scope, required); err != nil {
 			return err
 		}
 	} else if scope.credential.Scope != apiScopeAdmin {

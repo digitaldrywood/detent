@@ -10,7 +10,7 @@
 // the decision, not this client's.
 import { ArrowLeftIcon, GitPullRequestIcon } from "lucide-react";
 import React from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useParams, useRouteContext, useSearch } from "@tanstack/react-router";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Textarea } from "../../components/ui/textarea.tsx";
@@ -545,7 +545,10 @@ function useChangeRequest(
 }
 
 export function ChangeRequestPage(): React.ReactElement {
-  const { workItemId, changeId } = useParams({ from: "/work/i/$workItemId/changes/$changeId" });
+  const params = useParams({ strict: false }) as { workItemId?: string; changeId: string };
+ const context = useRouteContext({ strict: false }) as { resolvedWorkItemId?: string; resolvedProjectId?: string };
+ const workItemId = context.resolvedWorkItemId ?? params.workItemId ?? "";
+ const changeId = params.changeId;
   const search = useSearch({ strict: false }) as { project?: string };
   const shell = useShell();
   const navigate = useNavigate();
@@ -562,7 +565,7 @@ export function ChangeRequestPage(): React.ReactElement {
     (conversation) => conversation.work_item_id === workItemId,
   );
   const projectId =
-    (search.project !== undefined && search.project.length > 0 ? search.project : null) ??
+    context.resolvedProjectId ?? (search.project !== undefined && search.project.length > 0 ? search.project : null) ??
     linked?.project_id ??
     (shell.projectId === "" ? null : shell.projectId);
   const { data, error, loading, reload } = useChangeRequest(http, projectId, workItemId, changeId);

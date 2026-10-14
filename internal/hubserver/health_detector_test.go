@@ -36,7 +36,7 @@ func TestHealthFindingLifecycle(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "health-lifecycle")
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-	finding := newHealthFinding("test", "instance", "project", string(f.project.ID), "One sentence.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{Counts: map[string]int{"candidates": 1}})
+	finding := newHealthFinding("every_candidate_refused", "instance", "project", string(f.project.ID), "Every candidate was refused with the same reason: runner_capacity_full.", "The runner operator corrects the reported capacity or policy refusal.", []string{string(f.project.ID)}, healthEvidence{Counts: map[string]int{"candidates": 1}})
 	var original string
 	for _, test := range []struct {
 		name   string
@@ -54,7 +54,7 @@ func TestHealthFindingLifecycle(t *testing.T) {
 		{"later recurrence opens new record", 124 * time.Minute, true, 2, false, 124 * time.Minute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			findings := []healthFinding{}
+			findings := evaluateHealth(now.Add(test.offset), healthSnapshot{Projects: []healthProject{{ID: string(f.project.ID), Candidates: 1, RefusalReasons: []string{"runner_capacity_full"}}}})
 			if test.active {
 				findings = append(findings, finding)
 			}
@@ -148,6 +148,11 @@ func TestHealthFindingsReads(t *testing.T) {
 	}
 	findings[0].Projects = append(findings[0].Projects, string(other.project.ID))
 	findings[0].Evidence = healthEvidence{Counts: map[string]int{"queue_depth": 8}, Queues: map[string]healthQueueEvidence{string(f.project.ID): {QueueDepth: 3}, string(other.project.ID): {QueueDepth: 5}}}
+	scheduled, active := deadManFinding(now, healthProject{ID: string(f.project.ID), Scheduled: healthScheduledValidation{LastReport: now.Add(-6 * time.Hour), LastRunURL: "https://github.com/example-org/example-project/actions/runs/1/attempts/1"}})
+	if !active {
+		t.Fatal("scheduled validation finding was not active")
+	}
+	findings[1] = scheduled
 	applyTestHealth(t, f, now, findings)
 	for _, test := range []struct {
 		name, path string
@@ -207,7 +212,7 @@ func TestHealthFindingsReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(result.Content), "last_tick_at") {
+	if !strings.Contains(string(result.Content), "last_tick_at") || !strings.Contains(string(result.Content), "scheduled_silent") || !strings.Contains(string(result.Content), "actions/runs/1/attempts/1") {
 		t.Fatalf("MCP result=%+v", result)
 	}
 	applyTestHealth(t, f, now.Add(time.Minute), nil)
@@ -326,6 +331,9 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 		wantRefusal bool
 	}{
 		{name: "all refused", reasons: []string{"policy_mismatch", "policy_mismatch"}, wantRefusal: true},
+		{name: "all slots working", reasons: []string{"runner_capacity_full", "runner_capacity_full"}},
+		{name: "recorded full capacity", reasons: []string{"capacity_full", "capacity_full"}},
+		{name: "offline", reasons: []string{"runner_heartbeat_stale", "runner_heartbeat_stale"}, wantRefusal: true},
 		{name: "different reasons", reasons: []string{"policy_mismatch", "capacity_full"}},
 		{name: "partial cycle", reasons: []string{"policy_mismatch"}},
 		{name: "claimed cycle", reasons: []string{"policy_mismatch", "policy_mismatch"}, claims: true},

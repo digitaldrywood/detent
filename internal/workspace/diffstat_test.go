@@ -79,15 +79,26 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		name    string
-		advance bool
-		dirty   bool
-		wantErr bool
+		name           string
+		advance        bool
+		dirty          bool
+		missingPullRef bool
+		stalePullRef   bool
+		missingBranch  bool
+		movedBranch    bool
+		wantErr        bool
 	}{
 		{name: "stable head"},
 		{name: "matching head with dirty review workspace", dirty: true, wantErr: true},
 		{name: "head changes before checkout", advance: true},
 		{name: "dirty review workspace", advance: true, dirty: true, wantErr: true},
+		{name: "missing pull ref uses published branch", advance: true, missingPullRef: true},
+		{name: "missing pull ref and branch", missingPullRef: true, missingBranch: true, wantErr: true},
+		{name: "missing pull ref with moved branch", advance: true, missingPullRef: true, movedBranch: true, wantErr: true},
+		{name: "stale pull ref uses published branch", advance: true, stalePullRef: true},
+		{name: "stale pull ref with dirty workspace", advance: true, stalePullRef: true, dirty: true, wantErr: true},
+		{name: "stale pull ref with missing branch", advance: true, stalePullRef: true, missingBranch: true, wantErr: true},
+		{name: "stale pull ref with wrong branch head", advance: true, stalePullRef: true, movedBranch: true, wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -123,10 +134,46 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 				}
 			}
 			issue.PullRequestHeadSHA = wanted
+			if tt.missingPullRef || tt.stalePullRef {
+				issue.PullRequestNumber = 119
+				issue.PullRequestBranch = info.Branch
+			}
+			if tt.stalePullRef {
+				runGit(t, remote, "update-ref", "refs/pull/119/head", a)
+			}
+			if tt.missingBranch {
+				issue.PullRequestBranch = "missing-review-branch"
+			}
+			if tt.movedBranch {
+				if tt.stalePullRef {
+					runGit(t, remote, "update-ref", "refs/heads/"+info.Branch, a)
+				} else {
+					issue.PullRequestHeadSHA = a
+				}
+			}
 			err = backend.SeedReviewHead(t.Context(), info, issue)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("SeedReviewHead() error = %v, want error %t", err, tt.wantErr)
 			}
+			if tt.dirty {
+				if !strings.Contains(err.Error(), "review workspace has local changes") {
+					t.Fatalf("SeedReviewHead() error = %v, want dirty workspace refusal", err)
+				}
+				data, readErr := os.ReadFile(filepath.Join(info.Path, "dirty.txt"))
+				if readErr != nil || string(data) != "local" {
+					t.Fatalf("dirty file = %q, error = %v; want preserved local content", data, readErr)
+				}
+			}
+			if tt.movedBranch || (tt.stalePullRef && tt.missingBranch) {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Fatalf("SeedReviewHead() error = %v, want head_moved refusal", err)
+				}
+			}
+			if tt.missingPullRef && tt.missingBranch && (!strings.Contains(err.Error(), "refs/pull/119/head") || !strings.Contains(err.Error(), "refs/heads/missing-review-branch")) {
+				t.Fatalf("SeedReviewHead() error = %v, want both missing remote refs", err)
+			}
+			t.Logf("expected source = %s; seeding error = %v", issue.PullRequestHeadSHA, err)
 			head, err := backend.Head(t.Context(), info, issue)
 			if err != nil {
 				t.Fatal(err)
@@ -137,6 +184,7 @@ func TestLocalGitSeedReviewHead(t *testing.T) {
 			if strings.TrimSpace(head) != wanted {
 				t.Fatalf("HEAD = %s, want %s", head, wanted)
 			}
+			t.Logf("final HEAD = %s", strings.TrimSpace(head))
 		})
 	}
 }
@@ -186,7 +234,15 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		name, command, head string
 		exit                int
 		wantErr             bool
+		toolchainKnown      bool
+		probeOnly           bool
 	}{
+		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
+		{name: "package manager toolchain is unverified", command: "pnpm test", probeOnly: true},
+		{name: "make target toolchain is unverified", command: "make check-landing", probeOnly: true},
+		{name: "external Go executor is unverified", command: "go test -exec=custom ./...", probeOnly: true},
+		{name: "alternate Go module is unverified", command: "go test -modfile=other.mod ./...", probeOnly: true},
+		{name: "compound command is unverified", command: "go version; pnpm test", probeOnly: true},
 		{name: "passing observed output", command: "echo verified"},
 		{name: "failed command", command: failedCommand, exit: 7},
 		{name: "wrong immutable head", command: "echo must-not-run", head: strings.Repeat("f", 40), wantErr: true},
@@ -194,6 +250,12 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		{name: "dirty result", command: "echo changed > untracked.txt", wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.probeOnly {
+				if backend.ReviewCommandEnvironment(t.Context(), info, issue, test.command).Known() {
+					t.Fatal("Go metadata was accepted for an unverified command toolchain")
+				}
+				return
+			}
 			request := issue
 			if test.head != "" {
 				request.PullRequestHeadSHA = test.head
@@ -204,6 +266,15 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			}
 			if !test.wantErr && (receipt.Command != test.command || receipt.HeadSHA != issue.PullRequestHeadSHA || receipt.TreeSHA == "" || receipt.ExitCode != test.exit || receipt.Output == "") {
 				t.Fatalf("missing command evidence: %+v", receipt)
+			}
+			if !test.wantErr && (receipt.Evidence == nil || !receipt.Evidence.Environment.Known()) {
+				t.Fatalf("missing host command environment: %+v", receipt.Evidence)
+			}
+			if !test.wantErr {
+				environment := backend.ReviewCommandEnvironment(t.Context(), info, request, test.command)
+				if environment.Known() != test.toolchainKnown || (test.toolchainKnown && environment != receipt.Evidence.Environment) {
+					t.Fatalf("command toolchain applicability differs: %+v", environment)
+				}
 			}
 		})
 	}
@@ -280,40 +351,75 @@ func TestLocalGitSeedReviewHeadUsesPullRequestRepository(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	source := initSourceRepo(t)
-	fork := filepath.Join(t.TempDir(), "fork.git")
-	base := filepath.Join(t.TempDir(), "base.git")
-	runGit(t, t.TempDir(), "clone", "--bare", source, fork)
-	runGit(t, t.TempDir(), "clone", "--bare", source, base)
-	runGit(t, source, "remote", "add", "origin", fork)
-	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue := Issue{Identifier: "review-base-ref"}
-	info, err := backend.Create(t.Context(), issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writer := filepath.Join(t.TempDir(), "writer")
-	runGit(t, t.TempDir(), "clone", base, writer)
-	if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("PR head\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, writer, "add", "review.txt")
-	runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "PR head")
-	wanted := strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
-	runGit(t, writer, "push", "origin", "HEAD:refs/pull/119/head")
-	runGit(t, info.Path, "config", "url."+base+".insteadOf", "https://github.com/acme/base.git")
-	issue.PullRequestRepository = "acme/base"
-	issue.PullRequestHeadSHA = wanted
-	issue.PullRequestNumber = 119
-	if err := backend.SeedReviewHead(t.Context(), info, issue); err != nil {
-		t.Fatal(err)
-	}
-	head, err := backend.Head(t.Context(), info, issue)
-	if err != nil || strings.TrimSpace(head) != wanted {
-		t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
+	for _, tt := range []struct {
+		name            string
+		stalePullRef    bool
+		missingBranch   bool
+		wrongBranchHead bool
+	}{
+		{name: "pull ref in PR repository"},
+		{name: "stale pull ref uses PR repository branch", stalePullRef: true},
+		{name: "missing PR repository branch cannot use fork branch", stalePullRef: true, missingBranch: true},
+		{name: "wrong PR repository branch cannot use fork branch", stalePullRef: true, wrongBranchHead: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			fork := filepath.Join(t.TempDir(), "fork.git")
+			base := filepath.Join(t.TempDir(), "base.git")
+			runGit(t, t.TempDir(), "clone", "--bare", source, fork)
+			runGit(t, t.TempDir(), "clone", "--bare", source, base)
+			runGit(t, source, "remote", "add", "origin", fork)
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "review-base-ref"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer := filepath.Join(t.TempDir(), "writer")
+			runGit(t, t.TempDir(), "clone", base, writer)
+			if err := os.WriteFile(filepath.Join(writer, "review.txt"), []byte("PR head\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, writer, "add", "review.txt")
+			runGit(t, writer, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "PR head")
+			wanted := strings.TrimSpace(runGit(t, writer, "rev-parse", "HEAD"))
+			initial := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			if tt.stalePullRef {
+				runGit(t, base, "update-ref", "refs/pull/119/head", initial)
+				runGit(t, writer, "push", fork, "HEAD:refs/heads/published-review")
+				if !tt.missingBranch {
+					head := "HEAD"
+					if tt.wrongBranchHead {
+						head = initial
+					}
+					runGit(t, writer, "push", "origin", head+":refs/heads/published-review")
+				}
+			} else {
+				runGit(t, writer, "push", "origin", "HEAD:refs/pull/119/head")
+			}
+			runGit(t, info.Path, "config", "url."+base+".insteadOf", "https://github.com/example-org/base.git")
+			issue.PullRequestRepository = "example-org/base"
+			issue.PullRequestHeadSHA = wanted
+			issue.PullRequestNumber = 119
+			issue.PullRequestBranch = "published-review"
+			err = backend.SeedReviewHead(t.Context(), info, issue)
+			if tt.missingBranch || tt.wrongBranchHead {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Fatalf("SeedReviewHead() error = %v, want head_moved refusal", err)
+				}
+				wanted = initial
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			head, err := backend.Head(t.Context(), info, issue)
+			if err != nil || strings.TrimSpace(head) != wanted {
+				t.Fatalf("HEAD = %q, error = %v; want %q", head, err, wanted)
+			}
+		})
 	}
 }
 

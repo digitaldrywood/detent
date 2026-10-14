@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -95,6 +97,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		wantRecovered      bool
 		wantLandingWait    bool
 		priorOutage        string
+		baseMoves          int
 	}{
 		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
@@ -122,6 +125,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "red barrier retains Merging without Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "waiting for rolling barrier repair"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "pending configured CI retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Refusal: "waiting for Full CI", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending", Triggered: true}}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "target advance after a green gate stays in landing", baseMoves: 1, mergeStatus: http.StatusOK, currentBase: true, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "repeated target advances after green gates stay in landing", baseMoves: 3, mergeStatus: http.StatusOK, currentBase: true, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "known advanced base retains landing retry without coding rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, BaseSHA: strings.Repeat("d", 40), RefusalKind: workspace.LandRefusalBaseMoved, Refusal: "the base branch changed after landing validation"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "stale base projection with current conflict enters configured rework", mergeMessage: "Pull Request has merge conflicts", sourceConflict: true, hubState: "Merging", states: workflow, reworkState: "Refresh", wantState: "Refresh", wantComment: "was not landed", wantMoves: 1},
 		{name: "current base projection with clean source retains landing wait", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "responsive clean projection clears only old synthetic outage", currentBase: true, mergeMessage: "Pull Request has merge conflicts", hubState: "Merging", states: workflow, wantLandingWait: true, priorOutage: "projection"},
@@ -160,14 +166,38 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			branch := "detent/land"
 			landingHead := head
 			landed := *landed
-			if test.mergeMessage != "" {
+			if test.mergeMessage != "" || test.baseMoves > 0 {
 				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.mergeStatus, test.sourceConflict, test.currentBase)
+				if test.baseMoves > 0 {
+					nativeLandingGit(t, t.Context(), journey.remote, "config", "core.logAllRefUpdates", "true")
+					remaining := test.baseMoves
+					journey.afterGate = func() {
+						if remaining == 0 {
+							return
+						}
+						remaining--
+						if err := os.WriteFile(filepath.Join(journey.source, "parallel.txt"), []byte(fmt.Sprintf("parallel landing %d\n", remaining)), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						nativeLandingGit(t, t.Context(), journey.source, "add", ".")
+						nativeLandingGit(t, t.Context(), journey.source, "commit", "-m", "parallel landing")
+						nativeLandingGit(t, t.Context(), journey.source, "push", "origin", "main")
+						base := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
+						tree := nativeLandingGit(t, t.Context(), journey.source, "merge-tree", "--write-tree", base, journey.target.HeadSHA)
+						journey.merge = nativeLandingGit(t, t.Context(), journey.source, "commit-tree", tree, "-p", base, "-m", "land reviewed feature")
+					}
+				}
 				result, runErr = journey.run(t)
 				branch, landingHead = result.WorkspaceBranch, journey.target.HeadSHA
 				landed.HeadSHA = landingHead
 				if test.wantRecovered {
 					if runErr != nil || !result.NativeLanding.Landed || !result.NativeLanding.Rebased || len(journey.execution.recorded) != 1 || journey.provider.calls.Load() != 0 || journey.execution.started != 1 || journey.mergeCalls.Load() != 2 {
 						t.Fatalf("clean rebase did not land in one merge run: %#v, %v", result, runErr)
+					}
+					test.landing = result.NativeLanding
+				} else if test.baseMoves > 0 {
+					if runErr != nil || result.NativeLanding.RefusalKind != workspace.LandRefusalBaseMoved || result.NativeLanding.BaseSHA != nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") || result.NativeLanding.Gate == nil || result.NativeLanding.Gate.ExitCode != 0 || result.NativeLanding.Gate.TreeSHA == "" || journey.mergeCalls.Load() != 0 || len(journey.execution.recorded) != 0 {
+						t.Fatalf("obsolete combined tree was accepted: %#v, %v", result.NativeLanding, runErr)
 					}
 					test.landing = result.NativeLanding
 				} else if test.wantInfrastructure {
@@ -276,7 +306,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
 			if test.wantLandingWait {
-				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 1 || retry.Issue.State != "Merging" || !retry.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || scheduling.releases != 1 {
+				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 1 || retry.Issue.State != "Merging" || !retry.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
 					t.Fatalf("projection wait lost item-local continuation: retry %#v, state %#v", retry, state)
 				}
 				peer := completionTransitionIssue("Merging", "")
@@ -302,16 +332,43 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != map[bool]any{true: nil, false: workspace.LandRefusalBaseMoved}[test.landing.CI != nil || test.landing.Waiting] || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
 					t.Fatalf("continuation lost immutable reviewed identity: %#v", metadata)
 				}
+				if test.landing.BaseSHA != "" && metadata["native_base_sha"] != test.landing.BaseSHA {
+					t.Fatalf("continuation lost advanced base evidence: %#v", metadata)
+				}
 				if journey != nil && !genuineOutage {
+					previousTree := result.NativeLanding.Gate
+					for cycle := 1; cycle < test.baseMoves; cycle++ {
+						retryResult, err := journey.run(t)
+						landing := retryResult.NativeLanding
+						if err != nil || landing.RefusalKind != workspace.LandRefusalBaseMoved || landing.BaseSHA != nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") || landing.Landed || landing.Gate == nil || landing.Gate.ExitCode != 0 || landing.Gate.TreeSHA == previousTree.TreeSHA || journey.mergeCalls.Load() != 0 || len(journey.execution.recorded) != 0 || journey.provider.calls.Load() != 0 {
+							t.Fatalf("repeated base movement bypassed validation or source identity: %#v, %v", landing, err)
+						}
+						previousTree = landing.Gate
+						state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(42 + cycle), Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: retry.DueAt}
+						state.Claimed[issue.ID] = Claimed{Issue: issue}
+						orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: retry.DueAt.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: retryResult})
+						retry = state.Retry[issue.ID]
+						if retry.Attempt != 1 || retry.Issue.State != "Merging" || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(state.Claimed) != 0 || len(state.Running) != 0 || len(state.Retry) != 1 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || len(tick.updates) != 0 || scheduling.releases != cycle+1 || len(attempts.completions) != cycle+1 {
+							t.Fatalf("repeated movement retained claims or left landing: retry %#v, releases %d", retry, scheduling.releases)
+						}
+						completion := attempts.completions[cycle]
+						if completion.TerminalState != store.WorkAttemptTerminalSuccess || completion.Phase != "waiting" || completion.ErrorClass != "" {
+							t.Fatalf("base movement consumed issue failure allowance: %#v", completion)
+						}
+					}
+					latestBase := nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main")
 					retryResult, err := journey.run(t)
 					if err != nil || !retryResult.NativeLanding.Landed || journey.execution.target.HeadSHA != landingHead || len(journey.execution.recorded) != 1 || journey.provider.calls.Load() != 0 {
 						t.Fatalf("same-version continuation failed to land: %#v, %v", retryResult, err)
 					}
+					if test.baseMoves > 0 && (retryResult.NativeLanding.BaseSHA != latestBase || retryResult.NativeLanding.Gate == nil || retryResult.NativeLanding.Gate.ExitCode != 0 || retryResult.NativeLanding.Gate.TreeSHA == previousTree.TreeSHA || retryResult.NativeLanding.Gate.TreeSHA != nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main^{tree}") || journey.mergeCalls.Load() != 1) {
+						t.Fatalf("final landing did not validate the latest combined tree: %#v", retryResult.NativeLanding)
+					}
 					tick.stateIssues[0].State = "Done"
-					state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 43, Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: retry.DueAt}
+					state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: int64(43 + max(0, test.baseMoves-1)), Mode: runpkg.RunModeMerge, DispatchSourceState: "Merging", StartedAt: retry.DueAt}
 					state.Claimed[issue.ID] = Claimed{Issue: issue}
 					orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: retry.DueAt.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: retryResult})
-					if len(state.ForgeUnavailable) != 0 || state.Completed[issue.ID].Issue.State != "Done" || len(attempts.completions) != 2 || len(tick.updates) != 0 {
+					if len(state.ForgeUnavailable) != 0 || state.Completed[issue.ID].Issue.State != "Done" || len(attempts.completions) != max(2, test.baseMoves+1) || len(tick.updates) != 0 {
 						t.Fatalf("same-version continuation failed to settle: %#v", state)
 					}
 				}

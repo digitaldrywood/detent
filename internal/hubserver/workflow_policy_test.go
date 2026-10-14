@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -28,9 +30,18 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		nilConfiguration                                                                      bool
 		humanApproval                                                                         bool
 		fleet                                                                                 bool
+		autoInitial                                                                           bool
+		bind, adopt, nativeRevision                                                           bool
+		history                                                                               int
 	}{
+		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
+		{name: "binding leaves differing repository policy pending", initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent},
+		{name: "binding without approval applies first repository policy", bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "binding carries same authored approval", initial: true, bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "explicit repository adoption enables later updates", initial: true, bind: true, adopt: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
+		{name: "native definition without commit stays pending", initial: true, nativeRevision: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent},
 		{name: "external authored definition stays pending against legacy approval", initial: true, canonical: true, fromLegacy: true, local: true, active: true, status: http.StatusNoContent},
-		{name: "first release requires human approval for changed inputs", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true, humanApproval: true},
+		{name: "default branch replaces legacy approval", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "nil configuration projection carries only authored policy", initial: true, canonical: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
 		{name: "nil configuration invented digest is refused", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "digest", status: http.StatusUnprocessableEntity},
 		{name: "canonical version carries feature approval", initial: true, canonical: true, status: http.StatusNoContent, applied: true},
@@ -45,13 +56,14 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "nil configuration cannot change selector", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "selector", status: http.StatusNoContent},
 		{name: "nil configuration cannot change profile", initial: true, canonical: true, local: true, active: true, nilConfiguration: true, forge: "profile", status: http.StatusNoContent},
 		{name: "canonical version with changed inputs pending", initial: true, canonical: true, changedInputs: true, status: http.StatusNoContent},
+		{name: "default branch changed authored files auto apply", initial: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "default branch initial definition", reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "second runner default branch descriptor stays pending", initial: true, reachable: true, active: true, fleet: true, status: http.StatusNoContent},
+		{name: "second default branch revision auto applies", initial: true, autoInitial: true, reachable: true, active: true, fleet: true, status: http.StatusNoContent, applied: true},
 		{name: "different tiers share authored approval", initial: true, canonical: true, active: true, fleet: true, status: http.StatusNoContent, applied: true},
-		{name: "human approval records each apply", initial: true, reachable: true, replay: true, active: true, fleet: true, status: http.StatusNoContent, applied: true, humanApproval: true},
+		{name: "human approval records each apply", initial: true, replay: true, active: true, fleet: true, status: http.StatusNoContent, applied: true, humanApproval: true},
 		{name: "feature branch pending", initial: true, status: http.StatusNoContent},
 		{name: "uncommitted definition pending", initial: true, local: true, reachable: true, status: http.StatusNoContent},
-		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusNoContent},
+		{name: "occupied lane stays pending", initial: true, reachable: true, occupied: true, status: http.StatusUnprocessableEntity},
 		{name: "different repository pending", initial: true, reachable: true, wrongRepository: true, status: http.StatusNoContent},
 		{name: "unenrolled reporter pending", initial: true, reachable: true, legacy: true, status: http.StatusNoContent},
 		{name: "missing commit pending", initial: true, reachable: true, missingRevision: true, status: http.StatusNoContent},
@@ -59,8 +71,10 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", test.name)
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "acme/orders", f.project.ID); err != nil {
-				t.Fatal(err)
+			if !test.bind {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "example-org/example-project", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			runner.enroll(t)
@@ -68,7 +82,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			original := hubTestPolicy()
 			original.Workflow = &policy.Workflow{Source: "detent.yaml", Revision: strings.Repeat("a", 40), States: nativeFixtureStates()}
 			if test.canonical {
-				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  lanes:\n    - {name: Todo, role: active}\n    - {name: In Progress, role: active}\n    - {name: Done, role: terminal}\n    - {name: Blocked, role: holding}\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Done]\n      In Progress: [Todo, Done]\n      Done: [Todo]\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -92,13 +106,40 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if test.nativeRevision {
+				workflow := *original.Workflow
+				workflow.Revision = ""
+				original.Workflow = &workflow
+			}
 			original = original.WithID()
 			historyCount := 0
+			var initialApproval policy.Approval
 			if test.initial {
-				approveHubTestPolicy(t, f.service, f.base+"/policy", original)
+				if test.autoInitial {
+					initialSource := &policy.RepositorySource{Repository: "example-org/example-project", Commit: original.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: original.Workflow.Revision, DefaultBranchReachable: true}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", runner.redemption.Credential, policy.Observation{Descriptor: original, Source: initialSource}), http.StatusNoContent)
+				} else {
+					approveHubTestPolicy(t, f.service, f.base+"/policy", original)
+				}
 				historyCount++
+				var err error
+				initialApproval, err = readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.bind {
+				f.service.config.ReconcileBackend = &scriptedReconcileBackend{steps: []reconcileStep{{snapshot: ReconcileSnapshot{Repository: RepositorySource{NodeID: "R_example", Owner: "example-org", Name: "example-project", UpdatedAt: time.Now().UTC()}}}}}
+				integration, err := readProjectIntegration(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/repository", testHubAdminToken, bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "bind-repository"}, ExpectedRevision: integration.Revision, Repository: "example-org/example-project"}), http.StatusOK)
 			}
 			item := f.create(t, "Preserve occupied Todo and revision")
+			baseline := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), f.token, nil)
+			requireNativeStatus(t, baseline, http.StatusOK)
+			decodeHubResponse(t, baseline, &item)
 			candidate := original
 			candidate.SourceDigest = policy.Digest([]byte("changed repository definition"))
 			candidate.SourceRevision = strings.Repeat("b", 40)
@@ -161,12 +202,12 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				candidate.Configuration = nil
 			}
 			candidate = candidate.WithID()
-			source := &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("b", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("c", 40), DefaultBranchReachable: test.reachable}
+			source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: strings.Repeat("b", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("c", 40), DefaultBranchReachable: test.reachable}
 			if test.local {
 				source = nil
 			}
 			if test.wrongRepository {
-				source.Repository = "acme/other"
+				source.Repository = "example-org/other-project"
 			}
 			token := runner.redemption.Credential
 			if test.legacy {
@@ -199,8 +240,66 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &item)
 			}
+			if test.history > 0 {
+				for i := range test.history {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("history-%d", i)}, Title: "Retained history", Body: issueContractTestSections, State: "Done"})
+					requireNativeStatus(t, response, http.StatusOK)
+				}
+				for _, statement := range []string{
+					"CREATE TABLE policy_work_counts(kind TEXT NOT NULL)",
+					"CREATE TRIGGER count_policy_dirty AFTER INSERT ON native_board_dirty BEGIN INSERT INTO policy_work_counts VALUES('card'); END",
+					"CREATE TRIGGER count_policy_states AFTER UPDATE ON workflow_states BEGIN INSERT INTO policy_work_counts VALUES('state'); END",
+					"CREATE TRIGGER count_policy_projects AFTER UPDATE ON projects BEGIN INSERT INTO policy_work_counts VALUES('project'); END",
+				} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			report := policy.Observation{Descriptor: candidate, Source: source}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), test.status)
+			if test.history > 0 {
+				for _, kind := range []string{"card", "state", "project"} {
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM policy_work_counts WHERE kind=?", kind).Scan(&count); err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("instruction-only adoption: %s work=%d, retained history=%d", kind, count, test.history)
+					want := 0
+					if kind == "project" {
+						want = 1
+					}
+					if count != want {
+						t.Errorf("instruction-only adoption %s work=%d, want %d", kind, count, want)
+					}
+				}
+			}
+			if test.adopt {
+				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+				if err != nil || !reflect.DeepEqual(approval, initialApproval) {
+					t.Fatalf("observation replaced approval before adoption: %+v %v", approval, err)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: candidate.ID})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &approval)
+				if approval.Policy.ID != candidate.ID || approval.ApprovedBy != initialApproval.ApprovedBy {
+					t.Fatalf("explicit adoption attribution = %+v", approval)
+				}
+				original = approval.Policy
+				historyCount++
+				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Updated adopted repository instructions.\n"), Config: []byte(original.Authored.Files["detent.yaml"]), HasConfig: true, ConfigPath: "detent.yaml"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				workflow.Definition.Revision = strings.Repeat("d", 40)
+				candidate, err = workflowconfig.ResolvePolicy(workflow)
+				if err != nil {
+					t.Fatal(err)
+				}
+				source.Commit, source.DefaultBranchHead = candidate.Workflow.Revision, candidate.Workflow.Revision
+				report = policy.Observation{Descriptor: candidate, Source: source}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
+			}
 			if test.humanApproval {
 				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 				if err != nil || approval.Policy.ID != original.ID || strings.HasPrefix(approval.ApprovedBy, "runner_") {
@@ -231,12 +330,18 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			decodeHubResponse(t, response, &setup)
 			if test.applied {
 				historyCount++
+				if test.reachable && !candidate.SameAuthoredInputs(original) && setup.Policy != nil && setup.Policy.ApprovedBy != "repository-default-branch" {
+					t.Fatalf("default branch apply attribution = %s", setup.Policy.ApprovedBy)
+				}
 				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID || len(setup.ObservedPolicies) != 0 {
 					t.Fatalf("default-branch apply left pending approval: %+v", setup)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", token, report), http.StatusNoContent)
 			} else if len(setup.ObservedPolicies) != 1 || setup.Policy == nil || setup.Policy.Policy.ID != original.ID || !reflect.DeepEqual(setup.ObservedPolicies[0].Source, source) {
 				t.Fatalf("unapplied revision changed approval or lost report: %+v", setup)
+			}
+			if test.bind && test.initial && !test.applied && (!reflect.DeepEqual(*setup.Policy, initialApproval) || setup.ObservedPolicies[0].Policy.ID != candidate.ID || setup.ObservedPolicies[0].PreviouslyApproved) {
+				t.Fatalf("binding changed approval provenance or lost pending candidate: %+v", setup)
 			}
 			if strings.HasPrefix(setup.Policy.ApprovedBy, "runner_") {
 				t.Fatalf("runner is policy approver: %+v", setup.Policy)
@@ -248,7 +353,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			if test.occupied {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusUnprocessableEntity)
 			}
-			if test.applied && test.canonical && !test.fromLegacy {
+			if test.applied && test.initial && test.canonical && !test.fromLegacy {
 				previousSource := *source
 				previousSource.Commit = original.Workflow.Revision
 				previousReport := policy.Observation{Descriptor: original, Source: &previousSource}
@@ -256,16 +361,27 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &setup)
-				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID || len(setup.ObservedPolicies) != 0 {
-					t.Fatalf("older runner reverted approval or requested reapproval: %+v", setup)
+				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID {
+					t.Fatalf("older runner reverted approval: %+v", setup.Policy)
+				}
+				if test.changedInputs {
+					if len(setup.ObservedPolicies) != 1 || !setup.ObservedPolicies[0].PreviouslyApproved || !setup.ObservedPolicies[0].Conflict {
+						t.Fatalf("historical authored policy is not reported as a conflict: %+v", setup.ObservedPolicies)
+					}
+				} else if len(setup.ObservedPolicies) != 0 {
+					t.Fatalf("older authored version requested reapproval: %+v", setup.ObservedPolicies)
 				}
 			}
 			if test.active {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/validate", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken}), http.StatusOK)
 				if test.fleet && !test.humanApproval {
-					fresh := f.create(t, "First runner keeps dispatching")
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: pinned.MachineID, SessionID: "continued", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+					fresh := f.create(t, "First runner dispatch authority")
+					claimStatus := http.StatusOK
+					if test.applied && !candidate.SameAuthoredInputs(original) {
+						claimStatus = http.StatusConflict
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: pinned.MachineID, SessionID: "continued", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), claimStatus)
 				}
 				policyID, err := f.service.database.leasePolicyID(t.Context(), pinned.ID)
 				if err != nil || policyID != original.ID {
@@ -295,7 +411,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if test.initial {
 					previous = original.SourceDigest
 				}
-				if entry.Repository != "acme/orders" || entry.Commit != candidate.Workflow.Revision || entry.PreviousDefinitionDigest != previous || entry.DefinitionDigest != candidate.SourceDigest || entry.RunnerID != runner.binding.RunnerID || entry.AppliedBy != approval.ApprovedBy || strings.HasPrefix(entry.AppliedBy, "runner_") || entry.AppliedAt == "" {
+				if entry.Repository != "example-org/example-project" || entry.Commit != candidate.Workflow.Revision || entry.PreviousDefinitionDigest != previous || entry.DefinitionDigest != candidate.SourceDigest || entry.RunnerID != runner.binding.RunnerID || entry.AppliedBy != approval.ApprovedBy || strings.HasPrefix(entry.AppliedBy, "runner_") || entry.AppliedAt == "" {
 					t.Fatalf("incomplete apply history: %+v", entry)
 				}
 				if !reflect.DeepEqual(entry.Definition, &candidate) || test.initial && !reflect.DeepEqual(entry.PreviousDefinition, &original) || !test.initial && entry.PreviousDefinition != nil {

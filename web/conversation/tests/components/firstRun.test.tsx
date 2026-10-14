@@ -35,10 +35,12 @@ import {
   firstRunSteps,
   type FirstRunFacts,
 } from "../../src/app/work/components/FirstRun.tsx";
-import { newIssueProject, newIssueProjects, newIssueState } from "../../src/app/work/NewIssue.tsx";
+import { NewIssueProvider, newIssueProject, newIssueProjects, newIssueState, useNewIssue } from "../../src/app/work/NewIssue.tsx";
 import type { AccountProject } from "../../src/contracts/account.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
+
+if (typeof globalThis.PointerEvent === "undefined") { globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent; }
 
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
 
@@ -65,6 +67,7 @@ const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
 async function startHub(options: {
   readonly organization?: OrganizationMode;
   readonly account?: AccountMode;
+  readonly emptyWork?: boolean;
 }): Promise<ConversationClient> {
   hub = await startMockHub({
     deltaDelayMs: 0,
@@ -73,6 +76,7 @@ async function startHub(options: {
     organization: options.organization ?? "empty",
     account: options.account ?? "write",
   });
+  if (options.emptyWork) await nativeFetch(`${hub.url}/__mock/work/reset`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ empty: true }) });
   const bootstrap = await loadBootstrap(hub.url);
   client = makeClient({
     origin: hub.url,
@@ -85,7 +89,7 @@ async function startHub(options: {
 
 async function mountShell(
   path = "/work",
-  options: { readonly organization?: OrganizationMode; readonly account?: AccountMode } = {},
+  options: { readonly organization?: OrganizationMode; readonly account?: AccountMode; readonly emptyWork?: boolean } = {},
 ) {
   const mounted = await startHub(options);
   const router = makeRouter(createMemoryHistory({ initialEntries: [path] }));
@@ -262,6 +266,7 @@ describe("firstIssueState", () => {
       can_write: true,
       can_manage_runners: true,
       states: [
+        { name: "Triage", terminal: false, dispatchable: false },
         { name: "Backlog", terminal: false, dispatchable: false },
         { name: "Todo", terminal: false, dispatchable: true },
         { name: "Done", terminal: true, dispatchable: false },
@@ -389,6 +394,7 @@ describe("where a new issue goes", () => {
     can_write,
     can_manage_runners: false,
     states: [
+      { name: "Triage", terminal: false, dispatchable: false },
       { name: "Backlog", terminal: false, dispatchable: false },
       { name: "Todo", terminal: false, dispatchable: true },
       { name: "Done", terminal: true, dispatchable: false },
@@ -405,29 +411,103 @@ describe("where a new issue goes", () => {
     expect(newIssueProject(projects, requested)?.id).toBe(want);
   });
 
-  it.each([
+  it.each<{ name: string; state: string | null; want: string[]; role?: string }>([
     { name: "every writable project without a lane", state: null, want: ["b", "c"] },
     { name: "only writable projects with the lane", state: "Review", want: ["c"] },
     { name: "none when no writable project has the lane", state: "Missing", want: [] },
-  ])("offers $name", ({ state, want }) => {
+    { name: "none for native reserved intake", state: "Triage", want: [] },
+    { name: "reporter projects for Triage", state: "Triage", role: "reporter", want: ["b", "c"] },
+    { name: "no reporter projects for Todo", state: "Todo", role: "reporter", want: [] },
+  ])("offers $name", ({ state, want, role }) => {
     const review = project("c", true);
     const projects = [
       project("a", false),
       project("b", true),
       { ...review, states: [...review.states, { name: "Review", terminal: false, dispatchable: true }] },
     ];
-    expect(newIssueProjects(projects, state).map((entry) => entry.id)).toEqual(want);
+    expect(newIssueProjects(projects, state, role).map((entry) => entry.id)).toEqual(want);
   });
 
   it("picks no project when none is writable", () => {
     expect(newIssueProject([project("a", false)], "a")).toBeUndefined();
   });
 
-  it.each([
+  it.each<{ name: string; requested: string | null; want: string; role?: string }>([
     { name: "the lane it was started from", requested: "Backlog", want: "Backlog" },
     { name: "the native backlog without a request", requested: null, want: "Backlog" },
     { name: "the native backlog for a lane the project lacks", requested: "Review", want: "Backlog" },
-  ])("starts in $name", ({ requested, want }) => {
-    expect(newIssueState(project("a", true), requested)).toBe(want);
+    { name: "the native backlog for reserved intake", requested: "Triage", want: "Backlog" },
+    { name: "reporter Triage without a request", requested: null, role: "reporter", want: "Triage" },
+    { name: "reporter Triage when requested", requested: "Triage", role: "reporter", want: "Triage" },
+    { name: "reporter Triage instead of Todo", requested: "Todo", role: "reporter", want: "Triage" },
+  ])("starts in $name", ({ requested, want, role }) => {
+    expect(newIssueState(project("a", true), requested, role)).toBe(want);
   });
+
+  it.each(["member", "reporter"])("preserves compatibility projects' Triage creation lane for %s", (role) => {
+    const projects = [project("a", true), { ...project("b", true), profile: "github_compatible" as const }];
+    expect(newIssueProjects(projects, "Triage", role).map((entry) => entry.id)).toEqual(role === "reporter" ? ["a", "b"] : ["b"]);
+    expect(newIssueState(projects[1], "Triage", role)).toBe("Triage");
+    expect(newIssueState(projects[1], "Todo", role)).toBe("Todo");
+  });
+
+  it("opens a reporter's native Triage dialog with only its supported destination", async () => {
+    const mounted = await startHub({ organization: "seeded" });
+    const account = mounted.account!;
+    const reporter = {
+      ...mounted,
+      account: {
+        ...account,
+        actor: { ...account.actor, role: "reporter", can_manage: false },
+        projects: [project("a", false), project("b", true), project("c", true)],
+      },
+    };
+    function Opener(): React.ReactElement {
+      const { openNewIssue } = useNewIssue();
+      return <button onClick={() => openNewIssue({ projectId: "b", state: "Triage" })}>File in Triage</button>;
+    }
+    render(<ClientContext.Provider value={reporter}><NewIssueProvider><Opener /></NewIssueProvider></ClientContext.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: "File in Triage" }));
+    const dialog = await screen.findByRole("dialog", { name: "New issue" });
+    expect((within(dialog).getByLabelText("Project") as HTMLSelectElement).value).toBe("b");
+    expect(within(dialog).queryByLabelText("Lane")).toBeNull();
+  });
+});
+
+
+describe("empty project import", () => {
+  it("offers New issue and a setup link when no repository is associated", async () => {
+    const { router } = await mountShell("/work/p/proj_beta", { organization: "seeded", emptyWork: true });
+    await screen.findByText("Associate a repository first.");
+    expect(within(step("issue")).getByRole("button", { name: "New issue" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Import from GitHub" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Associate repository" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/projects/proj_beta/setup"));
+  }, 30_000);
+
+  it("imports from the empty Work view and keeps progress available when cards appear", async () => {
+    await mountShell("/work/p/proj_alpha", { organization: "seeded", emptyWork: true });
+    const action = await screen.findByRole("button", { name: "Import from GitHub" });
+    await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(action);
+    const dialog = await screen.findByRole("dialog", { name: "Import issues" });
+    const source = within(dialog).getByRole("combobox", { name: "Import source" });
+    expect((source as HTMLSelectElement).value).toBe("github");
+    expect(within(source).getAllByRole("option").map(option => option.textContent)).toEqual(["GitHub"]);
+    fireEvent.change(source, { target: { value: "github" } });
+    const intake = await within(dialog).findByRole("region", { name: "Import GitHub issues" });
+    const preview = await within(intake).findByRole("button", { name: "Preview issues" });
+    fireEvent.click(preview);
+    await within(dialog).findByText(/2 matching issues/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Select previewed" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import selected issues" }));
+    await within(dialog).findByText(/2 completed/);
+    expect((within(dialog).getByRole("button", { name: "Close source issues" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByLabelText("Close imported GitHub source issues"));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close source issues" }));
+    await within(dialog).findByText(/Link and close requested for 2 GitHub issues/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Done" }));
+    await screen.findByText("Imported task 12");
+    expect(screen.queryByRole("dialog", { name: "Import issues" })).toBeNull();
+  }, 30_000);
 });

@@ -9,6 +9,9 @@ func TestLocalChecksValidation(t *testing.T) {
 		checks LocalChecks
 		valid  bool
 	}{
+		{"runner commit policy", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitName: "Enrolled runner", CommitEmail: "machine@runners.detent.invalid", CommitSigning: "unsigned"}, true},
+		{"invalid signing mode", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitSigning: "pinentry"}, false},
+		{"multiline commit identity", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", CommitName: "Runner\nother"}, false},
 		{"pending", LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending"}, true},
 		{"setup failed", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", Setup: "failed"}, true},
 		{"raw setup output", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", Setup: "secret-token"}, false},

@@ -39,6 +39,8 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 }
 
 func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, state, since, cursor string, limit int) (healthFindingsPage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	page := healthFindingsPage{Items: []healthFinding{}, BaselineUnavailable: []healthBaselineUnavailable{}}
 	if state == "" {
 		state = "open"

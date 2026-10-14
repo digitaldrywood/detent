@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -29,6 +30,8 @@ func (s *Service) registerCredentialMaintenanceRoutes(e *echo.Echo) {
 
 func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+		defer cancelRead()
 		c.Response().Header().Set("Cache-Control", "no-store")
 		if _, err := apiBearerToken(c); err != nil || c.Request().Header.Get("Origin") != "" {
 			return c.NoContent(http.StatusUnauthorized)
@@ -41,7 +44,7 @@ func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.Handl
 			return c.NoContent(http.StatusForbidden)
 		}
 		var members int
-		if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM hosted_members WHERE principal_id = ?", credential.ID).Scan(&members); err != nil || members != 0 {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members WHERE principal_id = ?", credential.ID).Scan(&members); err != nil || members != 0 {
 			return c.NoContent(http.StatusForbidden)
 		}
 		identity := &auth.HostedIdentity{Subject: credential.ID, CreatedAt: s.config.now()}

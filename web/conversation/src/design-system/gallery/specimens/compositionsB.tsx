@@ -169,7 +169,7 @@ function SheetSpecimen({ initialOpen = false }: { readonly initialOpen?: boolean
         <PullRequestSurface
           pullRequest={{
             number: 3363,
-            repository: "digitaldrywood/detent",
+            repository: "example-org/example-project",
             url: "#specimen",
             state: "open",
             isDraft: false,
@@ -292,7 +292,7 @@ function BrowserPanelSpecimen() {
 
 const TERMINAL_OUTPUT = [
   "\x1b[32m~/detent\x1b[0m $ go test ./internal/lock/...\r\n",
-  "ok  \tgithub.com/digitaldrywood/detent/internal/lock\t0.412s\r\n",
+  "ok  \texample.com/example-org/example-project/internal/lock\t0.412s\r\n",
   "\x1b[32m~/detent\x1b[0m $ ",
 ].join("");
 
@@ -504,7 +504,7 @@ const panels: Record<string, GalleryDoc> = {
                 <PullRequestSurface
                   pullRequest={{
                     number: 3363,
-                    repository: "digitaldrywood/detent",
+                    repository: "example-org/example-project",
                     url: "#specimen",
                     state,
                     isDraft,
@@ -793,7 +793,7 @@ function ToolbarSpecimen() {
       facets={{
         state: LANES.map((lane) => lane.name),
         label: ["ui", "design-system", "bug"],
-        assignee: ["michael@example.com", "agent"],
+        assignee: ["owner@example.com", "agent"],
         priority: ["Urgent", "High", "Medium", "Low"],
       }}
     />
@@ -828,10 +828,10 @@ function PropertiesSpecimen({ canWrite }: { readonly canWrite: boolean }) {
         ]}
         onAssignees={noop}
         members={[
-          { id: "michael@example.com", label: "Michael" },
-          { id: "dana@example.com", label: "Dana" },
+          { id: "owner@example.com", label: "Example Owner" },
+          { id: "member@example.com", label: "Example Member" },
         ]}
-        viewer={{ id: "michael@example.com", label: "Michael" }}
+        viewer={{ id: "owner@example.com", label: "Example Owner" }}
         onInvite={canWrite ? noop : null}
         inviteReason="Only owners can invite."
         canWrite={canWrite}
@@ -893,10 +893,16 @@ const ACTIVITY_ROWS = mergeActivity({
   viewerPrincipalId: "tok_7b21",
 });
 
+const SHIPPED_WINDOWS: Readonly<Record<string, { shipped: number; cancelled: number }>> = {
+  "1h": { shipped: 6, cancelled: 2 },
+  "24h": { shipped: 87, cancelled: 41 },
+  "7d": { shipped: 301, cancelled: 96 },
+};
+
 function WorkTopBarSpecimen({ title, connection }: { title: string; connection: ConnectionChip }) {
-  const [completedWindow, setCompletedWindow] = React.useState<WorkViewState["completedWindow"]>("48h");
+  const [completedWindow, setCompletedWindow] = React.useState<WorkViewState["completedWindow"]>("24h");
   return <WorkTopBar context="Work" title={title} connection={connection}
-    completed={<div className="flex shrink-0 items-center gap-1"><LiveCounter count={6} loading={false} /><CompletedCounter count={146} completedWindow={completedWindow} onCompletedWindowChange={setCompletedWindow} loading={false} /></div>}
+    completed={<div className="flex shrink-0 items-center gap-1"><LiveCounter count={6} loading={false} /><CompletedCounter count={SHIPPED_WINDOWS[completedWindow]!.shipped} cancelled={SHIPPED_WINDOWS[completedWindow]!.cancelled} windows={SHIPPED_WINDOWS} completedWindow={completedWindow} onCompletedWindowChange={setCompletedWindow} loading={false} /></div>}
     actions={<Button size="sm" className="hidden md:inline-flex"><PlusIcon />New issue</Button>}
     mobileActions={<SplitButton className="md:hidden" aria-label="Work actions">
       <Button><SparklesIcon />Ask</Button>

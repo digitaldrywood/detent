@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -169,7 +168,7 @@ func (s *Service) sendHealthEmails(ctx context.Context, organization tracker.Org
 	recipients = slices.Compact(recipients)
 	var failures error
 	for _, f := range findings {
-		message, err := s.renderHealthEmail(f)
+		message, err := s.renderHealthEmail(ctx, f)
 		if err != nil {
 			failures = errors.Join(failures, err)
 			continue
@@ -184,7 +183,7 @@ func (s *Service) sendHealthEmails(ctx context.Context, organization tracker.Org
 	return failures
 }
 
-func (s *Service) renderHealthEmail(f healthFinding) (auth.EmailMessage, error) {
+func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.EmailMessage, error) {
 	type count struct {
 		Name  string
 		Value int
@@ -198,9 +197,19 @@ func (s *Service) renderHealthEmail(f healthFinding) (auth.EmailMessage, error) 
 	if f.ResolvedAt != nil {
 		state, resolved = "resolved", formatHubTime(*f.ResolvedAt)
 	}
-	path := "/fleet"
+	link := s.config.Hosted.PublicURL + s.hostedPath("/fleet")
 	if f.Subject.Kind == "work_item" {
-		path = "/work/i/" + url.PathEscape(f.Subject.ID)
+		var err error
+		link, err = s.issueBrowserURL(ctx, f.Subject.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			link = s.config.Hosted.PublicURL + s.hostedPath("/diagnostics")
+		} else if err != nil {
+			return auth.EmailMessage{}, err
+		}
+	}
+	link, err := s.canonicalBrowserLink(ctx, link)
+	if err != nil {
+		return auth.EmailMessage{}, err
 	}
 	data := struct {
 		State, Signal, Subject, Summary, NextAction, OpenedAt, ResolvedAt, URL string
@@ -214,7 +223,7 @@ func (s *Service) renderHealthEmail(f healthFinding) (auth.EmailMessage, error) 
 		NextAction: healthEmailText(f.NextAction),
 		OpenedAt:   formatHubTime(f.OpenedAt),
 		ResolvedAt: resolved,
-		URL:        s.config.Hosted.PublicURL + s.hostedPath(path),
+		URL:        link,
 		Events:     len(f.Evidence.EventIDs),
 		Attempts:   len(f.Evidence.AttemptIDs),
 		Counts:     counts,

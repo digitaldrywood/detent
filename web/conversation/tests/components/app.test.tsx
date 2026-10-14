@@ -210,10 +210,10 @@ describe("the conversation shell", () => {
     const assign = vi.fn();
     vi.stubGlobal("location", { assign, pathname: "/work", search: "", hash: "" });
     vi.spyOn(sharedEntry, "behindSharedEntry").mockReturnValue(shared);
-    vi.spyOn(sharedEntry, "useSharedOrganizations").mockReturnValue(shared ? [
+    vi.spyOn(sharedEntry, "useSharedOrganizations").mockReturnValue({ value: shared ? [
       { id: "org_mock", name: "Mock organization", url: "/organizations/org_mock", current: true },
       { id: "org_second", name: "Second mock organization", url: "/organizations/org_second", current: false },
-    ] : null);
+    ] : null, error: null, loading: false, refresh: async () => {}, set: () => {} });
     const switches: unknown[] = [];
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/switch")) switches.push(JSON.parse(String(init?.body)));
@@ -307,9 +307,6 @@ describe("the conversation shell", () => {
     fireEvent.change(within(form).getByLabelText("Priority"), {
       target: { value: "1" },
     });
-    fireEvent.click(
-      screen.getByLabelText("Share this conversation's history with the project"),
-    );
     fireEvent.click(within(form).getByRole("button", { name: "Create linked issue" }));
 
     // Linking moves the reader to the issue: the issue is the page now and the

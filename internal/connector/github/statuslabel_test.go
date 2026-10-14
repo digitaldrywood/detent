@@ -77,7 +77,7 @@ func TestAttachLabelIssuePullRequestReferencesHydratesLatestLaneEntry(t *testing
 
 	want := time.Date(2026, 8, 18, 22, 30, 8, 0, time.UTC)
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_74","timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-08-17T04:53:35Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"first"}},{"__typename":"UnlabeledEvent","createdAt":"2026-08-18T21:35:57Z","label":{"name":"detent:human-review"},"actor":{"__typename":"Bot","login":"detent[bot]"}},{"__typename":"LabeledEvent","createdAt":"2026-08-18T22:30:08Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"corylanou"}}]},"closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}`,
+		body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_74","timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2026-08-17T04:53:35Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"first"}},{"__typename":"UnlabeledEvent","createdAt":"2026-08-18T21:35:57Z","label":{"name":"detent:human-review"},"actor":{"__typename":"Bot","login":"detent[bot]"}},{"__typename":"LabeledEvent","createdAt":"2026-08-18T22:30:08Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"example-user"}}]},"closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}`,
 	}})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,
@@ -92,7 +92,7 @@ func TestAttachLabelIssuePullRequestReferencesHydratesLatestLaneEntry(t *testing
 	if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(want) {
 		t.Fatalf("StageUpdatedAt = %v, want %v", issues[0].StageUpdatedAt, want)
 	}
-	if got := issues[0].StageUpdatedActor; got.Login != "corylanou" || got.Kind != "User" {
+	if got := issues[0].StageUpdatedActor; got.Login != "example-user" || got.Kind != "User" {
 		t.Fatalf("StageUpdatedActor = %#v, want latest label actor", got)
 	}
 }
@@ -687,7 +687,7 @@ func TestConnectorAttachLabelIssuePullRequestReferencesPaginates(t *testing.T) {
 				firstPage[index] = fmt.Sprintf(`{"number":%d,"state":"CLOSED","repository":{"nameWithOwner":"gopherguides/corp"}}`, index+1)
 			}
 			server := newGraphQLTestServer(t, []graphqlTestResponse{
-				{body: fmt.Sprintf(`{"data":{"nodes":[{"__typename":"Issue","id":"I_74","timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2025-12-27T12:00:00Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"corylanou"}}]},"closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[%s]}}]}}`, strings.Join(firstPage, ","))},
+				{body: fmt.Sprintf(`{"data":{"nodes":[{"__typename":"Issue","id":"I_74","timelineItems":{"nodes":[{"__typename":"LabeledEvent","createdAt":"2025-12-27T12:00:00Z","label":{"name":"detent:human-review"},"actor":{"__typename":"User","login":"example-user"}}]},"closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[%s]}}]}}`, strings.Join(firstPage, ","))},
 				{body: fmt.Sprintf(`{"data":{"node":{"__typename":"Issue","id":"I_74","closedByPullRequestsReferences":{"pageInfo":{"hasNextPage":false,"endCursor":"cursor-2"},"nodes":[%s]}}}}`, tt.secondPage)},
 			})
 			c := newGitHubTestConnector(t, server, Config{GitHubStatusSource: GitHubStatusSourceLabel, Repository: "gopherguides/corp"})
@@ -698,7 +698,7 @@ func TestConnectorAttachLabelIssuePullRequestReferencesPaginates(t *testing.T) {
 			if issues[0].PRNumber == nil || *issues[0].PRNumber != tt.wantNumber || issues[0].PRRepository != "gopherguides/corp" || issues[0].PRHeadSHA != fmt.Sprintf("head-%d", tt.wantNumber) {
 				t.Fatalf("PR identity = number %v, repo %q, head %q; want PR %d from overflow page", issues[0].PRNumber, issues[0].PRRepository, issues[0].PRHeadSHA, tt.wantNumber)
 			}
-			if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(time.Date(2025, 12, 27, 12, 0, 0, 0, time.UTC)) || issues[0].StageUpdatedActor.Login != "corylanou" {
+			if issues[0].StageUpdatedAt == nil || !issues[0].StageUpdatedAt.Equal(time.Date(2025, 12, 27, 12, 0, 0, 0, time.UTC)) || issues[0].StageUpdatedActor.Login != "example-user" {
 				t.Fatalf("lane transition = %v, %#v; want timestamp and actor from first page", issues[0].StageUpdatedAt, issues[0].StageUpdatedActor)
 			}
 			requests := server.requests()
@@ -1442,7 +1442,7 @@ func TestConnectorFetchIssueParentsLabelModeAvoidsProjectItems(t *testing.T) {
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"- [ ] #251","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"detent:todo"},{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","labels":{"nodes":[{"name":"detent:done"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"- [ ] #251","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"author":{"login":"example-user"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"detent:todo"},{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","labels":{"nodes":[{"name":"detent:done"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 		},
 		{
 			method: http.MethodGet,

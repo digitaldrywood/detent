@@ -12,8 +12,8 @@ func TestWorkflowDetailsURL(t *testing.T) {
 	}{
 		{
 			name:       "organization project",
-			projectURL: "https://github.com/orgs/digitaldrywood/projects/4",
-			want:       "https://github.com/orgs/digitaldrywood/projects/4/workflows",
+			projectURL: "https://github.com/orgs/example-org/projects/4",
+			want:       "https://github.com/orgs/example-org/projects/4/workflows",
 		},
 		{
 			name:       "user project view",
@@ -21,9 +21,9 @@ func TestWorkflowDetailsURL(t *testing.T) {
 			want:       "https://github.com/users/octocat/projects/12/workflows",
 		},
 		{name: "project node id", projectURL: "PVT_kwDOExample"},
-		{name: "repository slug", projectURL: "digitaldrywood/detent"},
-		{name: "non-project URL", projectURL: "https://github.com/digitaldrywood/detent"},
-		{name: "invalid project number", projectURL: "https://github.com/orgs/digitaldrywood/projects/not-a-number"},
+		{name: "repository slug", projectURL: "example-org/example-project"},
+		{name: "non-project URL", projectURL: "https://github.com/example-org/example-project"},
+		{name: "invalid project number", projectURL: "https://github.com/orgs/example-org/projects/not-a-number"},
 		{name: "missing URL"},
 	}
 

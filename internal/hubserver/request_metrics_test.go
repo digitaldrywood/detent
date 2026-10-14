@@ -3,9 +3,13 @@ package hubserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +79,30 @@ func TestRequestMetricsPersistence(t *testing.T) {
 	if count != 2 || classes != 2 {
 		t.Fatalf("minute/status rows=%d classes=%d", count, classes)
 	}
+	for _, test := range []struct {
+		name   string
+		from   time.Time
+		bucket time.Duration
+		want   []string
+	}{
+		{"recent hour by status class", now.Add(-2 * time.Hour), time.Minute, []string{"GET /items/:item 2xx count=20 p95=20 max=20", "GET /items/:item 4xx count=1 p95=20 max=20"}},
+		{"hours outlive minutes", now.Add(-16 * 24 * time.Hour), 30 * 24 * time.Hour, []string{"GET /expired 2xx count=1 p95=1000 max=1000", "GET /items/:item 2xx count=20 p95=20 max=20", "GET /items/:item 4xx count=1 p95=20 max=20"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			history, err := m.history(t.Context(), test.from, now, test.bucket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(history.Buckets))
+			for _, bucket := range history.Buckets {
+				got = append(got, fmt.Sprintf("%s %s count=%d p95=%g max=%g", bucket.Route, bucket.StatusClass, bucket.Count, bucket.P95, bucket.Max))
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("history=%v want %v", got, test.want)
+			}
+		})
+	}
 	if got, err := other.report(t.Context(), now); err != nil || len(got.Callers) != 0 {
 		t.Fatalf("other tenant=%+v err=%v", got, err)
 	}
@@ -87,6 +115,56 @@ func TestRequestMetricsPersistence(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dir, "one.metrics.sqlite"))
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("metrics file permissions: %v %v", info, err)
+	}
+}
+
+func TestMetricRouteBoundsKeys(t *testing.T) {
+	t.Parallel()
+	routes := map[string]bool{"GET /api/v2/organizations/:organization/activity": true}
+	for _, test := range []struct {
+		method, path, want string
+	}{
+		{"GET", "/api/v2/organizations/:organization/activity", "GET /api/v2/organizations/:organization/activity"},
+		{"PATCH", "/api/v2/organizations/:organization/activity", "PATCH <unmatched>"},
+		{"GET", "/api/v2/organizations/:organization/", "GET <unmatched>"},
+		{"GET", "", "GET <unmatched>"},
+		{"BREW", "/api/v2/organizations/:organization/activity", "OTHER <unmatched>"},
+		{"get", "/api/v2/organizations/:organization/activity", "OTHER <unmatched>"},
+	} {
+		if got := metricRoute(routes, test.method, test.path); got != test.want {
+			t.Errorf("metricRoute(%q, %q) = %q, want %q", test.method, test.path, got, test.want)
+		}
+	}
+}
+
+func TestRequestHistoryKeepsBusiestRoutes(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
+	m := testRequestMetrics(t, filepath.Join(t.TempDir(), "busy.metrics.sqlite"), "org_busy")
+	for route := range routeLatencyRouteLimit + 5 {
+		for range route + 1 {
+			m.record(now.Add(-time.Minute), fmt.Sprintf("GET /route/%02d", route), "browser", "user", 200, time.Millisecond)
+			m.record(now.Add(-48*time.Hour), fmt.Sprintf("GET /route/%02d", route), "browser", "user", 500, time.Millisecond)
+		}
+	}
+	if err := m.flush(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	history, err := m.history(t.Context(), now.Add(-2160*time.Hour), now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int64)
+	for _, bucket := range history.Buckets {
+		counts[bucket.Route] += bucket.Count
+	}
+	if len(counts) != routeLatencyRouteLimit {
+		t.Fatalf("routes=%d want %d: %v", len(counts), routeLatencyRouteLimit, counts)
+	}
+	for route := 5; route < routeLatencyRouteLimit+5; route++ {
+		if got := counts[fmt.Sprintf("GET /route/%02d", route)]; got != int64(2*(route+1)) {
+			t.Fatalf("route %d count=%d want %d", route, got, 2*(route+1))
+		}
 	}
 }
 
@@ -227,6 +305,33 @@ func TestRequestMetricsAdminReads(t *testing.T) {
 	requireNativeStatus(t, f.request(t, owner, http.MethodGet, path, nil), http.StatusOK)
 	requireNativeStatus(t, f.request(t, member, http.MethodGet, path, nil), http.StatusForbidden)
 	requireNativeStatus(t, f.request(t, owner, http.MethodGet, "/api/v2/organizations/org_other/diagnostics/requests", nil), http.StatusNotFound)
+	serverTiming := regexp.MustCompile(`^db;dur=[0-9.]+, compute;dur=[0-9.]+, encode;dur=[0-9.]+, total;dur=[0-9.]+$`)
+	for _, test := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+		timed    bool
+	}{
+		{"authenticated admin", f.request(t, owner, http.MethodGet, path, nil), true},
+		{"authenticated without access", f.request(t, member, http.MethodGet, path, nil), true},
+		{"anonymous", performHubAPIRequest(t, f.service, http.MethodGet, path, "", nil), false},
+		{"invalid token", performHubAPIRequest(t, f.service, http.MethodGet, path, "detent_invalid", nil), false},
+	} {
+		t.Run("server timing/"+test.name, func(t *testing.T) {
+			header := test.response.Header().Get("Server-Timing")
+			if test.timed != serverTiming.MatchString(header) || !test.timed && header != "" {
+				t.Fatalf("status=%d Server-Timing=%q", test.response.Code, header)
+			}
+		})
+	}
+	historyResponse := f.request(t, owner, http.MethodGet, path+"?window=24h", nil)
+	requireNativeStatus(t, historyResponse, http.StatusOK)
+	var history requestMetricsResponse
+	decodeHubResponse(t, historyResponse, &history)
+	if history.RouteLatency == nil || history.RouteLatency.Bucket != "1h0m0s" {
+		t.Fatalf("route latency history: %s", historyResponse.Body.String())
+	}
+	requireNativeStatus(t, f.request(t, owner, http.MethodGet, path+"?window=1m", nil), http.StatusBadRequest)
+	requireNativeStatus(t, f.request(t, member, http.MethodGet, path+"?window=1m", nil), http.StatusForbidden)
 	f.grant(t, owner, false, false)
 	for _, test := range []struct {
 		access hostedProjectAccess

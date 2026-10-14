@@ -521,7 +521,7 @@ func TestRecordMergeFailedRejectsFailureBeforeMergeEntry(t *testing.T) {
 	failedAt := enteredMergingAt.Add(-time.Minute - 2*time.Second)
 	issue := connector.Issue{
 		ID:             "issue-invalid-merge-timing",
-		Identifier:     "getparable/parable#1946",
+		Identifier:     "example-org/example-project#1946",
 		State:          "Merging",
 		StageUpdatedAt: &enteredMergingAt,
 	}

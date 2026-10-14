@@ -298,6 +298,7 @@ describe("the project settings save", () => {
     const after = await api.saveIntegration({
       projectId: project.id,
       key: "integration-1",
+      duplicateChallenge: false,
       archiveCompletedAfterDays: 14,
       archiveCancelledAfterDays: null,
       revision: before.revision,
@@ -306,9 +307,11 @@ describe("the project settings save", () => {
       repositoryEnabled: before.repository_enabled,
     });
     expect(after.revision).not.toBe(before.revision);
+    expect(after.duplicate_challenge).toBe(false);
     expect(after.archive_completed_after_days).toBe(14);
     expect(after.archive_cancelled_after_days).toBeNull();
     const reloaded = await api.integration(project.id);
+    expect(reloaded.duplicate_challenge).toBe(false);
     expect(reloaded.archive_completed_after_days).toBe(14);
     expect(reloaded.archive_cancelled_after_days).toBeNull();
   });
@@ -344,20 +347,23 @@ describe("the project settings save", () => {
 });
 
 describe("the first-run wizard", () => {
-  it("associates a private runner checkout without enabling GitHub API integration", async () => {
+  it.each([
+    ["mockorg/other", false],
+    ["mockorg/private", true],
+  ])("associates %s without enabling GitHub API integration", async (repository, verified) => {
     await reset();
     const project = bootstrap.projects.find((entry) => entry.id === "proj_beta")!;
     const before = await api.integration(project.id);
-    const missing = await api.bindRepository({ projectId: project.id, repository: "mockorg/other", revision: before.revision, key: "missing-checkout" }).catch((cause: unknown) => cause);
-    expect(missing).toBeInstanceOf(AccountError);
-    expect((missing as AccountError).code).toBe("checkout_unavailable");
-    expect((missing as AccountError).message).toContain("Start an enrolled runner");
-
-    const associated = await api.bindRepository({ projectId: project.id, repository: "mockorg/private", revision: before.revision, key: "private-checkout" });
-    expect(associated.checkout_repository).toBe("mockorg/private");
+    const associated = await api.bindRepository({ projectId: project.id, repository, revision: before.revision, key: "private-checkout" });
+    expect(associated.checkout_repository).toBe(repository);
+    expect(associated.checkout_verified).toBe(verified);
     expect(associated.repository_enabled).toBe(false);
     expect(associated.repository).toBeUndefined();
     expect(await api.integration(project.id)).toEqual(associated);
+    const changed = await api.bindRepository({ projectId: project.id, repository: "mockorg/replacement", revision: associated.revision, key: "change-checkout" }).catch((cause: unknown) => cause);
+    expect(changed).toBeInstanceOf(AccountError);
+    expect((changed as AccountError).code).toBe("invalid_request");
+    expect((await api.integration(project.id)).checkout_repository).toBe(repository);
   });
 
   it("walks the four steps and the hub recomputes readiness from what was saved", async () => {

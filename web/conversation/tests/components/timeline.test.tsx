@@ -223,7 +223,7 @@ describe("Timeline", () => {
     expect(screen.queryByTestId("status-row")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Create linked issue" }));
     expect(onCreateIssue).toHaveBeenCalledWith(
-      expect.objectContaining({ project_id: "proj_parable" }),
+      expect.objectContaining({ project_id: "proj_example_project" }),
     );
   });
 
@@ -288,7 +288,7 @@ describe("Timeline", () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Create linked issue" }));
     expect(onCreateIssue).toHaveBeenCalledWith(
-      expect.objectContaining({ project_id: "proj_parable" }),
+      expect.objectContaining({ project_id: "proj_example_project" }),
     );
   });
 
@@ -304,7 +304,7 @@ describe("Timeline", () => {
       />,
     );
     const card = screen.getByTestId("issue-card");
-    expect(card.textContent).toContain("parable#3363");
+    expect(card.textContent).toContain("example-project#3363");
     expect(card.textContent).toContain("Todo");
     expect(card.textContent).toContain("Waiting for a runner");
     fireEvent.click(screen.getByRole("button", { name: "Open issue" }));

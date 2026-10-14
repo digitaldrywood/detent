@@ -15,6 +15,7 @@ import (
 const NativeExecutionCapability = "fenced_run_history"
 
 const NativeRuntimeEvidenceCapability = "native_runtime_evidence"
+const NativePreProviderFailureCapability = "native_pre_provider_failure"
 const NativeAdmissionEvidenceCapability = "native_admission_evidence"
 const NativeAdmissionObservationCapability = "native_admission_observation"
 
@@ -305,21 +306,29 @@ type NativeRuntimeAdmission struct {
 }
 
 type NativeRuntimeEvidence struct {
-	SourceRecovery           *NativeSourceRecovery    `json:"source_recovery,omitempty"`
-	ValidationAudit          *ValidationAudit         `json:"validation_audit,omitempty"`
-	Admission                []NativeRuntimeAdmission `json:"admission,omitempty"`
-	CurrentLease             *NativeLease             `json:"current_lease,omitempty"`
-	Issue                    NativeIssue              `json:"issue"`
-	Attempt                  *NativeAttempt           `json:"attempt,omitempty"`
-	Selection                string                   `json:"selection"`
-	LatestTransition         *CollaborationEvent      `json:"latest_transition,omitempty"`
-	LatestDecision           *CollaborationEvent      `json:"latest_decision,omitempty"`
-	NativeCandidateExclusion *CollaborationEvent      `json:"native_candidate_exclusion,omitempty"`
-	Scheduling               NativeSchedulerDecision  `json:"scheduling"`
-	Capacity                 []NativeRuntimeCapacity  `json:"capacity"`
-	Change                   *ChangeDetail            `json:"change,omitempty"`
-	ObservedAt               time.Time                `json:"observed_at"`
-	Unavailable              []string                 `json:"unavailable"`
+	CurrentVersion           *NativeChangeVersionEvidence `json:"current_version,omitempty"`
+	SourceRecovery           *NativeSourceRecovery        `json:"source_recovery,omitempty"`
+	ValidationAudit          *ValidationAudit             `json:"validation_audit,omitempty"`
+	Admission                []NativeRuntimeAdmission     `json:"admission,omitempty"`
+	CurrentLease             *NativeLease                 `json:"current_lease,omitempty"`
+	Issue                    NativeIssue                  `json:"issue"`
+	Attempt                  *NativeAttempt               `json:"attempt,omitempty"`
+	Selection                string                       `json:"selection"`
+	LatestTransition         *CollaborationEvent          `json:"latest_transition,omitempty"`
+	LatestDecision           *CollaborationEvent          `json:"latest_decision,omitempty"`
+	NativeCandidateExclusion *CollaborationEvent          `json:"native_candidate_exclusion,omitempty"`
+	Scheduling               NativeSchedulerDecision      `json:"scheduling"`
+	Capacity                 []NativeRuntimeCapacity      `json:"capacity"`
+	Change                   *ChangeDetail                `json:"change,omitempty"`
+	ObservedAt               time.Time                    `json:"observed_at"`
+	Unavailable              []string                     `json:"unavailable"`
+}
+
+type NativeChangeVersionEvidence struct {
+	NativeChangeReference
+	PublishedAt time.Time             `json:"published_at"`
+	Validation  *gate.CommandResult   `json:"validation,omitempty"`
+	Landing     *NativeLandingReceipt `json:"landing,omitempty"`
 }
 
 func (i NativeIssue) RuntimeReference() NativeIssue {

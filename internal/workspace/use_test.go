@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"testing/synctest"
@@ -84,25 +85,50 @@ func TestWorkspaceUseCancellation(t *testing.T) {
 }
 
 func TestFilesystemCleanupProtectsWorker(t *testing.T) {
-	backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	issue := Issue{Identifier: "repo#1", ID: "1"}
-	release, err := backend.Use(t.Context(), issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	info, err := backend.Create(t.Context(), issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
-		t.Fatalf("cleanup=%v", err)
-	}
-	if _, err := os.Stat(info.Path); err != nil {
-		t.Fatalf("active workspace removed: %v", err)
+	for _, kind := range []string{KindFilesystem, KindLocalGit} {
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			opts := LocalGitOptions{Root: t.TempDir(), SourceRoot: t.TempDir(), CommitIdentity: CommitIdentity{Name: "Enrolled runner", Email: "runner@example.com"}}
+			backend, err := NewBackend(kind, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "owner/repository#1", ID: "1"}
+			release, err := backend.(Usage).Use(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			if kind == KindLocalGit {
+				if err := os.MkdirAll(filepath.Join(opts.Root, "owner_repository_1"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := backend.Create(t.Context(), issue); err != nil {
+				t.Fatal(err)
+			}
+			opts.Hooks.AfterCreate = "printf updated"
+			opts.CommitIdentity = CommitIdentity{Name: "Changed identity", Email: "changed@example.com"}
+			updated, err := ReconfigureBackend(backend, kind, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == KindLocalGit {
+				before := backend.(*LocalGit).CommitReport()
+				after := updated.(*LocalGit).CommitReport()
+				if after != before || after.Identity.Email != "runner@example.com" {
+					t.Fatalf("reload changed startup commit policy: before=%+v after=%+v", before, after)
+				}
+			}
+			for _, candidate := range []Backend{backend, updated} {
+				if _, err := candidate.(IssueCleaner).CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+					t.Fatalf("cleanup=%v", err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(opts.Root, "owner_repository_1")); err != nil {
+				t.Fatalf("active workspace removed: %v", err)
+			}
+		})
 	}
 }
 

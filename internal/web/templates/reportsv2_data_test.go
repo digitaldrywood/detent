@@ -110,10 +110,10 @@ func TestReportsP95IgnoresZeroBuckets(t *testing.T) {
 func TestReportsTopRowsResolveTrackerURLs(t *testing.T) {
 	t.Parallel()
 
-	issueURL := "https://github.com/digitaldrywood/detent/issues/117"
-	prURL := "https://github.com/digitaldrywood/detent/pull/133"
+	issueURL := "https://github.com/example-org/example-project/issues/117"
+	prURL := "https://github.com/example-org/example-project/pull/133"
 	snapshot := telemetry.Snapshot{BoardIssues: []telemetry.Issue{{
-		Identifier: "digitaldrywood/detent#117",
+		Identifier: "example-org/example-project#117",
 		URL:        issueURL,
 		PullRequest: &telemetry.PullRequest{
 			Number: 133,
@@ -127,8 +127,8 @@ func TestReportsTopRowsResolveTrackerURLs(t *testing.T) {
 		bucket string
 		want   string
 	}{
-		{name: "issue", prefix: "issue", bucket: "digitaldrywood/detent#117", want: issueURL},
-		{name: "pull request", prefix: "pr", bucket: "detent#133", want: prURL},
+		{name: "issue", prefix: "issue", bucket: "example-org/example-project#117", want: issueURL},
+		{name: "pull request", prefix: "pr", bucket: "example-project#133", want: prURL},
 		{name: "unknown", prefix: "issue", bucket: "MT-1"},
 	}
 

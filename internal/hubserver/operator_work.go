@@ -27,10 +27,6 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeRead}); err != nil {
 		return nil, err
 	}
-	writable := false
-	if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item"}); err == nil {
-		writable = true
-	}
 	definitions := []operatortool.Definition{}
 	catalog, err := operatorCatalog(ctx)
 	if err != nil {
@@ -52,8 +48,8 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
-		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem:
-			if writable {
+		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem, operatortool.VerifyFix:
+			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
 		case operatortool.ListComments:
@@ -62,7 +58,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	if e.service.hostedShared() {
 		for _, definition := range operatortool.AttachmentCatalog() {
-			if writable || definition.Annotations.ReadOnly {
+			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil || definition.Annotations.ReadOnly {
 				definitions = append(definitions, definition)
 			}
 		}
@@ -120,7 +116,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			e.service.config.Logger.InfoContext(ctx, "operator mutation", "audit", string(audit))
 		}()
 	}
-	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, ProjectID: selector.ProjectID})
+	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, Action: call.Name, ProjectID: selector.ProjectID})
 	if err != nil {
 		outcome = "denied"
 		return operatortool.Result{}, err
@@ -131,6 +127,9 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(selector.ProjectID)
+	metadata.ActorKind = scope.actor().Kind
+	metadata.ViaKey = scope.actor().ViaKey
+	scope.action = call.Name
 	if call.Name == operatortool.UploadAttachment {
 		if !e.service.hostedShared() {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
@@ -176,7 +175,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			if definition.Annotations.ReadOnly {
 				resolve = e.service.resolveOperatorNativeReadItem
 			}
-			item, resolveErr := resolve(ctx, e.service.database.db, scope, request.Identifier)
+			item, resolveErr := resolve(ctx, e.service.database.reader, scope, request.Identifier)
 			if resolveErr != nil {
 				if definition.Annotations.ReadOnly {
 					return operatortool.Result{}, safeWorkReadError(resolveErr)
@@ -189,7 +188,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
 			}
 			if request.Related != "" && !strings.HasPrefix(request.Related, "wi_") {
-				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.db, scope, request.Related)
+				related, resolveErr := e.service.resolveOperatorNativeItem(ctx, e.service.database.reader, scope, request.Related)
 				if resolveErr != nil {
 					return operatortool.Result{}, hubSafeChangeError(resolveErr)
 				}
@@ -227,7 +226,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			priority = &level
 		}
-		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
+		raw, err = e.service.operatorCreateNativeWork(ctx, scope, tracker.CreateIssue{Mutation: tracker.MutationForContext(ctx, ""), GitHubIssueURL: create.GitHubIssueURL, ChallengeToken: create.ChallengeToken, NotDuplicateOf: create.NotDuplicateOf, Type: create.Type, ReportContext: create.ReportContext, Title: create.Title, Body: create.Description, State: create.State, Labels: create.Labels, Priority: priority})
 	} else if operatortool.IsWorkTool(call.Name) {
 		metadata.ResourceID = request.Identifier
 		if definition.Annotations.ReadOnly {
@@ -283,10 +282,13 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		CommentID     string           `json:"comment_id,omitempty"`
 		Data          json.RawMessage  `json:"data"`
 	}{metadata.CorrelationID, e.service.config.now(), resourceID, resourceURL, resource.Revision, resource.ID, raw})
-	if err != nil || len(content) > operatortool.MaxResultBytes {
+	if err != nil {
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
-	return operatortool.Result{Content: content}, nil
+	if resource.ID == "" && len(resource.WorkItemID) > 0 {
+		return operatortool.EncodeWorkItemResult(json.RawMessage(content))
+	}
+	return operatortool.EncodeResult(json.RawMessage(content))
 }
 
 func operatorNativeConflict(err error) error {

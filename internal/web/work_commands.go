@@ -59,6 +59,9 @@ func (s *Server) workActionProposal(ctx context.Context, name string, arguments 
 	if err != nil {
 		return chatpkg.Action{}, err
 	}
+	if name == operatortool.VerifyFix {
+		return chatpkg.Action{}, errOperatorCommandUnavailable
+	}
 	target, err := s.workCommandTarget(ctx, request.ProjectID, request.Identifier)
 	if err != nil {
 		return chatpkg.Action{}, err

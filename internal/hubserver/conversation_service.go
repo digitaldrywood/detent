@@ -157,6 +157,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
 	service.settled = make(chan struct{})
+	service.store.reader = server.database.reader
 	go service.settleLoop()
 	return service
 }
@@ -242,7 +243,9 @@ func (c *conversationService) settleLoop() {
 // linked conversations with queued controls to the control router. Nothing
 // is replayed; the components re-read durable state.
 func (c *conversationService) wakePending(ctx context.Context) error {
-	rows, err := c.store.db.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := c.store.reader.QueryContext(ctx, `SELECT DISTINCT m.conversation_id, c.work_item_id IS NOT NULL FROM conversation_messages m
 JOIN conversations c ON c.id = m.conversation_id
 WHERE m.role = 'user' AND m.delivery IN ('saved', 'queued')`)
 	if err != nil {
@@ -484,9 +487,15 @@ func translateConversationError(err error) error {
 // authorizeRead applies the audience rules from the decisions document:
 // the record must belong to the request scope, private conversations are
 // visible only to their owner, and every denial is an opaque not_found.
-func (c *conversationService) authorizeRead(scope nativeScope, record conversationRecord) error {
+func (c *conversationService) authorizeRead(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
 	if record.OrganizationID != scope.organization || record.ProjectID != scope.project {
 		return nativeNotFound()
+	}
+	if record.ReadAudience != "" {
+		audience, err := conversationReadAudience(ctx, query, scope.organization, scope.credential)
+		if err != nil || audience != record.ReadAudience {
+			return nativeNotFound()
+		}
 	}
 	if record.Visibility == conversation.VisibilityPrivate && record.OwnerPrincipalID != scope.credential.ID {
 		return nativeNotFound()
@@ -497,7 +506,7 @@ func (c *conversationService) authorizeRead(scope nativeScope, record conversati
 // authorizeWrite requires read access, an active conversation and project
 // write capability. Viewers and read-only grants cannot send commands.
 func (c *conversationService) authorizeWrite(ctx context.Context, query nativeQueryer, scope nativeScope, record conversationRecord) error {
-	if err := c.authorizeRead(scope, record); err != nil {
+	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
 		return err
 	}
 	if scope.credential.Hosted != nil {
@@ -617,20 +626,12 @@ type conversationReferenceResource struct {
 	URL   string                     `json:"url"`
 }
 
-// conversationReferenceURL is the client route a reference opens.
-func conversationReferenceURL(kind conversation.ReferenceKind, id string) string {
-	if kind == conversation.ReferenceConversation {
-		return "/chat/c/" + id
-	}
-	return "/work/i/" + id
-}
-
 func projectReferences(references []conversationMessageReference) []conversationReferenceResource {
 	projected := make([]conversationReferenceResource, 0, len(references))
 	for _, reference := range references {
 		projected = append(projected, conversationReferenceResource{
 			Kind: reference.Kind, ID: reference.ID, Label: reference.Label,
-			URL: conversationReferenceURL(reference.Kind, reference.ID),
+			URL: reference.URL,
 		})
 	}
 	return projected
@@ -643,10 +644,18 @@ func conversationOptional(value string) *string {
 	return &value
 }
 
+func conversationBetweenTurns(execution conversation.Execution) bool {
+	return execution.Status == conversation.ExecutionRunning && execution.Owner.AttemptID != "" && execution.Owner.TurnID == ""
+}
+
 func projectExecution(execution conversation.Execution) conversationExecutionResource {
 	status := execution.Status
 	if status == "" {
 		status = conversation.ExecutionIdle
+	}
+	capabilities := execution.Capabilities
+	if conversationBetweenTurns(execution) {
+		capabilities.Steer = false
 	}
 	return conversationExecutionResource{
 		Status:       status,
@@ -656,7 +665,7 @@ func projectExecution(execution conversation.Execution) conversationExecutionRes
 		ThreadID:     conversationOptional(execution.Owner.ThreadID),
 		TurnID:       conversationOptional(execution.Owner.TurnID),
 		Resume:       execution.Resume,
-		Capabilities: execution.Capabilities,
+		Capabilities: capabilities,
 		Error:        conversationOptional(execution.Error),
 		UpdatedAt:    execution.UpdatedAt,
 	}
@@ -824,7 +833,7 @@ func (c *conversationService) loadConversation(ctx context.Context, query native
 	if err != nil {
 		return conversationRecord{}, translateConversationError(err)
 	}
-	if err := c.authorizeRead(scope, record); err != nil {
+	if err := c.authorizeRead(ctx, query, scope, record); err != nil {
 		return conversationRecord{}, err
 	}
 	return record, nil
@@ -951,7 +960,7 @@ func (c *conversationService) resolveConversationReference(ctx context.Context, 
 	if err != nil {
 		return found, false, fmt.Errorf("resolve conversation reference: %w", err)
 	}
-	return conversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text}, true, nil
+	return conversationMessageReference{Kind: conversation.ReferenceConversation, ID: reference.ConversationID, Label: reference.Text, URL: "/chat/c/" + reference.ConversationID}, true, nil
 }
 
 // resolveIssueReference reports the referenced issue; ok is false when the
@@ -977,7 +986,11 @@ WHERE i.organization_id = ? AND lower(p.name) = ? AND i.number = ?`
 	if err != nil {
 		return found, false, fmt.Errorf("resolve issue reference: %w", err)
 	}
-	return conversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text}, true, nil
+	path, err := readIssueBrowserPath(ctx, tx, workItemID)
+	if err != nil {
+		return found, false, err
+	}
+	return conversationMessageReference{Kind: conversation.ReferenceIssue, ID: workItemID, Label: reference.Text, URL: path}, true, nil
 }
 
 // updateMessage persists a changed message and its message.updated event.

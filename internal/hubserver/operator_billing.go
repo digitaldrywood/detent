@@ -125,10 +125,10 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		if (definition.Name == operatortool.CreditCheckout || definition.Name == operatortool.CreditAutoFund) && !e.service.creditAvailable() {
 			continue
 		}
-		if definition.Name == operatortool.CreditCheckout && e.service.config.Hosted.Billing.CheckoutDisabled {
+		if cfg := e.service.hostedBillingConfig(); definition.Name == operatortool.CreditCheckout && cfg != nil && cfg.CheckoutDisabled {
 			continue
 		}
-		if !definition.Annotations.ReadOnly && e.service.config.Hosted.Billing == nil {
+		if !definition.Annotations.ReadOnly && e.service.hostedBillingConfig() == nil {
 			continue
 		}
 		definitions = append(definitions, definition)
@@ -141,14 +141,13 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 }
 
 func billingResult(value any) (operatortool.Result, error) {
-	raw, err := json.Marshal(value)
-	if err != nil || len(raw) > operatortool.MaxResultBytes {
-		return operatortool.Result{}, errBillingUnavailable
-	}
-	return operatortool.Result{Content: raw}, nil
+	return operatortool.EncodeResult(value)
 }
 
 func safeBillingError(err error) error {
+	if errors.Is(err, operatortool.ErrResultTooLarge) {
+		return err
+	}
 	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe
@@ -158,6 +157,15 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	call, err = e.service.normalizeToolReferences(ctx, call)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if err == nil && len(result.Content) > 0 && e.service.config.Hosted != nil {
+			result, err = e.service.canonicalToolResult(ctx, result)
+		}
+	}()
 	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
@@ -177,6 +185,9 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		return hubOperatorExecutor(e).Execute(ctx, call)
 	}
 	if operatortool.IsAdministration(call.Name) {
+		if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, Action: call.Name}); err != nil {
+			return result, err
+		}
 		return e.service.administration.Execute(ctx, call)
 	}
 	if call.Name == operatortool.ActionResult {
@@ -390,6 +401,7 @@ func decodeBillingAction(name string, raw json.RawMessage) (billingActionRequest
 
 func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
 	s := e.service
+	cfg := s.hostedBillingConfig()
 	request, err := decodeBillingAction(call.Name, call.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -398,7 +410,7 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	if s.config.Hosted.Billing == nil || s.billing == nil {
+	if cfg == nil || s.billing == nil {
 		return operatortool.Result{}, errBillingUnavailable
 	}
 	arguments, err := json.Marshal(request)
@@ -423,18 +435,18 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 	}
 	if call.Name == operatortool.BillingCheckout {
 		approved := false
-		for _, price := range s.config.Hosted.Billing.Prices {
+		for _, price := range cfg.Prices {
 			approved = approved || price.PriceID == request.Price
 		}
 		if !approved {
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
-		if s.config.Hosted.Billing.CheckoutDisabled {
+		if cfg.CheckoutDisabled {
 			return operatortool.Result{}, errBillingUnavailable
 		}
 	}
 	if call.Name == operatortool.CreditCheckout || call.Name == operatortool.CreditAutoFund {
-		if !s.creditAvailable() || call.Name == operatortool.CreditCheckout && s.config.Hosted.Billing.CheckoutDisabled {
+		if !s.creditAvailable() || call.Name == operatortool.CreditCheckout && cfg.CheckoutDisabled {
 			return operatortool.Result{}, errBillingUnavailable
 		}
 		if call.Name == operatortool.CreditCheckout || *request.Enabled {
@@ -468,7 +480,7 @@ func (e hostedOperatorExecutor) submitBilling(ctx context.Context, call operator
 
 // Bind the preview to the configured purchase, not just a mutable price label.
 func (s *Service) billingActionBinding(price string) string {
-	cfg := s.config.Hosted.Billing
+	cfg := s.hostedBillingConfig()
 	if cfg == nil {
 		return ""
 	}
@@ -482,13 +494,15 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (s *Service) billingRequestBinding(ctx context.Context, name string, request billingActionRequest) (string, string, error) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
 		return s.billingActionBinding(request.Price), "", nil
 	}
-	if !s.creditAvailable() {
+	cfg := s.hostedBillingConfig()
+	if cfg == nil || !s.creditAvailable() {
 		return "", "", errBillingUnavailable
 	}
-	cfg := s.config.Hosted.Billing
 	pack, _ := s.creditPack(request.Price)
 	material := struct {
 		Organization string           `json:"organization_id"`
@@ -507,7 +521,7 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 		Pack                                                        HostedCreditPack
 	}{Account: cfg.AccountID, Mode: cfg.mode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
-		if err := s.database.db.QueryRowContext(ctx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT auto_enabled,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", s.database.hostedOrganization, s.database.aiCreditMode).Scan(&state.Enabled, &state.Threshold, &state.Price, &state.Method); err != nil {
 			return "", "", err
 		}
 		if *request.Enabled {

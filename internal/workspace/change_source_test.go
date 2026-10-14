@@ -277,7 +277,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		})
 	}
 
-	for _, scenario := range []string{"inherited synthetic fixtures", "introduced credential", "inherited credential", "unsafe intermediate commit"} {
+	for _, scenario := range []string{"inherited synthetic fixtures", "runtime synthetic checkpoint fixtures", "introduced credential", "inherited credential", "unsafe intermediate commit"} {
 		t.Run("capture "+scenario, func(t *testing.T) {
 			source := initSourceRepo(t)
 			paths := []string{"internal/hubserver/health_email_test.go", "internal/hubserver/slack_delivery_test.go"}
@@ -288,11 +288,20 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				}
 				checkpointWrite(t, source, path, string(data))
 			}
+			if scenario == "runtime synthetic checkpoint fixtures" {
+				path := "internal/workspace/checkpoint_ref_test.go"
+				data, err := os.ReadFile("checkpoint_ref_test.go")
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpointWrite(t, source, path, string(data))
+				paths = append(paths, path)
+			}
 			credential := "ghp_" + strings.Repeat("Z", 36)
 			if scenario == "inherited credential" {
 				checkpointWrite(t, source, paths[0], readFile(t, filepath.Join(source, paths[0]))+"\n"+credential)
 			}
-			runGit(t, source, "add", "--", paths[0], paths[1])
+			runGit(t, source, append([]string{"add", "--"}, paths...)...)
 			runGit(t, source, "commit", "-m", "inherited notification fixtures")
 			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
 			if scenario == "unsafe intermediate commit" {
@@ -308,12 +317,12 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 			if scenario == "introduced credential" {
 				checkpointWrite(t, source, paths[1], readFile(t, filepath.Join(source, paths[1]))+credential)
 			}
-			runGit(t, source, "add", "--", paths[0], paths[1])
+			runGit(t, source, append([]string{"add", "--"}, paths...)...)
 			runGit(t, source, "commit", "-m", "selected notification source")
 			head := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
 			tree := runGit(t, source, "rev-parse", "HEAD^{tree}")
 			capture, err := CaptureChangeSource(t.Context(), source, base, head)
-			if scenario != "inherited synthetic fixtures" {
+			if scenario != "inherited synthetic fixtures" && scenario != "runtime synthetic checkpoint fixtures" {
 				if !errors.Is(err, ErrCheckpointUnsafe) || err.Error() != "checkpoint could not be safely published: possible credential in selected content" || len(capture.Bundle) != 0 {
 					t.Fatalf("unsafe source escaped capture refusal: bytes=%d, error=%v", len(capture.Bundle), err)
 				}

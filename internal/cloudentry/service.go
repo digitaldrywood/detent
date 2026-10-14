@@ -11,9 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -25,8 +28,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -52,6 +57,10 @@ type Config struct {
 	Allocation                *AllocationConfig
 	Billing                   *BillingConfig
 	ConfigPath                string
+	Reload                    func() (Config, error)
+	ConfigureRuntime          func(hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error)
+	Runtime                   *hubserver.HostedRuntimeUpdate
+	RestartSettings           []byte
 	Attachments               *attachment.Config
 	GitHubWebhookSecret       []byte
 	GitHubApp                 *github.InstallationTokenConfig
@@ -64,7 +73,10 @@ type Config struct {
 
 	tenantStartTimeout time.Duration
 	platformDeadline   time.Duration
+	reloadSignals      <-chan os.Signal
 }
+
+func ValidateConfig(c Config) error { return c.validate() }
 
 func (c Config) validate() error {
 	u, err := url.Parse(c.PublicURL)
@@ -94,6 +106,8 @@ func (c Config) validate() error {
 }
 
 type Service struct {
+	runtime           atomic.Pointer[entryRuntime]
+	reloadMu          sync.Mutex
 	keyMCP            *mcp.HTTPHandler
 	administration    *operatoradmin.Executor
 	config            Config
@@ -173,6 +187,7 @@ func Open(ctx context.Context, cfg Config) (result *Service, resultErr error) {
 		return nil, errors.Join(err, authStorage.Close(), registry.Close())
 	}
 	service := &Service{config: cfg, registry: registry, auth: &authStore{store: authStorage, now: cfg.now, seal: seal}, secure: strings.HasPrefix(cfg.PublicURL, "https://"), closeDevelopState: closeDevelopState}
+	service.configureRuntimeLauncher()
 	service.attachments = attachments
 	if cfg.transport == nil {
 		service.config.transport = service.tenantTransport
@@ -261,13 +276,26 @@ func (s *Service) serve(ctx context.Context, listener net.Listener) error {
 		cancelReplay()
 		<-replayDone
 	}()
-	select {
-	case err := <-result:
-		return err
-	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return errors.Join(s.echo.Shutdown(shutdown), <-result)
+	reloads := s.config.reloadSignals
+	if reloads == nil && s.config.Reload != nil && len(configurationSignals()) > 0 {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, configurationSignals()...)
+		defer signal.Stop(signals)
+		reloads = signals
+	}
+	for {
+		select {
+		case <-reloads:
+			if err := s.reloadConfiguration(ctx); err != nil {
+				s.config.Logger.ErrorContext(ctx, "cloud configuration reload failed; retaining previous entry state", "actor", "operator", "reason", "SIGHUP", "error", err)
+			}
+		case err := <-result:
+			return err
+		case <-ctx.Done():
+			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			return errors.Join(s.echo.Shutdown(shutdown), <-result)
+		}
 	}
 }
 
@@ -277,7 +305,7 @@ func (s *Service) routes() {
 	s.registerKeyMCP()
 	e := s.echo
 	e.Pre(s.boundary)
-	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", http.FileServerFS(detent.StaticFS()))))
+	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
 	e.GET("/health", s.health)
 	e.GET("/", s.home)
 	e.GET("/auth/oidc/start", s.startLogin)
@@ -303,8 +331,8 @@ func (s *Service) routes() {
 	e.GET("/api/cloud/platform/health", s.platformHealthJSON)
 	e.GET("/api/cloud/platform/users", s.platformUsersJSON)
 	e.GET("/api/cloud/platform/audit", s.platformAuditJSON)
-	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON)
-	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement)
+	e.GET("/api/cloud/platform/organizations/:organization/entitlements", s.platformEntitlementsJSON, s.platformEntitlementAuthority)
+	e.POST("/api/cloud/platform/organizations/:organization/entitlements", s.changePlatformEntitlement, s.platformEntitlementAuthority)
 	e.GET("/api/cloud/platform/members", s.platformMembersJSON)
 	e.POST("/api/cloud/platform/members", s.changePlatformMember)
 	e.PATCH("/api/cloud/platform/members/:email", s.changePlatformMember)
@@ -315,7 +343,11 @@ func (s *Service) routes() {
 	e.POST("/api/v1/webhooks/github", s.githubWebhook)
 	e.GET("/invite", s.startInvitation)
 	s.registerAttachmentRoutes(e)
+	e.GET("/api/cloud/organizations/:organization/slug", s.organizationSlug)
+	e.PUT("/api/cloud/organizations/:organization/slug", s.organizationSlug)
+	e.Any("/*", s.readableProxy)
 	e.Any("/organizations/:organization", s.proxy)
+	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }

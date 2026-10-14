@@ -1,3 +1,4 @@
+import type { IssueIntake, IntakeCommand } from "../src/contracts/githubIntake.ts";
 // In-memory mock of the conversation hub.
 //
 // Implements the endpoints and the event stream in
@@ -21,6 +22,7 @@ import { randomUUID } from "node:crypto";
 
 import { createWorkMock } from "./mock-work.ts";
 import reportsFixture from "../src/contracts/fixtures/reports.json";
+import reportOptionsFixture from "../src/contracts/fixtures/reportOptions.json";
 import type {
   Conversation,
   ConversationEvent,
@@ -88,6 +90,7 @@ interface ProjectRow {
 }
 
 interface IntegrationRow {
+  duplicate_challenge?: boolean;
   profile: string;
   /** A JSON *string*: the hub marshals the counter with `json:",string"`. */
   revision: string;
@@ -98,6 +101,7 @@ interface IntegrationRow {
   archive_cancelled_after_days: number | null;
   repository?: string;
   checkout_repository?: string;
+  checkout_verified?: boolean;
   authority: Record<string, string>;
 }
 
@@ -186,10 +190,10 @@ const WORKFLOW_STATES = [
  * needs, which does not change with whether it has it, so only `state` moves.
  */
 const ONBOARDING_STEP_TEXT: ReadonlyArray<{ name: string; detail: string }> = [
-  { name: "Execution runner", detail: "Enroll a host, then prepare its project checkout, detent.yaml and WORKFLOW.md. Enrollment does not require policy approval." },
-  { name: "Local validation", detail: "The runner reports checkout, detent doctor and selected provider sign-in checks. Fix failures on that host, then restart the runner to report fresh results. Credentials stay local." },
-  { name: "Repository configuration", detail: "Review the policy reported by the runner and explicitly approve it before dispatch." },
-  { name: "Artifact history", detail: "Choose local history or configure the customer S3-compatible service and independent gateway. A binding does not verify storage or promise offline access." },
+  { name: "Execution runner", detail: "Connect a computer to do this project's work. Click Enroll a runner, then paste the command it gives you into a terminal on that machine." },
+  { name: "Local validation", detail: "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks." },
+  { name: "Repository configuration", detail: "The project configuration tells Detent how to work on your code. Review the settings sent by your runner, then click Approve to allow work to start." },
+  { name: "Artifact history", detail: "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage." },
 ];
 
 /**
@@ -229,8 +233,8 @@ const SEED_MEMBERS: MemberRow[] = [
   },
   {
     id: "mem_admin",
-    user_id: "usr_dana",
-    email: "dana@example.test",
+    user_id: "usr_member",
+    email: "member@example.test",
     role: "admin",
     status: "active",
     grants: [
@@ -861,7 +865,7 @@ const SEED_BILLING = {
 
 /** An open support session: somebody from Detent acting as this organization. */
 const SEED_SUPPORT: SupportRow = {
-  actor: "support@detent.dev",
+  actor: "support@example.com",
   reason: "Investigating a stuck lease reported in ticket 4471",
   expires_at: "2026-09-10T22:30:00Z",
 };
@@ -2133,6 +2137,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   const organizationMode: OrganizationMode =
     options.organization ?? readOrganizationMode(process.env.MOCK_ORGANIZATION) ?? "seeded";
   let account = initialAccountState(organizationMode);
+  const intakeBatches = new Map<string, IssueIntake>();
+  const importedSources = new Map<string, string>();
   // Kept outside `account` on purpose: it is test cover for what was sent, not
   // hub state, so `POST /__mock/reset` leaves it alone.
   let lastEnrollment: MockEnrollmentRequest | null = null;
@@ -2665,6 +2671,10 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
 
+    if (segments[0] === "reports" && segments[1] === "options" && segments.length === 2 && method === "GET") {
+      json(response, 200, structuredClone(reportOptionsFixture));
+      return true;
+    }
     if (segments[0] === "reports" && segments.length === 1 && method === "GET") {
       const report = structuredClone(reportsFixture);
       report.analytics.project_id = url.searchParams.get("project") ?? "proj_alpha";
@@ -2865,8 +2875,52 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   ): Promise<boolean> {
     const tail = rest.join("/");
 
+    if (tail === "onboarding/issue-intake") {
+      const lanes = WORKFLOW_STATES.map(state => ({ name: state.name, dispatchable: state.dispatchable ?? false, terminal: state.terminal ?? false }));
+      const current = intakeBatches.get(projectId) ?? { batch: null, lanes };
+      if (method === "GET") { json(response, 200, current); return true; }
+      if (method === "POST") {
+        const body = await readBody(request);
+        runMutation(response, method, path, body, () => {
+          const input = body as unknown as IntakeCommand;
+          if (input.revision !== (current.batch?.revision ?? 0)) return { status: 409, payload: { code: "revision_conflict", message: "Refresh import progress." } };
+          let batch = current.batch;
+          if (input.action === "discover") {
+            const integration = account.integrations.get(projectId);
+            const repository = integration?.checkout_repository || integration?.repository || "";
+            batch = { id: `intake_${projectId}`, revision: current.batch?.revision ?? 0, runner_id: input.runner_id ?? "", status: "preview", destination: "", discovery: { repository, include_closed: input.include_closed ?? false, labels: input.labels ?? [], cursor: "" }, page: { total: 2, next_cursor: "", issues: [12, 13].map(number => ({ number, id: `I_${number}`, url: `https://github.com/${repository}/issues/${number}`, title: `Imported task ${number}`, body: "Existing repository work", closed: false, labels: ["detent:backlog"] })) }, items: [] };
+          } else if (input.action === "apply" && batch?.status === "preview") {
+            const lane = lanes.find(lane => lane.name === input.destination);
+            if (!lane || lane.dispatchable && !input.allow_dispatch) return { status: 422, payload: { code: "invalid_request", message: "Confirm the dispatchable destination." } };
+            const items = [...new Set(input.numbers ?? [])].map(number => {
+              const preview = batch!.page.issues.find(issue => issue.number === number)!;
+              const source = `${projectId}:${preview.id}`;
+              const existing = importedSources.get(source);
+              const id = existing ?? `wi_import_${projectId}_${number}`;
+              if (!existing) {
+                importedSources.set(source, id);
+                work.addIssue({ work_item_id: id, project_id: projectId, number, title: preview.title, body: preview.body, state: lane.name, labels: [] });
+              }
+              return { number, work_item_id: id, status: existing ? "skipped" : "completed" };
+            });
+            batch = { ...batch, status: "finished", destination: lane.name, items };
+          } else if (input.action === "close_source" && batch?.status === "finished") {
+            batch = { ...batch, items: batch.items.map(item => item.status === "completed" ? { ...item, source_close_requested: true } : item) };
+          } else return { status: 422, payload: { code: "invalid_request", message: "No matching intake action." } };
+          const result = { batch: { ...batch, revision: batch.revision + 1 }, lanes };
+          intakeBatches.set(projectId, result);
+          return { status: 200, payload: result };
+        });
+        return true;
+      }
+    }
+
     if (tail === "integration" && method === "GET") {
-      json(response, 200, account.integrations.get(projectId));
+      const integration = account.integrations.get(projectId);
+      json(response, 200, integration === undefined ? undefined : {
+        ...integration,
+        checkout_verified: Boolean(integration.checkout_repository) && account.checkoutReports.get(projectId)?.toLowerCase() === integration.checkout_repository?.toLowerCase(),
+      });
       return true;
     }
 
@@ -2886,6 +2940,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           intake: String(body.intake ?? current.intake),
           projection: String(body.projection ?? current.projection),
           repository_enabled: body.repository_enabled === true,
+          duplicate_challenge: body.duplicate_challenge === undefined ? current.duplicate_challenge ?? true : body.duplicate_challenge === true,
           archive_completed_after_days: body.archive_completed_after_days === undefined ? current.archive_completed_after_days : body.archive_completed_after_days === null ? null : Number(body.archive_completed_after_days),
           archive_cancelled_after_days: body.archive_cancelled_after_days === undefined ? current.archive_cancelled_after_days : body.archive_cancelled_after_days === null ? null : Number(body.archive_cancelled_after_days),
           revision: String(Number(current.revision) + 1),
@@ -3051,12 +3106,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         if (String(body.expected_revision ?? "") !== current.revision) {
           return { status: 409, payload: REVISION_CONFLICT };
         }
-        if (account.checkoutReports.get(projectId)?.toLowerCase() !== repository.toLowerCase()) {
-          return { status: 422, payload: { code: "checkout_unavailable", message: "Start an enrolled runner with this project's Git checkout and matching GitHub origin, then retry." } };
+        if (current.checkout_repository || (current.repository && current.repository.toLowerCase() !== repository.toLowerCase())) {
+          return { status: 422, payload: { code: "invalid_request", message: "This project already has a repository." } };
         }
         const next: IntegrationRow = {
           ...current,
           checkout_repository: repository,
+          checkout_verified: account.checkoutReports.get(projectId)?.toLowerCase() === repository.toLowerCase(),
           revision: String(Number(current.revision) + 1),
         };
         account.integrations.set(projectId, next);

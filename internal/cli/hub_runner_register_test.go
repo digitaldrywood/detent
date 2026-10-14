@@ -22,6 +22,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -48,9 +49,9 @@ func TestRunnerCheckoutRepositoryReportsOnlyCanonicalOrigin(t *testing.T) {
 		{name: "GitLab origin with external workflow", remote: "git@gitlab.com:Acme/Private.git", externalWorkflow: true, wantReady: true},
 		{name: "local origin", remote: "../source.git", wantReady: true},
 		{name: "configured workflow outside checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, want: "Acme/Private", wantReady: true},
-		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true},
-		{name: "invalid configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, invalidWorkflow: true},
-		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true},
+		{name: "missing configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingWorkflow: true, want: "Acme/Private"},
+		{name: "invalid configured workflow despite default", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, invalidWorkflow: true, want: "Acme/Private"},
+		{name: "missing default workflow", remote: "git@github.com:Acme/Private.git", missingWorkflow: true, want: "Acme/Private"},
 		{name: "missing Git origin", externalWorkflow: true, wantReady: true},
 		{name: "missing Git checkout", remote: "git@github.com:Acme/Private.git", externalWorkflow: true, missingGit: true},
 		{name: "configured Git ref workflow absent locally", remote: "git@github.com:Acme/Private.git", refWorkflow: true, want: "Acme/Private", wantReady: true},
@@ -238,6 +239,7 @@ type registerHub struct {
 	server         *httptest.Server
 	credential     atomic.Value
 	identity       atomic.Value
+	heartbeat      atomic.Value
 	tier           atomic.Value
 	redeemed       atomic.Int32
 	projects       map[tracker.ProjectID]string
@@ -308,7 +310,12 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 		}
 		if identity, ok := hub.identity.Load().(runnerauth.Identity); ok && strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID+"/routing") {
 			tier, _ := hub.tier.Load().(string)
-			_ = json.NewEncoder(w).Encode(runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()})
+			runner := runnerauth.Runner{Binding: identity.Binding, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Build host", State: "active", CapacityLimit: 2, ProjectIDs: ids, IsolationTier: tier}.Normalized()}
+			if heartbeat, ok := hub.heartbeat.Load().(time.Time); ok {
+				runner.LastHeartbeatAt = heartbeat
+				runner.ProviderCapacity = []providercapacity.View{{Report: providercapacity.Report{Provider: "openai"}}}
+			}
+			_ = json.NewEncoder(w).Encode(runner)
 			return
 		}
 		for id, name := range projects {
@@ -376,7 +383,7 @@ func TestHubRunnerRegisterServiceRuntime(t *testing.T) {
 			root := t.TempDir()
 			configPath := filepath.Join(root, "runner config", "global.yaml")
 			var captured servicepkg.Config
-			runner := &serviceRunnerStub{startErrs: []error{test.startErr}, startResults: []servicepkg.StartResult{{Action: servicepkg.ActionInstalled, State: servicepkg.StateRunning}}}
+			runner := &serviceRunnerStub{startErrs: []error{test.startErr}, startResults: []servicepkg.StartResult{{Action: servicepkg.ActionInstalled, State: servicepkg.StateRunning}}, onStart: func() { hub.heartbeat.Store(time.Now()) }}
 			var opts options
 			command := NewRootCommand(t.Context(), func(o *options) {
 				o.lookupEnv = func(string) string { return "" }
@@ -463,6 +470,9 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	var registration runnerRegistration
 	if err := json.Unmarshal([]byte(output), &registration); err != nil {
 		t.Fatal(err)
+	}
+	if registration.Commit.Identity.Name == "" || registration.Commit.Identity.Email == "" || registration.Commit.Signing == "" {
+		t.Fatalf("registration omitted commit policy: %+v", registration.Commit)
 	}
 	steps := strings.Join(registration.NextSteps, "\n")
 	if len(started) != 1 || !registration.ServiceRun || steps != "" {

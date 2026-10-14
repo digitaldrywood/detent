@@ -2,15 +2,67 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/billing"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
+
+func TestHostedBillingResultLimits(t *testing.T) {
+	t.Parallel()
+	for _, deployment := range []string{"shared", "dedicated"} {
+		for _, test := range []struct {
+			name      string
+			model     string
+			oversized bool
+		}{
+			{name: "normal", model: "example-model"},
+			{name: "oversized", model: strings.Repeat("x", 300<<10), oversized: true},
+		} {
+			t.Run(deployment+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				f, ctx := newHostedKeyMCPFixture(t, deployment, "owner")
+				now := f.service.config.now().UTC()
+				operatorSQL(t, f.hostedSecurityFixture, `INSERT INTO attempt_usage
+ (attempt_id, organization_id, project_id, period, provider, model, input, currency, updated_at)
+ VALUES ('attempt_usage_fixture', ?, ?, ?, 'example-provider', ?, 100, 'USD', ?)`,
+					f.service.config.Hosted.OrganizationID, f.project, usagePeriod(now), test.model, formatHubTime(now))
+				result, err := (hostedOperatorExecutor{f.service}).Execute(ctx, operatortool.Call{
+					Name: operatortool.HostedUsage, Arguments: json.RawMessage(`{"range":"24h"}`),
+				})
+				if test.oversized {
+					var sizeError *operatortool.ResultTooLargeError
+					if !errors.Is(err, operatortool.ErrResultTooLarge) || !errors.As(err, &sizeError) {
+						t.Fatalf("oversized billing report error = %v, want typed size error", err)
+					}
+					if sizeError.SizeBytes <= 300<<10 || sizeError.LimitBytes != operatortool.MaxResultBytes || len(result.Content) != 0 {
+						t.Fatalf("oversized billing report size = %+v, content bytes = %d", sizeError, len(result.Content))
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				var response struct {
+					Report usageReport `json:"report"`
+				}
+				if err := json.Unmarshal(result.Content, &response); err != nil {
+					t.Fatal(err)
+				}
+				if len(response.Report.Breakdown.ByModel) != 1 || response.Report.Breakdown.ByModel[0].Model != test.model {
+					t.Fatal("billing report lost the stored model")
+				}
+			})
+		}
+	}
+}
 
 // Provider response loss is resumable only through the application's existing
 // checkout intent/key; concurrent callers must not invent a new purchase.

@@ -50,13 +50,16 @@ func TestNativeIssuePromptOwnership(t *testing.T) {
 func TestBuildPromptNativeCompletionContract(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name  string
-		kind  string
-		state string
-		want  bool
+		name     string
+		kind     string
+		state    string
+		want     bool
+		recovery bool
 	}{
 		{name: "native code", kind: config.TrackerHubNative, state: "In Progress", want: true},
 		{name: "native rework", kind: config.TrackerHubNative, state: "Rework", want: true},
+		{name: "native recovery", kind: config.TrackerHubNative, state: "Rework", want: true, recovery: true},
+		{name: "github recovery", kind: config.TrackerGitHub, state: "Rework", recovery: true},
 		{name: "github", kind: config.TrackerGitHub, state: "In Progress"},
 		{name: "linear", kind: config.TrackerLinear, state: "Rework"},
 		{name: "memory", kind: config.TrackerMemory, state: "In Progress"},
@@ -68,13 +71,25 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				Config: config.Config{Tracker: config.Tracker{Kind: tt.kind}},
 			}
 			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#7", State: tt.state}
-			prompt, err := BuildPrompt(workflow, issue, PromptOptions{})
+			opts := PromptOptions{}
+			if tt.recovery {
+				opts.RecoveryState = &workspace.RecoveryState{DiffStat: workspace.DiffStat{Files: 1, Added: 2}, TrackedPaths: []string{"internal/example.go"}}
+			}
+			prompt, err := BuildPrompt(workflow, issue, opts)
 			if err != nil {
 				t.Fatal(err)
 			}
 			index := strings.Index(prompt, "## Native completion contract")
 			if got := index >= 0; got != tt.want {
 				t.Fatalf("native completion contract present = %t, want %t", got, tt.want)
+			}
+			if tt.recovery {
+				if strings.Contains(prompt, "commit and publish work that belongs to the issue") == tt.want || strings.Contains(prompt, "native completion contract governs recovery") != tt.want {
+					t.Fatalf("recovery instructions conflict with selected completion authority: %s", prompt)
+				}
+				if tt.want && (strings.Contains(prompt, "Do not repeat `status: complete` while the worktree remains dirty") || !strings.Contains(prompt, "Staged issue-owned work is the expected handoff")) {
+					t.Fatalf("native recovery rejects staged source handoff: %s", prompt)
+				}
 			}
 			if !tt.want {
 				return
@@ -476,7 +491,7 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
 		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
 			prompt := appendBlockedHandoffBlock("", opts)
-			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance"} {
+			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance", "never file a follow-up issue for acceptance"} {
 				if !strings.Contains(prompt, required) {
 					t.Fatalf("handoff lost acceptance ownership: %s", required)
 				}
@@ -1089,6 +1104,23 @@ func TestBuildPromptOmitsWorkflowInstructionsWhenUnconfigured(t *testing.T) {
 	}
 }
 
+func TestImplementationReviewPromptLeavesAcceptanceToValidator(t *testing.T) {
+	t.Parallel()
+	workflow := config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}}}}
+	issue := connector.Issue{Description: "## Acceptance criteria\n- Verify the delivered feature through its real surface."}
+	prompt := BuildValidatorPrompt(workflow, issue, ValidatorPromptOptions{implementationReview: true})
+	for _, instruction := range []string{"implementation defects", "separate validator", "immutable source diff", "Return only JSON"} {
+		if !strings.Contains(prompt, instruction) {
+			t.Errorf("source-review task omitted its independent contract: %q", instruction)
+		}
+	}
+	for _, instruction := range []string{"Acceptance criteria to map", "Map every acceptance criterion", "any not_verified criterion forces rework", "satisfies the acceptance criteria"} {
+		if strings.Contains(prompt, instruction) {
+			t.Errorf("source review was assigned the later acceptance validator's task: %q", instruction)
+		}
+	}
+}
+
 func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	t.Parallel()
 
@@ -1106,6 +1138,24 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 			name: "native host command evidence",
 			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{ReceiptID: "timing_build", Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
 			want: []string{"host", `receipt_id="timing_build"`, "receipt_ids", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
+		},
+		{
+			name:      "native omitted patch reads pinned source",
+			opts:      ValidatorPromptOptions{VersionID: "version_example", Repository: "example-org/example-project", WorkspacePath: "workspace", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", DiffStat: &stat, DiffTruncated: true, MaxInlineDiffBytes: len(patch)},
+			want:      []string{"Reviewed native version: version_example", "base=base head=head sha256=digest", "Full diff omitted", "git rev-parse --verify base^{commit}", "git rev-parse --verify head^{commit}", "git --no-pager diff --no-ext-diff --no-textconv base head --", "do not call GitHub", "Never substitute working-tree or index edits", "instance/evidence limitation", "Missing source is not approval"},
+			forbidden: []string{"use the named GitHub PR diff", "do not use workspace git diff", "+seeded validator diff"},
+		},
+		{
+			name:      "native source read unavailable",
+			opts:      ValidatorPromptOptions{VersionID: "version_example", DiffError: "source unavailable"},
+			want:      []string{"Diff collection error: source unavailable", "instance/evidence limitation", "Missing source is not approval"},
+			forbidden: []string{"use the named GitHub PR diff", "git --no-pager diff", "git rev-parse"},
+		},
+		{
+			name:      "native implementation review reads pinned source",
+			opts:      ValidatorPromptOptions{implementationReview: true, VersionID: "version_example", Repository: "example-org/example-project", WorkspacePath: "workspace", BaseSHA: "base", HeadSHA: "head", DiffStat: &stat, DiffTruncated: true},
+			want:      []string{"git --no-pager diff --no-ext-diff --no-textconv base head --", "instance/evidence limitation", "wait when source review cannot be completed"},
+			forbidden: []string{"use the named GitHub PR diff", "Map every acceptance criterion"},
 		},
 		{
 			name:      "clean physical observation",
@@ -1140,6 +1190,7 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 				"Diff context:",
 				"Stat: 1 file changed, 1 insertion(+)",
 				"Full diff omitted because it exceeds the inline diff limit.",
+				"use the named GitHub PR diff at the stated head; do not use workspace git diff",
 			},
 			forbidden: []string{"+seeded validator diff"},
 		},
@@ -1179,7 +1230,7 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 			t.Parallel()
 
 			prompt := BuildValidatorPrompt(config.Workflow{}, connector.Issue{
-				Identifier:  "digitaldrywood/detent#854",
+				Identifier:  "example-org/example-project#854",
 				Title:       "Seed validator prompt",
 				Description: "## Acceptance Criteria\n- Inline small diffs.",
 			}, tt.opts)
@@ -1302,7 +1353,7 @@ func TestBuildPromptIncludesStrandedWorkspaceRecovery(t *testing.T) {
 	}
 	for _, commits := range []int{0, 1} {
 		state := &workspace.RecoveryState{UnpushedCommits: commits, DiffStat: workspace.DiffStat{HeadSHA: "physical-head", HeadObservedAt: time.Now()}}
-		cleanPrompt := appendWorkspaceRecoveryBlock("base", state)
+		cleanPrompt := appendWorkspaceRecoveryBlock("base", state, false)
 		if strings.Contains(cleanPrompt, "diffstat:") || (commits == 0 && cleanPrompt != "base") || (commits == 1 && !strings.Contains(cleanPrompt, "unpushed commits: 1")) {
 			t.Fatalf("clean recovery observation changed prompt: %q", cleanPrompt)
 		}

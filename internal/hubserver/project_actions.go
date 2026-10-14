@@ -559,7 +559,9 @@ func (s *Service) applyCreateProjectActionRun(ctx context.Context, tx *sql.Tx, s
 }
 
 func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawMessage, error) {
-	records, err := readProjectActions(ctx, s.database.db, scope.organization, scope.project)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	records, err := readProjectActions(ctx, s.database.reader, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -571,14 +573,16 @@ func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawM
 }
 
 func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
-	action, err := readProjectAction(ctx, s.database.db, scope, actionID)
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	action, err := readProjectAction(ctx, s.database.reader, scope, actionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nativeNotFound()
 	}
 	if err != nil {
 		return nil, err
 	}
-	records, err := readProjectActionRuns(ctx, s.database.db, scope, action.ID, limit)
+	records, err := readProjectActionRuns(ctx, s.database.reader, scope, action.ID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -590,13 +594,15 @@ func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionI
 }
 
 func (s *Service) readActionRun(ctx context.Context, scope nativeScope, actionID, runID string) (actionRunRecord, error) {
-	if _, err := readProjectAction(ctx, s.database.db, scope, actionID); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	if _, err := readProjectAction(ctx, s.database.reader, scope, actionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return actionRunRecord{}, nativeNotFound()
 		}
 		return actionRunRecord{}, err
 	}
-	run, err := readProjectActionRun(ctx, s.database.db, scope, actionID, runID)
+	run, err := readProjectActionRun(ctx, s.database.reader, scope, actionID, runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return actionRunRecord{}, nativeNotFound()
 	}

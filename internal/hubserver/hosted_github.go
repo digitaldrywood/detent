@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"time"
@@ -9,7 +10,9 @@ import (
 )
 
 func (s *Service) hostedGitHubRepositories(c echo.Context) error {
-	rows, err := s.database.db.QueryContext(c.Request().Context(), `
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	rows, err := s.database.reader.QueryContext(ctx, `
 SELECT lower(r.github_owner || '/' || r.github_name) FROM projects p
 JOIN repositories r ON r.id = p.repository_id WHERE p.deleted_at IS NULL AND p.profile = 'native' AND p.organization_id = ?
 UNION
@@ -34,8 +37,10 @@ WHERE deleted_at IS NULL AND profile = 'native' AND organization_id = ? AND chec
 }
 
 func (s *Service) hostedGitHubReceipt(c echo.Context) error {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
 	var received sql.NullString
-	if err := s.database.db.QueryRowContext(c.Request().Context(), "SELECT max(last_received_at) FROM github_webhook_inbox").Scan(&received); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT max(last_received_at) FROM github_webhook_inbox").Scan(&received); err != nil {
 		return s.internalAPIError(c, "tenant_unavailable", "GitHub webhook receipt is unavailable", err)
 	}
 	var result struct {

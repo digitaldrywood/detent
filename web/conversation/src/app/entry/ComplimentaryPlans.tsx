@@ -1,9 +1,19 @@
-// Complimentary plan grants in the platform console. Only entitlement
-// administrators get this panel; the entry re-checks that on every request,
-// reaches the tenant Hub with its own credential, and forwards the revision and
-// idempotency key minted here.
 import React from "react";
 
+import { SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
+import {
+  Tooltip,
+  TooltipPopup,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../../components/ui/tooltip.tsx";
+import {
+  planDisplayName,
+  platformTime,
+  readableKey,
+  tenantPlanGrant,
+} from "./platformFormat.ts";
+import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import {
@@ -16,6 +26,13 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
 import {
@@ -33,6 +50,7 @@ import { redirectPlatformSignIn } from "./usePlatformResource.ts";
 import { AccountError } from "../account/api.ts";
 import type {
   EntitlementChange,
+  EntitlementPlan,
   EntitlementGrant,
   OrganizationEntitlements,
   PlanReference,
@@ -43,18 +61,8 @@ import { useEntryApi } from "./EntryScreens.tsx";
 export const STALE_PLAN_MESSAGE =
   "Someone changed this organization's plan; reload and try again.";
 
-function planName(plan: PlanReference): string {
-  return `${plan.id} v${plan.version}`;
-}
-
 function planKey(plan: PlanReference): string {
   return `${plan.id}@${plan.version}`;
-}
-
-function day(value: string | null): string {
-  if (value === null) return "Never";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toISOString().slice(0, 10);
 }
 
 function failureMessage(error: unknown): string {
@@ -117,12 +125,14 @@ export function GrantComplimentaryDialog({
   csrf,
   onChanged,
   modelChoice = false,
+  trigger,
 }: {
   readonly organization: PlatformOrganization;
   readonly entitlements: OrganizationEntitlements;
   readonly csrf: string;
   readonly onChanged: () => Promise<void>;
   readonly modelChoice?: boolean;
+  readonly trigger?: (onOpen: () => void, disabled: boolean) => React.ReactNode;
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   const choices = entitlements.plans.filter(
@@ -189,15 +199,44 @@ export function GrantComplimentaryDialog({
 
   return (
     <Dialog open={open} onOpenChange={reset}>
-      <Button
-        size="sm"
-        onClick={() => reset(true)}
-        disabled={
-          modelChoice && (entitlements.features ?? []).includes("model_choice")
-        }
-      >
-        {modelChoice ? "Grant model choice" : "Grant complimentary plan"}
-      </Button>
+      {trigger ? (
+        trigger(
+          () => reset(true),
+          modelChoice
+            ? (entitlements.features ?? []).includes("model_choice")
+            : choices.length === 0,
+        )
+      ) : (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  tabIndex={
+                    !modelChoice && choices.length === 0 ? 0 : undefined
+                  }
+                />
+              }
+            >
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => reset(true)}
+                disabled={
+                  modelChoice
+                    ? (entitlements.features ?? []).includes("model_choice")
+                    : choices.length === 0
+                }
+              >
+                {modelChoice ? "Grant model choice" : "Change plan"}
+              </Button>
+            </TooltipTrigger>
+            {!modelChoice && choices.length === 0 ? (
+              <TooltipPopup>No other plan is configured to grant.</TooltipPopup>
+            ) : null}
+          </Tooltip>
+        </TooltipProvider>
+      )}
       <DialogPopup>
         <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
@@ -218,18 +257,28 @@ export function GrantComplimentaryDialog({
               {modelChoice ? null : (
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={`${prefix}-plan`}>Plan</Label>
-                  <select
-                    id={`${prefix}-plan`}
+                  <Select
                     value={selected === undefined ? "" : planKey(selected)}
-                    onChange={(event) => setPlan(event.currentTarget.value)}
-                    className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                    items={choices.map((choice) => ({
+                      value: planKey(choice),
+                      label: planDisplayName(choice, entitlements),
+                    }))}
+                    onValueChange={(next) => setPlan(next ?? "")}
                   >
-                    {choices.map((choice) => (
-                      <option key={planKey(choice)} value={planKey(choice)}>
-                        {planName(choice)}
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger id={`${prefix}-plan`} className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {choices.map((choice) => (
+                        <SelectItem
+                          key={planKey(choice)}
+                          value={planKey(choice)}
+                        >
+                          {planDisplayName(choice, entitlements)}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
                 </div>
               )}
               <div className="flex flex-col gap-1.5">
@@ -272,8 +321,10 @@ export function RevokeGrantDialog({
   revision,
   csrf,
   onChanged,
+  planLabel,
 }: {
   readonly organization: PlatformOrganization;
+  readonly planLabel?: string;
   readonly grant: EntitlementGrant;
   readonly revision: number;
   readonly csrf: string;
@@ -324,14 +375,17 @@ export function RevokeGrantDialog({
   return (
     <Dialog open={open} onOpenChange={reset}>
       <Button size="sm" variant="outline" onClick={() => reset(true)}>
-        Revoke
+        Revoke grant
       </Button>
       <DialogPopup>
         <form className="contents" onSubmit={onSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>
-              Revoke {modelChoice ? "model choice" : planName(grant.plan)} for{" "}
-              {organization.name}?
+              Revoke{" "}
+              {modelChoice
+                ? "model choice"
+                : (planLabel ?? planDisplayName(grant.plan))}{" "}
+              for {organization.name}?
             </DialogTitle>
             <DialogDescription>
               {modelChoice
@@ -368,11 +422,357 @@ export function RevokeGrantDialog({
   );
 }
 
-function effectivePlan(entitlements: OrganizationEntitlements): string {
-  const plan = `${planName(entitlements.effective_base)} (${entitlements.source})`;
-  const grants = entitlements.grants.length;
-  if (grants === 0) return plan;
-  return `${plan} + ${grants} complimentary grant${grants === 1 ? "" : "s"}`;
+function PlanAdministrationDialog({
+  organization,
+  value,
+  csrf,
+  onChanged,
+  create = false,
+}: {
+  readonly organization: PlatformOrganization;
+  readonly value: OrganizationEntitlements;
+  readonly csrf: string;
+  readonly onChanged: () => Promise<void>;
+  readonly create?: boolean;
+}): React.ReactElement {
+  const [open, setOpen] = React.useState(false);
+  const [sourceKey, setSourceKey] = React.useState("");
+  const [definition, setDefinition] = React.useState<EntitlementPlan | null>(
+    null,
+  );
+  const [action, setAction] = React.useState<
+    "base" | "subscription" | "end_subscription"
+  >("base");
+  const [expires, setExpires] = React.useState("");
+  const [reason, setReason] = React.useState("");
+  const [key, setKey] = React.useState(newKey);
+  const [retryRevision, setRetryRevision] = React.useState<number | null>(null);
+  const change = useChange(organization.id, csrf, onChanged);
+  const prefix = `${create ? "create" : "assign"}-plan-${organization.id}`;
+  const title = create ? "Create plan version" : "Change base or subscription";
+  const featureChoices = [
+    ...new Set(value.plans.flatMap((plan) => plan.features ?? [])),
+  ].sort();
+
+  const choose = (selection: string) => {
+    setSourceKey(selection);
+    const source = value.plans.find((plan) => planKey(plan) === selection);
+    if (source !== undefined) {
+      const nextVersion =
+        Math.max(
+          ...value.plans
+            .filter((plan) => plan.id === source.id)
+            .map((plan) => plan.version),
+        ) + 1;
+      setDefinition({
+        ...source,
+        version: nextVersion,
+        features: [...(source.features ?? [])],
+        allowances: { ...(source.allowances ?? {}) },
+      });
+    }
+  };
+  const reset = (next: boolean) => {
+    setOpen(next);
+    if (next) {
+      choose(value.plans[0] === undefined ? "" : planKey(value.plans[0]));
+      setAction("base");
+      setExpires("");
+      setReason("");
+      setKey(newKey());
+      setRetryRevision(null);
+      change.setError(null);
+    }
+  };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (reason.trim() === "") {
+      change.setError("Give a reason for this plan change.");
+      return;
+    }
+    const selected = value.plans.find((plan) => planKey(plan) === sourceKey);
+    if (selected === undefined || definition === null) {
+      change.setError("Choose an existing plan to continue.");
+      return;
+    }
+    if (
+      create &&
+      (!/^[a-zA-Z0-9_-]{1,128}$/.test(definition.id) ||
+        !Number.isSafeInteger(definition.version) ||
+        definition.version < 1 ||
+        Object.values(definition.allowances ?? {}).some(
+          (limit) => !Number.isSafeInteger(limit) || limit < 0,
+        ))
+    ) {
+      change.setError(
+        "Give a plan ID, positive version and nonnegative whole-number allowances.",
+      );
+      return;
+    }
+    if (!create && action === "subscription" && expires === "") {
+      change.setError("A subscription requires an expiry date.");
+      return;
+    }
+    const revision = retryRevision ?? value.revision;
+    const common = {
+      idempotency_key: key,
+      expected_revision: revision,
+      reason: reason.trim(),
+    };
+    const command: EntitlementChange = create
+      ? {
+          ...common,
+          action: "create_plan",
+          definition,
+          plan: { id: definition.id, version: definition.version },
+        }
+      : {
+          ...common,
+          action,
+          plan: { id: selected.id, version: selected.version },
+          expires_at: expires === "" ? null : `${expires}T23:59:59Z`,
+        };
+    const outcome = await change.submit(command);
+    if (outcome === "done") setOpen(false);
+    if (outcome === "failed") {
+      setRetryRevision(revision);
+    } else {
+      setKey(newKey());
+      setRetryRevision(null);
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={reset}>
+      <Button size="sm" variant="outline" onClick={() => reset(true)}>
+        {title}
+      </Button>
+      <DialogPopup>
+        <form className="contents" onSubmit={submit} noValidate>
+          <DialogHeader>
+            <DialogTitle>
+              {title} for {organization.name}
+            </DialogTitle>
+            <DialogDescription>
+              {create
+                ? "Copy a plan and adjust its features and allowances. Existing versions and organization access stay unchanged until you assign or grant the new version."
+                : "Base changes apply immediately. Stripe manages paid subscriptions; use complimentary grants for additional access."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${prefix}-source`}>
+                  {create ? "Copy from" : "Plan"}
+                </Label>
+                <select
+                  id={`${prefix}-source`}
+                  value={sourceKey}
+                  onChange={(event) => choose(event.currentTarget.value)}
+                  className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                >
+                  {value.plans.map((plan) => (
+                    <option key={planKey(plan)} value={planKey(plan)}>
+                      {planDisplayName(plan, value)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {create && definition !== null ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-id`}>Plan ID</Label>
+                      <Input
+                        id={`${prefix}-id`}
+                        value={definition.id}
+                        maxLength={128}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            id: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-version`}>Version</Label>
+                      <Input
+                        id={`${prefix}-version`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={definition.version}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            version: Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-name`}>Display name</Label>
+                      <Input
+                        id={`${prefix}-name`}
+                        value={definition.name ?? ""}
+                        maxLength={80}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            name: event.currentTarget.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-price`}>
+                        Monthly price (USD cents)
+                      </Label>
+                      <Input
+                        id={`${prefix}-price`}
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={definition.monthly_usd_cents ?? ""}
+                        onChange={(event) =>
+                          setDefinition({
+                            ...definition,
+                            monthly_usd_cents:
+                              event.currentTarget.value === ""
+                                ? undefined
+                                : Number(event.currentTarget.value),
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <fieldset className="flex flex-col gap-2">
+                    <legend className="mb-2 text-sm font-medium">
+                      Features
+                    </legend>
+                    {featureChoices.map((feature) => (
+                      <Label
+                        key={feature}
+                        htmlFor={`${prefix}-feature-${feature}`}
+                        className="flex items-center gap-2"
+                      >
+                        <Checkbox
+                          id={`${prefix}-feature-${feature}`}
+                          checked={(definition.features ?? []).includes(
+                            feature,
+                          )}
+                          onCheckedChange={(checked) =>
+                            setDefinition({
+                              ...definition,
+                              features: checked
+                                ? [...(definition.features ?? []), feature]
+                                : (definition.features ?? []).filter(
+                                    (item) => item !== feature,
+                                  ),
+                            })
+                          }
+                        />
+                        {feature.replaceAll("_", " ")}
+                      </Label>
+                    ))}
+                  </fieldset>
+                  <fieldset className="grid gap-3 sm:grid-cols-2">
+                    <legend className="mb-2 text-sm font-medium">
+                      Allowances
+                    </legend>
+                    {Object.entries(definition.allowances ?? {})
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([name, limit]) => (
+                        <div key={name} className="flex flex-col gap-1.5">
+                          <Label htmlFor={`${prefix}-allowance-${name}`}>
+                            {name.replaceAll("_", " ")}
+                          </Label>
+                          <Input
+                            id={`${prefix}-allowance-${name}`}
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={limit}
+                            onChange={(event) =>
+                              setDefinition({
+                                ...definition,
+                                allowances: {
+                                  ...definition.allowances,
+                                  [name]: Number(event.currentTarget.value),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                  </fieldset>
+                </>
+              ) : null}
+              {!create ? (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor={`${prefix}-action`}>Apply as</Label>
+                    <select
+                      id={`${prefix}-action`}
+                      value={action}
+                      onChange={(event) =>
+                        setAction(event.currentTarget.value as typeof action)
+                      }
+                      className="h-9 rounded-lg border border-input bg-background px-2 text-sm"
+                    >
+                      <option value="base">Base plan</option>
+                      {!organization.billing.available ? (
+                        <>
+                          <option value="subscription">Subscription</option>
+                          <option value="end_subscription">
+                            End subscription
+                          </option>
+                        </>
+                      ) : null}
+                    </select>
+                  </div>
+                  {action === "subscription" ? (
+                    <div className="flex flex-col gap-1.5">
+                      <Label htmlFor={`${prefix}-expires`}>Expires</Label>
+                      <Input
+                        id={`${prefix}-expires`}
+                        type="date"
+                        value={expires}
+                        onChange={(event) =>
+                          setExpires(event.currentTarget.value)
+                        }
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`${prefix}-reason`}>Reason</Label>
+                <Textarea
+                  id={`${prefix}-reason`}
+                  maxLength={500}
+                  required
+                  value={reason}
+                  onChange={(event) => setReason(event.currentTarget.value)}
+                />
+              </div>
+              <ControlError message={change.error} />
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline">Cancel</Button>} />
+            <Button type="submit" disabled={change.pending}>
+              {change.pending
+                ? "Saving…"
+                : create
+                  ? "Create version"
+                  : "Apply plan"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
+  );
 }
 
 export function TenantPlan({
@@ -381,112 +781,183 @@ export function TenantPlan({
   value,
   canGrant,
   onChanged,
+  history = false,
 }: {
   readonly organization: PlatformOrganization;
   readonly csrf: string;
   readonly value: OrganizationEntitlements;
   readonly canGrant: boolean;
   readonly onChanged: () => Promise<void>;
+  readonly history?: boolean;
 }): React.ReactElement {
+  const current = tenantPlanGrant(value);
+  const currentPlan = current?.plan ?? value.effective_base;
+  const records = value.grant_history ?? value.grants;
   return (
-    <section
+    <SettingsSection
+      title="Plan"
       aria-label={`Plan for ${organization.name}`}
-      className="border-t border-border pt-4"
+      headerAction={
+        canGrant ? (
+          <div className="flex flex-wrap gap-2">
+            <PlanAdministrationDialog
+              organization={organization}
+              value={value}
+              csrf={csrf}
+              onChanged={onChanged}
+              create
+            />
+            <PlanAdministrationDialog
+              organization={organization}
+              value={value}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+            <GrantComplimentaryDialog
+              organization={organization}
+              entitlements={value}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+          </div>
+        ) : null
+      }
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex-1">
-          <h3 className="text-sm font-medium">Plan</h3>
-        </div>
-        {!canGrant ? null : (
+      <SettingsRow
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            {planDisplayName(currentPlan, value)}
+            {current ? <Badge variant="info">Complimentary</Badge> : null}
+          </span>
+        }
+        description={
+          current
+            ? `Granted ${platformTime(current.granted_at ?? current.starts_at)} by ${current.granted_by}. ${current.expires_at ? `Returns to ${planDisplayName(value.effective_base, value)} on ${platformTime(current.expires_at)}.` : "No expiry."}`
+            : `Base plan: ${planDisplayName(value.base, value)}`
+        }
+        control={
+          current && canGrant ? (
+            <RevokeGrantDialog
+              organization={organization}
+              grant={current}
+              planLabel={planDisplayName(current.plan, value)}
+              revision={value.revision}
+              csrf={csrf}
+              onChanged={onChanged}
+            />
+          ) : null
+        }
+      />
+      <SettingsRow
+        title="Model choice"
+        description="Lets the organization pick models for its runs."
+        control={
           <>
-            <GrantComplimentaryDialog
-              organization={organization}
-              entitlements={value}
-              csrf={csrf}
-              onChanged={onChanged}
-            />
-            <GrantComplimentaryDialog
-              organization={organization}
-              entitlements={value}
-              csrf={csrf}
-              onChanged={onChanged}
-              modelChoice
-            />
+            <Badge variant="outline">
+              {(value.features ?? []).includes("model_choice") ? "On" : "Off"}
+            </Badge>
+            {canGrant ? (
+              <GrantComplimentaryDialog
+                organization={organization}
+                entitlements={value}
+                csrf={csrf}
+                onChanged={onChanged}
+                modelChoice
+              />
+            ) : null}
           </>
-        )}
-      </div>
-      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-        <div>
-          <dt className="text-muted-foreground">Base plan</dt>
-          <dd className="font-medium">{planName(value.base)}</dd>
+        }
+      />
+      <SettingsRow
+        title="Stripe subscription"
+        control={
+          <span className="text-sm text-muted-foreground">
+            {organization.billing.available
+              ? readableKey(organization.billing.status ?? "None")
+              : "Unavailable"}
+            {organization.billing.customer_id ? (
+              <>
+                {" "}
+                ·{" "}
+                <a
+                  className="text-link underline"
+                  href={`https://dashboard.stripe.com/customers/${encodeURIComponent(organization.billing.customer_id)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open Stripe customer
+                </a>
+              </>
+            ) : null}
+          </span>
+        }
+      />
+      {history ? (
+        <div className="p-4">
+          {records.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No complimentary grants.
+            </p>
+          ) : (
+            <Table aria-label={`Grant history for ${organization.name}`}>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Plan</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Scope</TableHead>
+                  <TableHead>Starts</TableHead>
+                  <TableHead>Expires</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead>Granted by</TableHead>
+                  <TableHead />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {records.map((grant) => (
+                  <TableRow key={grant.id}>
+                    <TableCell>
+                      {grant.scope?.length === 1 &&
+                      grant.scope[0] === "model_choice"
+                        ? "Model choice"
+                        : planDisplayName(grant.plan, value)}
+                    </TableCell>
+                    <TableCell>
+                      {grant.revoked_at
+                        ? "Revoked"
+                        : !value.grants.some((active) => active.id === grant.id)
+                          ? "Inactive"
+                          : "Active"}
+                    </TableCell>
+                    <TableCell className="max-w-56 whitespace-normal">
+                      {(grant.scope ?? []).map(readableKey).join(", ")}
+                    </TableCell>
+                    <TableCell>{platformTime(grant.starts_at)}</TableCell>
+                    <TableCell>{platformTime(grant.expires_at)}</TableCell>
+                    <TableCell className="max-w-56 whitespace-normal">
+                      {grant.reason}
+                    </TableCell>
+                    <TableCell>{grant.granted_by}</TableCell>
+                    <TableCell>
+                      {canGrant &&
+                      grant.id !== current?.id &&
+                      value.grants.some((active) => active.id === grant.id) ? (
+                        <RevokeGrantDialog
+                          organization={organization}
+                          grant={grant}
+                          planLabel={planDisplayName(grant.plan, value)}
+                          revision={value.revision}
+                          csrf={csrf}
+                          onChanged={onChanged}
+                        />
+                      ) : null}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </div>
-        <div>
-          <dt className="text-muted-foreground">Effective plan</dt>
-          <dd className="font-medium">{effectivePlan(value)}</dd>
-        </div>
-      </dl>
-      <p className="mt-3 text-sm text-muted-foreground">
-        Model choice:{" "}
-        {(value.features ?? []).includes("model_choice")
-          ? "Enabled"
-          : "Disabled"}
-      </p>
-      {value.grants.length === 0 ? (
-        <p className="mt-3 text-sm text-muted-foreground">
-          No active complimentary grants.
-        </p>
-      ) : (
-        <Table
-          aria-label={`Active grants for ${organization.name}`}
-          className="mt-3"
-        >
-          <TableHeader>
-            <TableRow>
-              <TableHead>Plan</TableHead>
-              <TableHead>Scope</TableHead>
-              <TableHead>Starts</TableHead>
-              <TableHead>Expires</TableHead>
-              <TableHead>Reason</TableHead>
-              <TableHead>Granted by</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {value.grants.map((grant) => (
-              <TableRow key={grant.id}>
-                <TableCell>
-                  <Badge variant="info">
-                    {grant.scope?.length === 1 &&
-                    grant.scope[0] === "model_choice"
-                      ? "Model choice"
-                      : planName(grant.plan)}
-                  </Badge>
-                </TableCell>
-                <TableCell className="max-w-56 whitespace-normal text-muted-foreground">
-                  {(grant.scope ?? []).join(", ")}
-                </TableCell>
-                <TableCell>{day(grant.starts_at)}</TableCell>
-                <TableCell>{day(grant.expires_at)}</TableCell>
-                <TableCell className="max-w-56 whitespace-normal">
-                  {grant.reason}
-                </TableCell>
-                <TableCell>{grant.granted_by}</TableCell>
-                <TableCell>
-                  {canGrant ? (
-                    <RevokeGrantDialog
-                      organization={organization}
-                      grant={grant}
-                      revision={value.revision}
-                      csrf={csrf}
-                      onChanged={onChanged}
-                    />
-                  ) : null}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
-    </section>
+      ) : null}
+    </SettingsSection>
   );
 }

@@ -20,9 +20,18 @@ func TestWorkReadArguments(t *testing.T) {
 		{"invalid health since", HealthFindings, `{"project_id":"project","since":"yesterday"}`, false},
 		{"oversized health page", HealthFindings, `{"project_id":"project","limit":101}`, false},
 		{"health requires project", HealthFindings, `{}`, false},
+		{"bug filter", WorkList, `{"project_id":"project","type":"bug"}`, true},
+		{"change request filter", WorkList, `{"project_id":"project","type":"change_request"}`, true},
+		{"unknown type filter", WorkList, `{"project_id":"project","type":"question"}`, false},
+		{"to-verify filter", WorkList, `{"project_id":"project","created_by":"me","verification":"pending"}`, true},
+		{"unknown verification filter", WorkList, `{"project_id":"project","verification":"failed"}`, false},
 		{"list default", WorkList, `{"project_id":"project"}`, true},
 		{"open fingerprint search", WorkList, `{"project_id":"project","fingerprint":"canonical","open":true,"limit":2}`, true},
 		{"nonboolean open", WorkList, `{"project_id":"project","open":"true"}`, false},
+		{"date filters", WorkList, `{"project_id":"project","created_after":"2026-10-12T00:00:00Z","created_before":"2026-10-13T00:00:00Z","updated_after":"2026-10-12T05:00:00+05:00"}`, true},
+		{"invalid date", WorkList, `{"project_id":"project","created_after":"today"}`, false},
+		{"invalid before", WorkList, `{"project_id":"project","created_before":"2026-10-12"}`, false},
+		{"invalid updated", WorkList, `{"project_id":"project","updated_after":"yesterday"}`, false},
 		{"search", WorkList, `{"project_id":"project","query":"needle","limit":2,"offset":3}`, true},
 		{"native filters and projection", WorkList, `{"project_id":"project","archived":"all","states":["Todo","Done"],"labels":["bug"],"assignees":["operator"],"priorities":[0,3],"include":["work","workspace"]}`, true},
 		{"native singleton filters", WorkList, `{"project_id":"project","assignee":"operator","priority":0,"archived":"false"}`, true},
@@ -128,7 +137,12 @@ func TestWorkReadDirectAuthorityAndSafeFailure(t *testing.T) {
 				if !errors.Is(err, ErrAccessDenied) || probe.calls != 0 {
 					t.Fatalf("err=%v calls=%d", err, probe.calls)
 				}
-			case test.failure != nil || test.oversized:
+			case test.oversized:
+				var size *ResultTooLargeError
+				if !errors.As(err, &size) || size.SizeBytes != len(probe.content) || size.LimitBytes != MaxResultBytes || errors.Is(err, ErrReadUnavailable) {
+					t.Fatalf("oversize cause = %v", err)
+				}
+			case test.failure != nil:
 				if !errors.Is(err, ErrReadUnavailable) {
 					t.Fatal(err)
 				}

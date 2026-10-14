@@ -47,6 +47,8 @@ func nativeReadQuery(c echo.Context) (url.Values, error) {
 }
 
 func (s *Service) readNativePage(ctx context.Context, scope nativeScope, path string, params url.Values) (int, nativeCursor, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	limit, err := parsePageLimit(params.Get("limit"))
 	if err != nil {
 		return 0, nativeCursor{}, nil, nativeInvalid("Page limit is invalid")
@@ -119,10 +121,43 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 	return nil
 }
 
+func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
+	value := strings.TrimSpace(params.Get("created_by"))
+	if len(value) > 256 {
+		return "", nativeInvalid("created_by is invalid")
+	}
+	if value != "me" {
+		return value, nil
+	}
+	actor := scope.actor()
+	if actor.Kind != "human" || actor.PrincipalID == "" {
+		return "", nativeInvalid("created_by=me requires a human identity")
+	}
+	return actor.PrincipalID, nil
+}
+
 func validateNativeIssueQuery(params url.Values) error {
 	single := url.Values{}
 	for key, values := range params {
 		switch key {
+		case "type":
+			if len(values) > 2 {
+				return nativeInvalid("type must be bug or change_request")
+			}
+			for _, value := range values {
+				if err := validateNativeIssueType(value, true); err != nil {
+					return err
+				}
+			}
+		case "verification":
+			if len(values) > 2 {
+				return nativeVerificationFilterInvalid()
+			}
+			for _, value := range values {
+				if value != tracker.VerificationPending && value != tracker.VerificationVerified {
+					return nativeVerificationFilterInvalid()
+				}
+			}
 		case "state", "label", "assignee", "priority":
 			if len(values) > 32 || len(strings.Join(values, "\x00")) > 4096 {
 				return nativeInvalid("Query contains an unsupported field or value")
@@ -131,7 +166,7 @@ func validateNativeIssueQuery(params url.Values) error {
 			single[key] = values
 		}
 	}
-	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort")
+	return validateNativeQuery(single, "include", "archived", "q", "open", "fingerprint", "completed_window", "sort", "created_after", "created_before", "updated_after", "created_by", "fields")
 }
 
 // parseNativeIssueIncludes reads the include query and reports whether it asks
@@ -160,11 +195,23 @@ func (s *Service) listNativeIssues(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if params.Get("fields") == nativeIssuePickerFields {
+		return c.JSON(http.StatusOK, nativeIssuePickerResponse(page))
+	}
 	return c.JSON(http.StatusOK, page)
 }
 
 func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.Values) (tracker.NativeIssuePage, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	picker, err := nativeIssuePickerRequested(params)
+	if err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
 	if slices.Contains(strings.Split(params.Get("include"), ","), "board") {
+		if params.Has("created_after") || params.Has("created_before") || params.Has("updated_after") {
+			return tracker.NativeIssuePage{}, nativeInvalid("Date filters require an issue list projection")
+		}
 		return s.readBoardIssues(ctx, scope, params)
 	}
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items"
@@ -172,7 +219,7 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	if err := validateNativeIssueQuery(params); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
-	if _, err := nativeCompletedWindow(params.Get("completed_window")); err != nil {
+	if _, err := nativeShippedWindow(params.Get("completed_window")); err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	if sort := params.Get("sort"); sort != "" && sort != "closed" {
@@ -203,6 +250,38 @@ func (s *Service) readIssues(ctx context.Context, scope nativeScope, params url.
 	query := `SELECT i.native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 WHERE i.organization_id = ? AND i.project_id = ? `
 	args := []any{scope.organization, scope.project}
+	searchQuery := strings.TrimSpace(params.Get("q"))
+	if searchQuery != "" {
+		expressions := nativeSearchExpressions(searchQuery)
+		terms, err := json.Marshal(expressions)
+		if err != nil {
+			return tracker.NativeIssuePage{}, err
+		}
+		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+"WHERE i.organization_id", 1)
+		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms)}, args...)
+	}
+	var dateClauses strings.Builder
+	for _, filter := range []struct{ name, column, operator string }{
+		{"created_after", "native_created_at", ">="}, {"created_before", "native_created_at", "<"}, {"updated_after", "native_updated_at", ">="},
+	} {
+		if value := params.Get(filter.name); value != "" {
+			date, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return tracker.NativeIssuePage{}, nativeInvalid("Date filters must be RFC3339 timestamps")
+			}
+			dateClauses.WriteString(" AND rtrim(i." + filter.column + ", 'Z') " + filter.operator + " ?")
+			args = append(args, strings.TrimSuffix(formatHubTime(date), "Z"))
+		}
+	}
+	query += dateClauses.String()
+	createdBy, err := nativeCreatedBy(scope, params)
+	if err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
+	if createdBy != "" {
+		query += " AND json_extract(i.actor_json, '$.principal_id') = ?"
+		args = append(args, createdBy)
+	}
 	switch params.Get("archived") {
 	case "", "false":
 		query += " AND i.archived = 0"
@@ -234,6 +313,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	}
 	var filterClauses strings.Builder
 	for _, filter := range []struct{ name, clause string }{
+		{"type", "i.issue_type = ?"},
+		{"verification", "i.verification_state = ?"},
 		{"state", "ws.detent_state = ?"},
 		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
 		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},
@@ -261,7 +342,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		if !workIncluded {
 			text += " || ' ' || i.body"
 		}
-		query += " AND (instr(lower(" + text + "), lower(?)) > 0" +
+		query += " AND (search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
 			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
 			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
 			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"
@@ -270,12 +351,12 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 
 	var work *tracker.NativeWorkSummary
 	if workIncluded {
-		work, err = readNativeWorkSummary(ctx, s.database.reader, scope, query, args, limit, s.config.now(), params.Get("completed_window"))
+		work, err = readNativeWorkSummary(ctx, s.database.reader, scope, query, args, limit, s.config.now(), params.Get("completed_window"), searchQuery)
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
 	}
-	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"))
+	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"), searchQuery)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
@@ -283,13 +364,24 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	page.Total = total
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
-		for _, issue := range work.Items {
-			operational[string(issue.WorkItemID)] = issue
+		for i, issue := range work.Items {
+			work.Items[i] = s.nativeIssueResponse(issue)
+			operational[string(issue.WorkItemID)] = work.Items[i]
 		}
 	}
 	hasMore := len(items) > limit
 	if hasMore {
 		items = items[:limit]
+	}
+	if picker {
+		page.Items, err = readNativeIssuePickerRows(ctx, s.database.reader, scope, items)
+		if err != nil {
+			return tracker.NativeIssuePage{}, err
+		}
+		if len(items) > 0 {
+			cursor.Issues = &items[len(items)-1].Position
+		}
+		items = nil
 	}
 	for _, item := range items {
 		id := item.ID
@@ -301,10 +393,14 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 			}
 		}
 		issue = s.nativeIssueResponse(issue)
+		issue.ReportContext = nil
+		issue.Snippet = item.Snippet
 		next := cursor
 		next.Issues = &item.Position
 		if summary {
 			issue = operatortool.NativeListIssue(issue)
+		}
+		if summary || workIncluded {
 			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
 			candidate.NextCursor, err = encodeNativeCursor(next, key)
 			if err != nil {
@@ -370,6 +466,8 @@ func (s *Service) listNativeComments(c echo.Context) error {
 }
 
 func (s *Service) readComments(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeComment], error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
 
 	if err := validateNativeQuery(params); err != nil {
@@ -424,6 +522,8 @@ func (s *Service) listNativeHistory(c echo.Context) error {
 }
 
 func (s *Service) readHistory(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/history"
 
 	if err := validateNativeQuery(params, "view"); err != nil {
@@ -564,4 +664,8 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		}
 	}
 	return page, nil
+}
+
+func nativeVerificationFilterInvalid() error {
+	return &nativeError{Code: "invalid_request", Message: "verification must be pending or verified", status: http.StatusUnprocessableEntity, publicMessage: true}
 }

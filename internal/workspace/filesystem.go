@@ -29,7 +29,7 @@ type FilesystemOptions struct {
 }
 
 type Filesystem struct {
-	uses       workspaceUses
+	uses       *workspaceUses
 	root       string
 	sourceRoot string
 	outputRoot string
@@ -69,6 +69,7 @@ func NewFilesystem(opts FilesystemOptions) (*Filesystem, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Filesystem{
+		uses:       &workspaceUses{},
 		root:       root,
 		sourceRoot: sourceRoot,
 		outputRoot: outputRoot,

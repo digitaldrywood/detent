@@ -17,10 +17,10 @@ func TestAPIIssueResolvesIdleBoardReferences(t *testing.T) {
 
 	issue := telemetry.Issue{
 		ID:         "issue-1640",
-		Identifier: "digitaldrywood/detent#1640",
+		Identifier: "example-org/example-project#1640",
 		Number:     1640,
 		ProjectID:  "detent",
-		URL:        "https://github.com/digitaldrywood/detent/issues/1640",
+		URL:        "https://github.com/example-org/example-project/issues/1640",
 		State:      "Rework",
 	}
 	tests := []struct {
@@ -65,10 +65,10 @@ func TestAPIIssuePrecedenceAndScope(t *testing.T) {
 
 	base := telemetry.Issue{
 		ID:         "issue-42",
-		Identifier: "digitaldrywood/detent#42",
+		Identifier: "example-org/example-project#42",
 		Number:     42,
 		ProjectID:  "detent",
-		URL:        "https://github.com/digitaldrywood/detent/issues/42",
+		URL:        "https://github.com/example-org/example-project/issues/42",
 	}
 	board := base
 	board.State = "Rework"
@@ -107,7 +107,7 @@ func TestAPIIssueSurfacesRetryLimitAttemptError(t *testing.T) {
 
 	issue := telemetry.Issue{
 		ID:         "issue-2052",
-		Identifier: "digitaldrywood/detent#2052",
+		Identifier: "example-org/example-project#2052",
 		Number:     2052,
 		ProjectID:  "detent",
 		State:      "Blocked",

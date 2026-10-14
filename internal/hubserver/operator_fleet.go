@@ -402,6 +402,8 @@ func safeHubOperatorError(err error) error {
 	return fmt.Errorf("%w: %w", errHubOperatorUnavailable, err)
 }
 func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var r hubFleetRequest
 	if operatortool.DecodeArguments(arguments, &r) != nil {
 		return chatpkg.Action{}, operatortool.ErrInvalidArguments
@@ -438,7 +440,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.CurrentState = strconv.FormatInt(urgent.Revision, 10)
 		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
-		runner, err := readRunnerWithClock(ctx, e.service.database.db, tracker.OrganizationID(org), r.RunnerID, e.service.config.now)
+		runner, err := readRunnerWithClock(ctx, e.service.database.reader, tracker.OrganizationID(org), r.RunnerID, e.service.config.now)
 		if err != nil {
 			return a, errHubOperatorUnavailable
 		}
@@ -482,7 +484,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		// Ownership and exact revision use the same host read backing runner views.
 		var revision int64
 		var capacity int
-		if e.service.database.db.QueryRowContext(ctx, "SELECT routing_revision, capacity FROM machines WHERE organization_id=? AND id=?", org, r.MachineID).Scan(&revision, &capacity) != nil || revision != change.ExpectedRevision {
+		if e.service.database.reader.QueryRowContext(ctx, "SELECT routing_revision, capacity FROM machines WHERE organization_id=? AND id=?", org, r.MachineID).Scan(&revision, &capacity) != nil || revision != change.ExpectedRevision {
 			return a, errHubOperatorUnavailable
 		}
 		a.IssueID = r.MachineID
@@ -491,7 +493,7 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.MaterialChange = capacity != change.Capacity
 	case operatortool.RevokeRunnerEnrollment:
 		var expires string
-		if e.service.database.db.QueryRowContext(ctx, "SELECT expires_at FROM runner_enrollments WHERE organization_id=? AND id=? AND revoked_at IS NULL AND redeemed_at IS NULL", org, r.EnrollmentID).Scan(&expires) != nil {
+		if e.service.database.reader.QueryRowContext(ctx, "SELECT expires_at FROM runner_enrollments WHERE organization_id=? AND id=? AND revoked_at IS NULL AND redeemed_at IS NULL", org, r.EnrollmentID).Scan(&expires) != nil {
 			return a, errHubOperatorUnavailable
 		}
 		a.IssueID = r.EnrollmentID

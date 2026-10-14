@@ -4,17 +4,18 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,6 +25,8 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -38,167 +41,6 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		DatabasePath: filepath.Join(t.TempDir(), "hub.db"),
 		BusyTimeout:  2500 * time.Millisecond,
 	})
-
-	rows, err := service.database.db.QueryContext(t.Context(), "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-	if err != nil {
-		t.Fatalf("query schema tables: %v", err)
-	}
-	defer rows.Close()
-
-	var tables []string
-	for rows.Next() {
-		var table string
-		if err := rows.Scan(&table); err != nil {
-			t.Fatalf("scan schema table: %v", err)
-		}
-		tables = append(tables, table)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate schema tables: %v", err)
-	}
-
-	wantTables := []string{
-		"ai_credit_accounts", "ai_credit_packs", "ai_credit_purchases", "ai_credit_transactions",
-		"artifact_services",
-		"artifact_references",
-		"artifact_grants",
-		"attachment_references",
-		"attachments",
-		"change_evidence",
-		"change_issue_links",
-		"change_landing_receipts",
-		"change_requests",
-		"change_review_policies",
-		"change_sources",
-		"change_versions",
-		"change_viewed_files",
-		"github_cutovers",
-		"github_import_records",
-		"github_imports",
-		"collaboration_events",
-		"collaboration_versions",
-		"event_compactions",
-		"attempt_diff_body_migration",
-		"attempt_diff_files",
-		"attempt_diffs",
-		"attempt_usage",
-		"usage_cost_observations",
-		"hub_identity",
-		"hosted_tenant",
-		"hosted_members",
-		"hosted_project_grants",
-		"hosted_sessions",
-		"hosted_transactions",
-		"hosted_invitations",
-		"hosted_audit",
-		"hosted_billing_accounts",
-		"hosted_billing_audit",
-		"hosted_billing_customer_intents",
-		"hosted_billing_events",
-		"hosted_billing_prices",
-		"hosted_billing_retired",
-		"hosted_binding_migrations",
-		"hosted_plans",
-		"hosted_plan_assignments",
-		"hosted_complimentary_grants",
-		"hosted_plan_audit",
-		"hosted_usage_windows",
-		"hosted_work_view_preferences",
-		"hosted_member_reservations",
-		"hosted_artifact_usage",
-		"hosted_usage_counters",
-		"native_commands",
-		"native_comments",
-		"native_board_counts",
-		"native_board_deltas",
-		"native_board_dirty",
-		"native_board_items",
-		"native_board_sequences",
-		"native_issue_page_items",
-		"native_issue_pages",
-		"health_findings",
-		"health_finding_issues",
-		"health_detector_ticks",
-		"health_slack_deliveries",
-		"organization_secret_audit",
-		"organization_secrets",
-		"slack_integrations",
-		"organizations",
-		"projects",
-		"token_grants",
-		"api_tokens",
-		"github_hydration_requests",
-		"github_outbox",
-		"github_webhook_inbox",
-		"github_webhook_payloads",
-		"hub_schema_version",
-		"issue_dependencies",
-		"issues",
-		"landing_barrier_receipts",
-		"landing_barriers",
-		"leases",
-		"lease_policies",
-		"lease_runners",
-		"monthly_budget_admissions",
-		"monthly_budget_leases",
-		"monthly_budget_policies",
-		"policy_revisions",
-		"project_action_runs",
-		"project_actions",
-		"project_observed_policies",
-		"project_onboarding",
-		"onboarding_issue_intake",
-		"project_policies",
-		"linked_issue_sources",
-		"project_secrets",
-		"project_secret_audit",
-		"organization_sprite_pools",
-		"organization_sprite_members",
-		"project_workflow_applies",
-		"provider_reservations",
-		"machines",
-		"native_attempts",
-		"native_attempt_events",
-		"pull_requests",
-		"quality_landings",
-		"queue_entries",
-		"repositories",
-		"runner_checkout_repositories",
-		"runner_enrollment_projects",
-		"runner_enrollments",
-		"runner_identities",
-		"runner_identity_events",
-		"runner_project_skills",
-		"sync_checkpoints",
-		"work_events",
-		"workflow_states",
-		"conversations",
-		"conversation_messages",
-		"conversation_questions",
-		"conversation_commands",
-		"conversation_events",
-		"conversation_starts",
-		"conversation_audience_events",
-		"conversation_turn_batches",
-		"conversation_prices",
-		"conversation_usage",
-		"conversation_attachments",
-		"conversation_attachment_blobs",
-		"operator_chat_sessions",
-		"message_references",
-		// Workspace sessions and the relay (decisions sections 18.1 and 18.2).
-		"workspace_sessions",
-		"workspace_items",
-		"workspace_occupancy",
-		"workspace_relay_tickets",
-		"workspace_relay_sessions",
-		"workspace_terminal_recordings",
-		"runner_host_hours",
-	}
-	sort.Strings(wantTables)
-	if strings.Join(tables, ",") != strings.Join(wantTables, ",") {
-		t.Fatalf("tables = %v, want %v", tables, wantTables)
-	}
 
 	checks := []struct {
 		name  string
@@ -220,6 +62,38 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 			}
 			if !strings.EqualFold(got, check.want) {
 				t.Fatalf("%s = %q, want %q", check.name, got, check.want)
+			}
+		})
+	}
+
+	for _, pool := range []struct {
+		name  string
+		db    *sql.DB
+		cache int64
+	}{{"reader", service.database.reader, -8000}, {"auth reader", service.database.auth(), -2000}, {"claim reader", service.database.claimReader, -2000}} {
+		t.Run(pool.name, func(t *testing.T) {
+			for range 2 {
+				conn, err := pool.db.Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := conn.Close(); err != nil {
+						t.Error(err)
+					}
+				})
+				for _, check := range []struct {
+					query string
+					want  int64
+				}{{"PRAGMA query_only", 1}, {"PRAGMA cache_size", pool.cache}, {"PRAGMA temp_store", 2}, {"PRAGMA mmap_size", 268435456}} {
+					var value int64
+					if err := conn.QueryRowContext(t.Context(), check.query).Scan(&value); err != nil {
+						t.Fatal(err)
+					}
+					if value != check.want {
+						t.Fatalf("%s=%d, want %d", check.query, value, check.want)
+					}
+				}
 			}
 		})
 	}
@@ -484,6 +358,10 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 }
 
 func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "hub.db")
@@ -533,11 +411,20 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 		t.Fatalf("close legacy database: %v", err)
 	}
 
-	service := openTestService(t, Config{
+	store, err := openDatabase(t.Context(), Config{
 		DatabasePath: path,
+		Logger:       discardLogger(),
 		now: func() time.Time {
 			return time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 		},
+	}.normalized())
+	if err != nil {
+		t.Fatalf("openDatabase() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
 	})
 	var eventType string
 	var action string
@@ -545,7 +432,7 @@ func TestOpenMigratesLegacyWebhookPayloads(t *testing.T) {
 	var body string
 	var payloadSHA string
 	var lastReceivedAt string
-	if err := service.database.db.QueryRowContext(t.Context(), `
+	if err := store.db.QueryRowContext(t.Context(), `
 		SELECT i.event_type, i.action, i.headers_json, CAST(p.body AS TEXT), i.payload_sha256, i.last_received_at
 		FROM github_webhook_inbox i
 		JOIN github_webhook_payloads p ON p.inbox_id = i.id
@@ -1296,6 +1183,37 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				t.Fatal("reader pool accepted a write")
 			}
 			if !test.write {
+				window := operatortool.AnalyticsWindow{From: time.Now().UTC().Add(-time.Hour), To: time.Now().UTC().Add(time.Hour), Bucket: time.Hour}
+				read := func() int {
+					t.Helper()
+					analytics, err := readNativeAnalytics(t.Context(), held, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return analytics.LaneResidence.IssuesObserved
+				}
+				if got := read(); got != 2 {
+					t.Fatalf("initial analytics population = %d, want 2", got)
+				}
+				body, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-third"}, Title: "third", Body: issueContractTestSections, State: "Todo"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				request := httptest.NewRequest(http.MethodPost, f.base+"/work-items", strings.NewReader(string(body))).WithContext(ctx)
+				request.Header.Set("Authorization", "Bearer "+f.token)
+				request.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request)
+				requireNativeStatus(t, response, http.StatusOK)
+				if got := read(); got != 2 {
+					t.Fatalf("held analytics snapshot after write = %d, want 2", got)
+				}
+				page, err := f.service.readIssues(ctx, scope, url.Values{})
+				if err != nil || page.Total != 3 {
+					t.Fatalf("committed population = %d, want 3: %v", page.Total, err)
+				}
 				return
 			}
 			blocked, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)

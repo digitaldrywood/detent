@@ -83,7 +83,7 @@ async function openLinkedConversation(page, account = "owner") {
   await page.goto(`${hub.fixture.chat}/c/${hub.fixture.conversation}`, {
     waitUntil: "domcontentloaded",
   });
-  await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}`));
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
   await expect(page.getByTestId("conversation-surface")).toBeVisible();
   return page.getByTestId("conversation-surface");
 }
@@ -101,14 +101,18 @@ function shell(page) {
   return page.locator("[data-slot='sidebar-wrapper']");
 }
 
-for (const selection of ["all projects", "different project", "no remembered project"]) {
+for (const [selection, title, body] of [
+  ["all projects", "Cobalt orchard", "Violet meadow"],
+  ["different project", "Amber harbor", "Copper lantern"],
+  ["no remembered project", "Silver canyon", "Quartz summit"],
+]) {
   test(`opens an issue link with ${selection}`, async ({ page }) => {
     await openChat(page);
     const issueProject = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
     const created = await hubAPI(page, "POST", `/projects/${issueProject}/work-items`, {
       idempotency_key: `issue-link-${selection}`,
-      title: `Issue link with ${selection}`,
-      body: "This issue has no linked conversation and resolves its own project.",
+      title,
+      body,
       state: "Todo",
     });
     expect(created.status).toBe(200);
@@ -126,9 +130,9 @@ for (const selection of ["all projects", "different project", "no remembered pro
       expect(await page.evaluate((key) => localStorage.getItem(key), projectKey)).toBeNull();
     }
     await page.goto(new URL(`/work/i/${item}`, hub.fixture.url).toString());
-    await expect(page.getByRole("heading", { name: `Issue link with ${selection}`, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
     await expect(page.getByTestId("issue-properties")).toBeVisible();
-    await expect(page.getByTestId("issue-body")).toContainText("resolves its own project");
+    await expect(page.getByTestId("issue-body")).toContainText(body);
     const lookup = await hubAPI(page, "GET", `/work-items/${item}`);
     expect(lookup.status).toBe(200);
     expect(lookup.payload.project_id).toBe(issueProject);
@@ -673,7 +677,7 @@ test("lists the chat in the sidebar and filters it from the search box", async (
 test("sends both linked-conversation paths to the issue page", async ({ page }) => {
   const errors = watchConsole(page);
   await openChat(page, `/issues/${hub.fixture.work_item}`);
-  await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}$`));
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2$/);
 
   // The issue is the page: it names itself at level one, and the properties
   // sidebar carries what the old chat header's chips did.
@@ -739,9 +743,10 @@ test("answers the search and new-chat keyboard shortcuts", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("requires the share-history confirmation before it creates a linked issue", async ({
+test("confirms automatic chat linking when creating an issue on a phone", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   const errors = watchConsole(page);
   await openChat(page);
   await sendWithKeyboard(page, "Move the renewal behind the acknowledgement");
@@ -750,7 +755,8 @@ test("requires the share-history confirmation before it creates a linked issue",
     "Move the renewal behind the acknowledgement",
   );
 
-  await openCreateLinkedIssue(page);
+  await page.getByRole("button", { name: "Conversation scope" }).click();
+  await page.getByRole("menuitem", { name: "Create linked issue" }).click();
 
   const form = page.getByRole("dialog", { name: "Create linked issue" });
   await expect(form).toBeVisible();
@@ -765,7 +771,7 @@ test("requires the share-history confirmation before it creates a linked issue",
   // on Detent's own defaults rather than on a blank.
   const next = form.getByTestId("handoff-next");
   await expect(next).toContainText("What happens next");
-  await expect(next.getByLabel("Lane")).toHaveValue("Todo");
+  await expect(next.getByLabel("Lane")).toHaveValue("Backlog");
   await expect(next.getByLabel("Dispatch")).toHaveValue("later");
   await page.keyboard.press("Tab");
   await expect(next.getByLabel("Lane")).toBeFocused();
@@ -778,31 +784,26 @@ test("requires the share-history confirmation before it creates a linked issue",
   await expect(next.getByLabel("Dispatch")).toBeFocused();
   await page.keyboard.press("Tab");
 
-  const share = form.getByRole("checkbox", {
-    name: "Share this conversation's history with the project",
-  });
-  await expect(share).toBeFocused();
-  await expect(share).not.toBeChecked();
-
-  // Submitting without the confirmation states the rule and puts the reader on
-  // the control that satisfies it.
-  await form.getByRole("button", { name: "Create linked issue" }).focus();
-  await page.keyboard.press("Enter");
-  await expect(form.getByTestId("handoff-local-error")).toContainText(
-    "Linking shares this conversation's full history with the project.",
+  await expect(form.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await expect(form.getByTestId("handoff-audience")).toContainText(
+    "By choosing Create linked issue, you confirm sharing this history.",
   );
-  await expect(share).toBeFocused();
+  await expect(form.getByRole("checkbox")).toHaveCount(0);
+  await form.getByLabel("Objective").fill("   ");
+  await form.getByRole("button", { name: "Create linked issue" }).click();
+  await expect(form.getByRole("alert")).toHaveText(
+    "Enter an objective describing the issue before creating it.",
+  );
+  await expect(form.getByLabel("Objective")).toBeFocused();
+  await form.getByLabel("Objective").fill("Move the renewal behind the acknowledgement");
 
-  // Space ticks the confirmation, and the same submit now completes.
-  await page.keyboard.press("Space");
-  await expect(share).toBeChecked();
   await form.getByRole("button", { name: "Create linked issue" }).focus();
   await page.keyboard.press("Enter");
 
   await expect(form).toBeHidden();
   // Linking moves the reader to the issue page with the chat in the panel
   // (§19.4); everything the link produced is still there, in the panel.
-  await expect(page).toHaveURL(/\/work\/i\//);
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/\d+(?:\?|$)/);
   await expect(page.getByTestId("issue-card").last()).toContainText(
     "Move the renewal behind the acknowledgement",
   );
@@ -922,7 +923,7 @@ test.describe("narrow viewport", () => {
       .filter({ hasText: "Lease renewal under load" })
       .click();
     await expect(sidebar(page)).toHaveCount(0);
-    await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}`));
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
 
     await expect(page.getByTestId("conversation-surface")).toBeVisible();
     await expect(composer(page)).toBeVisible();
@@ -1433,7 +1434,7 @@ test.describe("decisions.md §10 corrections", () => {
     const work = list.getByTestId("nav-work");
     await work.focus();
     await page.keyboard.press("Enter");
-    await expect(page).toHaveURL(/\/work(\/p\/[^/]+)?$/);
+    await expect(page).toHaveURL(/\/(?:work|local-organization\/browser-collaboration)$/);
     expect(errors).toEqual([]);
   });
 
@@ -1649,6 +1650,7 @@ test.describe("the ported shell's interactions", () => {
   test("carries the header actions on a conversation", async ({ page }) => {
     const errors = watchConsole(page);
     await openLinkedConversation(page);
+    await expect(composer(page)).toBeEditable();
 
     const add = headerActionsTrigger(page);
     await expect(add).toBeVisible();
@@ -1789,7 +1791,7 @@ test.describe("the ported shell's interactions", () => {
     await expect(palette).toHaveCount(0);
     // A linked conversation's destination is its issue page with the chat open
     // in the panel (§19.4) — the same rule the sidebar's rows follow.
-    await expect(page).toHaveURL(new RegExp(`/work/i/${hub.fixture.work_item}`));
+    await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
     await expect(page.getByTestId("conversation-surface")).toBeVisible();
     await expect(page.getByRole("heading", { level: 1 })).toContainText(
       "Renew the lease before the handoff completes",

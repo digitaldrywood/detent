@@ -33,12 +33,12 @@ func TestBoardViewBuildsOneSharedWorkItemPerCard(t *testing.T) {
 func TestNativeWorkNavigationAndSource(t *testing.T) {
 	for _, tt := range []struct{ kind, want string }{
 		{"hub_native", "/projects/detent/issues/new"},
-		{"github", "https://github.com/digitaldrywood/detent/issues/new"},
+		{"github", "https://github.com/example-org/example-project/issues/new"},
 	} {
 		t.Run(tt.kind, func(t *testing.T) {
 			data := boardTestData()
 			data.ProjectID = "detent"
-			data.Snapshot.Project.URL = "https://github.com/digitaldrywood/detent"
+			data.Snapshot.Project.URL = "https://github.com/example-org/example-project"
 			data.Kanban.TrackerKind = tt.kind
 			if got := workNewIssueURL(data); got != tt.want {
 				t.Fatalf("new issue URL = %q, want %q", got, tt.want)
@@ -143,7 +143,7 @@ func TestBoardSnapshotRendersSharedWorkControlsAndRepresentations(t *testing.T) 
 }
 
 func TestWorkListSheetTriggerExcludesNestedControls(t *testing.T) {
-	attrs := workListSheetOpenAttrs("detent", "digitaldrywood/detent#2076", "fleet")
+	attrs := workListSheetOpenAttrs("detent", "example-org/example-project#2076", "fleet")
 	if got, _ := attrs["hx-trigger"].(string); got != "click[!event.target.closest('a,button,input,select,label')]" {
 		t.Fatalf("list sheet trigger = %q, want nested controls excluded", got)
 	}
@@ -209,12 +209,12 @@ func TestWorkBoardRendersLargeFleetLanes(t *testing.T) {
 			data.Kanban.States = []string{"Backlog", "Todo", "In Progress", "Rework"}
 			for index := range backlogCount {
 				data.Snapshot.BoardIssues = append(data.Snapshot.BoardIssues, telemetry.Issue{
-					ID: fmt.Sprintf("backlog-%d", index), Identifier: fmt.Sprintf("digitaldrywood/detent#%d", index+1000),
+					ID: fmt.Sprintf("backlog-%d", index), Identifier: fmt.Sprintf("example-org/example-project#%d", index+1000),
 					ProjectID: "detent", Title: "Backlog fixture", State: "Backlog",
 				})
 			}
 			data.Snapshot.BoardIssues = append(data.Snapshot.BoardIssues, telemetry.Issue{
-				ID: "queued", Identifier: "digitaldrywood/detent#3000", ProjectID: "detent", Title: "Queued fixture", State: "Todo",
+				ID: "queued", Identifier: "example-org/example-project#3000", ProjectID: "detent", Title: "Queued fixture", State: "Todo",
 			})
 			data.Snapshot.SchedulerDecisions = []telemetry.SchedulerDecision{{
 				IssueID: "queued", ProjectID: "detent", Lane: "Todo", Result: "selected", Selected: true, DecisionAt: data.Snapshot.GeneratedAt,

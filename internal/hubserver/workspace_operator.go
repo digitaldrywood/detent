@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -152,7 +153,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	if !write {
 		value, err := e.server.readWorkspaceTool(ctx, scope, call.Name, request)
 		if err != nil {
-			return operatortool.Result{}, safeWorkspaceError(err)
+			return operatortool.Result{}, fmt.Errorf("%w: %w", safeWorkspaceError(err), err)
 		}
 		return operatortool.WorkspaceResult(struct {
 			GeneratedAt time.Time       `json:"generated_at"`
@@ -202,7 +203,7 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 	}
 	proposal := chat.Action{Kind: chat.ActionKind(call.Name), ProjectID: request.ProjectID, IssueID: resourceSelector(request), RequestID: request.RequestID, Arguments: arguments, Mutation: m}
 	if call.Name == "create_project_action_run" {
-		configured, err := readProjectAction(ctx, e.server.database.db, scope, request.ActionID)
+		configured, err := readProjectAction(ctx, e.server.database.reader, scope, request.ActionID)
 		if err != nil {
 			return operatortool.Result{}, safeWorkspaceError(err)
 		}
@@ -238,10 +239,16 @@ func safeWorkspaceError(err error) error {
 	if conflict := operatorNativeConflict(err); conflict != nil {
 		return conflict
 	}
+	if errors.Is(err, operatortool.ErrResultTooLarge) {
+		return err
+	}
 	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe
 		}
+	}
+	if safe := hubSafeChangeError(err); !errors.Is(safe, operatortool.ErrServiceUnavailable) {
+		return safe
 	}
 	return errWorkspaceOperationUnavailable
 }
@@ -689,7 +696,7 @@ func boundedOperatorHistory(raw json.RawMessage, snapshot bool, err error) (json
 		}
 	}
 	if len(raw) > budget {
-		return nil, errWorkspaceOperationUnavailable
+		return nil, &operatortool.ResultTooLargeError{SizeBytes: len(raw), LimitBytes: budget}
 	}
 	return raw, nil
 }

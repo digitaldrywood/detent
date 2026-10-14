@@ -168,7 +168,7 @@ type DeliverableState struct {
 }
 
 type ReworkPreparer interface {
-	PrepareRework(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+	PrepareRework(context.Context, Info, Issue, MergePrepareOptions, func(context.Context) error) (MergePrepareResult, error)
 	VerifyReworkRecovery(context.Context, Info, Issue, string, string, RecoveryState) (bool, error)
 }
 
@@ -290,22 +290,24 @@ type Hooks struct {
 }
 
 type LocalGitOptions struct {
-	Root       string
-	SourceRoot string
-	OutputRoot string
-	AutoBranch bool
-	Hooks      Hooks
-	Logger     *slog.Logger
+	CommitIdentity CommitIdentity
+	Root           string
+	SourceRoot     string
+	OutputRoot     string
+	AutoBranch     bool
+	Hooks          Hooks
+	Logger         *slog.Logger
 }
 
 type LocalGit struct {
-	uses               workspaceUses
+	commits            commitPolicy
+	uses               *workspaceUses
 	root               string
 	sourceRoot         string
 	autoBranch         bool
 	hooks              Hooks
 	logger             *slog.Logger
-	createMu           sync.Mutex
+	createMu           *sync.Mutex
 	removeOwnedPath    func(string, string) error
 	scanWorkspacePaths workspaceProcessScanner
 }
@@ -455,9 +457,17 @@ func IsMissingWorkspaceError(err error) bool {
 }
 
 func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
+	return NewBackendContext(context.Background(), kind, opts)
+}
+
+func NewBackendContext(ctx context.Context, kind string, opts LocalGitOptions) (Backend, error) {
+	return newBackendContext(ctx, kind, opts, nil)
+}
+
+func newBackendContext(ctx context.Context, kind string, opts LocalGitOptions, policy *commitPolicy) (Backend, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case KindLocalGit:
-		return NewLocalGit(opts)
+		return newLocalGitContext(ctx, opts, policy)
 	case KindFilesystem:
 		return NewFilesystem(FilesystemOptions{
 			Root:       opts.Root,
@@ -471,7 +481,49 @@ func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
 	}
 }
 
+func ReconfigureBackend(current Backend, kind string, opts LocalGitOptions) (Backend, error) {
+	return ReconfigureBackendContext(context.Background(), current, kind, opts)
+}
+
+func ReconfigureBackendContext(ctx context.Context, current Backend, kind string, opts LocalGitOptions) (Backend, error) {
+	var policy *commitPolicy
+	if previous, ok := current.(*LocalGit); ok {
+		policy = &previous.commits
+	}
+	backend, err := newBackendContext(ctx, kind, opts, policy)
+	if err != nil {
+		return nil, err
+	}
+	var uses *workspaceUses
+	switch previous := current.(type) {
+	case *LocalGit:
+		uses = previous.uses
+		if next, ok := backend.(*LocalGit); ok {
+			next.createMu = previous.createMu
+		}
+	case *Filesystem:
+		uses = previous.uses
+	}
+	if uses != nil {
+		switch next := backend.(type) {
+		case *LocalGit:
+			next.uses = uses
+		case *Filesystem:
+			next.uses = uses
+		}
+	}
+	return backend, nil
+}
+
 func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
+	return NewLocalGitContext(context.Background(), opts)
+}
+
+func NewLocalGitContext(ctx context.Context, opts LocalGitOptions) (*LocalGit, error) {
+	return newLocalGitContext(ctx, opts, nil)
+}
+
+func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commitPolicy) (*LocalGit, error) {
 	root, err := prepareRoot(opts.Root)
 	if err != nil {
 		return nil, err
@@ -496,7 +548,20 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
+	var commits commitPolicy
+	if policy != nil {
+		commits = *policy
+	} else {
+		commits, err = probeCommitPolicy(ctx, sourceRoot, opts.CommitIdentity)
+		if err != nil {
+			return nil, err
+		}
+	}
+	logger.Info("runner commit policy", "identity", commits.report.Identity, "signing", commits.report.Signing)
 	return &LocalGit{
+		uses:               &workspaceUses{},
+		createMu:           &sync.Mutex{},
+		commits:            commits,
 		root:               root,
 		sourceRoot:         sourceRoot,
 		autoBranch:         opts.AutoBranch,
@@ -631,6 +696,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		release()
 		if err != nil {
 			return Info{}, err
+		}
+		if checkpoint.transaction != nil && (!issue.NativeRework || checkpoint.transaction.Branch != info.Branch) {
+			return Info{}, fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
 		}
 		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		exists, isDir, err := pathExists(info.Path)
@@ -2330,9 +2398,16 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 }
 
 func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
+	return runGitAtWithInput(ctx, dir, env, fileOutput, "", args...)
+}
+
+func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput bool, input string, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
+	if input != "" {
+		cmd.Stdin = strings.NewReader(input)
+	}
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)

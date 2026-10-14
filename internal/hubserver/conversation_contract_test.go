@@ -57,9 +57,9 @@ func conversationFixtureLinkedRecord() conversationRecord {
 	return conversationRecord{
 		ID:               "conv_9f2c41a0b7d84e6fa1c35d92e4780b16",
 		OrganizationID:   tracker.OrganizationID("org_4d1f"),
-		ProjectID:        tracker.ProjectID("proj_parable"),
+		ProjectID:        tracker.ProjectID("proj_example_project"),
 		OwnerPrincipalID: "tok_7b21",
-		OwnerSubject:     "usr_michael",
+		OwnerSubject:     "usr_owner",
 		Origin:           conversationOriginUser,
 		Title:            "Flaky checkout lock renewal",
 		Visibility:       conversation.VisibilityShared,
@@ -68,7 +68,7 @@ func conversationFixtureLinkedRecord() conversationRecord {
 		LinkedAt:         &linkedAt,
 		WorkItem: &conversationWorkItem{
 			ID:         "wi_3363",
-			Identifier: "parable#3363",
+			Identifier: "example-project#3363",
 			Title:      "Checkout lock renewal waits on a healthy handoff",
 			Lane:       "Todo",
 		},
@@ -92,7 +92,7 @@ func conversationFixturePrivateRecord() conversationRecord {
 		OrganizationID:   tracker.OrganizationID("org_4d1f"),
 		ProjectID:        tracker.ProjectID("proj_port_app"),
 		OwnerPrincipalID: "tok_7b21",
-		OwnerSubject:     "usr_michael",
+		OwnerSubject:     "usr_owner",
 		Origin:           conversationOriginUser,
 		Title:            conversationDefaultTitle,
 		Visibility:       conversation.VisibilityPrivate,
@@ -196,7 +196,7 @@ func conversationFixtureAnsweredQuestion() conversation.Question {
 	question.Prompts[0].FreeText = false
 	question.Prompts[0].Options = question.Prompts[0].Options[:1]
 	question.Answers = map[string][]string{"renewal-window": {"Half the lease"}}
-	question.AnsweredBy = "usr_michael"
+	question.AnsweredBy = "usr_owner"
 	question.ExpiresAt = nil
 	return question
 }
@@ -243,7 +243,7 @@ func conversationFixtureLinkResult() conversationLinkResult {
 	return conversationLinkResult{
 		Conversation: projectConversation(record),
 		Issue: conversationLinkedIssue{
-			ID: "wi_3363", Identifier: "parable#3363",
+			ID: "wi_3363", Identifier: "example-project#3363",
 			NativeIssue: tracker.NativeIssue{
 				Title: "Checkout lock renewal waits on a healthy handoff", State: "Todo",
 				Labels: []string{"bug"}, Assignees: []string{},
@@ -368,7 +368,7 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 		"message-page.json": {value: conversationMessagesPage{Messages: []conversationMessageResource{projectMessage(conversationFixtureFirstMessage())}, NextCursor: nil}, extra: conversationSection14Fields("messages[]")},
 		"message-proposal.json": {value: projectMessage(conversationFixtureTurnMessage(t, "msg_6a20f1c8", 11, "", "turn_5", map[string]any{
 			"proposal": map[string]any{
-				"project_id": "proj_parable", "title": "Checkout lock renewal waits on a healthy handoff",
+				"project_id": "proj_example_project", "title": "Checkout lock renewal waits on a healthy handoff",
 				"objective": "Move the renewal behind the handoff acknowledgement.",
 			},
 		})), extra: conversationSection14Fields("")},

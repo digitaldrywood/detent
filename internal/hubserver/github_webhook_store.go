@@ -191,6 +191,13 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(fmt.Errorf("complete GitHub webhook processing: %w", err), rollbackErr, failureErr)
 	}
+	if result.Outcome == webhookOutcomeIgnored {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM github_webhook_payloads WHERE inbox_id = ?", inboxID); err != nil {
+			rollbackErr := tx.Rollback()
+			failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
+			return errors.Join(fmt.Errorf("delete ignored GitHub webhook payload: %w", err), rollbackErr, failureErr)
+		}
+	}
 	if result.RepositoryID != nil {
 		if err := recordCheckpointSuccessTx(ctx, tx, *result.RepositoryID, checkpointWebhook, now, now); err != nil {
 			rollbackErr := tx.Rollback()
@@ -228,9 +235,11 @@ func (d *database) markWebhookFailed(ctx context.Context, inboxID int64, now tim
 }
 
 func (d *database) webhookFailureRepository(ctx context.Context, inboxID int64) (int64, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var repositoryID sql.NullInt64
 	var payload []byte
-	if err := d.db.QueryRowContext(ctx, `
+	if err := d.reader.QueryRowContext(ctx, `
 		SELECT i.repository_id, p.body
 		FROM github_webhook_inbox i
 		LEFT JOIN github_webhook_payloads p ON p.inbox_id = i.id
@@ -252,7 +261,7 @@ func (d *database) webhookFailureRepository(ctx context.Context, inboxID int64) 
 	}
 	var resolved int64
 	nodeID := optionalWebhookNodeID(webhook.Repository.NodeID)
-	err := d.db.QueryRowContext(ctx, `
+	err := d.reader.QueryRowContext(ctx, `
 		SELECT id FROM repositories
 		WHERE (? IS NOT NULL AND github_node_id = ?)
 			OR (lower(github_owner) = lower(?) AND lower(github_name) = lower(?))
@@ -294,7 +303,9 @@ func (d *database) processPendingWebhooks(ctx context.Context, now time.Time) er
 }
 
 func (d *database) pendingWebhookIDs(ctx context.Context, now time.Time) ([]int64, error) {
-	rows, err := d.db.QueryContext(ctx, `
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	rows, err := d.reader.QueryContext(ctx, `
 		SELECT id
 		FROM github_webhook_inbox
 		WHERE status IN ('pending', 'processing', 'failed')
@@ -326,8 +337,8 @@ func (d *database) purgeWebhookPayloads(ctx context.Context, now time.Time, rete
 			SELECT 1
 			FROM github_webhook_inbox i
 			WHERE i.id = github_webhook_payloads.inbox_id
-				AND i.status IN ('processed', 'ignored')
-				AND julianday(i.processed_at) <= julianday(?)
+				AND (i.status = 'ignored'
+					OR (i.status = 'processed' AND julianday(i.processed_at) <= julianday(?)))
 		)
 	`, formatWebhookTime(now.Add(-retention)))
 	if err != nil {

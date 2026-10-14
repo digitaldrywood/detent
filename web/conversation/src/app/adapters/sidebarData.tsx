@@ -12,6 +12,8 @@ export interface SidebarNavigation {
   /** The path of the current route, e.g. `/work/p/proj_1`. */
   readonly activePath: string;
   readonly onNavigate: (to: string) => void;
+  /** The reader is about to open `to`: start its chunk and data. */
+  readonly onPrefetch?: (to: string) => void;
   /** The open change-request count, for the Pull requests row. */
   readonly changeCount?: number | null;
 }

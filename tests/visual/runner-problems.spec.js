@@ -49,10 +49,11 @@ test("runner diagnostics show on the card, filter by count, and clear on heartbe
   await expect(page.getByTestId("host-card")).toHaveCount(1);
 
   await page.goto(new URL("/diagnostics", hub.fixture.url).toString());
-  const attention = page.getByRole("region", { name: "Runners needing attention" });
+  const attention = page.getByRole("region", { name: "Needs attention" });
   await expect(attention).toContainText("Settings runner");
-  await expect(attention).toContainText("Not logged in");
-  await expect(attention).toContainText("codex login --device-auth");
+  await expect(attention).toContainText("Configured agent backend is unavailable");
+  await expect(attention).not.toContainText("Not logged in");
+  await expect(attention).not.toContainText("codex login --device-auth");
   const fleetResponse = await page.request.get(`${hub.fixture.url}/api/v2/organizations/org_browser_preview/fleet`);
   expect(fleetResponse.ok()).toBe(true);
   const fleet = await fleetResponse.json();
@@ -65,8 +66,8 @@ test("runner diagnostics show on the card, filter by count, and clear on heartbe
   await expect(sheet).toContainText("Offline since");
   await page.keyboard.press("Escape");
   await page.goto(new URL("/diagnostics", hub.fixture.url).toString());
-  await expect(attention).toContainText("Offline since");
-  await expect(attention).toContainText("last report");
+  await expect(page.getByRole("region", { name: "Capacity right now" })).toContainText("Offline");
+  await expect(attention).not.toContainText("Offline since");
   await page.unroute("**/api/v2/organizations/org_browser_preview/fleet");
   await page.goto(`${url}?health=needs_attention`);
 
@@ -84,6 +85,6 @@ test("runner diagnostics show on the card, filter by count, and clear on heartbe
   await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, "runner-problems-cleared.png") });
   await page.goto(new URL("/diagnostics", hub.fixture.url).toString());
   await expect(page.getByRole("heading", { name: "Diagnostics", exact: true })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Runners needing attention" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Needs attention" })).not.toContainText("Configured agent backend is unavailable");
   expect(errors).toEqual([]);
 });

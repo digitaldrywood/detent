@@ -69,6 +69,7 @@ type claimCandidateQuery struct {
 	// is its own work item kind and not project work (decisions section
 	// 18.1).
 	WorkspaceLane bool
+	PageSize      int
 }
 
 type renewLeaseAPIRequest struct {
@@ -800,15 +801,6 @@ func claimWorkspaceExclusionArg(query claimCandidateQuery) int {
 
 func claimCandidateIDs(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories []string, workflowStates []string, authors []string, assignees []string, labelInclude []string, labelExclude []string, claimableRepositories map[tracker.RepositoryID]struct{}) ([]tracker.WorkItemID, error) {
 	if query.NativeScope != nil {
-		if query.NativeScope.project != "" && !query.WorkspaceLane {
-			now := query.AvailableAt
-			if now.IsZero() {
-				now = time.Now().UTC()
-			}
-			if _, err := reportHealthFindings(ctx, tx, query.NativeScope.organization, now, query.NativeScope.project); err != nil {
-				return nil, err
-			}
-		}
 		return nativeCandidateIDs(ctx, tx, query, repositoryIDs, repositories, workflowStates, authors, assignees, labelInclude, labelExclude)
 	}
 	scope := query.Scope
@@ -1085,12 +1077,14 @@ WHERE id = ?`, current.DisplayName, string(capabilities), current.Capacity, curr
 }
 
 func (d *database) machine(ctx context.Context, id tracker.MachineID) (machineResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var response machineResponse
 	var capabilitiesJSON string
 	var heartbeatAt string
 	var registeredAt string
 	var updatedAt string
-	err := d.db.QueryRowContext(ctx, `
+	err := d.reader.QueryRowContext(ctx, `
 SELECT id, hostname, display_name, capabilities_json, capacity, version, last_heartbeat_at, registered_at, updated_at
 FROM machines WHERE id = ?`, id).Scan(
 		&response.ID, &response.Hostname, &response.DisplayName, &capabilitiesJSON, &response.Capacity,

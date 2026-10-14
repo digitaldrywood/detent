@@ -20,6 +20,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.ArchiveItem:                      &operatortool.WorkArguments{},
 		operatortool.RestoreItem:                      &operatortool.WorkArguments{},
 		operatortool.TransferItem:                     &operatortool.WorkArguments{},
+		operatortool.VerifyFix:                        &operatortool.WorkArguments{},
 		operatortool.ReviewChange:                     &operatortool.ChangeArguments{},
 		operatortool.OrganizationProjectRankUpdate:    &operatoradmin.Input{},
 		operatortool.UpdateApply:                      &runnerUpdateChange{},
@@ -31,6 +32,7 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 		operatortool.UpdateRunnerCapacity:             &runnerCapacityChange{},
 		operatortool.UpdateOrganizationModelSelection: &operatortool.ModelSelectionInput{},
 		operatortool.UpdateProjectModelSelection:      &operatortool.ModelSelectionInput{},
+		operatortool.PlatformChangeEntitlement:        &operatortool.PlatformEntitlementArguments{},
 		"update_project_integration":                  &operatortool.IntegrationInput{},
 		"bind_native_repository":                      &operatortool.RepositoryInput{},
 		"start_git_hub_import":                        &operatortool.ImportStartInput{},
@@ -97,6 +99,8 @@ func TestOperatorRevisionSchemaContract(t *testing.T) {
 							fields["related"], fields["operation"] = "blocker", "add"
 						case operatortool.TransferItem:
 							fields["version_id"] = "version"
+						case operatortool.VerifyFix:
+							fields["result"] = "verified"
 						}
 						raw, err := json.Marshal(fields)
 						if err != nil {

@@ -24,7 +24,7 @@ func TestRunningEntriesIncludeOutputTruncationMetadata(t *testing.T) {
 	payload := runningEntries([]telemetry.Running{{
 		Issue: telemetry.Issue{
 			ID:         "issue-978",
-			Identifier: "digitaldrywood/detent#978",
+			Identifier: "example-org/example-project#978",
 			State:      "running",
 		},
 		LastMessage:           "01234" + runtimeoutput.Marker + "vwxyz",

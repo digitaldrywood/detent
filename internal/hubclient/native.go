@@ -3,10 +3,12 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,6 +150,19 @@ func (c *NativeClient) Issues(ctx context.Context, query url.Values) (tracker.Pa
 	return result.Page, err
 }
 
+func (c *NativeClient) issuePageWithinLimit(ctx context.Context, query url.Values, limit int) (tracker.Page[tracker.NativeIssue], int, error) {
+	for {
+		query.Set("limit", strconv.Itoa(limit))
+		page, err := c.Issues(ctx, query)
+		var oversized *responseSizeError
+		if errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300 && limit > 1 {
+			limit /= 2
+			continue
+		}
+		return page, limit, err
+	}
+}
+
 func (c *NativeClient) IssuesPage(ctx context.Context, query url.Values) (tracker.NativeIssuePage, error) {
 	var result tracker.NativeIssuePage
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items?"+query.Encode(), nil, &result)
@@ -156,8 +171,13 @@ func (c *NativeClient) IssuesPage(ctx context.Context, query url.Values) (tracke
 
 func (c *NativeClient) CreateIssue(ctx context.Context, request tracker.CreateIssue) (tracker.NativeIssue, error) {
 	var result tracker.NativeIssue
-	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items", request, &result)
-	return result, err
+	if err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items", request, &result); err != nil {
+		return result, err
+	}
+	if _, err := nativeItemPath(result.WorkItemID); err != nil {
+		return tracker.NativeIssue{}, fmt.Errorf("create issue response: %w", err)
+	}
+	return result, nil
 }
 
 func (c *NativeClient) UpdateIssue(ctx context.Context, id tracker.NativeWorkItemID, request tracker.UpdateIssue) (tracker.NativeIssue, error) {

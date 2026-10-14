@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestCollectRunnerLocalChecks(t *testing.T) {
@@ -152,14 +153,21 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 		t.Skip("network listener integration")
 	}
 
-	t.Parallel()
-	for _, supported := range []bool{false, true} {
-		name := "older Hub"
-		if supported {
-			name = "current Hub"
-		}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, test := range []struct {
+		name               string
+		supported, commits bool
+	}{
+		{name: "older Hub"},
+		{name: "older Hub with local checks", supported: true},
+		{name: "current Hub", supported: true, commits: true},
+	} {
+		supported, name := test.supported, test.name
 		t.Run(name, func(t *testing.T) {
 			var heartbeats atomic.Int32
+			var commitIdentity workspace.CommitIdentity
 			var snapshot runnerauth.RoutingSnapshot
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -168,6 +176,9 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 					features := []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProviderCapacityCapability}
 					if supported {
 						features = append(features, tracker.NativeLocalChecksCapability)
+						if test.commits {
+							features = append(features, tracker.NativeRunnerCommitPolicyCapability)
+						}
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features})
 				case r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test":
@@ -185,6 +196,12 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 					}
 					if supported && (body.LocalChecks == nil || body.LocalChecks.Checkout != "failed" || body.LocalChecks.Doctor != "pending" || body.LocalChecks.Provider != "pending") {
 						t.Errorf("startup observations missing or forged: %+v", body.LocalChecks)
+					}
+					if test.commits && (body.LocalChecks.CommitSigning != "unsigned" || body.LocalChecks.CommitName != commitIdentity.Name || body.LocalChecks.CommitEmail != commitIdentity.Email) {
+						t.Errorf("commit policy report missing: %+v", body.LocalChecks)
+					}
+					if supported && !test.commits && body.LocalChecks.CommitSigning != "" {
+						t.Errorf("older Hub received commit policy fields: %+v", body.LocalChecks)
 					}
 					heartbeats.Add(1)
 					_ = json.NewEncoder(w).Encode(snapshot)
@@ -228,6 +245,8 @@ func TestRunnerSetupHeartbeatOwnership(t *testing.T) {
 				t.Fatal("startup sent a separate heartbeat")
 			}
 			scheduler := source.(*hubclient.Scheduler)
+			commitIdentity = scheduler.CommitIdentity()
+			scheduler.ReportCommitPolicy("native", workspace.CommitReport{Identity: commitIdentity, Signing: "unsigned"})
 			if err := scheduler.Heartbeat(t.Context()); err != nil {
 				t.Fatal(err)
 			}

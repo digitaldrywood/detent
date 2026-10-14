@@ -26,6 +26,9 @@ func TestBuiltinSkillsMatchRepositorySources(t *testing.T) {
 				t.Fatal(err)
 			}
 			source := filepath.Join("..", "..", DefaultPath, filepath.Base(skill.BodyPath))
+			if skill.Name == "configuration-map" {
+				source = filepath.Join("..", "..", "docs", "conversation", "configuration-map.md")
+			}
 			canonical, err := os.ReadFile(source)
 			if err != nil {
 				t.Fatal(err)

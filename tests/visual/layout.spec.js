@@ -338,7 +338,7 @@ test("board card identity wraps while metadata truncates", async ({
   const secondary = card.locator('[data-board-card-priority-details]');
   await card.evaluate((article) => {
     const project = article.querySelector("[data-board-card-project]");
-    project.textContent = "digitaldrywood-release-train-platform";
+    project.textContent = "example-org-release-train-platform";
     const row = article.querySelector('[data-board-card-priority-details]');
     const badge = document.createElement("span");
     badge.className =
@@ -589,7 +589,7 @@ test("board shows only health states needing attention", async ({
     "1 project",
   );
   await expect(overlay.locator("#board-alert-failure-breaker")).not.toContainText(
-    "Author beat visuals — digitaldrywood/detent-core#5280",
+    "Author beat visuals — example-org/detent-core#5280",
   );
   await expect(overlay.locator("#board-alert-dispatch-recovery")).toContainText(
     "Dispatch retry overdue for GitHub REST capacity — 1 project",
@@ -627,10 +627,10 @@ test("board surfaces dispatch faults with affected cards and clears by morph", a
   );
   await expect(fault).toContainText("4 candidates skipped for 3h");
   for (let number = 5301; number <= 5304; number += 1) {
-    const identifier = `digitaldrywood/detent-core#${number}`;
+    const identifier = `example-org/detent-core#${number}`;
     await expect(fault.getByRole("link", { name: identifier })).toHaveAttribute(
       "href",
-      `https://github.test/digitaldrywood/detent-core/issues/${number}`,
+      `https://github.test/example-org/detent-core/issues/${number}`,
     );
   }
 
@@ -2046,7 +2046,7 @@ test("settings links to the selected project workflow details", async ({
   page,
 }) => {
   const workflowURL =
-    "https://github.com/orgs/digitaldrywood/projects/4/workflows";
+    "https://github.com/orgs/example-org/projects/4/workflows";
   await page.context().route(workflowURL, async (route) => {
     await route.fulfill({
       contentType: "text/html",
@@ -2126,8 +2126,8 @@ test("onboarding project selection remains readable on narrow screens", async ({
   });
 
   await expect(page.getByRole("heading", { name: "Pick project", exact: true })).toBeVisible();
-  await expect(page.getByLabel("ProjectV2 ID", { exact: true })).toHaveValue("digitaldrywood/detent-core");
-  await expect(page.getByLabel("Dispatch repository", { exact: true })).toHaveValue("digitaldrywood/detent-core");
+  await expect(page.getByLabel("ProjectV2 ID", { exact: true })).toHaveValue("example-org/detent-core");
+  await expect(page.getByLabel("Dispatch repository", { exact: true })).toHaveValue("example-org/detent-core");
   await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeInViewport();
   await assertNoDocumentOverflow(page);
   await attachScreenshotEvidence(

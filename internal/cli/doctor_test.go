@@ -4488,7 +4488,7 @@ func TestRunDoctorPreservesHintedRuntimeErrorHint(t *testing.T) {
 func TestCheckDoctorDetentExecutableReportsRunningBinary(t *testing.T) {
 	t.Parallel()
 
-	executablePath := filepath.Join("Users", "corylanou", "go", "bin", "detent")
+	executablePath := filepath.Join("Users", "example-user", "go", "bin", "detent")
 	got := checkDoctorDetentExecutable(buildinfo.Info{
 		Version: "v1.2.3",
 		Commit:  "abcdef123456",
@@ -6916,7 +6916,7 @@ func successfulDoctorDeps() doctorDeps {
 			}
 		},
 		executable: func() (string, error) {
-			return filepath.Join("Users", "corylanou", "go", "bin", "detent"), nil
+			return filepath.Join("Users", "example-user", "go", "bin", "detent"), nil
 		},
 		shipSkillProbe: func(string) (doctorShipSkill, error) {
 			return doctorShipSkill{Version: "1.6.0", Path: "/plugins/go-workflow/1.6.0/skills/ship/SKILL.md"}, nil

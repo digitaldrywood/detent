@@ -90,8 +90,10 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 	var issues []connector.Issue
 	for _, state := range states {
 		cursor := ""
+		limit := 200
 		for {
-			page, err := c.client.Issues(ctx, url.Values{"state": {state}, "limit": {"200"}, "cursor": {cursor}})
+			page, pageLimit, err := c.client.issuePageWithinLimit(ctx, url.Values{"state": {state}, "cursor": {cursor}}, limit)
+			limit = pageLimit
 			if err != nil {
 				return nil, err
 			}
@@ -398,9 +400,6 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft intake.IssueDra
 	}
 	if len(project.States) == 0 {
 		return connector.Issue{}, errors.New("native project has no workflow states")
-	}
-	if state == "" {
-		state = project.States[0].Name
 	}
 	mutation := nativeMutationKeyForContext(ctx)
 	if hostIntake {

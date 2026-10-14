@@ -175,3 +175,57 @@ func TestHubMCPOperatorCredentialBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestReporterOperatorAuthority(t *testing.T) {
+	for _, deployment := range []string{"shared", "dedicated"} {
+		for _, role := range []string{"reporter", "member", "viewer"} {
+			t.Run(deployment+"/"+role, func(t *testing.T) {
+				f, ctx := newHostedKeyMCPFixture(t, deployment, role)
+				for _, test := range []struct {
+					name     string
+					reporter bool
+				}{
+					{operatortool.FileIssue, true},
+					{operatortool.UploadAttachment, true},
+					{operatortool.ReferenceAttachment, true},
+					{operatortool.AddComment, true},
+					{operatortool.EditComment, true},
+					{operatortool.MoveItem, true},
+					{operatortool.VerifyFix, true},
+					{operatortool.EditItem, false},
+					{operatortool.SetDependency, false},
+					{operatortool.SetQueuePriority, false},
+					{operatortool.OrderItem, false},
+					{operatortool.TransferItem, false},
+					{operatortool.RestoreItem, false},
+					{operatortool.DeleteAttachment, false},
+				} {
+					t.Run(test.name, func(t *testing.T) {
+						_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ProjectID: string(f.project), Action: test.name})
+						allowed := role == "member" || role == "reporter" && test.reporter
+						if (err == nil) != allowed {
+							t.Fatalf("%s as %s: %v, allowed=%t", test.name, role, err, allowed)
+						}
+						if !allowed && !errors.Is(err, operatortool.ErrAccessDenied) {
+							t.Fatalf("refusal=%v", err)
+						}
+					})
+				}
+				for _, definition := range operatortool.AdministrationCatalog() {
+					if operatortool.AdministrationScope(definition.Name) != apikey.ScopeAdmin || operatortool.AdministrationRequirement(definition.Name).ResourceKind == "credentials" {
+						continue
+					}
+					if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.AdministrationRequirement(definition.Name)); !errors.Is(err, operatortool.ErrAccessDenied) {
+						t.Fatalf("admin tool %s: %v", definition.Name, err)
+					}
+				}
+				if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: string(f.project)}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: "prj_other"}); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("foreign project=%v", err)
+				}
+			})
+		}
+	}
+}

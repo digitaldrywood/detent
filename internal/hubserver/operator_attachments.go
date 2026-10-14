@@ -20,16 +20,16 @@ func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name st
 	if err != nil {
 		return ctx, nativeScope{}, r, err
 	}
-	if !e.service.hostedShared() {
-		return ctx, nativeScope{}, r, operatortool.ErrServiceUnavailable
-	}
 	scopeRequired := apikey.ScopeWrite
 	if name == operatortool.ReadAttachment || name == operatortool.ReadAttachmentMetadata {
 		scopeRequired = apikey.ScopeRead
 	}
-	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, ProjectID: r.ProjectID})
+	ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: scopeRequired, Action: name, ProjectID: r.ProjectID})
 	if err != nil {
 		return ctx, nativeScope{}, r, err
+	}
+	if !e.service.hostedShared() {
+		return ctx, nativeScope{}, r, operatortool.ErrServiceUnavailable
 	}
 	resolve, ok := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
 	if !ok {
@@ -40,6 +40,7 @@ func (e nativeOperatorExecutor) attachmentAuthority(ctx context.Context, name st
 		return ctx, nativeScope{}, r, operatortool.ErrAccessDenied
 	}
 	scope.project = tracker.ProjectID(r.ProjectID)
+	scope.action = name
 	return ctx, scope, r, nil
 }
 
@@ -134,7 +135,7 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 		return chat.ActionExecution{}, operatortool.ErrServiceUnavailable
 	}
 	defer tx.Rollback()
-	if err := e.service.recheckHostedMutation(ctx, tx, scope); err != nil {
+	if err := e.service.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return chat.ActionExecution{}, hubSafeChangeError(err)
 	}
 	record, err := readCloudAttachment(ctx, tx, scope, r.AttachmentID)
@@ -155,6 +156,8 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 }
 
 func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, action chat.Action) (operatortool.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	ctx, scope, r, err := e.attachmentAuthority(ctx, operatortool.DeleteAttachment, action.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err
@@ -162,7 +165,7 @@ func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, acti
 	state := ""
 	if action.Status == chat.ActionSucceeded {
 		var confirmed bool
-		err := e.service.database.db.QueryRowContext(ctx, "SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL", scope.organization, scope.project, r.AttachmentID).Scan(&confirmed)
+		err := e.service.database.reader.QueryRowContext(ctx, "SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL", scope.organization, scope.project, r.AttachmentID).Scan(&confirmed)
 		if err != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -44,13 +45,15 @@ func readOnboardingProgress(ctx context.Context, query nativeQueryer, scope nati
 }
 
 func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onboarding.Project, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	result := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
 	var err error
-	result.Progress, err = readOnboardingProgress(ctx, s.database.db, scope)
+	result.Progress, err = readOnboardingProgress(ctx, s.database.reader, scope)
 	if err != nil {
 		return result, err
 	}
-	approval, err := readProjectPolicy(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project))
+	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
 	if err == nil {
 		result.Policy = &approval
 	} else {
@@ -59,11 +62,11 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 			return result, err
 		}
 	}
-	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.db, string(scope.organization)+"/"+string(scope.project), approval.Policy, s.config.now())
+	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project), approval.Policy, s.config.now())
 	if err != nil {
 		return result, err
 	}
-	rows, err := s.database.db.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.display_name,r.id`, scope.organization, scope.organization, scope.project)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.display_name,r.id`, scope.organization, scope.organization, scope.project)
 	if err != nil {
 		return result, err
 	}
@@ -80,16 +83,18 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		return result, err
 	}
 	for _, id := range ids {
-		runner, err := readRunnerWithClock(ctx, s.database.db, scope.organization, id, s.config.now)
+		runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, id, s.config.now)
 		if err != nil {
 			return result, err
 		}
 		exclusions := runner.Exclusions(scope.project, approval.Policy.Requirements, false)
+		runner.Problems = slices.DeleteFunc(slices.Clone(runner.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
 		runner.ProjectIDs = []tracker.ProjectID{scope.project}
+		runner.ProjectRanks = map[tracker.ProjectID]int{scope.project: runner.ProjectRanks[scope.project]}
 		runner.Leases = nil
 		runner.ProviderCapacity = nil
 		var checksJSON string
-		if err := s.database.db.QueryRowContext(ctx, "SELECT local_checks_json FROM runner_identities WHERE id=? AND organization_id=?", id, scope.organization).Scan(&checksJSON); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT local_checks_json FROM runner_identities WHERE id=? AND organization_id=?", id, scope.organization).Scan(&checksJSON); err != nil {
 			return result, err
 		}
 		var checks map[tracker.ProjectID]*runnerauth.LocalChecks
@@ -98,7 +103,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		}
 		result.Runners = append(result.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
 	}
-	rows, err = s.database.db.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id", scope.organization, scope.project)
+	rows, err = s.database.reader.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id", scope.organization, scope.project)
 	if err != nil {
 		return result, err
 	}
@@ -118,7 +123,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return result, err
 	}
-	err = s.database.db.QueryRowContext(ctx, "SELECT status FROM native_attempts WHERE organization_id=? AND project_id=? ORDER BY fencing_token DESC LIMIT 1", scope.organization, scope.project).Scan(&result.LatestRun)
+	err = s.database.reader.QueryRowContext(ctx, "SELECT status FROM native_attempts WHERE organization_id=? AND project_id=? ORDER BY fencing_token DESC LIMIT 1", scope.organization, scope.project).Scan(&result.LatestRun)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return result, err
 	}

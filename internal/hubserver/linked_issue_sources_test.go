@@ -78,7 +78,7 @@ func TestLinkedIssueCreation(t *testing.T) {
 		name, state, source, wantState string
 		want                           int
 	}{
-		{"default without Triage", "", "", "Backlog", http.StatusOK},
+		{"default in unbound project", "", "", "Backlog", http.StatusOK},
 		{"linked intake", "", "github.com/Acme/Orders/issues/12", "Triage", http.StatusOK},
 		{"default with Triage first", "", "", "Backlog", http.StatusOK},
 		{"explicit unlinked Triage", "Triage", "", "", http.StatusUnprocessableEntity},
@@ -109,9 +109,13 @@ func TestLinkedIssueCreation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantStates := states
-			if first.WorkItemID != "" {
-				wantStates = nativeTriageStates(states)
+			wantStates := []tracker.NativeState{
+				{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}},
+				{Name: "Backlog", Transitions: []string{"Todo"}},
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
+				{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
+				{Name: "Cancelled", Terminal: true},
 			}
 			if !reflect.DeepEqual(project.States, wantStates) {
 				t.Fatalf("states=%+v want=%+v", project.States, wantStates)
@@ -123,6 +127,9 @@ func TestLinkedIssueCreation(t *testing.T) {
 	}
 	if first.LinkedSource == nil || first.LinkedSource.Status != "complete" || first.LinkedSource.URL != "https://github.com/acme/orders/issues/12" {
 		t.Fatalf("linked issue = %#v", first)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
 	for i := range 5 {

@@ -286,6 +286,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		want        []int
 		winner      int
 	}{
+		{name: "resolved health finding leaves preview read-only", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "resolved health", want: []int{0, 1, 2}},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
 		{name: "issue priority beats merging lane", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{0, 2, 1}},
 		{name: "merging lane lands before newer work of the same priority", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Merging"}, want: []int{1, 0, 2}, winner: 1},
@@ -405,6 +406,30 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			}
 			if test.unavailable == "lease" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issues[0], "running")), http.StatusOK)
+			}
+			if test.unavailable == "resolved health" {
+				now := f.service.config.now()
+				finding := newHealthFinding("scheduler_loop_behind", "instance", "project", string(f.project.ID), "Scheduler refresh is behind.", "Check scheduler refresh health.", []string{string(f.project.ID)}, healthEvidence{})
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_json) SELECT id,?,?,evidence_json FROM health_findings`, f.project.ID, issues[0].WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(time.Minute), nil); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `UPDATE health_finding_issues SET reported_resolved_at=(SELECT resolved_at FROM health_findings WHERE id=finding_id)`); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			f.service.tokenUseWork.Wait()
 			var writesBefore, writesAfter int64

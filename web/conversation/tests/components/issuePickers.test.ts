@@ -54,8 +54,8 @@ describe("matchesQuery", () => {
 
 describe("the status picker", () => {
   it("lists every workflow state in order, with the current one checked", () => {
-    const parable = ["Backlog", "Todo", "Plan Review", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled", "Customer QA"].map((name) => ({ name, category: "started" }));
-    for (const states of [STATES, parable]) {
+    const exampleWorkflow = ["Backlog", "Todo", "Plan Review", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled", "Customer QA"].map((name) => ({ name, category: "started" }));
+    for (const states of [STATES, exampleWorkflow]) {
       const sections = statusSections({ states, current: "Todo", moves: ["In Progress", "Done"], query: "" });
       expect(keys(sections)).toEqual(states.map((state) => state.name));
       expect(rows(sections).filter((option) => option.selected === true).map((o) => o.key)).toEqual(["Todo"]);

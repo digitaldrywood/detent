@@ -17,6 +17,7 @@ import (
 
 func migrationWorkflow() []tracker.NativeState {
 	return []tracker.NativeState{
+		{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}},
 		{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo", "Cancelled"}},
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"Backlog", "In Progress", "Blocked", "Done", "Cancelled"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"}},
@@ -185,7 +186,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM workflow_states WHERE project_id=?", created.ID).Scan(&remaining); err != nil {
 			t.Fatal(err)
 		}
-		if len(simplified.States) != 1 || remaining != 1 {
+		if !reflect.DeepEqual(simplified.States, []tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog"}}, {Name: "Backlog"}}) || remaining != 2 {
 			t.Fatalf("unused states were not removed: %#v, rows=%d", simplified.States, remaining)
 		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET profile='github_compatible' WHERE id=?", created.ID); err != nil {
@@ -203,10 +204,10 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		request := map[string]any{"idempotency_key": "markdown-workflow", "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": markdown}
 		integration = ProjectIntegration{}
 		browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/integration", request, http.StatusOK), &integration)
-		if integration.WorkflowMarkdown != markdown || integration.Authority["workflow"] != "detent" || len(integration.States) != 10 {
+		if integration.WorkflowMarkdown != markdown || integration.Authority["workflow"] != "detent" || len(integration.States) != 11 {
 			t.Fatalf("Cloud Markdown workflow = %#v", integration)
 		}
-		wantOrder := []string{"Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review", "Plan Review", "Done", "Cancelled"}
+		wantOrder := []string{"Triage", "Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review", "Plan Review", "Done", "Cancelled"}
 		for index, state := range integration.States {
 			if state.Name != wantOrder[index] {
 				t.Fatalf("Cloud lane %d = %q, want %q", index, state.Name, wantOrder[index])
@@ -275,7 +276,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if integration.Authority["workflow"] != "repository" || integration.WorkflowSource != "WORKFLOW.md" || integration.WorkflowSourceRevision != descriptor.Workflow.Revision || integration.WorkflowMarkdown != "" {
 			t.Fatalf("repository authority = %#v", integration)
 		}
-		states = descriptor.Workflow.States
+		states = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}}}, descriptor.Workflow.States...)
 		for _, endpoint := range []string{"/onboarding/integration"} {
 			for _, field := range []string{"states", "workflow_markdown"} {
 				payload := map[string]any{"idempotency_key": endpoint + field, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled"}
@@ -302,7 +303,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		updated := resolveRepositoryPolicy(updatedMarkdown, strings.Repeat("d", 40))
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: approved.Policy.ID, Policy: updated}, http.StatusConflict)
 		api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: updated}, http.StatusOK)
-		states = updated.Workflow.States
+		states = append([]tracker.NativeState{{Name: "Triage", Transitions: []string{"Backlog", "Todo", "Cancelled"}}}, updated.Workflow.States...)
 		browserHostedDecode(t, api(t, "owner", http.MethodGet, organizationBase+"/projects/"+string(otherProject.ID), nil, http.StatusOK), &loaded)
 		if !reflect.DeepEqual(loaded.States, HostedProjectStates()) {
 			t.Fatal("repository approval changed another project's workflow")

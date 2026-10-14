@@ -88,7 +88,7 @@ func prepareCoordinatorCodex(command, workspace string, lookupEnv func(string) (
 // apply_patch, which the read-only sandbox and the never approval policy
 // reject. The coordinator then works through the hub's own tools alone.
 var coordinatorDisabledCodexFeatures = []string{
-	"shell_tool", "unified_exec", "shell_snapshot", "view_image", "code_mode", "code_mode_host",
+	"shell_tool", "unified_exec", "shell_snapshot", "view_image", "code_mode",
 	"apps", "plugins", "browser_use", "computer_use", "image_generation", "multi_agent", "multi_agent_v2",
 	"goals", "tool_suggest", "skill_search", "hooks", "memories", "sleep_tool",
 }

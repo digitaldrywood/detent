@@ -613,7 +613,8 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	LandingBatch *workspace.LandingBatchTicket `json:"-"`
+	workspaceBackend workspace.Backend
+	LandingBatch     *workspace.LandingBatchTicket `json:"-"`
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
 	DeferExecutionFinish bool
@@ -659,6 +660,7 @@ type RunRequest struct {
 	sessionTokenOffset        int64
 	retainCheckpoint          bool
 	finalizeNativeWork        bool
+	reviewOnly                bool
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	validationEvidenceSource  AttemptDiffSource
@@ -752,16 +754,19 @@ const (
 )
 
 type ValidatorRequest struct {
-	Evidence         []tracker.NativeEvidence
-	EvidenceTools    []AgentTool
-	EvidenceHandler  AgentToolHandler
-	NativeVersion    *tracker.ChangeVersion
-	Issue            connector.Issue
-	Diff             *connector.ValidationDiff
-	StartedAt        time.Time
-	SelectorContext  selector.Context
-	OnUsageUpdate    UsageUpdateHandler
-	OnActivityUpdate AgentActivityUpdateHandler
+	Discussion           NativeReviewDiscussion
+	Evidence             []tracker.NativeEvidence
+	Commands             []gate.CommandResult
+	implementationReview bool
+	EvidenceTools        []AgentTool
+	EvidenceHandler      AgentToolHandler
+	NativeVersion        *tracker.ChangeVersion
+	Issue                connector.Issue
+	Diff                 *connector.ValidationDiff
+	StartedAt            time.Time
+	SelectorContext      selector.Context
+	OnUsageUpdate        UsageUpdateHandler
+	OnActivityUpdate     AgentActivityUpdateHandler
 }
 
 type SecurityAuditRequest struct {
@@ -875,12 +880,18 @@ type NativeLanding struct {
 	Refusal         string
 }
 
+func (l NativeLanding) RequiresRework() bool {
+	return !l.Landed && (l.CI != nil && l.CI.State == "failure" || l.GateFailed || l.RefusalKind == workspace.LandRefusalConflict || l.RefusalKind == workspace.LandRefusalProtected && workspace.ReviewConversationsRefusal(l.Refusal))
+}
+
 // NativeChange describes a successful hub-native work run's change. A hub
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
-	Landing   *NativeLanding
-	Validator *gate.ValidatorResult
+	ImplementationReview      *gate.ValidatorResult
+	ImplementationReviewError string
+	Landing                   *NativeLanding
+	Validator                 *gate.ValidatorResult
 	// Changed reports that the run's final attempt diff has commits ahead of
 	// its base. A run that committed nothing has nothing to review.
 	Changed bool

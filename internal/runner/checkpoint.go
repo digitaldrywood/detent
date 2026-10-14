@@ -30,9 +30,9 @@ type workerCheckpoint struct {
 	record          *workspace.CheckpointRecord
 }
 
-func (r *Runner) prepareWorkerCheckpoint(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue) *workerCheckpoint {
+func (r *Runner) prepareWorkerCheckpoint(ctx context.Context, req RunRequest, trackerKind string, backend workspace.Backend, info workspace.Info, issue workspace.Issue) *workerCheckpoint {
 	checkpointBackend, ok := backend.(workspace.CheckpointBackend)
-	if !ok || normalizeRunMode(req.Mode) != RunModeImplement {
+	if !ok || normalizeRunMode(req.Mode) != RunModeImplement || trackerKind == config.TrackerHubNative && req.checkpointRefs != nil {
 		return nil
 	}
 	prepareCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

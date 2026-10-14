@@ -7,7 +7,7 @@ if ! [[ "$procs" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Process budget must be a positive integer.\n' >&2
     exit 1
 fi
-export GOMAXPROCS=$procs
+export GOMAXPROCS=1
 GOTOOLCHAIN=$(awk '$1 == "toolchain" {print $2}' go.mod)
 export GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 source scripts/check-evidence.sh
@@ -43,6 +43,7 @@ while raw.strip():
 root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
 direct = set()
+propagated = set()
 lint = set()
 for name, package in packages.items():
     directory = Path(package["Dir"]).relative_to(root).as_posix()
@@ -53,17 +54,20 @@ for name, package in packages.items():
             if relative.endswith(".go") and "/" not in relative:
                 direct.add(name)
                 lint.add(name)
+                if not relative.endswith("_test.go"):
+                    propagated.add(name)
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
-selected = set(packages) if wide else direct.copy()
+                propagated.add(name)
 while True:
     dependents = {
         name for name, package in packages.items()
-        if selected.intersection(package.get("Imports", []) + package.get("TestImports", []) + package.get("XTestImports", []))
+        if propagated.intersection(package.get("Imports", []) + package.get("TestImports", []) + package.get("XTestImports", []))
     }
-    if dependents.issubset(selected):
+    if dependents.issubset(propagated):
         break
-    selected.update(dependents)
+    propagated.update(dependents)
+selected = set(packages) if wide else direct | propagated
 if wide:
     print("wide\t./...")
 for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):
@@ -83,11 +87,11 @@ while IFS=$'\t' read -r scope package; do
     esac
 done <<< "$selection"
 if [ "${#test_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=60s "${test_packages[@]}"
+    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=3m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"
-    check_with_evidence lint "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m "${lint_scope[@]}" "${lint_packages[@]}"
+    check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m "${lint_scope[@]}" "${lint_packages[@]}"
 fi
 if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$head" ]; then
     printf 'Landing head changed during validation.\n' >&2

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -75,7 +76,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		return s.nativeAPIError(c, err)
 	}
 	if credential, ok := c.Get("hub_api_credential").(apiCredential); ok {
-		if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if err := requireCredentialAuthority(ctx, tx, credential, now); err != nil {
@@ -106,7 +107,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		notify = dispatchBefore != after
 	}
 	completion := c.Request().Method == http.MethodDelete
-	if s.database.hostedPlans != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
+	if s.database.plans() != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
 		credential, ok := c.Get("hub_api_credential").(apiCredential)
 		if !ok {
 			return s.nativeAPIError(c, runnerUnauthorized())
@@ -147,7 +148,9 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 // re-check fencing themselves.
 func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
 	ctx := c.Request().Context()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -157,7 +160,7 @@ func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.C
 		return s.nativeAPIError(c, err)
 	}
 	if credential, ok := c.Get("hub_api_credential").(apiCredential); ok {
-		if err := s.recheckHostedMutation(ctx, tx, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
+		if err := s.recheckHostedMutation(ctx, tx, &nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if err := requireCredentialAuthority(ctx, tx, credential, now); err != nil {
@@ -181,7 +184,7 @@ func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.C
 // chargeRunnerRead records a successful runner read against the hosted plan's
 // request allowance in one short write, refusing it when the window is spent.
 func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Time) error {
-	if s.database.hostedPlans == nil {
+	if s.database.plans() == nil {
 		return nil
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -203,6 +206,18 @@ func (s *Service) chargeRunnerRead(ctx context.Context, path string, now time.Ti
 func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	var request runnerauth.EnrollmentRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
+		reason := "Malformed JSON request body"
+		var typeError *json.UnmarshalTypeError
+		var maxBytesError *http.MaxBytesError
+		switch {
+		case errors.As(err, &maxBytesError):
+			reason = "Request body is too large"
+		case errors.As(err, &typeError):
+			reason = "Request body contains an invalid field type"
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			reason = "Request body contains an unknown field"
+		}
+		s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", reason)
 		return invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
@@ -211,6 +226,10 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 	}
 	value, err := s.createRunnerEnrollmentCommand(c.Request().Context(), nativeScope{organization: tracker.OrganizationID(c.Param("organization")), credential: credential}, request)
 	if err != nil {
+		var failure *nativeError
+		if errors.As(err, &failure) {
+			s.config.Logger.WarnContext(c.Request().Context(), "runner enrollment request rejected", "method", c.Request().Method, "route", c.Path(), "error", failure.Code+": "+failure.Message)
+		}
 		return s.nativeAPIError(c, err)
 	}
 	c.Response().Header().Set("Cache-Control", "no-store")
@@ -219,7 +238,7 @@ func (s *Service) createRunnerEnrollment(c echo.Context) error {
 
 func (s *Service) createRunnerEnrollmentCommand(ctx context.Context, scope nativeScope, request runnerauth.EnrollmentRequest) (any, error) {
 	if !request.Valid() && !request.Unbound() || !runnerauth.ValidOperations(request.Operations) || request.Scope != "" && request.Scope != "projects" && request.Scope != "organization" || request.Scope == "organization" && len(request.ProjectIDs) > 0 || request.Scope != "organization" && len(request.ProjectIDs) == 0 || len(request.ProjectIDs) > 100 || request.TTLSeconds <= 0 || request.TTLSeconds > int64(runnerauth.MaxEnrollmentTTL/time.Second) {
-		return nil, nativeInvalid("Enrollment requires valid or omitted host IDs, a project or organization scope and operations, and a TTL of 1 to 900 seconds")
+		return nil, &nativeError{Code: "invalid_request", Message: "Enrollment requires valid or omitted host IDs, a project or organization scope and operations, and a TTL of 1 to 900 seconds", status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		return s.createRunnerEnrollmentInTx(ctx, tx, scope, request, now)
@@ -236,7 +255,7 @@ func (s *Service) createRunnerEnrollmentInTx(ctx context.Context, tx *sql.Tx, sc
 			return runnerauth.Enrollment{}, err
 		}
 		if count != 1 || slices.Contains(request.ProjectIDs[:i], project) {
-			return runnerauth.Enrollment{}, nativeInvalid("Enrollment projects must be unique and belong to the organization")
+			return runnerauth.Enrollment{}, &nativeError{Code: "invalid_request", Message: "Enrollment projects must be unique and belong to the organization", status: http.StatusUnprocessableEntity, publicMessage: true}
 		}
 	}
 	if !request.Unbound() {

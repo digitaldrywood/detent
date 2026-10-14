@@ -5,7 +5,7 @@ const path = require("node:path");
 let server;
 let origin;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   server = spawn(process.execPath, ["--import", path.resolve("web/conversation/node_modules/tsx/dist/loader.mjs"), "tests/visual/onboarding-help-server.ts"], { stdio: ["pipe", "pipe", "pipe"] });
   origin = await new Promise((resolve, reject) => {
     let output = "";
@@ -22,18 +22,18 @@ test.beforeAll(async () => {
   });
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   if (server?.exitCode === null) {
     await new Promise((resolve) => { server.once("exit", resolve); server.stdin.end(); });
   }
 });
 
-async function help(page, label, content, interaction = "click", screenshot) {
+async function help(page, label, content, interaction = "click", screenshot, fieldLabel = label) {
   const trigger = page.getByRole("button", { name: `Help for ${label}`, exact: true }).first();
   if (interaction === "hover") await trigger.hover();
   else if (interaction === "focus") {
     // Actual keyboard focus, including the focus-visible browser behavior.
-    await page.getByLabel(label, { exact: true }).focus();
+    await page.getByLabel(fieldLabel, { exact: true }).focus();
     await page.keyboard.press("Shift+Tab");
     await expect(trigger).toBeFocused();
   } else if (interaction === "tap") await trigger.tap();
@@ -58,26 +58,32 @@ for (const width of [1280, 390]) {
     const tap = width === 390 ? "tap" : "click";
     await page.goto(new URL("/projects/proj_alpha/setup", origin).href);
     const steps = page.getByRole("list", { name: "Setup steps" });
-    await expect(steps.getByRole("button").nth(0)).toContainText("Execution runner");
-    await steps.getByRole("button").nth(2).click();
-    await help(page, "Use an existing repository", "This saves your setup choice", width === 1280 ? "hover" : tap);
-    await expect(page.getByRole("radio", { name: "Use an existing repository" })).toBeChecked();
-    await help(page, "Generate the configuration", "Associate does not generate files", tap);
-    await expect(page.getByRole("radio", { name: "Generate the configuration" })).not.toBeChecked();
-    await help(page, "Associate the runner checkout", "GitHub API integration is optional", width === 1280 ? "focus" : tap);
-    await page.getByLabel("Associate the runner checkout", { exact: true }).fill("owner/repository");
-    await help(page, "Resolved policy descriptor", "policy mismatch prevents claims", tap);
-    await help(page, "Approve the resolved policy", "runners must resolve a matching policy", tap);
+    await expect(steps.getByRole("button").nth(0)).toContainText("Repository");
+    await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
+    const repositoryLabel = "Which repository should Detent work on?";
+    const repository = page.getByRole("textbox", { name: repositoryLabel, exact: true });
+    await expect(repository).toHaveValue("");
+    await help(page, "Associate the runner checkout", "private repositories work too, without a GitHub integration", width === 1280 ? "hover" : tap);
+    await expect(repository).toHaveValue("");
+    await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeDisabled();
+    await repository.fill("owner/repository");
+    await help(page, "Associate the runner checkout", "Enter owner/name and click Associate", width === 1280 ? "focus" : tap, undefined, repositoryLabel);
+    await expect(repository).toHaveValue("owner/repository");
+    await help(page, "Associate the runner checkout", "a repository your runner can download using its Git sign-in", tap);
+    await expect(repository).toHaveValue("owner/repository");
+    await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeEnabled();
+    await steps.getByRole("button", { name: /Repository configuration/ }).click();
+    await expect(page.getByRole("heading", { name: "Repository configuration", exact: true })).toBeVisible();
 
-    await steps.getByRole("button").nth(1).click();
+    await steps.getByRole("button", { name: /Local validation/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
-    await help(page, "Project checkout and configuration", "execution host", tap);
-    await help(page, "detent doctor", "not a browser confirmation", tap);
-    await help(page, "Provider sign-in", "Credentials and account details stay local", tap);
+    await help(page, "Project checkout and configuration", "Your runner needs a copy of your code", tap);
+    await help(page, "detent doctor", "checks whether Detent is set up correctly", tap);
+    await help(page, "Provider sign-in", "your sign-in details stay on that computer", tap);
 
-    await steps.getByRole("button").nth(0).click();
-    await help(page, "Runner eligibility", "runner-reported heartbeat and capacity", tap);
-    await help(page, "Route here", "does not fix a stale heartbeat", tap);
+    await steps.getByRole("button", { name: /Execution runner/ }).click();
+    await help(page, "Runner eligibility", "a computer you control", tap);
+    await help(page, "Route here", "check the reason shown next to it", tap);
     const enroll = page.getByRole("button", { name: "Enroll a runner", exact: true });
     const intake = page.getByRole("region", { name: "Import GitHub issues", exact: true });
     await expect(intake).toBeVisible();
@@ -125,15 +131,25 @@ for (const width of [1280, 390]) {
     await expect(page.getByRole("button", { name: "Create command" })).toBeDisabled();
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
-    await steps.getByRole("button").nth(3).click();
-    await help(page, "Your runner (local history)", "Detent stores no artifacts", tap);
+    await steps.getByRole("button", { name: /Artifact history/ }).click();
+    await help(page, "Your runner (local history)", "losing it also loses those files", tap);
     await help(page, "Your bucket and gateway", "you run and pay for", tap);
     await page.getByRole("radio", { name: "Your bucket and gateway", exact: true }).check();
-    await help(page, "Service id", "does not provision or verify storage", tap);
+    await help(page, "Service id", "does not create storage or check that it works", tap);
     await help(page, "Gateway origin", "not the S3 bucket URL", tap);
-    await help(page, "Publisher token id", "Hub checks that grant", tap, testInfo.outputPath(`publisher-help-${width}.png`));
+    await help(page, "Publisher token id", "not the secret token itself", tap, testInfo.outputPath(`publisher-help-${width}.png`));
     await page.screenshot({ path: testInfo.outputPath(`setup-${width}.png`) });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
+    await repository.fill("mockorg/alpha");
+    await page.getByRole("button", { name: "Associate", exact: true }).click();
+    await steps.getByRole("button", { name: /Repository configuration/ }).click();
+    await expect(page.getByText("Configuration files", { exact: true })).toBeVisible();
+    await expect(page.getByText(/The runner reads detent.yaml and WORKFLOW.md/)).toBeVisible();
+    await page.getByRole("button", { name: "Advanced policy details", exact: true }).click();
+    await expect(page.getByLabel("Resolved policy descriptor", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Approval saves the work settings you reviewed/)).toBeVisible();
+    await page.getByRole("button", { name: "Advanced policy details", exact: true }).click();
     await context.close();
   });
 }

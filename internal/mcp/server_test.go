@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -245,7 +246,12 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		{"internal", errors.New("credential-sensitive-value invitation-secret prompt-body support-token billing-secret sentinel"), "Operator tool is unavailable"},
 		{"missing", explain.ErrNotFound, "work item not found in this project"},
 		{"unauthorized project", operatortool.ErrProjectScopeRequired, operatortool.ErrProjectScopeRequired.Error()},
+		{"access denied", operatortool.ErrAccessDenied, operatortool.ErrAccessDenied.Error()},
+		{"uncertain mutation", mutation.ErrUncertain, mutation.ErrUncertain.Error()},
+		{"mutation conflict", mutation.ErrConflict, mutation.ErrConflict.Error()},
+		{"hosted allowance", &operatortool.AllowanceError{Code: "allowance_exhausted", HTTPStatus: 429, Message: "Hosted collaboration_bytes allowance reached", Resource: "collaboration_bytes", Allowance: 1073741824, Consumption: 1074232321, Recovery: "Inspect billing_usage.hosted_plan_page with owner/admin authority"}, `{"code":"allowance_exhausted","http_status":429,"message":"Hosted collaboration_bytes allowance reached","resource":"collaboration_bytes","allowance":1073741824,"consumption":1074232321,"recovery":"Inspect billing_usage.hosted_plan_page with owner/admin authority"}`},
 		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
+		{"oversized result", &operatortool.ResultTooLargeError{SizeBytes: 300000, LimitBytes: operatortool.MaxResultBytes}, `{"code":"result_too_large","size_bytes":300000,"limit_bytes":262144}`},
 		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
 		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
 		{"oversized Change record", operatortool.ChangeRecordTooLarge(), `{"code":"change_record_too_large","message":"A Change record with its required evidence envelope exceeds the 262144-byte result budget. Inspect the exact version or artifact through its scoped read; the record requires an operator repair. No evidence was reported as passing."}`},
@@ -306,7 +312,8 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 				}
 				var conflict *operatortool.ConflictError
 				var request *operatortool.RequestError
-				if !errors.As(test.err, &conflict) && !errors.As(test.err, &request) || version == "2024-11-05" {
+				var allowance *operatortool.AllowanceError
+				if !errors.Is(test.err, operatortool.ErrResultTooLarge) && !errors.As(test.err, &conflict) && !errors.As(test.err, &request) && !errors.As(test.err, &allowance) || version == "2024-11-05" {
 					if len(result.StructuredContent) != 0 {
 						t.Fatalf("unexpected structured error=%s", result.StructuredContent)
 					}

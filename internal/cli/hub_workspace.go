@@ -182,7 +182,7 @@ func newWorkspaceLane(
 	// worktree rather than inside the repository. GitWorktree keeps a fresh
 	// workspace off the issue's identifier, which is what stops it holding the
 	// branch an ordinary run of the same issue needs (section 18.11 step 2).
-	backend, err := buildWorkspaceBackend(workflow.Config, selected.Workdir, logger)
+	backend, err := buildWorkspaceBackendContext(ctx, workflow.Config, selected.Workdir, logger)
 	if err != nil {
 		return nil, err
 	}

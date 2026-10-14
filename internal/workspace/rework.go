@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
+func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (MergePrepareResult, error) {
 	info, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return MergePrepareResult{}, err
@@ -19,7 +19,7 @@ func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, op
 		return MergePrepareResult{}, err
 	}
 	defer release()
-	return l.prepareRework(ctx, info, issue, opts)
+	return l.prepareRework(ctx, info, issue, opts, validate)
 }
 
 func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Issue, sourceHead, sourceDigest string, observed RecoveryState) (verified bool, err error) {
@@ -35,6 +35,19 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
 	if err != nil || !paused {
 		return false, err
+	}
+	if issue.Checkpoint != nil {
+		checkpoint := *issue.Checkpoint
+		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
+			return false, err
+		}
+		if checkpoint.transaction != nil {
+			current, err := l.RecoveryState(ctx, info, issue)
+			if err != nil {
+				return false, err
+			}
+			return current.HeadSHA == observed.HeadSHA && current.WorkspaceFingerprint == observed.WorkspaceFingerprint && checkpointMatches(ctx, info.Path, &checkpoint), nil
+		}
 	}
 	if sourceHead == "" || sourceDigest != workspaceRecoveryFingerprint(sourceHead, "") {
 		return false, nil
@@ -88,7 +101,7 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if workspaceRecoveryFingerprint(sourceHead, stat.Fingerprint) != sourceDigest {
 		return false, nil
 	}
-	_, rebaseErr := runGitAt(ctx, replay, "-c", "core.hooksPath="+os.DevNull, "-c", "rerere.enabled=false", "rebase", "--no-gpg-sign", "--no-update-refs", "--no-autostash", "--no-rebase-merges", onto)
+	_, rebaseErr := l.runCommit(ctx, replay, nil, "-c", "core.hooksPath="+os.DevNull, "-c", "rerere.enabled=false", "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", onto)
 	prepared, err := reworkRebaseResult(ctx, replay, rebaseErr)
 	if err != nil || prepared.Status != MergePrepareStatusConflict {
 		return false, err
@@ -143,9 +156,15 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	return current.HeadSHA == observed.HeadSHA && current.WorkspaceFingerprint == observed.WorkspaceFingerprint, nil
 }
 
-func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
+func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (MergePrepareResult, error) {
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
 	if err != nil {
+		return MergePrepareResult{}, err
+	}
+	if validate == nil {
+		return MergePrepareResult{}, errors.New("native completion authority is unavailable")
+	}
+	if err := validate(ctx); err != nil {
 		return MergePrepareResult{}, err
 	}
 	if paused {
@@ -166,9 +185,45 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 				return MergePrepareResult{}, err
 			}
 			prepared.BaseSHA = strings.TrimSpace(string(onto))
+			break
+		}
+		if prepared.BaseSHA == "" {
+			return MergePrepareResult{}, fmt.Errorf("%w: paused rebase integration base is unavailable", ErrMergeResolutionInvalid)
+		}
+		if prepared.Status == MergePrepareStatusConflict {
 			return prepared, nil
 		}
-		return MergePrepareResult{}, fmt.Errorf("%w: paused rebase integration base is unavailable", ErrMergeResolutionInvalid)
+		unstaged, err := runGitAt(ctx, info.Path, "diff", "--name-only", "-z")
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		untracked, err := runGitAt(ctx, info.Path, "ls-files", "--others", "--exclude-standard", "-z")
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		if unstaged != "" || untracked != "" {
+			prepared.Status = MergePrepareStatusDirty
+			return prepared, nil
+		}
+		if err := validate(ctx); err != nil {
+			return MergePrepareResult{}, err
+		}
+		_, replayErr := l.runCommit(ctx, info.Path, nil, "rebase", "--continue")
+		replayed, err := reworkRebaseResult(ctx, info.Path, replayErr)
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		if replayed.Status == MergePrepareStatusConflict {
+			replayed.BaseSHA = prepared.BaseSHA
+			return replayed, nil
+		}
+		paused, err = l.verifyReworkBranch(ctx, info, issue)
+		if err != nil {
+			return MergePrepareResult{}, err
+		}
+		if paused {
+			return MergePrepareResult{}, fmt.Errorf("%w: rebase is still paused", ErrMergeResolutionInvalid)
+		}
 	}
 	metadata, err := inspectGitMetadata(ctx, info.Path)
 	if err != nil {
@@ -207,7 +262,10 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		return MergePrepareResult{}, err
 	}
 	base = strings.TrimSpace(base)
-	_, rebaseErr := runGitAt(ctx, info.Path, "rebase", "--no-gpg-sign", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
+	if err := validate(ctx); err != nil {
+		return MergePrepareResult{}, err
+	}
+	_, rebaseErr := l.runCommit(ctx, info.Path, nil, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", base)
 	prepared, err := reworkRebaseResult(ctx, info.Path, rebaseErr)
 	prepared.BaseSHA = base
 	return prepared, err
@@ -239,7 +297,7 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 			return "", err
 		}
 		if staged != "" {
-			if _, err := runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
+			if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: complete "+issue.Identifier); err != nil {
 				return "", err
 			}
 		}
@@ -253,56 +311,24 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 	if err := validate(ctx); err != nil {
 		return "", err
 	}
-	startedPaused := paused
-	prepared, err := l.prepareRework(ctx, info, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef})
+	if paused {
+		conflicts, err := reworkConflictPaths(ctx, info.Path)
+		if err != nil {
+			return "", err
+		}
+		if len(conflicts) != 0 {
+			return "", fmt.Errorf("%w: unresolved source conflicts: %s", ErrMergeResolutionInvalid, strings.Join(conflicts, ", "))
+		}
+	}
+	prepared, err := l.prepareRework(ctx, info, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}, validate)
 	if err != nil {
 		return "", err
 	}
 	if prepared.Status == MergePrepareStatusDirty {
 		return "", fmt.Errorf("%w: rework changes must be staged before finalization", ErrMergeResolutionInvalid)
 	}
-	paused, err = l.verifyReworkBranch(ctx, info, issue)
-	if err != nil || !paused {
-		return prepared.BaseSHA, err
-	}
-	if err := validate(ctx); err != nil {
-		return "", err
-	}
-	conflicts, err := reworkConflictPaths(ctx, info.Path)
-	if err != nil {
-		return "", err
-	}
-	if len(conflicts) != 0 {
-		if !startedPaused {
-			return "", nil
-		}
-		return "", fmt.Errorf("%w: unresolved source conflicts: %s", ErrMergeResolutionInvalid, strings.Join(conflicts, ", "))
-	}
-	for _, kind := range []string{"rebase-merge", "rebase-apply"} {
-		path, err := gitPathFor(ctx, info.Path, kind+"/gpg_sign_opt")
-		if err != nil {
-			return "", err
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-	}
-	if _, err := runGitAtWithEnv(ctx, info.Path, []string{"GIT_EDITOR=true"}, "-c", "commit.gpgsign=false", "rebase", "--continue"); err != nil {
-		result, inspectErr := reworkRebaseResult(ctx, info.Path, err)
-		if inspectErr != nil {
-			return "", inspectErr
-		}
-		if result.Status == MergePrepareStatusConflict {
-			return "", nil
-		}
-		return "", fmt.Errorf("%w: %s", ErrMergeResolutionInvalid, result.Message)
-	}
-	paused, err = l.verifyReworkBranch(ctx, info, issue)
-	if err != nil {
-		return "", err
-	}
-	if paused {
-		return "", fmt.Errorf("%w: rebase is still paused", ErrMergeResolutionInvalid)
+	if prepared.Status == MergePrepareStatusConflict {
+		return "", nil
 	}
 	return prepared.BaseSHA, nil
 }

@@ -25,7 +25,7 @@ import { ApiError } from "./conversation.ts";
  * `admin` manage the organization; `member` writes where a grant says so;
  * `viewer` reads only (decisions.md §10.11).
  */
-export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "viewer"]);
+export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "reporter", "viewer"]);
 export type OrganizationRole = typeof OrganizationRole.Type;
 
 /** True for the two roles §12 gates the management endpoints behind. */
@@ -49,6 +49,7 @@ export type ProjectGrant = typeof ProjectGrant.Type;
  * redirect through `/auth/oidc/start` rather than a state change here.
  */
 export const BootstrapOrganization = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   public_url: Schema.String,
@@ -87,7 +88,14 @@ export type WorkflowState = typeof WorkflowState.Type;
  * own `BootstrapProject` fields (`labels`, `priorities`, `coordinator`) stay
  * optional here so one payload satisfies both schemas.
  */
+export const ReporterTemplates = Schema.Struct({
+  bug: Schema.Array(Schema.String),
+  change_request: Schema.Array(Schema.String),
+});
+export type ReporterTemplates = typeof ReporterTemplates.Type;
+
 export const AccountProject = Schema.Struct({
+  slug: Schema.optional(Schema.String),
   id: Schema.String,
   name: Schema.String,
   profile: Schema.String,
@@ -169,6 +177,7 @@ export type UpdatesReport = typeof UpdatesReport.Type;
  */
 export const AccountBootstrap = Schema.Struct({
   organization: Schema.Struct({
+    slug: Schema.optional(Schema.String),
     id: Schema.String,
     name: Schema.String,
     public_url: Schema.optional(Schema.String),
@@ -264,6 +273,7 @@ export type SupportResponse = typeof SupportResponse.Type;
  * so recovering means re-reading, never guessing.
  */
 export const ProjectIntegration = Schema.Struct({
+  duplicate_challenge: Schema.optional(Schema.Boolean),
   archive_completed_after_days: Schema.NullOr(Schema.Number),
   archive_cancelled_after_days: Schema.NullOr(Schema.Number),
   workflow_source: Schema.optional(Schema.String),
@@ -282,6 +292,7 @@ export const ProjectIntegration = Schema.Struct({
   github_app_installed: Schema.optional(Schema.Boolean),
   repository: Schema.optional(Schema.String),
   checkout_repository: Schema.optional(Schema.String),
+  checkout_verified: Schema.optional(Schema.Boolean),
   authority: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ProjectIntegration = typeof ProjectIntegration.Type;
@@ -450,6 +461,7 @@ export const RunnerEligibility = Schema.Struct({
     revision: Schema.Number,
     hostname: Schema.optional(Schema.String),
     health: Schema.optional(Schema.String),
+    connection_health: Schema.optional(Schema.String),
     os: Schema.optional(Schema.String),
     architecture: Schema.optional(Schema.String),
     last_heartbeat_at: Schema.optional(Schema.String),
@@ -599,6 +611,7 @@ export const FleetRunner = Schema.Struct({
   display_name: Schema.String,
   hostname: Schema.String,
   health: Schema.String,
+  capacity_health: Schema.optional(Schema.String),
   connection_health: Schema.optional(Schema.String),
   problems: Schema.optional(Schema.Array(Schema.Struct({
     subject: Schema.optional(Schema.String),
@@ -621,6 +634,7 @@ export const FleetRunner = Schema.Struct({
   capacity_limit: Schema.Number,
   reported_capacity: Schema.Number,
   provider_capacity: Schema.Array(ProviderCapacity),
+  has_heartbeat: Schema.optional(Schema.Boolean),
   last_heartbeat_at: Schema.String,
   leases: Schema.Array(RunnerLease),
   isolation_tier: Schema.optional(Schema.String),

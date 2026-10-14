@@ -26,7 +26,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 			{
 				ID:                    "detent",
 				TrackerKind:           "github",
-				WorkflowDetailsURL:    "https://github.com/orgs/digitaldrywood/projects/4/workflows",
+				WorkflowDetailsURL:    "https://github.com/orgs/example-org/projects/4/workflows",
 				DependencyAutoUnblock: "enabled",
 			},
 			{
@@ -52,7 +52,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		"Health",
 		">Detent</span>",
 		"Read-only view of the running configuration.",
-		`href="https://github.com/orgs/digitaldrywood/projects/4/workflows"`,
+		`href="https://github.com/orgs/example-org/projects/4/workflows"`,
 		`aria-label="Open detent workflow details"`,
 		"View workflow ↗",
 		"Workflow details unavailable",

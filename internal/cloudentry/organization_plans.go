@@ -64,7 +64,7 @@ func (s *Service) creationPriceAllowed(id string) bool {
 	if s.config.Allocation == nil || s.config.Billing == nil {
 		return false
 	}
-	for _, price := range s.config.Allocation.Prices {
+	for _, price := range s.allocationPrices() {
 		if price.PriceID == id && price.Plan.ID != "free" && price.Plan.ID != "pilot_free" && price.Plan.ID != "comp_team" {
 			return true
 		}
@@ -74,14 +74,14 @@ func (s *Service) creationPriceAllowed(id string) bool {
 
 func (s *Service) creationPlans(ctx context.Context, session accountSession) (bool, []templates.HostedBillingPrice, error) {
 	if s.config.Allocation == nil || s.entitlementAdministrator(ctx, session) {
-		return false, nil, nil
+		return false, []templates.HostedBillingPrice{}, nil
 	}
 	used, err := s.freeSlotUsed(ctx, s.registry.store.db, session)
 	if err != nil {
 		return false, nil, err
 	}
 	prices := []templates.HostedBillingPrice{}
-	for _, price := range s.config.Allocation.Prices {
+	for _, price := range s.allocationPrices() {
 		if s.creationPriceAllowed(price.PriceID) {
 			prices = append(prices, templates.HostedBillingPrice{ID: price.PriceID, Label: price.Label})
 		}

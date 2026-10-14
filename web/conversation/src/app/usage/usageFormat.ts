@@ -16,10 +16,15 @@ const CURRENCY = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
+const PRECISE_CURRENCY = new Intl.NumberFormat("en-US", {
+  ...CURRENCY.resolvedOptions(),
+  maximumFractionDigits: 6,
+});
+
 const INTEGER = new Intl.NumberFormat("en-US");
 
-export function formatUsd(value: number): string {
-  return CURRENCY.format(value);
+export function formatUsd(value: number, maximumFractionDigits: 2 | 6 = 2): string {
+  return (maximumFractionDigits === 6 ? PRECISE_CURRENCY : CURRENCY).format(value);
 }
 
 export function formatCount(value: number): string {

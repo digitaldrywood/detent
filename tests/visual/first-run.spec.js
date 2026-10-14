@@ -159,7 +159,7 @@ test("creating the first project lands on its board and the checklist advances",
   await restoreOrganization(page);
   await dialog.getByRole("button", { name: "Create project" }).click();
 
-  await expect(page).toHaveURL(/\/work\/p\/[^/]+$/);
+  await expect(page).toHaveURL(/\/local-organization\/example-studio$/);
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Example Studio");
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
   await expect(page.getByTestId("first-run-progress")).toContainText("of 4 done");
@@ -191,9 +191,10 @@ test("an organization runner does not complete an unserved project's runner step
     /\/projects\/[^/]+\/onboarding$/.test(new URL(response.url()).pathname) && response.request().method() === "GET",
   );
   await dialog.getByRole("button", { name: "Create project" }).click();
-  await expect(page).toHaveURL(/\/work\/p\/[^/]+$/);
-  const projectId = new URL(page.url()).pathname.split("/").at(-1);
-  const onboarding = await (await onboardingResponse).json();
+  await expect(page).toHaveURL(/\/local-organization\/unserved-project$/);
+  const onboardingResult = await onboardingResponse;
+  const projectId = new URL(onboardingResult.url()).pathname.split("/").at(-2);
+  const onboarding = await onboardingResult.json();
   const fleetResponse = await page.request.get(new URL("/api/v2/organizations/org_browser_preview/fleet", hub.fixture.url).toString());
   expect(fleetResponse.ok()).toBe(true);
   expect((await fleetResponse.json()).runners.length).toBeGreaterThan(0);
@@ -248,14 +249,17 @@ test.describe("a board that already has issues", () => {
   test("a lane's add button creates into that lane", async ({ page }) => {
     const errors = watchConsole(page);
     await openStudioBoard(page);
-    const lane = page.locator('[data-testid="board-lane"]:not([data-terminal])').first();
+    const lanes = page.getByTestId("board-lane");
+    await expect(lanes.filter({ has: page.getByRole("button", { name: "New issue in Triage", exact: true }) })).toHaveCount(0);
+    const lane = lanes.filter({ has: page.getByRole("button", { name: /^New issue in / }) }).first();
     const laneName = await lane.getAttribute("data-lane");
     await lane.getByRole("button", { name: `New issue in ${laneName}` }).click();
     const dialog = page.getByRole("dialog", { name: "New issue" });
     await expect(dialog.getByLabel("Lane")).toHaveValue(laneName);
+    await expect(dialog.getByLabel("Lane").getByRole("option", { name: "Triage", exact: true })).toHaveCount(0);
     await createFrom(page, "Created from a lane");
     await expect(
-      page.locator(`[data-testid="board-lane"][data-lane="${laneName}"]`).getByText("Created from a lane"),
+      lane.getByText("Created from a lane"),
     ).toBeVisible();
     expect(errors).toEqual([]);
   });

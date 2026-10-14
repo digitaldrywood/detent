@@ -29,6 +29,9 @@ type AnalyticsDuration struct {
 	Seconds    float64 `json:"seconds"`
 	P50Seconds float64 `json:"p50_seconds"`
 	P90Seconds float64 `json:"p90_seconds"`
+	// Samples are the sorted values behind the quantiles, kept so that
+	// durations read separately can be combined exactly.
+	Samples []float64 `json:"-"`
 }
 
 type AnalyticsLaneDuration struct {
@@ -65,11 +68,12 @@ type AnalyticsIssueResidence struct {
 }
 
 type AnalyticsAging struct {
-	WorkItemID   string    `json:"work_item_id"`
-	Lane         string    `json:"lane"`
-	EnteredAt    time.Time `json:"entered_at"`
-	Hours        float64   `json:"hours"`
-	LaneP90Hours *float64  `json:"lane_p90_hours,omitempty"`
+	WorkItemID     string    `json:"work_item_id"`
+	Lane           string    `json:"lane"`
+	EnteredAt      time.Time `json:"entered_at"`
+	Hours          float64   `json:"hours"`
+	LaneP90Hours   *float64  `json:"lane_p90_hours,omitempty"`
+	SinceTodoHours *float64  `json:"since_todo_hours,omitempty"`
 }
 
 type AnalyticsQueue struct {

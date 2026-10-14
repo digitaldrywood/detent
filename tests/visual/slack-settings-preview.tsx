@@ -7,7 +7,7 @@ import { IntegrationsSettings } from "../../web/conversation/src/app/settings/Se
 
 const client = {
   account: {
-    organization: { id: "org_preview", name: "Threefold" },
+    organization: { id: "org_preview", name: "Example Organization" },
     actor: { can_manage: !new URLSearchParams(location.search).has("viewer") },
     projects: [],
     base_path: "",

@@ -36,7 +36,7 @@ test("confirms before executing a proposed board mutation", async ({ page }) => 
   const panel = page.getByRole("dialog", { name: "Detent chat" });
   await panel
     .getByLabel("Message Detent")
-    .fill("Move digitaldrywood/detent-core#5250 to Todo");
+    .fill("Move example-org/detent-core#5250 to Todo");
   await panel.getByRole("button", { name: "Send message" }).click();
 
   const action = panel.locator("[data-chat-action]");
@@ -48,5 +48,5 @@ test("confirms before executing a proposed board mutation", async ({ page }) => 
   await expect(panel.locator('[data-chat-action-status="succeeded"]')).toContainText(
     "Executed",
   );
-  await expect(panel).toContainText("Moved digitaldrywood/detent-core#5250 to Todo via chat");
+  await expect(panel).toContainText("Moved example-org/detent-core#5250 to Todo via chat");
 });

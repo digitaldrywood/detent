@@ -9,6 +9,7 @@ import { normalizeCatalog, rawCatalog, type CatalogEntry } from "./catalog";
 import type { GalleryDoc } from "./specimen";
 import * as actions from "./specimens/actions";
 import * as chat from "./specimens/chat";
+import * as dataDisplay from "./specimens/dataDisplay";
 import * as feedback from "./specimens/feedback";
 import { FOUNDATIONS } from "./specimens/foundations";
 import * as forms from "./specimens/forms";
@@ -24,6 +25,7 @@ import * as workspace from "./specimens/workspace";
 import { activityPage } from "./specimens/activity";
 
 export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
+  "navigation-list": layout.navigationList,
   // Foundations (not catalog entries: token, type, icon and value rules)
   ...FOUNDATIONS,
   // Actions
@@ -60,12 +62,16 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   "runner-status-dot": feedback.runnerStatusDot,
   "stage-progress": feedback.stageProgress,
   "activity-page": activityPage,
+  "capacity-panel": feedback.capacityPanel,
   // Layout and data display
   "scroll-area": layout.scrollArea,
   separator: layout.separator,
   group: layout.group,
   collapsible: layout.collapsible,
   table: layout.table,
+  tabs: dataDisplay.tabs,
+  "metric-tile": dataDisplay.metricTile,
+  chart: dataDisplay.chart,
   kbd: layout.kbd,
   // Navigation
   sidebar: navigation.sidebar,
