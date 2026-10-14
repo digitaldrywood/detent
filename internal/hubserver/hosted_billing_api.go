@@ -53,6 +53,7 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 	}
 	result, err := s.checkoutBilling(c.Request().Context(), authorize, request.Price, request.IdempotencyKey)
 	if err != nil {
+		s.logStripeFailure(c.Request().Context(), err)
 		var failure *nativeError
 		switch {
 		case errors.Is(err, auth.ErrHostedIdentity):
@@ -138,6 +139,7 @@ func (s *Service) hostedBillingPortal(c echo.Context) error {
 	}
 	result, err := s.portalBilling(c.Request().Context(), authorize, request.IdempotencyKey)
 	if err != nil {
+		s.logStripeFailure(c.Request().Context(), err)
 		var failure *nativeError
 		switch {
 		case errors.Is(err, auth.ErrHostedIdentity):
