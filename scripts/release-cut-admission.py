@@ -79,6 +79,11 @@ def reference(run):
     return f"{run['html_url']} (run {run['id']}, source {run['head_branch']}, SHA {run['head_sha']})"
 
 
+def stable_version(value):
+    match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value or "")
+    return tuple(map(int, match.groups())) if match else None
+
+
 def admit(repository, current_run, now):
     interval, cron = cadence(now)
     cutoff = now - interval
@@ -93,8 +98,12 @@ def admit(repository, current_run, now):
                 print(f"Release admission: no-op; active {workflow} ({run['status']}): {reference(run)}")
                 return False
     runs = api(repository, "actions/workflows/release.yml/runs?status=success&per_page=100", "workflow_runs")
-    for run in runs:
-        if run["status"] != "completed" or run["conclusion"] != "success" or timestamp(run["updated_at"]) <= cutoff:
+    completed_release = None
+    for run in sorted(runs, key=lambda run: stable_version(run["head_branch"]) or (-1, -1, -1), reverse=True):
+        if run["status"] != "completed" or run["conclusion"] != "success":
+            continue
+        version = stable_version(run["head_branch"])
+        if timestamp(run["updated_at"]) <= cutoff and (version is None or completed_release is not None):
             continue
         jobs = api(repository, f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100", "jobs")
         for job in jobs:
@@ -104,10 +113,30 @@ def admit(repository, current_run, now):
             if not all(steps.get(name, {}).get("conclusion") == "success" for name in ("Deploy signed release", "Smoke deployed release", "Exercise production MCP tools")):
                 continue
             completed = timestamp(job["completed_at"])
+            if completed > now:
+                continue
+            if version is not None and completed_release is None:
+                completed_release = (version, run)
             if cutoff < completed <= now:
                 print(f"Release admission: no-op; production deployment and smoke completed at {utc(completed)}: {reference(run)}")
                 return False
-    print("Release admission: proceed; no active or recently completed production release.")
+    refs = subprocess.run(
+        ["git", "ls-remote", "--heads", "origin", "refs/heads/release/v*"],
+        check=True, capture_output=True, text=True,
+    )
+    branches = []
+    for line in refs.stdout.splitlines():
+        sha, ref = line.split()
+        match = re.fullmatch(r"refs/heads/release/v(0|[1-9]\d*)\.(0|[1-9]\d*)", ref)
+        if match:
+            branches.append((tuple(map(int, match.groups())), ref.removeprefix("refs/heads/"), sha))
+    if branches:
+        series, branch, sha = max(branches)
+        if completed_release is None or series > completed_release[0][:2] or (series == completed_release[0][:2] and sha != completed_release[1]["head_sha"]):
+            previous = f"; last production completion: {reference(completed_release[1])}" if completed_release else "; no successful stable production release"
+            print(f"Release admission: no-op; unfinished frozen series: https://github.com/{repository}/tree/{branch} (source {branch}, SHA {sha}){previous}")
+            return False
+    print("Release admission: proceed; no active, unfinished current series or recently completed production release.")
     return True
 
 
