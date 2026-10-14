@@ -33,9 +33,11 @@ func newConversationFixture(t *testing.T) conversationFixture {
 		decodeHubResponse(t, response, &token)
 		return token.ID
 	}
+	store := newConversationStore(f.service.database.db)
+	store.reader = f.service.database.reader
 	return conversationFixture{
 		nativeFixture: f,
-		store:         newConversationStore(f.service.database.db),
+		store:         store,
 		organization:  organization,
 		owner:         principal("owner"),
 		other:         principal("other"),
