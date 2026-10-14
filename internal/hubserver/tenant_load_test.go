@@ -152,12 +152,17 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 			leases = append(leases, claimNativeAttempt(t, f, worker, fmt.Sprintf("machine-%d", index), fmt.Sprintf("session-%d", index), issue.WorkItemID))
 		}
 		pad := strings.Repeat("h", 200)
-		if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?)
+		commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
+			if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?)
 INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
 SELECT 'evt_history_'||i, ?, ?, ?, 1000000+i, 'comment.created', 1, '{"kind":"system"}', json_object('pad', ?), ? FROM n`,
-			history, f.project.OrganizationID, f.project.ID, items[0].WorkItemID, pad, formatHubTime(time.Now())); err != nil {
-			t.Fatal(err)
-		}
+				history, f.project.OrganizationID, f.project.ID, items[0].WorkItemID, pad, formatHubTime(time.Now())); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET event_sequence=? WHERE organization_id=? AND project_id=? AND native_id=?", 1000000+history, f.project.OrganizationID, f.project.ID, items[0].WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+		})
 		if _, err := f.service.database.db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 			t.Fatal(err)
 		}
