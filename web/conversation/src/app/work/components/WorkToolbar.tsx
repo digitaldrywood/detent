@@ -1,6 +1,7 @@
 import { FilterIcon, KanbanIcon, LayoutListIcon } from "lucide-react";
 import React from "react";
 
+import { Badge } from "../../../components/ui/badge.tsx";
 import { Button } from "../../../components/ui/button.tsx";
 import {
   Menu,
@@ -205,7 +206,7 @@ export function WorkToolbar({
                 onCheckedChange={() => onChange(toggleLane(view, lane.name, lanes))}
               >
                 {lane.name}
-                {totals === undefined ? null : <span className="ml-auto inline-grid h-5 min-w-5 shrink-0 place-items-center rounded-md bg-accent px-1.5 text-[11px] text-muted-foreground tabular-nums">{totals[lane.name] ?? 0}</span>}
+                {totals === undefined ? null : <Badge variant="secondary" className="ml-auto tabular-nums">{totals[lane.name] ?? 0}</Badge>}
               </MenuCheckboxItem>
             ))}
           </MenuGroup>
