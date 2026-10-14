@@ -24,6 +24,12 @@ import { Dash, IssueLink, LaneBadge, Muted, ShowMore } from "./parts.tsx";
 
 type Stage = ReportsReport["stages"][number];
 
+const GROUP_HEADINGS = {
+  stage: ["Stage", "Model · effort"],
+  model: ["Model", "Stages"],
+  runner: ["Runner", "Runner ID"],
+} as const;
+
 export interface CostRow {
   readonly key: string;
   readonly name: string;
@@ -32,6 +38,20 @@ export interface CostRow {
   readonly succeeded: number;
   readonly p50: number | null;
   readonly cost: number;
+}
+
+export function runnerRows(runners: NonNullable<ReportsReport["runners"]>): readonly CostRow[] {
+  return runners
+    .map((runner) => ({
+      key: runner.runner_id,
+      name: runner.name || runner.runner_id,
+      detail: runner.runner_id,
+      sessions: runner.sessions,
+      succeeded: runner.succeeded,
+      p50: runner.duration.count > 0 ? runner.duration.p50_seconds : null,
+      cost: runner.cost_usd,
+    }))
+    .toSorted((a, b) => b.cost - a.cost);
 }
 
 export function costRows(stages: readonly Stage[], group: "stage" | "model"): readonly CostRow[] {
@@ -105,7 +125,8 @@ export function CostTab({
   const categories = bucketCategories(buckets);
   const stacks = buckets.map(stageStack);
   const hasOther = stacks.some((stack) => stack.other > 0);
-  const rows = search.group === "runner" ? [] : costRows(report.stages, search.group);
+  const rows =
+    search.group === "runner" ? (report.runners === undefined ? [] : runnerRows(report.runners)) : costRows(report.stages, search.group);
   const rowsTotal = rows.reduce((sum, row) => sum + row.cost, 0);
   const issues = report.spend.filter((item) =>
     search.issues === "all" ? true : search.issues === "shipped" ? item.shipped === true : item.shipped === false,
@@ -190,7 +211,7 @@ export function CostTab({
           </ToggleGroup>
         }
       >
-        {search.group === "runner" ? (
+        {search.group === "runner" && report.runners === undefined ? (
           <Muted>
             <Dash /> Spend by runner is not recorded.
           </Muted>
@@ -204,8 +225,8 @@ export function CostTab({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{search.group === "stage" ? "Stage" : "Model"}</TableHead>
-                <TableHead>{search.group === "stage" ? "Model · effort" : "Stages"}</TableHead>
+                <TableHead>{GROUP_HEADINGS[search.group][0]}</TableHead>
+                <TableHead>{GROUP_HEADINGS[search.group][1]}</TableHead>
                 <TableHead className="text-right">Attempts</TableHead>
                 <TableHead className="text-right">Succeeded</TableHead>
                 <TableHead className="text-right">Time p50</TableHead>
@@ -225,7 +246,7 @@ export function CostTab({
                   <TableCell className="text-right tabular-nums">{rowsTotal > 0 ? percentText((100 * row.cost) / rowsTotal) : <Dash />}</TableCell>
                 </TableRow>
               ))}
-              {report.stages
+              {search.group === "runner" ? null : report.stages
                 .filter((stage) => stage.disabled)
                 .map((stage) => (
                   <TableRow key={`${stage.stage}:disabled`}>

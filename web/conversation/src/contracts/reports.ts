@@ -84,6 +84,18 @@ export const ReportsReport = Schema.Struct({
   previous_first_try_percent: Schema.optional(Schema.NullOr(Schema.Number)),
   previous_failed: Schema.optional(Schema.Number),
   failed_issues: Schema.optional(Schema.Number),
+  runners: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        runner_id: Schema.String,
+        name: Schema.String,
+        sessions: Schema.Number,
+        succeeded: Schema.Number,
+        duration: Duration,
+        cost_usd: Schema.Number,
+      }),
+    ),
+  ),
   completion: Completion,
   previous: Completion,
   tokens: Schema.Number,

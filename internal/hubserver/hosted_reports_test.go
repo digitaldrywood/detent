@@ -211,6 +211,34 @@ func TestReportsStageAndSpendAttribution(t *testing.T) {
 	}
 }
 
+func TestReportsRunnerTotals(t *testing.T) {
+	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	minutes := func(n int) []tracker.NativePhase {
+		return []tracker.NativePhase{{Name: "implement", StartedAt: at, FinishedAt: at.Add(time.Duration(n) * time.Minute)}}
+	}
+	attempts := []nativeAnalyticsAttempt{
+		{AttemptID: "a", WorkItemID: "one", Status: "succeeded", Phases: minutes(2)},
+		{AttemptID: "b", WorkItemID: "one", Status: "failed", Phases: minutes(4)},
+		{AttemptID: "c", WorkItemID: "two", Status: "succeeded", Phases: minutes(1)},
+		{AttemptID: "d", WorkItemID: "two", Status: "succeeded"},
+		{AttemptID: "e", WorkItemID: "two", Status: "running"},
+	}
+	usage := map[string][]usageRow{
+		"a": {{RunnerID: "run_studio", RunnerName: "studio", Cost: 1}, {RunnerID: "run_studio", RunnerName: "studio", Cost: 2}},
+		"b": {{RunnerID: "run_studio", RunnerName: "studio", Cost: 1}},
+		"c": {{RunnerID: "run_sprite", RunnerName: "sprite", Cost: 5}},
+		"d": {{Cost: 9}},
+	}
+	got := reportsRunnerTotals(attempts, usage)
+	want := []reportsRunner{
+		{RunnerID: "run_sprite", Name: "sprite", Sessions: 1, Succeeded: 1, Duration: analyticsDuration([]float64{60}), Cost: 5},
+		{RunnerID: "run_studio", Name: "studio", Sessions: 2, Succeeded: 1, Duration: analyticsDuration([]float64{120, 240}), Cost: 4},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("runners=%+v want %+v", got, want)
+	}
+}
+
 func TestReportsFirstTryHistory(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}

@@ -153,6 +153,47 @@
   "cancelled": 112,
   "previous_failed": 177,
   "failed_issues": 71,
+  "runners": [
+    {
+      "runner_id": "run_studio",
+      "name": "mac-studio",
+      "sessions": 712,
+      "succeeded": 541,
+      "duration": {
+        "count": 541,
+        "seconds": 1298400,
+        "p50_seconds": 1500,
+        "p90_seconds": 4500
+      },
+      "cost_usd": 3410.5
+    },
+    {
+      "runner_id": "run_sprite_a",
+      "name": "sprite-pool-a",
+      "sessions": 501,
+      "succeeded": 402,
+      "duration": {
+        "count": 402,
+        "seconds": 810432,
+        "p50_seconds": 1260,
+        "p90_seconds": 3780
+      },
+      "cost_usd": 2050.25
+    },
+    {
+      "runner_id": "run_sprite_b",
+      "name": "sprite-pool-b",
+      "sessions": 192,
+      "succeeded": 192,
+      "duration": {
+        "count": 192,
+        "seconds": 313344,
+        "p50_seconds": 1020,
+        "p90_seconds": 3060
+      },
+      "cost_usd": 740.25
+    }
+  ],
   "unavailable": [
     "private_instruction_causality"
   ],

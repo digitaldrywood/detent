@@ -130,7 +130,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (hostedReportsReport, error) {
 	p := analytics.Projects[0]
 	w := analytics.Window
-	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Series: []reportsSeriesBucket{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
+	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Series: []reportsSeriesBucket{}, Runners: []reportsRunner{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
 	diagnostics, err := s.readHostedDiagnosticsFrom(ctx, analytics, q)
 	if err != nil {
 		return out, err
@@ -194,6 +194,7 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 		return out, err
 	}
 	out.Stages, out.Spend = reportsAttemptTotals(p.allAttempts, usage)
+	out.Runners = reportsRunnerTotals(p.allAttempts, usage)
 	shipped := reportsShipped(timelines, w.From, w.To)
 	reportsSpendOutcomes(out.Spend, p.allAttempts, timelines, shipped)
 	out.Rework = reportReworkClasses(p.Quality.returns, p.allAttempts, usage)
