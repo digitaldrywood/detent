@@ -257,11 +257,12 @@ type hostedSharedBillingQuery struct {
 }
 
 func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := s.database.hostedEntitlement(ctx, s.database.reader, s.config.now())
+	entitlement, err := s.database.hostedEntitlement(readCtx, s.database.reader, s.config.now())
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
@@ -290,8 +291,10 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 				return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
 			}
 		}
+		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelCheckout()
 		var raw string
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
+		if err := s.database.reader.QueryRowContext(checkoutCtx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err == nil {
 			var checkout hostedCheckout
 			result.CheckoutPending = json.Unmarshal([]byte(raw), &checkout) == nil && checkout.ExpiresAt.After(s.config.now())
 		}
@@ -354,13 +357,14 @@ func (s *Service) bootstrapHostedSharedOwner(c echo.Context) error {
 	if claims.Subject == "" || claims.Email == "" || name == "" || len(name) > 120 {
 		return invalidAPIRequest(c, errors.New("invalid owner bootstrap"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	s.hostedMutationMu.Lock()
 	defer s.hostedMutationMu.Unlock()
 	var members int
 	var owner string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*), COALESCE(max(CASE WHEN role = 'owner' AND active = 1 THEN user_id END), '') FROM hosted_members").Scan(&members, &owner); err != nil {
 		return s.internalAPIError(c, "bootstrap_unavailable", "Owner bootstrap is unavailable", err)
 	}
 	if members != 0 {

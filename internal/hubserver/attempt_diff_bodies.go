@@ -40,10 +40,11 @@ func (s *Service) attemptDiffBodyBatch(c echo.Context) error {
 	if !diffBodyService(c) {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	batch := diffbody.Batch{Files: []diffbody.File{}}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch
  FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch<>'' ORDER BY f.diff_id,f.position LIMIT 32`)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -80,7 +81,7 @@ WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody+` LIMIT 
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	rows, err = s.database.reader.QueryContext(ctx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch_object,f.patch_sha256,f.patch_size
+	rows, err = s.database.reader.QueryContext(readCtx, `SELECT d.organization_id,d.project_id,f.diff_id,f.position,f.patch_object,f.patch_sha256,f.patch_size
 FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch_expired=1 AND f.patch_object<>'' LIMIT 32`)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -99,7 +100,7 @@ FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id WHERE f.patch_e
 	if err := rows.Close(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT vacuum_pending FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&batch.VacuumPending); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT vacuum_pending FROM attempt_diff_body_migration WHERE singleton=1`).Scan(&batch.VacuumPending); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return c.JSON(http.StatusOK, batch)

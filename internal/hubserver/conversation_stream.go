@@ -172,15 +172,16 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 // It updates scope with the refreshed credential and returns the current
 // record.
 func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeScope, conversationID string) (conversationRecord, error) {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if scope.credential.Hosted != nil {
 		credential, _, err := s.hostedCredential(ctx, c)
 		if err != nil {
 			return conversationRecord{}, err
 		}
 		scope.credential = credential
-		if err := s.requireHostedProject(ctx, s.database.reader, *scope, false); err != nil {
+		if err := s.requireHostedProject(readCtx, s.database.reader, *scope, false); err != nil {
 			return conversationRecord{}, err
 		}
 	} else {
@@ -194,7 +195,7 @@ func (s *Service) reauthorizeConversationStream(c echo.Context, scope *nativeSco
 	if err := s.database.authorizeNativeProject(ctx, *scope); err != nil {
 		return conversationRecord{}, err
 	}
-	return s.conversations.loadConversation(ctx, s.database.reader, *scope, conversationID)
+	return s.conversations.loadConversation(readCtx, s.database.reader, *scope, conversationID)
 }
 
 // conversationStreamCloseReason tells a denial apart from a failure. A

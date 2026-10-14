@@ -62,8 +62,9 @@ func authorizeClaimItem(ctx context.Context, tx *sql.Tx, id tracker.WorkItemID, 
 }
 
 func (s *Service) claimNativeIssue(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var request tracker.NativeClaim
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
@@ -92,7 +93,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	}
 	var id tracker.WorkItemID
 	if request.WorkItemID != "" {
-		_, id, err = readNativeIssue(ctx, s.database.reader, scope, string(request.WorkItemID))
+		_, id, err = readNativeIssue(readCtx, s.database.reader, scope, string(request.WorkItemID))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

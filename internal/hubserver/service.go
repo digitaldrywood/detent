@@ -36,6 +36,8 @@ type Service struct {
 	writerStatsAt           atomic.Int64
 	writerWaits             atomic.Int64
 	writerWaited            atomic.Int64
+	readerWaits             atomic.Int64
+	readerWaited            atomic.Int64
 	requestMetrics          *tenantRequestMetrics
 	runnerPublishedReleases sync.Map
 	tokenUse                sync.Map

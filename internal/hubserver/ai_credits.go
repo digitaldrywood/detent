@@ -240,8 +240,8 @@ func (w *hostedBillingWorker) creditEvent(ctx context.Context, id, kind string) 
 }
 
 func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	s := w.service
 	d := s.database
 	cfg := s.hostedBillingConfig()
@@ -250,11 +250,11 @@ func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
 	}
 	var key, price, method string
 	var cents, at int64
-	err := d.reader.QueryRowContext(ctx, "SELECT purchase_key,price_id,usd_cents,payment_method,created_at FROM ai_credit_purchases WHERE organization_id=? AND mode=? AND automatic=1 AND state='pending'", d.hostedOrganization, d.aiCreditMode).Scan(&key, &price, &cents, &method, &at)
+	err := d.reader.QueryRowContext(readCtx, "SELECT purchase_key,price_id,usd_cents,payment_method,created_at FROM ai_credit_purchases WHERE organization_id=? AND mode=? AND automatic=1 AND state='pending'", d.hostedOrganization, d.aiCreditMode).Scan(&key, &price, &cents, &method, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		var enabled bool
 		var balance, threshold int64
-		if err := d.reader.QueryRowContext(ctx, "SELECT auto_enabled,balance_micros,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&enabled, &balance, &threshold, &price, &method); err != nil {
+		if err := d.reader.QueryRowContext(readCtx, "SELECT auto_enabled,balance_micros,threshold_cents,price_id,payment_method FROM ai_credit_accounts WHERE organization_id=? AND mode=?", d.hostedOrganization, d.aiCreditMode).Scan(&enabled, &balance, &threshold, &price, &method); err != nil {
 			return err
 		}
 		if !enabled || balance >= threshold*10000 {

@@ -12,12 +12,12 @@ import (
 )
 
 func (s *Service) maintainGitHubBatches(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if s.config.ImportBackend == nil {
 		return nil
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.organization_id,p.id FROM onboarding_issue_intake b JOIN projects p ON p.id=b.project_id
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.organization_id,p.id FROM onboarding_issue_intake b JOIN projects p ON p.id=b.project_id
  WHERE p.deleted_at IS NULL AND json_extract(b.request_json,'$.hub_owned')=1 AND json_extract(b.request_json,'$.status') IN ('discovering','importing')`)
 	if err != nil {
 		return err

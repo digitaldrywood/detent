@@ -497,7 +497,7 @@ func TestReadPoolExhaustionReturnsLoggedDeadline(t *testing.T) {
 	if response.Code != http.StatusInternalServerError || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("pool exhaustion response=%d context=%v", response.Code, ctx.Err())
 	}
-	if !strings.Contains(logs.String(), "context deadline exceeded") {
+	if !strings.Contains(logs.String(), "context deadline exceeded") || !strings.Contains(logs.String(), "read_timeout_cause=reader_pool_exhausted") {
 		t.Fatalf("pool exhaustion lost its cause: %s", logs.String())
 	}
 	if service.database.reader.Stats().WaitCount == 0 {

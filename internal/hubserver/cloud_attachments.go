@@ -98,8 +98,7 @@ func (s *Service) checkCloudAttachment(c echo.Context) error {
 }
 
 func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.UploadRequest) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if err := s.checkAttachmentEvidence(c, input.Evidence); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -133,8 +132,10 @@ func (s *Service) prepareCloudAttachment(c echo.Context, input attachment.Upload
 	if json.Unmarshal(result, &prepared) != nil {
 		return s.nativeAPIError(c, nativeInvalid("Invalid attachment receipt"))
 	}
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var deleted bool
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL)", scope.organization, scope.project, prepared.ID).Scan(&deleted); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NOT NULL)", scope.organization, scope.project, prepared.ID).Scan(&deleted); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if deleted {

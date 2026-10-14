@@ -169,17 +169,18 @@ func (s *Service) hostedHome(c echo.Context) error {
 }
 
 func (s *Service) hostedPageData(c echo.Context, credential apiCredential, data *templates.HostedPageData) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	identity := credential.Hosted
 	if identity.SupportActor != "" {
 		data.SupportActor, data.SupportReason = identity.SupportActor, identity.SupportReason
 		data.SupportExpiry = identity.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT name FROM organizations WHERE id = ?", s.config.Hosted.OrganizationID).Scan(&data.OrganizationName); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT name FROM organizations WHERE id = ?", s.config.Hosted.OrganizationID).Scan(&data.OrganizationName); err != nil {
 		return err
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.id,p.name,g.manage_runner FROM projects p JOIN hosted_project_grants g ON g.project_id = p.id WHERE p.deleted_at IS NULL AND g.user_id = ? AND p.organization_id = ? ORDER BY p.id`, identity.Subject, s.config.Hosted.OrganizationID)
 	if err != nil {
 		return err
 	}

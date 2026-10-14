@@ -173,7 +173,7 @@ func invalidAPIRequest(c echo.Context, err error) error {
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {
-	s.config.Logger.Error(message, "error", err)
+	s.config.Logger.Error(message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
 	return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: code, Message: message})
 }
 

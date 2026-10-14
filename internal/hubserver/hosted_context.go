@@ -95,8 +95,8 @@ func (e hostedContextExecutor) listTools(ctx context.Context) []operatortool.Def
 }
 
 func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	defer func() {
 		if resultErr == nil {
 			return
@@ -138,7 +138,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 				return result, operatortool.ErrAccessDenied
 			}
 		} else if credential.HostedKeyScope != "" {
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
+			if err := s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_members WHERE user_id=? AND active=1", credential.Hosted.Subject).Scan(&session.Email); err != nil {
 				return result, err
 			}
 		}

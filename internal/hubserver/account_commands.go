@@ -25,8 +25,8 @@ func (s *Service) hostedAccountCredential(ctx context.Context, hash string) (api
 }
 
 func (s *Service) createHostedOrganizationFor(ctx context.Context, credential apiCredential, name string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if credential.Hosted == nil || credential.Hosted.SupportActor != "" || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject {
 		return "", operatortool.ErrAccessDenied
 	}
@@ -35,7 +35,7 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential ap
 		return "", operatortool.ErrAccessDenied
 	}
 	var members int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil || members != 0 {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&members); err != nil || members != 0 {
 		return "", operatortool.ErrAccessDenied
 	}
 	name = strings.TrimSpace(name)

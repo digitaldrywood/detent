@@ -141,8 +141,9 @@ ORDER BY p.name,p.id LIMIT 1`, s.config.Hosted.OrganizationID, projects == nil, 
 }
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	credential, err := s.hostedAdministrator(c)
 	role := c.FormValue("role")
 	if err != nil || !auth.ValidOrganizationRole(role) || role == "owner" && credential.HostedRole != "owner" {
@@ -152,7 +153,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedEmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, email, nil); err != nil {
+	if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, email, nil); err != nil {
 		return s.hostedError(c, http.StatusForbidden, "You cannot replace this member's project access")
 	}
 	reserved, err := s.reserveHostedInvitationSeat(ctx, email)

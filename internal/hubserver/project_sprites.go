@@ -246,9 +246,14 @@ func (s *Service) spriteWakeDispatchable(ctx context.Context, scope nativeScope,
 	return false, nil
 }
 
+type spriteWakeCandidate struct {
+	runnerID    string
+	name        string
+	secretScope nativeScope
+	envelope    hubsecrets.Envelope
+}
+
 func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, state string) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	if s.config.SecretKeys == nil {
 		return 0, nil
 	}
@@ -261,46 +266,73 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 	woken := 0
 	last := ""
 	for {
+		candidate, found, err := s.nextSpriteWakeCandidate(ctx, scope, state, &last)
+		if err != nil || !found {
+			return woken, err
+		}
+		started, err := s.wakeSpriteRunnerWithSecret(ctx, scope, candidate.secretScope, &client, candidate.name, candidate.envelope)
+		if err != nil {
+			return woken, err
+		}
+		failedAt := ""
+		if !started {
+			failedAt = formatHubTime(s.config.now())
+		}
+		if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_wake_failed_at',?) WHERE id=(SELECT machine_id FROM runner_identities WHERE id=? AND organization_id=?)`, failedAt, candidate.runnerID, scope.organization); err != nil {
+			return woken, err
+		}
+		if started {
+			if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json,'$.sprite_name')=hostname`, formatHubTime(s.config.now()), scope.organization, candidate.name); err != nil {
+				return woken, err
+			}
+			woken++
+		}
+	}
+}
+
+func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope, state string, last *string) (spriteWakeCandidate, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	for {
 		dispatchable, err := s.spriteWakeDispatchable(ctx, scope, state)
 		if err != nil || !dispatchable {
-			return woken, err
+			return spriteWakeCandidate{}, false, err
 		}
 		var configured bool
 		if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_pools WHERE organization_id=?)`, scope.organization).Scan(&configured); err != nil {
-			return woken, err
+			return spriteWakeCandidate{}, false, err
 		}
 		var placement placementSnapshot
 		if configured {
 			placement, err = readPlacementSnapshot(ctx, s.database.reader, scope, s.config.now(), nil)
 			if err != nil {
-				return woken, err
+				return spriteWakeCandidate{}, false, err
 			}
 			if placement.Provisionable == 0 {
-				return woken, nil
+				return spriteWakeCandidate{}, false, nil
 			}
 		}
-		var name string
-		var runnerID string
+		var candidate spriteWakeCandidate
 		cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
 		err = s.database.reader.QueryRowContext(ctx, `SELECT r.id,m.hostname FROM runner_identities r
 JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL
 WHERE r.organization_id=? AND r.state='active' AND r.removed_at IS NULL AND r.last_heartbeat_at<? AND COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'')<? AND m.hostname>? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname AND
 (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?))
-ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config.now().Add(-time.Minute)), last, scope.project).Scan(&runnerID, &name)
+ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config.now().Add(-time.Minute)), *last, scope.project).Scan(&candidate.runnerID, &candidate.name)
 		if errors.Is(err, sql.ErrNoRows) {
-			return woken, nil
+			return spriteWakeCandidate{}, false, nil
 		}
 		if err != nil {
-			return woken, err
+			return spriteWakeCandidate{}, false, err
 		}
-		last = name
-		if !validSpritesSlug(name) {
+		*last = candidate.name
+		if !validSpritesSlug(candidate.name) {
 			continue
 		}
 		if configured {
 			compatible := false
 			for _, r := range placement.Runners {
-				if r.RunnerID != runnerID || !r.Sprite || r.Pending || !placementRunnerCompatible(r, scope.project, placement.Requirements, s.config.now(), true) {
+				if r.RunnerID != candidate.runnerID || !r.Sprite || r.Pending || !placementRunnerCompatible(r, scope.project, placement.Requirements, s.config.now(), true) {
 					continue
 				}
 				for id, requirement := range placement.Items {
@@ -318,30 +350,14 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 				continue
 			}
 		}
-		secretScope, envelope, err := spriteWakeSecret(ctx, s.database.reader, scope, name)
+		candidate.secretScope, candidate.envelope, err = spriteWakeSecret(ctx, s.database.reader, scope, candidate.name)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
-			return woken, err
+			return spriteWakeCandidate{}, false, err
 		}
-		started, err := s.wakeSpriteRunnerWithSecret(ctx, scope, secretScope, &client, name, envelope)
-		if err != nil {
-			return woken, err
-		}
-		failedAt := ""
-		if !started {
-			failedAt = formatHubTime(s.config.now())
-		}
-		if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_wake_failed_at',?) WHERE id=(SELECT machine_id FROM runner_identities WHERE id=? AND organization_id=?)`, failedAt, runnerID, scope.organization); err != nil {
-			return woken, err
-		}
-		if started {
-			if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json,'$.sprite_name')=hostname`, formatHubTime(s.config.now()), scope.organization, name); err != nil {
-				return woken, err
-			}
-			woken++
-		}
+		return candidate, true, nil
 	}
 }
 
@@ -390,9 +406,9 @@ func (s *Service) wakeSpriteRunnerWithSecret(ctx context.Context, scope, secretS
 }
 
 func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativeScope) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.id,ws.source_name FROM projects p JOIN workflow_states ws ON ws.project_id=p.id WHERE p.organization_id=? AND p.profile='native' AND ws.dispatchable=1 AND ws.terminal=0 AND EXISTS(SELECT 1 FROM issues i WHERE i.project_id=p.id AND i.organization_id=p.organization_id AND i.workflow_state_id=ws.id AND i.archived=0 AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))) ORDER BY p.scheduling_rank,p.id,ws.source_name`, scope.organization, formatHubTime(s.config.now()))
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.id,ws.source_name FROM projects p JOIN workflow_states ws ON ws.project_id=p.id WHERE p.organization_id=? AND p.profile='native' AND ws.dispatchable=1 AND ws.terminal=0 AND EXISTS(SELECT 1 FROM issues i WHERE i.project_id=p.id AND i.organization_id=p.organization_id AND i.workflow_state_id=ws.id AND i.archived=0 AND NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))) ORDER BY p.scheduling_rank,p.id,ws.source_name`, scope.organization, formatHubTime(s.config.now()))
 	if err != nil {
 		return 0, err
 	}

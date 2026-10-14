@@ -490,13 +490,14 @@ func (s *Service) postConversationAction(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	record, err := s.conversations.store.readConversation(ctx, s.database.reader, scope.organization, scope.project, c.Param("conversation"))
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	record, err := s.conversations.store.readConversation(readCtx, s.database.reader, scope.organization, scope.project, c.Param("conversation"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if err := s.conversations.authorizeWrite(ctx, s.database.reader, scope, record); err != nil {
+	if err := s.conversations.authorizeWrite(readCtx, s.database.reader, scope, record); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {

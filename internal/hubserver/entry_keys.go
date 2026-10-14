@@ -16,8 +16,8 @@ import (
 )
 
 func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Claims) (apiCredential, int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	if !s.hostedShared() || claims.Kind != cloudassert.KindKey || claims.Key == nil || !claims.Key.Valid() || !claims.ExpiresAt.After(s.config.now()) || claims.Audience != s.config.Hosted.OrganizationID {
 		return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 	}
@@ -44,7 +44,7 @@ func (s *Service) entryKeyCredential(ctx context.Context, claims cloudassert.Cla
 		return credential, http.StatusOK, nil
 	}
 	var local string
-	err = s.database.auth().QueryRowContext(ctx, `SELECT m.membership_id,m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL`, claims.Subject).Scan(&credential.HostedMembership, &credential.HostedPrincipal, &local)
+	err = s.database.auth().QueryRowContext(readCtx, `SELECT m.membership_id,m.principal_id,m.role FROM hosted_members m JOIN api_tokens t ON t.id=m.principal_id WHERE m.user_id=? AND m.active=1 AND t.revoked_at IS NULL`, claims.Subject).Scan(&credential.HostedMembership, &credential.HostedPrincipal, &local)
 	if err != nil || !auth.ValidOrganizationRole(local) {
 		return apiCredential{}, http.StatusForbidden, &apikey.Refusal{Code: "membership_denied", Message: "The key owner is not an active organization member"}
 	}

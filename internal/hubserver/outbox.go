@@ -732,11 +732,11 @@ func randomJitter() float64 {
 }
 
 func (s *Service) OutboxHealth(ctx context.Context) (OutboxHealth, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
 	var health OutboxHealth
 	if err := s.readOutboxStatusCounts(ctx, &health); err != nil {
 		return OutboxHealth{}, err

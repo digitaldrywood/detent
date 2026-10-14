@@ -18,8 +18,6 @@ import (
 // These commands are shared with dashboard adapters. They own persistence and
 // provider effects; MCP only supplies typed input and trusted mutation context.
 func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential) (hostedMembersResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	memberships, err := s.config.Hosted.Provider.Memberships(ctx, "", credential.Hosted.OrganizationID)
 	if err != nil {
@@ -33,6 +31,8 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 	if err != nil {
 		return hostedMembersResponse{}, err
 	}
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	response := hostedMembersResponse{Members: []hostedMemberView{}, Invitations: []hostedInvitationView{}}
 	for _, member := range memberships {
 		if member.OrganizationID != credential.Hosted.OrganizationID || member.Status != "active" || !manage && member.UserID != credential.Hosted.Subject {
@@ -41,7 +41,7 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 		// Local removal/downgrade is authoritative even before provider propagation.
 		var active bool
 		var role string
-		err := s.database.reader.QueryRowContext(ctx, "SELECT active,role FROM hosted_members WHERE user_id=?", member.UserID).Scan(&active, &role)
+		err := s.database.reader.QueryRowContext(readCtx, "SELECT active,role FROM hosted_members WHERE user_id=?", member.UserID).Scan(&active, &role)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return response, err
 		}
@@ -152,10 +152,10 @@ func (s *Service) changeHostedGrantFor(ctx context.Context, credential apiCreden
 }
 
 func (s *Service) revokeHostedInvitationFor(ctx context.Context, id string) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var email string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT email FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", id, s.config.Hosted.OrganizationID).Scan(&email); err != nil {
 		return err
 	}
 	if err := auth.RevokeInvitationID(ctx, s.config.Hosted.Provider, id); err != nil {

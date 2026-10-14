@@ -172,8 +172,7 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if err := s.secretMutation(ctx, scope, func(tx *sql.Tx) error { return nil }); err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -189,7 +188,9 @@ func (s *Service) testSlackIntegration(c echo.Context) error {
 	if err := s.recordSlackResult(ctx, s.database.db, scope.organization, "", status, delivered, s.config.now()); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	result, err := readSlackIntegration(ctx, s.database.reader, scope.organization)
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	result, err := readSlackIntegration(readCtx, s.database.reader, scope.organization)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

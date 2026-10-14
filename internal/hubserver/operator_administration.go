@@ -46,8 +46,8 @@ func (s *Service) operatorAdministration() *operatoradmin.Executor {
 // Resolve through the original authenticated binding again. The effective role
 // supplied by the entry is still capped by the local member role.
 func (a hubAdministration) credential(ctx context.Context) (apiCredential, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	c := operatortool.CurrentConnection(ctx)
 	authority, err := c.Resolve(ctx)
 	if err != nil || authority.Identity != c.Identity {
@@ -76,13 +76,13 @@ func (a hubAdministration) credential(ctx context.Context) (apiCredential, error
 		return credential, err
 	}
 	var credential apiCredential
-	err = s.database.reader.QueryRowContext(ctx, "SELECT id,name,token_hash,scope,native_only FROM api_tokens WHERE id=? AND token_hash=? AND revoked_at IS NULL", c.Identity.PrincipalID, c.Identity.CredentialID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Scope, &credential.NativeOnly)
+	err = s.database.reader.QueryRowContext(readCtx, "SELECT id,name,token_hash,scope,native_only FROM api_tokens WHERE id=? AND token_hash=? AND revoked_at IS NULL", c.Identity.PrincipalID, c.Identity.CredentialID).Scan(&credential.ID, &credential.Name, &credential.Hash, &credential.Scope, &credential.NativeOnly)
 	return credential, err
 }
 
 func (a hubAdministration) Authorize(ctx context.Context, name string, in operatoradmin.Input, resource string) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	credential, err := a.credential(ctx)
 	if err != nil {
 		return operatortool.ErrAccessDenied
@@ -138,11 +138,11 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 				id = resource
 			}
 			var count int
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", id).Scan(&count); err != nil || count != 1 {
+			if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM api_tokens WHERE id=? AND NOT EXISTS(SELECT 1 FROM runner_identities WHERE token_id=api_tokens.id)", id).Scan(&count); err != nil || count != 1 {
 				return operatortool.ErrAccessDenied
 			}
 			if resource != "" && (name == operatortool.CredentialCreate || name == operatortool.CredentialRotate) {
-				if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM api_tokens WHERE id=? AND revoked_at IS NULL", id).Scan(&count); err != nil || count != 1 {
+				if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM api_tokens WHERE id=? AND revoked_at IS NULL", id).Scan(&count); err != nil || count != 1 {
 					return operatortool.ErrAccessDenied
 				}
 			}
@@ -214,7 +214,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			}
 			return nil
 		}
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_members").Scan(&count); err != nil || count != 0 && in.RequestID == "" {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_members").Scan(&count); err != nil || count != 0 && in.RequestID == "" {
 			return operatortool.ErrAccessDenied
 		}
 		return nil
@@ -234,7 +234,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 			return operatortool.ErrAccessDenied
 		}
 		var count int
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count); err != nil || count != 1 {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND (accepted_user_id='' OR accepted_user_id=?)", in.InvitationID, s.config.Hosted.OrganizationID, credential.Hosted.Subject).Scan(&count); err != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
 	}
@@ -255,19 +255,19 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 		return operatortool.ErrAccessDenied
 	}
 	if name == operatortool.InvitationSend && in.Email != "" {
-		if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
+		if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, strings.ToLower(strings.TrimSpace(in.Email)), in.Grants); err != nil {
 			return err
 		}
 	}
 	if (name == operatortool.InvitationEdit || name == operatortool.InvitationResend) && in.InvitationID != "" {
-		view, err := s.pendingHostedInvitationFor(ctx, s.database.reader, credential, in.InvitationID)
+		view, err := s.pendingHostedInvitationFor(readCtx, s.database.reader, credential, in.InvitationID)
 		if err != nil {
 			return err
 		}
 		if name == operatortool.InvitationEdit {
-			return s.validateHostedInvitationEdit(ctx, s.database.reader, credential, view, in.Grants)
+			return s.validateHostedInvitationEdit(readCtx, s.database.reader, credential, view, in.Grants)
 		}
-		if err := s.validateHostedInvitationGrants(ctx, s.database.reader, credential, view.Email, view.Grants); err != nil {
+		if err := s.validateHostedInvitationGrants(readCtx, s.database.reader, credential, view.Email, view.Grants); err != nil {
 			return err
 		}
 	}
@@ -286,7 +286,7 @@ func (a hubAdministration) Authorize(ctx context.Context, name string, in operat
 	}
 	if invitation != "" {
 		var count int
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count); err != nil || count != 1 {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM hosted_invitations WHERE id=? AND organization_id=? AND accepted_user_id=''", invitation, s.config.Hosted.OrganizationID).Scan(&count); err != nil || count != 1 {
 			return operatortool.ErrAccessDenied
 		}
 	}

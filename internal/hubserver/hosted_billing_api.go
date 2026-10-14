@@ -74,11 +74,11 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 }
 
 func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string) (hostedCheckout, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var checkout hostedCheckout
 	var raw string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT checkout_json FROM hosted_billing_accounts WHERE organization_id=?", s.config.Hosted.OrganizationID).Scan(&raw); err != nil {
 		return checkout, err
 	}
 	if err := json.Unmarshal([]byte(raw), &checkout); err != nil {

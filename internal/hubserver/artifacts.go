@@ -310,8 +310,9 @@ func (s *Service) authorizeArtifactRead(c echo.Context) error {
 }
 
 func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, sessionHash string) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	session, err := s.WebSession(ctx, sessionHash, s.config.now())
 	if err != nil {
 		return err
@@ -322,7 +323,7 @@ func (s *Service) authorizeHostedArtifactRead(c echo.Context, principal, session
 	}
 	scope := nativeRequestScope(c)
 	scope.credential = credential
-	if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
+	if err := s.requireHostedProject(readCtx, s.database.reader, scope, false); err != nil {
 		return err
 	}
 	return s.hostedAudit(ctx, session.Identity, "action", c.Request().Method+" "+c.Path(), string(scope.project), 0)
@@ -356,10 +357,10 @@ func (s *Service) artifactServicesCommand(ctx context.Context, scope nativeScope
 }
 
 func (s *Service) artifactReadGrantCommand(ctx context.Context, scope nativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	var raw, bindingRaw []byte
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, item, artifactID, revision).Scan(&raw, &bindingRaw); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT a.reference_json,s.binding_json FROM artifact_references a JOIN artifact_services s ON s.organization_id=a.organization_id AND s.project_id=a.project_id AND s.id=a.service_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.artifact_id=? AND a.revision=?", scope.organization, scope.project, item, artifactID, revision).Scan(&raw, &bindingRaw); err != nil {
 		return result, err
 	}
 	var ref artifact.Reference

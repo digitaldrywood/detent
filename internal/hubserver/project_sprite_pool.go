@@ -236,22 +236,22 @@ WHERE p.organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>j
 }
 
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	scope.project = ""
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
 	now := s.config.now()
-	placement, err := readOrganizationPlacementSnapshot(ctx, s.database.reader, scope, now)
+	placement, err := readOrganizationPlacementSnapshot(readCtx, s.database.reader, scope, now)
 	if err != nil {
 		return input, nil, err
 	}
 	input.Depth, input.Free, input.Pending = placement.SpriteTarget, placement.SpriteFree, placement.Pending
 	input.CreateLimit = placement.ProviderFree
-	allowed, err := monthlySpriteAllowed(ctx, s.database.reader, scope, now)
+	allowed, err := monthlySpriteAllowed(readCtx, s.database.reader, scope, now)
 	if err != nil {
 		return input, nil, err
 	}
-	decision, err := checkMonthlyBudget(ctx, s.database.reader, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+	decision, err := checkMonthlyBudget(readCtx, s.database.reader, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
 	if err != nil {
 		return input, nil, err
 	}
@@ -279,11 +279,11 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		if member.RunnerID == "" {
 			continue
 		}
-		runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
+		runner, err := readRunnerWithClock(readCtx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
 		if err != nil {
 			return input, nil, err
 		}
-		retained, err := monthlyBudgetRetainsRunner(ctx, s.database.reader, scope, runner.MachineID)
+		retained, err := monthlyBudgetRetainsRunner(readCtx, s.database.reader, scope, runner.MachineID)
 		if err != nil {
 			return input, nil, err
 		}
@@ -303,21 +303,22 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 }
 
 func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowCreate bool) error {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	view, err := s.readSpritePool(ctx, scope)
 	if err != nil || view.Revision == 0 {
 		return err
 	}
-	if _, err := s.spritePoolAuthority(ctx, s.database.reader, scope); errors.Is(err, sql.ErrNoRows) {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	_, err = s.spritePoolAuthority(readCtx, s.database.reader, scope)
+	cancelRead()
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 	for _, member := range view.Members {
 		if member.State == "bootstrapping" {
-			var expires string
-			if err := s.database.reader.QueryRowContext(ctx, `SELECT expires_at FROM runner_enrollments WHERE id=?`, member.EnrollmentID).Scan(&expires); err != nil {
+			expires, err := s.spriteEnrollmentExpiry(ctx, member.EnrollmentID)
+			if err != nil {
 				return err
 			}
 			end, err := parseTimeValue(expires)
@@ -365,6 +366,14 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 		}
 	}
 	return nil
+}
+
+func (s *Service) spriteEnrollmentExpiry(ctx context.Context, enrollmentID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	var expires string
+	err := s.database.reader.QueryRowContext(ctx, `SELECT expires_at FROM runner_enrollments WHERE id=?`, enrollmentID).Scan(&expires)
+	return expires, err
 }
 
 func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope nativeScope) {

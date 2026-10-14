@@ -171,8 +171,6 @@ func changeLimit(args operatortool.ChangeArguments) int {
 }
 
 func (a hubChangeApplication) MutateChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	scope, err := a.authorized(ctx, args, name != operatortool.ArtifactAccess)
 	if err != nil {
 		return operatortool.ChangeResult{}, err
@@ -292,7 +290,9 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return result, err
 		}
 		result.Version = &version
-		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelRead()
+		tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return result, err
 		}

@@ -349,12 +349,12 @@ func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 }
 
 func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegration, job GitHubImport) (GitHubImportPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	request := GitHubImportRequest{Repository: integration.Repository, Profile: integration.Profile, IssueNumber: job.IssueNumber, Stage: job.Stage, Cursor: job.Cursor}
 	var sequence int64
 	if job.Stage == "edits" {
-		err := s.database.reader.QueryRowContext(ctx, `SELECT sequence, COALESCE(json_extract(record_json, '$.provenance.external_id'), '') FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &request.SourceID)
+		err := s.database.reader.QueryRowContext(readCtx, `SELECT sequence, COALESCE(json_extract(record_json, '$.provenance.external_id'), '') FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &request.SourceID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return GitHubImportPage{EditsFinished: true}, nil
 		}

@@ -20,8 +20,6 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	if request.ScheduledValidation != nil {
 		scope.action = ""
 		return s.recordScheduledValidation(ctx, scope, request)
@@ -54,8 +52,10 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		if err != nil {
 			return nil, nativeInvalid(err.Error())
 		}
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		defer cancelRead()
 		var exists int
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
+		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM issues WHERE project_id = ? AND native_source_key = ?", scope.project, "github:"+canonical).Scan(&exists); err != nil {
 			return nil, err
 		}
 		if exists == 0 {
@@ -63,7 +63,11 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			if _, found, err := resolveWebhookRepositoryID(ctx, s.database.reader, repository); err != nil {
+			repositoryCtx, cancelRepository := context.WithTimeout(ctx, hubReadTimeout)
+			var found bool
+			_, found, err = resolveWebhookRepositoryID(repositoryCtx, s.database.reader, repository)
+			cancelRepository()
+			if err != nil {
 				return nil, err
 			} else if !found {
 				if s.config.ReconcileBackend == nil {

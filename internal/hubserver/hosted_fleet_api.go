@@ -154,8 +154,9 @@ func readHostedRunnerNames(ctx context.Context, query nativeQueryer, organizatio
 
 // hostedFleet answers GET /fleet for any member of the organization.
 func (s *Service) hostedFleet(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
 	credential, _, err := s.hostedCredential(ctx, c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
@@ -163,7 +164,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	var result any
 	if c.QueryParam("include") == "names" {
 		var names map[string]hostedRunnerName
-		names, err = readHostedRunnerNames(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
+		names, err = readHostedRunnerNames(readCtx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else if c.QueryParam("include") == "host_metrics" {
 		var from, to time.Time

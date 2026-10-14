@@ -147,9 +147,10 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 // the plan's request accounting writes. Writes that depend on the answer
 // re-check fencing themselves.
 func (s *Service) runnerReadTransaction(c echo.Context, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	ctx := c.Request().Context()
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

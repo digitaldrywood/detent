@@ -328,9 +328,9 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 }
 
 func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScope, item, refresh string) ([]pullRequestView, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
-	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancelRead()
+	if _, _, err := readNativeIssue(readCtx, s.database.reader, scope, item); err != nil {
 		return nil, err
 	}
 	now := s.config.now()
@@ -342,11 +342,11 @@ func (s *Service) readWorkItemPullRequests(ctx context.Context, scope nativeScop
 	} else if !s.pullRequests.allowRefresh(scope.organization, now) {
 		return nil, pullRequestRefreshLimited()
 	}
-	connector, repositoryID, err := projectConnector(ctx, s.database.reader, scope)
+	connector, repositoryID, err := projectConnector(readCtx, s.database.reader, scope)
 	if err != nil {
 		return nil, err
 	}
-	changes, err := changeRows[tracker.ChangeRequest](ctx, s.database.reader, `SELECT c.record_json FROM change_requests c
+	changes, err := changeRows[tracker.ChangeRequest](readCtx, s.database.reader, `SELECT c.record_json FROM change_requests c
 JOIN change_issue_links l ON l.change_id = c.id
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
 	if err != nil {
