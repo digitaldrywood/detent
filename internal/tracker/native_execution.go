@@ -291,19 +291,26 @@ func (c NativeAdmissionContext) Validate() error {
 	return nil
 }
 
+type NativeAnsweredExclusion struct {
+	Kind            string     `json:"kind"`
+	AttemptID       string     `json:"attempt_id"`
+	RetryEligibleAt *time.Time `json:"retry_eligible_at,omitempty"`
+}
+
 type NativeRuntimeAdmission struct {
-	UnresolvedDependencies []NativeDependency `json:"unresolved_dependencies,omitempty"`
-	SelectorSource         string             `json:"selector_source,omitempty"`
-	SelectorObservedAt     *time.Time         `json:"selector_observed_at,omitempty"`
-	RunnerID               string             `json:"runner_id"`
-	RunnerRevision         int64              `json:"runner_revision"`
-	PolicyID               string             `json:"policy_id"`
-	Source                 string             `json:"source"`
-	ObservedAt             time.Time          `json:"observed_at"`
-	Outcome                string             `json:"outcome"`
-	ReasonCode             string             `json:"reason_code,omitempty"`
-	Reason                 string             `json:"reason"`
-	Unavailable            []string           `json:"unavailable"`
+	AnsweredExclusion      *NativeAnsweredExclusion `json:"answered_exclusion,omitempty"`
+	UnresolvedDependencies []NativeDependency       `json:"unresolved_dependencies,omitempty"`
+	SelectorSource         string                   `json:"selector_source,omitempty"`
+	SelectorObservedAt     *time.Time               `json:"selector_observed_at,omitempty"`
+	RunnerID               string                   `json:"runner_id"`
+	RunnerRevision         int64                    `json:"runner_revision"`
+	PolicyID               string                   `json:"policy_id"`
+	Source                 string                   `json:"source"`
+	ObservedAt             time.Time                `json:"observed_at"`
+	Outcome                string                   `json:"outcome"`
+	ReasonCode             string                   `json:"reason_code,omitempty"`
+	Reason                 string                   `json:"reason"`
+	Unavailable            []string                 `json:"unavailable"`
 }
 
 type NativeRuntimeEvidence struct {
