@@ -381,6 +381,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		next.Issues = &item.Position
 		if summary {
 			issue = operatortool.NativeListIssue(issue)
+		}
+		if summary || workIncluded {
 			candidate := tracker.Page[tracker.NativeIssue]{Items: append(page.Items, issue)}
 			candidate.NextCursor, err = encodeNativeCursor(next, key)
 			if err != nil {
