@@ -106,8 +106,6 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 }
 
 func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
-	defer cancel()
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return healthSnapshot{}, err
