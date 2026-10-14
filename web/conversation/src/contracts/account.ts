@@ -25,7 +25,7 @@ import { ApiError } from "./conversation.ts";
  * `admin` manage the organization; `member` writes where a grant says so;
  * `viewer` reads only (decisions.md §10.11).
  */
-export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "reporter", "viewer"]);
+export const OrganizationRole = Schema.String;
 export type OrganizationRole = typeof OrganizationRole.Type;
 
 /** True for the two roles §12 gates the management endpoints behind. */
@@ -218,6 +218,13 @@ export const Member = Schema.Struct({
 });
 export type Member = typeof Member.Type;
 
+export const MemberRole = Schema.Struct({
+  slug: Schema.String,
+  name: Schema.String,
+  description: Schema.String,
+});
+export type MemberRole = typeof MemberRole.Type;
+
 export const Invitation = Schema.Struct({
   id: Schema.String,
   email: Schema.String,
@@ -230,6 +237,7 @@ export type Invitation = typeof Invitation.Type;
 
 /** `GET /members`. A plain member sees only themselves and no invitations. */
 export const MembersResponse = Schema.Struct({
+  roles: Schema.optional(Schema.Array(MemberRole)),
   member_count: Schema.optional(Schema.Number),
   members: Schema.Array(Member),
   invitations: Schema.Array(Invitation),

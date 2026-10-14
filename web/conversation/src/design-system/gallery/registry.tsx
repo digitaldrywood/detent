@@ -55,6 +55,7 @@ export const REGISTRY: Readonly<Record<string, GalleryDoc>> = {
   "usage-meter": feedback.usageMeter,
   alert: feedback.alert,
   badge: feedback.badge,
+  avatar: dataDisplay.avatar,
   toast: feedback.toast,
   spinner: feedback.spinner,
   skeleton: feedback.skeleton,
