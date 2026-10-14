@@ -78,13 +78,13 @@ func initializeLocalConfiguration(ctx context.Context, settings store.LocalConfi
 	return settings.LocalConfiguration(ctx, cfg)
 }
 
-func readRuntimeConfiguration(ctx context.Context, settings store.LocalConfigurationStore, path string) (globalconfig.Config, error) {
+func readRuntimeConfiguration(ctx context.Context, settings store.LocalConfigurationStore, path string, previous ...globalconfig.Config) (globalconfig.Config, error) {
 	cfg, err := globalconfig.Read(path, globalconfig.WithoutProjectConfiguration(), globalconfig.WithProjectPathLiterals())
 	if err != nil {
 		return cfg, err
 	}
 	if cfg.Client.Configured() {
-		return readRunnerRuntimeConfig(ctx, path, globalconfig.WithProjectPathLiterals())
+		return resolveRunnerProjects(ctx, cfg, previous...)
 	}
 	cfg, err = settings.LocalConfiguration(ctx, cfg)
 	if errors.Is(err, sql.ErrNoRows) {

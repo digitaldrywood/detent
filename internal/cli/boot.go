@@ -710,7 +710,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			registry := manager.Registry()
 			runPauseMonitor(ctx, pauseMonitorDeps{
 				read: func() (globalconfig.Config, error) {
-					return readRuntimeConfiguration(ctx, runtimeStore, cfg.Global.Path)
+					return readRuntimeConfiguration(ctx, runtimeStore, cfg.Global.Path, globalConfigState.get())
 				},
 				write: func(updated globalconfig.Config) error {
 					return writeRuntimeConfiguration(ctx, runtimeStore, updated)

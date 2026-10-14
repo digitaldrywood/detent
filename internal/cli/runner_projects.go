@@ -18,6 +18,7 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -34,22 +35,32 @@ type runnerProjects struct {
 	apply       func(context.Context, globalconfig.Config) error
 	runtime     func() globalconfig.Config
 	checkout    func(context.Context, globalconfig.Project, string) error
+	preparing   map[string]*runnerProjectPreparation
+}
+
+type runnerProjectPreparation struct {
+	selected globalconfig.Project
+	cancel   context.CancelFunc
+	done     chan struct{}
+	checks   runnerauth.LocalChecks
+	err      error
 }
 
 func (p *runnerProjects) prepare(ctx context.Context, name string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.syncRuntimeLocked()
-	return p.prepareLocked(ctx, name)
+	cfg := p.cfg
+	p.mu.Unlock()
+	return p.prepareConfiguration(ctx, cfg, name)
 }
 
-func (p *runnerProjects) prepareLocked(ctx context.Context, name string) error {
-	for _, selected := range project.ManagerConfigFromGlobal(p.cfg).Projects {
+func (p *runnerProjects) prepareConfiguration(ctx context.Context, cfg globalconfig.Config, name string) error {
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
 		if selected.ID != name {
 			continue
 		}
 		if !runnerCheckoutReady(ctx, selected) {
-			native, err := p.client.Native(tracker.OrganizationID(p.cfg.Client.OrganizationID), tracker.ProjectID(p.cfg.Client.NativeProjects[name]))
+			native, err := p.client.Native(tracker.OrganizationID(cfg.Client.OrganizationID), tracker.ProjectID(cfg.Client.NativeProjects[name]))
 			if err != nil {
 				return err
 			}
@@ -61,16 +72,53 @@ func (p *runnerProjects) prepareLocked(ctx context.Context, name string) error {
 			if clone == nil {
 				clone = prepareRunnerCheckout
 			}
-			if err := clone(ctx, selected, definition.CloneURL); err != nil {
+			cloneURL := definition.CloneURL
+			if cloneURL == "" && definition.Repository != "" {
+				cloneURL = "https://github.com/" + definition.Repository + ".git"
+			}
+			if err := clone(ctx, selected, cloneURL); err != nil {
 				return err
 			}
 		}
-		if id := p.cfg.Client.NativeProjects[name]; id != "" {
+		if id := cfg.Client.NativeProjects[name]; id != "" {
 			selected.ID = id
 		}
 		return p.setup.Prepare(ctx, selected)
 	}
 	return fmt.Errorf("runner project checkout %s is unavailable", name)
+}
+
+func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project) *runnerProjectPreparation {
+	ctx, cancel := context.WithCancel(ctx)
+	run := &runnerProjectPreparation{selected: selected, cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(run.done)
+		defer cancel()
+		run.err = p.prepareConfiguration(ctx, cfg, selected.ID)
+		if run.err != nil {
+			run.checks = runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending"}
+			var checkoutErr *runnerCheckoutError
+			if errors.As(run.err, &checkoutErr) {
+				run.checks.CheckoutMessage, run.checks.CheckoutFix = checkoutErr.message, checkoutErr.fix
+			}
+			return
+		}
+		run.checks = runnerProjectLocalChecks(ctx, cfg, selected.ID)
+		run.checks.Setup = "passed"
+		native, err := p.client.Native(tracker.OrganizationID(cfg.Client.OrganizationID), tracker.ProjectID(cfg.Client.NativeProjects[selected.ID]))
+		if err == nil && run.checks.Checkout == "passed" {
+			var descriptor policy.Descriptor
+			_, _, descriptor, err = resolveRunnerProjectPolicy(ctx, cfg, selected.ID)
+			if err == nil {
+				err = native.ReportObservedPolicy(ctx, descriptor)
+			}
+		}
+		if err != nil {
+			run.err = err
+			run.checks.Setup = "failed"
+		}
+	}()
+	return run
 }
 
 func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Scheduler) error {
@@ -113,43 +161,53 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 		return err
 	}
 	changed := needsApply || !reflect.DeepEqual(before, p.cfg)
+	if p.preparing == nil {
+		p.preparing = make(map[string]*runnerProjectPreparation)
+	}
+	for name, run := range p.preparing {
+		if !slices.ContainsFunc(p.cfg.Projects, func(selected globalconfig.Project) bool { return reflect.DeepEqual(selected, run.selected) }) {
+			run.cancel()
+			select {
+			case <-run.done:
+				delete(p.preparing, name)
+			default:
+			}
+			delete(p.checks, name)
+		}
+	}
+	for name := range p.checks {
+		if _, allowed := p.cfg.Client.NativeProjects[name]; !allowed {
+			delete(p.checks, name)
+		}
+	}
 	for _, selected := range p.cfg.Projects {
 		previous, reported := p.checks[selected.ID]
-		setupErr := p.prepareLocked(ctx, selected.ID)
-		checks := previous
-		if setupErr == nil && (!reported || previous.Checkout != "passed" || previous.Setup != "passed") {
-			checks = runnerProjectLocalChecks(ctx, p.cfg, selected.ID)
-			native, err := p.client.Native(identity.OrganizationID, tracker.ProjectID(p.cfg.Client.NativeProjects[selected.ID]))
-			if err != nil {
-				return err
-			}
-			if checks.Checkout == "passed" {
-				_, _, descriptor, err := resolveRunnerProjectPolicy(ctx, p.cfg, selected.ID)
-				if err != nil {
-					return err
-				}
-				if err := native.ReportObservedPolicy(ctx, descriptor); err != nil {
-					return err
-				}
-			}
+		run := p.preparing[selected.ID]
+		if run != nil && !reflect.DeepEqual(run.selected, selected) {
+			continue
 		}
-		checks.Setup = "passed"
-		if setupErr != nil {
-			checks.Setup = "failed"
+		if run == nil {
+			if reported && previous.Checkout == "passed" && previous.Setup == "passed" {
+				continue
+			}
+			run = p.startPreparation(ctx, p.cfg, selected)
+			p.preparing[selected.ID] = run
 			if !reported {
-				checks.Checkout, checks.Doctor, checks.Provider = "failed", "pending", "pending"
+				p.checks[selected.ID] = runnerauth.LocalChecks{Checkout: "pending", Setup: "pending", Doctor: "pending", Provider: "pending"}
 			}
-			var checkoutErr *runnerCheckoutError
-			if errors.As(setupErr, &checkoutErr) {
-				checks.Checkout = "failed"
-				checks.CheckoutMessage, checks.CheckoutFix = checkoutErr.message, checkoutErr.fix
-			}
-			p.logger.Warn("prepare assigned runner project failed", "project", selected.ID, "attribution", "instance", "error", setupErr)
-		} else {
-			checks.CheckoutMessage, checks.CheckoutFix = "", ""
+			continue
 		}
-		changed = changed || !reflect.DeepEqual(previous, checks)
-		p.checks[selected.ID] = checks
+		select {
+		case <-run.done:
+			run.cancel()
+			delete(p.preparing, selected.ID)
+			p.checks[selected.ID] = run.checks
+			changed = changed || !reflect.DeepEqual(previous, run.checks)
+			if run.err != nil {
+				p.logger.Warn("prepare assigned runner project failed", "project", selected.ID, "attribution", "instance", "error", run.err)
+			}
+		default:
+		}
 	}
 	projects := make(map[string]tracker.ProjectID, len(p.cfg.Client.NativeProjects))
 	for name, id := range p.cfg.Client.NativeProjects {
@@ -159,6 +217,9 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 		return err
 	}
 	current := p.cfg
+	current.Projects = slices.DeleteFunc(slices.Clone(current.Projects), func(selected globalconfig.Project) bool {
+		return p.checks[selected.ID].Setup != "passed"
+	})
 	p.mu.Unlock()
 	locked = false
 	if changed && p.apply != nil {
@@ -240,7 +301,13 @@ func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previou
 	if err != nil {
 		return cfg, fmt.Errorf("read runner's allowed projects: %w", err)
 	}
-	return runnerProjectsForIdentity(ctx, cfg, client, identity, true)
+	resolved, err := runnerProjectsForIdentity(ctx, cfg, client, identity, len(previous) == 0)
+	if len(previous) > 0 && err == nil {
+		resolved.Projects = slices.DeleteFunc(resolved.Projects, func(selected globalconfig.Project) bool {
+			return !slices.ContainsFunc(previous[0].Projects, func(current globalconfig.Project) bool { return current.ID == selected.ID }) && !runnerCheckoutReady(ctx, selected)
+		})
+	}
+	return resolved, err
 }
 
 func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client, identity runnerauth.Identity, prepare bool) (globalconfig.Config, error) {
