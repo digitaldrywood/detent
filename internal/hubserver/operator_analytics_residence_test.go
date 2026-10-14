@@ -70,6 +70,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 			}
 		}
 	}
+	f.service.database.refreshAnalyticsRollups(t.Context(), tx)
 	for _, test := range []struct {
 		name                      string
 		from, to                  int
@@ -91,6 +92,11 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 10}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, report, projected)
 			residence := report.LaneResidence
 			for name, pair := range map[string][2]float64{"system": {residence.SystemTotal.Seconds, test.system * 3600}, "held": {residence.HeldTotal.Seconds, test.held * 3600}, "queue": {report.QueueTime.Seconds, test.queue * 3600}, "lead": {residence.LeadTotal.Seconds, test.lead * 3600}} {
 				if pair[0] != pair[1] {
@@ -220,6 +226,12 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 			if err != nil {
 				t.Fatal(err)
 			}
+			f.service.database.refreshAnalyticsRollups(t.Context(), tx)
+			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{tx}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAnalyticsJSONEqual(t, report, projected)
 			residence := report.LaneResidence
 			population := "residence_" + kind
 			cursor := report.PopulationCursors[population]

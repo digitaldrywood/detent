@@ -281,6 +281,47 @@ Do not advance the site's pinned upstream release to this layout until that
 companion source update is available. Site publication remains separate from
 Detent's build and scheduled validation.
 
+## Hub analytics rollups
+
+Diagnostics, Reports and `analytics_dashboard` read the persisted
+`analytics_hourly_rollups` model through the WAL reader pool. Ready decisions,
+skip reasons, merge entries and lease capacity have additive hourly values.
+Residence reads subtract accumulated per-issue lane and queue durations from
+hourly snapshots. Indexed state-boundary samples supply exact partial-hour
+edges, Todo depths and population clipping. Open spans contribute elapsed time
+from their recorded start without a timer or event replay. Completion samples
+retain the accumulated durations at Done for completion quantiles and throughput.
+Claim waits have additive hourly durations; indexed claim and skip samples retain
+bounded population cursors. The same model retains current issue, attempt and
+usage facts for exact quantiles and distinct populations. It excludes observation-event
+payload history. Landing and refusal identities remain bounded drill-downs.
+
+The existing native commit path projects changed work items before committing,
+using the board's existing dirty-item list and per-item event sequence positions.
+Residence maintenance resumes from the last stored per-issue sequence and
+processes only new transitions and claims. There is no periodic analytics worker.
+Unchanged lease snapshots do not rewrite
+capacity buckets. Lease capacity buckets extend at most 24 hours past the projecting
+commit; a lease renewal reprojects them. Each work item projects inside its own savepoint: analytics failure does not
+roll back an event, claim or lane transition, or another item's projection. A
+failed item keeps its last sequence position and is marked failed; every later
+commit retries it, and its project reads as unavailable rather than serving old
+totals as complete until the retry succeeds.
+
+`rebuildAnalyticsRollups` rebuilds one organization/project in a caller-owned
+transaction from the raw source views, including the hourly counters, residence snapshots, completion and decision
+samples, and lease buckets. Schema migrations backfill all existing projects. Changes to metric
+definitions must update those source views and rebuild the affected projections
+in their migration. Rebuilds preserve tenant scope and replace the project's
+rollups and sequence positions atomically.
+
+Compaction does not delete rollups. Scheduler claim samples retain their exact
+predecessor before raw observation rows can be compacted. A rebuild after
+compaction cannot recreate deleted predecessor evidence: a sequence gap makes
+that capacity-wait interval unavailable. It must not infer adjacency from the
+next surviving earlier event. Current runtime observations and usage remain
+rebuildable from their durable source records.
+
 ## Conversation assets
 
 Conversation source and its npm lockfile are tracked; `static/app/conversation/`
