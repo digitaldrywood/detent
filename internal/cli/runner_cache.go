@@ -12,14 +12,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 type runnerBuildCache struct {
 	cache     *toolcache.Managed
 	root      string
-	registry  *project.Registry
 	gate      dispatchPauser
 	processes workerProcessStore
 	logger    *slog.Logger
@@ -29,7 +27,7 @@ type runnerBuildCache struct {
 
 var errNativeBuildCache = errors.New("runner uses the native Go build cache")
 
-func newRunnerBuildCache(ctx context.Context, cfg BootConfig, registry *project.Registry, gate dispatchPauser, processes workerProcessStore, logger *slog.Logger) (*runnerBuildCache, error) {
+func newRunnerBuildCache(ctx context.Context, cfg BootConfig, gate dispatchPauser, processes workerProcessStore, logger *slog.Logger) (*runnerBuildCache, error) {
 	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHE") != "" {
 		return nil, errNativeBuildCache
 	}
@@ -60,7 +58,7 @@ func newRunnerBuildCache(ctx context.Context, cfg BootConfig, registry *project.
 	if err != nil {
 		return nil, err
 	}
-	return &runnerBuildCache{cache: cache, root: root, registry: registry, gate: gate, processes: processes, logger: logger}, nil
+	return &runnerBuildCache{cache: cache, root: root, gate: gate, processes: processes, logger: logger}, nil
 }
 
 func (c *runnerBuildCache) observe() *toolcache.Report {
@@ -92,10 +90,10 @@ func (c *runnerBuildCache) trim(ctx context.Context, policy toolcache.Policy, no
 	if report.RetainedBytes <= policy.NormalizedForCapacity(capacity).MaxBytes {
 		return nil
 	}
-	resume, err := runtimeUpdateDrainReservation(ctx, c.registry, c.gate)
-	if err != nil {
-		return err
+	if c.gate == nil {
+		return errors.New("managed Go cache has no dispatch owner")
 	}
+	resume := c.gate.PauseDispatch()
 	defer resume()
 	report, err = c.cache.Maintain(ctx, policy, now, c.confirmQuiescence)
 	if err != nil {

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -76,7 +75,7 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 			if failed {
 				owner.err = errors.New("consumer recovery unavailable")
 			}
-			managed := &runnerBuildCache{cache: cache, root: root, registry: project.NewRegistry(), gate: gate, processes: owner, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			managed := &runnerBuildCache{cache: cache, root: root, gate: gate, processes: owner, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			err = managed.trim(t.Context(), toolcache.Policy{MaxBytes: 1000}, time.Now())
 			if !errors.Is(err, owner.err) {
 				t.Fatalf("maintenance: %v want %v", err, owner.err)

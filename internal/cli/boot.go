@@ -603,7 +603,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			reporter.SetProjectConfigurationOwner(runnerProjectConfigurationOwner(cfg.Global, globalConfigState.get, owner))
 		}
 		logger.Info("runner setup observations completed", "duration", time.Since(observationsStarted))
-		buildCache, cacheErr := newRunnerBuildCache(ctx, cfg, manager.Registry(), globalDispatchGate, runtimeStore, logger)
+		buildCache, cacheErr := newRunnerBuildCache(ctx, cfg, globalDispatchGate, runtimeStore, logger)
 		if cacheErr != nil && !errors.Is(cacheErr, errNativeBuildCache) {
 			logger.Warn("runner-owned Go build cache unavailable; retaining native cache", "error", cacheErr)
 		}
