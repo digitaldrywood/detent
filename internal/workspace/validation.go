@@ -30,21 +30,7 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 }
 
 func directGoValidation(validation string) bool {
-	args := strings.Fields(validation)
-	if len(args) < 2 || args[0] != "go" || strings.ContainsAny(validation, "\"'`$;&|<>\n\r()%!^") {
-		return false
-	}
-	switch args[1] {
-	case "build", "test", "vet", "version":
-	default:
-		return false
-	}
-	for _, arg := range args[2:] {
-		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") || strings.HasPrefix(arg, "-overlay") || strings.HasPrefix(arg, "-compiler") || strings.HasPrefix(arg, "-pkgdir") || strings.HasPrefix(arg, "-ldflags") {
-			return false
-		}
-	}
-	return true
+	return validation == "go version"
 }
 
 func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {

@@ -73,7 +73,7 @@ func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 
 func projectAnalyticsCapacityRollups(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
 	queue := nativeAnalyticsCapacityWait{Source: "native_scheduler_decisions", Coverage: "recorded_provider_capacity_wait_to_claim; claimed_in_window; clipped_to_window", Partial: true}
-	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='capacity_claim' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", `SELECT data_json FROM analytics_hourly_rollups INDEXED BY analytics_capacity_order WHERE organization_id=? AND project_id=? AND metric='capacity_claim' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
 	if err != nil {
 		return err
 	}

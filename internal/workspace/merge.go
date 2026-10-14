@@ -446,10 +446,8 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)
 	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
-	inputs := result.Evidence.InputsSHA
 	if !result.Evidence.Environment.Known() {
 		result.Evidence = validationEnvironment(ctx, cmd)
-		result.Evidence.InputsSHA = ""
 	}
 	l.logger.Info("validating workspace", "workspace_path", info.Path, "command", command)
 	started := time.Now()
@@ -460,12 +458,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = string(output)
 	result.Evidence.Checks = gate.CheckObservations(result.Output)
-	if inputs != "" {
-		after := reviewCommandEvidence(ctx, cmd, command)
-		if after.InputsSHA != inputs || after.Environment != result.Evidence.Environment {
-			result.Evidence.InputsSHA = ""
-		}
-	}
 	if ctx.Err() != nil {
 		return result, ctx.Err()
 	}
@@ -497,7 +489,6 @@ func validationEnvironment(ctx context.Context, command *exec.Cmd) *gate.Command
 		environment := gate.CheckEnvironment{OS: observed.OS, Architecture: observed.Architecture, GoVersion: observed.Version}
 		if environment.Valid() {
 			evidence.Environment = environment
-			evidence.InputsSHA = validationInputs(ctx, command, output)
 		}
 	}
 	return evidence
