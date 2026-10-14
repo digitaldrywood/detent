@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 One row per catalogued element. The [component contracts](components.md) hold the full contract for each. Status *available* means the component ships in Detent; *proposed* means it is planned and has no source yet; *exception* means a deliberate, documented departure from the shared contract.
 
-Totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception.
+Totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status: 146 available, 0 proposed, 0 exception.
 
 | Element | Group | Kind | Status | Source |
 | --- | --- | --- | --- | --- |
@@ -37,6 +37,7 @@ Totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status
 | [Preview card](components.md#preview-card) | Overlays | primitive | available | `src/components/ui/preview-card.tsx` |
 | [Usage meter](components.md#usage-meter) | Feedback | primitive | available | `src/components/ui/usage-meter.tsx` |
 | [Alert](components.md#alert) | Feedback | primitive | available | `src/components/ui/alert.tsx` |
+| [Avatar](components.md#avatar) | Feedback | primitive | available | `src/components/ui/avatar.tsx` |
 | [Badge](components.md#badge) | Feedback | primitive | available | `src/components/ui/badge.tsx` |
 | [Toast](components.md#toast) | Feedback | primitive | available | `src/components/ui/toast.tsx` |
 | [Spinner](components.md#spinner) | Feedback | primitive | available | `src/components/ui/spinner.tsx` |
@@ -156,7 +157,7 @@ Totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status
 
 ## Internal modules
 
-Every module under `src/components` is part of an entry or listed here: 155 of 166 are catalogued (as an entry's source or one of its files) and 11 are internal.
+Every module under `src/components` is part of an entry or listed here: 156 of 167 are catalogued (as an entry's source or one of its files) and 11 are internal.
 
 | Module | Why it is not a catalogued component |
 | --- | --- |

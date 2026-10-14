@@ -21,6 +21,7 @@ import { AddressInfo } from "node:net";
 import { randomUUID } from "node:crypto";
 
 import { createWorkMock } from "./mock-work.ts";
+import membersFixture from "../src/contracts/fixtures/account-members.json";
 import reportsFixture from "../src/contracts/fixtures/reports.json";
 import reportOptionsFixture from "../src/contracts/fixtures/reportOptions.json";
 import type {
@@ -2410,12 +2411,13 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         // §12: a plain member sees only themselves, and pending invitations
         // are an owner's business rather than a directory.
         json(response, 200, {
+          roles: membersFixture.roles,
           members: account.members.filter((member) => member.user_id === ACTOR.subject),
           invitations: [],
         });
         return true;
       }
-      json(response, 200, { members: account.members, invitations: account.invitations });
+      json(response, 200, { roles: membersFixture.roles, members: account.members, invitations: account.invitations });
       return true;
     }
 

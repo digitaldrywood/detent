@@ -555,6 +555,14 @@ func TestListHostedMembersIsOrdered(t *testing.T) {
 	for attempt := range 16 {
 		var members hostedMembersResponse
 		browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &members)
+		if len(members.Roles) != 5 {
+			t.Fatalf("roles = %#v", members.Roles)
+		}
+		for _, role := range members.Roles {
+			if !auth.ValidOrganizationRole(role.Slug) || role.Name == "" || role.Description == "" {
+				t.Fatalf("invalid role catalog entry: %#v", role)
+			}
+		}
 		if len(members.Members) != 2 {
 			t.Fatalf("members = %#v", members.Members)
 		}

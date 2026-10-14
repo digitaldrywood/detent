@@ -1,4 +1,5 @@
 import React from "react";
+import { MoreHorizontalIcon, PlusIcon, XIcon } from "lucide-react";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
@@ -21,9 +22,55 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../../components/ui/dialog.tsx";
-import { Switch } from "../../components/ui/switch.tsx";
-import type { Invitation, Member, ProjectGrant } from "../../contracts/account.ts";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "../settings/settingsLayout.tsx";
+import { Badge } from "../../components/ui/badge.tsx";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "../../components/ui/input-group.tsx";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuTrigger,
+} from "../../components/ui/menu.tsx";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select.tsx";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../../components/ui/alert-dialog.tsx";
+import {
+  accessSummary,
+  MemberAccessSheet,
+  MemberIdentity,
+  memberIdentity,
+  ProjectAccessMatrix,
+  ProjectMarks,
+  RolePicker,
+  type AccessProject,
+} from "./MemberAccess.tsx";
+import type {
+  Invitation,
+  Member,
+  MemberRole,
+  ProjectGrant,
+} from "../../contracts/account.ts";
+import {
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "../settings/settingsLayout.tsx";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
@@ -32,81 +79,6 @@ import { behindSharedEntry } from "../entry/shared.ts";
 import { useOrganizationMembers } from "./OrganizationMembers.tsx";
 import { useMutation } from "./useResource.ts";
 import { signInPath } from "../../runtime/basePath.ts";
-
-const ROLES = ["owner", "admin", "member", "reporter", "viewer"] as const;
-const ROLE_OPTIONS = ROLES.map((role) => ({
-  value: role,
-  label: role.charAt(0).toUpperCase() + role.slice(1),
-}));
-
-type AccessProject = {
-  readonly id: string;
-  readonly name: string;
-  readonly can_write: boolean;
-  readonly can_manage_runners: boolean;
-};
-
-function replaceGrant(grants: readonly ProjectGrant[], projectId: string, grant: ProjectGrant | null): ProjectGrant[] {
-  const next = grants.filter((current) => current.project_id !== projectId);
-  if (grant !== null) next.push(grant);
-  return next;
-}
-
-function ProjectAccess({ projects, grants, identity, canManage, busy, onChange }: {
-  readonly projects: readonly AccessProject[];
-  readonly grants: readonly ProjectGrant[];
-  readonly identity: string;
-  readonly canManage: boolean;
-  readonly busy: boolean;
-  readonly onChange: (projectId: string, grant: ProjectGrant | null) => void;
-}): React.ReactElement {
-  return (
-    <ul className="flex flex-col gap-1.5">
-      {projects.map((project) => {
-        const grant = grants.find((current) => current.project_id === project.id);
-        const level = grant === undefined ? "none" : grant.write ? "write" : "read";
-        return (
-          <li key={project.id} className="flex flex-wrap items-center gap-3 text-xs">
-            <span className="min-w-24 text-foreground">{project.name}</span>
-            {canManage ? (
-              <>
-                <NativeSelect
-                  aria-label={`Access to ${project.name} for ${identity}`}
-                  value={level}
-                  disabled={busy}
-                  options={[
-                    { value: "none", label: "No access" },
-                    { value: "read", label: "Read" },
-                    { value: "write", label: "Write", disabled: !project.can_write },
-                  ]}
-                  onValueChange={(access) => onChange(project.id, access === "none" ? null : {
-                    project_id: project.id, write: access === "write", runner: grant?.runner ?? false,
-                  })}
-                />
-                <label className="flex items-center gap-1.5 text-muted-foreground">
-                  <Switch
-                    size="sm"
-                    aria-label={`Runner management on ${project.name} for ${identity}`}
-                    checked={grant?.runner ?? false}
-                    disabled={busy || grant === undefined || !project.can_manage_runners}
-                    onCheckedChange={(runner) => {
-                      if (grant !== undefined) onChange(project.id, { ...grant, runner });
-                    }}
-                  />
-                  runners
-                </label>
-              </>
-            ) : (
-              <span className="text-muted-foreground">
-                {level === "none" ? "no access" : level}{grant?.runner ? " · runners" : ""}
-              </span>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
 
 /**
  * The message for a refused mutation. `last_owner` is the one the screen has
@@ -175,215 +147,385 @@ function RemoveMemberDialog({
   readonly error: string | null;
 }): React.ReactElement {
   return (
-    <Dialog open={member !== null} onOpenChange={onOpenChange}>
-      <DialogPopup>
-        <DialogHeader>
-          <DialogTitle>Remove {member?.email ?? "this member"}?</DialogTitle>
-          <DialogDescription>
-            They lose access to every project in this organization immediately. Their work stays.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogPanel>
+    <AlertDialog
+      open={member !== null}
+      onOpenChange={(open) => {
+        if (!pending) onOpenChange(open);
+      }}
+    >
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Remove {member === null ? "this member" : memberIdentity(member)}?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            They lose access to every project in this organization immediately.
+            Their work stays.
+          </AlertDialogDescription>
           <ControlError message={error} />
-        </DialogPanel>
-        <DialogFooter>
-          <DialogClose render={<Button variant="outline">Keep them</Button>} />
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogClose
+            render={
+              <Button variant="outline" disabled={pending}>
+                Keep them
+              </Button>
+            }
+          />
           <Button
             variant="destructive"
             disabled={pending || member === null}
+            aria-busy={pending}
             onClick={() => {
               if (member !== null) onConfirm(member);
             }}
           >
-            {pending ? "Removing…" : "Remove"}
+            Remove
           </Button>
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
   );
 }
 
 export function MembersTable({
   members,
   projects,
+  roles,
+  actorId,
   canManage,
   actorRole,
   onRoleChange,
-  onGrantChange,
+  onEdit,
   onRemove,
   busyMember,
   errorFor,
 }: {
   readonly members: readonly Member[];
   readonly projects: readonly AccessProject[];
+  readonly roles: readonly MemberRole[];
+  readonly actorId?: string;
   readonly canManage: boolean;
   readonly actorRole: string;
   readonly onRoleChange: (member: Member, role: string) => void;
-  readonly onGrantChange: (member: Member, projectId: string, grant: ProjectGrant | null) => void;
+  readonly onEdit: (member: Member) => void;
   readonly onRemove: (member: Member) => void;
   readonly busyMember: string | null;
   readonly errorFor: (member: Member) => string | null;
 }): React.ReactElement {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Member</TableHead>
-          <TableHead>Role</TableHead>
-          <TableHead>Project access</TableHead>
-          {canManage ? <TableHead className="text-right">Actions</TableHead> : null}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {members.map((member) => {
-          const identity = member.email.trim() || member.name?.trim() || member.user_id;
-          const busy = busyMember === member.id;
-          const failure = errorFor(member);
-          return (
+    <div className="min-w-0 overflow-hidden rounded-lg border">
+      <Table className="min-w-150">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Member</TableHead>
+            <TableHead>Role</TableHead>
+            <TableHead>Project access</TableHead>
+            {canManage ? (
+              <TableHead>
+                <span className="sr-only">Actions</span>
+              </TableHead>
+            ) : null}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {members.map((member) => (
             <TableRow key={member.id}>
               <TableCell>
-                <div className="font-medium text-foreground">{identity}</div>
-                {member.email.trim() && member.name?.trim() ? (
-                  <div className="text-xs text-muted-foreground">{member.name}</div>
-                ) : null}
-                <div className="text-xs text-muted-foreground">
-                  {member.status === "active"
-                    ? member.never_signed_in ? "Hasn't signed in yet" : "Active"
-                    : "Disabled"}
-                </div>
-                {failure === null ? null : (
-                  <div className="pt-1">
-                    <ControlError message={failure} />
-                  </div>
+                <MemberIdentity
+                  member={member}
+                  isActor={member.user_id === actorId}
+                />
+                <ControlError message={errorFor(member)} />
+              </TableCell>
+              <TableCell>
+                {canManage && member.role !== "owner" ? (
+                  <RolePicker
+                    roles={roles}
+                    value={member.role}
+                    actorRole={actorRole}
+                    label={`Role for ${memberIdentity(member)}`}
+                    disabled={busyMember !== null}
+                    onChange={(role) => onRoleChange(member, role)}
+                  />
+                ) : (
+                  <span className="text-sm capitalize text-muted-foreground">
+                    {roles.find((role) => role.slug === member.role)?.name ??
+                      member.role}
+                  </span>
                 )}
               </TableCell>
               <TableCell>
                 {canManage ? (
-                  <div className="flex flex-col gap-1.5">
-                    <NativeSelect
-                      aria-label={`Role for ${identity}`}
-                      value={member.role}
-                      disabled={busy}
-                      options={ROLE_OPTIONS.map((option) => ({
-                        ...option,
-                        // Only an owner may make another owner: the hub refuses
-                        // it, so the option is not offered to an admin either.
-                        disabled: option.value === "owner" && actorRole !== "owner",
-                      }))}
-                      onValueChange={(role) => onRoleChange(member, role)}
-                      className="min-w-[130px]"
-                    />
-                    {member.role === "reporter" ? <p className="text-sm text-muted-foreground">Reads issues and files new ones into Triage.</p> : null}
-                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busyMember !== null}
+                    aria-label={`Project access for ${memberIdentity(member)}: ${accessSummary(projects, member.grants)}`}
+                    onClick={() => onEdit(member)}
+                  >
+                    <ProjectMarks projects={projects} grants={member.grants} />
+                    {accessSummary(projects, member.grants)}
+                  </Button>
                 ) : (
-                  <span className="text-sm capitalize text-muted-foreground">{member.role}</span>
+                  <span className="flex items-center gap-2 text-sm">
+                    <ProjectMarks projects={projects} grants={member.grants} />
+                    {accessSummary(projects, member.grants)}
+                  </span>
                 )}
               </TableCell>
-              <TableCell>
-                <ProjectAccess
-                  projects={projects}
-                  grants={member.grants}
-                  identity={identity}
-                  canManage={canManage}
-                  busy={busy}
-                  onChange={(projectId, grant) => onGrantChange(member, projectId, grant)}
-                />
-              </TableCell>
               {canManage ? (
-                <TableCell className="text-right">
-                  <Button
-                    size="xs"
-                    variant="destructive-outline"
-                    disabled={busy}
-                    onClick={() => onRemove(member)}
-                  >
-                    Remove
-                  </Button>
+                <TableCell>
+                  <Menu>
+                    <MenuTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Actions for ${memberIdentity(member)}`}
+                          disabled={busyMember !== null}
+                        >
+                          <MoreHorizontalIcon />
+                        </Button>
+                      }
+                    />
+                    <MenuPopup align="end">
+                      <MenuItem onClick={() => onEdit(member)}>
+                        Edit project access
+                      </MenuItem>
+                      <MenuItem
+                        variant="destructive"
+                        onClick={() => onRemove(member)}
+                      >
+                        Remove from organization
+                      </MenuItem>
+                    </MenuPopup>
+                  </Menu>
                 </TableCell>
               ) : null}
             </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+          ))}
+        </TableBody>
+      </Table>
+      {members.length === 0 ? (
+        <p role="status" className="px-4 py-8 text-sm text-muted-foreground">
+          No matching members.
+        </p>
+      ) : null}
+    </div>
   );
+}
+
+function splitEmails(value: string): string[] {
+  return value
+    .split(/[,\s]+/)
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 export function InviteForm({
   onInvite,
+  onDone,
+  onCancel,
   projects = [],
+  roles,
   actorRole = "owner",
   pending = false,
   error = null,
 }: {
-  readonly onInvite: (input: { email: string; role: string; grants: readonly ProjectGrant[] }) => Promise<boolean>;
+  readonly onInvite: (input: {
+    email: string;
+    role: string;
+    grants: readonly ProjectGrant[];
+  }) => Promise<boolean>;
+  readonly onDone?: () => void;
+  readonly onCancel?: () => void;
   readonly projects?: readonly AccessProject[];
+  readonly roles: readonly MemberRole[];
   readonly actorRole?: string;
   readonly pending?: boolean;
   readonly error?: string | null;
 }): React.ReactElement {
-  const [email, setEmail] = React.useState("");
-  const [role, setRole] = React.useState<string>("member");
+  const initialRole =
+    roles.find((role) => role.slug === "member")?.slug ??
+    roles.find((role) => role.slug !== "owner" || actorRole === "owner")
+      ?.slug ??
+    "";
+  const [draft, setDraft] = React.useState("");
+  const [emails, setEmails] = React.useState<string[]>([]);
+  const [role, setRole] = React.useState(initialRole);
   const [grants, setGrants] = React.useState<ProjectGrant[]>([]);
-  const [invitedEmail, setInvitedEmail] = React.useState<string | null>(null);
+  const [sending, setSending] = React.useState(false);
+  const [feedback, setFeedback] = React.useState<string | null>(null);
+  const [validation, setValidation] = React.useState<string | null>(null);
+  const submitting = React.useRef(false);
+  const busy = pending || sending;
+  const addresses = [...new Set([...emails, ...splitEmails(draft)])];
+  const inputId = React.useId();
+  const commitEmails = (value: string) => {
+    setEmails((emails) => [...new Set([...emails, ...splitEmails(value)])]);
+    setDraft("");
+    setValidation(null);
+  };
   return (
     <form
-      className="flex flex-col gap-2 py-3"
+      className="flex min-h-0 flex-col"
       onSubmit={async (event) => {
         event.preventDefault();
-        const value = email.trim();
-        if (pending || value.length === 0) return;
-        setInvitedEmail(null);
-        if (await onInvite({ email: value, role, grants })) {
-          setEmail("");
-          setRole("member");
-          setGrants([]);
-          setInvitedEmail(value);
+        if (busy || submitting.current || addresses.length === 0 || role === "")
+          return;
+        if (
+          addresses.some((email) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+        ) {
+          setValidation("Enter a valid email address for each invitation.");
+          return;
+        }
+        submitting.current = true;
+        setSending(true);
+        setValidation(null);
+        setFeedback(null);
+        setEmails(addresses);
+        setDraft("");
+        const failed: string[] = [];
+        try {
+          for (const email of addresses) {
+            if (!(await onInvite({ email, role, grants }))) failed.push(email);
+            else
+              setEmails((current) =>
+                current.filter((address) => address !== email),
+              );
+          }
+          setEmails(failed);
+          const sent = addresses.length - failed.length;
+          setFeedback(
+            `${sent} invitation${sent === 1 ? "" : "s"} sent.${failed.length > 0 ? ` ${failed.length} could not be sent. Retry the remaining addresses.` : ""}`,
+          );
+          if (failed.length === 0) {
+            setRole(initialRole);
+            setGrants([]);
+            onDone?.();
+          }
+        } catch {
+          setValidation(
+            "Sending stopped. Check pending invitations before sending again.",
+          );
+        } finally {
+          submitting.current = false;
+          setSending(false);
         }
       }}
     >
-      <div className="flex flex-1 flex-col gap-1.5">
-        <Label htmlFor="invite-email">Email</Label>
-        <Input
-          id="invite-email"
-          type="email"
-          value={email}
-          disabled={pending}
-          placeholder="colleague@example.com"
-          onChange={(event) => setEmail(event.currentTarget.value)}
-        />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="invite-role">Role</Label>
-        <NativeSelect
-          id="invite-role"
-          value={role}
-          disabled={pending}
-          options={ROLE_OPTIONS.map((option) => ({ ...option, disabled: option.value === "owner" && actorRole !== "owner" }))}
-          onValueChange={setRole}
-          className="min-w-[130px]"
-        />
-        {role === "reporter" ? <p className="text-sm text-muted-foreground">Reads issues and files new ones into Triage.</p> : null}
-      </div>
-      <ProjectAccess
-        projects={projects}
-        grants={grants}
-        identity="invitation"
-        canManage
-        busy={pending}
-        onChange={(projectId, grant) => setGrants((current) => replaceGrant(current, projectId, grant))}
-      />
-      <Button type="submit" disabled={pending || email.trim().length === 0}>
-        {pending ? "Inviting…" : "Send invitation"}
-      </Button>
-      <div className="w-full sm:w-auto">
-        <ControlError message={error} />
-      </div>
-      {invitedEmail === null ? null : (
-        <p role="status" className="w-full text-sm text-muted-foreground">
-          Invitation sent to {invitedEmail}.
-        </p>
-      )}
+      <DialogPanel className="flex flex-col gap-6 space-y-0">
+        <div className="flex flex-col gap-2">
+          <Label htmlFor={inputId}>Email addresses</Label>
+          <InputGroup>
+            {emails.length > 0 ? (
+              <InputGroupAddon align="block-start" className="flex-wrap">
+                {emails.map((email) => (
+                  <Badge key={email} variant="secondary">
+                    <span className="max-w-52 truncate" title={email}>
+                      {email}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={`Remove ${email}`}
+                      disabled={busy}
+                      onClick={() =>
+                        setEmails((emails) =>
+                          emails.filter((current) => current !== email),
+                        )
+                      }
+                    >
+                      <XIcon />
+                    </Button>
+                  </Badge>
+                ))}
+              </InputGroupAddon>
+            ) : null}
+            <InputGroupInput
+              id={inputId}
+              value={draft}
+              disabled={busy}
+              placeholder="Add an address, or paste a list"
+              aria-describedby={`${inputId}-hint`}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                if (/[,\s]$/.test(value)) commitEmails(value);
+                else {
+                  setDraft(value);
+                  setValidation(null);
+                }
+              }}
+              onPaste={(event) => {
+                const pasted = event.clipboardData.getData("text");
+                if (/[,\s]/.test(pasted)) {
+                  event.preventDefault();
+                  commitEmails(draft + pasted);
+                }
+              }}
+              onBlur={() => {
+                if (draft.trim()) commitEmails(draft);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && draft.trim()) {
+                  event.preventDefault();
+                  commitEmails(draft);
+                }
+              }}
+            />
+          </InputGroup>
+          <p id={`${inputId}-hint`} className="text-xs text-muted-foreground">
+            Separate addresses with commas or spaces.
+          </p>
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label>Role</Label>
+          <div className="max-w-56">
+            <RolePicker
+              roles={roles}
+              value={role}
+              actorRole={actorRole}
+              label="Role"
+              disabled={busy}
+              onChange={setRole}
+            />
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {roles.find((option) => option.slug === role)?.description}
+          </p>
+        </div>
+        <div className="flex flex-col gap-2">
+          <h3 className="text-sm font-medium">Project access</h3>
+          <ProjectAccessMatrix
+            projects={projects}
+            grants={grants}
+            identity="invitation"
+            disabled={busy}
+            onChange={setGrants}
+          />
+        </div>
+        <ControlError message={validation ?? error} />
+        {feedback === null ? null : (
+          <p role="status" className="text-sm text-muted-foreground">
+            {feedback}
+          </p>
+        )}
+      </DialogPanel>
+      <DialogFooter>
+        {onCancel === undefined ? null : (
+          <Button variant="outline" disabled={busy} onClick={onCancel}>
+            Cancel
+          </Button>
+        )}
+        <Button
+          type="submit"
+          disabled={busy || addresses.length === 0 || role === ""}
+          aria-busy={busy}
+        >
+          Send {addresses.length} invitation{addresses.length === 1 ? "" : "s"}
+        </Button>
+      </DialogFooter>
     </form>
   );
 }
@@ -424,61 +566,101 @@ export function OrganizationMembersRoute(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const members = useOrganizationMembers();
   const [removing, setRemoving] = React.useState<Member | null>(null);
+  const [editingId, setEditingId] = React.useState<string | null>(null);
   const [busyMember, setBusyMember] = React.useState<string | null>(null);
-  const [memberErrors, setMemberErrors] = React.useState<Record<string, string>>({});
+  const [memberErrors, setMemberErrors] = React.useState<
+    Record<string, string>
+  >({});
   const [revoking, setRevoking] = React.useState<Invitation | null>(null);
-  const [activeInvitation, setActiveInvitation] = React.useState<string | null>(null);
-  const [resentInvitation, setResentInvitation] = React.useState<string | null>(null);
-
+  const [activeInvitation, setActiveInvitation] = React.useState<string | null>(
+    null,
+  );
+  const [resentInvitation, setResentInvitation] = React.useState<string | null>(
+    null,
+  );
+  const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [search, setSearch] = React.useState("");
+  const [roleFilter, setRoleFilter] = React.useState("all");
+  const [editingInvitation, setEditingInvitation] =
+    React.useState<Invitation | null>(null);
+  const [invitationGrants, setInvitationGrants] = React.useState<
+    readonly ProjectGrant[]
+  >([]);
+  const inviteKeys = React.useRef(new Map<string, string>());
+  const mutationActive = React.useRef(false);
   const canManage = bootstrap?.actor.can_manage ?? false;
   const actorRole = bootstrap?.actor.role ?? "viewer";
-  const projects = React.useMemo(
-    () => bootstrap?.projects ?? [],
-    [bootstrap],
+  const projects = bootstrap?.projects ?? [];
+  const roles = members.value?.roles ?? [];
+  const editing = members.value?.members.find(
+    (member) => member.id === editingId,
+  );
+  const filtered = (members.value?.members ?? []).filter(
+    (member) =>
+      (roleFilter === "all" || member.role === roleFilter) &&
+      `${member.email} ${member.name ?? ""}`
+        .toLowerCase()
+        .includes(search.trim().toLowerCase()),
   );
 
-  const noteFailure = React.useCallback((member: Member, error: AccountError | null) => {
+  const runForMember = async (
+    member: Member,
+    work: () => Promise<unknown>,
+  ): Promise<boolean> => {
+    if (mutationActive.current) return false;
+    mutationActive.current = true;
+    setBusyMember(member.id);
     setMemberErrors((current) => {
       const next = { ...current };
-      const message = refusalMessage(error);
-      if (message === null) delete next[member.id];
-      else next[member.id] = message;
+      delete next[member.id];
       return next;
     });
-  }, []);
+    try {
+      await work();
+      await members.refresh();
+      return true;
+    } catch (cause) {
+      const message =
+        cause instanceof AccountError
+          ? refusalMessage(cause)
+          : "Could not save this member. Try again.";
+      setMemberErrors((current) => ({
+        ...current,
+        [member.id]: message ?? "Could not save this member.",
+      }));
+      await members.refresh();
+      return false;
+    } finally {
+      mutationActive.current = false;
+      setBusyMember(null);
+    }
+  };
 
-  /** Every member mutation is the same shape: run it, report it, re-read. */
-  const runForMember = React.useCallback(
-    async (member: Member, work: () => Promise<unknown>) => {
-      setBusyMember(member.id);
-      noteFailure(member, null);
-      try {
-        await work();
-        await members.refresh();
-      } catch (cause) {
-        noteFailure(member, cause instanceof AccountError ? cause : null);
-        if (!(cause instanceof AccountError)) throw cause;
-        // The hub may have changed something before it refused; re-reading is
-        // the only honest way back to what is actually true.
-        await members.refresh();
-      } finally {
-        setBusyMember(null);
-      }
+  const invite = useMutation(
+    async (input: {
+      email: string;
+      role: string;
+      grants: readonly ProjectGrant[];
+    }) => {
+      const identity = JSON.stringify(input);
+      const key = inviteKeys.current.get(identity) ?? newKey();
+      inviteKeys.current.set(identity, key);
+      const created = await api.invite({ ...input, key });
+      inviteKeys.current.delete(identity);
+      await members.refresh();
+      return created;
     },
-    [members, noteFailure],
   );
-
-  const invite = useMutation(async (input: { email: string; role: string; grants: readonly ProjectGrant[] }) => {
-    const created = await api.invite({ ...input, key: newKey() });
+  const editInvitation = useMutation(async () => {
+    if (editingInvitation === null) return;
+    await api.setInvitationGrants({
+      invitation: editingInvitation.id,
+      grants: invitationGrants,
+      key: newKey(),
+    });
     await members.refresh();
-    return created;
+    setEditingInvitation(null);
   });
-
-  const editInvitation = useMutation(async (input: { invitation: string; grants: readonly ProjectGrant[] }) => {
-    await api.setInvitationGrants({ ...input, key: newKey() });
-    await members.refresh();
-  });
-
   const invitationAction = useMutation(
     async (invitation: Invitation, action: "revoke" | "resend") => {
       setActiveInvitation(invitation.id);
@@ -495,19 +677,36 @@ export function OrganizationMembersRoute(): React.ReactElement {
       return true;
     },
   );
-
   const exitSupport = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
     return null;
   });
-
-  const removeError = removing === null ? null : (memberErrors[removing.id] ?? null);
+  const openInvite = () => {
+    invite.clearError();
+    setInviteOpen(true);
+  };
 
   return (
-    <SettingsPageContainer>
-      <h2 className="px-3 text-xl font-semibold tracking-tight sm:px-4">Members</h2>
-
+    <SettingsPageContainer width="wide">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-3 sm:px-4">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Members</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Who belongs to {bootstrap?.organization.name ?? "this organization"}{" "}
+            and what they can reach.
+          </p>
+        </div>
+        {canManage ? (
+          <Button
+            onClick={openInvite}
+            disabled={members.loading || roles.length === 0}
+          >
+            <PlusIcon />
+            Invite member
+          </Button>
+        ) : null}
+      </div>
       {bootstrap?.support == null ? null : (
         <SupportBanner
           actor={bootstrap.support.actor}
@@ -517,81 +716,124 @@ export function OrganizationMembersRoute(): React.ReactElement {
           exiting={exitSupport.pending}
         />
       )}
-
-      <SettingsSection id="settings-organization-members" title="Members" variant="plain">
+      <SettingsSection
+        id="settings-organization-members"
+        title="Members"
+        hideTitle
+        variant="plain"
+      >
+        <div className="flex flex-wrap items-center gap-2 pb-3">
+          <div className="w-full sm:w-72">
+            <Input
+              type="search"
+              aria-label="Search members"
+              placeholder="Search by name or email"
+              value={search}
+              onChange={(event) => setSearch(event.currentTarget.value)}
+            />
+          </div>
+          <div className="w-full sm:w-40">
+            <Select
+              items={[
+                { value: "all", label: "All roles" },
+                ...roles.map((role) => ({
+                  value: role.slug,
+                  label: role.name,
+                })),
+              ]}
+              value={roleFilter}
+              onValueChange={(role) => {
+                if (role !== null) setRoleFilter(role);
+              }}
+            >
+              <SelectTrigger aria-label="Filter by role">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup>
+                <SelectItem value="all">All roles</SelectItem>
+                {roles.map((role) => (
+                  <SelectItem key={role.slug} value={role.slug}>
+                    {role.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </div>
+        </div>
         {members.loading && members.value === undefined ? (
-          <p role="status" className="px-3 py-6 text-sm text-muted-foreground sm:px-4">
+          <p role="status" className="py-6 text-sm text-muted-foreground">
             Loading the members.
           </p>
         ) : members.error !== null ? (
-          <div className="px-3 py-6 sm:px-4">
+          <div className="py-6">
             <ControlError message={refusalMessage(members.error)} />
-            <Button size="sm" variant="outline" className="mt-2" onClick={() => void members.refresh()}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void members.refresh()}
+            >
               Try again
             </Button>
           </div>
         ) : (
           <MembersTable
-            members={members.value?.members ?? []}
+            members={filtered}
             projects={projects}
+            roles={roles}
+            actorId={bootstrap?.actor.subject}
             canManage={canManage}
             actorRole={actorRole}
             busyMember={busyMember}
             errorFor={(member) => memberErrors[member.id] ?? null}
+            onEdit={(member) => setEditingId(member.id)}
+            onRemove={setRemoving}
             onRoleChange={(member, role) =>
               void runForMember(member, () =>
                 api.setMemberRole({ member: member.id, role, key: newKey() }),
               )
             }
-            onGrantChange={(member, projectId, grant) =>
-              void runForMember(member, () =>
-                api.setMemberGrant({
-                  member: member.id,
-                  projectId,
-                  write: grant?.write ?? false,
-                  runner: grant?.runner ?? false,
-                  revoke: grant === null,
-                  key: newKey(),
-                }),
-              )
-            }
-            onRemove={(member) => setRemoving(member)}
           />
         )}
       </SettingsSection>
-
-      <SettingsSection id="settings-organization-invitations" title="Invitations">
-        <ControlError message={editInvitation.error?.message ?? null} />
+      <SettingsSection
+        id="settings-organization-invitations"
+        title="Pending invitations"
+        aria-label="Pending invitations"
+      >
         {(members.value?.invitations ?? []).map((invitation) => (
           <SettingsRow
             key={invitation.id}
+            role="group"
+            aria-label={`Invitation to ${invitation.email}`}
             title={invitation.email}
-            description={`Invited as ${invitation.role}. Expires ${invitation.expires_at}.`}
+            description={`Invited as ${roles.find((role) => role.slug === invitation.role)?.name ?? invitation.role}. Expires ${new Date(invitation.expires_at).toLocaleDateString()}.`}
           >
-            <ProjectAccess
-              projects={projects}
-              grants={invitation.grants ?? []}
-              identity={invitation.email}
-              canManage={canManage}
-              busy={editInvitation.pending || invitationAction.pending}
-              onChange={(projectId, grant) => void editInvitation.call({
-                invitation: invitation.id,
-                grants: replaceGrant(invitation.grants ?? [], projectId, grant),
-              })}
-            />
             {canManage ? (
               <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    editInvitation.clearError();
+                    setInvitationGrants(invitation.grants ?? []);
+                    setEditingInvitation(invitation);
+                  }}
+                >
+                  {accessSummary(projects, invitation.grants ?? [])}
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={invitationAction.pending}
-                  onClick={() => void invitationAction.call(invitation, "resend")}
+                  onClick={() =>
+                    void invitationAction.call(invitation, "resend")
+                  }
                 >
                   Resend
                 </Button>
                 <Button
                   size="sm"
-                  variant="destructive-outline"
+                  variant="ghost-destructive"
                   disabled={invitationAction.pending}
                   onClick={() => {
                     invitationAction.clearError();
@@ -602,47 +844,165 @@ export function OrganizationMembersRoute(): React.ReactElement {
                   Revoke
                 </Button>
                 {activeInvitation === invitation.id ? (
-                  <ControlError message={invitationAction.error?.message ?? null} />
+                  <ControlError
+                    message={invitationAction.error?.message ?? null}
+                  />
                 ) : null}
-                {resentInvitation === invitation.id ? <span role="status">Invitation resent.</span> : null}
+                {resentInvitation === invitation.id ? (
+                  <span role="status" className="text-sm text-muted-foreground">
+                    Invitation resent.
+                  </span>
+                ) : null}
               </div>
             ) : null}
           </SettingsRow>
         ))}
-        {(members.value?.invitations ?? []).length === 0 ? (
-          <SettingsRow title="No pending invitations" description="Nobody is waiting to join." />
-        ) : null}
-        {canManage ? (
-          <SettingsRow title="Invite somebody" description="They receive a link and join with their own account.">
-            <InviteForm
-              projects={projects}
-              actorRole={actorRole}
-              onInvite={async (input) => (await invite.call(input)) !== null}
-              pending={invite.pending}
-              error={invite.error?.message ?? null}
-            />
+        {(members.value?.invitations ?? []).length === 0 &&
+        !members.loading &&
+        members.error === null ? (
+          <SettingsRow
+            title="No pending invitations"
+            description="Invitations you send wait here until they are accepted, with Resend and Revoke."
+          >
+            {canManage ? (
+              <Button
+                variant="outline"
+                disabled={roles.length === 0}
+                onClick={openInvite}
+              >
+                Invite member
+              </Button>
+            ) : null}
           </SettingsRow>
         ) : null}
       </SettingsSection>
-
+      {editing === undefined ? null : (
+        <MemberAccessSheet
+          member={editing}
+          projects={projects}
+          roles={roles}
+          actorRole={actorRole}
+          pending={busyMember !== null}
+          error={memberErrors[editing.id] ?? null}
+          onClose={() => setEditingId(null)}
+          onRemove={setRemoving}
+          onSave={(member, role, grants) =>
+            runForMember(member, async () => {
+              if (role !== member.role)
+                await api.setMemberRole({
+                  member: member.id,
+                  role,
+                  key: newKey(),
+                });
+              for (const project of projects) {
+                const before = member.grants.find(
+                  (grant) => grant.project_id === project.id,
+                );
+                const after = grants.find(
+                  (grant) => grant.project_id === project.id,
+                );
+                if (
+                  before?.write === after?.write &&
+                  before?.runner === after?.runner
+                )
+                  continue;
+                await api.setMemberGrant({
+                  member: member.id,
+                  projectId: project.id,
+                  write: after?.write ?? false,
+                  runner: after?.runner ?? false,
+                  revoke: after === undefined,
+                  key: newKey(),
+                });
+              }
+            })
+          }
+        />
+      )}
       <Dialog
-        open={revoking !== null}
+        open={inviteOpen}
         onOpenChange={(open) => {
-          if (!open) setRevoking(null);
+          if (!invite.pending) setInviteOpen(open);
         }}
       >
         <DialogPopup>
           <DialogHeader>
-            <DialogTitle>Revoke invitation to {revoking?.email}?</DialogTitle>
+            <DialogTitle>Invite members</DialogTitle>
             <DialogDescription>
-              The invitation link will no longer let them join this organization.
+              They receive a link and join with their own account.
             </DialogDescription>
           </DialogHeader>
-          <DialogPanel>
-            <ControlError message={invitationAction.error?.message ?? null} />
+          {inviteOpen ? (
+            <InviteForm
+              roles={roles}
+              projects={projects}
+              actorRole={actorRole}
+              pending={invite.pending}
+              error={invite.error?.message ?? null}
+              onInvite={async (input) => (await invite.call(input)) !== null}
+              onDone={() => setInviteOpen(false)}
+              onCancel={() => setInviteOpen(false)}
+            />
+          ) : null}
+        </DialogPopup>
+      </Dialog>
+      <Dialog
+        open={editingInvitation !== null}
+        onOpenChange={(open) => {
+          if (!open && !editInvitation.pending) setEditingInvitation(null);
+        }}
+      >
+        <DialogPopup>
+          <DialogHeader>
+            <DialogTitle>Invitation project access</DialogTitle>
+            <DialogDescription>{editingInvitation?.email}</DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="flex flex-col gap-3">
+            <ProjectAccessMatrix
+              projects={projects}
+              grants={invitationGrants}
+              identity={editingInvitation?.email ?? "invitation"}
+              disabled={editInvitation.pending}
+              onChange={setInvitationGrants}
+            />
+            <ControlError message={editInvitation.error?.message ?? null} />
           </DialogPanel>
           <DialogFooter>
             <DialogClose
+              render={
+                <Button variant="outline" disabled={editInvitation.pending}>
+                  Cancel
+                </Button>
+              }
+            />
+            <Button
+              disabled={editInvitation.pending}
+              onClick={() => void editInvitation.call()}
+            >
+              Save access
+            </Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
+      <AlertDialog
+        open={revoking !== null}
+        onOpenChange={(open) => {
+          if (!open && !invitationAction.pending) setRevoking(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Revoke invitation to {revoking?.email}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              The invitation link will no longer let them join this
+              organization.
+            </AlertDialogDescription>
+            <ControlError message={invitationAction.error?.message ?? null} />
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose
               render={
                 <Button variant="outline" disabled={invitationAction.pending}>
                   Keep invitation
@@ -653,34 +1013,32 @@ export function OrganizationMembersRoute(): React.ReactElement {
               variant="destructive"
               disabled={invitationAction.pending}
               onClick={() => {
-                if (revoking !== null) void invitationAction.call(revoking, "revoke");
+                if (revoking !== null)
+                  void invitationAction.call(revoking, "revoke");
               }}
             >
-              {invitationAction.pending ? "Revoking…" : "Revoke invitation"}
+              Revoke invitation
             </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
-
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <RemoveMemberDialog
         member={removing}
         pending={busyMember !== null}
-        error={removeError}
+        error={removing === null ? null : (memberErrors[removing.id] ?? null)}
         onOpenChange={(open) => {
           if (!open) setRemoving(null);
         }}
-        onConfirm={(member) => {
+        onConfirm={(member) =>
           void runForMember(member, () =>
             api.removeMember({ member: member.id, key: newKey() }),
-          ).then(() => {
-            // A refusal keeps the dialog open so the reason is read where the
-            // decision was made; a success closes it.
-            setMemberErrors((current) => {
-              if (current[member.id] === undefined) setRemoving(null);
-              return current;
-            });
-          });
-        }}
+          ).then((success) => {
+            if (success) {
+              setRemoving(null);
+              if (editingId === member.id) setEditingId(null);
+            }
+          })
+        }
       />
     </SettingsPageContainer>
   );
