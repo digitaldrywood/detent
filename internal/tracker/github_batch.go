@@ -44,6 +44,7 @@ type GitHubBatch struct {
 	HubOwned      bool                `json:"hub_owned,omitempty"`
 	AllowDispatch bool                `json:"allow_dispatch,omitempty"`
 	LabelLanes    map[string]string   `json:"label_lanes,omitempty"`
+	IgnoreLanes   bool                `json:"ignore_lane_labels,omitempty"`
 	Limit         int                 `json:"limit,omitempty"`
 	ID            string              `json:"id"`
 	Revision      int64               `json:"revision"`
@@ -68,6 +69,7 @@ type GitHubBatchCommand struct {
 	Numbers       []int             `json:"numbers"`
 	Destination   string            `json:"destination"`
 	AllowDispatch bool              `json:"allow_dispatch"`
+	IgnoreLanes   bool              `json:"ignore_lane_labels"`
 }
 
 type GitHubBatchTask struct {

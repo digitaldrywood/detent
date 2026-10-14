@@ -42,7 +42,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	states := append(f.project.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo"}})
+	states := append(f.project.States, tracker.NativeState{Name: "Backlog", OperatorOnly: true, Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
 	raw, err := marshalNative(states)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func newBatchFixture(t *testing.T) *batchFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?, 'Backlog','Backlog',0,0,?,?)", f.project.ID, testTimestamp, testTimestamp)
+	_, err = f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?, 'Backlog','Backlog',0,0,?,?), (?, 'Blocked','Blocked',0,0,?,?)", f.project.ID, testTimestamp, testTimestamp, f.project.ID, testTimestamp, testTimestamp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +183,8 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 				}
 				input := operatortool.GitHubBatchInput{Revision: f.batch.Revision, Action: "apply", Numbers: []int{12, 13, 14}, Destination: "Backlog"}
 				input.Destination = "Todo"
-				var refusal *nativeError
-				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.status != http.StatusUnprocessableEntity || refusal.Message != "Select a destination and explicitly confirm any dispatchable lane" {
+				var refusal *operatortool.RequestError
+				if _, err := e.Execute(ctx, projectCall(t, "command_git_hub_batch", string(f.project.ID), "dispatch-preview", input)); !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != "Select a destination and explicitly confirm any dispatchable lane" {
 					t.Fatalf("unconfirmed dispatch=%v", err)
 				}
 				input.Destination = "Backlog"
@@ -597,14 +597,17 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 		labels  []string
 		mapping map[string]string
 		allow   bool
+		ignore  bool
 		lane    string
-		failed  bool
 	}{
 		{name: "default destination", labels: []string{"bug"}, lane: "Backlog"},
 		{name: "lane label", labels: []string{"bug", "detent:todo"}, allow: true, lane: "Todo"},
-		{name: "unconfirmed dispatch", labels: []string{"detent:todo"}, failed: true},
+		{name: "hyphenated lane label", labels: []string{"bug", "detent:in-progress"}, allow: true, lane: "In Progress"},
+		{name: "dispatchable lane label without authorization stays in destination", labels: []string{"bug", "detent:todo"}, lane: "Backlog"},
+		{name: "holding lane label without authorization", labels: []string{"bug", "detent:blocked"}, lane: "Blocked"},
+		{name: "ignored lane labels", labels: []string{"bug", "detent:blocked"}, mapping: map[string]string{"detent:blocked": "Blocked"}, ignore: true, lane: "Backlog"},
 		{name: "custom mapping", labels: []string{"incoming", "bug"}, mapping: map[string]string{"incoming": "Todo"}, allow: true, lane: "Todo"},
-		{name: "conflicting lane labels", labels: []string{"detent:todo", "detent:backlog"}, allow: true, failed: true},
+		{name: "conflicting lane labels stay in destination", labels: []string{"bug", "detent:todo", "detent:blocked"}, allow: true, lane: "Backlog"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -615,7 +618,7 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 				preview.Labels, preview.Snapshot = test.labels, &snapshot
 				return GitHubImportPage{BatchPage: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}}, nil
 			})
-			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping}, http.StatusOK)
+			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping, IgnoreLanes: test.ignore}, http.StatusOK)
 			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -625,42 +628,16 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 				t.Fatal(err)
 			}
 			item := batch.Items[0]
-			if test.failed {
-				if item.Status != "failed" || item.WorkItemID != "" {
-					t.Fatalf("unconfirmed/conflicting import=%+v", item)
-				}
-				f.batch = batch
-				f.service.config.ImportBackend = linkedTestImporter{snapshot: batchSnapshot(12)}
-				f.command(t, tracker.GitHubBatchCommand{Action: "retry", AllowDispatch: true, LabelLanes: map[string]string{"detent:backlog": "Todo"}}, http.StatusOK)
-				if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
-					t.Fatal(err)
-				}
-				retried, err := readGitHubBatch(t.Context(), f.service.database.db, scope)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if retried.Items[0].Status != "completed" {
-					t.Fatalf("corrected routing=%+v", retried.Items[0])
-				}
-				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(retried.Items[0].WorkItemID))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if issue.State != "Todo" {
-					t.Fatalf("corrected destination=%s", issue.State)
-				}
-			} else {
-				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
-				if err != nil {
-					t.Fatalf("item=%+v: %v", item, err)
-				}
-				wantLabels := []string{"bug"}
-				if test.mapping != nil {
-					wantLabels = []string{"incoming", "bug"}
-				}
-				if issue.State != test.lane || !slices.Equal(issue.Labels, wantLabels) {
-					t.Fatalf("mapped issue=%+v", issue)
-				}
+			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
+			if err != nil {
+				t.Fatalf("item=%+v: %v", item, err)
+			}
+			wantLabels := []string{"bug"}
+			if test.labels[0] == "incoming" {
+				wantLabels = []string{"incoming", "bug"}
+			}
+			if issue.State != test.lane || !slices.Equal(issue.Labels, wantLabels) {
+				t.Fatalf("mapped issue=%+v", issue)
 			}
 		})
 	}
