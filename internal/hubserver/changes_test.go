@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -91,6 +94,135 @@ func (f changeFixture) detail(t *testing.T) tracker.ChangeDetail {
 func changeTestResult(version tracker.ChangeVersion) tracker.SubmitChangeCheck {
 	check := version.Checks[0]
 	return tracker.SubmitChangeCheck{Mutation: tracker.Mutation{IdempotencyKey: "check"}, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{changeTestArtifact("test")}}}
+}
+
+func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loopback network listener integration")
+	}
+	t.Parallel()
+	for _, test := range []struct {
+		name                 string
+		sourceVerdict        string
+		acceptanceVerdict    string
+		sourceAfterValidator bool
+		ordinaryOnly         bool
+		oversizedSource      bool
+		oversizedAcceptance  bool
+		oversizedHuman       bool
+	}{
+		{name: "fresh acceptance follows source", sourceVerdict: "pass"},
+		{name: "source pass requires newer acceptance", sourceVerdict: "pass", sourceAfterValidator: true},
+		{name: "latest source wait is retained", sourceVerdict: "wait", sourceAfterValidator: true},
+		{name: "latest source rework is retained", sourceVerdict: "rework", sourceAfterValidator: true},
+		{name: "latest acceptance wait is retained", sourceVerdict: "pass", acceptanceVerdict: "wait"},
+		{name: "latest acceptance rework is retained", sourceVerdict: "pass", acceptanceVerdict: "rework"},
+		{name: "ordinary reviews remain complete", ordinaryOnly: true},
+		{name: "single authoritative source remains oversized", sourceVerdict: "pass", oversizedSource: true},
+		{name: "single authoritative acceptance remains oversized", sourceVerdict: "pass", oversizedAcceptance: true},
+		{name: "ordinary human review remains oversized", sourceVerdict: "pass", oversizedHuman: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+			version := f.publish(t, "retained-version", "", true)
+			automatic := func(id, verdict string, source bool, bytes int) tracker.ChangeReview {
+				result := &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Submitted: true, Verdict: verdict, Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("x", bytes)}}}
+				review := tracker.ChangeReview{ID: id, VersionID: version.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: version.CreatedAt}
+				if source {
+					review.ImplementationReview = result
+				} else {
+					review.Validator = result
+				}
+				if verdict == "wait" {
+					review.Decision = "commented"
+				} else if verdict == "rework" {
+					review.Decision = "changes_requested"
+				}
+				return review
+			}
+			human := tracker.ChangeReview{ID: "review_human", VersionID: version.ID, Decision: "changes_requested", Body: "Preserve the existing behavior.", Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: version.CreatedAt}
+			bot := tracker.ChangeReview{ID: "review_codex", VersionID: version.ID, Decision: "commented", Body: "Independent source feedback.", Actor: tracker.Actor{Kind: "bot", PrincipalID: "codex"}, CreatedAt: version.CreatedAt}
+			if test.oversizedHuman {
+				human.Body = strings.Repeat("h", 1<<20)
+			}
+			var history, want []tracker.ChangeReview
+			if !test.ordinaryOnly {
+				for i := range 5 {
+					history = append(history, automatic(fmt.Sprintf("review_superseded_%d", i), "pass", i%2 == 0, 150<<10))
+					if i == 1 {
+						history = append(history, human)
+						want = append(want, human)
+					}
+				}
+				bytes := 160 << 10
+				if test.oversizedSource {
+					bytes = 1 << 20
+				}
+				source := automatic("review_latest_source", test.sourceVerdict, true, bytes)
+				verdict := test.acceptanceVerdict
+				if verdict == "" {
+					verdict = "pass"
+				}
+				bytes = 160 << 10
+				if test.oversizedAcceptance {
+					bytes = 1 << 20
+				}
+				acceptance := automatic("review_latest_acceptance", verdict, false, bytes)
+				if test.sourceAfterValidator {
+					history = append(history, acceptance, bot, source)
+					want = append(want, acceptance, bot, source)
+				} else {
+					history = append(history, source, bot, acceptance)
+					want = append(want, source, bot, acceptance)
+				}
+			} else {
+				history, want = []tracker.ChangeReview{human, bot}, []tracker.ChangeReview{human, bot}
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for _, review := range history {
+				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", review.ID, review); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			before := f.detail(t)
+			if !reflect.DeepEqual(before.Reviews, history) {
+				t.Fatal("stored review history did not match the retained fixture")
+			}
+			server := httptest.NewServer(f.service.Handler())
+			t.Cleanup(server.Close)
+			client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return f.token }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native(f.project.OrganizationID, f.project.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recovery, err := native.Recovery(t.Context(), f.issue.WorkItemID)
+			if test.oversizedSource || test.oversizedAcceptance || test.oversizedHuman {
+				if err == nil || !strings.Contains(err.Error(), "response exceeds 1048576 bytes") {
+					t.Fatalf("oversized authoritative evidence must remain an explicit refusal: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("superseded automatic review output blocked Recovery: %v", err)
+				}
+				if recovery.ChangeDetail == nil || !reflect.DeepEqual(recovery.ChangeDetail.Reviews, want) || !reflect.DeepEqual(recovery.ChangeDetail.Versions, before.Versions) || !reflect.DeepEqual(recovery.ChangeDetail.Summary, before.Summary) || recovery.Issue.WorkItemID != f.issue.WorkItemID {
+					t.Fatal("Recovery changed current review order, ordinary feedback, source or summary authority")
+				}
+			}
+			if after := f.detail(t); !reflect.DeepEqual(after, before) {
+				t.Fatal("Recovery altered complete durable Change evidence")
+			}
+		})
+	}
 }
 
 func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
