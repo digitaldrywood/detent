@@ -25,6 +25,7 @@ const (
 	OrderItem              = "order_item"
 	SetQueuePriority       = "set_queue_priority"
 	TransferItem           = "transfer_item"
+	UpdateTestItem         = "update_test_item"
 )
 
 // WorkArguments are application inputs only. Connection authority, actor,
@@ -57,6 +58,11 @@ type WorkArguments struct {
 	HeadSHA             string    `json:"head_sha,omitempty"`
 	FindingID           string    `json:"finding_id,omitempty"`
 	Evidence            string    `json:"evidence,omitempty"`
+	Item                int       `json:"item,omitempty"`
+	ItemText            string    `json:"text,omitempty"`
+	Result              string    `json:"result,omitempty"`
+	Note                string    `json:"note,omitempty"`
+	RelatedIssue        int       `json:"related_issue,omitempty"`
 }
 
 func WorkCatalog() []Definition {
@@ -77,6 +83,7 @@ func WorkCatalog() []Definition {
 		commandDefinition(RemoveItem, "Remove board membership through the orchestrator using current authority; tracker capability restrictions remain.", selector, `"identifier"`, true),
 		commandDefinition(AcknowledgeParks, "Acknowledge the item's existing park summary through the dashboard command.", selector, `"identifier"`, false),
 		commandDefinition(DisposeSecurityFinding, "Record a false-positive disposition for the exact trusted security finding using current authority.", selector+`,"repository":{"type":"string","minLength":1,"maxLength":256},"pull_request":{"type":"integer","minimum":1},"base_sha":{"type":"string","minLength":1,"maxLength":256},"head_sha":{"type":"string","minLength":1,"maxLength":256},"finding_id":{"type":"string","minLength":1,"maxLength":256},"evidence":{"type":"string","minLength":1,"maxLength":4096}`, `"identifier","repository","pull_request","base_sha","head_sha","finding_id","evidence"`, true),
+		commandDefinition(UpdateTestItem, "Record a pass, fail or blocked result for one checklist item of a native issue labeled test-plan. Items are numbered from 1 in body order; text is the item's exact text from work_item test_plan and a changed item is refused as a conflict; the plan text is unchanged and the result records who and when. Reporters may record results. For a fail result, ask the tester for the number of the issue they filed and pass it as related_issue to link it as related; related_issue is accepted only with fail. work_item returns the plan's progress.", selector+`,"item":{"type":"integer","minimum":1,"maximum":1000},"text":{"type":"string","minLength":1,"maxLength":4096},"result":{"type":"string","enum":["pass","fail","blocked"]},"note":{"type":"string","maxLength":8000,"description":"At most 2000 characters."},"related_issue":{"type":"integer","minimum":1}`, `"identifier","item","text","result"`, false),
 		commandDefinition(OrderItem, "Set queue ordering where the deployment dashboard offers it.", selector+`,"queue_scope":{"type":"string","minLength":1,"maxLength":256},"state":{"type":"string","minLength":1,"maxLength":256},"rank":{"type":"string","minLength":1,"maxLength":256}`, `"identifier","queue_scope","state","rank"`, false),
 	}
 	for _, name := range []string{ListComments, WorkflowTimeline} {

@@ -967,6 +967,8 @@ clients negotiate major 2 and schema 1. A native claim supplies `protocol_major:
 and `capabilities: ["native_issues", "scoped_collaboration"]`. Incompatible
 negotiation fails without switching tracker or scheduler.
 
+A native issue labeled `test-plan` is a test plan: each Markdown checklist item in its body is a screen or workflow to test. Test plans are filed, labeled and moved only within non-dispatchable, nonterminal lanes; a transition into another lane is refused until the label is removed. Members and Reporters record item results with `POST /work-items/{id}/test-items` or MCP `update_test_item`; the body is unchanged and each result appears in issue history with its actor. A result with an issue number links that issue as `related`. Issue detail and MCP `work_item` include `test_plan` progress. Removing the label makes the issue ordinary again and keeps recorded results in history.
+
 Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type; Reporters cannot edit issue fields. Type edits appear in issue history, and labels remain independent of the type.
 
 The following paths are relative to
@@ -984,6 +986,7 @@ events require worker scope. Instance administrators can perform these operation
 | `PATCH /work-items/{id}` | `idempotency_key`, `expected_revision`, supplied `type`, `title`, `body`, `priority`, `labels` or `assignees` |
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
 | `POST /work-items/{id}/dependencies` | `idempotency_key`, `expected_revision`, `related_work_item_id`, `operation: add` or `remove` |
+| `POST /work-items/{id}/test-items` | `idempotency_key`, checklist `item` numbered from 1 with its exact `text` (a changed item returns 409 `test_item_changed`), `result` (`pass`, `fail` or `blocked`), optional `note` of at most 2000 characters, and `related_issue_number` with `fail` only; only on issues labeled `test-plan` |
 | `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |
 | `GET /work-items/{id}/comments` | Paged discussion with authorship, provenance, revisions, editor and timestamps |
 | `PATCH /work-items/{id}/comments/{comment_id}` | `idempotency_key`, `expected_revision`, explicit `body` |
