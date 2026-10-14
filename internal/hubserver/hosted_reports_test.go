@@ -314,7 +314,8 @@ func TestReportsOpenWork(t *testing.T) {
 	for _, issue := range issues {
 		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
 	}
-	in := reportsTimelineInputs(timelines, issues, states, w, false)
+	var in reportsInputs
+	reportsTimelineResidence(&in, timelines, issues, states, w, false)
 	got := reportsOpenWorkFor(in, nil, w)
 	ids := []string{}
 	for _, item := range got.Items {
@@ -386,8 +387,24 @@ func TestReportsSeriesBuckets(t *testing.T) {
 	}
 	usage := map[string][]usageRow{"a": {{Period: at(day(7, 12)), Cost: 2}}, "b": {{Period: at(day(8, 3)), Cost: 1.5}}, "": {{Period: at(day(14, 5)), Cost: 0.5}}}
 	w := operatortool.AnalyticsWindow{From: at(day(7, 10)), To: end, Bucket: time.Hour}
-	in := reportsTimelineInputs(timelines, nil, states, w, false)
-	series := reportsSeries(in, attempts, usage, w)
+	in := reportsInputs{
+		done:      []reportsDone{{id: "shipped", at: at(day(10, 3))}},
+		priorDone: []reportsDone{{id: "prior", at: at(day(1, 5))}},
+		timing: func(ids []string, to time.Time) (reportsCompletion, error) {
+			var picked []analyticsResidenceTimeline
+			for _, timeline := range timelines {
+				if slices.Contains(ids, timeline.issue.id) {
+					picked = append(picked, timeline)
+				}
+			}
+			return reportsCompletions(picked, states, to), nil
+		},
+	}
+	reportsTimelineResidence(&in, timelines, nil, states, w, false)
+	series, err := reportsSeries(in, attempts, usage, w)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(series) != 8 || !series[0].From.Equal(w.From) || !series[0].To.Equal(at(day(8, 0))) || !series[7].From.Equal(at(day(14, 0))) || !series[7].To.Equal(end) {
 		t.Fatalf("buckets=%d first=%s..%s last=%s..%s, want UTC days clipped to the window", len(series), series[0].From, series[0].To, series[len(series)-1].From, series[len(series)-1].To)
 	}

@@ -75,21 +75,10 @@ func reportsSeriesIndex(spans []reportsSeriesSpan) func(time.Time) int {
 	}
 }
 
-func reportsLastDone(timeline analyticsResidenceTimeline, from, to time.Time) (time.Time, bool) {
-	var last time.Time
-	found := false
-	for _, done := range timeline.done {
-		if !done.Before(from) && done.Before(to) && (!found || done.After(last)) {
-			last, found = done, true
-		}
-	}
-	return last, found
-}
-
-// reportsSeries counts each shipped issue once, on its last Done in the window,
-// and splits every usage row in the window by stage, so the buckets sum to
-// the Shipped and Total spend headlines.
-func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, w operatortool.AnalyticsWindow) []reportsSeriesBucket {
+// reportsSeries counts each shipped issue once, on the day it closed, and
+// splits every usage row in the window by stage, so the buckets sum to the
+// Shipped and Total spend headlines.
+func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage map[string][]usageRow, w operatortool.AnalyticsWindow) ([]reportsSeriesBucket, error) {
 	spans := reportsSeriesSpans(w)
 	index := reportsSeriesIndex(spans)
 	span := w.To.Sub(w.From)
@@ -99,17 +88,14 @@ func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage ma
 	}
 	priorIndex := reportsSeriesIndex(shift)
 	out := make([]reportsSeriesBucket, 0, len(spans))
-	cycles := make([][2][]float64, len(spans))
+	closed := make([][]string, len(spans))
 	for _, s := range spans {
 		out = append(out, reportsSeriesBucket{From: s.from, To: s.to, LaneSeconds: in.lanes(s.from, s.to), StageCost: map[string]float64{}, ReworkClasses: map[string]int{}})
 	}
 	for _, done := range in.done {
 		if i := index(done.at); i >= 0 {
 			out[i].Done++
-			if done.timed {
-				cycles[i][0] = append(cycles[i][0], done.system)
-				cycles[i][1] = append(cycles[i][1], done.lead)
-			}
+			closed[i] = append(closed[i], done.id)
 		}
 	}
 	for _, done := range in.priorDone {
@@ -117,8 +103,15 @@ func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage ma
 			out[i].PriorDone++
 		}
 	}
-	for i := range out {
-		out[i].Cycle, out[i].Lead = analyticsDuration(cycles[i][0]), analyticsDuration(cycles[i][1])
+	for i, ids := range closed {
+		if len(ids) == 0 {
+			continue
+		}
+		timing, err := in.timing(ids, spans[i].to)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Cycle, out[i].Lead = timing.System, timing.Lead
 	}
 	shipped := in.shipped()
 	byAttempt := map[string]nativeAnalyticsAttempt{}
@@ -143,7 +136,7 @@ func reportsSeries(in reportsInputs, attempts []nativeAnalyticsAttempt, usage ma
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 func reportsSeriesClasses(series []reportsSeriesBucket, returns []qualityReturn, failures []nativeFailure, w operatortool.AnalyticsWindow) {
