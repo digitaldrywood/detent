@@ -772,3 +772,79 @@ test("the usage page draws the window, the tabs and the breakdown", async ({ pag
   await expectOneHeadingOne(page, "Usage");
   await expectNoSeriousAxeViolations(page, "/usage as viewer");
 });
+
+for (const theme of ["dark", "light"]) {
+  for (const width of [1280, 390]) {
+    test(`API keys & MCP page fits ${width}px in ${theme} mode`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 1000 });
+      await page.emulateMedia({ colorScheme: theme });
+      const organization = "org_browser_preview";
+      const mount = `/organizations/${organization}`;
+      const reach = { organization_id: organization, name: "Browser organization", role: "owner", status: "allowed", projects: [{ id: hub.fixture.project_id, name: "Browser collaboration", can_write: true }], last_used_at: "2026-10-01T12:00:00Z" };
+      const personal = { id: "key_personal", name: "My cross-org agent", kind: "personal", owner: "browser_owner", owner_email: "owner@example.test", permission: "write", access_context: "global", organizations: [], created_at: "2026-10-01T12:00:00Z", effective_reach: [reach], last_used_at: reach.last_used_at };
+      await page.route(`**${mount}/**`, async (route) => {
+        const upstream = new URL(route.request().url());
+        upstream.pathname = upstream.pathname.slice(mount.length);
+        if (upstream.pathname !== "/app/bootstrap" && !route.request().isNavigationRequest()) {
+          await route.continue({ url: upstream.toString() });
+          return;
+        }
+        const response = await route.fetch({ url: upstream.toString() });
+        if (upstream.pathname === "/app/bootstrap") {
+          const bootstrap = await response.json();
+          await route.fulfill({ response, json: { ...bootstrap, base_path: mount } });
+        } else if (route.request().isNavigationRequest()) {
+          const body = (await response.text()).replace('name="detent-base-path" content=""', `name="detent-base-path" content="${mount}"`);
+          await route.fulfill({ response, body });
+        } else {
+          await route.fulfill({ response });
+        }
+      });
+      await page.route("**/api/cloud/**", async (route) => {
+        const endpoint = new URL(route.request().url()).pathname;
+        const json = endpoint.endsWith("key-context") ? { organizations: [reach, { ...reach, organization_id: "org_other", name: "Other organization", projects: [{ id: "prj_other", name: "Other project", can_write: false }] }], mcp_endpoint: "https://cloud.example.test/mcp" }
+          : endpoint.endsWith("key-policy") ? { personal_keys: "approval" }
+          : endpoint.endsWith("service-keys") ? { keys: [{ ...personal, id: "key_service", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: organization, project_access: "all", project_ids: [] }], effective_reach: undefined }] }
+          : endpoint.endsWith("external-keys") ? { keys: [{ ...personal, effective_reach: [{ ...reach, status: "pending" }] }] }
+          : endpoint.endsWith("/organizations") ? { email: "owner@example.test", csrf: "fixture-csrf", organizations: [{ id: organization, name: "Browser organization", url: mount }], pending: [], can_create: true }
+          : { keys: [personal] };
+        await route.fulfill({ json });
+      });
+      await page.goto(hub.fixture.accounts.owner);
+      await page.goto(new URL(`${mount}/settings/api-keys`, hub.fixture.url).toString());
+      await expect(page.getByRole("heading", { name: "API keys & MCP", exact: true })).toBeVisible();
+      await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
+      await expect(page).toHaveURL(new RegExp(`${mount}/settings/mcp$`));
+      await expect(page.getByRole("heading", { name: "Your personal keys", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Create key", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Copy MCP setup prompt", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("textbox", { name: "MCP endpoint value" })).toHaveValue("https://cloud.example.test/mcp");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `api-keys-mcp-${theme}-${width}.png`) });
+      await page.getByRole("button", { name: "Create key", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByRole("radio", { name: "You", exact: true })).toBeChecked();
+      await dialog.getByRole("radio", { name: "You", exact: true }).focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(dialog.getByRole("radio", { name: "The organization", exact: true })).toBeChecked();
+      await page.keyboard.press("Tab");
+      await expect(dialog.getByLabel("Name", { exact: true })).toBeFocused();
+      await dialog.getByLabel("Reach", { exact: true }).selectOption("project");
+      await expect(dialog.getByLabel("Project in Browser organization")).toBeVisible();
+      expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `create-key-${theme}-${width}.png`) });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("button", { name: "Create key", exact: true })).toBeFocused();
+      await page.goto(new URL(`${mount}/settings/mcp`, hub.fixture.url).toString());
+      await expect(page.getByRole("heading", { name: "Organization service keys", exact: true })).toBeVisible();
+      await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
+      await expect(page.getByRole("heading", { name: "Member keys", exact: true })).toBeVisible();
+      await expect(page.getByLabel("Personal keys", { exact: true })).toHaveValue("approval");
+      await expect(page.getByRole("button", { name: "Approve My cross-org agent", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Block My cross-org agent for this org", exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `org-keys-${theme}-${width}.png`) });
+    });
+  }
+}

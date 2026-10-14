@@ -67,17 +67,16 @@ describe("which sections an actor gets", () => {
     const items = settingsNavItems({ canManage: true, supporting: false });
     expect(labelsFor(items)).toEqual([
       "General",
-      "API keys",
       "Organization",
       "Members",
       "Models",
-      "Appearance",
       "Projects",
       "Providers & runners",
       "Integrations",
-      "API & MCP",
+      "API keys & MCP",
       "Plan & usage",
       "Billing",
+      "Appearance",
       "Keybindings",
       "SnapShots",
       "Source Control",
@@ -140,7 +139,7 @@ describe("which sections an actor gets", () => {
     await screen.findByRole("button", { name: "General" });
     if (mount) {
       await screen.findByRole("button", { name: "Create key" });
-      expect(screen.getByRole("button", { name: "API keys" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "API keys & MCP" })).toBeTruthy();
     } else {
       expect(screen.queryByRole("button", { name: "API keys" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Create key" })).toBeNull();
@@ -276,7 +275,7 @@ describe("MCP setup", () => {
     };
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     if (mount) {
-      await screen.findByText("Manage your keys in account settings");
+      await screen.findByRole("heading", { name: "Your personal keys" });
       expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Personal key policy" })).toBeNull();
       expect(fetch.mock.calls.some(([url]) => /external-keys|key-policy|service-keys/.test(String(url)))).toBe(false);
@@ -468,61 +467,94 @@ describe("personal keys and org controls", () => {
   const key = { id: "personal1", name: "My agent", kind: "personal", owner: "user1", owner_email: "member@example.test", permission: "write", access_context: "global", organizations: [], created_at: "2026-10-01T12:00:00Z", effective_reach: [reach], last_used_at: null };
   const context = { organizations: [reach, { ...reach, organization_id: "org_other", name: "Other org", projects: [{ id: "prj_other", name: "Other project", can_write: false }] }], mcp_endpoint: "https://cloud.example.test/mcp" };
 
-  it("creates a selected cross-org key and keeps the secret out of setup prompts", async () => {
+  it.each([
+    ["member", false, "global", "personal", "global"],
+    ["owner", true, "all", "personal", "selected"],
+    ["admin", true, "project", "personal", "project"],
+    ["owner", true, "all", "service", "selected"],
+    ["admin", true, "selected", "service", "selected"],
+    ["owner", true, "project", "service", "project"],
+  ])("creates a %s key with %s management and %s reach as %s", async (role, canManage, reachChoice, kind, accessContext) => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       if (String(url).endsWith("key-context")) return new Response(JSON.stringify(context));
-      if (init?.method === "POST") return new Response(JSON.stringify({ ...key, ...JSON.parse(String(init.body)), token: "private-new-key" }), { status: 201 });
-      return new Response(JSON.stringify({ keys: [key] }));
+      if (String(url).endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "allowed" }));
+      if (init?.method === "POST") return new Response(JSON.stringify({ ...key, kind, ...JSON.parse(String(init.body)), token: "private-new-key" }), { status: 201 });
+      return new Response(JSON.stringify({ keys: String(url).includes("/account/api-keys") ? [key] : [] }));
     });
-    renderSidebarNav("/settings/api-keys", { ...client, account: { ...account, actor: { ...account.actor, can_manage: false, role: "member" } } }, <SettingsRoute section="api-keys" />);
-    await screen.findByRole("button", { name: "Create key" });
-    expect(screen.getByText("Effective reach today")).toBeTruthy();
-    expect(screen.getByText("Never used", { exact: false })).toBeTruthy();
+    renderSidebarNav("/settings/mcp", { ...client, account: { ...account, actor: { ...account.actor, can_manage: canManage, role } } } as ConversationClient, <SettingsRoute section="mcp" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
+    for (const title of ["API keys & MCP", "Which key do I need?", "Your personal keys", "Connect"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+    for (const title of ["Organization service keys", "Member keys"]) expect(Boolean(screen.queryByRole("heading", { name: title }))).toBe(canManage);
+    expect(screen.getAllByRole("button", { name: "Create key" })).toHaveLength(1);
+    expect(screen.getAllByRole("textbox", { name: "MCP endpoint value" })).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Create key" }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Cross-org agent" } });
-    fireEvent.change(screen.getByLabelText("Organization scope"), { target: { value: "selected" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: account.organization.name }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Other org" }));
-    fireEvent.change(screen.getByLabelText(`${account.organization.name} project scope`), { target: { value: "selected" } });
-    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" })).toHaveProperty("disabled", true);
-    fireEvent.click(screen.getByRole("checkbox", { name: account.projects[0]!.name }));
-    fireEvent.change(screen.getByLabelText("Other org project scope"), { target: { value: "project" } });
-    fireEvent.change(screen.getByLabelText("Project in Other org"), { target: { value: "prj_other" } });
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Create key" }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("radio", { name: "You" }).getAttribute("aria-checked")).toBe("true");
+    if (!canManage) {
+      expect(dialog.getByRole("radio", { name: "The organization" }).getAttribute("aria-disabled")).toBe("true");
+      expect(dialog.getByText("Owners and admins create service keys.")).toBeTruthy();
+    }
+    if (kind === "service") fireEvent.click(dialog.getByRole("radio", { name: "The organization" }));
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Agent key" } });
+    fireEvent.change(dialog.getByLabelText("Reach"), { target: { value: reachChoice } });
+    if (["project", "selected"].includes(reachChoice)) {
+      expect(dialog.getByRole("button", { name: `Create ${kind} key` })).toHaveProperty("disabled", true);
+      if (reachChoice === "project") fireEvent.change(dialog.getByLabelText(`Project in ${account.organization.name}`), { target: { value: account.projects[0]!.id } });
+      else fireEvent.click(dialog.getByRole("checkbox", { name: account.projects[0]!.name }));
+    }
+    fireEvent.click(dialog.getByRole("button", { name: `Create ${kind} key` }));
     await screen.findByLabelText("New API key");
     const post = fetch.mock.calls.find(([, init]) => init?.method === "POST")!;
-    expect(post[0]).toBe("/api/cloud/account/api-keys");
-    expect(JSON.parse(String(post[1]?.body))).toMatchObject({ access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "selected", project_ids: [account.projects[0]!.id] }, { organization_id: "org_other", project_access: "project", project_ids: ["prj_other"] }] });
+    expect(post[0]).toBe(kind === "personal" ? "/api/cloud/account/api-keys" : `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`);
+    expect(JSON.parse(String(post[1]?.body))).toMatchObject({ access_context: accessContext, organizations: reachChoice === "global" ? [] : [{ organization_id: account.organization.id, project_access: ["project", "selected"].includes(reachChoice) ? reachChoice : "all", project_ids: ["project", "selected"].includes(reachChoice) ? [account.projects[0]!.id] : [] }] });
     expect(screen.getByLabelText("New API key").getAttribute("type")).toBe("password");
-    fireEvent.click(screen.getByRole("button", { name: "Copy MCP prompt" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalled());
-    expect(writeText.mock.lastCall![0]).toContain("https://cloud.example.test/mcp");
-    expect(writeText.mock.lastCall![0]).not.toContain("private-new-key");
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(screen.queryByLabelText("New API key")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Copy MCP setup prompt" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.lastCall![0]).toContain("Settings → API keys & MCP");
+    expect(writeText.mock.lastCall![0]).not.toContain("private-new-key");
   });
 
-  it("confirms rotation and revocation through owner-scoped endpoints", async () => {
+  it("redirects the old personal-key URL to the shared page", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith("key-context") ? context : String(url).endsWith("key-policy") ? { personal_keys: "allowed" } : { keys: [] })));
+    const { router } = renderSidebarNav("/settings/api-keys", client, null, true);
+    await screen.findByRole("heading", { name: "Your personal keys" });
+    expect(router.state.location.pathname).toBe("/settings/mcp");
+    expect(screen.queryByRole("button", { name: "API keys" })).toBeNull();
+  });
+
+  it.each(["personal", "service"])("preserves %s key actions and history through existing endpoints", async (kind) => {
     let revoked = false;
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       if (String(url).endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (String(url).endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "allowed" }));
       if (String(url).endsWith("/rotate")) return new Response(JSON.stringify({ ...key, token: "replacement-key" }), { status: 201 });
       if (init?.method === "DELETE") { revoked = true; return new Response(null, { status: 204 }); }
-      return new Response(JSON.stringify({ keys: [{ ...key, ...(revoked ? { revoked_at: "2026-10-09T00:00:00Z" } : {}) }] }));
+      const ownList = kind === "personal" ? String(url).endsWith("/account/api-keys") : String(url).endsWith("service-keys");
+      return new Response(JSON.stringify({ keys: ownList ? [{ ...key, kind, ...(revoked ? { revoked_at: "2026-10-09T00:00:00Z" } : {}) }] : [] }));
     });
     renderSidebarNav("/settings/api-keys", client, <SettingsRoute section="api-keys" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Rotate My agent" }));
-    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Rotate key" }));
-    await screen.findByLabelText("New API key");
-    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    if (kind === "personal") {
+      fireEvent.click(await screen.findByRole("button", { name: "Rotate My agent" }));
+      expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+      fireEvent.click(screen.getByRole("button", { name: "Rotate key" }));
+      await screen.findByLabelText("New API key");
+      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    } else {
+      await screen.findByRole("button", { name: "Revoke My agent" });
+      expect(screen.queryByRole("button", { name: "Rotate My agent" })).toBeNull();
+    }
     fireEvent.click(await screen.findByRole("button", { name: "Revoke My agent" }));
     fireEvent.click(screen.getByRole("button", { name: "Revoke key" }));
-    await screen.findByText("No active personal keys");
-    expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1/rotate" && init?.method === "POST")).toBe(true);
-    expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1" && init?.method === "DELETE")).toBe(true);
+    await screen.findByText(`No active ${kind} keys`);
+    expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1/rotate" && init?.method === "POST")).toBe(kind === "personal");
+    expect(fetch.mock.calls.some(([url, init]) => url === (kind === "personal" ? "/api/cloud/account/api-keys/personal1" : `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys/personal1`) && init?.method === "DELETE")).toBe(true);
+    const section = screen.getByRole("heading", { name: kind === "personal" ? "Your personal keys" : "Organization service keys" }).closest("section")!;
+    fireEvent.click(within(section).getByRole("button", { name: "Show revoked and expired keys" }));
+    expect(within(section).getByText("Revoked")).toBeTruthy();
   });
 
   it("loads the next member-key page and includes its pending keys", async () => {
@@ -536,8 +568,8 @@ describe("personal keys and org controls", () => {
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
     fireEvent.click(await screen.findByRole("button", { name: "Load more member keys" }));
     await screen.findByRole("button", { name: "Approve Next page agent" });
-    expect(screen.getByRole("button", { name: "Revoke My agent for this org" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Revoke Next page agent for this org" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Block My agent for this org" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Block Next page agent for this org" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Load more member keys" })).toBeNull();
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/external-keys?cursor=personal1"))).toBe(true);
   });
@@ -563,9 +595,9 @@ describe("personal keys and org controls", () => {
     fireEvent.change(screen.getByLabelText("Personal keys"), { target: { value: "blocked" } });
     fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
     await waitFor(() => expect(policy).toBe("blocked"));
-    fireEvent.click(screen.getByRole("button", { name: "Revoke My agent for this org" }));
+    fireEvent.click(screen.getByRole("button", { name: "Block My agent for this org" }));
     expect(screen.getByText(/The key keeps its access to other organizations/)).toBeTruthy();
-    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Revoke for this org" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Block for this org" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/external-keys/personal1/block") && init?.method === "PUT")).toBe(true);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
@@ -574,23 +606,24 @@ describe("personal keys and org controls", () => {
 
 describe("the settings navigation in the sidebar", () => {
   beforeEach(() => applyHubPaths({ base_path: "/organizations/org_test" }));
-  it("lists every section the actor gets, in the reading order", async () => {
-    renderSidebarNav();
+  it.each([true, false])("groups sections for management access %s", async (canManage) => {
+    renderSidebarNav("/settings/general", { ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, actor: { ...OWNER_ACCOUNT.account.actor, can_manage: canManage } } });
+    expect(await screen.findByText(OWNER_ACCOUNT.account.organization.name, { exact: true })).toBeTruthy();
+    expect(screen.getByText("Your account", { exact: true })).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "General" })).toBeTruthy());
     for (const label of [
       "General",
-      "API keys",
       "Organization",
       "Overview",
       "Members",
       "Models",
-      "Appearance",
       "Projects",
       "Providers & runners",
       "Integrations",
-      "API & MCP",
+      "API keys & MCP",
       "Plan & usage",
       "Billing",
+      "Appearance",
       "Keybindings",
       "SnapShots",
       "Source Control",
@@ -598,7 +631,8 @@ describe("the settings navigation in the sidebar", () => {
       "Archive",
       "About",
     ]) {
-      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+      if (!canManage && ["Plan & usage", "Billing"].includes(label)) expect(screen.queryByRole("button", { name: label })).toBeNull();
+      else expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
   });
 
