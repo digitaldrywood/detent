@@ -557,6 +557,9 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   await page.route("**/api/v2/organizations/*/fleet", (route) => route.fulfill({
     json: { ...fleet, runners: connected ? [runner] : [] },
   }));
+  await page.route(`**/api/v2/organizations/*/runners/${runner.id}/capacity`, (route) => route.fulfill({
+    json: {},
+  }));
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
       writeText: async (value) => { window.copiedEnrollmentCommand = value; },
