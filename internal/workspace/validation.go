@@ -40,7 +40,7 @@ func directGoValidation(validation string) bool {
 		return false
 	}
 	for _, arg := range args[2:] {
-		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") || strings.HasPrefix(arg, "-overlay") {
+		if strings.HasPrefix(arg, "-exec") || strings.HasPrefix(arg, "-toolexec") || strings.HasPrefix(arg, "-C") || strings.HasPrefix(arg, "-modfile") || strings.HasPrefix(arg, "-overlay") || strings.HasPrefix(arg, "-compiler") || strings.HasPrefix(arg, "-pkgdir") || strings.HasPrefix(arg, "-ldflags") {
 			return false
 		}
 	}

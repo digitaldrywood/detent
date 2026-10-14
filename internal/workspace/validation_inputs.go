@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -15,26 +16,48 @@ import (
 	"slices"
 	"strings"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/gate"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 var landingValidationRecipe = regexp.MustCompile(`^bash scripts/check-landing\.sh "([^"\r\n]+)" "([1-9][0-9]*)" "([^"\r\n]+)"$`)
 var generatedGoBuildPrefixMap = regexp.MustCompile(`(^|[ \t])-ffile-prefix-map=[^ \t=]+[/\\]go-build[0-9]+=([^ \t]+)([ \t]|$)`)
 
 func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation string) *gate.CommandEvidence {
+	sourceBound := true
+	module, moduleErr := os.ReadFile(filepath.Join(command.Dir, "go.mod"))
+	if moduleErr == nil {
+		parsed, err := modfile.Parse("go.mod", module, nil)
+		if err != nil {
+			return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+		}
+		for _, replacement := range parsed.Replace {
+			if replacement.New.Version == "" {
+				sourceBound = false
+			}
+		}
+	} else if !os.IsNotExist(moduleErr) {
+		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
 	for _, entry := range command.Env {
 		key, value, _ := strings.Cut(entry, "=")
 		if key == "GOFLAGS" {
 			for _, flag := range strings.Fields(value) {
-				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") {
+				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") {
 					return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 				}
 			}
 		}
 	}
 	if directGoValidation(validation) {
-		return validationEnvironment(ctx, command)
+		evidence := validationEnvironment(ctx, command)
+		if !sourceBound {
+			evidence.InputsSHA = ""
+		}
+		return evidence
 	}
 	evidence := &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 	if validation != "make check-landing" {
@@ -65,8 +88,10 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 			return evidence
 		}
 	}
-	resolve := exec.CommandContext(ctx, "make", "--no-print-directory", "-n", "check-landing")
-	resolve.Dir, resolve.Env, resolve.WaitDelay = command.Dir, command.Env, workspaceCommandWaitDelay
+	resolve := validationProbe(ctx, command, "make --no-print-directory -n check-landing")
+	if resolve == nil {
+		return evidence
+	}
 	output, err := resolve.Output()
 	if err != nil {
 		return evidence
@@ -79,8 +104,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	if err != nil {
 		return evidence
 	}
-	module, err := os.ReadFile(filepath.Join(command.Dir, "go.mod"))
-	if err != nil {
+	if moduleErr != nil {
 		return evidence
 	}
 	toolchain := "auto"
@@ -95,10 +119,18 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 			toolchain = fields[1]
 		}
 	}
-	probe := &exec.Cmd{Dir: command.Dir, Env: append(slices.Clone(command.Env), "GOTOOLCHAIN="+toolchain, "GOMAXPROCS=1")}
-	evidence = validationEnvironment(ctx, probe)
-	if !evidence.Environment.Known() || evidence.InputsSHA == "" {
+	probe := *command
+	probe.Env = append(slices.Clone(command.Env), "GOTOOLCHAIN="+toolchain, "GOMAXPROCS=1")
+	evidence = validationEnvironment(ctx, &probe)
+	if !evidence.Environment.Known() {
 		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
+	if evidence.InputsSHA == "" {
+		return evidence
+	}
+	if !sourceBound {
+		evidence.InputsSHA = ""
+		return evidence
 	}
 	digest := sha256.New()
 	_, _ = digest.Write([]byte(evidence.InputsSHA + "\n" + strings.ReplaceAll(string(output), command.Dir, "<workspace>") + "\n" + strings.TrimSpace(base)))
@@ -106,9 +138,9 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	if !filepath.IsAbs(linter) {
 		linter = filepath.Join(command.Dir, linter)
 	}
-	paths := []string{linter}
-	for _, name := range []string{"go", "make", "bash", "node", "npm", "python3"} {
-		path, err := exec.LookPath(name)
+	paths := []string{linter, "/bin/bash"}
+	for _, name := range []string{"go", "make", "bash", "node", "npm", "python3", "git", "awk", "env"} {
+		path, err := validationExecutable(ctx, &probe, name)
 		if err != nil {
 			return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 		}
@@ -128,16 +160,130 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 		}
 		_, _ = digest.Write(identity.Sum(nil))
 	}
+	for _, entry := range command.Env {
+		key, value, _ := strings.Cut(entry, "=")
+		if value != "" && (key == "APP_DIR" && value != "web/conversation" || key == "TAILWIND_INPUT" && value != "static/css/input.css") {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+	}
+	if _, err := os.Stat(filepath.Join(command.Dir, "static", "css", "input.css")); err == nil {
+		identity, err := validationDirectoryIdentity(filepath.Join(command.Dir, "node_modules"))
+		if err != nil {
+			return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+		}
+		_, _ = digest.Write(identity)
+	} else if !os.IsNotExist(err) {
+		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
+	}
+
+	for _, name := range []string{"web/conversation/package.json", "web/conversation/package-lock.json"} {
+		content, err := os.ReadFile(filepath.Join(command.Dir, filepath.FromSlash(name)))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+		var value any
+		if json.Unmarshal(content, &value) != nil || validationLocalNodeSource(value) {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+	}
+	npm, err := validationExecutable(ctx, &probe, "npm")
+	if err != nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	npm, err = filepath.EvalSymlinks(npm)
+	if err != nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	npmRoot := filepath.Dir(filepath.Dir(npm))
+	content, err := os.ReadFile(filepath.Join(npmRoot, "package.json"))
+	var npmPackage struct{ Name string }
+	if err != nil || json.Unmarshal(content, &npmPackage) != nil || npmPackage.Name != "npm" {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	identity, err := validationDirectoryIdentity(npmRoot)
+	if err != nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	_, _ = digest.Write(identity)
 	evidence.InputsSHA = hex.EncodeToString(digest.Sum(nil))
 	return evidence
 }
 
-func validationInputs(command *exec.Cmd, observed []byte) string {
+func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte) string {
 	var goEnvironment map[string]string
 	if json.Unmarshal(observed, &goEnvironment) != nil {
 		return ""
 	}
+	identities := make(map[string]string)
+	if len(command.Args) < 2 {
+		return ""
+	}
+	identities["shell_args"] = strings.Join(command.Args[:len(command.Args)-1], "\x00")
+	launcher, err := validationExecutable(ctx, command, "go")
+	if err != nil {
+		return ""
+	}
+	paths := []string{command.Path, launcher}
+	suffix := ""
+	if goEnvironment["GOHOSTOS"] == "windows" {
+		suffix = ".exe"
+	}
+	if root, tools := goEnvironment["GOROOT"], goEnvironment["GOTOOLDIR"]; root != "" && tools != "" {
+		paths = append(paths, filepath.Join(root, "bin", "go"+suffix))
+		for _, name := range []string{"compile", "asm", "link", "cgo", "vet"} {
+			paths = append(paths, filepath.Join(tools, name+suffix))
+		}
+	} else {
+		return ""
+	}
+	if goEnvironment["CGO_ENABLED"] == "1" {
+		for _, key := range []string{"CC", "CXX"} {
+			name := goEnvironment[key]
+			if name == "" || len(strings.Fields(name)) != 1 {
+				return ""
+			}
+			path, err := validationExecutable(ctx, command, name)
+			if err != nil {
+				return ""
+			}
+			paths = append(paths, path)
+		}
+	}
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || suffix == "" && info.Mode().Perm()&0o111 == 0 {
+			return ""
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return ""
+		}
+		digest := sha256.Sum256(content)
+		identities[strings.ReplaceAll(path, command.Dir, "<workspace>")] = info.Mode().String() + ":" + hex.EncodeToString(digest[:])
+	}
+	sdk, err := validationDirectoryIdentity(goEnvironment["GOROOT"])
+	if err != nil {
+		return ""
+	}
+	identities["sdk_sha"] = hex.EncodeToString(sdk)
 	for key, value := range goEnvironment {
+		if key == "GOFLAGS" {
+			for _, flag := range strings.Fields(value) {
+				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") || strings.HasPrefix(flag, "-ldflags") {
+					return ""
+				}
+			}
+		}
 		if key == "GOWORK" && value != "" && value != "off" {
 			return ""
 		}
@@ -160,16 +306,19 @@ func validationInputs(command *exec.Cmd, observed []byte) string {
 		if slices.Contains([]string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR", "DETENT_WORKER_SCRATCH", "PWD", "OLDPWD", "SHLVL", "_"}, key) {
 			continue
 		}
+		if key == "NODE_OPTIONS" && value != "" {
+			return ""
+		}
 		values[key] = strings.ReplaceAll(value, command.Dir, "<workspace>")
 	}
-	for _, flag := range strings.Fields(values["GOFLAGS"]) {
+	for _, flag := range strings.Fields(goEnvironment["GOFLAGS"]) {
 		if strings.HasPrefix(flag, "-toolexec") {
 			path, ok := strings.CutPrefix(flag, "-toolexec=")
 			if !ok || path == "" || strings.ContainsAny(path, "\"'`$;&|<>\n\r()%!^") {
 				return ""
 			}
 			if !filepath.IsAbs(path) {
-				path, err = exec.LookPath(path)
+				path, err = validationExecutable(ctx, command, path)
 				if err != nil {
 					return ""
 				}
@@ -186,6 +335,103 @@ func validationInputs(command *exec.Cmd, observed []byte) string {
 	if err != nil {
 		return ""
 	}
-	digest := sha256.Sum256(append(canonical, environment...))
+	tools, err := json.Marshal(identities)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(append(append(canonical, environment...), tools...))
 	return hex.EncodeToString(digest[:])
+}
+
+func validationProbe(ctx context.Context, command *exec.Cmd, text string) *exec.Cmd {
+	if command.Path == "" || len(command.Args) < 2 {
+		return nil
+	}
+	probe := commandshell.Command(ctx, text, command.Path)
+	if !slices.Equal(probe.Args[1:len(probe.Args)-1], command.Args[1:len(command.Args)-1]) {
+		return nil
+	}
+	probe.Dir, probe.Env, probe.WaitDelay = command.Dir, slices.Clone(command.Env), workspaceCommandWaitDelay
+	return probe
+}
+
+func validationExecutable(ctx context.Context, command *exec.Cmd, name string) (string, error) {
+	probe := validationProbe(ctx, command, "command -v '"+strings.ReplaceAll(name, "'", "'\\''")+"'")
+	if probe == nil {
+		return "", fs.ErrInvalid
+	}
+	output, err := probe.Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(output))
+	if path == "" || strings.ContainsAny(path, "\r\n") {
+		return "", fs.ErrInvalid
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(command.Dir, path)
+	}
+	return path, nil
+}
+
+func validationDirectoryIdentity(path string) ([]byte, error) {
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	digest := sha256.New()
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := root.Stat(path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return json.NewEncoder(digest).Encode(struct{ Path, Mode string }{path, info.Mode().String()})
+		}
+		if !info.Mode().IsRegular() {
+			return fs.ErrInvalid
+		}
+		file, err := root.Open(path)
+		if err != nil {
+			return err
+		}
+		identity := sha256.New()
+		_, copyErr := io.Copy(identity, file)
+		closeErr := file.Close()
+		if err := errors.Join(copyErr, closeErr); err != nil {
+			return err
+		}
+		return json.NewEncoder(digest).Encode(struct{ Path, Mode, SHA string }{path, info.Mode().String(), hex.EncodeToString(identity.Sum(nil))})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return digest.Sum(nil), nil
+}
+
+func validationLocalNodeSource(value any) bool {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if key == "link" && child == true {
+				return true
+			}
+			if validationLocalNodeSource(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if validationLocalNodeSource(child) {
+				return true
+			}
+		}
+	case string:
+		return strings.HasPrefix(value, "file:") || strings.HasPrefix(value, "link:") || strings.HasPrefix(value, "workspace:") || strings.HasPrefix(value, "../") || strings.HasPrefix(value, "./") || filepath.IsAbs(value)
+	}
+	return false
 }

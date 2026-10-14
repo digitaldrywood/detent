@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -206,6 +207,22 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		gateFailure  bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
+		{name: "asset file framing changes require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "asset-framing", wantRuns: 1},
+		{name: "npm implementation replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "npm-implementation", wantRuns: 1},
+		{name: "scope selector Git replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "scope-git", wantRuns: 1},
+		{name: "selected SDK vet replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "sdk-vet", wantRuns: 1},
+		{name: "SDK source replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "sdk-source", wantRuns: 1},
+		{name: "external Node preload declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "node-preload", wantRuns: 2},
+		{name: "local npm source declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "npm-local", wantRuns: 2},
+		{name: "persistent external Go flags decline reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "persistent-flags", wantRuns: 2},
+		{name: "direct Go launcher replacement requires command", validator: true, verdict: "pass", command: "go build ./...", wrapped: true, changedInput: "relative-go", wantRuns: 1},
+		{name: "relative PATH Go replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "relative-go", wantRuns: 1},
+		{name: "configured shell replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "shell", wantRuns: 1},
+		{name: "selected compiler replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "compiler", wantRuns: 1},
+		{name: "local module replacement declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "local-replace", wantRuns: 2},
+		{name: "external asset source declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "external-app", wantRuns: 2},
+		{name: "Tailwind dependency replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "tailwind", wantRuns: 1},
+		{name: "linter changes during validation decline reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "during-lint", wantRuns: 2},
 		{name: "source review without acceptance validator", verdict: "pass"},
 		{name: "source rework without acceptance validator", verdict: "rework"},
 		{name: "source rework stops acceptance validator", validator: true, verdict: "rework"},
@@ -280,15 +297,49 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 						}
 					}
 				}
-				if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n"), 0o600); err != nil {
+				module := "module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n"
+				if test.changedInput == "local-replace" {
+					module += "\nreplace example.test/dependency => ../dependency\n"
+				}
+				if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte(module), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				for name, content := range map[string]string{
-					".gitignore":        "tmp/\n",
+					".gitignore":        "tmp/\nnode_modules/\n",
 					".golangci-version": "v2.14.0\n",
 					"main.go":           "package main\nfunc main() {}\n",
 				} {
 					if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.changedInput == "tailwind" || test.changedInput == "asset-framing" {
+					if err := os.MkdirAll(filepath.Join(source, "static", "css"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(source, "static", "css", "input.css"), []byte("body {}\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Join(source, "node_modules", ".bin"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(source, "node_modules", ".bin", "tailwindcss"), []byte("#!/bin/sh\ncat node_modules/css-runtime >> .git/asset-invocations\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(source, "node_modules", "css-runtime"), []byte("first\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if test.changedInput == "asset-framing" {
+						if err := os.WriteFile(filepath.Join(source, "node_modules", "z-next"), []byte("second\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if test.changedInput == "npm-local" {
+					if err := os.MkdirAll(filepath.Join(source, "web", "conversation"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(source, "web", "conversation", "package.json"), []byte(`{"dependencies":{"external":"file:../../../dependency"}}`), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -300,6 +351,9 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 					t.Fatal(err)
 				}
 				linterTool := "#!/bin/sh\necho original >> .git/linter-invocations\n"
+				if test.changedInput == "during-lint" {
+					t.Setenv("FIXTURE_SWAP_LINTER", linter)
+				}
 				if err := os.WriteFile(linter, []byte(linterTool), 0o700); err != nil {
 					t.Fatal(err)
 				}
@@ -312,18 +366,23 @@ if [ "$1" = env ]; then
         if [ -f .git/env-probes ]; then count=$(cat .git/env-probes); fi
         count=$((count + 1))
         echo "$count" > .git/env-probes
+        effective_flags=""
+        if [ -f .git/effective-go-flags ]; then effective_flags=$(cat .git/effective-go-flags); fi
         flags=-fPIC
         cgo_flags='-O2 -g'
         target=/tmp/go-build
         if [ -f .git/compiler-flags ]; then flags=$(cat .git/compiler-flags); fi
         if [ -f .git/cgo-flags ]; then cgo_flags=$(cat .git/cgo-flags); fi
         if [ -f .git/prefix-target ]; then target=$(cat .git/prefix-target); fi
-        printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "$cgo_flags" "$flags" "$count" "$count" "$target"
+		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
     else
         case "$2" in GOHOSTOS) echo linux;; GOHOSTARCH) echo amd64;; GOVERSION) echo "$version";; esac
     fi
 elif [ "$1" = build ]; then
     echo build >> .git/invocations
+    if [ -n "$FIXTURE_SWAP_LINTER" ]; then
+        printf '#!/bin/sh\necho replacement >> .git/linter-invocations\n' > "$FIXTURE_SWAP_LINTER"
+    fi
 elif [ "$1" = list ]; then
     printf '{"Dir":"%s","ImportPath":"example.test/project"}\n' "$PWD"
 fi
@@ -331,9 +390,70 @@ fi
 				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+				npmRoot := filepath.Join(bin, "npm-package")
+				for name, content := range map[string]string{"package.json": `{"name":"npm"}`, "bin/npm-cli.js": "#!/bin/sh\n:\n", "lib/cli.js": "first\n"} {
+					path := filepath.Join(npmRoot, name)
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.Symlink(filepath.Join(npmRoot, "bin", "npm-cli.js"), filepath.Join(bin, "npm")); err != nil {
+					t.Fatal(err)
+				}
+				gitTool := ""
+				if test.changedInput == "scope-git" {
+					realGit, err := exec.LookPath("git")
+					if err != nil {
+						t.Fatal(err)
+					}
+					gitTool = "#!/bin/sh\nexec '" + strings.ReplaceAll(realGit, "'", "'\\''") + "' \"$@\"\n"
+					if err := os.WriteFile(filepath.Join(bin, "git"), []byte(gitTool), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				toolRoot := filepath.Join(bin, "sdk")
+				for _, name := range []string{"bin/go", "pkg/tool/linux_amd64/compile", "pkg/tool/linux_amd64/asm", "pkg/tool/linux_amd64/link", "pkg/tool/linux_amd64/cgo", "pkg/tool/linux_amd64/vet", "src/runtime/fixture.go"} {
+					path := filepath.Join(toolRoot, filepath.FromSlash(name))
+					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("fixture executable\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Setenv("FIXTURE_GOROOT", toolRoot)
+				searchPath := bin + string(os.PathListSeparator) + os.Getenv("PATH")
+				if test.changedInput == "relative-go" {
+					if err := os.MkdirAll(filepath.Join(source, "tmp", "bin"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(source, "tmp", "bin", "go"), []byte(goTool), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					searchPath = "tmp/bin" + string(os.PathListSeparator) + searchPath
+				}
+				t.Setenv("PATH", searchPath)
 				t.Setenv("GOTOOLCHAIN", "go1.27.1")
-				local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source})
+				if strings.HasPrefix(command, "go ") {
+					t.Setenv("GOTOOLCHAIN", "go1.26.9")
+				}
+				if test.changedInput == "external-app" {
+					t.Setenv("APP_DIR", "../app")
+				}
+				if test.changedInput == "node-preload" {
+					t.Setenv("NODE_OPTIONS", "--require=../hook.js")
+				}
+				options := workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source}
+				if test.changedInput == "shell" {
+					options.Hooks.Shell = filepath.Join(bin, "fixture-shell")
+					if err := os.WriteFile(options.Hooks.Shell, []byte("#!/bin/sh\nexec /bin/sh \"$@\"\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				local, err := workspace.NewLocalGit(options)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -341,6 +461,11 @@ fi
 				worktree.info.Path = source
 				head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 				worktree.heads = []string{head}
+				if test.changedInput == "persistent-flags" {
+					if err := os.WriteFile(filepath.Join(source, ".git", "effective-go-flags"), []byte("-overlay=../overlay.json"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				receipt, err = local.RunReviewCommand(t.Context(), worktree.info, workspace.Issue{ProjectID: defaultProjectID, ID: "wi_example", Identifier: "prj_example#1", PullRequestHeadSHA: head}, command)
 				if err != nil || receipt.ExitCode != 0 {
 					t.Fatalf("host finalization command: %+v %v", receipt, err)
@@ -348,6 +473,49 @@ fi
 				receipt.TimingStage = "finalization"
 				receipt = tracker.PublicGateResult(receipt)
 				switch test.changedInput {
+				case "asset-framing":
+					if err := os.WriteFile(filepath.Join(source, "node_modules", "css-runtime"), []byte("first\n/z-next\n-rw-------\nsecond\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Remove(filepath.Join(source, "node_modules", "z-next")); err != nil {
+						t.Fatal(err)
+					}
+				case "npm-implementation":
+					if err := os.WriteFile(filepath.Join(npmRoot, "lib", "cli.js"), []byte("replacement\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "scope-git":
+					if err := os.WriteFile(filepath.Join(bin, "git"), []byte(gitTool+"\n:\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "sdk-vet", "sdk-source":
+					path := filepath.Join(toolRoot, "pkg", "tool", "linux_amd64", "vet")
+					if test.changedInput == "sdk-source" {
+						path = filepath.Join(toolRoot, "src", "runtime", "fixture.go")
+					}
+					if err := os.WriteFile(path, []byte("replacement\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "during-lint":
+					if err := os.WriteFile(linter, []byte(linterTool), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "relative-go":
+					if err := os.WriteFile(filepath.Join(source, "tmp", "bin", "go"), []byte(goTool+"\n:\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "shell":
+					if err := os.WriteFile(options.Hooks.Shell, []byte("#!/bin/sh\n:\nexec /bin/sh \"$@\"\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "compiler":
+					if err := os.WriteFile(filepath.Join(toolRoot, "pkg", "tool", "linux_amd64", "compile"), []byte("replacement executable\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "tailwind":
+					if err := os.WriteFile(filepath.Join(source, "node_modules", "css-runtime"), []byte("replacement\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
 				case "toolchain":
 					t.Setenv("FIXTURE_GO_VERSION", "go1.26.10")
 				case "flags":
