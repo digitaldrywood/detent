@@ -294,7 +294,7 @@ func sqliteReaderDSN(path string, busyTimeout time.Duration) string {
 }
 
 func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) error {
-	reader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	reader, err := openTimedReader(sqliteReaderDSN(d.path, busyTimeout))
 	if err != nil {
 		return fmt.Errorf("open hub database reader: %w", err)
 	}
@@ -304,7 +304,7 @@ func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) er
 	if err := reader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub database reader: %w", err)
 	}
-	authReader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	authReader, err := openTimedReader(sqliteReaderDSN(d.path, busyTimeout))
 	if err != nil {
 		return fmt.Errorf("open hub database authentication reader: %w", err)
 	}
@@ -314,7 +314,7 @@ func (d *database) openReader(ctx context.Context, busyTimeout time.Duration) er
 	if err := authReader.PingContext(ctx); err != nil {
 		return fmt.Errorf("open hub database authentication reader: %w", err)
 	}
-	claimReader, err := sql.Open("sqlite", sqliteReaderDSN(d.path, busyTimeout))
+	claimReader, err := openTimedReader(sqliteReaderDSN(d.path, busyTimeout))
 	if err != nil {
 		return fmt.Errorf("open hub claim reader: %w", err)
 	}

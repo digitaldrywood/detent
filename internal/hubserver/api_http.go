@@ -39,6 +39,8 @@ const maxActionRunReportBytes = 6*workspacesession.MaxExecOutputBytes + (1 << 20
 
 func (s *Service) registerRoutes(e *echo.Echo) {
 	e.Pre(s.timeWriterUse)
+	e.Pre(s.serverTiming)
+	e.JSONSerializer = timedJSONSerializer{}
 	if s.config.CredentialMaintenance {
 		s.registerCredentialMaintenanceRoutes(e)
 		return

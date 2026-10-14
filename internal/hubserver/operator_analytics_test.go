@@ -115,7 +115,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if err := json.Unmarshal(raw, &report); err != nil {
 					t.Fatal(err)
 				}
-				if report.Requests != nil {
+				if report.Requests != nil || report.RouteLatency != nil {
 					t.Fatalf("member received tenant-wide traffic: %s", raw)
 				}
 				want := 1
@@ -238,6 +238,15 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	var report nativeAnalyticsReport
 	if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.Requests == nil || len(report.Requests.Callers) != 1 || report.Requests.Callers[0].Caller != "runner_report" {
 		t.Fatalf("admin MCP traffic: %s err=%v", response.Body.String(), err)
+	}
+	response, raw = call(owner, operatortool.TimeSeries, map[string]any{"window": "2h", "bucket": "1h"})
+	report = nativeAnalyticsReport{}
+	if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.RouteLatency == nil {
+		t.Fatalf("admin MCP route latency: %s err=%v", response.Body.String(), err)
+	}
+	recorded := slices.IndexFunc(report.RouteLatency.Buckets, func(bucket routeLatencyBucket) bool { return bucket.Route == "GET /items/:item" })
+	if recorded < 0 || report.RouteLatency.Buckets[recorded].StatusClass != "2xx" || report.RouteLatency.Buckets[recorded].Count != 1 || report.RouteLatency.Buckets[recorded].P95 != 10 {
+		t.Fatalf("admin MCP route latency buckets: %+v", report.RouteLatency.Buckets)
 	}
 	t.Run("analytics reads beside a held writer", func(t *testing.T) {
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())
