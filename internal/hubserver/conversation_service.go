@@ -644,10 +644,18 @@ func conversationOptional(value string) *string {
 	return &value
 }
 
+func conversationBetweenTurns(execution conversation.Execution) bool {
+	return execution.Status == conversation.ExecutionRunning && execution.Owner.AttemptID != "" && execution.Owner.TurnID == ""
+}
+
 func projectExecution(execution conversation.Execution) conversationExecutionResource {
 	status := execution.Status
 	if status == "" {
 		status = conversation.ExecutionIdle
+	}
+	capabilities := execution.Capabilities
+	if conversationBetweenTurns(execution) {
+		capabilities.Steer = false
 	}
 	return conversationExecutionResource{
 		Status:       status,
@@ -657,7 +665,7 @@ func projectExecution(execution conversation.Execution) conversationExecutionRes
 		ThreadID:     conversationOptional(execution.Owner.ThreadID),
 		TurnID:       conversationOptional(execution.Owner.TurnID),
 		Resume:       execution.Resume,
-		Capabilities: execution.Capabilities,
+		Capabilities: capabilities,
 		Error:        conversationOptional(execution.Error),
 		UpdatedAt:    execution.UpdatedAt,
 	}
