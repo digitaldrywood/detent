@@ -12,6 +12,9 @@ import {
   useQuery,
 } from "../src/app/lib/queryCache.ts";
 import { useReports } from "../src/app/reports/reportsQuery.ts";
+import { useIssue } from "../src/app/work/IssuePage.tsx";
+import { authorizeBoardCache, clearBoardCache, rejectBoardCache } from "../src/app/work/lib/boardStore.ts";
+import { makeWorkHttp } from "../src/app/work/lib/workHttp.ts";
 import type { AccountApi } from "../src/app/account/api.ts";
 
 afterEach(() => {
@@ -102,6 +105,58 @@ describe("client data cache", () => {
     expect(read).toHaveBeenCalledTimes(1);
     prefetchQuery(["probe", "p"], read, 30_000);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a refused read", () => {
+  it("reads once on a repeated 403 and keeps other screens' entries", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    authorizeBoardCache("account-one");
+    const requests: string[] = [];
+    const http = makeWorkHttp({
+      origin: "", apiBase: "/api", csrfToken: "token",
+      fetch: async (input) => {
+        requests.push(String(input));
+        return Response.json({ code: "forbidden", message: "Forbidden" }, { status: 403 });
+      },
+      onAuthorizationRejected: () => rejectBoardCache("account-one"),
+    });
+    const other = vi.fn(async () => "report");
+    function IssueProbe() {
+      const issue = useIssue(http, "wi_refused");
+      return <div data-testid="issue">{issue.error}</div>;
+    }
+    render(<><IssueProbe /><Probe id="report" read={other} /></>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(requests).toHaveLength(1);
+    expect(other).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("issue").textContent).toBe("Forbidden");
+    expect(screen.getByTestId("probe").textContent).toBe("report");
+    clearBoardCache();
+  });
+});
+
+describe("cache bounds", () => {
+  it("skips an issue prefetch when the issue budget is full of reads in flight", async () => {
+    const reads = Array.from({ length: 25 }, () => vi.fn(() => new Promise<string>(() => {})));
+    reads.forEach((read, index) => prefetchQuery(["issue", `wi_${index}`], read, 10_000));
+    expect(reads.slice(0, 24).every((read) => read.mock.calls.length === 1)).toBe(true);
+    expect(reads[24]).not.toHaveBeenCalled();
+    const report = vi.fn(async () => "report");
+    prefetchQuery(["reports", "project"], report, 60_000);
+    expect(report).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a prefetch nobody has opened when its signal aborts", async () => {
+    const controller = new AbortController();
+    let aborted = false;
+    prefetchQuery(["issue-head", "wi_hover"], (signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); });
+    }), 10_000, controller.signal);
+    controller.abort();
+    await act(async () => {});
+    expect(aborted).toBe(true);
+    expect(getQueryData(["issue-head", "wi_hover"])).toBeUndefined();
   });
 });
 

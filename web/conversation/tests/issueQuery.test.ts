@@ -8,19 +8,19 @@ afterEach(() => clearQueryCache());
 
 function recordingHttp(projectId: string) {
   let settled = 0;
-  const calls: { name: string; wave: number }[] = [];
-  const call = <T>(name: string, value: T) => {
-    calls.push({ name, wave: settled });
+  const calls: { name: string; project: string | null; wave: number }[] = [];
+  const call = <T>(name: string, project: string | null, value: T) => {
+    calls.push({ name, project, wave: settled });
     return new Promise<T>((resolve) => setTimeout(() => { settled++; resolve(value); }, 0));
   };
   const http = {
-    getWorkItemById: (id: string) => call("item", { work_item_id: id, project_id: projectId }),
-    getProject: (id: string) => call("project", { project_id: id, states: [] }),
-    listAttempts: () => call("attempts", { items: [] }),
-    listHistory: () => call("history", { items: [] }),
-    listComments: () => call("comments", { items: [] }),
-    listChanges: () => call("changes", [{ change_id: "change_1", title: "Change" }]),
-    getChange: () => call("change", { summary: { status: "open" } }),
+    getWorkItemById: (id: string) => call("item", null, { work_item_id: id, project_id: projectId }),
+    getProject: (id: string) => call("project", id, { project_id: id, states: [] }),
+    listAttempts: (id: string) => call("attempts", id, { items: [{ attempt_id: `attempt_${id}` }] }),
+    listHistory: (input: { projectId: string }) => call("history", input.projectId, { items: [] }),
+    listComments: (input: { projectId: string }) => call("comments", input.projectId, { items: [] }),
+    listChanges: (id: string) => call("changes", id, [{ change_id: "change_1", title: "Change" }]),
+    getChange: (id: string) => call("change", id, { summary: { status: "open" } }),
   } as unknown as WorkHttp;
   return { http, calls };
 }
@@ -36,13 +36,14 @@ describe("issue first paint", () => {
     const { http, calls } = recordingHttp("project_a");
     const painted: (IssueData | null)[] = [];
     const data = await readIssue(http, workItemId, null)(new AbortController().signal, (value) => painted.push(value));
-    const firstPaint = calls.filter((entry) => entry.name !== "change" && (hint === undefined || hint === "project_a" || entry.wave > 0 || entry.name === "item"));
+    const firstPaint = calls.filter((entry) => entry.name !== "change" && entry.project !== "project_old");
     expect(new Set(firstPaint.map((entry) => entry.wave)).size).toBe(waves);
     expect(painted).toHaveLength(1);
     expect(painted[0]?.changes[0]?.pending).toBe(true);
     const detail = calls.find((entry) => entry.name === "change")!;
-    expect(detail.wave).toBeGreaterThanOrEqual(Math.max(...firstPaint.map((entry) => entry.wave)) + 1);
+    expect(detail.wave).toBeGreaterThan(Math.max(...firstPaint.map((entry) => entry.wave)));
     expect(data?.change).not.toBeNull();
     expect(data?.project.project_id).toBe("project_a");
+    expect(data?.attempts.map((attempt) => attempt.attempt_id)).toEqual(["attempt_project_a"]);
   });
 });

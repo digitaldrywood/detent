@@ -70,9 +70,19 @@ export function hintIssueProject(workItemId: string, projectId: string): void {
   if (projectHints.size > 2000) projectHints.delete(projectHints.keys().next().value!);
 }
 
-function related(http: WorkHttp, projectId: string, workItemId: string) {
+/** The cache key for an issue's head: the item and its project, all a hover prefetches. */
+function headKey(http: WorkHttp, workItemId: string) {
+  return ["issue-head", workItemId, scopeOf(http)] as const;
+}
+
+interface IssueHead {
+  readonly issue: NativeIssue;
+  readonly project: NativeProject;
+}
+
+function related(http: WorkHttp, projectId: string, workItemId: string, signal: AbortSignal, project?: NativeProject) {
   return Promise.all([
-    http.getProject(projectId),
+    project?.project_id === projectId ? project : http.getProject(projectId, signal),
     allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)).catch(() => null),
     allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })).catch(() => null),
     allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
@@ -88,20 +98,22 @@ function related(http: WorkHttp, projectId: string, workItemId: string) {
  * after the first paint.
  */
 export function readIssue(http: WorkHttp, workItemId: string, requestedChange: string | null): Read<IssueData | null> {
-  return async (_signal, partial) => {
+  return async (signal, partial) => {
     try {
       const cached = getQueryData<IssueData | null>(issueKey(http, workItemId, requestedChange));
-      const known = cached?.issue.project_id ?? projectHints.get(workItemId);
+      const head = getQueryData<IssueHead>(headKey(http, workItemId));
+      const known = cached?.issue.project_id ?? head?.project.project_id ?? projectHints.get(workItemId);
+      const knownProject = cached?.project ?? head?.project;
       let issue: NativeIssue;
       let rest: Awaited<ReturnType<typeof related>>;
       if (known === undefined) {
-        issue = await http.getWorkItemById(workItemId);
-        rest = await related(http, issue.project_id, workItemId);
+        issue = await http.getWorkItemById(workItemId, signal);
+        rest = await related(http, issue.project_id, workItemId, signal);
       } else {
-        const together = related(http, known, workItemId);
+        const together = related(http, known, workItemId, signal, knownProject);
         together.catch(() => undefined);
-        issue = await http.getWorkItemById(workItemId);
-        rest = issue.project_id === known ? await together : await related(http, issue.project_id, workItemId);
+        issue = await http.getWorkItemById(workItemId, signal);
+        rest = issue.project_id === known ? await together : await related(http, issue.project_id, workItemId, signal);
       }
       const projectId = issue.project_id;
       hintIssueProject(workItemId, projectId);
@@ -127,8 +139,17 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
   };
 }
 
-/** Starts an issue's read for a reader about to open it. */
-export function prefetchIssue(http: WorkHttp, workItemId: string, projectId?: string): void {
+/**
+ * Starts an issue's first-paint head (the item and its project) for a reader
+ * about to open it. `signal` cancels it when the pointer leaves first.
+ */
+export function prefetchIssue(http: WorkHttp, workItemId: string, projectId?: string, signal?: AbortSignal): void {
   if (projectId !== undefined) hintIssueProject(workItemId, projectId);
-  prefetchQuery(issueKey(http, workItemId, null), readIssue(http, workItemId, null), 10_000);
+  prefetchQuery(headKey(http, workItemId), async (read) => {
+    const [issue, project] = await Promise.all([
+      http.getWorkItemById(workItemId, read),
+      projectId === undefined ? undefined : http.getProject(projectId, read),
+    ]);
+    return { issue, project: project?.project_id === issue.project_id ? project : await http.getProject(issue.project_id, read) };
+  }, 10_000, signal);
 }

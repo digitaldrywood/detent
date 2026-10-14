@@ -133,7 +133,6 @@ export function clearBoardCache(): void {
 export function rejectBoardCache(owner: string | null = account): void {
   if (owner !== account) return;
   epoch++;
-  clearQueryCache();
   metadata.clear();
   knownStates.clear();
   confirmed.clear();
@@ -400,8 +399,10 @@ export class BoardRead {
         if (delta.sequence <= (entry.sequence ?? 0)) continue;
         const card = delta.current;
         const issue = card?.issue ?? delta.previous?.issue;
+        for (const id of new Set([card?.issue.work_item_id, delta.previous?.issue.work_item_id])) {
+          if (id !== undefined) invalidateQueries(["issue", id]);
+        }
         if (issue === undefined || issue.project_id !== projectId) continue;
-        invalidateQueries(["issue", issue.work_item_id]);
         if (newer(issues.get(issue.work_item_id)?.revision ?? null, issue.revision)) continue;
         issues.delete(issue.work_item_id);
         cards.delete(issue.work_item_id);

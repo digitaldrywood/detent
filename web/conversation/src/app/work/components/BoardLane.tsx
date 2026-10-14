@@ -18,6 +18,7 @@ export interface BoardLaneProps {
   readonly now?: number;
   readonly onOpen: (item: WorkItemView) => void;
   readonly onIntent?: (item: WorkItemView) => void;
+  readonly onIntentEnd?: () => void;
   readonly movesFor: (item: WorkItemView) => readonly string[];
   readonly onMove: (item: WorkItemView, toState: string) => void;
   readonly movingIds: ReadonlySet<string>;
@@ -43,6 +44,7 @@ export function BoardLane({
   now,
   onOpen,
   onIntent,
+  onIntentEnd,
   movesFor,
   onMove,
   movingIds,
@@ -150,6 +152,7 @@ export function BoardLane({
               now={now}
               onOpen={onOpen}
               onIntent={onIntent}
+              onIntentEnd={onIntentEnd}
               moves={movesFor(item)}
               onMove={onMove}
               moving={movingIds.has(item.id)}

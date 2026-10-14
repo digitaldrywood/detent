@@ -43,7 +43,22 @@ interface Entry {
 }
 
 const EMPTY: QuerySnapshot<never> = { data: undefined, error: null, updatedAt: 0, fetching: false };
-const ENTRY_LIMIT = 96;
+/**
+ * Entries kept per class. Issue reads (one per opened or hovered issue) have
+ * their own small budget, so browsing issues never evicts page reports.
+ */
+const LIMITS = { issue: 24, page: 64 } as const;
+type EntryClass = keyof typeof LIMITS;
+
+function classOf(key: QueryKey): EntryClass {
+  return key[0] === "issue" || key[0] === "issue-head" ? "issue" : "page";
+}
+
+function countOf(kind: EntryClass): number {
+  let count = 0;
+  for (const entry of entries.values()) if (classOf(entry.key) === kind) count++;
+  return count;
+}
 
 let account: string | null = null;
 let epoch = 0;
@@ -69,7 +84,7 @@ function entryFor(key: QueryKey): Entry {
   if (entry === undefined) {
     entry = { key, snapshot: EMPTY, read: null, promise: null, controller: null, again: false, invalidated: false, observers: 0 };
     entries.set(id, entry);
-    prune();
+    prune(classOf(key));
   } else {
     entries.delete(id);
     entries.set(id, entry);
@@ -77,11 +92,13 @@ function entryFor(key: QueryKey): Entry {
   return entry;
 }
 
-function prune(): void {
+function prune(kind: EntryClass): void {
+  let count = countOf(kind);
   for (const [id, entry] of entries) {
-    if (entries.size <= ENTRY_LIMIT) return;
-    if (entry.observers > 0 || entry.promise !== null) continue;
+    if (count <= LIMITS[kind]) return;
+    if (classOf(entry.key) !== kind || entry.observers > 0 || entry.promise !== null) continue;
     entries.delete(id);
+    count--;
   }
 }
 
@@ -148,8 +165,24 @@ export function fetchQuery<T>(key: QueryKey, read: Read<T>, options: FetchOption
 }
 
 /** Starts a read for a destination the reader is about to open. */
-export function prefetchQuery<T>(key: QueryKey, read: Read<T>, staleTime: number): void {
+/**
+ * Starts a read for a destination the reader is about to open. It is skipped
+ * when its class is already full of entries in use, and `signal` cancels it
+ * while no screen has started showing it.
+ */
+export function prefetchQuery<T>(key: QueryKey, read: Read<T>, staleTime: number, signal?: AbortSignal): void {
+  const id = hash(key);
+  if (signal?.aborted === true) return;
+  if (!entries.has(id)) {
+    const kind = classOf(key);
+    prune(kind);
+    if (countOf(kind) >= LIMITS[kind]) return;
+  }
   void fetchQuery(key, read, { staleTime });
+  signal?.addEventListener("abort", () => {
+    const entry = entries.get(id);
+    if (entry !== undefined && entry.observers === 0 && entry.promise !== null) entry.controller?.abort();
+  }, { once: true });
 }
 
 export function getQuerySnapshot<T>(key: QueryKey): QuerySnapshot<T> {
@@ -258,7 +291,7 @@ export function useQuery<T>(key: QueryKey | null, read: Read<T>, options: QueryO
     void fetchQuery(key, (signal, partial) => latest.current(signal, partial), { staleTime });
     return () => {
       entry.observers--;
-      prune();
+      prune(classOf(entry.key));
     };
   }, [id, owner, staleTime]);
   const previous = React.useRef<{ owner: number; group: string; data: T } | null>(null);
