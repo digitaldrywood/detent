@@ -352,17 +352,17 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 		failedCommand = "echo failed & exit /b 7"
 	}
 	for _, test := range []struct {
-		name, command, head   string
-		exit                  int
-		wantErr               bool
-		toolchainKnown        bool
-		probeOnly             bool
-		unbound, cgo, ignored bool
+		name, command, head string
+		exit                int
+		wantErr             bool
+		toolchainKnown      bool
+		probeOnly           bool
+		cgo, ignored        bool
 	}{
 		{name: "direct Go toolchain", command: "go version", toolchainKnown: true},
-		{name: "package runtime inputs are unbound with supported flags", command: "go test ./... -short -count=1", probeOnly: true, unbound: true},
-		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, unbound: true, cgo: true},
-		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, unbound: true, ignored: true},
+		{name: "package runtime inputs are unbound with supported flags", command: "go test ./... -short -count=1", probeOnly: true},
+		{name: "CGO package commands need independent execution", command: "go test ./...", probeOnly: true, cgo: true},
+		{name: "ignored package inputs need independent execution", command: "go test ./...", probeOnly: true, ignored: true},
 		{name: "Go binary version operands are unverified", command: "go version tmp/tool", probeOnly: true},
 		{name: "version separated into shell commands is unverified", command: "go\nversion", probeOnly: true},
 		{name: "external vet analyzer is unverified", command: "go vet -vettool=custom ./...", probeOnly: true},
