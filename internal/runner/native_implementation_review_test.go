@@ -282,6 +282,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				if runtime.GOOS == "windows" {
 					t.Skip("POSIX landing wrapper")
 				}
+				t.Setenv("CHECK_LAND_BASE", "origin/develop")
 				source := initRunnerSourceRepo(t)
 				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
