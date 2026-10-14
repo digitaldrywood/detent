@@ -242,6 +242,8 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "clock-behind newer pass supersedes failure", validator: true, verdict: "pass", latestPassed: true},
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
 		{name: "matching wrapped finalization receipt is reused", validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
+		{name: "environment vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "environment-vettool", wantRuns: 2},
+		{name: "effective vet analyzer requires commands", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "effective-vettool", wantRuns: 2},
 		{name: "wrapped receipt survives transport", ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true},
 		{name: "changed effective wrapper toolchain requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "toolchain", wantRuns: 1},
 		{name: "changed Go flags require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "flags", wantRuns: 1},
@@ -284,6 +286,14 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				}
 				t.Setenv("CHECK_LAND_BASE", "origin/develop")
 				source := initRunnerSourceRepo(t)
+				if test.changedInput == "environment-vettool" {
+					t.Setenv("GOFLAGS", "-vettool=custom")
+				}
+				if test.changedInput == "effective-vettool" {
+					if err := os.WriteFile(filepath.Join(source, ".git", "effective-go-flags"), []byte("-vettool=custom"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
