@@ -191,7 +191,12 @@ func (e workspaceOperatorExecutor) Execute(ctx context.Context, call operatortoo
 		if json.Unmarshal(raw, &receipt) != nil || receipt.Action.Status != chat.ActionSucceeded {
 			return operatortool.Result{}, errWorkspaceOperationUnavailable
 		}
-		outcome, m = "replayed", receipt.Action.Mutation
+		outcome = "replayed"
+		receipt.Action.Mutation = m
+		receipt.Action, err = e.server.operatorChat.RestoreActionResult(ctx, receipt.Action, receipt.Execution.Data)
+		if err != nil {
+			return operatortool.Result{}, err
+		}
 		return e.actionResult(receipt.Action, receipt.Execution.Data)
 	}
 	if call.Name == "delete_project_action" {
