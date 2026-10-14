@@ -52,8 +52,9 @@ func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	policies := map[string]changeSummaryPolicy{}
 	for _, id := range ids {
-		if err := refreshNativeBoardCard(ctx, tx, id, now); err != nil {
+		if err := refreshNativeBoardCard(ctx, tx, id, now, policies); err != nil {
 			return err
 		}
 	}
@@ -61,7 +62,7 @@ func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
 	return err
 }
 
-func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time.Time, policies map[string]changeSummaryPolicy) error {
 	var previous *tracker.NativeBoardCard
 	var oldJSON string
 	err := tx.QueryRowContext(ctx, "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&oldJSON)
@@ -88,7 +89,7 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1`,
 			scope.organization, scope.project, id, scope.organization, scope.project, id).Scan(&attemptID, &attemptCount)
 		if err == nil {
-			attempt, err := readNativeAttempt(ctx, tx, scope, id, attemptID, now)
+			attempt, err := readNativeAttemptRecord(ctx, tx, scope, id, attemptID, now)
 			if err != nil {
 				return err
 			}
@@ -101,13 +102,22 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			return err
 		}
 		if found {
-			detail, err := readCurrentChangeDetail(ctx, tx, scope, change, now)
+			key := string(scope.organization) + "/" + string(scope.project)
+			currentPolicy, found := policies[key]
+			if !found {
+				currentPolicy, err = readChangeSummaryPolicy(ctx, tx, scope)
+				if err != nil {
+					return err
+				}
+				policies[key] = currentPolicy
+			}
+			detail, err := readCurrentChangeDetailWithPolicy(ctx, tx, scope, change, now, &currentPolicy)
 			if err != nil {
 				return err
 			}
-			version, _, err := readNativeChangeVersion(ctx, tx, change)
-			if err != nil {
-				return err
+			var version tracker.ChangeVersion
+			if len(detail.Versions) > 0 {
+				version = detail.Versions[0]
 			}
 			current.Change = &tracker.NativeBoardChange{ID: change.ID, Title: change.Title, Status: detail.Summary.Status, External: version.External}
 		}

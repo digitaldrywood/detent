@@ -451,3 +451,78 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 	}
 	requireNativeStatus(t, f.request(t, user, http.MethodGet, "/projects/prj_ungranted/events?board=true&since=0", nil), http.StatusForbidden)
 }
+
+func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+	type projectCards struct {
+		fixture nativeFixture
+		policy  policy.Descriptor
+		items   []tracker.NativeIssue
+		changes []tracker.ChangeRequest
+		want    string
+	}
+	projects := []projectCards{}
+	for index, name := range []string{"changed-audit", "unchanged-gates"} {
+		f := newNativeFixture(t, service, "", name)
+		descriptor := hubTestPolicy()
+		approveHubTestPolicy(t, service, f.base+"/policy", descriptor)
+		cards := projectCards{fixture: f, policy: descriptor, want: "reviewed"}
+		for _, state := range []string{"Todo", "Done"} {
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: state}, Title: name + " " + state, Body: issueContractTestSections, State: state})
+			requireNativeStatus(t, response, http.StatusOK)
+			var issue tracker.NativeIssue
+			decodeHubResponse(t, response, &issue)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+			response = performHubAPIRequest(t, service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: name + " " + state})
+			requireNativeStatus(t, response, http.StatusOK)
+			var change tracker.ChangeRequest
+			decodeHubResponse(t, response, &change)
+			response = performHubAPIRequest(t, service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version"}, ChangeVersionInput: changeTestInput()})
+			requireNativeStatus(t, response, http.StatusOK)
+			cards.items = append(cards.items, issue)
+			cards.changes = append(cards.changes, change)
+		}
+		cards.policy.SourceDigest = policy.Digest([]byte(name))
+		if index == 0 {
+			cards.policy.Gates.SecurityAudit = true
+			cards.want = "stale_policy"
+		}
+		cards.policy = cards.policy.WithID()
+		projects = append(projects, cards)
+	}
+	tx, err := service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, project := range projects {
+		scope := string(project.fixture.project.OrganizationID) + "/" + string(project.fixture.project.ID)
+		if _, err := service.database.approvePolicyInTx(t.Context(), tx, scope, "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: project.policy}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.database.commit(t.Context(), tx); err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range projects {
+		for index, issue := range project.items {
+			var raw string
+			if err := service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", issue.WorkItemID).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var card tracker.NativeBoardCard
+			if err := json.Unmarshal([]byte(raw), &card); err != nil {
+				t.Fatal(err)
+			}
+			if card.Issue.State != issue.State || card.Change == nil || card.Change.Status != project.want {
+				t.Fatalf("project %s card lane = %s, Change = %+v, want unchanged lane and %s", project.fixture.project.ID, card.Issue.State, card.Change, project.want)
+			}
+			scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID}
+			detail, err := readChangeDetail(t.Context(), service.database.reader, scope, string(issue.WorkItemID), project.changes[index].ID, service.config.now())
+			if err != nil || detail.Summary.Status != card.Change.Status {
+				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
+			}
+		}
+	}
+}
