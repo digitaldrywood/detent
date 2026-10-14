@@ -148,6 +148,11 @@ Hub-stored source bundle, and work that must survive is published to the Hub.
 Never add machine-local state that later jobs depend on, configuration discovered
 by scanning the machine, or routing by where earlier work ran.
 
+Follow [INV-18](docs/invariants.md#inv-18--hub-writes-stay-small):
+a request's write transaction writes only what that request owns and never
+rebuilds rollups or reprojects other rows; derived data is refreshed in the
+background one item per short transaction. New Hub columns are typed, never JSON.
+
 ## Validation
 
 Every change gets a per-change security audit before merge, bound to its exact

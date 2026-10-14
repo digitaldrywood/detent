@@ -306,6 +306,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	if stored[1].input != 3000 || stored[1].cost != 0.75 {
 		t.Fatalf("replaced row = %+v, want the running total, not a sum", stored[1])
 	}
+	drainTestAnalytics(t, f.service)
 	window := usageWindow{From: f.service.config.now().Add(-time.Hour), To: f.service.config.now().Add(time.Hour)}
 	raw, err := readUsageRows(t.Context(), f.service.database.reader, string(f.project.OrganizationID), window, []string{string(f.project.ID)}, maxAnalyticsPopulation)
 	if err != nil {
@@ -316,7 +317,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(projected) != 2 || !reflect.DeepEqual(raw, projected) {
-		t.Fatalf("finished usage not immediately projected: raw=%+v projected=%+v", raw, projected)
+		t.Fatalf("finished usage not projected: raw=%+v projected=%+v", raw, projected)
 	}
 }
 

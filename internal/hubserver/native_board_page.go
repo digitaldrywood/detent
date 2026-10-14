@@ -241,6 +241,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	if err != nil {
 		return page, err
 	}
+	var currentPolicy *changeSummaryPolicy
 	defer rows.Close()
 	for rows.Next() {
 		if len(page.Cards) == limit {
@@ -261,6 +262,24 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		var card tracker.NativeBoardCard
 		if err := json.Unmarshal([]byte(raw), &card); err != nil {
 			return page, err
+		}
+		if card.Change != nil {
+			if currentPolicy == nil {
+				loaded, err := readChangeSummaryPolicy(ctx, tx, scope)
+				if err != nil {
+					return page, err
+				}
+				currentPolicy = &loaded
+			}
+			change, err := readChange(ctx, tx, scope, string(card.Issue.WorkItemID), card.Change.ID)
+			if err != nil {
+				return page, err
+			}
+			detail, err := readCurrentChangeDetailWithPolicy(ctx, tx, scope, change, s.config.now(), currentPolicy)
+			if err != nil {
+				return page, err
+			}
+			card.Change.Status = detail.Summary.Status
 		}
 		card.Issue.Actor.DisplayName = displayName
 		redactNativeBoardCard(&card, grants)

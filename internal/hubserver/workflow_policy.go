@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
@@ -35,20 +36,31 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 		}
 	}
 	current := approval.Policy.ID
-	carryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
-	if current != "" && !carryover {
-		if source == nil || approval.Policy.Workflow == nil || !validCommitID(approval.Policy.Workflow.Revision) {
+	authoredCarryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
+	carryover := authoredCarryover
+	if current != "" && !authoredCarryover {
+		equivalent, err := workflowconfig.SameSharedPolicyBehavior(approval.Policy, descriptor)
+		if err != nil {
+			return err
+		}
+		delegated := source != nil && approval.Policy.Workflow != nil && validCommitID(approval.Policy.Workflow.Revision)
+		if !equivalent && !delegated {
 			return d.commit(ctx, tx)
 		}
 		var previouslyApproved, repositoryAdopted bool
-		if err := tx.QueryRowContext(ctx, `SELECT
+		if delegated {
+			if err := tx.QueryRowContext(ctx, `SELECT
 EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ?),
 EXISTS (SELECT 1 FROM project_workflow_applies WHERE scope = ? AND repository = ? COLLATE NOCASE AND source_commit = ? AND definition_digest = ?)`, scope, descriptor.ID, scope, source.Repository, approval.Policy.Workflow.Revision, approval.Policy.SourceDigest).Scan(&previouslyApproved, &repositoryAdopted); err != nil {
+				return err
+			}
+		} else if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM policy_revisions WHERE scope=? AND policy_id=?)", scope, descriptor.ID).Scan(&previouslyApproved); err != nil {
 			return err
 		}
-		if previouslyApproved || !repositoryAdopted {
+		if previouslyApproved || !repositoryAdopted && (!equivalent || descriptor.Workflow != nil) {
 			return d.commit(ctx, tx)
 		}
+		carryover = equivalent
 	}
 	if descriptor.Workflow != nil {
 		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
@@ -61,7 +73,7 @@ EXISTS (SELECT 1 FROM project_workflow_applies WHERE scope = ? AND repository = 
 		if repository == "" || !strings.EqualFold(repository, source.Repository) {
 			return d.commit(ctx, tx)
 		}
-		if !carryover && !source.DefaultBranchReachable {
+		if !authoredCarryover && !source.DefaultBranchReachable {
 			return d.commit(ctx, tx)
 		}
 	} else {
@@ -77,7 +89,7 @@ EXISTS (SELECT 1 FROM project_workflow_applies WHERE scope = ? AND repository = 
 	}
 	if current != descriptor.ID {
 		actor := "repository-default-branch"
-		if carryover {
+		if authoredCarryover || descriptor.Workflow == nil && carryover {
 			actor = approval.ApprovedBy
 		}
 		if actor == "" || strings.HasPrefix(actor, "runner_") {

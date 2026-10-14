@@ -227,6 +227,12 @@ organization/project scope. Policies are resolved on the customer host. See
 | Either policy endpoint | `DELETE` | Instance administrator only; `expected_policy_id`. Revokes current authority while retaining revision/lease history. |
 | `/api/v2/organizations/{organization}/projects/{project}/policy/observed` | `POST` | A runner with the `heartbeat` operation reports its resolved descriptor, including successful matches. The Hub retains the latest report per runner and returns distinct mismatches with all reporting runner IDs in `GET .../onboarding`. Conflicting configurations and previously approved reports are not new approval candidates. An enrolled runner may include `repository_source` alongside the descriptor: `repository`, `commit`, `default_branch`, `default_branch_head` and `default_branch_reachable`. Every new committed workflow definition reachable from the bound repository's default branch, including replacements of an approved policy, is applied through the existing atomic policy approval path as `repository-default-branch`. Replaying a historical approval does not replace current authority. Other reports remain pending. |
 
+Enrolled runner credentials receive the current approved descriptor and approval
+provenance from `GET .../policy`, without workflow apply history. Operator reads
+retain complete historical definitions and the existing `limit` and `after`
+pagination. Retained history therefore does not enlarge the runner's current
+execution contract.
+
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
 only and is not served in hosted mode. Runners report each distinct resolved
@@ -761,7 +767,10 @@ when observed pressure leaves no safe slot estimate.
 at once" value: `limit`, `current`, `direction` (`lower`, `raise`, `hold` or
 `insufficient_evidence`), `hours_covered`, `saturated_hours` and up to three
 `reasons`. An hour counts when it has memory and CPU samples, and is busy when
-slots were in use. A busy hour is saturated when memory pressure warned or was
+slots were in use. Shared runners leave person hours, as split for the periods
+above, out of coverage and saturation because the person's own work loads them;
+those hours still feed the low-disk reason and the adjacent-hour CPU and swap
+checks. A busy hour is saturated when memory pressure warned or was
 critical, PSI `some` avg10 averaged above 10, swap grew by at least 1 GiB over a
 swap-sampled previous hour, or CPU busy averaged 90% or more in it and an
 adjacent hour. Load average is not used. Fewer than 24 counted hours returns
