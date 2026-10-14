@@ -471,7 +471,7 @@ if [ "$1" = env ]; then
         if [ -f .git/compiler-flags ]; then flags=$(cat .git/compiler-flags); fi
         if [ -f .git/cgo-flags ]; then cgo_flags=$(cat .git/cgo-flags); fi
         if [ -f .git/prefix-target ]; then target=$(cat .git/prefix-target); fi
-		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","CGO_ENABLED":"%s","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "${FIXTURE_CGO_ENABLED:-0}" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
+		printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s","CGO_ENABLED":"%s","CC":"fixture-cc","CXX":"fixture-cxx","GOFLAGS":"%s","GOROOT":"%s","GOTOOLDIR":"%s/pkg/tool/linux_amd64","CGO_CFLAGS":"%s","GOGCCFLAGS":"%s -ffile-prefix-map=/scratch/probe-%s/go-build%s=%s -gno-record-gcc-switches"}\n' "$version" "${FIXTURE_CGO_ENABLED:-0}" "$effective_flags" "$FIXTURE_GOROOT" "$FIXTURE_GOROOT" "$cgo_flags" "$flags" "$count" "$count" "$target"
     else
         case "$2" in GOHOSTOS) echo linux;; GOHOSTARCH) echo amd64;; GOVERSION) echo "$version";; esac
     fi
@@ -486,6 +486,11 @@ fi
 `
 				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
 					t.Fatal(err)
+				}
+				for _, name := range []string{"fixture-cc", "fixture-cxx"} {
+					if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+						t.Fatal(err)
+					}
 				}
 				npmRoot := filepath.Join(bin, "npm-package")
 				for name, content := range map[string]string{"package.json": `{"name":"npm"}`, "bin/npm-cli.js": "#!/bin/sh\nif [ \"$1\" = config ]; then\n    case \"$3\" in\n        userconfig) printf '%s/.git/npm-userconfig\\n' \"$PWD\";;\n        globalconfig) printf '%s/.git/npm-globalconfig\\n' \"$PWD\";;\n    esac\nfi\n", "lib/cli.js": "first\n"} {
