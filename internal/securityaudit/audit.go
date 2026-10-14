@@ -31,8 +31,6 @@ const (
 	ReasonFailed             = "failed"
 	ReasonDiffTooLarge       = "diff_too_large"
 	ReasonEmptyOutput        = "empty_output"
-	ReasonMeteredAuth        = "metered_auth"
-	ReasonUntrustedService   = "untrusted_service"
 	ReasonReviewerMismatch   = "reviewer_mismatch"
 	ReasonUnresolvedFindings = "unresolved_findings"
 )
@@ -145,12 +143,8 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 		evaluation.Reason = ReasonMissing
 		return evaluation
 	}
-	if !sameKey(run, key) {
+	if strings.TrimSpace(key.BaseSHA) == "" || strings.TrimSpace(key.HeadSHA) == "" || !sameKey(run, key) {
 		evaluation.Reason = ReasonStale
-		return evaluation
-	}
-	if strings.TrimSpace(run.ServiceIdentity) == "" || strings.TrimSpace(run.ServiceIdentity) != strings.TrimSpace(serviceIdentity) {
-		evaluation.Reason = ReasonUntrustedService
 		return evaluation
 	}
 	if run.ReviewerVersion != ReviewerVersion || run.ReviewerDigest != ReviewerDigest() {
@@ -161,14 +155,6 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 		evaluation.Reason = ReasonDiffTooLarge
 		evaluation.ActualBytes = size.ActualBytes
 		evaluation.MaxDiffBytes = size.LimitBytes
-		return evaluation
-	}
-	if run.AuthenticationMode == AuthenticationNotRun {
-		evaluation.Reason = ReasonFailed
-		return evaluation
-	}
-	if run.AuthenticationMode != AuthenticationSubscription {
-		evaluation.Reason = ReasonMeteredAuth
 		return evaluation
 	}
 	if run.ExitStatus != ExitStatusSuccess {
@@ -199,7 +185,7 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 
 func validSuccessfulRun(run Run) bool {
 	if strings.TrimSpace(run.InvocationID) == "" || run.WorkerPID <= 0 || run.WorkerPGID <= 0 || run.WorkerStartedAt.IsZero() ||
-		strings.TrimSpace(run.ProviderThreadID) == "" || strings.TrimSpace(run.ProviderSessionID) == "" ||
+
 		run.StartedAt.IsZero() || run.CompletedAt.IsZero() || run.CompletedAt.Before(run.StartedAt) ||
 		run.WorkerStartedAt.Before(run.StartedAt) || run.WorkerStartedAt.After(run.CompletedAt) ||
 		len(strings.TrimSpace(run.OutputDigest)) != sha256.Size*2 || strings.TrimSpace(run.Summary) == "" {

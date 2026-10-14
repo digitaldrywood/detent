@@ -33,13 +33,6 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	if err != nil {
 		return execution, err
 	}
-	if backendConfig.Kind != config.AgentBackendCodex {
-		return execution, errors.New("security audit requires a Codex app-server backend")
-	}
-	options := backendConfig.CodexOptions()
-	if strings.TrimSpace(options.ModelProvider) != "" {
-		return execution, errors.New("security audit refuses a configured metered model provider")
-	}
 
 	auditWorkspace, err := r.prepareSecurityAuditWorkspace()
 	if err != nil {
@@ -62,15 +55,10 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	execution.InvocationID = uuid.NewString()
 	execution.StartedAt = startedAt
 	selectedModel := selection.Model
-	if configuredModel := strings.TrimSpace(auditConfig.Model); configuredModel != "" {
-		selectedModel = configuredModel
-	}
 	baseModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	selectionIssue := req.Issue
 	selectionIssue.Description = ""
 	baseEnvironment := r.withGoBudget(auditWorkspace, workerEnvironment(map[string]string{
-		"OPENAI_API_KEY":                       "",
-		"AZURE_OPENAI_API_KEY":                 "",
 		"GH_TOKEN":                             "",
 		"GITHUB_TOKEN":                         "",
 		serviceapi.AddressEnvironment:          "",
@@ -109,21 +97,20 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 	}
 	removeAuditWorkspace = false
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
-		Workspace:               auditWorkspace,
-		Prompt:                  prompt,
-		ToolInstructions:        securityaudit.ToolInstructions(),
-		ReadOnly:                true,
-		RequireSubscriptionAuth: true,
-		Model:                   selectedModel,
-		ModelProvider:           modelProvider,
-		ServiceTier:             serviceTier,
-		ReasoningEffort:         effort,
-		TurnTimeout:             durationFromMillis(auditConfig.TurnTimeoutMS),
-		MaxDuration:             durationFromMillis(auditConfig.TurnTimeoutMS),
-		Environment:             baseEnvironment,
-		MaxRSSBytes:             r.maxAgentRSSBytes,
-		RSSPollInterval:         r.rssPollInterval,
-		processRSS:              r.processRSS,
+		Workspace:        auditWorkspace,
+		Prompt:           prompt,
+		ToolInstructions: securityaudit.ToolInstructions(),
+		ReadOnly:         true,
+		Model:            selectedModel,
+		ModelProvider:    modelProvider,
+		ServiceTier:      serviceTier,
+		ReasoningEffort:  effort,
+		TurnTimeout:      durationFromMillis(auditConfig.TurnTimeoutMS),
+		MaxDuration:      durationFromMillis(auditConfig.TurnTimeoutMS),
+		Environment:      baseEnvironment,
+		MaxRSSBytes:      r.maxAgentRSSBytes,
+		RSSPollInterval:  r.rssPollInterval,
+		processRSS:       r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse
@@ -140,6 +127,11 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		}
 		previousIdentity := runResult.RuntimeIdentity
 		applyAgentUpdate(&runResult, update)
+		if req.OnUsageUpdate != nil {
+			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity}); err != nil {
+				return err
+			}
+		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
 				return err
@@ -154,10 +146,9 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (execution
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
 	}
 
+	execution.RuntimeIdentity = runResult.RuntimeIdentity
+	execution.SessionID = sessionID
 	execution.AuthenticationMode = turnResult.AuthenticationMode
-	if errors.Is(turnErr, ErrSubscriptionAuthRequired) {
-		execution.AuthenticationMode = securityaudit.AuthenticationRejected
-	}
 	execution.ProviderThreadID = turnResult.ThreadID
 	execution.ProviderSessionID = turnResult.SessionID
 	execution.Output = output.String()

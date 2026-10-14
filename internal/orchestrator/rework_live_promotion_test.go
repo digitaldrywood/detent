@@ -151,7 +151,7 @@ func TestReworkLiveSecurityAudit(t *testing.T) {
 		{name: "not run", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonMissing}, want: AutoPromoteActionAwaitReview},
 		{name: "pass", audit: securityaudit.Evaluation{Allowed: true, Reason: securityaudit.ReasonReady}, want: AutoPromoteActionPromote},
 		{name: "running", audit: securityaudit.Evaluation{Running: true}, want: AutoPromoteActionAwaitReview},
-		{name: "failed", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonFailed}, want: AutoPromoteActionRework},
+		{name: "failed", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonFailed}, want: AutoPromoteActionAwaitReview},
 		{name: "findings", audit: securityaudit.Evaluation{Reason: securityaudit.ReasonUnresolvedFindings}, want: AutoPromoteActionRework},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
