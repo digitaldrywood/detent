@@ -54,7 +54,7 @@ func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, erro
 		return state.approval, state.approvalErr
 	}
 	var approval policy.Approval
-	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval))
+	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy?limit=1", nil, &approval))
 	var failure *APIError
 	if c.client.runner != nil && (err == nil || errors.As(err, &failure) && failure.Code == "policy_mismatch") {
 		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
