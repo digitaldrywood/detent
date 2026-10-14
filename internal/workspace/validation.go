@@ -42,8 +42,13 @@ func directGoValidation(validation string) bool {
 	if args[1] == "version" && len(args) != 2 {
 		return false
 	}
+	flagsSeen := false
 	for _, arg := range args[2:] {
-		if !strings.HasPrefix(arg, "-") && (strings.HasPrefix(arg, "/") || arg == ".." || strings.HasPrefix(arg, "../") || strings.Contains(arg, "/../") || strings.HasSuffix(arg, "/..") || strings.HasSuffix(arg, ".go")) {
+		if strings.HasPrefix(arg, "-") {
+			flagsSeen = true
+			continue
+		}
+		if flagsSeen || strings.HasPrefix(arg, "/") || arg == ".." || strings.HasPrefix(arg, "../") || strings.Contains(arg, "/../") || strings.HasSuffix(arg, "/..") || strings.HasSuffix(arg, ".go") {
 			return false
 		}
 	}
@@ -62,7 +67,6 @@ func reusableGoValidationFlags(args []string) bool {
 			continue
 		}
 		name, _, _ := strings.Cut(arg, "=")
-		name = strings.TrimPrefix(name, "-test.")
 		name = strings.TrimPrefix(name, "-")
 		switch name {
 		case "a", "n", "x", "v", "race", "msan", "asan", "trimpath", "work", "p", "buildvcs", "buildmode", "tags", "mod", "modcacherw", "installsuffix", "c", "short", "json", "run", "bench", "benchtime", "benchmem", "count", "cpu", "failfast", "fullpath", "list", "parallel", "shuffle", "skip", "timeout", "vet":
