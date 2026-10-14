@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -29,6 +30,24 @@ type stripeProvider struct {
 	live   bool
 	client *http.Client
 }
+
+type StripeError struct {
+	StatusCode int
+	Method     string
+	Path       string
+	Type       string
+	Code       string
+	Param      string
+	Message    string
+	RequestID  string
+	cause      error
+}
+
+func (e *StripeError) Error() string {
+	return fmt.Sprintf("stripe billing request failed with status %d", e.StatusCode)
+}
+
+func (e *StripeError) Unwrap() error { return e.cause }
 
 func ValidMode(mode string) bool {
 	return mode == ModeTest || mode == ModeLive
@@ -63,7 +82,7 @@ func (s *stripeProvider) request(ctx context.Context, method, path, key string, 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
-		return errors.New("stripe request could not be constructed")
+		return fmt.Errorf("construct stripe request: %w", err)
 	}
 	req.SetBasicAuth(s.key, "")
 	req.Header.Set("Stripe-Version", StripeAPIVersion)
@@ -75,14 +94,24 @@ func (s *stripeProvider) request(ctx context.Context, method, path, key string, 
 	}
 	response, err := s.client.Do(req)
 	if err != nil {
-		return errors.New("stripe is temporarily unavailable")
+		return fmt.Errorf("send stripe request: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		if response.StatusCode == http.StatusPaymentRequired && path == "payment_intents" {
-			return ErrPaymentFailed
+		failure := &StripeError{StatusCode: response.StatusCode, Method: method, Path: path, RequestID: response.Header.Get("Request-Id")}
+		var payload struct {
+			Error struct{ Type, Code, Param, Message string }
 		}
-		return errors.New("stripe could not complete the billing request")
+		raw, readErr := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
+		if readErr != nil {
+			failure.cause = fmt.Errorf("read stripe error response: %w", readErr)
+		} else if len(raw) <= 2*1024*1024 && json.Unmarshal(raw, &payload) == nil {
+			failure.Type, failure.Code, failure.Param, failure.Message = payload.Error.Type, payload.Error.Code, payload.Error.Param, payload.Error.Message
+		}
+		if response.StatusCode == http.StatusPaymentRequired && path == "payment_intents" {
+			failure.cause = errors.Join(failure.cause, ErrPaymentFailed)
+		}
+		return failure
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 2*1024*1024+1))
 	if err != nil || len(raw) > 2*1024*1024 || json.Unmarshal(raw, result) != nil {

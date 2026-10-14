@@ -49,7 +49,7 @@ func (w *hostedBillingWorker) run(ctx context.Context) {
 		err := w.reconcile(ctx)
 		w.mu.Unlock()
 		if err != nil && ctx.Err() == nil {
-			w.service.config.Logger.Warn("hosted billing reconciliation unavailable; retaining bounded local access")
+			w.service.config.Logger.WarnContext(ctx, "hosted billing reconciliation unavailable; retaining bounded local access", billingErrorAttrs(err)...)
 		}
 		select {
 		case <-ctx.Done():
