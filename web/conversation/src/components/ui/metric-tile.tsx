@@ -27,6 +27,14 @@ export type MetricDelta = {
 
 const NOT_RECORDED = "Not recorded";
 
+const TONE_WORD = { good: "better", bad: "worse", neutral: "no change" } as const;
+
+/** The change in words for screen readers: "up 38 vs prior 7d, better". */
+export function deltaDescription(delta: NonNullable<MetricDelta>): string {
+  const direction = delta.direction === "flat" ? "" : `${delta.direction} `;
+  return delta.tone === "neutral" ? `${direction}${delta.text}` : `${direction}${delta.text}, ${TONE_WORD[delta.tone]}`;
+}
+
 function MetricTileGroup({ className, ...props }: React.ComponentProps<"section">) {
   return (
     <section
@@ -81,8 +89,11 @@ function MetricTile({
             delta.tone === "neutral" && "text-muted-foreground",
           )}
         >
-          {delta.direction === "flat" ? null : <span aria-hidden>{delta.direction === "up" ? "▲ " : "▼ "}</span>}
-          {delta.text}
+          <span aria-hidden>
+            {delta.direction === "flat" ? null : delta.direction === "up" ? "▲ " : "▼ "}
+            {delta.text}
+          </span>
+          <span className="sr-only">{deltaDescription(delta)}</span>
         </span>
       )}
       {detail === undefined ? null : <span className="text-muted-foreground text-xs">{detail}</span>}

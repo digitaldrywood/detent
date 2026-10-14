@@ -301,7 +301,7 @@ export function ReportsView({
               ) : tab === "failures" ? (
                 <FailuresTab report={report} search={search} />
               ) : (
-                <OverviewTab report={report} search={search} onOpenTab={(next) => onNavigate(next, search)} />
+                <OverviewTab report={report} search={search} />
               )}
             </TabsPanel>
           </WorkspacePageContainer>

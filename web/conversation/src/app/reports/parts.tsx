@@ -5,7 +5,7 @@ import React from "react";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import type { ReportsReport } from "../../contracts/reports.ts";
-import { issueTitle, type ReportTab } from "./model.ts";
+import { issueTitle, reportsSearchParams, type ReportsSearch, type ReportTab } from "./model.ts";
 
 export const NOT_RECORDED = "Not recorded";
 
@@ -54,21 +54,26 @@ export function LaneBadge({ lane }: { readonly lane: string }): React.ReactEleme
   );
 }
 
-/** "Open Flow →": a card's link into the tab that owns its detail. */
+/** "Open Flow →": a card's link into the tab that owns its detail, keeping the range and view. */
 export function TabLink({
   tab,
+  search,
   children,
-  onOpen,
 }: {
   readonly tab: ReportTab;
+  readonly search: ReportsSearch;
   readonly children: React.ReactNode;
-  readonly onOpen: (tab: ReportTab) => void;
 }): React.ReactElement {
   return (
-    <Button size="compact" variant="ghost-muted" onClick={() => onOpen(tab)}>
+    <Link
+      to={tab === "overview" ? "/reports" : "/reports/$tab"}
+      params={(tab === "overview" ? {} : { tab }) as never}
+      search={reportsSearchParams(search) as never}
+      className="inline-flex items-center gap-1 rounded-sm text-muted-foreground text-xs outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+    >
       {children}
-      <ArrowRightIcon aria-hidden />
-    </Button>
+      <ArrowRightIcon aria-hidden className="size-3.5" />
+    </Link>
   );
 }
 

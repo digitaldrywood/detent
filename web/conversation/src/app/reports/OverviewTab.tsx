@@ -1,6 +1,7 @@
 import React from "react";
 
 import { Chart, ChartLegend, ChartPanel, ProportionBar } from "../../components/ui/chart.tsx";
+import { useMediaQuery } from "../../hooks/useMediaQuery.ts";
 import { MetricTile, MetricTileGroup } from "../../components/ui/metric-tile.tsx";
 import type { ReportsReport } from "../../contracts/reports.ts";
 import { formatCount, formatUsd } from "../usage/usageFormat.ts";
@@ -17,7 +18,6 @@ import {
   rangeOption,
   reportBuckets,
   type ReportsSearch,
-  type ReportTab,
   usdDelta,
 } from "./model.ts";
 import { Dash, IssueLink, LaneBadge, Muted, TabLink } from "./parts.tsx";
@@ -51,15 +51,8 @@ export function ageTone(item: { hours: number; lane_p90_hours?: number | undefin
   return "text-muted-foreground";
 }
 
-export function OverviewTab({
-  report,
-  search,
-  onOpenTab,
-}: {
-  readonly report: ReportsReport;
-  readonly search: ReportsSearch;
-  readonly onOpenTab: (tab: ReportTab) => void;
-}): React.ReactElement {
+export function OverviewTab({ report, search }: { readonly report: ReportsReport; readonly search: ReportsSearch }): React.ReactElement {
+  const phone = useMediaQuery("max-sm");
   const compare = search.compare;
   const prior = rangeOption(search.range).prior;
   const usageMissing = report.unavailable.includes("recorded_usage");
@@ -122,6 +115,7 @@ export function OverviewTab({
           detail={cost === undefined ? undefined : `${formatUsd(cost)} total`}
         />
         <MetricTile
+          className="max-sm:hidden"
           label="Stuck over 24h"
           value={residenceMissing ? null : formatCount(open.stuck)}
           delta={compare ? countDelta(open.stuck, open.previous_stuck, false) : undefined}
@@ -135,8 +129,8 @@ export function OverviewTab({
           <ChartLegend
             items={[
               { label: "Shipped", color: "var(--success)" },
-              { label: "Failed attempts", color: "var(--warning)" },
-              ...(compare && hasPrior ? [{ label: rangeOption(search.range).prior.replace(/^p/, "P"), color: "var(--muted-foreground)", dashed: true }] : []),
+              ...(phone ? [] : [{ label: "Failed attempts", color: "var(--warning)" }]),
+              ...(compare && hasPrior && !phone ? [{ label: rangeOption(search.range).prior.replace(/^p/, "P"), color: "var(--muted-foreground)", dashed: true }] : []),
             ]}
           />
         }
@@ -148,8 +142,8 @@ export function OverviewTab({
           height={260}
           series={[
             { id: "shipped", label: "Shipped", color: "var(--success)", kind: "bar", values: buckets.map((bucket) => (residenceMissing ? null : bucket.done)) },
-            { id: "failed", label: "Failed attempts", color: "var(--warning)", kind: "bar", values: buckets.map((bucket) => bucket.failed) },
-            ...(compare && hasPrior
+            ...(phone ? [] : [{ id: "failed", label: "Failed attempts", color: "var(--warning)", kind: "bar" as const, values: buckets.map((bucket) => bucket.failed) }]),
+            ...(compare && hasPrior && !phone
               ? [{ id: "prior", label: "Prior period", color: "var(--muted-foreground)", kind: "line" as const, dashed: true, values: buckets.map((bucket) => bucket.prior_done ?? null) }]
               : []),
           ]}
@@ -157,7 +151,7 @@ export function OverviewTab({
       </ChartPanel>
 
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
-        <ChartPanel title="Where cycle time goes" actions={<TabLink tab="flow" onOpen={onOpenTab}>Open Flow</TabLink>}>
+        <ChartPanel title="Where cycle time goes" actions={<TabLink tab="flow" search={search}>Open Flow</TabLink>}>
           {residenceMissing || segmentTotal === 0 ? (
             <Muted>
               <Dash /> {residenceMissing ? "Lane residence is not recorded." : "No completed issues in this range."}
@@ -177,7 +171,7 @@ export function OverviewTab({
             </>
           )}
         </ChartPanel>
-        <ChartPanel title="Most expensive shipped issues" actions={<TabLink tab="cost" onOpen={onOpenTab}>Open Cost</TabLink>}>
+        <ChartPanel title="Most expensive shipped issues" actions={<TabLink tab="cost" search={search}>Open Cost</TabLink>}>
           {usageMissing || !shippedKnown ? (
             <Muted>
               <Dash /> Spend by shipped issue is not recorded.
@@ -197,7 +191,7 @@ export function OverviewTab({
         </ChartPanel>
       </div>
 
-      <ChartPanel title="Stuck right now" actions={<TabLink tab="flow" onOpen={onOpenTab}>All aging work</TabLink>}>
+      <ChartPanel title="Stuck right now" actions={<TabLink tab="flow" search={search}>All aging work</TabLink>}>
         {residenceMissing ? (
           <Muted>
             <Dash /> Aging work is not recorded.

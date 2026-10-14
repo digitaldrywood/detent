@@ -124,7 +124,7 @@ export function FailuresTab({ report, search }: { readonly report: ReportsReport
               return (
                 <ExpandRow
                   key={row.class}
-                  label={`${row.class}: ${formatCount(row.count)} attempts`}
+                  label={`${row.class}, ${badge.label}: ${formatCount(row.count)} attempts, ${formatCount(row.issues)} ${row.issues === 1 ? "issue" : "issues"}, ${usageMissing ? "spend not recorded" : formatUsd(row.cost_usd)}`}
                   summary={
                     <>
                       <span className={`min-w-0 flex-1 truncate ${row.kind === "unknown" ? "text-muted-foreground" : ""}`} title={row.class}>

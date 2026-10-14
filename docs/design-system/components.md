@@ -631,10 +631,10 @@ Tabular data such as usage and billing rows: labels left-aligned, comparable num
 
 ### Metric tile
 
-A headline number with its label, an optional change against the prior period and one line of detail. `MetricTileGroup` joins tiles into one divided panel (two per row on phones); `size="compact"` is the bare value-over-label form for dense pages such as Diagnostics. Pass `value={null}` for an unrecorded value and `delta={null}` for an unrecorded prior; both render a dash with a Not recorded hint, never a zero.
+A headline number with its label, an optional change against the prior period and one line of detail. `MetricTileGroup` joins tiles into one divided panel (two per row on phones); `size="compact"` is the bare value-over-label form for dense pages such as Diagnostics. Pass `value={null}` for an unrecorded value and `delta={null}` for an unrecorded prior; both render a dash with a Not recorded hint, never a zero. A delta pairs its colour with an arrow and reads to screen readers as words, such as "up 38, worse".
 
 - Kind: Primitive; status: available; id: `metric-tile`.
-- Import: `import { MetricTile, MetricTileGroup, MetricDelta } from "~/components/ui/metric-tile";`
+- Import: `import { MetricTile, MetricTileGroup, MetricDelta, deltaDescription } from "~/components/ui/metric-tile";`
 - Source: [src/components/ui/metric-tile.tsx](../../web/conversation/src/components/ui/metric-tile.tsx).
 - Variants: `size`: `default`, `compact`.
 - States: value, not recorded, delta up, delta down, delta not recorded.

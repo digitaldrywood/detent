@@ -9,6 +9,7 @@ import { Dash, ExpandRow, IssueLink, Muted } from "./parts.tsx";
 import { REWORK_GROUPS, reworkByGroup, reworkGroupOf } from "./rework.ts";
 
 const STACK_ORDER = ["refused", "gate", "review", "conflict", "other"] as const;
+const KIND_WORD: Readonly<Record<string, string>> = { infrastructure: "infrastructure", issue: "issue" };
 
 /** The Hub's rework classes, largest first, with Not classified last. */
 export function reworkRows(report: ReportsReport) {
@@ -93,7 +94,7 @@ export function QualityTab({ report, search }: { readonly report: ReportsReport;
               return (
                 <ExpandRow
                   key={row.class}
-                  label={`${row.class}: ${formatCount(row.count)}`}
+                  label={`${row.class}, ${KIND_WORD[row.kind] ?? "unclassified"}: ${formatCount(row.count)} returns, ${formatCount(row.issues)} ${row.issues === 1 ? "issue" : "issues"}`}
                   summary={
                     <>
                       <span className={`w-36 shrink-0 truncate sm:w-64 ${unclassified ? "text-muted-foreground" : ""}`} title={row.class}>
