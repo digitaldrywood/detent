@@ -41,6 +41,7 @@ import {
   SourceRecovery,
   type TransitionReason,
   WorkItemPage,
+  IssuePickerPage,
   WorkItemPullRequestList,
 
   Workspace,
@@ -171,8 +172,10 @@ export interface WorkHttp {
   readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
+  /** The compact issue-picker projection, searched and paged by the hub. */
+  readonly listIssuePicker: (input: { readonly projectId: string; readonly q?: string; readonly cursor?: string; readonly limit?: number; readonly signal?: AbortSignal }) => Promise<IssuePickerPage>;
   readonly getWorkItem: (projectId: string, itemId: string) => Promise<NativeIssue>;
-  readonly getWorkItemById: (itemId: string) => Promise<NativeIssue>;
+  readonly getWorkItemById: (itemId: string, signal?: AbortSignal) => Promise<NativeIssue>;
   readonly getWorkItemConversation: (projectId: string, itemId: string) => Promise<ConversationSnapshot>;
   readonly patchWorkItem: (input: {
     projectId: string;
@@ -599,10 +602,14 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         undefined,
         input.signal,
       ),
+    listIssuePicker: (input) =>
+      send(IssuePickerPage, "GET", url(`${projectBase(input.projectId)}/work-items`, {
+        fields: "picker", q: input.q?.trim() || undefined, cursor: input.cursor, limit: input.limit,
+      }), undefined, input.signal),
     getWorkItem: (projectId, itemId) =>
       send(NativeIssue, "GET", url(itemBase(projectId, itemId))),
-    getWorkItemById: (itemId) =>
-      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`)),
+    getWorkItemById: (itemId, signal) =>
+      send(NativeIssue, "GET", url(`${options.apiBase}/work-items/${encodeURIComponent(itemId)}`), undefined, signal),
     getWorkItemConversation: (projectId, itemId) =>
       send(ConversationSnapshot, "GET", url(`${itemBase(projectId, itemId)}/conversation`)),
     listLabels: (projectId) =>

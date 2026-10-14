@@ -61,6 +61,7 @@ function NavRow({
   label,
   active,
   onClick,
+  onIntent,
   disabled = false,
   trailing,
   testId,
@@ -69,6 +70,7 @@ function NavRow({
   label: string;
   active: boolean;
   onClick?: (() => void) | undefined;
+  onIntent?: (() => void) | undefined;
   disabled?: boolean;
   trailing?: React.ReactNode;
   testId?: string;
@@ -82,6 +84,8 @@ function NavRow({
       aria-disabled={disabled ? true : undefined}
       disabled={disabled}
       onClick={disabled ? undefined : onClick}
+      onPointerEnter={disabled ? undefined : onIntent}
+      onFocus={disabled ? undefined : onIntent}
       className="w-full min-w-0 focus-visible:ring-inset"
     >
       {icon}
@@ -193,6 +197,7 @@ export function SidebarDestinations(): React.ReactElement | null {
           onClick={() =>
             navigate(activeProjectId === null ? "/work" : `/work/p/${activeProjectId}`)
           }
+          onIntent={() => navigation.onPrefetch?.(activeProjectId === null ? "/work" : `/work/p/${activeProjectId}`)}
         />
         <NavRow
           testId="nav-chat"
@@ -223,6 +228,7 @@ export function SidebarDestinations(): React.ReactElement | null {
                     label={`${issueNumberLabel(conversation.work_item!.identifier)} ${conversation.work_item!.title}`}
                     active={navigation.activePath === `/work/i/${conversation.work_item!.id}`}
                     onClick={() => navigate(`/work/i/${conversation.work_item!.id}`)}
+                    onIntent={() => navigation.onPrefetch?.(`/work/i/${conversation.work_item!.id}`)}
                     trailing={
                       <span className="shrink-0 text-xs text-sidebar-muted-foreground">
                         {relativeTimeLabel(conversation.execution.updated_at, { now: Date.now() })}
@@ -277,6 +283,7 @@ export function SidebarDestinations(): React.ReactElement | null {
                 ) : undefined}
                 active={row.to !== null && navigation.activePath === row.to}
                 onClick={row.to === null ? undefined : () => navigate(row.to as string)}
+                onIntent={row.to === null ? undefined : () => navigation.onPrefetch?.(row.to as string)}
               />
             ))}
           </SidebarMenu>

@@ -41,6 +41,9 @@ import { useShell } from "../App.tsx";
 import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 import { allProjectsLabel } from "../lib/projectScope.ts";
+import { prefetchIssue } from "./lib/issueQuery.ts";
+
+const HOVER_INTENT_MS = 150;
 
 function applyFilters(
   items: readonly WorkItemView[],
@@ -181,6 +184,27 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
     },
     [navigate],
   );
+
+  // Hover intent: a card's first-paint read starts after the pointer rests on
+  // it briefly, and is cancelled when the pointer leaves first.
+  const pending = React.useRef<{ timer: ReturnType<typeof setTimeout>; controller: AbortController } | null>(null);
+  const intentEnd = React.useCallback(() => {
+    if (pending.current === null) return;
+    clearTimeout(pending.current.timer);
+    pending.current.controller.abort();
+    pending.current = null;
+  }, []);
+  const intent = React.useCallback((item: WorkItemView) => {
+    intentEnd();
+    const controller = new AbortController();
+    pending.current = {
+      controller,
+      timer: setTimeout(() => prefetchIssue(http, item.id, item.projectId, controller.signal), HOVER_INTENT_MS),
+    };
+  }, [http, intentEnd]);
+  React.useEffect(() => () => {
+    if (pending.current !== null) clearTimeout(pending.current.timer);
+  }, []);
 
   const move = React.useCallback(
     (item: WorkItemView, toState: string) => {
@@ -416,6 +440,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
             onLoadMore={board.loadMore}
             showProject={projectId === null}
             onOpen={open}
+            onIntent={intent}
+            onIntentEnd={intentEnd}
             movesFor={movesFor}
             onMove={move}
           />
@@ -438,6 +464,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
                   loadingMore={board.backlogLoading}
                   showProject={projectId === null}
                   onOpen={open}
+                  onIntent={intent}
+                  onIntentEnd={intentEnd}
                   movesFor={movesFor}
                   onMove={move}
                   movingIds={moving}
