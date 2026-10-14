@@ -207,6 +207,12 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		gateFailure  bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
+		{name: "linked app source declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "app-link", wantRuns: 2},
+		{name: "external npm script shell declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "npm-shell", wantRuns: 2},
+		{name: "external npm configuration declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "npm-config", wantRuns: 2},
+		{name: "effective Go execution hook declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "toolexec", wantRuns: 2},
+		{name: "external CGO source declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "cgo-source", wantRuns: 2},
+		{name: "external Python source declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "python-source", wantRuns: 2},
 		{name: "asset file framing changes require command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "asset-framing", wantRuns: 1},
 		{name: "npm implementation replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "npm-implementation", wantRuns: 1},
 		{name: "scope selector Git replacement requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, changedInput: "scope-git", wantRuns: 1},
@@ -343,6 +349,18 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if test.changedInput == "app-link" {
+					app := t.TempDir()
+					if err := os.WriteFile(filepath.Join(app, "package.json"), []byte(`{}`), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Join(source, "web"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(app, filepath.Join(source, "web", "conversation")); err != nil {
+						t.Fatal(err)
+					}
+				}
 				runRunnerGit(t, source, "add", ".")
 				runRunnerGit(t, source, "commit", "-m", "landing fixture")
 				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
@@ -391,7 +409,7 @@ fi
 					t.Fatal(err)
 				}
 				npmRoot := filepath.Join(bin, "npm-package")
-				for name, content := range map[string]string{"package.json": `{"name":"npm"}`, "bin/npm-cli.js": "#!/bin/sh\n:\n", "lib/cli.js": "first\n"} {
+				for name, content := range map[string]string{"package.json": `{"name":"npm"}`, "bin/npm-cli.js": "#!/bin/sh\nif [ \"$1\" = config ]; then\n    case \"$3\" in\n        userconfig) printf '%s/.git/npm-userconfig\\n' \"$PWD\";;\n        globalconfig) printf '%s/.git/npm-globalconfig\\n' \"$PWD\";;\n    esac\nfi\n", "lib/cli.js": "first\n"} {
 					path := filepath.Join(npmRoot, name)
 					if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 						t.Fatal(err)
@@ -437,6 +455,12 @@ fi
 				}
 				t.Setenv("PATH", searchPath)
 				t.Setenv("GOTOOLCHAIN", "go1.27.1")
+				if test.changedInput == "npm-shell" {
+					t.Setenv("npm_config_script_shell", filepath.Join(bin, "external-shell"))
+				}
+				if test.changedInput == "python-source" {
+					t.Setenv("PYTHONPATH", filepath.Join(bin, "python-source"))
+				}
 				if strings.HasPrefix(command, "go ") {
 					t.Setenv("GOTOOLCHAIN", "go1.26.9")
 				}
@@ -461,8 +485,21 @@ fi
 				worktree.info.Path = source
 				head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 				worktree.heads = []string{head}
-				if test.changedInput == "persistent-flags" {
-					if err := os.WriteFile(filepath.Join(source, ".git", "effective-go-flags"), []byte("-overlay=../overlay.json"), 0o600); err != nil {
+				if test.changedInput == "persistent-flags" || test.changedInput == "toolexec" {
+					flags := "-overlay=../overlay.json"
+					if test.changedInput == "toolexec" {
+						flags = "-toolexec=../external-wrapper"
+					}
+					if err := os.WriteFile(filepath.Join(source, ".git", "effective-go-flags"), []byte(flags), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.changedInput == "npm-config" || test.changedInput == "cgo-source" {
+					name, content := "npm-userconfig", "script-shell=../external-shell"
+					if test.changedInput == "cgo-source" {
+						name, content = "cgo-flags", "-include ../external-header.h"
+					}
+					if err := os.WriteFile(filepath.Join(source, ".git", name), []byte(content), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}

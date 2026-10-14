@@ -46,7 +46,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 		key, value, _ := strings.Cut(entry, "=")
 		if key == "GOFLAGS" {
 			for _, flag := range strings.Fields(value) {
-				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") {
+				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-toolexec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") {
 					return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 				}
 			}
@@ -177,6 +177,48 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 		return &gate.CommandEvidence{Checks: []gate.CheckObservation{}}
 	}
 
+	for _, name := range []string{"web", "web/conversation"} {
+		info, err := os.Lstat(filepath.Join(command.Dir, filepath.FromSlash(name)))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.IsDir() {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+	}
+	tracked := validationProbe(ctx, command, "git ls-files --stage -z -- web/conversation")
+	if tracked == nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	files, err := tracked.Output()
+	if err != nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	for _, file := range strings.Split(string(files), "\x00") {
+		if strings.HasPrefix(file, "120000 ") {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+	}
+	ignored := validationProbe(ctx, command, "git status --porcelain=v1 --ignored=matching -z -- web/conversation")
+	if ignored == nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	files, err = ignored.Output()
+	if err != nil {
+		evidence.InputsSHA = ""
+		return evidence
+	}
+	for _, file := range strings.Split(string(files), "\x00") {
+		if strings.HasPrefix(file, "!! ") && !strings.HasPrefix(file, "!! web/conversation/node_modules/") {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+	}
 	for _, name := range []string{"web/conversation/package.json", "web/conversation/package-lock.json"} {
 		content, err := os.ReadFile(filepath.Join(command.Dir, filepath.FromSlash(name)))
 		if os.IsNotExist(err) {
@@ -215,6 +257,23 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 		return evidence
 	}
 	_, _ = digest.Write(identity)
+	for _, name := range []string{"userconfig", "globalconfig"} {
+		config := validationProbe(ctx, &probe, "npm config get "+name)
+		if config == nil {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+		output, err := config.Output()
+		path := strings.TrimSpace(string(output))
+		if err != nil || !filepath.IsAbs(path) || strings.ContainsAny(path, "\r\n") {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			evidence.InputsSHA = ""
+			return evidence
+		}
+	}
 	evidence.InputsSHA = hex.EncodeToString(digest.Sum(nil))
 	return evidence
 }
@@ -279,7 +338,16 @@ func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte) s
 	for key, value := range goEnvironment {
 		if key == "GOFLAGS" {
 			for _, flag := range strings.Fields(value) {
-				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") || strings.HasPrefix(flag, "-ldflags") {
+				if strings.HasPrefix(flag, "-exec") || strings.HasPrefix(flag, "-toolexec") || strings.HasPrefix(flag, "-modfile") || strings.HasPrefix(flag, "-overlay") || strings.HasPrefix(flag, "-C") || strings.HasPrefix(flag, "-compiler") || strings.HasPrefix(flag, "-pkgdir") || strings.HasPrefix(flag, "-ldflags") {
+					return ""
+				}
+			}
+		}
+		if slices.Contains([]string{"CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_FFLAGS", "CGO_LDFLAGS"}, key) {
+			for _, flag := range strings.Fields(value) {
+				switch flag {
+				case "-O", "-O0", "-O1", "-O2", "-O3", "-Os", "-Oz", "-Og", "-Ofast", "-g", "-g0", "-g1", "-g2", "-g3", "-ggdb", "-ggdb1", "-ggdb2", "-ggdb3":
+				default:
 					return ""
 				}
 			}
@@ -306,30 +374,10 @@ func validationInputs(ctx context.Context, command *exec.Cmd, observed []byte) s
 		if slices.Contains([]string{"TMPDIR", "TMP", "TEMP", "GOTMPDIR", "DETENT_WORKER_SCRATCH", "PWD", "OLDPWD", "SHLVL", "_"}, key) {
 			continue
 		}
-		if key == "NODE_OPTIONS" && value != "" {
+		if value != "" && (key == "NODE_OPTIONS" || strings.HasPrefix(key, "PYTHON") || strings.HasPrefix(strings.ToLower(key), "npm_config_")) {
 			return ""
 		}
 		values[key] = strings.ReplaceAll(value, command.Dir, "<workspace>")
-	}
-	for _, flag := range strings.Fields(goEnvironment["GOFLAGS"]) {
-		if strings.HasPrefix(flag, "-toolexec") {
-			path, ok := strings.CutPrefix(flag, "-toolexec=")
-			if !ok || path == "" || strings.ContainsAny(path, "\"'`$;&|<>\n\r()%!^") {
-				return ""
-			}
-			if !filepath.IsAbs(path) {
-				path, err = validationExecutable(ctx, command, path)
-				if err != nil {
-					return ""
-				}
-			}
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return ""
-			}
-			digest := sha256.Sum256(content)
-			values["toolexec_sha"] = hex.EncodeToString(digest[:])
-		}
 	}
 	environment, err := json.Marshal(values)
 	if err != nil {
@@ -356,7 +404,16 @@ func validationProbe(ctx context.Context, command *exec.Cmd, text string) *exec.
 }
 
 func validationExecutable(ctx context.Context, command *exec.Cmd, name string) (string, error) {
-	probe := validationProbe(ctx, command, "command -v '"+strings.ReplaceAll(name, "'", "'\\''")+"'")
+	text := "command -v '" + strings.ReplaceAll(name, "'", "'\\''") + "'"
+	if len(command.Args) >= 3 && strings.EqualFold(command.Args[1], "/C") {
+		if strings.ContainsAny(name, "\"%!?^&|<>()") {
+			return "", fs.ErrInvalid
+		}
+		text = "where \"" + name + "\""
+	} else if len(command.Args) >= 3 && strings.EqualFold(command.Args[len(command.Args)-2], "-Command") {
+		text = "(Get-Command -Name '" + strings.ReplaceAll(name, "'", "''") + "' -CommandType Application -ErrorAction Stop).Source"
+	}
+	probe := validationProbe(ctx, command, text)
 	if probe == nil {
 		return "", fs.ErrInvalid
 	}
@@ -374,12 +431,12 @@ func validationExecutable(ctx context.Context, command *exec.Cmd, name string) (
 	return path, nil
 }
 
-func validationDirectoryIdentity(path string) ([]byte, error) {
+func validationDirectoryIdentity(path string) (identity []byte, resultErr error) {
 	root, err := os.OpenRoot(path)
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { resultErr = errors.Join(resultErr, root.Close()) }()
 	digest := sha256.New()
 	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
