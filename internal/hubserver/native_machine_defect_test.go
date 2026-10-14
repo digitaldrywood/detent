@@ -154,7 +154,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			if comments != 2 {
 				t.Fatalf("terminal report added an occurrence: %d", comments)
 			}
-			closed.PublicationReused = false
+			response = performHubAPIRequest(t, f.service, http.MethodGet, base+"/work-items/"+string(owner.WorkItemID), testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var historicalBefore tracker.NativeIssue
+			decodeHubResponse(t, response, &historicalBefore)
 			origin.Source = "new-scheduled-run"
 			request = tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-scheduled-occurrence"}, Title: "Recurring scheduled failure", Body: issueorigin.Stamp(test.second, origin), State: "Todo", Priority: new(1)}
 			var current tracker.NativeIssue
@@ -201,8 +204,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var historical tracker.NativeIssue
 			decodeHubResponse(t, response, &historical)
-			if !reflect.DeepEqual(historical, closed) {
-				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, closed)
+			if !reflect.DeepEqual(historical, historicalBefore) {
+				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, historicalBefore)
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id = ?", owner.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
