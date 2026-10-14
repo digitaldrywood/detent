@@ -52,7 +52,6 @@ describe("the activity merge", () => {
       { type: "issue.edited", data: { operation: "archive", fields: ["archived"], reason_detail: "Archived automatically after 30 days" }, sentence: "Archived automatically after 30 days", lowValue: false },
       { type: "issue.edited", data: { operation: "archive", fields: ["archived"] }, sentence: "archived the issue", lowValue: false },
       { type: "issue.edited", data: { operation: "restore", fields: ["archived"] }, sentence: "restored the issue", lowValue: false },
-      { type: "issue.edited", data: { fields: ["test_item"], test_item: { index: 2, text: "Quote builder: send", result: "fail" } }, sentence: "marked test item 2 failed", lowValue: false },
       // The log is append-only and the hub grows it: an unknown type is still
       // a row, named by its own type, rather than a dropped page.
       { type: "nothing.we.know", sentence: "recorded nothing.we.know", lowValue: true },

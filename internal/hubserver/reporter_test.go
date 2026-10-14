@@ -183,36 +183,6 @@ func TestReporterNativeCommands(t *testing.T) {
 			if other.Type != "change_request" {
 				t.Fatalf("member edit type=%q", other.Type)
 			}
-			r = request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "member-plan"}, Title: "Quote builder plan", Body: "- [ ] Quote builder: create\n- [ ] Quote builder: send", Labels: []string{"test-plan"}})
-			requireNativeStatus(t, r, http.StatusOK)
-			var plan tracker.NativeIssue
-			decodeHubResponse(t, r, &plan)
-			for _, result := range []struct {
-				user   hostedSecurityUser
-				record tracker.RecordTestItem
-				want   tracker.NativeTestPlan
-				status int
-			}{
-				{u, tracker.RecordTestItem{Mutation: tracker.Mutation{IdempotencyKey: "reporter-result"}, Item: 2, Text: "Quote builder: send", Result: "fail", Note: "Send does nothing", RelatedIssueNumber: own.Number}, tracker.NativeTestPlan{Failed: 1, Untested: 1}, http.StatusOK},
-				{u, tracker.RecordTestItem{Mutation: tracker.Mutation{IdempotencyKey: "reporter-stale"}, Item: 1, Text: "Quote builder: send", Result: "pass"}, tracker.NativeTestPlan{}, http.StatusConflict},
-				{member, tracker.RecordTestItem{Mutation: tracker.Mutation{IdempotencyKey: "member-result"}, Item: 1, Text: "Quote builder: create", Result: "pass"}, tracker.NativeTestPlan{Passed: 1, Failed: 1}, http.StatusOK},
-			} {
-				r = request(result.user, http.MethodPost, f.base+"/work-items/"+string(plan.WorkItemID)+"/test-items", result.record)
-				requireNativeStatus(t, r, result.status)
-				if result.status != http.StatusOK {
-					var failure apiErrorResponse
-					decodeHubResponse(t, r, &failure)
-					if failure.Code != "test_item_changed" || strings.Contains(failure.Message, result.record.Text) {
-						t.Fatalf("stale item refusal=%#v", failure)
-					}
-					continue
-				}
-				decodeHubResponse(t, r, &plan)
-				if got := plan.TestPlan; got == nil || got.Passed != result.want.Passed || got.Failed != result.want.Failed || got.Untested != result.want.Untested || got.Items[1].LinkedIssues[0].WorkItemID != own.WorkItemID {
-					t.Fatalf("test plan=%#v", got)
-				}
-			}
-			requireNativeStatus(t, request(u, http.MethodPatch, f.base+"/work-items/"+string(plan.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-plan-edit"}, ExpectedRevision: plan.Revision, Body: new("- [x] Quote builder: create\n- [x] Quote builder: send")}), http.StatusForbidden)
 			for _, test := range []struct {
 				item   tracker.NativeIssue
 				state  string
@@ -276,7 +246,7 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 			for _, definition := range definitions {
 				seen[definition.Name] = true
 			}
-			for _, name := range []string{operatortool.FileIssue, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, operatortool.UpdateTestItem} {
+			for _, name := range []string{operatortool.FileIssue, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem} {
 				if !seen[name] {
 					t.Fatalf("Reporter catalog omits %s", name)
 				}
@@ -384,20 +354,6 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				}
 				if !reflect.DeepEqual(content.Data.ReportContext, wantContext) {
 					t.Fatalf("report context=%+v", content.Data.ReportContext)
-				}
-				if i == 0 {
-					operatorSQL(t, f.hostedSecurityFixture, `UPDATE issues SET labels_json='["test-plan"]', body='- [ ] Quote builder' WHERE native_id=?`, content.Data.WorkItemID)
-					raw, err := json.Marshal(map[string]any{"project_id": f.project, "request_id": "reporter-result", "identifier": content.Data.WorkItemID, "item": 1, "text": "Quote builder", "result": "blocked", "note": "Needs a quote"})
-					if err != nil {
-						t.Fatal(err)
-					}
-					result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.UpdateTestItem, Arguments: raw})
-					var recorded struct {
-						Data tracker.NativeIssue `json:"data"`
-					}
-					if err != nil || json.Unmarshal(result.Content, &recorded) != nil || recorded.Data.TestPlan == nil || recorded.Data.TestPlan.Blocked != 1 || recorded.Data.TestPlan.Items[0].Tester == nil {
-						t.Fatalf("Reporter test item result=%s err=%v", result.Content, err)
-					}
 				}
 			}
 		})
