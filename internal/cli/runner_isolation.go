@@ -301,7 +301,7 @@ func backendReadinessProblem(subject, kind, tier, goos string, err error) runner
 	var exitError *exec.ExitError
 	incomplete := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.As(err, &exitError) && exitError.ExitCode() == -1
 	output := strings.ToLower(err.Error())
-	missingCommand := strings.Contains(output, "command not found") || strings.Contains(output, "executable file not found") || strings.Contains(output, "not installed") || strings.Contains(output, "no such file") || errors.Is(err, exec.ErrNotFound)
+	missingCommand := strings.Contains(output, "command not found") || strings.Contains(output, ": not found") || strings.Contains(output, "executable file not found") || strings.Contains(output, "not installed") || strings.Contains(output, "no such file") || errors.Is(err, exec.ErrNotFound)
 	code := "backend_probe_failed"
 	if !incomplete {
 		if tier == isolation.Sandbox || check == nil {
