@@ -279,7 +279,7 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 			return evidence
 		}
 	}
-	ignoredIdentity, err := validationIgnoredInputs(ctx, command, linter)
+	ignoredIdentity, err := validationIgnoredInputs(ctx, command, paths)
 	if err != nil {
 		evidence.InputsSHA = ""
 		return evidence
@@ -289,18 +289,22 @@ func reviewCommandEvidence(ctx context.Context, command *exec.Cmd, validation st
 	return evidence
 }
 
-func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, linter string) ([]byte, error) {
+func validationIgnoredInputs(ctx context.Context, command *exec.Cmd, executables []string) ([]byte, error) {
 	ignored, err := runGitAtWithEnv(ctx, command.Dir, command.Env, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, err
 	}
-	linterPath, err := filepath.Rel(command.Dir, linter)
-	if err != nil {
-		return nil, err
+	boundExecutables := make(map[string]bool)
+	for _, executable := range executables {
+		path, err := filepath.Rel(command.Dir, executable)
+		if err != nil {
+			return nil, err
+		}
+		boundExecutables[filepath.ToSlash(path)] = true
 	}
 	paths := []string{"node_modules", "web/conversation/node_modules", "static/app/conversation", "static/css/output.css", "docs/config.md", "config.reference.yaml"}
 	for _, name := range strings.Split(ignored, "\x00") {
-		if name == "" || name == filepath.ToSlash(linterPath) {
+		if name == "" || boundExecutables[name] {
 			continue
 		}
 		bound := false
