@@ -22,6 +22,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -245,6 +247,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 	for _, test := range []struct {
 		name                string
 		method              string
+		pausedValidation    string
 		pullState           string
 		reworked            bool
 		failureMethod       string
@@ -307,6 +310,14 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		lostPushReceipt     bool
 		review              string
 	}{
+		{name: "paused validation permits source import", method: "squash", pausedValidation: "success"},
+		{name: "paused validation bootstrap permits source import", method: "squash", pausedValidation: "bootstrap"},
+		{name: "paused validation refresh permits source import", method: "squash", pausedValidation: "refresh", failureMethod: "PUT", status: 405, message: "Pull Request has merge conflicts", advanceParallel: true, retrySuccess: true, wantRetry: true},
+		{name: "paused validation refuses moved base", method: "squash", pausedValidation: "base"},
+		{name: "paused validation refuses moved head", method: "squash", pausedValidation: "head"},
+		{name: "paused validation refuses lost authority", method: "squash", pausedValidation: "authority"},
+		{name: "paused validation cancellation preserves other workspaces", method: "squash", pausedValidation: "cancel"},
+		{name: "paused validation failure preserves other workspaces", method: "squash", pausedValidation: "failure"},
 		{name: "external unresolved review refuses before validation", method: "squash", external: true, review: "known", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
 		{name: "external unresolved review precedes concurrent base advance", method: "squash", external: true, review: "base", failureMethod: "PUT", status: 405, message: "A conversation must be resolved before this pull request can be merged."},
 		{name: "external review read failure refuses before validation", method: "squash", external: true, review: "failure"},
@@ -1032,7 +1043,19 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				previousRun, methods, mergeCalls = false, nil, 0
 				opts.GitHubClient = newClient(false)
 			}
-			result, err := fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			var result LandResult
+			var err error
+			if test.pausedValidation != "" {
+				result, err = runPausedGitHubLanding(t, fixture, opts, test.pausedValidation)
+				if test.pausedValidation != "success" && test.pausedValidation != "bootstrap" && test.pausedValidation != "refresh" {
+					if len(methods) != 0 || mergeCalls != 0 {
+						t.Fatalf("refused validation published external effects: %v", methods)
+					}
+					return
+				}
+			} else {
+				result, err = fixture.backend.LandChangeViaGitHub(context.Background(), landingInfo, landingIssue, opts)
+			}
 			if test.pullError != "" && reviewReads != 0 {
 				t.Fatal("review read preceded external source identity validation")
 			}
@@ -1332,6 +1355,201 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 			}
 		})
 	}
+}
+
+func runPausedGitHubLanding(t *testing.T, fixture landingFixture, opts LandOptions, scenario string) (LandResult, error) {
+	t.Helper()
+	base := fixture.remoteMain(t)
+	capture, err := CaptureChangeSource(t.Context(), fixture.info.Path, base, fixture.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := capture.Source
+	otherIssue := Issue{Identifier: "DD-INDEPENDENT", Source: &ChangeSource{
+		Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: fixture.head, Repository: opts.Repository, Source: &metadata}},
+		Bundle:  capture.Bundle,
+	}}
+	other, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "independent"), SourceRoot: fixture.info.Path, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	if scenario == "bootstrap" {
+		cache, err := toolcache.NewManaged(ctx, filepath.Join(t.TempDir(), "build-cache"), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var releaseCache func() error
+		ctx, releaseCache, err = cache.Use(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := releaseCache(); err != nil {
+				t.Error(err)
+			}
+		}()
+		fixture.backend.hooks.AfterCreate = "test -f feature.txt"
+		fixture.backend.hooks.BeforeRun = "test -f feature.txt"
+	}
+	paused, resume, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	commands := 0
+	process := validationProcessFixture{
+		started:  func(procgroup.Identity) error { return nil },
+		finished: func(gate.CommandResult, error) error { return nil },
+	}
+	ctx = WithValidationProcessOwner(ctx, func(ctx context.Context, _ Info, _ Issue, _ string) (ValidationProcess, error) {
+		commands++
+		pauseAt := 1
+		if scenario == "refresh" {
+			pauseAt = 2
+		}
+		if commands != pauseAt {
+			return process, nil
+		}
+		close(paused)
+		select {
+		case <-resume:
+			return process, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	authorityErr := errors.New("landing authority revoked")
+	authorized := true
+	opts.Authorize = func(context.Context) error {
+		if !authorized {
+			return authorityErr
+		}
+		return nil
+	}
+	if scenario == "failure" {
+		opts.ValidationCommand = "exit 23"
+	}
+	var result LandResult
+	var landingErr error
+	go func() {
+		defer close(done)
+		result, landingErr = fixture.backend.LandChangeViaGitHub(ctx, fixture.info, fixture.issue, opts)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case <-paused:
+	case <-done:
+		t.Fatalf("landing did not reach validation: %v", landingErr)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	createCtx, stopCreate := context.WithTimeout(ctx, 5*time.Second)
+	defer stopCreate()
+	independent, err := other.Create(createCtx, otherIssue)
+	if err != nil {
+		t.Fatalf("independent source import blocked behind paused validation: %v", err)
+	}
+	if got := strings.TrimSpace(runGit(t, independent.Path, "rev-parse", "HEAD")); got != fixture.head {
+		t.Fatalf("imported head = %s, want %s", got, fixture.head)
+	}
+	release, err := fixture.backend.acquireSourceOperation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	common, err := gitCommonDir(ctx, other.sourceRoot)
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	shared := sourceOperationLockFor(common)
+	select {
+	case <-shared.permit:
+		shared.permit <- struct{}{}
+		release()
+		t.Fatal("independent workspace does not share the held source mutation lock")
+	default:
+	}
+	mutationStarted, mutationDone := make(chan struct{}), make(chan error, 1)
+	const mutationRef = "refs/heads/independent-mutation"
+	go func() {
+		close(mutationStarted)
+		release, err := other.acquireSourceOperation(ctx)
+		if err != nil {
+			mutationDone <- err
+			return
+		}
+		defer release()
+		_, err = runGitAt(ctx, independent.Path, "update-ref", mutationRef, fixture.head)
+		mutationDone <- err
+	}()
+	<-mutationStarted
+	before, beforeErr := runGitAt(ctx, independent.Path, "for-each-ref", "--format=%(objectname)", mutationRef)
+	release()
+	if err := <-mutationDone; err != nil {
+		t.Fatal(err)
+	}
+	if beforeErr != nil || strings.TrimSpace(before) != "" {
+		t.Fatalf("shared ref mutated while production lock was held: %s, %v", before, beforeErr)
+	}
+	if got := strings.TrimSpace(runGit(t, independent.Path, "rev-parse", mutationRef)); got != fixture.head {
+		t.Fatalf("shared ref mutation did not finish after release: %s", got)
+	}
+	if err := os.WriteFile(filepath.Join(independent.Path, "unrelated.txt"), []byte("preserve independent edits\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preserved := preserveLandingOwner(t, independent.Path)
+	switch scenario {
+	case "base":
+		fixture.advanceMain(t, "parallel.txt", "parallel\n")
+	case "head":
+		runGit(t, fixture.info.Path, "reset", "--hard", base)
+	case "authority":
+		authorized = false
+	case "cancel":
+		cancel()
+	}
+	close(resume)
+	<-done
+	preserved()
+	cleanupCtx, stopCleanup := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stopCleanup()
+	release, err = other.acquireSourceOperation(cleanupCtx)
+	if err != nil {
+		t.Fatalf("landing leaked the source lock: %v", err)
+	}
+	release()
+	staging := filepath.Join(fixture.backend.root, "landing-"+fixture.info.Key)
+	if _, err := os.Stat(staging); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("landing staging survived cleanup: %v", err)
+	}
+	if listing := runGit(t, fixture.source, "worktree", "list", "--porcelain"); strings.Contains(listing, staging) || !strings.Contains(listing, independent.Path) {
+		t.Fatalf("landing cleanup changed unrelated worktree registration: %s", listing)
+	}
+	var refusal *LandRefusal
+	var validation *ValidationError
+	switch scenario {
+	case "base", "head":
+		want := LandRefusalBaseMoved
+		if scenario == "head" {
+			want = LandRefusalHeadMoved
+		}
+		if !errors.As(landingErr, &refusal) || refusal.Kind != want {
+			t.Fatalf("landing error = %v, want %s", landingErr, want)
+		}
+	case "authority":
+		if !errors.Is(landingErr, authorityErr) {
+			t.Fatalf("landing ignored revoked authority: %v", landingErr)
+		}
+	case "cancel":
+		if !errors.Is(landingErr, context.Canceled) {
+			t.Fatalf("landing ignored cancellation: %v", landingErr)
+		}
+	case "failure":
+		if !errors.As(landingErr, &validation) || result.Gate.ExitCode != 23 {
+			t.Fatalf("landing ignored failed validation: %+v, %v", result, landingErr)
+		}
+	}
+	return result, landingErr
 }
 
 func TestGitHubLandingAPIEndpointOwnership(t *testing.T) {

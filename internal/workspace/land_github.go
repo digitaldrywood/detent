@@ -372,7 +372,11 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	if err != nil {
 		return LandResult{}, fmt.Errorf("wait for source repository operation: %w", err)
 	}
-	defer release()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	if opts.Authorize != nil {
 		if err := opts.Authorize(ctx); err != nil {
 			return LandResult{}, err
@@ -412,6 +416,44 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return LandResult{}, fmt.Errorf("inspect fetched base: %w", err)
 	}
 	baseBefore = strings.TrimSpace(baseBefore)
+	prepare := func(validatedBase string) (string, gate.CommandResult, error) {
+		release()
+		release = nil
+		integrated, checked, err := l.prepareGitHubLanding(ctx, normalized, issue, opts, validatedBase)
+		if err != nil {
+			return "", checked, err
+		}
+		release, err = l.acquireSourceOperation(ctx)
+		if err != nil {
+			return "", checked, fmt.Errorf("wait for source repository operation: %w", err)
+		}
+		if opts.Authorize != nil {
+			if err := opts.Authorize(ctx); err != nil {
+				return "", checked, err
+			}
+		}
+		if err := l.verifyLandingWorktree(ctx, normalized, issue, opts); err != nil {
+			return "", checked, err
+		}
+		current, err := l.Head(ctx, normalized, issue)
+		if err != nil {
+			return "", checked, err
+		}
+		if strings.TrimSpace(current) != head {
+			return "", checked, refuse(LandRefusalHeadMoved, "the worktree moved after the reviewed head "+head)
+		}
+		if _, err := runGitAt(ctx, normalized.Path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
+			return "", checked, fmt.Errorf("refresh validated landing base: %w", err)
+		}
+		currentBase, err := runGitAt(ctx, normalized.Path, "rev-parse", baseRef)
+		if err != nil {
+			return "", checked, err
+		}
+		if strings.TrimSpace(currentBase) != validatedBase {
+			return "", checked, &LandRefusal{Kind: LandRefusalBaseMoved, BaseSHA: strings.TrimSpace(currentBase), Reason: "the base branch changed after landing validation"}
+		}
+		return integrated, checked, nil
+	}
 	if kept, found := keptLanding(ctx, normalized.Path, head, baseRef); found {
 		return kept, nil
 	}
@@ -433,7 +475,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		}
 	}
 	if strings.TrimSpace(opts.ValidationCommand) != "" {
-		_, validation, err = l.prepareGitHubLanding(ctx, normalized, issue, opts, baseBefore)
+		_, validation, err = prepare(baseBefore)
 		if err != nil {
 			return LandResult{}, err
 		}
@@ -512,12 +554,16 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 					}
 					var retryValidation gate.CommandResult
 					var retryErr error
-					retryHead, retryValidation, retryErr = l.refreshGitHubLanding(ctx, normalized, issue, opts, remote, baseBefore)
+					retryHead, retryValidation, retryErr = prepare(baseBefore)
 					if retryValidation.Command != "" {
 						validation = retryValidation
 					}
 					if retryErr != nil {
 						return LandResult{Rebased: true}, retryErr
+					}
+					branch := githubLandingBranch(normalized, opts)
+					if _, err := runGitAt(ctx, normalized.Path, "push", "--force-with-lease=refs/heads/"+branch+":"+opts.HeadSHA, remote, retryHead+":refs/heads/"+branch); err != nil {
+						return LandResult{Rebased: true}, classifyLandingPush(err, branch)
 					}
 					rebased = true
 				}
@@ -664,8 +710,21 @@ func githubLandingChecks(ctx context.Context, opts LandOptions, repository strin
 }
 
 func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, base string) (string, gate.CommandResult, error) {
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return "", gate.CommandResult{}, fmt.Errorf("wait for source repository operation: %w", err)
+	}
 	staging := filepath.Join(l.root, "landing-"+info.Key)
 	defer func() {
+		if release == nil {
+			var err error
+			release, err = l.acquireSourceOperation(context.WithoutCancel(ctx))
+			if err != nil {
+				l.logger.Warn("landing worktree left behind", "path", staging, "error", err)
+				return
+			}
+		}
+		defer release()
 		if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, staging); err != nil {
 			l.logger.Warn("landing worktree left behind", "path", staging, "error", err)
 		}
@@ -683,26 +742,16 @@ func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Is
 	validationInfo := info
 	validationInfo.Path = staging
 	validationInfo.Created = true
-	if err := l.runHookUnderSourceLock(ctx, "after_create", l.hooks.AfterCreate, validationInfo, issue); err != nil {
+	release()
+	release = nil
+	if err := l.executeHook(ctx, "after_create", l.hooks.AfterCreate, validationInfo, issue); err != nil {
 		return "", gate.CommandResult{}, err
 	}
-	if err := l.runHookUnderSourceLock(ctx, "before_run", l.hooks.BeforeRun, validationInfo, issue); err != nil {
+	if err := l.executeHook(ctx, "before_run", l.hooks.BeforeRun, validationInfo, issue); err != nil {
 		return "", gate.CommandResult{}, err
 	}
 	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, head)
 	return head, validation, err
-}
-
-func (l *LocalGit) refreshGitHubLanding(ctx context.Context, info Info, issue Issue, opts LandOptions, remote, base string) (string, gate.CommandResult, error) {
-	head, validation, err := l.prepareGitHubLanding(ctx, info, issue, opts, base)
-	if err != nil {
-		return "", validation, err
-	}
-	branch := githubLandingBranch(info, opts)
-	if _, err := runGitAt(ctx, info.Path, "push", "--force-with-lease=refs/heads/"+branch+":"+opts.HeadSHA, remote, head+":refs/heads/"+branch); err != nil {
-		return "", validation, classifyLandingPush(err, branch)
-	}
-	return head, validation, nil
 }
 
 func closeSupersededLandingPulls(ctx context.Context, client GitHubRESTClient, repository, base, key string, mergedNumber int) error {
