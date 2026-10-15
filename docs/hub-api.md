@@ -2478,11 +2478,15 @@ this delegation.
 
 The Hub requires the authenticated source author `github-actions[bot]`, a source
 repository equal to the configured checkout repository, and the existing
-importer's independent verification of `.github/workflows/ci.yml`. It verifies
-the run attempt, repository and head repository, `develop` or `release/v*`
-branch, scheduled/push/manual event, tested head SHA and completed failed or
-timed-out job. The approved policy and checkout binding are rechecked during
-creation, and Todo must be dispatchable, nonterminal and not operator-only.
+importer's independent verification of the repository's CI workflow and branch.
+The repository identity mapping accepts only `.github/workflows/ci.yaml` on
+`dev` for `getparable/parable`; other repositories retain `.github/workflows/ci.yml`
+on `develop` or `release/v*`. This mapping supplies no admission authority: the
+approved contract and checkout binding remain required. The importer verifies
+the run attempt, repository and head repository, scheduled/push/manual event,
+tested head SHA and completed failed or timed-out job. The approved policy and
+checkout binding are rechecked during creation, and Todo must be dispatchable,
+nonterminal and not operator-only.
 Only then does a new report receive Todo, native priority `0` (Urgent), and
 confirmation of the bounded approved sections. Source diagnostics remain quoted
 as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no
