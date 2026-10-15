@@ -113,7 +113,8 @@ func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nat
 	if privateUnblocks {
 		issue.UnblocksReason.CurrentBasis = ""
 	}
-	return nil
+	issue.Related, err = readNativeRelated(ctx, q, scope, issue.WorkItemID)
+	return err
 }
 
 func validDependencyReason(text string) bool {
