@@ -93,6 +93,8 @@ func TestQueuedDispatchPreservesRetry(t *testing.T) {
 				globalDispatchReady: make(chan struct{}, 1), globalDispatchPending: make(map[string]pendingGlobalDispatch),
 				supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1),
 			}
+			resume := gate.PauseDispatch()
+			defer resume()
 			state := newState(cfg)
 			defer o.releaseRunningSlots(&state)
 			defer o.cancelPendingGlobalDispatches()
@@ -103,6 +105,11 @@ func TestQueuedDispatchPreservesRetry(t *testing.T) {
 			if len(o.globalDispatchPending) != 1 {
 				t.Fatalf("queued requests = %d", len(o.globalDispatchPending))
 			}
+			pending := o.globalDispatchPending[issue.ID]
+			_, granted, decision := o.acquireOrQueueGlobalDispatchSlot(t.Context(), &state, pending.action, issue, "", now, 0, false)
+			if granted || decision.Reason != scheduler.DispatchGateReasonPaused || decision.GlobalCapacity != 1 {
+				t.Fatalf("queued request lost its actual pause decision: granted=%t decision=%+v", granted, decision)
+			}
 			if got := state.Retry[issue.ID]; got.Attempt != retry.Attempt || got.RecoveryAttemptID != retry.RecoveryAttemptID || !got.DueAt.Equal(retry.DueAt) {
 				t.Fatalf("queued retry changed: %+v", got)
 			}
@@ -112,6 +119,7 @@ func TestQueuedDispatchPreservesRetry(t *testing.T) {
 					t.Fatalf("retry was lost on refresh: %+v", state.Retry)
 				}
 			}
+			resume()
 			if err := gate.Release(held); err != nil {
 				t.Fatal(err)
 			}
