@@ -11,7 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
-import { HealthFindingsProvider } from "../../src/app/diagnostics/healthFindings.tsx";
+import { HealthFindingsProvider, useHealthFindings } from "../../src/app/diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
 import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
 import * as settings from "../../src/hooks/useSettings.ts";
@@ -393,6 +393,50 @@ it("bounds findings reads to mount and health ticks across renders and runner na
   expect(result.current.map((finding) => [finding.id, finding.label, finding.to])).toEqual([["hf_opened", "Runner 59", "/fleet"]]);
   unmount();
   expect(source.close).toHaveBeenCalledOnce();
+});
+
+it.each(["mount", "health event"])("retries the current health tick after a failed %s refresh", async (phase) => {
+  vi.stubGlobal("EventSource", Source);
+  const projects = ["p1", "p2"].map((id) => ({ id, name: `Project ${id}`, can_write: true }));
+  let tick = "2026-10-06T10:00:00Z";
+  let fail = phase === "mount";
+  let reject: (reason: Error) => void = () => {};
+  mocks.listHealthFindings.mockImplementation(async (id) => {
+    if (id === "p2" && fail) return new Promise((_resolve, rejectRequest) => { reject = rejectRequest; });
+    return { items: [{ id: `hf_${id}`, class: "flow", summary: "Project attention", next_action: "Check project", subject: { kind: "project", id }, opened_at: tick, severity: "attention", resolved_at: null }], last_tick_at: tick };
+  });
+  const { result, rerender } = renderHook(() => ({ findings: useSidebarFindings(projects), health: useHealthFindings() }), {
+    wrapper: ({ children }) => <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider>,
+  });
+  const source = Source.instances[0]!;
+  if (phase === "health event") {
+    await waitFor(() => expect(result.current.findings.map((finding) => finding.id)).toEqual(["hf_p1", "hf_p2"]));
+    fail = true;
+    tick = "2026-10-06T10:01:00Z";
+  }
+  const attempts = phase === "mount" ? 1 : 2;
+  if (phase === "health event") await act(async () => {
+    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+  });
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(attempts * 2);
+  await act(async () => reject(new Error("Network unavailable")));
+  expect(result.current.health.error).toBe(true);
+  expect(result.current.findings.map((finding) => finding.id).sort()).toEqual(phase === "mount" ? ["hf_p1"] : ["hf_p1", "hf_p2"]);
+  rerender();
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(attempts * 2);
+  fail = false;
+  await act(async () => {
+    source.dispatchEvent(new Event("open"));
+    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+  });
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes((attempts + 1) * 2);
+  expect(result.current.health.error).toBe(false);
+  expect(result.current.health.read?.last_tick_at).toBe(tick);
+  expect(result.current.findings.map((finding) => [finding.id, finding.to])).toEqual([["hf_p1", "/diagnostics"], ["hf_p2", "/diagnostics"]]);
+  await act(async () => source.dispatchEvent(new MessageEvent("health.findings", { data: tick })));
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes((attempts + 1) * 2);
 });
 
 it("shares project events while reading every page, filtering and resolving findings", async () => {

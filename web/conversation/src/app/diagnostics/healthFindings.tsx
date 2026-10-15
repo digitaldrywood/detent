@@ -30,6 +30,7 @@ export function HealthFindingsProvider({ projects, children }: { projects: reado
     const failed = new Set<string>();
     let tick: string | null = null;
     let pendingTick: string | null = null;
+    let refreshingTick: string | null = null;
     const publish = () => {
       const reads = [...byProject.values()];
       const ticks = reads.map((read) => read.last_tick_at).filter((at): at is string => at !== null);
@@ -56,7 +57,6 @@ export function HealthFindingsProvider({ projects, children }: { projects: reado
           cursor = page.next_cursor || undefined;
         } while (cursor !== undefined && !controller.signal.aborted);
         if (controller.signal.aborted || revisions.get(project.id) !== revision) return;
-        tick ??= lastTick;
         if (lastTick !== null) since.set(project.id, lastTick);
         byProject.set(project.id, { items, last_tick_at: lastTick });
         failed.delete(project.id);
@@ -66,18 +66,21 @@ export function HealthFindingsProvider({ projects, children }: { projects: reado
       }
     };
     let batch = 0;
-    const refreshAll = async () => {
+    const refreshAll = async (eventTick?: string) => {
       const version = ++batch;
       await Promise.all(projects.map(refresh));
-      if (!controller.signal.aborted && batch === version) publish();
+      if (controller.signal.aborted || batch !== version) return;
+      if (failed.size === 0) tick = eventTick ?? tick ?? [...byProject.values()][0]?.last_tick_at ?? null;
+      publish();
     };
     let initialized = false;
     const initialRefresh = refreshAll().then(() => { initialized = true; });
     refreshRef.current = () => { void refreshAll(); };
     const refreshTick = () => {
-      if (document.visibilityState === "hidden" || pendingTick === null || pendingTick === tick) return;
-      tick = pendingTick;
-      void refreshAll();
+      if (document.visibilityState === "hidden" || pendingTick === null || pendingTick === tick || pendingTick === refreshingTick) return;
+      const eventTick = pendingTick;
+      refreshingTick = eventTick;
+      void refreshAll(eventTick).finally(() => { if (refreshingTick === eventTick) refreshingTick = null; });
     };
     const project = projects[0];
     const unsubscribe = project === undefined ? undefined : subscribeProjectEvents(http, project.id, {
