@@ -26,15 +26,22 @@ func TestHostedNativeBulkExportLargeItem(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project); err != nil {
 		t.Fatal(err)
 	}
-	body := strings.Repeat("Stored imported discussion. ", 50000)
-	for index := range 2 {
+	type discussion struct {
+		body  string
+		count int
+	}
+	expected := map[tracker.NativeWorkItemID]discussion{}
+	for index, shape := range []discussion{{strings.Repeat("Stored imported discussion. ", 50000), 1}, {strings.Repeat("Stored imported discussion. ", 18), 852}} {
 		response := f.request(t, f.user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-export-%d", index)}, Title: fmt.Sprintf("Export item %d", index), State: "Todo"})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
 		now := formatHubTime(time.Now())
-		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,?,?,?,1,1,?,'{}',?,?)", "comment_"+string(issue.WorkItemID), issue.OrganizationID, issue.ProjectID, issue.WorkItemID, body, now, now); err != nil {
-			t.Fatal(err)
+		expected[issue.WorkItemID] = shape
+		for sequence := range shape.count {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,?,?,?,1,?,?,'{}',?,?)", fmt.Sprintf("comment_%s_%d", issue.WorkItemID, sequence), issue.OrganizationID, issue.ProjectID, issue.WorkItemID, sequence+1, shape.body, now, now); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES(?,'Backlog','Backlog',?,?)", f.project, formatHubTime(time.Now()), formatHubTime(time.Now())); err != nil {
@@ -59,8 +66,14 @@ func TestHostedNativeBulkExportLargeItem(t *testing.T) {
 						t.Fatalf("invalid large export: bytes=%d total=%d items=%d", len(raw), page.Total, len(page.Items))
 					}
 					for _, item := range page.Items {
-						if seen[item.WorkItemID] || len(item.Comments) != 1 || item.Comments[0].Body != body || item.Comments[0].ProjectID != f.project {
+						shape, ok := expected[item.WorkItemID]
+						if !ok || seen[item.WorkItemID] || len(item.Comments) != shape.count {
 							t.Fatal("large export lost or repeated discussion")
+						}
+						for index, comment := range item.Comments {
+							if comment.Body != shape.body || comment.ProjectID != f.project || comment.WorkItemID != item.WorkItemID || comment.Sequence != int64(index+1) {
+								t.Fatal("large export changed stored discussion")
+							}
 						}
 						seen[item.WorkItemID] = true
 					}
