@@ -176,7 +176,11 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 	}
 	version := tracker.ChangeVersion{ID: "version", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("a", 40), PolicyID: "policy"}}
 	identity := workspace.GitHubPublication{Repository: version.Repository, HeadSHA: version.HeadSHA, Branch: "detent/rework", BaseRef: "develop"}
-	remoteExecution.setPublicationIdentity(func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error) {
+	pushed := workspace.GitHubPublicationPush{EffectID: "effect_retained", Publication: tracker.NativePRPublication{ChangeID: "change", VersionID: "previous", Repository: version.Repository, HeadSHA: strings.Repeat("b", 40), PolicyID: "previous-policy", SourceVersion: tracker.NativeChangeReference{ChangeID: "change", VersionID: "previous", HeadSHA: strings.Repeat("b", 40)}, SourceAttemptID: "attempt_previous", External: tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}}}
+	remoteExecution.setPublicationIdentity(func(_ context.Context, _ tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+		if opts.External != nil && (len(opts.PublicationPushes) != 1 || opts.PublicationPushes[0] != pushed) {
+			return workspace.GitHubPublication{}, errors.New("publication identity forwarding lost historical push authority")
+		}
 		return identity, nil
 	})
 	var privateOwner sync.Mutex
@@ -209,12 +213,13 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 			if mode == "retained branch" {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: version.Repository + "/pull/7"}
 				opts.ExternalHeadSHA = strings.Repeat("b", 40)
+				opts.PublicationPushes = []workspace.GitHubPublicationPush{pushed}
 			}
 			remoteExecution.SetPublicationSource(func(ctx context.Context, received tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 				if received.ID != version.ID || opts.Repository != version.Repository || opts.HeadSHA != version.HeadSHA || opts.TargetBranch != "develop" || opts.Authorize == nil || opts.PublicationEffect == nil || opts.GitHubClient != nil {
 					return workspace.GitHubPublication{}, errors.New("publication forwarding lost exact binding or leaked a client")
 				}
-				if mode == "retained branch" && (opts.External == nil || opts.External.ID != "7" || opts.ExternalHeadSHA != strings.Repeat("b", 40)) {
+				if mode == "retained branch" && (opts.External == nil || opts.External.ID != "7" || opts.ExternalHeadSHA != strings.Repeat("b", 40) || len(opts.PublicationPushes) != 1 || opts.PublicationPushes[0] != pushed) {
 					return workspace.GitHubPublication{}, errors.New("publication forwarding lost the retained PR identity")
 				}
 				if mode == "cancelled" {

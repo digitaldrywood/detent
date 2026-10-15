@@ -54,6 +54,13 @@ type GitHubPublication struct {
 	External   tracker.ChangeExternalReference `json:"external"`
 }
 
+// GitHubPublicationPush carries an existing confirmed git_push checkpoint.
+// Branch and base are resolved from the retained PR before verifying its digest.
+type GitHubPublicationPush struct {
+	Publication tracker.NativePRPublication `json:"publication"`
+	EffectID    string                      `json:"effect_id"`
+}
+
 func (l *LocalGit) PrepareGitHubPublication(ctx context.Context, info Info, issue Issue, opts LandOptions) (GitHubPublication, error) {
 	if opts.Authorize == nil {
 		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires current fenced execution authority; resume on the authorized source-owning runner")
@@ -70,7 +77,7 @@ func (l *LocalGit) PrepareGitHubPublication(ctx context.Context, info Info, issu
 	if err := opts.Authorize(ctx); err != nil {
 		return GitHubPublication{}, err
 	}
-	identity, err := l.GitHubPublicationIdentity(ctx, normalized, issue, opts)
+	identity, err := l.gitHubPublicationIdentity(ctx, normalized, issue, &opts)
 	if err != nil {
 		return GitHubPublication{}, err
 	}
@@ -112,6 +119,10 @@ func (l *LocalGit) PrepareGitHubPublication(ctx context.Context, info Info, issu
 }
 
 func (l *LocalGit) GitHubPublicationIdentity(ctx context.Context, info Info, issue Issue, opts LandOptions) (GitHubPublication, error) {
+	return l.gitHubPublicationIdentity(ctx, info, issue, &opts)
+}
+
+func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, issue Issue, opts *LandOptions) (GitHubPublication, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return GitHubPublication{}, err
@@ -120,7 +131,7 @@ func (l *LocalGit) GitHubPublicationIdentity(ctx context.Context, info Info, iss
 	if !ok || RepositoryURL(ctx, normalized.Path) != opts.Repository {
 		return GitHubPublication{}, refuse(LandRefusalProtected, "PR publication requires the configured GitHub repository and runner authentication; verify the authorized runner checkout and credentials")
 	}
-	if err := l.verifyGitHubPublicationSource(ctx, normalized, issue, opts); err != nil {
+	if err := l.verifyGitHubPublicationSource(ctx, normalized, issue, *opts); err != nil {
 		return GitHubPublication{}, err
 	}
 	remote := strings.TrimSpace(opts.Remote)
@@ -144,6 +155,14 @@ func (l *LocalGit) GitHubPublicationIdentity(ctx context.Context, info Info, iss
 			return GitHubPublication{}, err
 		}
 		branch = pull.Head.Ref
+		for _, push := range opts.PublicationPushes {
+			binding := push.Publication
+			binding.Branch, binding.BaseRef = branch, base
+			if binding.Repository == opts.Repository && binding.External == *opts.External && binding.HeadSHA == pull.Head.SHA && binding.EffectID("git_push") == push.EffectID {
+				opts.ExternalHeadSHA = binding.HeadSHA
+				break
+			}
+		}
 		if !validLandingHead(pull.Head.SHA) || pull.Head.SHA != opts.HeadSHA && pull.Head.SHA != opts.ExternalHeadSHA || pull.State != "open" || pull.Merged || pull.MergedAt != "" {
 			return GitHubPublication{}, githubPublicationRefusal(pull, pull.Head.Repo.FullName, branch, opts.HeadSHA, base)
 		}

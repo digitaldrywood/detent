@@ -361,11 +361,12 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				var reviewErr *NativeImplementationReviewError
 				if errors.As(err, &reviewErr) {
 					outcome = "interrupted"
-					reprepareCtx, reprepareCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
-					reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
-					reprepareCancel()
-					runErr = errors.Join(runErr, reprepareErr)
 				}
+				// Deferred lease release publishes the prepared outcome after Run returns.
+				reprepareCtx, reprepareCancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+				reprepareErr := prepared.PrepareFinish(reprepareCtx, outcome, result.FinalMessage, nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused))
+				reprepareCancel()
+				runErr = errors.Join(runErr, reprepareErr)
 			}
 		}
 	}
