@@ -1,17 +1,75 @@
 package runner
 
 import (
+	"context"
+	"crypto/sha256"
 	"slices"
 	"sync"
+	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type ProviderUsage struct {
-	mu      sync.Mutex
-	windows map[string][]providercapacity.UsageWindow
-	billing map[string]string
+	mu         sync.Mutex
+	windows    map[string][]providercapacity.UsageWindow
+	billing    map[string]string
+	capacityMu sync.Mutex
+	capacity   map[[32]byte]capacityRead
+}
+
+type capacityRead struct {
+	at          time.Time
+	observation CapacityObservation
+	err         error
+}
+
+func (u *ProviderUsage) RefreshCapacity(ctx context.Context, cfg config.AgentBackend, backend AgentBackend, now time.Time) (CapacityObservation, error) {
+	reader, ok := backend.(AgentCapacityReader)
+	if !ok || cfg.Disabled {
+		return CapacityObservation{}, nil
+	}
+	provider := configuredCapacityScope(RouteSelection{BackendID: cfg.ID}, cfg, agentidentity.Identity{}).Provider
+	if cfg.Kind == config.AgentBackendCodex && provider != "" && provider != "openai" {
+		return CapacityObservation{}, nil
+	}
+	if u == nil {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		return reader.ReadCapacity(ctx)
+	}
+	identity := cfg
+	identity.ID = ""
+	raw, err := yaml.Marshal(identity)
+	if err != nil {
+		return CapacityObservation{}, err
+	}
+	key := sha256.Sum256(raw)
+	u.capacityMu.Lock()
+	defer u.capacityMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return CapacityObservation{}, err
+	}
+	read, found := u.capacity[key]
+	if !found || !now.Before(read.at.Add(time.Minute)) {
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		read.observation, read.err = reader.ReadCapacity(ctx)
+		read.at = now
+		if u.capacity == nil {
+			u.capacity = make(map[[32]byte]capacityRead)
+		}
+		u.capacity[key] = read
+	}
+	if read.err == nil {
+		u.Observe(cfg.ID, read.observation.RateLimits)
+	}
+	return read.observation, read.err
 }
 
 func (u *ProviderUsage) Observe(backend string, limits *telemetry.RateLimits) {

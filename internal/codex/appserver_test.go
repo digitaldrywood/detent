@@ -531,6 +531,72 @@ func TestAppServerAccountReadsResolvedAuthentication(t *testing.T) {
 	}
 }
 
+func TestAppServerReadsCapacityWithoutStartingTurn(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		response  string
+		account   string
+		available bool
+		exhausted bool
+		failed    bool
+		code      int
+	}{
+		{name: "legacy available", response: `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":20}}}`, available: true},
+		{name: "exhausted until next week", response: `{"rateLimits":{"limitId":"codex","rateLimitReachedType":"primary","primary":{"usedPercent":100,"resetsAt":2000000000}}}`, exhausted: true},
+		{name: "explicit permission restored", response: `{"ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":100}}}`, available: true},
+		{name: "provider restricts usage", response: `{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"usedPercent":0}}}`, exhausted: true},
+		{name: "permission unknown", response: `{"ordinaryUsageAllowed":null,"rateLimits":{"primary":{"usedPercent":0}}}`},
+		{name: "missing status", response: `{}`},
+		{name: "other metered bucket", response: `{"rateLimits":{"limitId":"codex_other","primary":{"usedPercent":0}}}`},
+		{name: "multi bucket selects codex", response: `{"rateLimits":{"limitId":"codex_other","primary":{"usedPercent":0}},"rateLimitsByLimitId":{"codex":{"rateLimitReachedType":"primary","primary":{"usedPercent":100}}}}`, exhausted: true},
+		{name: "invalid permission", response: `{"ordinaryUsageAllowed":"yes"}`, failed: true},
+		{name: "malformed response", response: `[]`, failed: true},
+		{name: "status unsupported", code: methodNotFoundCode, failed: true},
+		{name: "status request fails", code: -32000, failed: true},
+		{name: "API key account", account: `{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			account := tt.account
+			if account == "" {
+				account = `{"account":{"type":"chatgpt","planType":"pro"},"requiresOpenaiAuth":true}`
+			}
+			responses := []Message{
+				responseMessage(t, initializeRequestID, `{}`),
+				responseMessage(t, accountReadRequestID, account),
+			}
+			if tt.response != "" {
+				responses = append(responses, responseMessage(t, rateLimitsReadRequestID, tt.response))
+			}
+			if tt.code != 0 {
+				responses = append(responses, errorResponseMessage(t, rateLimitsReadRequestID, tt.code, "status unavailable"))
+			}
+			transport := newFakeAppServerTransport(responses)
+			server, err := NewAppServer(staticTransportFactory{transport: transport})
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, err := server.ReadCapacity(t.Context())
+			if (err != nil) != tt.failed || observation.Status.Available != tt.available || observation.Status.Exhausted != tt.exhausted {
+				t.Fatalf("ReadCapacity() = %#v, %v", observation, err)
+			}
+			wantMethods := []string{"initialize", "initialized", "account/read"}
+			if tt.account == "" {
+				wantMethods = append(wantMethods, "account/rateLimits/read")
+			}
+			sent := transport.sentMessages()
+			if len(sent) != len(wantMethods) {
+				t.Fatalf("sent messages = %#v", sent)
+			}
+			for i, method := range wantMethods {
+				if sent[i].Method != method {
+					t.Fatalf("method = %q, want %q", sent[i].Method, method)
+				}
+			}
+		})
+	}
+}
+
 func TestAppServerRunTurnRequiresSubscriptionAuthenticationInSameTransport(t *testing.T) {
 	t.Parallel()
 

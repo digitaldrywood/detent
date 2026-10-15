@@ -506,6 +506,7 @@ func TestLocalProviderRevalidation(t *testing.T) {
 		want   bool
 	}{
 		{"same account", func(*providercapacity.Report) {}, "sol", true},
+		{"restored quota with revoked lease", func(r *providercapacity.Report) { r.Availability = "available" }, "sol", true},
 		{"stale quota", func(r *providercapacity.Report) {
 			r.Availability = "exhausted"
 			r.ObservedAt = now.Add(-providercapacity.MaxAge)
@@ -528,6 +529,13 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			err := e.validateProviderStart(tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: test.model})
 			if (err == nil) != test.want || err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				t.Fatal(err)
+			}
+			if test.name == "restored quota with revoked lease" {
+				_, stop, err := e.Guard(t.Context())
+				stop()
+				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("restored quota released a revoked execution: %v", err)
+				}
 			}
 		})
 	}

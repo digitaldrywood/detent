@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -17,6 +18,34 @@ type AgentCapacityClassifier interface {
 
 type AgentCapacityStatusProvider interface {
 	CapacityStatus(*telemetry.RateLimits) (CapacityStatus, bool)
+}
+
+type CapacityObservation struct {
+	Status     CapacityStatus
+	RateLimits *telemetry.RateLimits
+}
+
+type AgentCapacityReader interface {
+	ReadCapacity(context.Context) (CapacityObservation, error)
+}
+
+type CapacityReader interface {
+	ReadBackendCapacity(context.Context, backendcapacity.Scope, time.Time) (CapacityObservation, error)
+}
+
+func (r *Runner) ReadBackendCapacity(ctx context.Context, scope backendcapacity.Scope, now time.Time) (CapacityObservation, error) {
+	_, runtime, _, _ := r.runtimeSnapshot()
+	scope = scope.Normalize()
+	backend, ok := runtime.backends[scope.BackendID]
+	if !ok {
+		return CapacityObservation{}, nil
+	}
+	cfg := runtime.backendConfigs[scope.BackendID]
+	configured := configuredCapacityScope(RouteSelection{BackendID: scope.BackendID}, cfg, agentidentity.Identity{})
+	if !configured.Matches(scope) || !scope.Hosted() {
+		return CapacityObservation{}, nil
+	}
+	return r.providerUsage.RefreshCapacity(ctx, cfg, backend, now)
 }
 
 type CapacityStatus struct {

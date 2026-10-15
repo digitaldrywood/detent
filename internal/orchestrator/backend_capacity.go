@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -154,8 +155,9 @@ func (o *Orchestrator) registerBackendOutage(
 		existing.LastProbeDetail = existing.Reason
 	}
 	if strings.TrimSpace(existing.ProbeIssueID) == "" {
-		delay := backendCapacityProbeDelayForAttempt(existing.ProbeAttempts)
+		delay := backendCapacityProbeDelay
 		if backendCapacityProviderOutage(existing) {
+			delay = backendCapacityProbeDelayForAttempt(existing.ProbeAttempts)
 			existing.ResumeAt = observedAt.Add(delay)
 		}
 		existing.NextProbeAt = backendCapacityBoundedProbeAt(existing.ResumeAt, observedAt.Add(delay), observedAt)
@@ -167,6 +169,43 @@ func (o *Orchestrator) registerBackendOutage(
 
 func backendCapacityProviderOutage(outage BackendOutage) bool {
 	return outage.Kind == "http_404" || (len(outage.Kind) == len("http_500") && strings.HasPrefix(outage.Kind, "http_5"))
+}
+
+func (o *Orchestrator) refreshBackendCapacity(ctx context.Context, state *State, now time.Time) {
+	if o.capacityReader == nil {
+		return
+	}
+	for _, key := range sortedKeys(state.BackendOutages) {
+		outage := state.BackendOutages[key]
+		if outage.Scope.BackendKind != workflowconfig.AgentBackendCodex && outage.Scope.BackendKind != workflowconfig.AgentBackendClaudeCode && outage.Scope.BackendKind != workflowconfig.AgentBackendPiAgent {
+			continue
+		}
+		if backendCapacityProviderOutage(outage) || !outage.Scope.Hosted() || now.Before(outage.NextProbeAt) {
+			continue
+		}
+		readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		observation, err := o.capacityReader.ReadBackendCapacity(readCtx, outage.Scope, now)
+		cancel()
+		outage.LastProbeAt = now
+		outage.NextProbeAt = now.Add(backendCapacityProbeDelay)
+		outage.ProbeIssueID = ""
+		outage.ProbeAttempts++
+		outage.LastProbeResult = "status_unknown"
+		if err == nil {
+			outage.LastProbeDetail = observation.Status.Detail
+			if observation.Status.Available && !observation.Status.Exhausted {
+				outage.LastProbeResult = "status_available"
+				o.completeBackendCapacityRecovery(state, key, outage, now, "live_status")
+				continue
+			}
+			if observation.Status.Exhausted {
+				outage.LastProbeResult = "status_exhausted"
+			}
+		} else {
+			outage.LastProbeDetail = "provider capacity read unavailable"
+		}
+		state.BackendOutages[key] = outage
+	}
 }
 
 func backendCapacityProbeDelayForAttempt(attempt int) time.Duration {
@@ -273,6 +312,9 @@ func (o *Orchestrator) backendCapacityDispatch(
 	if !ok {
 		return scope, "", false
 	}
+	if !backendCapacityProviderOutage(outage) {
+		return scope, "", true
+	}
 	probeAt := outage.NextProbeAt
 	if probeAt.IsZero() {
 		probeAt = outage.ResumeAt
@@ -309,6 +351,9 @@ func (o *Orchestrator) validatorCapacityDispatch(
 	key, outage, ok := matchingBackendOutage(state.BackendOutages, scope)
 	if !ok {
 		return scope, "", false
+	}
+	if !backendCapacityProviderOutage(outage) {
+		return scope, "", true
 	}
 	probeAt := outage.NextProbeAt
 	if probeAt.IsZero() {
@@ -428,7 +473,7 @@ func (o *Orchestrator) recoverBackendCapacity(state *State, running Running, rec
 		return
 	}
 	key, outage, ok := matchingBackendOutage(state.BackendOutages, running.CapacityScope)
-	if !ok {
+	if !ok || !backendCapacityProviderOutage(outage) {
 		return
 	}
 	outage.LastProbeAt = recoveredAt

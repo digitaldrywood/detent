@@ -1,12 +1,77 @@
 package runner
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
+	t.Parallel()
+	for _, failed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "unknown after failure"}[failed], func(t *testing.T) {
+			now := time.Date(2026, 10, 15, 20, 0, 0, 0, time.UTC)
+			usage := &ProviderUsage{}
+			calls := 0
+			backend := capacityReadBackend{read: func(ctx context.Context) (CapacityObservation, error) {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Fatal("status read has no deadline")
+				}
+				calls++
+				if failed {
+					return CapacityObservation{}, errors.New("unavailable")
+				}
+				return CapacityObservation{Status: CapacityStatus{Available: true}}, nil
+			}}
+			cfg := config.AgentBackend{ID: "one", Kind: config.AgentBackendCodex, Command: "codex app-server"}
+			for _, id := range []string{"one", "two", "one"} {
+				cfg.ID = id
+				got, err := usage.RefreshCapacity(t.Context(), cfg, backend, now)
+				if (err != nil) != failed || got.Status.Available == failed {
+					t.Fatalf("read=%#v, %v", got, err)
+				}
+			}
+			if calls != 1 {
+				t.Fatalf("coalesced reads=%d", calls)
+			}
+			cfg.Command = "codex app-server -c profile=other-account"
+			if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now); (err != nil) != failed {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatal("separate account reused capacity evidence")
+			}
+			cfg.Command = "codex app-server"
+			if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now.Add(time.Minute)); (err != nil) != failed {
+				t.Fatal(err)
+			}
+			if calls != 3 {
+				t.Fatal("capacity was not refreshed")
+			}
+			cfg.Provider = "local_ollama"
+			if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 3 {
+				t.Fatal("local backend read ChatGPT quota")
+			}
+		})
+	}
+}
+
+type capacityReadBackend struct {
+	AgentBackend
+	read func(context.Context) (CapacityObservation, error)
+}
+
+func (b capacityReadBackend) ReadCapacity(ctx context.Context) (CapacityObservation, error) {
+	return b.read(ctx)
+}
 
 func TestProviderUsageRetainsWindowObservations(t *testing.T) {
 	t.Parallel()
