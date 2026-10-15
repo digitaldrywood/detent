@@ -44,6 +44,44 @@ func BenchmarkAnalyticsRollupReads(b *testing.B) {
 	}
 }
 
+func BenchmarkAnalyticsReportSubreads(b *testing.B) {
+	f := benchmarkAnalyticsFixture(b, 0)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	now := formatHubTime(f.service.config.now())
+	if _, err := f.service.database.db.ExecContext(b.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('machine_browser_preview_runner','example-runner',1,'test',?,?,?)`, now, now, now); err != nil {
+		b.Fatal(err)
+	}
+	seedProductionProject(b, f.service, scope, pyroApexShape)
+	for _, span := range []time.Duration{24 * time.Hour, 7 * 24 * time.Hour, 30 * 24 * time.Hour} {
+		w := operatortool.AnalyticsWindow{From: f.service.config.now().Add(-span), To: f.service.config.now(), Bucket: time.Hour}
+		for _, source := range []struct {
+			name string
+			q    nativeQueryer
+		}{{"raw", f.service.database.reader}, {"rollups", analyticsRollupReader{f.service.database.reader}}} {
+			for _, read := range []struct {
+				name string
+				run  func() error
+			}{
+				{"attempts", func() error { _, err := loadNativeAnalyticsAttempts(b.Context(), source.q, scope, w, ""); return err }},
+				{"quality", func() error {
+					_, err := readAnalyticsQuality(b.Context(), source.q, scope, operatortool.AnalyticsRequest{Limit: maxAnalyticsPopulation}, w)
+					return err
+				}},
+				{"landings", func() error { _, err := nativeAnalyticsLandings(b.Context(), source.q, scope, w); return err }},
+			} {
+				b.Run(fmt.Sprintf("%s/%s/%dh", source.name, read.name, int(span.Hours())), func(b *testing.B) {
+					b.ReportAllocs()
+					for b.Loop() {
+						if err := read.run(); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 func BenchmarkAnalyticsRollupAppend(b *testing.B) {
 	for _, projected := range []bool{false, true} {
 		b.Run(fmt.Sprintf("projected=%t", projected), func(b *testing.B) {

@@ -30,10 +30,6 @@ var knownSlowHotReads = []struct {
 	{"activity running attempts sort", "n.status='running' AND l.released_at IS NULL", hotReadIssue + "1057"},
 	{"activity finished attempts sort", "n.status!='running' AND n.activity_updated_at>=julianday(:from)", hotReadIssue + "1057"},
 	{"work item latest change sort", "ORDER BY c.rowid DESC LIMIT 1", hotReadIssue + "1057"},
-	{"analytics landed changes sort", "SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v", hotReadIssue + "976"},
-	{"analytics quality landings sort", "WITH landed AS ( SELECT c.id,c.work_item_id,v.id AS version_id", hotReadIssue + "976"},
-	{"analytics residence transitions sort", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", hotReadIssue + "1045"},
-	{"analytics review evidence sort", "FROM change_evidence e JOIN change_requests c ON c.id=e.change_id", hotReadIssue + "976"},
 }
 
 const hotReadIssue = "prj_6d4919bebd73446798e6cd807feda10e#"
@@ -431,7 +427,7 @@ var windowedRollupReads = []struct{ name, fragment, index, bound string }{
 	{"usage rows", "FROM analytics_attempt_usage u LEFT JOIN analytics_native_attempts a ON a.id = u.attempt_id", "analytics_usage_window", ">?"},
 	{"attempts in window", "julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?=''", "analytics_attempt_started", ""},
 	{"failed attempts in window", "WHERE metric='attempt' AND json_extract(data_json,'$.failed_at') IS NOT NULL", "analytics_attempt_failed", ">?"},
-	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_window", ">?"},
+	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_order", ">?"},
 }
 
 // TestAnalyticsRollupReportPlans reads Reports over production-shaped
@@ -543,7 +539,7 @@ var pyroApexShape = productionProjectShape{issues: 594, attempts: 469, usage: 26
 // seedProductionProject writes a production-shaped project through the raw
 // tables and rebuilds its rollups the way the backfill does, so every
 // derived rollup has production's row counts and payload sizes.
-func seedProductionProject(t *testing.T, s *Service, scope nativeScope, shape productionProjectShape) {
+func seedProductionProject(t testing.TB, s *Service, scope nativeScope, shape productionProjectShape) {
 	t.Helper()
 	now := formatHubTime(s.config.now().UTC())
 	org, project := string(scope.organization), string(scope.project)

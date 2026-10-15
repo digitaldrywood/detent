@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"slices"
@@ -73,30 +74,69 @@ type qualityDiscussion struct {
 	tracker.ChangeDiscussion
 }
 
+func analyticsEventsInRecordedOrder(q nativeQueryer) string {
+	if _, projected := q.(analyticsRollupReader); !projected {
+		return "collaboration_events INDEXED BY collaboration_events_analytics_order"
+	}
+	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.json_work_item_id AS work_item_id,r.json_sequence AS sequence,r.json_type AS type,r.json_recorded_at AS recorded_at,e.data_json FROM analytics_hourly_rollups r INDEXED BY analytics_event_order CROSS JOIN main.collaboration_events e ON e.id=r.dimension WHERE r.metric='event') AS collaboration_events`
+}
+
 func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
 	issues, issueArgs := reportsIssueClause(ctx, "l.work_item_id")
-	rows, err := queryAnalyticsPopulation(ctx, q, "quality_landings", `WITH landed AS (
-SELECT c.id,c.work_item_id,v.id AS version_id,l.record_json AS landing FROM quality_landings l JOIN change_versions v ON v.id=l.version_id JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=?
+	rows, err := queryAnalyticsRows(ctx, q, `WITH reopened_items(work_item_id) AS MATERIALIZED (
+SELECT e.work_item_id FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.type='workflow.transitioned' AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?) AND lower(json_extract(e.data_json,'$.from_state'))='done'
+),escaped_versions(change_id,version_id) AS MATERIALIZED (
+SELECT e.change_id,e.version_id FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
+WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND json_extract(e.record_json,'$.escape') IS NOT NULL AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)
+),relevant_changes(id) AS (
+SELECT c.id FROM quality_landings l INDEXED BY quality_landings_analytics_landed CROSS JOIN change_versions v ON v.id=l.version_id CROSS JOIN change_requests c ON c.id=v.change_id
+WHERE c.organization_id=? AND c.project_id=? AND json_extract(l.record_json,'$.landed_at')>=? AND json_extract(l.record_json,'$.landed_at')<?
+UNION ALL SELECT c.id FROM change_requests c WHERE c.organization_id=? AND c.project_id=? AND json_extract(c.record_json,'$.landed.landed_at')>=? AND json_extract(c.record_json,'$.landed.landed_at')<?
+UNION ALL SELECT c.id FROM reopened_items i CROSS JOIN change_requests c ON c.work_item_id=i.work_item_id WHERE c.organization_id=? AND c.project_id=?
+UNION ALL SELECT change_id FROM escaped_versions
+),landed AS (
+SELECT c.id,c.work_item_id,v.id AS version_id,l.record_json AS landing FROM quality_landings l JOIN change_versions v ON v.id=l.version_id JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=? AND c.id IN (SELECT id FROM relevant_changes)
 UNION ALL SELECT c.id,c.work_item_id,v.id,json_extract(c.record_json,'$.landed') FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
-WHERE c.organization_id=? AND c.project_id=? AND NOT EXISTS (SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
+WHERE c.organization_id=? AND c.project_id=? AND c.id IN (SELECT id FROM relevant_changes) AND NOT EXISTS (SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
 )
-SELECT id,work_item_id,landing FROM landed l WHERE julianday(json_extract(landing,'$.landed_at'))<julianday(?) AND (
-julianday(json_extract(landing,'$.landed_at'))>=julianday(?) OR EXISTS (SELECT 1 FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=l.work_item_id AND e.type='workflow.transitioned' AND lower(json_extract(e.data_json,'$.from_state'))='done' AND julianday(e.recorded_at)>=julianday(?) AND julianday(e.recorded_at)<julianday(?))
-OR EXISTS (SELECT 1 FROM change_evidence e WHERE e.change_id=l.id AND e.version_id=l.version_id AND e.kind='discussion' AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)))
+SELECT id,work_item_id,landing,version_id,json_extract(landing,'$.landed_at') FROM landed l WHERE julianday(json_extract(landing,'$.landed_at'))<julianday(?) AND (
+julianday(json_extract(landing,'$.landed_at'))>=julianday(?) OR l.work_item_id IN (SELECT work_item_id FROM reopened_items)
+OR (l.id,l.version_id) IN (SELECT change_id,version_id FROM escaped_versions))
 `+issues+`
-ORDER BY json_extract(landing,'$.landed_at'),id,version_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), formatHubTime(w.From), formatHubTime(w.To)}, issueArgs...)...)
+`, append([]any{
+		scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To),
+		scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To),
+		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly),
+		scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly),
+		scope.organization, scope.project,
+		scope.organization, scope.project, scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	landings := []nativeAnalyticsLanding{}
+	type qualityLandingRow struct {
+		id, item, raw, version, at string
+	}
+	population := newAnalyticsOrderedPopulation(ctx, "quality_landings", func(a, b qualityLandingRow) int {
+		if order := cmp.Compare(a.at, b.at); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(a.id, b.id); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.version, b.version)
+	})
 	for rows.Next() {
-		var landing nativeAnalyticsLanding
-		var raw string
-		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &raw); err != nil {
+		var row qualityLandingRow
+		if err := rows.Scan(&row.id, &row.item, &row.raw, &row.version, &row.at); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(raw), &landing.Landing); err != nil {
+		population.add(row)
+	}
+	landings := []nativeAnalyticsLanding{}
+	for _, row := range population.page(ctx, "quality_landings") {
+		landing := nativeAnalyticsLanding{ChangeID: row.id, WorkItemID: tracker.NativeWorkItemID(row.item)}
+		if err := json.Unmarshal([]byte(row.raw), &landing.Landing); err != nil {
 			return nil, err
 		}
 		landings = append(landings, landing)
@@ -104,19 +144,26 @@ ORDER BY json_extract(landing,'$.landed_at'),id,version_id LIMIT ? OFFSET ?`, ap
 	return landings, rows.Err()
 }
 
-func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
+type analyticsQualityInputs struct {
+	landings    []nativeAnalyticsLanding
+	events      []qualityHistoryEvent
+	discussions []qualityDiscussion
+	partial     bool
+}
+
+func loadAnalyticsQualityInputs(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
 	landings, err := readQualityLandings(ctx, q, scope, w)
 	if err != nil {
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	partial := len(landings) > maxAnalyticsPopulation || analyticsPopulationOffset(ctx, "quality_landings") > 0 || analyticsPopulationOffset(ctx, "quality_events") > 0 || analyticsPopulationOffset(ctx, "quality_evidence") > 0 || analyticsPopulationOffset(ctx, "quality_worked") > 0
 	landings = landings[:min(len(landings), maxAnalyticsPopulation)]
 	eventIssues, eventArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err := queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=json_extract(data_json,'$.to_state')),0) FROM collaboration_events
+	rows, err := queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=json_extract(data_json,'$.to_state')),0) FROM `+analyticsEventsInRecordedOrder(q)+`
 WHERE organization_id=? AND project_id=? AND type='workflow.transitioned'
-AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`+eventIssues+` ORDER BY recorded_at,sequence,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, eventArgs...)...)
+AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) AND recorded_at>=? AND recorded_at<?`+eventIssues+` ORDER BY recorded_at,sequence,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, eventArgs...)...)
 	if err != nil {
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	defer rows.Close()
 	events := []qualityHistoryEvent{}
@@ -125,7 +172,7 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		var at, raw string
 		if err := rows.Scan(&e.ID, &e.Item, &e.Kind, &at, &raw, &e.ToTerminal); err != nil {
 			rows.Close()
-			return analyticsQuality{}, err
+			return analyticsQualityInputs{}, err
 		}
 		e.At, err = parseTimeValue(at)
 		if err == nil {
@@ -133,80 +180,88 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		}
 		if err != nil {
 			rows.Close()
-			return analyticsQuality{}, err
+			return analyticsQualityInputs{}, err
 		}
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	partial = partial || len(events) > maxAnalyticsPopulation
 	events = events[:min(len(events), maxAnalyticsPopulation)]
 	evidenceIssues, evidenceArgs := reportsIssueClause(ctx, "c.work_item_id")
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_evidence", `SELECT e.change_id,e.kind,e.record_json,c.work_item_id FROM change_evidence e JOIN change_requests c ON c.id=e.change_id
-WHERE c.organization_id=? AND c.project_id=? AND ((e.kind='review' AND json_extract(e.record_json,'$.decision')='changes_requested' AND julianday(json_extract(e.record_json,'$.created_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.created_at'))<julianday(?) AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(json_extract(newer.record_json,'$.created_at'))<=julianday(json_extract(e.record_json,'$.created_at'))))
-OR (e.kind='discussion' AND json_extract(e.record_json,'$.escape') IS NOT NULL AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)))
+	rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
+WHERE c.organization_id=? AND c.project_id=? AND e.kind='review' AND json_extract(e.record_json,'$.decision')='changes_requested' AND julianday(json_extract(e.record_json,'$.created_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.created_at'))<julianday(?) AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(json_extract(newer.record_json,'$.created_at'))<=julianday(json_extract(e.record_json,'$.created_at')))
 `+evidenceIssues+`
-ORDER BY e.sequence LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), formatHubTime(w.From), formatHubTime(w.To)}, evidenceArgs...)...)
+UNION ALL SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
+WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND json_extract(e.record_json,'$.escape') IS NOT NULL AND julianday(json_extract(e.record_json,'$.escape.observed_at'))>=julianday(?) AND julianday(json_extract(e.record_json,'$.escape.observed_at'))<julianday(?)
+`+evidenceIssues, append(append(append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, evidenceArgs...), scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)), evidenceArgs...)...)
 	if err != nil {
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	defer rows.Close()
-	discussions := []qualityDiscussion{}
-	count := 0
+	type qualityEvidenceRow struct {
+		id, kind, raw, item string
+		sequence            int64
+	}
+	evidence := newAnalyticsOrderedPopulation(ctx, "quality_evidence", func(a, b qualityEvidenceRow) int { return cmp.Compare(a.sequence, b.sequence) })
 	for rows.Next() {
-		var id, kind, raw, item string
-		if err := rows.Scan(&id, &kind, &raw, &item); err != nil {
-			rows.Close()
-			return analyticsQuality{}, err
+		var value qualityEvidenceRow
+		if err := rows.Scan(&value.id, &value.kind, &value.raw, &value.item, &value.sequence); err != nil {
+			return analyticsQualityInputs{}, err
 		}
-		count++
-		if count > maxAnalyticsPopulation {
-			partial = true
-			break
-		}
+		evidence.add(value)
+	}
+	if err := rows.Err(); err != nil {
+		return analyticsQualityInputs{}, err
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return analyticsQualityInputs{}, err
+	}
+	discussions := []qualityDiscussion{}
+	values := evidence.page(ctx, "quality_evidence")
+	partial = partial || len(values) > maxAnalyticsPopulation
+	for _, value := range values[:min(len(values), maxAnalyticsPopulation)] {
+		id, kind, raw, item := value.id, value.kind, value.raw, value.item
 		if kind == "discussion" {
 			var discussion qualityDiscussion
 			discussion.ChangeID = id
 			if err := json.Unmarshal([]byte(raw), &discussion.ChangeDiscussion); err != nil {
 				rows.Close()
-				return analyticsQuality{}, err
+				return analyticsQualityInputs{}, err
 			}
 			discussions = append(discussions, discussion)
 		} else {
 			var review tracker.ChangeReview
 			if err := json.Unmarshal([]byte(raw), &review); err != nil {
 				rows.Close()
-				return analyticsQuality{}, err
+				return analyticsQualityInputs{}, err
 			}
 			events = append(events, qualityHistoryEvent{ID: review.ID, Item: item, Kind: "changes_requested", VersionID: review.VersionID, At: review.CreatedAt})
 		}
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return analyticsQuality{}, err
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return analyticsQuality{}, err
+	role := "coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role'))"
+	if _, projected := q.(analyticsRollupReader); projected {
+		role = "attempt_role"
 	}
 	workedIssues, workedArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+analyticsAttemptsInStartedOrder(q)+` a WHERE organization_id=? AND project_id=? AND coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role')) IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?)`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)}, workedArgs...)...)
+	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+analyticsAttemptsInStartedOrder(q)+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
 	if err != nil {
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	defer rows.Close()
-	count = 0
+	count := 0
 	for rows.Next() {
 		var item, at string
 		if err := rows.Scan(&item, &at); err != nil {
 			rows.Close()
-			return analyticsQuality{}, err
+			return analyticsQualityInputs{}, err
 		}
 		count++
 		if count > maxAnalyticsPopulation {
@@ -216,18 +271,27 @@ ORDER BY e.sequence LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.pr
 		when, err := parseTimeValue(at)
 		if err != nil {
 			rows.Close()
-			return analyticsQuality{}, err
+			return analyticsQualityInputs{}, err
 		}
 		events = append(events, qualityHistoryEvent{Item: item, Kind: "worked", At: when})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return analyticsQuality{}, err
+		return analyticsQualityInputs{}, err
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return analyticsQualityInputs{}, err
+	}
+	return analyticsQualityInputs{landings, events, discussions, partial}, nil
+}
+
+func readAnalyticsQuality(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (analyticsQuality, error) {
+	inputs, err := reportsQualityInputs(ctx, q, scope, w)
+	if err != nil {
 		return analyticsQuality{}, err
 	}
+	landings, events, discussions, partial := inputs.landings, inputs.events, inputs.discussions, inputs.partial
 	out := summarizeAnalyticsQuality(landings, events, discussions, w)
 	out.Partial = partial
 	if partial {
