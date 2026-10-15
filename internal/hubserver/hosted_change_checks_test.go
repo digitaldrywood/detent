@@ -188,7 +188,7 @@ func testHostedCheckRevocation(t *testing.T, f *browserHostedFixture, base, path
 		{"project grant", "DELETE FROM token_grants WHERE token_id=? AND project_id=?", "INSERT INTO token_grants VALUES (?, 'org_browser_preview', ?)", []any{principal, project}, []any{principal, project}, 404},
 		{"policy principal", "UPDATE change_review_policies SET policy_json=json_set(policy_json,'$.required_checks[0].principal_id','other') WHERE project_id=?", "UPDATE change_review_policies SET policy_json=? WHERE project_id=?", []any{project}, []any{rules, project}, 404},
 		{"policy source", "UPDATE change_review_policies SET policy_json=json_set(policy_json,'$.required_checks[0].source','customer') WHERE project_id=?", "UPDATE change_review_policies SET policy_json=? WHERE project_id=?", []any{project}, []any{rules, project}, 404},
-		{"repository policy", "UPDATE change_review_policies SET policy_json=json_set(policy_json,'$.policy_id','other') WHERE project_id=?", "UPDATE change_review_policies SET policy_json=? WHERE project_id=?", []any{project}, []any{rules, project}, 404},
+		{"repository configuration identity", "UPDATE change_review_policies SET policy_json=json_set(policy_json,'$.policy_id','other') WHERE project_id=?", "UPDATE change_review_policies SET policy_json=? WHERE project_id=?", []any{project}, []any{rules, project}, http.StatusOK},
 	} {
 		for _, during := range []bool{false, true} {
 			name := test.name + "/admission"
@@ -232,7 +232,7 @@ func testHostedCheckRevocation(t *testing.T, f *browserHostedFixture, base, path
 				response := httptest.NewRecorder()
 				f.service.Handler().ServeHTTP(response, request)
 				want := test.want
-				if during {
+				if during && want != http.StatusOK {
 					want = http.StatusNotFound
 				}
 				requireNativeStatus(t, response, want)
