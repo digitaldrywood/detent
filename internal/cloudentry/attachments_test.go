@@ -209,6 +209,7 @@ func TestAttachmentRoutesIsolation(t *testing.T) {
 	_, body := alice.get("/organizations/org_alpha/organization")
 	csrf := csrfFrom(t, body)
 	project := attachmentProject(t, alice, "org_alpha")
+	approveEntryFixturePolicy(t, alice, "org_alpha", project)
 	base := "/organizations/org_alpha/api/v2/projects/" + project + "/attachments"
 	content := strings.Repeat("attachment-data\n", 180000)
 	upload := attachmentRequest(t, alice, http.MethodPost, base, strings.NewReader(content), map[string]string{"Content-Type": "text/plain", "X-Attachment-Name": "orgs/org_beta/secret.txt", "X-CSRF-Token": csrf, "X-Detent-Organization": "org_beta"})
@@ -630,7 +631,7 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 	}
 	for _, mode := range []string{"API", "MCP", "worker"} {
 		t.Run(mode, func(t *testing.T) {
-			issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-issue-" + mode}, Title: map[string]string{"API": "Screenshot rendering", "MCP": "Protocol transfer", "worker": "Worker publication"}[mode], State: "Todo"})
+			issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-issue-" + mode}, Title: map[string]string{"API": "Screenshot rendering", "MCP": "Protocol transfer", "worker": "Worker publication"}[mode], State: "Backlog"})
 			if err != nil {
 				t.Fatal(err)
 			}

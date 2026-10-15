@@ -39,9 +39,10 @@ func TestMigratedAttemptDiffReadsThroughEntry(t *testing.T) {
 	_, body := alice.get("/organizations/org_alpha/organization")
 	csrf := csrfFrom(t, body)
 	project := attachmentProject(t, alice, "org_alpha")
+	approveEntryFixturePolicy(t, alice, "org_alpha", project)
 	base := "/api/v2/organizations/org_alpha/projects/" + project
 	headers := map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf}
-	created := attachmentRequest(t, alice, http.MethodPost, base+"/work-items", strings.NewReader(`{"idempotency_key":"diff-item","title":"Diff migration"}`), headers)
+	created := attachmentRequest(t, alice, http.MethodPost, base+"/work-items", strings.NewReader(`{"idempotency_key":"diff-item","title":"Diff migration","state":"Backlog"}`), headers)
 	if created.Code != http.StatusOK {
 		t.Fatalf("issue=%d %s", created.Code, created.Body.String())
 	}

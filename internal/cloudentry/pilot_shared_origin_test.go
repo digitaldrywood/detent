@@ -724,6 +724,9 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 	})
 
 	pilotStage(t, "concurrent tabs stay scoped", func() {
+		for _, o := range []pilotOrganization{alpha, beta} {
+			pilotStatus(t, "policy", o.owner.json(http.MethodPut, o.projectAPI()+"/onboarding/policy", o.ownerCSRF, policy.Change{Policy: pilotPolicy()}), http.StatusOK)
+		}
 		var wg sync.WaitGroup
 		errs := make(chan error, 64)
 		requests := atomic.Int64{}
@@ -740,7 +743,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 						errs <- fmt.Errorf("tab %s read %d", tab.self.id, page.status)
 						return
 					}
-					issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("tab-%s-%d", tab.self.id, i)}, Title: fmt.Sprintf("%s tab issue %d", tab.self.projectName, i), State: "Todo"}
+					issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("tab-%s-%d", tab.self.id, i)}, Title: fmt.Sprintf("%s tab issue %d", tab.self.projectName, i), State: "Backlog"}
 					created := fay.json(http.MethodPost, tab.self.projectAPI()+"/work-items", fayCSRF[tab.self.id], issue)
 					requests.Add(1)
 					if created.status == http.StatusConflict {
@@ -851,7 +854,6 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 			identity[test.name] = response.status
 		}
 		descriptor := pilotPolicy()
-		pilotStatus(t, "policy", alpha.owner.json(http.MethodPut, alpha.projectAPI()+"/onboarding/policy", alpha.ownerCSRF, policy.Change{Policy: descriptor}), http.StatusOK)
 		created := alpha.owner.json(http.MethodPost, alpha.projectAPI()+"/work-items", alpha.ownerCSRF, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "runner-work"}, Title: "Runner work", Body: issueContractTestSections, State: "Todo"})
 		pilotStatus(t, "runner issue", created, http.StatusOK)
 		pilotDecode(t, created, &alphaIssue)
@@ -1136,9 +1138,10 @@ func TestSharedOriginAPIKeyConnection(t *testing.T) {
 	project := owner.form("/organizations/"+o.id+"/projects", url.Values{"name": {"API key project"}, "grant_access": {"true"}, "csrf": {o.ownerCSRF}})
 	pilotStatus(t, "project", project, http.StatusSeeOther)
 	o.project = strings.TrimPrefix(project.location, "/organizations/"+o.id+"/projects/")
+	pilotStatus(t, "policy", owner.json(http.MethodPut, o.projectAPI()+"/onboarding/policy", o.ownerCSRF, policy.Change{Policy: pilotPolicy()}), http.StatusOK)
 	mount := "/organizations/" + o.id
 	api := mount + o.api()
-	pilotStatus(t, "seed readable work", owner.json(http.MethodPost, api+"/projects/"+o.project+"/work-items", o.ownerCSRF, map[string]any{"title": "Shared key read", "state": "Todo", "idempotency_key": "shared-key-read"}), http.StatusOK)
+	pilotStatus(t, "seed readable work", owner.json(http.MethodPost, api+"/projects/"+o.project+"/work-items", o.ownerCSRF, map[string]any{"title": "Shared key read", "state": "Backlog", "idempotency_key": "shared-key-read"}), http.StatusOK)
 	issued := owner.json(http.MethodPost, api+"/api-keys", o.ownerCSRF, map[string]any{"name": "external-client", "scope": "read", "expires_days": 7, "project_ids": []string{o.project}})
 	pilotStatus(t, "create shared key", issued, http.StatusCreated)
 	var key struct {
