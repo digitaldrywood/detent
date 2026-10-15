@@ -138,6 +138,8 @@ class ShortLandingGateTest(unittest.TestCase):
         trace = self.trace()
         test = next(call for call in trace if call["args"][0] == "test")
         self.assertEqual(test["args"][-5:], ["./app", "./integration", "./lib", "./removed", "./unrelated"])
+        self.assertEqual(trace[-1]["tool"], "golangci-lint")
+        self.assertEqual(trace[-1]["args"][-5:], test["args"][-5:])
         self.assertFalse(any(arg.startswith("--new-from-rev") for arg in trace[-1]["args"]))
 
     def test_fixture_changes_select_tests_without_lint(self):
