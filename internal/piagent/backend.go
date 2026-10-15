@@ -79,7 +79,7 @@ func (b *AgentBackend) argv(ctx context.Context, req runner.AgentTurnRequest) ([
 	if req.Resume.SessionID != "" || req.Resume.ThreadID != "" {
 		return nil, runner.ErrAgentResumeUnsupported
 	}
-	if req.ReadOnly {
+	if req.ReadOnly || req.TextOnly {
 		return nil, &infrastructureError{err: errors.New("pi backend cannot enforce read-only execution")}
 	}
 	policy, pinned := isolation.FromContext(ctx)
