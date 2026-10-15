@@ -136,6 +136,7 @@ func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 }
 
 func (s *Service) creditCommandFailure(c echo.Context, api bool, err error) error {
+	s.logStripeFailure(c.Request().Context(), err)
 	var failure *nativeError
 	switch {
 	case errors.Is(err, auth.ErrHostedIdentity):

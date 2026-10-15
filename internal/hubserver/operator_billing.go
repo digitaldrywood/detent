@@ -578,6 +578,7 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	}
 	defer func() {
 		if err != nil {
+			e.service.logStripeFailure(ctx, err)
 			err = safeBillingError(err)
 		}
 	}()
