@@ -97,14 +97,14 @@ export function DiagnosticsRoute(): React.ReactElement {
     const rows = (read === null ? [] : findingsFromRead(read)).filter((finding) => nativeProjects.has(finding.subject.project_id ?? ""));
     setFindings((previous) => {
       const prior = previous.key === findingsKey ? previous.value : EMPTY_FINDINGS;
-      if (sharedFindings.error) return { key: findingsKey, value: { ...prior, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." } };
+      if (sharedFindings.error && read === null) return { key: findingsKey, value: { ...prior, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." } };
       const updates = new Map(rows.map((finding) => [finding.id, finding]));
-      const retained = live ? (prior.findings ?? []).map((finding) => updates.get(finding.id) ?? finding) : [];
+      const retained = live || sharedFindings.error ? (prior.findings ?? []).map((finding) => updates.get(finding.id) ?? finding) : [];
       const ids = new Set(retained.map((finding) => finding.id));
       return { key: findingsKey, value: {
         findings: read?.last_tick_at == null ? null : [...retained, ...rows.filter((finding) => finding.resolved_at == null && !ids.has(finding.id))],
         detectorTick: read?.last_tick_at ?? null,
-        findingsError: null,
+        findingsError: sharedFindings.error ? "Unable to refresh findings. Any findings below are from the last successful read." : null,
       } };
     });
   }, [sharedFindings.read, sharedFindings.error, findingsKey, readScope, projects]);
