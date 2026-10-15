@@ -62,10 +62,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body" + issueContractTestSections, State: "Todo", Labels: []string{"selected-label"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	selected := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Runner admission context", Body: "private-admission-body" + issueContractTestSections, State: "Todo", Labels: []string{"selected-label"}})
 	largeSelectors := make([]string, 33)
 	for i := range largeSelectors {
 		largeSelectors[i] = "label-" + strconv.Itoa(i)
@@ -163,11 +160,8 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	}
 	discovered := make(map[tracker.NativeWorkItemID]string)
 	for i, fingerprint := range []string{"native-search-existing-one", "native-search-existing-two"} {
-		body := issueorigin.Stamp("Authoritative existing problem", issueorigin.Origin{Kind: "worker", Source: "existing-owner", Fingerprint: fingerprint})
-		item, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Search fixture " + strconv.Itoa(i), Body: body, State: "Todo", Priority: new(0), Labels: []string{"search-fixture"}, Assignees: []string{"operator"}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		body := issueorigin.Stamp("Authoritative existing problem"+issueContractTestSections, issueorigin.Origin{Kind: "worker", Source: "existing-owner", Fingerprint: fingerprint})
+		item := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Search fixture " + strconv.Itoa(i), Body: body, State: "Todo", Priority: new(0), Labels: []string{"search-fixture"}, Assignees: []string{"operator"}})
 		discovered[item.WorkItemID] = fingerprint
 	}
 	execution := h.scheduler.RunExecution(issue.ID)
@@ -350,10 +344,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
-	other, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", Body: issueContractTestSections, State: "Todo"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", Body: issueContractTestSections, State: "Todo"})
 	for _, tool := range tools {
 		if tool.Name == operatortool.WorkList && (!strings.Contains(tool.Description, "Use cursor, not offset") || strings.Contains(tool.Description, "reference must")) {
 			t.Fatal("project search advertised an unsupported paging or reference contract")

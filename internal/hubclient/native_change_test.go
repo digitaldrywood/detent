@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -2657,7 +2658,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			if test.dependencyOnly {
 				validationCommand = `PATH="$PWD/.test-bin:$PATH" make check-fast`
-				candidate.Description = "Remove the unused direct @radix-ui/themes dependency. Required validation: frontend pnpm build, frontend pnpm check, root make check-fast."
+				candidate.Description = "Remove the unused direct @radix-ui/themes dependency. Required validation: frontend pnpm build, frontend pnpm check, root make check-fast." + issueContractTestSections
 			}
 			gateMarker := filepath.Join(t.TempDir(), "gate-invoked")
 			if test.finalMessage != "" {
@@ -4198,7 +4199,15 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 		if a.lowScore {
 			score = .5
 		}
-		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"verdict":%q,"score":%f,"summary":"Checked acceptance","findings":[]}`, a.validator, score)}); err != nil {
+		var evidence []gate.CriterionEvidence
+		if match := regexp.MustCompile(`(?m)^receipt_id="([^"]+)" command="(?:\\.|[^"\\])*" head=(\S+) tree=(\S+) exit=0\b`).FindStringSubmatch(request.Prompt); len(match) == 4 {
+			evidence = append(evidence, gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "Host validation", ReceiptIDs: []string{match[1]}, HeadSHA: match[2], TreeSHA: match[3], Behavior: "The configured fixture validation command succeeds on the published source."})
+		}
+		encoded, err := json.Marshal(evidence)
+		if err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"verdict":%q,"score":%f,"summary":"Checked acceptance","findings":[],"criteria_evidence":%s}`, a.validator, score, encoded)}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 		return runner.AgentTurnResult{ThreadID: "thread-validator", TurnID: "validator-turn"}, nil
