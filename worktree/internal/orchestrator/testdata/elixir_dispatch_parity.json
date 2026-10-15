@@ -1,0 +1,345 @@
+{
+  "source": "Original Elixir orchestrator dispatch helpers adapted to current priority ordering",
+  "cases": [
+    {
+      "name": "mixed active candidates honor rank, slots, blocked dependencies, claims, and budget cooldowns",
+      "now": "2026-05-31T12:00:00Z",
+      "config": {
+        "max_concurrent_agents": 3,
+        "max_concurrent_agents_by_state": {
+          "Merging": 1,
+          "Rework": 1,
+          "Todo": 2
+        },
+        "dispatch_priority_by_state": ["Merging", "Rework", "Todo"],
+        "active_states": ["Todo", "Rework", "Merging", "In Progress"],
+        "terminal_states": ["Done", "Cancelled", "Canceled", "Closed"],
+        "budget_refusal_cooldown_seconds": 3600
+      },
+      "initial_state": {
+        "running": [
+          {
+            "issue": {
+              "id": "running-todo",
+              "identifier": "digitaldrywood/detent#101",
+              "title": "Already running Todo issue",
+              "state": "Todo",
+              "priority": 2,
+              "created_at": "2026-05-31T07:00:00Z"
+            }
+          }
+        ],
+        "claimed": [
+          {
+            "issue": {
+              "id": "running-todo",
+              "identifier": "digitaldrywood/detent#101",
+              "title": "Already running Todo issue",
+              "state": "Todo",
+              "priority": 2,
+              "created_at": "2026-05-31T07:00:00Z"
+            }
+          },
+          {
+            "issue": {
+              "id": "claimed-existing",
+              "identifier": "digitaldrywood/detent#102",
+              "title": "Already claimed issue",
+              "state": "Todo",
+              "priority": 1,
+              "created_at": "2026-05-31T06:00:00Z"
+            }
+          }
+        ],
+        "blocked": [
+          {
+            "issue": {
+              "id": "blocked-existing",
+              "identifier": "digitaldrywood/detent#103",
+              "title": "Existing operator block",
+              "state": "Todo"
+            },
+            "reason": "operator input required"
+          }
+        ],
+        "budget_refusals": [
+          {
+            "issue": {
+              "id": "budget-active",
+              "identifier": "digitaldrywood/detent#104",
+              "title": "Budget cooldown active",
+              "state": "Todo",
+              "priority": 1,
+              "created_at": "2026-05-31T05:00:00Z"
+            },
+            "refused_at": "2026-05-31T11:30:00Z"
+          },
+          {
+            "issue": {
+              "id": "budget-expired",
+              "identifier": "digitaldrywood/detent#105",
+              "title": "Budget cooldown expired",
+              "state": "Todo",
+              "priority": 4,
+              "created_at": "2026-05-31T05:30:00Z"
+            },
+            "refused_at": "2026-05-31T10:00:00Z"
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "id": "todo-ready",
+          "identifier": "digitaldrywood/detent#106",
+          "title": "Ready Todo issue",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T04:00:00Z"
+        },
+        {
+          "id": "done-candidate",
+          "identifier": "digitaldrywood/detent#107",
+          "title": "Done issue",
+          "state": "Done",
+          "priority": 1,
+          "created_at": "2026-05-31T02:00:00Z"
+        },
+        {
+          "id": "blocked-dependency",
+          "identifier": "digitaldrywood/detent#108",
+          "title": "Blocked by in-progress dependency",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T01:00:00Z",
+          "blocked_by": [
+            {
+              "identifier": "digitaldrywood/detent#90",
+              "state": "In Progress"
+            }
+          ]
+        },
+        {
+          "id": "rework-ready",
+          "identifier": "digitaldrywood/detent#109",
+          "title": "Ready Rework issue",
+          "state": "Rework",
+          "priority": 2,
+          "created_at": "2026-05-31T10:30:00Z"
+        },
+        {
+          "id": "merging-ready",
+          "identifier": "digitaldrywood/detent#110",
+          "title": "Ready Merging issue",
+          "state": "Merging",
+          "priority": 4,
+          "created_at": "2026-05-31T11:00:00Z"
+        },
+        {
+          "id": "claimed-existing",
+          "identifier": "digitaldrywood/detent#102",
+          "title": "Already claimed issue",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T06:00:00Z"
+        },
+        {
+          "id": "budget-active",
+          "identifier": "digitaldrywood/detent#104",
+          "title": "Budget cooldown active",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T05:00:00Z"
+        },
+        {
+          "id": "budget-expired",
+          "identifier": "digitaldrywood/detent#105",
+          "title": "Budget cooldown expired",
+          "state": "Todo",
+          "priority": 4,
+          "created_at": "2026-05-31T05:30:00Z"
+        },
+        {
+          "id": "running-todo",
+          "identifier": "digitaldrywood/detent#101",
+          "title": "Already running Todo issue",
+          "state": "Todo",
+          "priority": 2,
+          "created_at": "2026-05-31T07:00:00Z"
+        }
+      ],
+      "want": {
+        "dispatch_order": ["todo-ready", "rework-ready"],
+        "blocked": ["blocked-dependency", "blocked-existing"],
+        "claimed": ["claimed-existing", "rework-ready", "running-todo", "todo-ready"],
+        "refusals": ["budget-active"]
+      }
+    },
+    {
+      "name": "terminal blockers remain dispatchable and nil created dates sort last",
+      "now": "2026-05-31T12:00:00Z",
+      "config": {
+        "max_concurrent_agents": 2,
+        "dispatch_priority_by_state": ["Todo"],
+        "active_states": ["Todo"],
+        "terminal_states": ["Done", "Cancelled", "Canceled", "Closed"],
+        "budget_refusal_cooldown_seconds": 3600
+      },
+      "initial_state": {},
+      "candidates": [
+        {
+          "id": "todo-missing-created",
+          "identifier": "digitaldrywood/detent#203",
+          "title": "Ready Todo without created date",
+          "state": "Todo",
+          "priority": 1
+        },
+        {
+          "id": "todo-terminal-blocker",
+          "identifier": "digitaldrywood/detent#202",
+          "title": "Ready Todo with completed dependency",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T10:00:00Z",
+          "blocked_by": [
+            {
+              "identifier": "digitaldrywood/detent#180",
+              "state": "Done"
+            }
+          ]
+        },
+        {
+          "id": "todo-old",
+          "identifier": "digitaldrywood/detent#201",
+          "title": "Old ready Todo",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T09:00:00Z"
+        }
+      ],
+      "want": {
+        "dispatch_order": ["todo-old", "todo-terminal-blocker"],
+        "blocked": [],
+        "claimed": ["todo-old", "todo-terminal-blocker"],
+        "refusals": []
+      }
+    },
+    {
+      "name": "non-terminal blockers are tracked and skipped before the next eligible candidate",
+      "now": "2026-05-31T12:00:00Z",
+      "config": {
+        "max_concurrent_agents": 1,
+        "dispatch_priority_by_state": ["Todo"],
+        "active_states": ["Todo"],
+        "terminal_states": ["Done", "Cancelled", "Canceled", "Closed"],
+        "budget_refusal_cooldown_seconds": 3600
+      },
+      "initial_state": {},
+      "candidates": [
+        {
+          "id": "todo-blocked-first",
+          "identifier": "digitaldrywood/detent#301",
+          "title": "Blocked Todo candidate",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T08:00:00Z",
+          "blocked_by": [
+            {
+              "identifier": "digitaldrywood/detent#280",
+              "state": "In Progress"
+            }
+          ]
+        },
+        {
+          "id": "todo-next-ready",
+          "identifier": "digitaldrywood/detent#302",
+          "title": "Next ready Todo candidate",
+          "state": "Todo",
+          "priority": 2,
+          "created_at": "2026-05-31T09:00:00Z"
+        }
+      ],
+      "want": {
+        "dispatch_order": ["todo-next-ready"],
+        "blocked": ["todo-blocked-first"],
+        "claimed": ["todo-next-ready"],
+        "refusals": []
+      }
+    },
+    {
+      "name": "budget cooldown candidates are skipped before the next eligible candidate",
+      "now": "2026-05-31T12:00:00Z",
+      "config": {
+        "max_concurrent_agents": 1,
+        "dispatch_priority_by_state": ["Todo"],
+        "active_states": ["Todo"],
+        "terminal_states": ["Done", "Cancelled", "Canceled", "Closed"],
+        "budget_refusal_cooldown_seconds": 3600
+      },
+      "initial_state": {
+        "budget_refusals": [
+          {
+            "issue": {
+              "id": "todo-budget-first",
+              "identifier": "digitaldrywood/detent#401",
+              "title": "Budget-refused Todo candidate",
+              "state": "Todo",
+              "priority": 1,
+              "created_at": "2026-05-31T08:00:00Z"
+            },
+            "refused_at": "2026-05-31T11:30:00Z"
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "id": "todo-budget-first",
+          "identifier": "digitaldrywood/detent#401",
+          "title": "Budget-refused Todo candidate",
+          "state": "Todo",
+          "priority": 1,
+          "created_at": "2026-05-31T08:00:00Z"
+        },
+        {
+          "id": "todo-budget-next-ready",
+          "identifier": "digitaldrywood/detent#402",
+          "title": "Ready Todo after budget cooldown",
+          "state": "Todo",
+          "priority": 2,
+          "created_at": "2026-05-31T09:00:00Z"
+        }
+      ],
+      "want": {
+        "dispatch_order": ["todo-budget-next-ready"],
+        "blocked": [],
+        "claimed": ["todo-budget-next-ready"],
+        "refusals": ["todo-budget-first"]
+      }
+    }
+  ],
+  "adversarial_cases": [
+    {
+      "name": "always-blocked-same-reason remains parked",
+      "behavior": "always_blocked_same_reason",
+      "now": "2026-07-11T16:00:00Z",
+      "simulated_ticks": 100,
+      "want_state": "Blocked",
+      "want_max_dispatches": 0
+    },
+    {
+      "name": "rate-limit-storm pauses paid dispatch",
+      "behavior": "rate_limit_storm",
+      "now": "2026-07-11T16:00:00Z",
+      "simulated_ticks": 100,
+      "want_state": "In Progress",
+      "want_max_dispatches": 0
+    },
+    {
+      "name": "gate-wait-timeout-loop transitions once",
+      "behavior": "gate_wait_timeout_loop",
+      "now": "2026-07-11T16:00:00Z",
+      "simulated_ticks": 100,
+      "want_state": "Human Review",
+      "want_max_dispatches": 0
+    }
+  ]
+}

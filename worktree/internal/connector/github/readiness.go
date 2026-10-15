@@ -1,0 +1,1897 @@
+package github
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
+
+type ReadinessStatus string
+
+const (
+	ReadinessOK   ReadinessStatus = "OK"
+	ReadinessWarn ReadinessStatus = "WARN"
+	ReadinessFail ReadinessStatus = "FAIL"
+)
+
+type ReadinessCheck struct {
+	Name   string
+	Status ReadinessStatus
+	Detail string
+	Hint   string
+}
+
+type ReadinessConfig struct {
+	AuthPath                      string
+	LocalStatusMode               bool
+	WriteProbeIssue               string
+	AllowWriteProbes              bool
+	Repositories                  []string
+	StatusStates                  []string
+	ReadStates                    []string
+	RequireProjectRead            bool
+	RequireIssueFieldRead         bool
+	RequireIssueCommentsRead      bool
+	RequireDependencyMetadataRead bool
+	RequireIssueChildrenRead      bool
+	RequireIssueParentsRead       bool
+	RequirePullRequestRead        bool
+	RequirePullRequestReviews     bool
+	RequirePullRequestChecks      bool
+	RequireProjectStatusWrite     bool
+	RequireIssueFieldStatusWrite  bool
+	RequireLabelStatusWrite       bool
+	RequireIssueComments          bool
+	RequireAssigneeWrite          bool
+	RequireIssueClose             bool
+	ProjectFieldWrites            []ReadinessProjectFieldWrite
+}
+
+type ReadinessProjectFieldWrite struct {
+	Name string
+}
+
+const projectWritePermissionQuery = `
+query DetentGitHubProjectWritePermission($projectId: ID!) {
+  node(id: $projectId) {
+    __typename
+    ... on ProjectV2 {
+      id
+      viewerCanUpdate
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+type readinessProbeIssue struct {
+	ID    string
+	Ref   issueRef
+	State string
+}
+
+func CheckReadiness(ctx context.Context, cfg Config, readiness ReadinessConfig) ([]ReadinessCheck, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cfg = readinessConnectorConfig(cfg)
+	connector, err := NewConnector(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	checker := githubReadinessChecker{
+		connector: connector,
+		cfg:       cfg,
+	}
+	checks := checker.Check(ctx, readiness)
+	if err := connector.Close(); err != nil {
+		checks = append(checks, ReadinessCheck{
+			Name:   "GitHub connector close",
+			Status: ReadinessWarn,
+			Detail: err.Error(),
+			Hint:   "Rerun detent doctor and check local network resources.",
+		})
+	}
+	return checks, nil
+}
+
+type githubReadinessChecker struct {
+	connector *Connector
+	cfg       Config
+}
+
+func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) []ReadinessCheck {
+	checks := []ReadinessCheck{c.authPathCheck(cfg)}
+	if hasGitHubAppCredentials(c.cfg, c.cfg.LookupEnv) {
+		checks = append(checks, c.appInstallationCheck(ctx, cfg))
+	}
+	if cfg.LocalStatusMode {
+		checks = append(checks, c.userCheck(ctx))
+		checks = append(checks, c.repositoryChecks(ctx, cfg.Repositories, cfg)...)
+		probe, hasProbe, probeCheck := c.resolveWriteProbe(ctx, cfg)
+		if probeCheck != nil {
+			checks = append(checks, *probeCheck)
+		}
+		readTarget, hasReadTarget, readTargetCheck := c.resolveIssueRelationshipReadTarget(ctx, cfg, probe, hasProbe)
+		if readTargetCheck != nil {
+			checks = append(checks, *readTargetCheck)
+		} else {
+			checks = append(checks, c.probeReadChecks(ctx, cfg, readTarget, hasReadTarget)...)
+		}
+		checks = append(checks, c.localWriteAllowlistCheck())
+		checks = append(checks, c.rateLimitCheck(ctx))
+		return checks
+	}
+	if c.connector.usesLabelStatus() {
+		checks = append(checks,
+			c.labelStatusOptionsCheck(ctx, cfg.StatusStates),
+			c.labelIssuesReadCheck(ctx, cfg.ReadStates),
+		)
+	} else if c.connector.usesIssueFieldStatus() {
+		checks = append(checks,
+			c.issueFieldAccessCheck(ctx),
+			c.issueFieldStatusOptionsCheck(ctx, cfg.StatusStates),
+			c.issueFieldIssuesReadCheck(ctx, cfg.ReadStates),
+		)
+	} else {
+		checks = append(checks,
+			c.projectAccessCheck(ctx),
+			c.projectSizeCheck(ctx),
+			c.statusOptionsCheck(ctx, cfg.StatusStates),
+			c.projectItemsReadCheck(ctx, cfg.ReadStates),
+		)
+	}
+	checks = append(checks, c.repositoryChecks(ctx, cfg.Repositories, cfg)...)
+
+	probe, hasProbe, probeCheck := c.resolveWriteProbe(ctx, cfg)
+	if probeCheck != nil {
+		checks = append(checks, *probeCheck)
+	}
+	readTarget, hasReadTarget, readTargetCheck := c.resolveIssueRelationshipReadTarget(ctx, cfg, probe, hasProbe)
+	if readTargetCheck != nil {
+		checks = append(checks, *readTargetCheck)
+	} else {
+		checks = append(checks, c.probeReadChecks(ctx, cfg, readTarget, hasReadTarget)...)
+	}
+	checks = append(checks, c.writeChecks(ctx, cfg, probe, hasProbe)...)
+	checks = append(checks, c.rateLimitCheck(ctx))
+	return checks
+}
+
+func readinessConnectorConfig(cfg Config) Config {
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = NewPooledHTTPClient(cfg.HTTPTransport)
+	}
+	cfg.HTTPClient = httpClient
+	if cfg.LookupEnv == nil {
+		cfg.LookupEnv = os.Getenv
+	}
+	if cfg.TokenSource == nil {
+		cfg.TokenSource = NewTokenResolver(TokenResolverConfig{
+			Endpoint:                cfg.Endpoint,
+			APIKey:                  cfg.APIKey,
+			GitHubAppID:             cfg.GitHubAppID,
+			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
+			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
+			HTTPClient:              httpClient,
+			Now:                     cfg.Now,
+			LookupEnv:               cfg.LookupEnv,
+			GHToken:                 cfg.GHToken,
+		})
+	}
+	return cfg
+}
+
+func (c githubReadinessChecker) authPathCheck(cfg ReadinessConfig) ReadinessCheck {
+	authPath := strings.TrimSpace(cfg.AuthPath)
+	if authPath == "" {
+		authPath = "GitHub token"
+	}
+	return ReadinessCheck{
+		Name:   "GitHub auth path",
+		Status: ReadinessOK,
+		Detail: authPath,
+	}
+}
+
+func (c githubReadinessChecker) userCheck(ctx context.Context) ReadinessCheck {
+	var user restAuthenticatedUser
+	if err := c.connector.client.REST(ctx, http.MethodGet, "/user", nil, &user); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub user",
+			Status: ReadinessFail,
+			Detail: "cannot read authenticated user: " + err.Error(),
+			Hint:   "Configure a GitHub token with read access for the target repository.",
+		}
+	}
+	if strings.TrimSpace(user.Login) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub user",
+			Status: ReadinessFail,
+			Detail: "authenticated user response did not include a login",
+			Hint:   "Check GitHub API compatibility and rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub user",
+		Status: ReadinessOK,
+		Detail: "authenticated as " + strings.TrimSpace(user.Login),
+	}
+}
+
+func (c githubReadinessChecker) appInstallationCheck(ctx context.Context, cfg ReadinessConfig) ReadinessCheck {
+	source, err := NewInstallationTokenSource(InstallationTokenConfig{
+		Endpoint:       c.cfg.Endpoint,
+		AppID:          c.cfg.GitHubAppID,
+		InstallationID: c.cfg.GitHubAppInstallationID,
+		PrivateKey:     c.cfg.GitHubAppPrivateKey,
+		PrivateKeyPath: c.cfg.GitHubAppPrivateKeyPath,
+		HTTPClient:     c.cfg.HTTPClient,
+		Now:            c.cfg.Now,
+		LookupEnv:      c.cfg.LookupEnv,
+	})
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub App installation",
+			Status: ReadinessFail,
+			Detail: "installation token source could not be created: " + err.Error(),
+			Hint:   "Fix tracker.github_app_id, tracker.github_app_installation_id, and private key configuration.",
+		}
+	}
+	details, err := source.TokenDetails(ctx)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub App installation",
+			Status: ReadinessFail,
+			Detail: "installation permissions could not be read: " + err.Error(),
+			Hint:   "Ensure the GitHub App credentials can create an installation token.",
+		}
+	}
+	missing := missingInstallationPermissions(details, cfg)
+	missing = append(missing, missingInstallationRepositories(details, cfg.Repositories)...)
+	if len(missing) > 0 {
+		return ReadinessCheck{
+			Name:   "GitHub App installation",
+			Status: ReadinessFail,
+			Detail: "installation lacks " + strings.Join(missing, ", "),
+			Hint:   "Grant the GitHub App installation the listed repository and permission access, then rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub App installation",
+		Status: ReadinessOK,
+		Detail: installationPermissionDetail(details),
+	}
+}
+
+func (c githubReadinessChecker) projectAccessCheck(ctx context.Context) ReadinessCheck {
+	if err := c.connector.Authenticate(ctx); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project access",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot authenticate against ProjectV2 %s: %v", c.connector.projectID, err),
+			Hint:   "Grant the token or GitHub App access to the configured ProjectV2 board.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub project access",
+		Status: ReadinessOK,
+		Detail: "viewer can read ProjectV2 " + c.connector.projectID,
+	}
+}
+
+func (c githubReadinessChecker) statusOptionsCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub project Status mappings",
+			Status: ReadinessOK,
+			Detail: "skipped because no tracker states are configured",
+		}
+	}
+	if err := c.connector.VerifyStatusOptions(ctx, states); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project Status mappings",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot resolve required Status options on project %s: %v", c.connector.projectID, err),
+			Hint:   "Add the missing ProjectV2 Status options or fix tracker.state_map.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub project Status mappings",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("resolved %d configured Status option(s) on project %s", len(states), c.connector.projectID),
+	}
+}
+
+func (c githubReadinessChecker) projectItemsReadCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub project item read",
+			Status: ReadinessOK,
+			Detail: "skipped because no active or observed tracker states are configured",
+		}
+	}
+	count, err := c.readProjectItemsSample(ctx, states)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project item read",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read ProjectV2 items for configured states on project %s: %v", c.connector.projectID, err),
+			Hint:   "Grant ProjectV2 read access and repository issue/PR read access for the configured project.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub project item read",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read ProjectV2 items for %d configured state(s); sampled %d issue(s)", len(states), count),
+	}
+}
+
+func (c githubReadinessChecker) readProjectItemsSample(ctx context.Context, states []string) (int, error) {
+	wantedStates := normalizedStateSet(states)
+	_, repairBlankStatuses := wantedStates[normalizeStateName(defaultProjectItemStatusState)]
+	scan, err := c.connector.fetchProjectItemsScanWithLimit(ctx, observedStatusProjectItemsQuery, graphQLQueryObservedStatus, func(issue connector.Issue) bool {
+		_, ok := wantedStates[normalizeStateName(issue.State)]
+		return ok
+	}, 1, repairBlankStatuses)
+	if err != nil {
+		return 0, err
+	}
+	return len(scan.Issues), nil
+}
+
+func (c githubReadinessChecker) issueFieldAccessCheck(ctx context.Context) ReadinessCheck {
+	metadata, err := c.connector.resolveIssueStatusMetadata(ctx)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field access",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read issue field %q for repository %s/%s: %v", c.connector.statusField, c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Grant Issue Fields organization read permission and Issues repository read permission.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field access",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read %s issue field %q", metadata.DataType, metadata.Name),
+	}
+}
+
+func (c githubReadinessChecker) issueFieldStatusOptionsCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status mappings",
+			Status: ReadinessOK,
+			Detail: "skipped because no tracker states are configured",
+		}
+	}
+	if err := c.connector.verifyIssueFieldStatusOptions(ctx, states); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status mappings",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot resolve required Status options for issue field %q: %v", c.connector.statusField, err),
+			Hint:   "Add the missing organization issue-field options or fix tracker.state_map.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field Status mappings",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("resolved %d configured Status option(s) on issue field %q", len(states), c.connector.statusField),
+	}
+}
+
+func (c githubReadinessChecker) issueFieldIssuesReadCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub issue field issue read",
+			Status: ReadinessOK,
+			Detail: "skipped because no active or observed tracker states are configured",
+		}
+	}
+	issues, err := c.connector.fetchIssueFieldIssuesByStates(ctx, states, 5, connector.IssueFilterHint{})
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field issue read",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read issues for configured issue-field states in %s/%s: %v", c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Grant Issues repository read permission and confirm issue field search is available.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field issue read",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read issues for %d configured state(s); sampled %d issue(s)", len(states), len(issues)),
+	}
+}
+
+func (c githubReadinessChecker) labelStatusOptionsCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub status label mappings",
+			Status: ReadinessOK,
+			Detail: "skipped because no tracker states are configured",
+		}
+	}
+	if err := c.connector.verifyLabelStatusOptions(ctx, states); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label mappings",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot resolve required status labels in %s/%s: %v", c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Run Detent provisioning or create the missing repository labels, then rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub status label mappings",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("resolved %d configured status label(s) with prefix %q", len(states), c.connector.statusLabelPrefix),
+	}
+}
+
+func (c githubReadinessChecker) labelIssuesReadCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub status label issue read",
+			Status: ReadinessOK,
+			Detail: "skipped because no active or observed tracker states are configured",
+		}
+	}
+	issues, err := c.connector.fetchLabelIssuesByStates(ctx, states, 5)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label issue read",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read issues for configured status labels in %s/%s: %v", c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Grant Issues repository read permission and confirm status labels exist.",
+		}
+	}
+	if conflicts := c.connector.labelStatusConflictSummaries(issues); len(conflicts) > 0 {
+		return ReadinessCheck{
+			Name:   "GitHub status label issue read",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("read issues for %d configured label state(s); sampled %d issue(s); status label conflicts: %s", len(states), len(issues), strings.Join(conflicts, "; ")),
+			Hint:   "Remove all but one configured status label from each conflicted issue, leaving only the label for the intended workflow state, then rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub status label issue read",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read issues for %d configured label state(s); sampled %d issue(s)", len(states), len(issues)),
+	}
+}
+
+func (c githubReadinessChecker) repositoryChecks(ctx context.Context, repositories []string, cfg ReadinessConfig) []ReadinessCheck {
+	repositories = normalizedRepositories(repositories)
+	if len(repositories) == 0 {
+		return []ReadinessCheck{{
+			Name:   "GitHub repository access",
+			Status: ReadinessWarn,
+			Detail: "no source or target repository could be inferred for repository-level checks",
+			Hint:   "Ensure the project source checkout has a GitHub origin remote.",
+		}}
+	}
+	checks := make([]ReadinessCheck, 0, len(repositories)*8)
+	for _, repo := range repositories {
+		checks = append(checks, c.repositoryReadCheck(ctx, repo))
+		checks = append(checks, c.repositoryIssueReadCheck(ctx, repo))
+		if cfg.RequireIssueCommentsRead {
+			checks = append(checks, c.repositoryIssueCommentsReadCheck(ctx, repo))
+		}
+		if cfg.RequireDependencyMetadataRead {
+			checks = append(checks, c.repositoryDependencyMetadataCheck(ctx, repo))
+		}
+		if cfg.RequirePullRequestRead {
+			checks = append(checks, c.repositoryPullRequestReadCheck(ctx, repo))
+		}
+		if cfg.RequirePullRequestReviews {
+			checks = append(checks, c.repositoryPullRequestReviewsCheck(ctx, repo))
+		}
+		if cfg.RequirePullRequestChecks {
+			checks = append(checks, c.repositoryPullRequestChecksCheck(ctx, repo))
+		}
+	}
+	return checks
+}
+
+func (c githubReadinessChecker) repositoryReadCheck(ctx context.Context, repo string) ReadinessCheck {
+	if _, err := c.repositoryMetadata(ctx, repo); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub repository " + repo + " access",
+			Status: ReadinessFail,
+			Detail: "cannot read repository metadata: " + err.Error(),
+			Hint:   "Grant the token or GitHub App access to " + repo + ".",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub repository " + repo + " access",
+		Status: ReadinessOK,
+		Detail: "repository metadata is readable",
+	}
+}
+
+func (c githubReadinessChecker) repositoryIssueReadCheck(ctx context.Context, repo string) ReadinessCheck {
+	var out []restIssue
+	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryIssuesPath(repo), nil, &out); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue metadata " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot read repository issues: " + err.Error(),
+			Hint:   "Grant Issues read access for " + repo + ".",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue metadata " + repo,
+		Status: ReadinessOK,
+		Detail: "issue metadata endpoint is readable",
+	}
+}
+
+func (c githubReadinessChecker) repositoryIssueCommentsReadCheck(ctx context.Context, repo string) ReadinessCheck {
+	return c.restReadCheck(
+		ctx,
+		"GitHub issue comments read "+repo,
+		restRepositoryIssueCommentsPath(repo),
+		"repository issue comments endpoint is readable",
+		"Grant Issues read access for "+repo+".",
+	)
+}
+
+func (c githubReadinessChecker) repositoryDependencyMetadataCheck(ctx context.Context, repo string) ReadinessCheck {
+	return c.restReadCheck(
+		ctx,
+		"GitHub dependency metadata "+repo,
+		restRepositoryIssueSearchPath(repo),
+		"issue search and dependency metadata endpoint is readable",
+		"Grant repository issue search access for "+repo+".",
+	)
+}
+
+func (c githubReadinessChecker) repositoryPullRequestReadCheck(ctx context.Context, repo string) ReadinessCheck {
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		return ReadinessCheck{
+			Name:   "GitHub pull request metadata " + repo,
+			Status: ReadinessFail,
+			Detail: "repository name is invalid",
+			Hint:   "Use owner/name repository identifiers.",
+		}
+	}
+	var out []restPullRequest
+	if err := c.connector.client.REST(ctx, http.MethodGet, restPullRequestsPath(pullRequestRepo{Owner: owner, Name: name}, 1), nil, &out); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub pull request metadata " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot read repository pull requests: " + err.Error(),
+			Hint:   "Grant Pull requests read access for " + repo + ".",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub pull request metadata " + repo,
+		Status: ReadinessOK,
+		Detail: "pull request metadata endpoint is readable",
+	}
+}
+
+func (c githubReadinessChecker) repositoryPullRequestReviewsCheck(ctx context.Context, repo string) ReadinessCheck {
+	pr, ok, check := c.repositoryPullRequestSample(ctx, repo, "GitHub pull request reviews "+repo)
+	if check != nil {
+		return *check
+	}
+	if !ok {
+		return ReadinessCheck{
+			Name:   "GitHub pull request reviews " + repo,
+			Status: ReadinessWarn,
+			Detail: "no pull request was available to prove review metadata access",
+			Hint:   "Create or keep one scratch pull request if strict PR review readiness proof is required.",
+		}
+	}
+	return c.restReadCheck(
+		ctx,
+		"GitHub pull request reviews "+repo,
+		restPullRequestReviewsPath(pr.Repo, pr.Number),
+		"pull request reviews endpoint is readable",
+		"Grant Pull requests read access for "+repo+".",
+	)
+}
+
+func (c githubReadinessChecker) repositoryPullRequestChecksCheck(ctx context.Context, repo string) ReadinessCheck {
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		return ReadinessCheck{
+			Name:   "GitHub CI state " + repo,
+			Status: ReadinessFail,
+			Detail: "repository name is invalid",
+			Hint:   "Use owner/name repository identifiers.",
+		}
+	}
+	defaultBranch, err := c.repositoryDefaultBranch(ctx, repo)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub CI state " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot resolve repository default branch: " + err.Error(),
+			Hint:   "Grant repository metadata read access for " + repo + ".",
+		}
+	}
+	if defaultBranch == "" {
+		return ReadinessCheck{
+			Name:   "GitHub CI state " + repo,
+			Status: ReadinessWarn,
+			Detail: "repository default branch is blank; check-run and status endpoints were not probed",
+			Hint:   "Ensure " + repo + " has a default branch or validate CI state access with a scratch pull request.",
+		}
+	}
+	repoRef := pullRequestRepo{Owner: owner, Name: name}
+	checkRuns := c.restReadCheck(
+		ctx,
+		"GitHub check runs "+repo,
+		restCommitCheckRunsPath(repoRef, defaultBranch),
+		"check runs endpoint is readable",
+		"Grant Checks read access for "+repo+".",
+	)
+	if checkRuns.Status != ReadinessOK {
+		return checkRuns
+	}
+	statuses := c.restReadCheck(
+		ctx,
+		"GitHub commit statuses "+repo,
+		restCommitStatusesPath(repoRef, defaultBranch),
+		"commit statuses endpoint is readable",
+		"Grant commit status read access for "+repo+".",
+	)
+	if statuses.Status != ReadinessOK {
+		return statuses
+	}
+	return ReadinessCheck{
+		Name:   "GitHub CI state " + repo,
+		Status: ReadinessOK,
+		Detail: "check runs and commit statuses endpoints are readable",
+	}
+}
+
+type readinessPullRequestSample struct {
+	Repo   pullRequestRepo
+	Number int
+}
+
+func (c githubReadinessChecker) repositoryPullRequestSample(ctx context.Context, repo string, name string) (readinessPullRequestSample, bool, *ReadinessCheck) {
+	owner, repoName, ok := splitRepositoryName(repo)
+	if !ok {
+		check := ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "repository name is invalid",
+			Hint:   "Use owner/name repository identifiers.",
+		}
+		return readinessPullRequestSample{}, false, &check
+	}
+	repoRef := pullRequestRepo{Owner: owner, Name: repoName}
+	var out []restPullRequest
+	if err := c.connector.client.REST(ctx, http.MethodGet, restPullRequestsPath(repoRef, 1), nil, &out); err != nil {
+		check := ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "cannot read repository pull requests: " + err.Error(),
+			Hint:   "Grant Pull requests read access for " + repo + ".",
+		}
+		return readinessPullRequestSample{}, false, &check
+	}
+	for _, pr := range out {
+		if pr.Number > 0 {
+			return readinessPullRequestSample{Repo: repoRef, Number: pr.Number}, true, nil
+		}
+	}
+	return readinessPullRequestSample{}, false, nil
+}
+
+func (c githubReadinessChecker) repositoryDefaultBranch(ctx context.Context, repo string) (string, error) {
+	out, err := c.repositoryMetadata(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out.DefaultBranch), nil
+}
+
+func (c githubReadinessChecker) repositoryMetadata(ctx context.Context, repo string) (restRepository, error) {
+	var out restRepository
+	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryPath(repo), nil, &out); err != nil {
+		return restRepository{}, err
+	}
+	return out, nil
+}
+
+func (c githubReadinessChecker) restReadCheck(ctx context.Context, name string, path string, okDetail string, hint string) ReadinessCheck {
+	result, err := c.connector.client.restProbe(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "read probe failed: " + err.Error(),
+			Hint:   "Check GitHub credentials and network access, then rerun detent doctor.",
+		}
+	}
+	detailSuffix := acceptedPermissionsDetail(result.Headers)
+	if result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessOK,
+			Detail: okDetail + detailSuffix,
+		}
+	}
+	if result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden || result.StatusCode == http.StatusNotFound {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot read endpoint: HTTP %d%s %s", result.StatusCode, detailSuffix, strings.TrimSpace(result.Body)),
+			Hint:   hint,
+		}
+	}
+	return ReadinessCheck{
+		Name:   name,
+		Status: ReadinessFail,
+		Detail: fmt.Sprintf("read probe returned HTTP %d%s %s", result.StatusCode, detailSuffix, strings.TrimSpace(result.Body)),
+		Hint:   "Check GitHub endpoint availability and repository access.",
+	}
+}
+
+func (c githubReadinessChecker) resolveWriteProbe(ctx context.Context, cfg ReadinessConfig) (readinessProbeIssue, bool, *ReadinessCheck) {
+	if !cfg.requiresProbeIssue() {
+		return readinessProbeIssue{}, false, nil
+	}
+	probeID := strings.TrimSpace(cfg.WriteProbeIssue)
+	if probeID == "" {
+		return readinessProbeIssue{}, false, nil
+	}
+	probe, err := c.resolveProbeIssue(ctx, probeID)
+	if err != nil {
+		check := ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessFail,
+			Detail: probeID + ": " + err.Error(),
+			Hint:   "Set tracker.write_probe_issue to a scratch issue in the configured repository.",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	check := writeProbeTargetCheck(probeID, probe)
+	return probe, true, &check
+}
+
+func writeProbeTargetCheck(probeID string, probe readinessProbeIssue) ReadinessCheck {
+	state := normalizeStateName(probe.State)
+	detail := fmt.Sprintf("%s resolves to %s#%d and node %s", probeID, probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, probe.ID)
+	if state != "" {
+		detail += "; state " + state
+	}
+	switch state {
+	case "closed":
+		return ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessWarn,
+			Detail: detail,
+			Hint:   "Set tracker.write_probe_issue to a dedicated open scratch issue in the configured repository.",
+		}
+	case "":
+		return ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessWarn,
+			Detail: detail + "; issue state was not returned",
+			Hint:   "Check GitHub API compatibility or choose a dedicated open scratch issue.",
+		}
+	default:
+		return ReadinessCheck{
+			Name:   "GitHub write probe target",
+			Status: ReadinessOK,
+			Detail: detail,
+		}
+	}
+}
+
+func (cfg ReadinessConfig) requiresProbeIssue() bool {
+	return cfg.AllowWriteProbes && cfg.requiresWriteProbe()
+}
+
+func (cfg ReadinessConfig) requiresWriteProbe() bool {
+	return cfg.RequireProjectStatusWrite ||
+		cfg.RequireLabelStatusWrite ||
+		cfg.RequireIssueFieldStatusWrite ||
+		cfg.RequireIssueComments ||
+		cfg.RequireAssigneeWrite ||
+		cfg.RequireIssueClose ||
+		len(cfg.ProjectFieldWrites) > 0
+}
+
+func (cfg ReadinessConfig) requiresIssueObjectWriteProbe() bool {
+	return cfg.RequireIssueComments ||
+		cfg.RequireAssigneeWrite ||
+		cfg.RequireIssueClose
+}
+
+func (cfg ReadinessConfig) requiresIssueRelationshipRead() bool {
+	return cfg.RequireIssueChildrenRead ||
+		cfg.RequireIssueParentsRead
+}
+
+func (c githubReadinessChecker) resolveProbeIssue(ctx context.Context, value string) (readinessProbeIssue, error) {
+	if ref, ok := issueRefFromIdentifier(value); ok {
+		issue, err := c.connector.fetchRESTIssue(ctx, ref)
+		if err != nil {
+			return readinessProbeIssue{}, err
+		}
+		if strings.TrimSpace(issue.ID) == "" {
+			return readinessProbeIssue{}, ErrNotFound
+		}
+		c.connector.cacheIssueRef(issue)
+		return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref, State: issue.State}, nil
+	}
+	ref, ok, err := c.connector.issueRefForID(ctx, value, graphQLQueryIssueLookup)
+	if err != nil {
+		return readinessProbeIssue{}, err
+	}
+	if !ok {
+		return readinessProbeIssue{}, ErrNotFound
+	}
+	issue, err := c.connector.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return readinessProbeIssue{}, err
+	}
+	if strings.TrimSpace(issue.ID) == "" {
+		return readinessProbeIssue{}, ErrNotFound
+	}
+	return readinessProbeIssue{ID: strings.TrimSpace(issue.ID), Ref: ref, State: issue.State}, nil
+}
+
+func (c githubReadinessChecker) resolveIssueRelationshipReadTarget(
+	ctx context.Context,
+	cfg ReadinessConfig,
+	probe readinessProbeIssue,
+	hasProbe bool,
+) (readinessProbeIssue, bool, *ReadinessCheck) {
+	if !cfg.requiresIssueRelationshipRead() {
+		return readinessProbeIssue{}, false, nil
+	}
+	if hasProbe {
+		return probe, true, nil
+	}
+	return c.resolveRepositoryIssueSample(ctx, cfg.Repositories)
+}
+
+func (c githubReadinessChecker) resolveRepositoryIssueSample(ctx context.Context, repositories []string) (readinessProbeIssue, bool, *ReadinessCheck) {
+	repositories = normalizedRepositories(repositories)
+	if len(repositories) == 0 {
+		check := ReadinessCheck{
+			Name:   "GitHub issue relationship metadata sample",
+			Status: ReadinessWarn,
+			Detail: "no source or target repository could be inferred; issue relationship read capability not proven",
+			Hint:   "Configure tracker.repository or ensure the project source checkout has a GitHub origin remote.",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	for _, repo := range repositories {
+		sample, ok, check := c.repositoryIssueSample(ctx, repo)
+		if check != nil {
+			return readinessProbeIssue{}, false, check
+		}
+		if ok {
+			return sample, true, nil
+		}
+	}
+	check := ReadinessCheck{
+		Name:   "GitHub issue relationship metadata sample",
+		Status: ReadinessWarn,
+		Detail: "no issue was available to prove issue children/parent metadata access",
+		Hint:   "Keep at least one issue in the configured repository if strict issue relationship readiness proof is required.",
+	}
+	return readinessProbeIssue{}, false, &check
+}
+
+func (c githubReadinessChecker) repositoryIssueSample(ctx context.Context, repo string) (readinessProbeIssue, bool, *ReadinessCheck) {
+	var response restIssueSearchResponse
+	if err := c.connector.client.REST(ctx, http.MethodGet, restRepositoryIssueSearchPath(repo), nil, &response); err != nil {
+		check := ReadinessCheck{
+			Name:   "GitHub issue relationship metadata sample",
+			Status: ReadinessFail,
+			Detail: "cannot search repository issues for relationship read sample: " + err.Error(),
+			Hint:   "Grant repository issue search access for " + repo + ".",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		check := ReadinessCheck{
+			Name:   "GitHub issue relationship metadata sample",
+			Status: ReadinessFail,
+			Detail: "repository name is invalid",
+			Hint:   "Use owner/name repository identifiers.",
+		}
+		return readinessProbeIssue{}, false, &check
+	}
+	fallback := issueRef{Owner: owner, Name: name}
+	for _, item := range response.Items {
+		if item.PullRequest != nil || strings.TrimSpace(item.NodeID) == "" {
+			continue
+		}
+		ref, ok := issueRefFromRESTSearchItem(item, fallback)
+		if !ok {
+			continue
+		}
+		return readinessProbeIssue{ID: strings.TrimSpace(item.NodeID), Ref: ref, State: item.State}, true, nil
+	}
+	return readinessProbeIssue{}, false, nil
+}
+
+func (c githubReadinessChecker) probeReadChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
+	checks := []ReadinessCheck{}
+	if cfg.RequireIssueChildrenRead {
+		checks = append(checks, c.issueChildrenReadCheck(ctx, probe, hasProbe))
+	}
+	if cfg.RequireIssueParentsRead {
+		checks = append(checks, c.issueParentsReadCheck(ctx, probe, hasProbe))
+	}
+	return checks
+}
+
+func (c githubReadinessChecker) issueChildrenReadCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenIssueSampleCheck("GitHub issue children metadata")
+	}
+	children, err := c.connector.FetchIssueChildren(ctx, probe.ID)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue children metadata",
+			Status: ReadinessFail,
+			Detail: "cannot read issue sub-issue/tracked-issue metadata: " + err.Error(),
+			Hint:   "Grant GraphQL issue relationship read access for the probe issue repository and project.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue children metadata",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("queried sub-issue and tracked-issue metadata for sample issue %s#%d; found %d child link(s)", probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, len(children)),
+	}
+}
+
+func (c githubReadinessChecker) issueParentsReadCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenIssueSampleCheck("GitHub issue parent metadata")
+	}
+	parents, err := c.connector.FetchIssueParents(ctx, probe.ID)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue parent metadata",
+			Status: ReadinessFail,
+			Detail: "cannot read issue parent/tracked-in metadata: " + err.Error(),
+			Hint:   "Grant GraphQL issue relationship and repository search access for the probe issue repository and project.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue parent metadata",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("queried parent and tracked-in metadata for sample issue %s#%d; found %d parent link(s)", probe.Ref.Owner+"/"+probe.Ref.Name, probe.Ref.Number, len(parents)),
+	}
+}
+
+func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
+	if !cfg.AllowWriteProbes {
+		if hasGitHubAppCredentials(c.cfg, c.cfg.LookupEnv) {
+			return nil
+		}
+		return c.readOnlyWriteChecks(ctx, cfg)
+	}
+	return c.mutationWriteChecks(ctx, cfg, probe, hasProbe)
+}
+
+func (c githubReadinessChecker) readOnlyWriteChecks(ctx context.Context, cfg ReadinessConfig) []ReadinessCheck {
+	checks := []ReadinessCheck{}
+	if cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
+		checks = append(checks, c.projectWritePermissionCheck(ctx))
+	}
+	if cfg.requiresIssueWritePermission() {
+		repositories := normalizedRepositories(cfg.Repositories)
+		if len(repositories) == 0 {
+			checks = append(checks, ReadinessCheck{
+				Name:   "GitHub issue write permission",
+				Status: ReadinessFail,
+				Detail: "cannot introspect Issues: write; no source or target repository could be inferred",
+				Hint:   "Configure tracker.repository or ensure the project source checkout has a GitHub origin remote.",
+			})
+		}
+		for _, repo := range repositories {
+			checks = append(checks, c.repositoryIssueWritePermissionCheck(ctx, repo, cfg))
+		}
+	}
+	return checks
+}
+
+func (cfg ReadinessConfig) requiresIssueWritePermission() bool {
+	return cfg.RequireIssueFieldStatusWrite ||
+		cfg.RequireLabelStatusWrite ||
+		cfg.RequireIssueComments ||
+		cfg.RequireAssigneeWrite ||
+		cfg.RequireIssueClose
+}
+
+func (c githubReadinessChecker) projectWritePermissionCheck(ctx context.Context) ReadinessCheck {
+	if c.connector == nil || c.connector.client == nil {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot introspect Projects: write; GitHub connector is not configured",
+			Hint:   "Check GitHub tracker configuration and credentials.",
+		}
+	}
+	projectID := strings.TrimSpace(c.connector.projectID)
+	if projectID == "" {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot introspect Projects: write; tracker.project_slug is blank",
+			Hint:   "Set tracker.project_slug or use a boardless GitHub status source.",
+		}
+	}
+	var response struct {
+		Node *struct {
+			TypeName        string `json:"__typename"`
+			ID              string `json:"id"`
+			ViewerCanUpdate bool   `json:"viewerCanUpdate"`
+		} `json:"node"`
+	}
+	if err := c.connector.client.GraphQLWithType(ctx, graphQLQueryProjectMetadata, projectWritePermissionQuery, map[string]any{
+		"projectId": projectID,
+	}, &response); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot read ProjectV2 update permission: " + err.Error(),
+			Hint:   "Grant Projects read access so Detent can introspect the token's project permissions.",
+		}
+	}
+	if response.Node == nil || response.Node.TypeName != "ProjectV2" || strings.TrimSpace(response.Node.ID) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "cannot resolve ProjectV2 " + projectID,
+			Hint:   "Fix tracker.project_slug and grant the token access to the configured project.",
+		}
+	}
+	if !response.Node.ViewerCanUpdate {
+		return ReadinessCheck{
+			Name:   "GitHub project write permission",
+			Status: ReadinessFail,
+			Detail: "token lacks Projects: write for ProjectV2 " + projectID + "; viewerCanUpdate=false",
+			Hint:   "Grant project write access to the token or rerun with --allow-write-probes against a dedicated scratch issue for deep verification.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub project write permission",
+		Status: ReadinessOK,
+		Detail: "viewer can update ProjectV2 " + projectID + "; covers status and project field writes",
+	}
+}
+
+func (c githubReadinessChecker) repositoryIssueWritePermissionCheck(ctx context.Context, repo string, cfg ReadinessConfig) ReadinessCheck {
+	if c.connector == nil || c.connector.client == nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue write permission " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot introspect Issues: write; GitHub connector is not configured",
+			Hint:   "Check GitHub tracker configuration and credentials.",
+		}
+	}
+	metadata, err := c.repositoryMetadata(ctx, repo)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue write permission " + repo,
+			Status: ReadinessFail,
+			Detail: "cannot read repository permissions: " + err.Error(),
+			Hint:   "Grant the token access to " + repo + ".",
+		}
+	}
+	level, ok := repositoryIssueWritePermissionLevel(metadata.Permissions, cfg)
+	capabilities := strings.Join(requiredIssueWriteCapabilities(cfg), ", ")
+	if !ok {
+		return ReadinessCheck{
+			Name:   "GitHub issue write permission " + repo,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token lacks %s for %s; repository permissions: %s; required for %s", repositoryIssueWritePermissionName(cfg), repo, repositoryPermissionsDetail(metadata.Permissions), capabilities),
+			Hint:   repositoryIssueWritePermissionHint(cfg),
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue write permission " + repo,
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("repository permission %s permits issue writes for %s", level, capabilities),
+	}
+}
+
+func requiredIssueWriteCapabilities(cfg ReadinessConfig) []string {
+	capabilities := []string{}
+	if cfg.RequireIssueFieldStatusWrite {
+		capabilities = append(capabilities, "issue field Status updates")
+	}
+	if cfg.RequireLabelStatusWrite {
+		capabilities = append(capabilities, "status label updates")
+	}
+	if cfg.RequireIssueComments {
+		capabilities = append(capabilities, "issue comments")
+	}
+	if cfg.RequireAssigneeWrite {
+		capabilities = append(capabilities, "assignee updates")
+	}
+	if cfg.RequireIssueClose {
+		capabilities = append(capabilities, "issue close")
+	}
+	return capabilities
+}
+
+func repositoryIssueWritePermissionLevel(permissions map[string]bool, cfg ReadinessConfig) (string, bool) {
+	for _, level := range repositoryIssueWritePermissionLevels(cfg) {
+		if permissions[level] {
+			return level, true
+		}
+	}
+	return repositoryPermissionsDetail(permissions), false
+}
+
+func repositoryIssueWritePermissionLevels(cfg ReadinessConfig) []string {
+	if cfg.RequireIssueFieldStatusWrite {
+		return []string{"admin", "maintain", "push"}
+	}
+	return []string{"admin", "maintain", "push", "triage"}
+}
+
+func repositoryIssueWritePermissionName(cfg ReadinessConfig) string {
+	if cfg.RequireIssueFieldStatusWrite {
+		return "repository push permission"
+	}
+	return "Issues: write"
+}
+
+func repositoryIssueWritePermissionHint(cfg ReadinessConfig) string {
+	if cfg.RequireIssueFieldStatusWrite {
+		return "Grant the token push, maintain, or admin access to the repository."
+	}
+	return "Grant the token triage, push, maintain, or admin access to the repository."
+}
+
+func repositoryPermissionsDetail(permissions map[string]bool) string {
+	if len(permissions) == 0 {
+		return "not reported"
+	}
+	enabled := []string{}
+	for _, level := range []string{"admin", "maintain", "push", "triage", "pull"} {
+		if permissions[level] {
+			enabled = append(enabled, level)
+		}
+	}
+	if len(enabled) == 0 {
+		return "none"
+	}
+	return strings.Join(enabled, ", ")
+}
+
+func (c githubReadinessChecker) mutationWriteChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
+	checks := []ReadinessCheck{}
+	if cfg.RequireProjectStatusWrite {
+		checks = append(checks, c.projectStatusWriteCheck(ctx, probe, hasProbe))
+	}
+	if cfg.RequireIssueFieldStatusWrite {
+		checks = append(checks, c.issueFieldStatusWriteCheck(ctx, probe, hasProbe))
+	}
+	if cfg.RequireLabelStatusWrite {
+		checks = append(checks, c.labelStatusWriteCheck(ctx, probe, hasProbe))
+	}
+	if cfg.requiresIssueObjectWriteProbe() && !hasProbe && c.canUseRepositoryIssueWriteProbe() {
+		checks = append(checks, c.repositoryIssueWriteMutationProbeCheck(ctx))
+	} else {
+		if cfg.RequireIssueComments {
+			checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
+		}
+		if cfg.RequireAssigneeWrite {
+			checks = append(checks, c.assigneeWriteCheck(ctx, probe, hasProbe))
+		}
+	}
+	for _, field := range cfg.ProjectFieldWrites {
+		checks = append(checks, c.projectFieldWriteCheck(ctx, probe, hasProbe, field))
+	}
+	if cfg.RequireIssueClose && (hasProbe || !c.canUseRepositoryIssueWriteProbe()) {
+		checks = append(checks, c.issueCloseWriteCheck(ctx, probe, hasProbe))
+	}
+	return checks
+}
+
+func (c githubReadinessChecker) localWriteAllowlistCheck() ReadinessCheck {
+	return ReadinessCheck{
+		Name:   "GitHub local write allowlist",
+		Status: ReadinessOK,
+		Detail: "issue status, fields, labels, projects, issue comments, and issue close stay local; PR comments and merge remain allowlisted",
+	}
+}
+
+type restRateLimitResponse struct {
+	Resources struct {
+		Core    restRateLimitResource `json:"core"`
+		GraphQL restRateLimitResource `json:"graphql"`
+	} `json:"resources"`
+}
+
+type restRateLimitResource struct {
+	Limit     int64 `json:"limit"`
+	Used      int64 `json:"used"`
+	Remaining int64 `json:"remaining"`
+	Reset     int64 `json:"reset"`
+}
+
+func (c githubReadinessChecker) rateLimitCheck(ctx context.Context) ReadinessCheck {
+	var response restRateLimitResponse
+	if err := c.connector.client.REST(ctx, http.MethodGet, "/rate_limit", nil, &response); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub API rate limit",
+			Status: ReadinessWarn,
+			Detail: "rate-limit endpoint could not be read: " + err.Error(),
+			Hint:   "Rerun detent doctor when GitHub API access is available.",
+		}
+	}
+	details := []string{}
+	if response.Resources.Core.Limit > 0 {
+		details = append(details, rateLimitResourceDetail("REST core", response.Resources.Core))
+	}
+	if response.Resources.GraphQL.Limit > 0 {
+		details = append(details, rateLimitResourceDetail("GraphQL", response.Resources.GraphQL))
+	}
+	if len(details) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub API rate limit",
+			Status: ReadinessWarn,
+			Detail: "rate-limit endpoint returned no REST core or GraphQL resource details",
+			Hint:   "Check GitHub API compatibility and rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub API rate limit",
+		Status: ReadinessOK,
+		Detail: strings.Join(details, "; "),
+	}
+}
+
+func rateLimitResourceDetail(name string, resource restRateLimitResource) string {
+	return fmt.Sprintf(
+		"%s remaining %d/%d; used %d; resets %s",
+		name,
+		resource.Remaining,
+		resource.Limit,
+		resource.Used,
+		rateLimitResetDetail(resource.Reset),
+	)
+}
+
+func rateLimitResetDetail(reset int64) string {
+	if reset <= 0 {
+		return "unknown"
+	}
+	return time.Unix(reset, 0).UTC().Format(time.RFC3339)
+}
+
+func (c githubReadinessChecker) projectStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub project status update")
+	}
+	item, err := c.connector.resolveProjectItem(ctx, probe.ID)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot resolve ProjectV2 item for probe issue on project %s: %v", c.connector.projectID, err),
+			Hint:   "Use a scratch issue that is present on the configured ProjectV2 board.",
+		}
+	}
+	statusName := strings.TrimSpace(item.StatusName)
+	if statusName == "" {
+		return ReadinessCheck{
+			Name:   "GitHub project status update",
+			Status: ReadinessWarn,
+			Detail: "write probe issue has no current Status value; updateProjectV2ItemFieldValue was not executed",
+			Hint:   "Set the scratch issue Status field, then rerun detent doctor.",
+		}
+	}
+	fieldID, optionID, err := c.connector.resolveStatusOption(ctx, statusName)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot resolve current Status option %q for project %s: %v", statusName, c.connector.projectID, err),
+			Hint:   "Fix ProjectV2 Status options or tracker.state_map.",
+		}
+	}
+	if err := c.connector.updateStatusFieldValue(ctx, item.ID, fieldID, optionID); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub project status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot update ProjectV2 item field value for project %s: %v", c.connector.projectID, err),
+			Hint:   "Grant Projects write access to the token or GitHub App installation.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub project status update",
+		Status: ReadinessOK,
+		Detail: "reapplied existing Status value on the write probe item",
+	}
+}
+
+func (c githubReadinessChecker) issueFieldStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub issue field Status update")
+	}
+	statusName, err := c.connector.fetchIssueFieldStatus(ctx, probe.Ref)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot read current issue field %q for probe issue: %v", c.connector.statusField, err),
+			Hint:   "Use a scratch issue that has the configured issue field visible to the token.",
+		}
+	}
+	if strings.TrimSpace(statusName) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status update",
+			Status: ReadinessWarn,
+			Detail: "write probe issue has no current issue field Status value; issue-field update was not executed",
+			Hint:   "Set the scratch issue Status field, then rerun detent doctor.",
+		}
+	}
+	if err := c.connector.setIssueStatusField(ctx, probe.Ref, statusName); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot update issue field %q: %v", c.connector.statusField, err),
+			Hint:   "Grant Issues repository write permission and Issue Fields organization read permission.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field Status update",
+		Status: ReadinessOK,
+		Detail: "reapplied existing issue field Status value on the write probe issue",
+	}
+}
+
+func (c githubReadinessChecker) labelStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		if c.canUseRepositoryIssueWriteProbe() {
+			return c.repositoryLabelWritePermissionCheck(ctx)
+		}
+		return unprovenWriteCheck("GitHub status label update")
+	}
+	issue, err := c.connector.fetchRESTIssue(ctx, probe.Ref)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label update",
+			Status: ReadinessFail,
+			Detail: "token cannot read current labels for probe issue: " + err.Error(),
+			Hint:   "Grant Issues repository read permission for the probe issue repository.",
+		}
+	}
+	statusName := c.connector.labelStatusFromLabels(issue.Labels)
+	if strings.TrimSpace(statusName) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub status label update",
+			Status: ReadinessWarn,
+			Detail: "write probe issue has no current Detent status label; label update was not executed",
+			Hint:   "Set one configured status label on the scratch issue, then rerun detent doctor.",
+		}
+	}
+	if err := c.connector.updateIssueStatusLabel(ctx, probe.Ref, issue, statusName); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label update",
+			Status: ReadinessFail,
+			Detail: "token cannot update status labels: " + err.Error(),
+			Hint:   "Grant Issues repository write permission for the probe issue repository.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub status label update",
+		Status: ReadinessOK,
+		Detail: "reapplied existing status label on the write probe issue",
+	}
+}
+
+func (c githubReadinessChecker) canUseRepositoryIssueWriteProbe() bool {
+	return c.connector != nil && c.connector.usesLabelStatus() && validPullRequestRepo(c.connector.repository)
+}
+
+func (c githubReadinessChecker) repositoryLabelWritePermissionCheck(ctx context.Context) ReadinessCheck {
+	return c.invalidNoPersistentWriteProbe(ctx, "GitHub status label update", http.MethodPost, restRepositoryLabelsPath(c.connector.repository), map[string]any{
+		"name":  "",
+		"color": "not-a-hex-color",
+	}, "write repository labels")
+}
+
+func (c githubReadinessChecker) repositoryIssueWriteMutationProbeCheck(ctx context.Context) ReadinessCheck {
+	return c.invalidNoPersistentWriteProbe(ctx, "GitHub issue write permission", http.MethodPost, restRepositoryIssueCreatePath(c.connector.repository), map[string]any{
+		"title": "",
+	}, "write issues")
+}
+
+func (c githubReadinessChecker) issueCommentWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub issue comments")
+	}
+	return c.invalidWriteProbe(ctx, "GitHub issue comments", http.MethodPost, restIssueCommentsPath(probe.Ref), map[string]any{"body": ""}, "create issue comments")
+}
+
+func (c githubReadinessChecker) assigneeWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub assignee update")
+	}
+	return c.invalidWriteProbe(ctx, "GitHub assignee update", http.MethodPost, restIssueAssigneesPath(probe.Ref), map[string]any{
+		"assignees": []string{"detent-doctor-permission-probe-not-a-real-user-" + time.Now().UTC().Format("20060102150405")},
+	}, "update issue assignees")
+}
+
+func (c githubReadinessChecker) issueCloseWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub issue close")
+	}
+	beforeState := normalizeStateName(probe.State)
+	if beforeState == "" {
+		issue, err := c.connector.fetchRESTIssue(ctx, probe.Ref)
+		if err != nil {
+			return ReadinessCheck{
+				Name:   "GitHub issue close",
+				Status: ReadinessFail,
+				Detail: "token cannot read current state for probe issue: " + err.Error(),
+				Hint:   "Grant Issues repository read permission for the probe issue repository.",
+			}
+		}
+		beforeState = normalizeStateName(issue.State)
+	}
+	if beforeState == "" {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: "probe issue current state was not returned; close permission probe was not executed",
+			Hint:   "Check GitHub API compatibility or choose a dedicated open scratch issue.",
+		}
+	}
+	result, err := c.connector.client.restProbe(ctx, http.MethodPatch, restIssuePath(probe.Ref), map[string]any{
+		"state": "detent-doctor-invalid-state",
+	})
+	if err != nil {
+		return failedWriteProbeCheck("GitHub issue close", "close issues", err)
+	}
+	return issueCloseWriteProbeCheck(result, beforeState)
+}
+
+func (c githubReadinessChecker) invalidWriteProbe(ctx context.Context, name string, method string, path string, body any, capability string) ReadinessCheck {
+	result, err := c.connector.client.restProbe(ctx, method, path, body)
+	if err != nil {
+		return failedWriteProbeCheck(name, capability, err)
+	}
+	return invalidWriteProbeCheck(name, capability, result)
+}
+
+func (c githubReadinessChecker) invalidNoPersistentWriteProbe(ctx context.Context, name string, method string, path string, body any, capability string) ReadinessCheck {
+	result, err := c.connector.client.restProbe(ctx, method, path, body)
+	if err != nil {
+		return failedWriteProbeCheck(name, capability, err)
+	}
+	return invalidWriteProbeCheckWithHint(name, capability, result, "Inspect the target repository for unexpected changes and rerun detent doctor.")
+}
+
+func failedWriteProbeCheck(name string, capability string, err error) ReadinessCheck {
+	return ReadinessCheck{
+		Name:   name,
+		Status: ReadinessFail,
+		Detail: capability + " permission probe failed: " + err.Error(),
+		Hint:   "Check GitHub credentials and network access, then rerun detent doctor.",
+	}
+}
+
+func invalidWriteProbeCheck(name string, capability string, result restProbeResult) ReadinessCheck {
+	return invalidWriteProbeCheckWithHint(name, capability, result, "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.")
+}
+
+func invalidWriteProbeCheckWithHint(name string, capability string, result restProbeResult, unexpectedSuccessHint string) ReadinessCheck {
+	detailSuffix := acceptedPermissionsDetail(result.Headers)
+	switch result.StatusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessOK,
+			Detail: fmt.Sprintf("endpoint accepted auth and rejected the intentionally invalid probe with HTTP %d%s", result.StatusCode, detailSuffix),
+		}
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot %s: HTTP %d%s %s", capability, result.StatusCode, detailSuffix, strings.TrimSpace(result.Body)),
+			Hint:   "Grant the token or GitHub App installation the required repository write permission.",
+		}
+	default:
+		if result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
+			return ReadinessCheck{
+				Name:   name,
+				Status: ReadinessWarn,
+				Detail: fmt.Sprintf("permission probe unexpectedly returned HTTP %d%s", result.StatusCode, detailSuffix),
+				Hint:   unexpectedSuccessHint,
+			}
+		}
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s %s", result.StatusCode, detailSuffix, strings.TrimSpace(result.Body)),
+			Hint:   "Grant the required GitHub permission or check GitHub endpoint availability.",
+		}
+	}
+}
+
+func issueCloseWriteProbeCheck(result restProbeResult, beforeState string) ReadinessCheck {
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return invalidWriteProbeCheck("GitHub issue close", "close issues", result)
+	}
+
+	detailSuffix := acceptedPermissionsDetail(result.Headers)
+	beforeState = normalizeStateName(beforeState)
+	afterState := normalizeStateName(issueStateFromProbeBody(result.FullBody))
+	if afterState == "" {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, but the response did not include issue state", result.StatusCode, detailSuffix),
+			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+		}
+	}
+	if beforeState == afterState {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessOK,
+			Detail: fmt.Sprintf("endpoint accepted auth with HTTP %d%s and ignored the intentionally invalid close state; probe issue remained %s", result.StatusCode, detailSuffix, afterState),
+		}
+	}
+	if beforeState == "open" && afterState == "closed" {
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the probe issue changed from open to closed", result.StatusCode, detailSuffix),
+			Hint:   "Inspect the scratch issue before rerunning detent doctor.",
+		}
+	}
+	switch afterState {
+	case "open", "closed":
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the probe issue changed from %s to %s", result.StatusCode, detailSuffix, beforeState, afterState),
+			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+		}
+	default:
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the response says the probe issue state is %q", result.StatusCode, detailSuffix, afterState),
+			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+		}
+	}
+}
+
+func issueStateFromProbeBody(body string) string {
+	var response struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(response.State)
+}
+
+func (c githubReadinessChecker) projectFieldWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool, field ReadinessProjectFieldWrite) ReadinessCheck {
+	fieldName := strings.TrimSpace(field.Name)
+	name := "GitHub project field update"
+	if fieldName != "" {
+		name = "GitHub project field " + fieldName + " update"
+	}
+	if !hasProbe {
+		return unprovenWriteCheck(name)
+	}
+	if fieldName == "" {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessWarn,
+			Detail: "skipped because field name is blank",
+		}
+	}
+	item, err := c.connector.resolveProjectItem(ctx, probe.ID)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot resolve ProjectV2 item for probe issue on project %s: %v", c.connector.projectID, err),
+			Hint:   "Use a scratch issue that is present on the configured ProjectV2 board.",
+		}
+	}
+	_, _, _, fields, ok, err := c.connector.fetchProjectFieldsPage(ctx, probe.ID, nil)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "cannot read current project field values for probe issue: " + err.Error(),
+			Hint:   "Grant ProjectV2 read access for the configured project.",
+		}
+	}
+	if !ok {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "probe issue is not on the configured ProjectV2 board",
+			Hint:   "Use a scratch issue that is present on the configured ProjectV2 board.",
+		}
+	}
+	projectField, err := c.connector.fetchProjectField(ctx, fieldName)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "cannot resolve project field: " + err.Error(),
+			Hint:   "Create the configured ProjectV2 field or update the workflow identity/claims configuration.",
+		}
+	}
+	current, hasCurrent := fields[fieldName]
+	if projectTextField(projectField) {
+		if err := c.connector.updateProjectV2TextFieldValue(ctx, item.ID, projectField.ID, current, ErrProjectFieldUpdateFailed); err != nil {
+			return ReadinessCheck{
+				Name:   name,
+				Status: ReadinessFail,
+				Detail: "token cannot update ProjectV2 text field value: " + err.Error(),
+				Hint:   "Grant Projects write access to the token or GitHub App installation.",
+			}
+		}
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessOK,
+			Detail: "reapplied existing text field value on the write probe item",
+		}
+	}
+	if !hasCurrent || strings.TrimSpace(current) == "" {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessWarn,
+			Detail: "write probe issue has no current value for this single-select field; field update was not executed",
+			Hint:   "Set the field on the scratch issue, then rerun detent doctor.",
+		}
+	}
+	decoded, err := decodeProjectSingleSelectField(fieldName, &projectField)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "project field is not a supported text or single-select field: " + err.Error(),
+			Hint:   "Use a ProjectV2 text or single-select field for Detent ownership/lease fields.",
+		}
+	}
+	optionID := singleSelectOptionID(decoded.Options, current)
+	if optionID == "" {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("current probe field value %q is not an option on %s", current, fieldName),
+			Hint:   "Fix the ProjectV2 field options or choose a probe issue with a valid current value.",
+		}
+	}
+	if err := c.connector.updateProjectV2SingleSelectFieldValue(ctx, item.ID, decoded.ID, optionID, ErrProjectFieldUpdateFailed); err != nil {
+		return ReadinessCheck{
+			Name:   name,
+			Status: ReadinessFail,
+			Detail: "token cannot update ProjectV2 single-select field value: " + err.Error(),
+			Hint:   "Grant Projects write access to the token or GitHub App installation.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   name,
+		Status: ReadinessOK,
+		Detail: "reapplied existing single-select field value on the write probe item",
+	}
+}
+
+func unprovenIssueSampleCheck(name string) ReadinessCheck {
+	return ReadinessCheck{
+		Name:   name,
+		Status: ReadinessWarn,
+		Detail: "no repository issue sample was available; issue relationship read capability not proven",
+		Hint:   "Keep at least one issue in the configured repository if strict issue relationship readiness proof is required.",
+	}
+}
+
+func unprovenWriteCheck(name string) ReadinessCheck {
+	return ReadinessCheck{
+		Name:   name,
+		Status: ReadinessWarn,
+		Detail: "no tracker.write_probe_issue configured; write capability not proven",
+		Hint:   "Configure tracker.write_probe_issue with a scratch issue on the configured project to prove this write capability.",
+	}
+}
+
+func missingInstallationPermissions(details InstallationTokenDetails, cfg ReadinessConfig) []string {
+	var missing []string
+	if cfg.RequireProjectRead || cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
+		projectLevel := "read"
+		if cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
+			projectLevel = "write"
+		}
+		if !hasAnyPermission(details.Permissions, []string{"organization_projects", "repository_projects", "projects"}, projectLevel) {
+			missing = append(missing, "Projects: "+projectLevel)
+		}
+	}
+	if cfg.RequireIssueFieldRead && !hasAnyPermission(details.Permissions, []string{"organization_issue_fields", "issue_fields"}, "read") {
+		missing = append(missing, "Issue Fields: read")
+	}
+	issueLevel := "read"
+	if cfg.RequireIssueFieldStatusWrite || cfg.RequireLabelStatusWrite || cfg.RequireIssueComments || cfg.RequireAssigneeWrite || cfg.RequireIssueClose {
+		issueLevel = "write"
+	}
+	if !permissionAllows(details.Permissions["issues"], issueLevel) {
+		missing = append(missing, "Issues: "+issueLevel)
+	}
+	if cfg.RequirePullRequestRead && !permissionAllows(details.Permissions["pull_requests"], "read") {
+		missing = append(missing, "Pull requests: read")
+	}
+	if cfg.RequirePullRequestChecks && !permissionAllows(details.Permissions["checks"], "read") {
+		missing = append(missing, "Checks: read")
+	}
+	return missing
+}
+
+func missingInstallationRepositories(details InstallationTokenDetails, repositories []string) []string {
+	if !strings.EqualFold(strings.TrimSpace(details.RepositorySelection), "selected") {
+		return nil
+	}
+	repositories = normalizedRepositories(repositories)
+	if len(repositories) == 0 {
+		return []string{"selected repository access for configured repositories"}
+	}
+	available := make(map[string]struct{}, len(details.Repositories))
+	for _, repo := range details.Repositories {
+		if normalized := strings.ToLower(normalizeRepository(repo.FullName)); normalized != "" {
+			available[normalized] = struct{}{}
+		}
+	}
+	var missing []string
+	for _, repo := range repositories {
+		if _, ok := available[strings.ToLower(normalizeRepository(repo))]; !ok {
+			missing = append(missing, "repository access to "+repo)
+		}
+	}
+	return missing
+}
+
+func installationPermissionDetail(details InstallationTokenDetails) string {
+	parts := make([]string, 0, len(details.Permissions))
+	for key, value := range details.Permissions {
+		parts = append(parts, key+"="+value)
+	}
+	sort.Strings(parts)
+	selection := strings.TrimSpace(details.RepositorySelection)
+	if selection == "" {
+		selection = "unknown"
+	}
+	if len(parts) == 0 {
+		return "installation token created; repository_selection=" + selection
+	}
+	return "installation token created; repository_selection=" + selection + "; permissions " + strings.Join(parts, ", ")
+}
+
+func hasAnyPermission(permissions map[string]string, keys []string, required string) bool {
+	for _, key := range keys {
+		if permissionAllows(permissions[key], required) {
+			return true
+		}
+	}
+	return false
+}
+
+func permissionAllows(actual string, required string) bool {
+	actualRank := permissionRank(actual)
+	requiredRank := permissionRank(required)
+	return actualRank >= requiredRank && requiredRank > 0
+}
+
+func permissionRank(value string) int {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "read":
+		return 1
+	case "write":
+		return 2
+	case "admin":
+		return 3
+	default:
+		return 0
+	}
+}
+
+func hasGitHubAppCredentials(cfg Config, lookupEnv func(string) string) bool {
+	if lookupEnv == nil {
+		lookupEnv = func(string) string { return "" }
+	}
+	return resolveSecretValue(cfg.GitHubAppID, lookupEnv) != "" &&
+		resolveSecretValue(cfg.GitHubAppInstallationID, lookupEnv) != "" &&
+		(resolveSecretValue(cfg.GitHubAppPrivateKey, lookupEnv) != "" ||
+			resolveSecretValue(cfg.GitHubAppPrivateKeyPath, lookupEnv) != "")
+}
+
+func acceptedPermissionsDetail(headers http.Header) string {
+	value := strings.TrimSpace(headers.Get("X-Accepted-GitHub-Permissions"))
+	if value == "" {
+		return ""
+	}
+	return "; accepted permissions: " + value
+}
+
+func normalizedRepositories(repositories []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(repositories))
+	for _, repo := range repositories {
+		repo = normalizeRepository(repo)
+		if repo == "" {
+			continue
+		}
+		if _, ok := seen[strings.ToLower(repo)]; ok {
+			continue
+		}
+		seen[strings.ToLower(repo)] = struct{}{}
+		out = append(out, repo)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeRepository(repo string) string {
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		return ""
+	}
+	return owner + "/" + name
+}
+
+func restRepositoryPath(repo string) string {
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		return "/repos/"
+	}
+	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name)
+}
+
+func restRepositoryIssuesPath(repo string) string {
+	values := url.Values{}
+	values.Set("per_page", "1")
+	values.Set("state", "all")
+	return restRepositoryPath(repo) + "/issues?" + values.Encode()
+}
+
+func restRepositoryIssueCreatePath(repo pullRequestRepo) string {
+	return restRepositoryPath(pullRequestRepoName(repo)) + "/issues"
+}
+
+func restRepositoryIssueCommentsPath(repo string) string {
+	values := url.Values{}
+	values.Set("per_page", "1")
+	return restRepositoryPath(repo) + "/issues/comments?" + values.Encode()
+}
+
+func restRepositoryIssueSearchPath(repo string) string {
+	values := url.Values{}
+	values.Set("q", "repo:"+repo+" is:issue")
+	values.Set("per_page", "1")
+	return "/search/issues?" + values.Encode()
+}
