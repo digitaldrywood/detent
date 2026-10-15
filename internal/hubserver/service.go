@@ -52,6 +52,7 @@ type Service struct {
 	healthDetector          *healthDetector
 	issueMailer             *issueMailer
 	hostedMutationMu        sync.Mutex
+	sourceVerification      chan struct{}
 	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
 	hostedSessions          *auth.Service
@@ -136,20 +137,21 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	workerContext, workerCancel := context.WithCancel(context.Background())
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
-		releaseNotes:     notes,
-		echo:             e,
-		notifications:    newNotificationBroker(),
-		hostedAuthLogger: hostedAuthLogger,
-		database:         database,
-		tracker:          workTracker,
-		config:           cfg,
-		spriteWakes:      make(map[spriteWakeKey]*spriteLifecyclePass),
-		workerCancel:     workerCancel,
-		workerDone:       make(chan struct{}),
-		reconcileCancel:  reconcileCancel,
-		reconcileDone:    make(chan struct{}),
-		clientBuild:      conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
-		pullRequests:     newPullRequestCache(),
+		releaseNotes:       notes,
+		echo:               e,
+		notifications:      newNotificationBroker(),
+		hostedAuthLogger:   hostedAuthLogger,
+		database:           database,
+		sourceVerification: make(chan struct{}, 1),
+		tracker:            workTracker,
+		config:             cfg,
+		spriteWakes:        make(map[spriteWakeKey]*spriteLifecyclePass),
+		workerCancel:       workerCancel,
+		workerDone:         make(chan struct{}),
+		reconcileCancel:    reconcileCancel,
+		reconcileDone:      make(chan struct{}),
+		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
+		pullRequests:       newPullRequestCache(),
 	}
 	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)

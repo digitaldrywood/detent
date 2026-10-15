@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -32,6 +33,13 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	editBundle := func(bundle []byte) func(*ChangeSource) {
+		return func(source *ChangeSource) {
+			source.Bundle = bundle
+			source.Version.Source.BundleSHA256 = tracker.ChangeSourceDigest(bundle)
+			source.Version.Source.Bytes = int64(len(bundle))
+		}
+	}
 	for _, test := range []struct {
 		name        string
 		edit        func(*ChangeSource)
@@ -42,6 +50,8 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		absent      bool
 		corrupt     bool
 	}{
+		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
+		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
 		{name: "corrupt bundle", edit: func(s *ChangeSource) { s.Bundle = []byte("changed") }},
 		{name: "wrong diff", edit: func(s *ChangeSource) { s.Version.Source.DiffSHA256 = strings.Repeat("a", 64) }},
 		{name: "wrong repository", edit: func(s *ChangeSource) { s.Version.Repository = "https://github.com/other/source" }},

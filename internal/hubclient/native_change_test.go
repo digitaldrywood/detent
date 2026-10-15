@@ -434,7 +434,7 @@ func (h *nativeChangeHub) publishCapturedExternal(t *testing.T, item tracker.Nat
 }
 
 func nativeChangeSourceFixture(base, head string) tracker.ChangeSourceCapture {
-	bundle := []byte("bounded retained source fixture")
+	bundle := []byte("# v2 git bundle\n" + head + " HEAD\n\nbounded retained source fixture")
 	return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}
 }
 
@@ -895,7 +895,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if test.retainSource {
 				execution.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-					bundle := []byte("immutable source before publication outage")
+					bundle := []byte("# v2 git bundle\n" + head + " HEAD\n\nimmutable source before publication outage")
 					return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}, nil
 				})
 			}
