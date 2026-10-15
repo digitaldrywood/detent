@@ -59,7 +59,7 @@ func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope 
 	if err := json.Unmarshal([]byte(raw), &observed); err != nil {
 		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}
-	if validateNativeAdmissionContext(observed.Context) != nil || observed.RunnerRevision != runner.Revision || observed.Context.PolicyID != policyID || observed.ReceivedAt.IsZero() || now.Before(observed.ReceivedAt) || !now.Before(observed.ReceivedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(observed.Context.ObservedAt) || !now.Before(observed.Context.ObservedAt.Add(runnerauth.HeartbeatTimeout)) {
+	if validateNativeAdmissionContext(observed.Context) != nil || observed.RunnerRevision != runner.Revision || observed.ReceivedAt.IsZero() || now.Before(observed.ReceivedAt) || !now.Before(observed.ReceivedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(observed.Context.ObservedAt) || !now.Before(observed.Context.ObservedAt.Add(runnerauth.HeartbeatTimeout)) {
 		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}
 	return &observed.Context, nil
@@ -156,8 +156,6 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 				refuse(exclusions[0].Code, exclusions[0].Message)
 			} else if selected == nil {
 				a.Unavailable = append(a.Unavailable, "runner_specific_candidate_selection")
-			} else if selected.PolicyID != policyID {
-				refuse("policy_mismatch", "Runner policy is missing or stale; load the approved repository definition and permitted local overrides before claiming work")
 			} else {
 				a.SelectorSource = selectorSource
 				a.SelectorObservedAt = &selected.ObservedAt

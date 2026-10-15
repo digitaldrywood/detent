@@ -1531,27 +1531,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
-	if req.Policy.ID != "" || workflow.Config.Policy.ID != "" {
-		if err := req.Policy.Match(workflow.Config.Policy); err != nil {
-			return RunResult{}, err
-		}
-	}
 	mode := normalizeRunMode(req.Mode)
 	landing, nativeLanding := req.Execution.(LandingExecution)
 	nativeLanding = nativeLanding && mode == RunModeMerge
 	if nativeLanding {
 		identity := NativeLandingIdentity(r.now())
 		defer func() { returnValue.RuntimeIdentity = identity }()
-		req.ResumeState = store.AgentResumeState{}
-		req.RetryMode = RetryModeFresh
-	}
-	freshCheckout := req.Execution != nil && !nativeLanding && nativeCheckpointPolicyChanged(req.Execution.Recovery())
-	if freshCheckout {
-		recovery := req.Execution.Recovery()
-		action, reason := nativeRecoveryAction(recovery, nil, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{}, false, nil)
-		if action == "manual_recovery" {
-			return RunResult{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
-		}
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}
@@ -1566,7 +1551,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-		if !freshCheckout && !req.operatorFreshRetry() {
+		if !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
 				return RunResult{}, err
@@ -1617,7 +1602,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	req.workspaceBackend = runWorkspace
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
-	workspaceIssue.FreshCheckout = freshCheckout
+	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
 	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil) {
@@ -1632,7 +1617,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 
 		recovered, recoverErr := source.RecoverChangeSource(ctx)
-		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, freshCheckout) {
+		if recoverErr != nil && !checkpointRefCoversChangeSource(recoverErr, req.Execution.Recovery(), nativeLanding, false) {
 			return RunResult{}, fmt.Errorf("recover native Change source: %w", recoverErr)
 		}
 		if recoverErr != nil {
@@ -1642,7 +1627,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			workspaceIssue.Source = &recovered
 		}
 	}
-	if req.Execution != nil && !nativeLanding && !freshCheckout && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
+	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
 		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
 	}
 	var landingTarget NativeLandingTarget
@@ -1695,11 +1680,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err := r.publishWorkspaceCreateStarted(req); err != nil {
 		return RunResult{}, err
 	}
-	if freshCheckout {
-		if err := req.Execution.Validate(ctx); err != nil {
-			return RunResult{}, err
-		}
-	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		if workspaceIssue.NativeRework && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
@@ -1742,10 +1722,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := req.Execution.Validate(ctx); err != nil {
 			return RunResult{}, err
 		}
-	}
-	if freshCheckout {
-		recovery := req.Execution.Recovery()
-		r.logWorkerEventLevel(slog.LevelInfo, req.Issue, "worker_native_checkpoint_discarded", "previous_policy_id", recovery.Attempts[len(recovery.Attempts)-1].PolicyID, "approved_policy_id", recovery.Lease.PolicyID)
 	}
 	if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)

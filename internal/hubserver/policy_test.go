@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -35,13 +34,10 @@ func TestCompatibilityPolicyUpgradeAndRevocation(t *testing.T) {
 					t.Fatal(err)
 				}
 				if state == "revoked" {
-					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusNoContent)
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodDelete, "/api/v1/repositories/digitaldrywood/detent/policy", testHubAdminToken, map[string]string{"expected_policy_id": descriptor.ID}), http.StatusGone)
 				}
 			}
-			wantRenew, wantEvent := http.StatusConflict, http.StatusConflict
-			if state == "approved" {
-				wantRenew, wantEvent = http.StatusOK, http.StatusCreated
-			}
+			wantRenew, wantEvent := http.StatusOK, http.StatusCreated
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/renew", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "ttl_seconds": 90}), wantRenew)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, fmt.Sprintf("/api/v1/work-items/%d/events", issueID), testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "kind": "progress", "payload": map[string]string{"step": "plan"}}), wantEvent)
 			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, "/api/v1/leases/"+string(lease.ID)+"/release", testHubAdminToken, map[string]any{"fencing_token": lease.FencingToken, "reason": "cancelled"}), http.StatusNoContent)
@@ -77,7 +73,7 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	for _, token := range []string{worker, f.token, runner.redemption.Credential} {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", token, policy.Change{Policy: descriptor}), http.StatusForbidden)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusUnprocessableEntity)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 	for _, field := range []string{"states", "workflow_markdown"} {
 		request := map[string]any{"idempotency_key": "repository-override-" + field, "expected_revision": "2", "intake": "disabled", "projection": "disabled"}
@@ -88,10 +84,10 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/integration", testHubAdminToken, request), http.StatusUnprocessableEntity)
 	}
-	for _, test := range []struct{ name, id string }{{"missing", ""}, {"stale", "policy_" + strings.Repeat("b", 64)}} {
+	for _, test := range []struct{ name, id string }{{"missing", ""}, {"unknown", "policy_" + strings.Repeat("b", 64)}} {
 		t.Run(test.name, func(t *testing.T) {
 			claim.PolicyID = test.id
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusUnprocessableEntity)
 			var leases int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM leases").Scan(&leases); err != nil || leases != 0 {
 				t.Fatalf("rejected claim allocated a lease: %d %v", leases, err)
@@ -118,16 +114,19 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 		t.Fatalf("approval changed existing lease policy: %s %v", pinned, err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	reported := descriptor
+	reported.SourceDigest = policy.Digest([]byte("reported configuration"))
+	reported = reported.WithID()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: reported}), http.StatusNoContent)
+	claim.PolicyID = reported.ID
 	newIssue := f.create(t, "new policy work")
 	claim.WorkItemID, claim.SessionID = newIssue.WorkItemID, "new-policy-session"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusConflict)
-	claim.PolicyID = changed.ID
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim)
 	requireNativeStatus(t, response, http.StatusOK)
 	var newLease tracker.NativeLease
 	decodeHubResponse(t, response, &newLease)
-	if newLease.PolicyID != changed.ID || newLease.ID == lease.ID {
-		t.Fatalf("new claim lost current approval: %+v", newLease)
+	if newLease.PolicyID != reported.ID || newLease.ID == lease.ID {
+		t.Fatalf("new claim lost reported configuration: %+v", newLease)
 	}
 	event.Type, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", 2, nativeTestCheckpoint()
 	event.IdempotencyKey, event.Data.PolicyID = "forged", changed.ID
@@ -135,15 +134,19 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	event.Data.PolicyID, event.IdempotencyKey = descriptor.ID, "pinned"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", worker, map[string]string{"expected_policy_id": changed.ID}), http.StatusForbidden)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": changed.ID}), http.StatusNoContent)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": changed.ID}), http.StatusGone)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(newLease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: newLease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
+	claim.WorkItemID = f.create(t, "reported configuration without approval").WorkItemID
+	claim.SessionID = "reported-without-approval"
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusOK)
 	event.Data.PolicyID = descriptor.ID
 	event.IdempotencyKey = "revoked"
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusConflict)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
 }
 
-func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
+func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name          string
@@ -161,16 +164,16 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 		{name: "fallback", stale: 2, target: "In Progress", status: http.StatusOK},
 		{name: "rolling barrier", stale: 2, target: "Rework", status: http.StatusOK, barrier: true},
 		{name: "active landing lease", stale: 1, target: "Rework", status: http.StatusOK, activeLanding: true},
-		{name: "no allowed refusal lane", stale: 2, target: "Done", status: http.StatusUnprocessableEntity},
+		{name: "no refusal lane needed", stale: 2, target: "Done", status: http.StatusOK},
 		{name: "unauthorized", stale: 2, target: "Rework", refusal: "unauthorized", status: http.StatusForbidden},
 		{name: "stale approval", stale: 2, target: "Rework", refusal: "expected", status: http.StatusConflict},
-		{name: "later transition failure rolls back", stale: 2, target: "Rework", refusal: "write", status: http.StatusInternalServerError},
+		{name: "configuration does not transition issues", stale: 2, target: "Rework", refusal: "write", status: http.StatusOK},
 		{name: "review policy replacement", stale: 3, target: "Rework", mutation: "review", status: http.StatusOK},
 		{name: "review policy unauthorized", stale: 2, target: "Rework", mutation: "review", refusal: "unauthorized", status: http.StatusForbidden},
 		{name: "review policy transition rollback", stale: 2, target: "Rework", mutation: "review", refusal: "write", status: http.StatusInternalServerError},
-		{name: "repository policy revocation", stale: 3, target: "Rework", mutation: "revoke", status: http.StatusNoContent},
+		{name: "repository policy revocation", stale: 3, target: "Rework", mutation: "revoke", status: http.StatusGone},
 		{name: "repository policy revocation unauthorized", stale: 2, target: "Rework", mutation: "revoke", refusal: "unauthorized", status: http.StatusForbidden},
-		{name: "repository policy revocation transition rollback", stale: 2, target: "Rework", mutation: "revoke", refusal: "write", status: http.StatusInternalServerError},
+		{name: "repository revocation does not transition issues", stale: 2, target: "Rework", mutation: "revoke", refusal: "write", status: http.StatusGone},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -326,14 +329,10 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				wantPolicy = next.ID
 			}
 			approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
-			if succeeded && test.mutation == "revoke" {
-				var failure *nativeError
-				if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
-					t.Fatalf("revoked policy is still approved: %+v, error = %v", approval, err)
-				}
-			} else if err != nil || approval.Policy.ID != wantPolicy {
-				t.Fatalf("approved policy = %+v, error = %v, want %s", approval, err, wantPolicy)
+			if err != nil || approval.Policy.ID != wantPolicy {
+				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
+
 			if test.mutation == "review" {
 				rules, err := readChangePolicy(t.Context(), f.service.database.db, scope)
 				wantRules := defaultChangeReviewPolicy(previous).ID
@@ -370,13 +369,13 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				want := "Merging"
 				if i > test.stale {
 					want = "Blocked"
-				} else if succeeded && (i > 0 || test.mutation == "revoke") {
+				} else if succeeded && test.mutation == "review" && i > 0 {
 					want = test.target
 				}
 				if issue.State != want {
 					t.Errorf("%s state = %s, want %s", issue.Title, issue.State, want)
 				}
-				if (i == 0 && test.mutation != "revoke" || i > test.stale || !succeeded) && !reflect.DeepEqual(issue, issuesBefore[i]) {
+				if (test.mutation != "review" || i == 0 || i > test.stale || !succeeded) && !reflect.DeepEqual(issue, issuesBefore[i]) {
 					t.Errorf("%s approval changed unrelated or held work", issue.Title)
 				}
 				if i > test.stale {
@@ -395,7 +394,7 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 					t.Fatal(err)
 				}
 				wantTransitions := 0
-				if i <= test.stale && succeeded && (i > 0 || test.mutation == "revoke") {
+				if i <= test.stale && succeeded && test.mutation == "review" && i > 0 {
 					wantTransitions = 1
 				}
 				if transitions != wantTransitions {
@@ -407,9 +406,6 @@ func TestProjectPolicyApprovalRoutesStaleLandingChanges(t *testing.T) {
 				t.Fatalf("active lease policy = %s, error = %v", pinned, err)
 			}
 			wantRenew := http.StatusOK
-			if succeeded && test.mutation == "revoke" {
-				wantRenew = http.StatusConflict
-			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), wantRenew)
 		})
 	}

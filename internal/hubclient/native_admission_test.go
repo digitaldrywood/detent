@@ -234,7 +234,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
 		{name: "typed instance reason recovers after ended claim", instance: true, reasonCode: "instance_limitation", laterLease: "released", dirty: true},
 		{name: "typed instance reason preserves human hold", instance: true, reasonCode: "instance_limitation", refusal: "human"},
-		{name: "typed instance reason preserves policy hold", instance: true, reasonCode: "instance_limitation", refusal: "policy"},
+		{name: "configuration change permits instance recovery", instance: true, reasonCode: "instance_limitation", refusal: "policy"},
 		{name: "instance evidence preserves permission reason", instance: true, reasonCode: "permission_wait", refusal: "reason"},
 		{name: "instance evidence preserves unknown reason", instance: true, reasonCode: "unknown_hold", refusal: "reason"},
 		{name: "canonical native reference", qualified: true},
@@ -254,7 +254,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		{name: "stale fence cannot recover", refusal: "fence"},
 		{name: "stale report cannot recover", refusal: "report"},
 		{name: "unrelated native dependency retains hold", refusal: "relation"},
-		{name: "policy change retains hold", refusal: "policy"},
+		{name: "configuration change permits dependency recovery", refusal: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHubDependencies(t, "Human Review", []tracker.NativeState{
@@ -476,7 +476,7 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 				if test.refusal == "policy" {
 					h.repolicy(t)
 				}
-				if test.refusal != "" {
+				if test.refusal != "" && test.refusal != "policy" {
 					if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
 						t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
 					}
@@ -514,6 +514,12 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 				request.ExpectedRevision = current.Revision
 			case "policy":
 				h.repolicy(t)
+			}
+			if test.refusal == "policy" {
+				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
+					t.Fatalf("configuration change prevented recovery: %v", err)
+				}
+				return
 			}
 			if test.refusal != "" {
 				_, err := h.native.Transition(t.Context(), blocked.WorkItemID, request)

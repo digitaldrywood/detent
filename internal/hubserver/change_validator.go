@@ -131,7 +131,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if landingAudit {
 		validSession = current.Identity != nil && current.Identity.Role == "merge"
 	}
-	if current.PolicyID != version.PolicyID || current.FencingToken != request.FencingToken || !validSession || current.MachineID == source.MachineID && source.Runtime.Activity.SessionID == result.SessionID {
+	if current.FencingToken != request.FencingToken || !validSession || current.MachineID == source.MachineID && source.Runtime.Activity.SessionID == result.SessionID {
 		return "", nativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
 	}
 	reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)

@@ -23,7 +23,6 @@ import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect, PathValue, StatusDot, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
 import { newKey } from "./idempotency.ts";
-import { parsePolicyDescriptor, POLICY_INSPECT_COMMAND } from "./Setup.tsx";
 import { useMutation, useResource } from "./useResource.ts";
 
 /** The editable half of the integration: what a save sends. */
@@ -65,12 +64,6 @@ export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean 
 /**
  * What a failed save says. A revision conflict is the one worth its own
  * sentence: nothing the reader typed was wrong, and the fix is to look again.
- */
-/**
- * Whether a failed `GET .../policy` means "nothing is approved" rather than
- * "something went wrong". `404` is a project with no policy row; `409
- * policy_mismatch` is a stored approval that no longer describes what the host
- * resolves. Neither is an error the reader can act on except by approving.
  */
 export const OBSERVED_POLICY_REFRESH_MS = 30_000;
 
@@ -170,8 +163,8 @@ Complete the assigned work.
       <SettingsRow
         title="Project states"
         description={repositoryControlled
-          ? <span className="[overflow-wrap:anywhere]">Controlled by {integration.checkout_repository || integration.repository || "the repository"}: {integration.workflow_source} at revision {integration.workflow_source_revision}. Edit the repository definition, then approve its new policy.</span>
-          : native ? "Author YAML frontmatter and agent instructions in Markdown using the repository workflow schema. Review states and allowed transitions before saving; execution changes require policy approval." : "This workflow is owned by the source tracker."}
+          ? <span className="[overflow-wrap:anywhere]">Controlled by {integration.checkout_repository || integration.repository || "the repository"}: {integration.workflow_source} at revision {integration.workflow_source_revision}. Edit the repository definition; runners report the updated configuration.</span>
+          : native ? "Author YAML frontmatter and agent instructions in Markdown using the repository workflow schema. Review states and allowed transitions before saving." : "This workflow is owned by the source tracker."}
         status={
           <ul className="text-sm [overflow-wrap:anywhere]">
             {(integration.states ?? []).map((state, index) => (
@@ -202,126 +195,16 @@ Complete the assigned work.
 export function PolicyRow({
   policy,
   observed,
-  canManage,
-  onApprove,
-  onApprovePasted,
-  approving,
-  error,
-  workflowRevisionsShown = false,
 }: {
   readonly policy: PolicyApproval | null;
-  /** Descriptors runners resolved and could not run, newest first. */
   readonly observed: readonly ObservedPolicy[];
-  readonly canManage: boolean;
-  readonly onApprove: (policyId: string) => void;
-  readonly onApprovePasted: (text: string) => void;
-  readonly approving: boolean;
-  readonly error: string | null;
-  readonly workflowRevisionsShown?: boolean;
 }): React.ReactElement {
-  const [pasting, setPasting] = React.useState(false);
-  const [pasted, setPasted] = React.useState("");
-  const conflict = conflictingPolicies(observed);
-  const shared = policy?.policy.configuration !== undefined;
-  const description =
-    conflict
-      ? shared
-        ? "Runners report conflicting configurations. Load the approved shared configuration on these runners; approving their old reports will not converge the project."
-        : "Runners report conflicting configurations. Choose one shared project configuration with the intended planning, validation and automatic promotion settings, then approve its inspected descriptor once."
-      : observed.length > 0
-      ? canManage
-        ? "Review and approve the reported policy to resume work."
-        : "An owner or admin must approve the reported policy to resume work."
-      : policy === null
-        ? canManage
-          ? "Start a runner or paste a policy to approve it."
-          : "An owner or admin must approve a policy before work can run."
-        : shared
-          ? "Authorized runners consume this approved project configuration."
-          : "Approved for execution.";
   return (
     <SettingsRow
-      title={shared ? "Shared project configuration" : "Repository policy"}
-      help={{
-        label: shared ? "Shared project configuration" : "Repository policy",
-        text: shared || observed.some((entry) => entry.policy.configuration)
-          ? "Cloud stores the exact approved descriptor. External local definitions without trusted repository provenance adopt its shared behavior while retaining detent.local.yaml and WORKFLOW.local.md. Preview selected_policy with local_project_configuration, then use apply_local_project_policy after current work settles. Trusted repository definitions require matching committed shared files and approval; source_revision is an authored digest, not a Git ref. Credentials, paths, capacity, isolation setup and runner routing stay on each host. Applied confirms runtime adoption; saved is false when local files are unchanged. Later reads retain refusal details in last_operation."
-          : "The runner reports the policy descriptor it resolves from the trusted repository revision, including detent.yaml and WORKFLOW.md. Repository changes or a runner upgrade can change that descriptor and make the prior approval stale. Execution is blocked when the runner’s resolved policy does not match an approved descriptor; an owner or admin must approve the current policy.",
-      }}
-      description={description}
-      status={
-        <>
-          <span className={observed.length > 0 || policy === null ? "text-warning-foreground" : undefined}>
-            {observed.length > 0 ? "Needs approval" : policy === null ? "Not approved" : "Approved"}
-          </span>
-          {policy === null ? null : (
-            <details className="mt-1 text-sm">
-              <summary className="cursor-pointer">Approval details</summary>
-              <p className="mt-2 break-words">Approved by {policy.approved_by} on {policy.approved_at}</p>
-              <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-sm">{JSON.stringify(policy.policy, null, 2)}</pre>
-            </details>
-          )}
-          {observed.filter((entry) => !workflowRevisionsShown || !entry.policy.workflow || entry.previously_approved).map((entry) => (
-            <div key={entry.policy.policy_id} className="mt-2 flex min-w-0 flex-wrap items-start gap-2">
-              <details className="min-w-0 flex-1 text-sm">
-                <summary className="cursor-pointer">Review policy from {entry.runner_ids?.join(", ") ?? entry.runner_id}</summary>
-                <p className="mt-2">Reported at {entry.observed_at}</p>
-                <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-sm">{JSON.stringify(entry.policy, null, 2)}</pre>
-              </details>
-              {entry.previously_approved ? <span>Previously approved configuration</span> : null}
-              {canManage && !conflict ? (
-                <Button
-                  size="xs"
-                  disabled={approving}
-                  aria-label={`Approve updated policy ${entry.policy.policy_id}`}
-                  onClick={() => onApprove(entry.policy.policy_id)}
-                >
-                  {approving ? "Approving…" : "Approve"}
-                </Button>
-              ) : null}
-            </div>
-          ))}
-        </>
-      }
-      control={
-        canManage ? (
-          <div className="flex flex-col items-end gap-1.5">
-            <Button size="sm" variant="ghost-muted" onClick={() => setPasting((open) => !open)}>
-              {pasting ? "Cancel" : "Paste policy"}
-            </Button>
-            <ControlError message={error} />
-          </div>
-        ) : (
-          <ControlError message={error} />
-        )
-      }
-    >
-      {canManage && pasting ? (
-        <div className="flex flex-col gap-2 pb-3">
-          <p className="text-[13px] text-muted-foreground">
-            Run <code className="font-mono text-xs">{POLICY_INSPECT_COMMAND}</code> on the runner host and paste its
-            output.
-          </p>
-          <Textarea
-            aria-label="Policy descriptor"
-            className="font-mono text-xs"
-            rows={6}
-            value={pasted}
-            onChange={(event) => setPasted(event.currentTarget.value)}
-          />
-          <div>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={approving || pasted.trim() === ""}
-              onClick={() => onApprovePasted(pasted)}
-            >
-              Approve policy
-            </Button>
-          </div>
-        </div>
-      ) : null}
-    </SettingsRow>
+      title="Repository configuration"
+      description="The runner reads detent.yaml and WORKFLOW.md from the repository."
+      status={policy === null && observed.length === 0 ? "Waiting for runner configuration" : "Configuration reported"}
+    />
   );
 }
 
@@ -333,13 +216,9 @@ export function ProjectSettingsView({
   draft,
   onDraftChange,
   onSave,
-  onApprovePolicy,
-  onApprovePastedPolicy,
   observedPolicies,
   saving,
-  approving,
   saveError,
-  approveError,
   onOpenFleet,
   onOpenSetup,
   onboarding,
@@ -356,13 +235,9 @@ export function ProjectSettingsView({
   readonly draft: IntegrationDraft;
   readonly onDraftChange: (draft: IntegrationDraft) => void;
   readonly onSave: () => void;
-  readonly onApprovePolicy: (policyId: string) => void;
-  readonly onApprovePastedPolicy: (text: string) => void;
   readonly observedPolicies: readonly ObservedPolicy[];
   readonly saving: boolean;
-  readonly approving: boolean;
   readonly saveError: string | null;
-  readonly approveError: string | null;
   readonly onOpenFleet: () => void;
   readonly onOpenSetup?: () => void;
   readonly onboarding?: ProjectOnboardingSummary;
@@ -386,7 +261,6 @@ export function ProjectSettingsView({
   const unavailable = repository === "" || !transportAvailable;
   const waitingForRepository = unbound && repository !== "";
   const dirty = draftChanged(draft, draftOf(integration));
-  const conflict = conflictingPolicies(observedPolicies);
 
   return (
     <SettingsPageContainer>
@@ -405,38 +279,6 @@ export function ProjectSettingsView({
           <b className="font-semibold">This change was not saved.</b> {saveError}
         </SettingsWarning>
       )}
-
-      {policy === null || observedPolicies.length > 0 ? (
-        <SettingsWarning
-          action={
-            canManage && observedPolicies.length === 1 && !conflict ? (
-              <Button
-                size="sm"
-                variant="warning-outline"
-                onClick={() => onApprovePolicy(observedPolicies[0]!.policy.policy_id)}
-                disabled={approving}
-              >
-                {approving ? "Approving…" : "Approve updated policy"}
-              </Button>
-            ) : null
-          }
-        >
-          {conflict ? (
-            <>
-              <b className="font-semibold">Runners have conflicting project configurations.</b>{" "}
-              {policy?.policy.configuration ? "Load the approved shared configuration on the reported runners. Previously reported policies do not need another approval." : "Inspect and approve one shared configuration with the intended planning, validation and automatic promotion settings to converge the runners."}
-            </>
-          ) : observedPolicies.length > 0 ? (
-            <>
-              <b className="font-semibold">A runner is waiting for a new policy.</b> Approve the updated policy to resume work.
-            </>
-          ) : (
-            <>
-              <b className="font-semibold">No policy is approved for this project.</b> Work is blocked until an owner or admin approves a policy.
-            </>
-          )}
-        </SettingsWarning>
-      ) : null}
 
       {onboarding && !onboarding.ready ? (
         <SettingsSection title="Project setup">
@@ -464,7 +306,7 @@ export function ProjectSettingsView({
           }
         />
         <SettingsUnavailableGroup message={!transportAvailable
-          ? "Hub GitHub integration is unavailable; PR landing uses the runner’s approved repository policy."
+          ? "Hub GitHub integration is unavailable; PR landing uses the runner’s repository configuration."
           : repository === "" ? "Associate a runner checkout to configure repository integration." : undefined}>
           {integration.profile === "native" && installed !== undefined && !unavailable ? (
             <SettingsRow
@@ -502,7 +344,7 @@ export function ProjectSettingsView({
             help={{ label: "Pull requests", text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Existing issues and work summaries are separate settings." }}
             status={<span className="inline-flex items-center gap-2 [overflow-wrap:anywhere]">
               <StatusDot tone={integration.repository_enabled && !unavailable && !waitingForApp && !waitingForRepository ? "ok" : "idle"} />
-              {!transportAvailable ? "Work lands through the runner’s approved repository policy."
+              {!transportAvailable ? "Work lands through the runner’s repository configuration."
                 : !integration.repository_enabled ? "Off. Work lands by git push; no pull requests are created."
                 : waitingForRepository || repository === "" ? "Waiting for repository binding."
                 : waitingForApp ? "Waiting for the GitHub App." : "Detent opens, updates and merges pull requests on this repository."}
@@ -591,14 +433,8 @@ export function ProjectSettingsView({
 
       <SettingsSection title="Execution">
         <PolicyRow
-          workflowRevisionsShown={workflow !== undefined}
           policy={policy}
-          canManage={canManage}
-          onApprove={onApprovePolicy}
-          onApprovePasted={onApprovePastedPolicy}
           observed={observedPolicies}
-          approving={approving}
-          error={approveError}
         />
         <SettingsRow
           title="Runner routing"
@@ -641,12 +477,6 @@ export function ProjectSettingsRoute({
     () => api.integration(projectId),
     [api, projectId],
   );
-  // A project with nothing approved is an answer rather than a failure, and
-  // the hub gives it two shapes: `404` where the project has no policy row at
-  // all, and `409 policy_mismatch` where the stored approval no longer matches
-  // the resolved descriptor (`policyMismatch` in `internal/hubserver/policy.go`
-  // — the hosted preview answers exactly this for a fresh project). Both mean
-  // "nothing is approved": the screen says so and offers the approval.
   const policy = useResource<PolicyApproval | null>(
     () =>
       api.policy(projectId).catch((cause: unknown) => {
@@ -709,8 +539,6 @@ export function ProjectSettingsRoute({
     }
   });
 
-  // What a runner resolved and could not run: the Hub records it so the owner
-  // approves exactly that descriptor instead of pasting it.
   const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
   const observed = setup.value?.observed_policies ?? [];
   const loadOlder = useMutation(async () => {
@@ -733,42 +561,6 @@ export function ProjectSettingsRoute({
     }, OBSERVED_POLICY_REFRESH_MS);
     return () => globalThis.clearInterval(timer);
   }, [setup.refresh, policy.refresh]);
-
-  // Approves what the runner reported, or a descriptor pasted from the inspect
-  // command. Both go through the onboarding route, the one the hosted Hub
-  // serves to owners and admins.
-  const approve = useMutation(async (choice: { readonly reported: string } | { readonly pasted: string }) => {
-    const descriptor: { readonly policy_id: string } | undefined =
-      "pasted" in choice
-        ? parsePolicyDescriptor(choice.pasted)
-        : observed.find((entry) => entry.policy.policy_id === choice.reported)?.policy;
-    if (descriptor === undefined) {
-      throw new AccountError({
-        status: 422,
-        code: "invalid_request",
-        message: "No runner has reported a policy for this project yet.",
-      });
-    }
-    try {
-      const approved = await api.approvePolicy({
-        projectId,
-        // The onboarding response that listed the reported policies also
-        // carries the approval they were compared with, so the two never
-        // disagree, even while the separate policy read is still loading.
-        expectedPolicyId: (setup.value?.policy ?? policy.value)?.policy.policy_id ?? "",
-        policy: descriptor,
-        onboarding: true,
-      });
-      policy.set(approved);
-      await integration.refresh();
-      globalThis.location.reload();
-      return approved;
-    } finally {
-      // A conflict means somebody else approved meanwhile: re-read both, so a
-      // retry names the approval that is actually current.
-      await Promise.all([setup.refresh(), policy.refresh()]);
-    }
-  });
 
   if (integration.error !== null && integration.error.isAccessError) {
     return (
@@ -808,13 +600,9 @@ export function ProjectSettingsRoute({
       draft={draft}
       onDraftChange={setDraft}
       onSave={() => void save.call(draft)}
-      onApprovePolicy={(policyId) => void approve.call({ reported: policyId })}
-      onApprovePastedPolicy={(text) => void approve.call({ pasted: text })}
       observedPolicies={observed}
       saving={save.pending}
-      approving={approve.pending}
       saveError={saveMessage(save.error)}
-      approveError={approve.error?.message ?? null}
       header={header}
       deletion={canManage && project?.can_write === true ? <ProjectDeletionSettings key={projectId} projectName={project.name} pending={remove.pending} error={remove.error?.message ?? null} onDelete={() => void remove.call()} onDismiss={remove.clearError} /> : null}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
@@ -837,9 +625,6 @@ export function ProjectSettingsRoute({
                 policy={policy.value ?? setup.value?.policy ?? null}
                 observed={observed}
                 repository={integration.value.checkout_repository || integration.value.repository || ""}
-                canApprove={canManage && !conflictingPolicies(observed)}
-                approving={approve.pending}
-                onApprove={(policyId) => void approve.call({ reported: policyId })}
                 error={loadOlder.error?.message ?? policy.error?.message ?? null}
                 onLoadOlder={() => void loadOlder.call()}
                 loadingOlder={loadOlder.pending}
