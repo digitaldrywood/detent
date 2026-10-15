@@ -302,6 +302,9 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		card.Issue.Actor.DisplayName = displayName
 		card.Issue.Snippet = snippet
 		card.Issue.SearchScore = position.Score
+		if err := readNativeDependencyDetails(ctx, tx, scope, &card.Issue); err != nil {
+			return page, err
+		}
 		redactNativeBoardCard(&card, grants)
 		card.Issue = s.nativeIssueResponse(card.Issue)
 		page.Cards = append(page.Cards, card)

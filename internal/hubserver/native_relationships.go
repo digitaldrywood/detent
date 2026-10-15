@@ -24,10 +24,11 @@ func changeRelatedIssuesTx(ctx context.Context, tx *sql.Tx, first, second tracke
 func readNativeRelated(ctx context.Context, query nativeQueryer, scope nativeScope, item tracker.NativeWorkItemID) ([]tracker.NativeDependency, error) {
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	args := append([]any{item, scope.organization, scope.project, scope.organization}, grantArgs...)
-	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.project_id || '#' || i.number, ws.detent_state, ws.terminal
+	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.project_id || '#' || i.number, ws.detent_state, ws.terminal, i.number, i.title, o.slug, p.slug
 FROM issue_relationships r JOIN issues source ON source.id IN (r.first_issue_id, r.second_issue_id)
 JOIN issues i ON i.id = CASE WHEN source.id = r.first_issue_id THEN r.second_issue_id ELSE r.first_issue_id END
 JOIN workflow_states ws ON ws.id = i.workflow_state_id
+JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id
 WHERE source.native_id = ? AND source.organization_id = ? AND source.project_id = ? AND i.organization_id = ?
 AND r.relationship_type = 'related' AND (`+condition+`) ORDER BY i.native_id`, args...)
 	if err != nil {
@@ -37,9 +38,11 @@ AND r.relationship_type = 'related' AND (`+condition+`) ORDER BY i.native_id`, a
 	related := []tracker.NativeDependency{}
 	for rows.Next() {
 		var link tracker.NativeDependency
-		if err := rows.Scan(&link.ID, &link.ProjectID, &link.Identifier, &link.State, &link.Terminal); err != nil {
+		var organizationSlug, projectSlug string
+		if err := rows.Scan(&link.ID, &link.ProjectID, &link.Identifier, &link.State, &link.Terminal, &link.Number, &link.Title, &organizationSlug, &projectSlug); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
+		link.WebURL = issueBrowserPath(organizationSlug, projectSlug, link.Number)
 		related = append(related, link)
 	}
 	return related, errors.Join(rows.Err(), rows.Close())

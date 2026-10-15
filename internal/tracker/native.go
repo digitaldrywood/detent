@@ -121,6 +121,11 @@ type NativeIssue struct {
 	LastActivityAt     time.Time           `json:"last_activity_at"`
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
+	Dependents         []NativeDependency  `json:"dependents"`
+	Related            []NativeDependency  `json:"related,omitempty"`
+	DependencyReady    bool                `json:"dependency_ready"`
+	BlockedReason      DependencyReason    `json:"blocked_reason"`
+	UnblocksReason     DependencyReason    `json:"unblocks_reason"`
 	ExternalReferences []ExternalReference `json:"external_references"`
 	// Change is the item's change review surface, present only on a resource
 	// the caller asked for it with (include=change). It is null everywhere
@@ -195,7 +200,30 @@ type ExternalReference struct {
 	Number     int    `json:"number,omitempty"`
 }
 
+type DependencyReason struct {
+	Text         string `json:"text"`
+	Basis        string `json:"basis"`
+	CurrentBasis string `json:"current_basis"`
+	Revision     int64  `json:"revision"`
+}
+
+type UpdateDependencyReason struct {
+	Mutation
+	WorkItemID       NativeWorkItemID `json:"work_item_id"`
+	Kind             string           `json:"kind"`
+	Text             string           `json:"text"`
+	Basis            string           `json:"basis"`
+	ExpectedRevision int64            `json:"expected_revision"`
+}
+
 type NativeDependency struct {
+	Dispatchable bool       `json:"dispatchable"`
+	ClosedAt     *time.Time `json:"closed_at,omitempty"`
+	Number       int        `json:"number"`
+	Title        string     `json:"title"`
+	WebURL       string     `json:"web_url"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+
 	Identifier string           `json:"identifier,omitempty"`
 	ID         NativeWorkItemID `json:"work_item_id"`
 	ProjectID  ProjectID        `json:"project_id"`
@@ -381,10 +409,11 @@ type Transition struct {
 
 type DependencyMutation struct {
 	Mutation
-	RelationshipType  string           `json:"relationship_type,omitempty"`
-	ExpectedRevision  Revision         `json:"expected_revision,string"`
-	RelatedWorkItemID NativeWorkItemID `json:"related_work_item_id"`
-	Operation         string           `json:"operation"`
+	RelationshipType  string            `json:"relationship_type,omitempty"`
+	ExpectedRevision  Revision          `json:"expected_revision,string"`
+	RelatedIssue      *NativeDependency `json:"related_issue,omitempty"`
+	RelatedWorkItemID NativeWorkItemID  `json:"related_work_item_id"`
+	Operation         string            `json:"operation"`
 }
 
 type CollaborationEvent struct {
@@ -415,6 +444,7 @@ type CollaborationData struct {
 	Revision          Revision                 `json:"revision,string,omitempty"`
 	Fields            []string                 `json:"fields,omitempty"`
 	CommentID         string                   `json:"comment_id,omitempty"`
+	RelatedIssue      *NativeDependency        `json:"related_issue,omitempty"`
 	RelatedWorkItemID NativeWorkItemID         `json:"related_work_item_id,omitempty"`
 	Operation         string                   `json:"operation,omitempty"`
 	FromState         string                   `json:"from_state,omitempty"`

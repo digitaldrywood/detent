@@ -295,6 +295,20 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 				return frame, err
 			}
 		}
+		if delta.Previous != nil {
+			if err := readNativeDependencyDetails(ctx, q, scope, &delta.Previous.Issue); errors.Is(err, sql.ErrNoRows) {
+				delta.Previous = nil
+			} else if err != nil {
+				return frame, err
+			}
+		}
+		if delta.Current != nil {
+			if err := readNativeDependencyDetails(ctx, q, scope, &delta.Current.Issue); errors.Is(err, sql.ErrNoRows) {
+				delta.Current = nil
+			} else if err != nil {
+				return frame, err
+			}
+		}
 		redactNativeBoardCard(delta.Previous, grants)
 		redactNativeBoardCard(delta.Current, grants)
 		frame.Deltas = append(frame.Deltas, delta)
@@ -306,17 +320,22 @@ func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
 	if card.Issue.Terminal {
 		return card.Issue.State
 	}
-	if card.Attempt != nil && card.Attempt.Status == "running" {
-		return "Running"
-	}
 	blockers := 0
+	number := 0
 	for _, blocker := range card.Issue.Blockers {
 		if !blocker.Terminal {
 			blockers++
+			number = blocker.Number
 		}
 	}
 	if blockers > 0 {
-		return "Blocked · " + strconv.Itoa(blockers)
+		if blockers == 1 && number > 0 {
+			return "Waiting on #" + strconv.Itoa(number)
+		}
+		return "Waiting on " + strconv.Itoa(blockers)
+	}
+	if card.Attempt != nil && card.Attempt.Status == "running" {
+		return "Running"
 	}
 	if card.Attempt != nil {
 		switch card.Attempt.Status {
