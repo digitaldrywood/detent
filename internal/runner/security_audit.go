@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -32,9 +33,14 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 		ctx = isolation.WithPolicy(ctx, isolation.Policy{})
 	}
 	auditConfig := gateSecurityAuditConfig(workflow.Config)
-	prompt, err := securityaudit.BuildPrompt(req.Snapshot, securityAuditMaxDiffBytes(auditConfig))
+	plan, err := securityaudit.BuildPlan(req.Snapshot, securityAuditMaxDiffBytes(auditConfig))
 	if err != nil {
 		return execution, err
+	}
+	if timeout := durationFromMillis(auditConfig.TurnTimeoutMS); timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
 	if err != nil {
@@ -107,86 +113,143 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 	}
 
 	runResult := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
-	var output strings.Builder
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	if resolvedSelection.Effort != "" {
 		effort = resolvedSelection.Effort
 	}
-	removeAuditWorkspace = false
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
-		Workspace:        auditWorkspace,
-		Prompt:           prompt,
-		ToolInstructions: securityaudit.ToolInstructions(),
-		ReadOnly:         true,
-		Model:            selectedModel,
-		ModelProvider:    modelProvider,
-		ServiceTier:      serviceTier,
-		ReasoningEffort:  effort,
-		TurnTimeout:      durationFromMillis(auditConfig.TurnTimeoutMS),
-		MaxDuration:      durationFromMillis(auditConfig.TurnTimeoutMS),
-		Environment:      baseEnvironment,
-		MaxRSSBytes:      r.maxAgentRSSBytes,
-		RSSPollInterval:  r.rssPollInterval,
-		processRSS:       r.processRSS,
-		reserveScratch:   r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
-	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
-		r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
-		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
-			return ErrSecurityAuditToolUse
+	var turnResult AgentTurnResult
+	var turns int64
+	var resume AgentResume
+	usage := newSessionTokenUsage(false)
+	outputs := make([]securityaudit.ChunkOutput, 0, plan.Len())
+	for index := range plan.Len() {
+		if err = ctx.Err(); err != nil {
+			break
 		}
-		if update.WorkerProcess.PID > 0 {
-			execution.WorkerProcess = update.WorkerProcess
+		if err = os.MkdirAll(auditWorkspace, 0o700); err != nil {
+			break
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
-			return err
-		}
-		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
-		if update.Type == AgentUpdateMessageDelta {
-			output.WriteString(update.Delta)
-		}
-		previousIdentity := runResult.RuntimeIdentity
-		applyAgentUpdate(&runResult, update)
-		if req.OnUsageUpdate != nil {
-			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity}); err != nil {
-				return err
+		if index > 0 {
+			if agentResumeEmpty(resume) {
+				err = errors.New("security audit chunk conversation identity is unavailable")
+				break
+			}
+			resumeProcess, cleanupResume, prepareErr := prepareAgentProcessRequest(ctx, AgentProcessRequest{Workspace: auditWorkspace, Environment: baseEnvironment}, workerGitHubPolicy{})
+			if prepareErr != nil {
+				err = prepareErr
+				break
+			}
+			if err = r.agentPreflightError(verifyAgentResume(ctx, backend, resumeProcess, resume), cleanupResume()); err != nil {
+				break
 			}
 		}
-		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
-			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+		identity, prompt := plan.Chunk(index)
+		var output strings.Builder
+		previousUsage := runResult.Tokens
+		removeAuditWorkspace = false
+		turns++
+		execution.WorkerProcess = procgroup.Identity{}
+		currentTurn, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
+			Workspace:        auditWorkspace,
+			Prompt:           prompt,
+			Resume:           resume,
+			ToolInstructions: securityaudit.ToolInstructions(),
+			ReadOnly:         true,
+			Model:            selectedModel,
+			ModelProvider:    modelProvider,
+			ServiceTier:      serviceTier,
+			ReasoningEffort:  effort,
+			TurnTimeout:      durationFromMillis(auditConfig.TurnTimeoutMS),
+			MaxDuration:      durationFromMillis(auditConfig.TurnTimeoutMS),
+			Environment:      baseEnvironment,
+			MaxRSSBytes:      r.maxAgentRSSBytes,
+			RSSPollInterval:  r.rssPollInterval,
+			processRSS:       r.processRSS,
+			reserveScratch:   r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
+		}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
+			r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
+			if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
+				return ErrSecurityAuditToolUse
+			}
+			if update.WorkerProcess.PID > 0 {
+				execution.WorkerProcess = update.WorkerProcess
+			}
+			if err := r.persistSessionWorkerProcess(updateCtx, sessionID, update, r.securityAuditRoot, auditWorkspace); err != nil {
 				return err
 			}
+			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
+			if update.Type == AgentUpdateMessageDelta {
+				output.WriteString(update.Delta)
+			}
+			previousIdentity := runResult.RuntimeIdentity
+			if update.Type == AgentUpdateTokenUsage {
+				update.Tokens = usage.normalize(update.Tokens)
+			}
+			applyAgentUpdate(&runResult, update)
+			if update.Type == AgentUpdateTokenUsage && update.Tokens.ThreadTotal == nil {
+				runResult.Tokens = addAgentTokenTotals(previousUsage, runResult.Tokens)
+			}
+			if req.OnUsageUpdate != nil {
+				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity}); err != nil {
+					return err
+				}
+			}
+			if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
+				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+					return err
+				}
+			}
+			return nil
+		}, r.turnLimit)
+		reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
+		removeAuditWorkspace = reapErr == nil
+		turnErr = errors.Join(turnErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
+		if reapErr != nil {
+			turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
 		}
-		return nil
-	}, r.turnLimit)
-	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
-	removeAuditWorkspace = reapErr == nil
-	turnErr = errors.Join(turnErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
-	if reapErr != nil {
-		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
+		turnResult = currentTurn
+		execution.RuntimeIdentity = runResult.RuntimeIdentity
+		execution.SessionID = sessionID
+		execution.AuthenticationMode = turnResult.AuthenticationMode
+		execution.ProviderThreadID = turnResult.ThreadID
+		execution.ProviderSessionID = turnResult.SessionID
+		execution.Output = output.String()
+		if turnErr != nil {
+			err = fmt.Errorf("run security audit turn: %w", turnErr)
+			break
+		}
+		if plan.Len() > 1 && (execution.WorkerProcess.PID <= 0 || execution.WorkerProcess.GroupID <= 0 || execution.WorkerProcess.StartedAt.IsZero()) {
+			err = errors.New("security audit chunk worker identity is unavailable")
+			break
+		}
+		if index > 0 && ((resume.ThreadID != "" && turnResult.ThreadID != resume.ThreadID) || (resume.ThreadID == "" && resume.SessionID != "" && turnResult.SessionID != resume.SessionID)) {
+			err = errors.New("security audit chunk conversation identity changed")
+			break
+		}
+		chunkResult, parseErr := securityaudit.ParseOutput(execution.Output)
+		if parseErr == nil {
+			parseErr = securityaudit.ValidateContinuation(req.Snapshot.Previous, chunkResult)
+		}
+		if parseErr != nil {
+			err = parseErr
+			break
+		}
+		outputs = append(outputs, securityaudit.ChunkOutput{Identity: identity, Output: execution.Output})
+		resume = AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
 	}
-
-	execution.RuntimeIdentity = runResult.RuntimeIdentity
-	execution.SessionID = sessionID
-	execution.AuthenticationMode = turnResult.AuthenticationMode
-	execution.ProviderThreadID = turnResult.ThreadID
-	execution.ProviderSessionID = turnResult.SessionID
-	execution.Output = output.String()
 	execution.CompletedAt = r.now().UTC()
 	runResult.Tokens.RuntimeSeconds = runtimeSeconds(startedAt, execution.CompletedAt)
-	if turnErr != nil {
-		runResult.FinalState = finalStateForTurnError(turnErr)
-		finishErr := r.finishSession(context.WithoutCancel(ctx), sessionID, sessionStarted, 0, req.Issue, startedAt, execution.CompletedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0)
-		return execution, errors.Join(fmt.Errorf("run security audit turn: %w", turnErr), finishErr)
-	}
-
-	execution.Result, err = securityaudit.ParseOutput(execution.Output)
 	if err == nil {
-		err = securityaudit.ValidateContinuation(req.Snapshot.Previous, execution.Result)
+		err = ctx.Err()
+	}
+	if err == nil {
+		execution.Result, execution.Output, err = plan.Aggregate(outputs)
 	}
 	if err != nil {
-		runResult.FinalState = FinalStateFailed
+		runResult.FinalState = finalStateForTurnError(err)
 	}
-	finishErr := r.finishSession(context.WithoutCancel(ctx), sessionID, sessionStarted, 0, req.Issue, startedAt, execution.CompletedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0)
+
+	finishErr := r.finishSession(context.WithoutCancel(ctx), sessionID, sessionStarted, 0, req.Issue, startedAt, execution.CompletedAt, runResult, sessionModel, backendConfig.Kind, turns, turnResult, 0)
 	if err != nil {
 		return execution, errors.Join(err, finishErr)
 	}
