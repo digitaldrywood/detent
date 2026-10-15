@@ -25,7 +25,7 @@ func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
 	}
 	defer tx.Rollback()
 	for index, name := range []string{"first", "second"} {
-		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, State: "Todo"}, now.Add(-time.Hour))
+		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: nativeContractTestBody, State: "Todo"}, now.Add(-time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
