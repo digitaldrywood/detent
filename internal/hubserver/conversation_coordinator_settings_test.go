@@ -128,6 +128,10 @@ func TestCoordinatorSettingsActions(t *testing.T) {
 				}
 				{
 					response := f.request(t, u, http.MethodPost, f.base+"/conversations/"+record.ID+"/actions", action)
+					if tool == "revoke_project_policy" {
+						requireNativeStatus(t, response, http.StatusGone)
+						return
+					}
 					requireNativeStatus(t, response, http.StatusOK)
 					if tool == operatortool.UpdateRunnerCapacity {
 						if !strings.Contains(response.Body.String(), `\"desired\":6`) || !strings.Contains(response.Body.String(), "application evidence") {

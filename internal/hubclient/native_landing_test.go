@@ -56,14 +56,14 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 			p.SourceDigest = policy.Digest([]byte("new source"))
 			p.Profile = "updated"
 		}},
-		{name: "merge method change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantRework: true},
-		{name: "validator change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantRework: true},
-		{name: "required check floor change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantRework: true},
-		{name: "GitHub CI contract change returns to Rework", policyChange: func(p *policy.Descriptor) {
+		{name: "merge method change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantRework: true},
+		{name: "validator change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantRework: true},
+		{name: "required check floor change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantRework: true},
+		{name: "GitHub CI contract change requires fresh review evidence", policyChange: func(p *policy.Descriptor) {
 			p.Gates.GitHubPullRequest, p.Gates.GitHubCIDigest = true, policy.Digest([]byte("Full CI run-full-ci"))
 		}, wantRework: true},
-		{name: "review change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantRework: true},
-		{name: "GitHub landing gate change returns to Rework", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantRework: true},
+		{name: "review change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantRework: true},
+		{name: "GitHub landing gate change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantRework: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -222,8 +222,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 || len(h.scheduler.nativeClaims) != 0 {
 				t.Fatalf("stale gates were claimed for landing: %+v", candidates)
 			}
-			if state := h.state(t, issue.ID); state != "Rework" {
-				t.Fatalf("after claim evaluation the item is in %s, want Rework", state)
+			if state := h.state(t, issue.ID); state != "Merging" {
+				t.Fatalf("configuration report moved the item to %s, want Merging", state)
 			}
 			detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
 			if err != nil || detail.Change.CurrentVersion != change.VersionID || detail.Change.Landed != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || detail.Summary.Status != "stale_policy" {

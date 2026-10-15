@@ -413,8 +413,8 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 		mu.Unlock()
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
-		case "/api/v1/repositories/acme/widgets/policy":
-			_ = json.NewEncoder(response).Encode(policy.Approval{Policy: descriptor})
+		case "/api/v1/repositories/acme/widgets/policy/observed":
+			response.WriteHeader(http.StatusNoContent)
 		case "/api/v1/machines/register", "/api/v1/machines/machine-a/heartbeat":
 			_ = json.NewEncoder(response).Encode(machine)
 		case "/api/v1/claims":
@@ -485,13 +485,13 @@ func TestSchedulerDispatchCycleUsesHub(t *testing.T) {
 	}
 
 	wantPaths := []string{
-		"GET /api/v1/repositories/acme/widgets/policy",
+		"POST /api/v1/repositories/acme/widgets/policy/observed",
 		"POST /api/v1/machines/register",
 		"POST /api/v1/claims",
 		"GET /api/v1/work-items/42",
-		"GET /api/v1/repositories/acme/widgets/policy",
+		"POST /api/v1/repositories/acme/widgets/policy/observed",
 		"POST /api/v1/machines/machine-a/heartbeat",
-		"GET /api/v1/repositories/acme/widgets/policy",
+		"POST /api/v1/repositories/acme/widgets/policy/observed",
 		"POST /api/v1/leases/lease-1/renew",
 		"POST /api/v1/leases/lease-1/release",
 	}
