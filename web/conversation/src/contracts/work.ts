@@ -170,6 +170,7 @@ export const NativeIssue = Schema.Struct({
   profile: Schema.String,
   title: Schema.String,
   body: Schema.String,
+  search_score: Schema.optional(Schema.Number),
   state: Schema.String,
   terminal: Schema.Boolean,
   archived: Schema.optional(Schema.Boolean),

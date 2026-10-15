@@ -190,6 +190,7 @@ export function toWorkItemView(
     ...(issue.type === undefined ? {} : { type: issue.type }),
     title: issue.title,
     body: issue.body,
+    searchScore: issue.search_score,
     state: issue.state,
     stateId: issue.state,
     terminal: issue.terminal,
