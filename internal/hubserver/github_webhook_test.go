@@ -190,7 +190,7 @@ func TestGitHubWebhookIgnoredPayloadDeletionIsTransactional(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err = service.database.processWebhook(t.Context(), receipt.InboxID, now)
+			err = service.processWebhook(t.Context(), receipt.InboxID, now)
 			if (err != nil) != test.failDelete {
 				t.Fatalf("processWebhook() error = %v, want error %t", err, test.failDelete)
 			}

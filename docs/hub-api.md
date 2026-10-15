@@ -2389,6 +2389,63 @@ failed items roll back independently. Native edits retain field ownership.
 Rate limits stop unstarted work until explicit retry, honoring source deadlines.
 No idle GitHub polling occurs. The wizard refreshes progress only on request.
 Reopening setup resumes persisted selection and results. Webhook intake of new
-issues continues to create linked issues in Triage. New authoring and
+issues creates linked issues in Triage, except for explicitly delegated,
+verified CI repair reports described below. New authoring and
 landing continue through native Hub operations, including the existing Done
 transaction; any later explicit source action keeps its own write authorization.
+
+### Trusted scheduled CI imports
+
+A native project's approved repository workflow may delegate admission of new
+GitHub Actions repair reports through its existing **Scheduled CI repair
+contract**. Before its five required subsections, the section must contain this
+exact authorization sentence:
+
+> New verified GitHub Actions CI repair reports enter Todo with Urgent priority.
+
+The repository's `WORKFLOW.md` supplies the five nonempty contract subsections:
+Acceptance criteria, Must not break, How we know it worked, Invariants touched,
+and Safety regression. The operator approves that exact workflow revision
+through the existing project policy owner. Merely editing a repository file or
+an issue does not grant this delegation. Projects without the approved sentence
+retain their existing confirmation rules; Detent's direct scheduled reporter
+keeps its existing project-specific delegation.
+
+The producer opens an issue in the configured checkout repository using its
+GitHub Actions identity. Its body contains those same five section contents,
+a separate diagnostic-evidence heading, the existing `detent-origin` stamp
+(`doctor`, `github-actions`, stable problem fingerprint and run-attempt URL),
+and one `detent-checks` scheduled occurrence. That occurrence identifies the
+repository, run, attempt, failed job, job name, tested commit and conclusion.
+Place diagnostic text and occurrence metadata under the separate heading so
+they do not change the approved contract section digests. For example, use
+`example-org/example-project` as the fixture repository; production identity
+comes from the selected project.
+
+The signed `issues.opened` webhook is the automatic import path. Explicit
+`POST /work-items` / MCP `file_issue` with only `github_issue_url` and the normal
+request identity uses the same admission after the GitHub App fetches the full
+source. Caller-supplied native title, body or priority retains ordinary intake
+semantics. Historical bulk import and runner-supplied snapshots do not grant
+this delegation.
+
+The Hub requires the authenticated source author `github-actions[bot]`, a source
+repository equal to the configured checkout repository, and the existing
+importer's independent verification of `.github/workflows/ci.yml`. It verifies
+the run attempt, repository and head repository, `develop` or `release/v*`
+branch, scheduled/push/manual event, tested head SHA and completed failed or
+timed-out job. The approved policy and checkout binding are rechecked during
+creation, and Todo must be dispatchable, nonterminal and not operator-only.
+Only then does a new report receive Todo, native priority `0` (Urgent), and
+confirmation of the bounded approved sections. Source diagnostics remain quoted
+as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no
+authority. No review, security, validator or landing gate changes.
+
+Incomplete, untrusted, held or unverifiable scheduled reports remain in Triage
+without delegated confirmation; their `github.imported` history records the
+refusal reason. Existing source identities retain native decisions. A matching
+open machine fingerprint receives one occurrence comment per occurrence key,
+preserving its body, state and priority; terminal matches remain untouched.
+Repeated deliveries cannot readmit, reprioritize or reconfirm existing issues.
+Producer delivery and this admission behavior are independently testable;
+automatic recovery requires both plus the approved project policy.

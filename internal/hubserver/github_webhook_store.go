@@ -117,14 +117,10 @@ func (d *database) recordWebhook(ctx context.Context, receipt webhookReceipt) (w
 	return webhookReceiptResult{InboxID: inboxID, Duplicate: !inserted}, nil
 }
 
-func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.Time) error {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin GitHub webhook processing: %w", err)
-	}
-
+func (s *Service) processWebhook(ctx context.Context, inboxID int64, now time.Time) error {
+	d := s.database
 	var delivery storedWebhook
-	err = tx.QueryRowContext(ctx, `
+	err := d.reader.QueryRowContext(ctx, `
 		SELECT i.id, i.delivery_id, i.event_type, COALESCE(i.action, ''), p.body, i.payload_sha256, i.status
 		FROM github_webhook_inbox i
 		LEFT JOIN github_webhook_payloads p ON p.inbox_id = i.id
@@ -139,17 +135,27 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		&delivery.Status,
 	)
 	if err != nil {
-		rollbackErr := tx.Rollback()
-		return errors.Join(fmt.Errorf("read GitHub webhook delivery: %w", err), rollbackErr)
+		return fmt.Errorf("read GitHub webhook delivery: %w", err)
 	}
 	if delivery.Status == "processed" || delivery.Status == "ignored" {
-		return tx.Rollback()
+		return nil
 	}
 	if len(delivery.Payload) == 0 {
 		processingErr := errors.New("GitHub webhook payload is unavailable")
-		rollbackErr := tx.Rollback()
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, processingErr)
-		return errors.Join(processingErr, rollbackErr, failureErr)
+		return errors.Join(processingErr, failureErr)
+	}
+	ctx = s.observeScheduledWebhook(ctx, delivery)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin GitHub webhook processing: %w", err)
+	}
+	var status string
+	if err := tx.QueryRowContext(ctx, "SELECT status FROM github_webhook_inbox WHERE id=?", inboxID).Scan(&status); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if status == "processed" || status == "ignored" {
+		return tx.Rollback()
 	}
 
 	processedAt := formatWebhookTime(now)
@@ -171,7 +177,7 @@ func (d *database) processWebhook(ctx context.Context, inboxID int64, now time.T
 		failureErr := d.markWebhookFailed(ctx, inboxID, now, err)
 		return errors.Join(err, rollbackErr, failureErr)
 	}
-	status := "processed"
+	status = "processed"
 	if result.Outcome == webhookOutcomeIgnored {
 		status = "ignored"
 	}
@@ -284,8 +290,8 @@ func optionalWebhookNodeID(nodeID *string) any {
 	return strings.TrimSpace(*nodeID)
 }
 
-func (d *database) processPendingWebhooks(ctx context.Context, now time.Time) error {
-	inboxIDs, err := d.pendingWebhookIDs(ctx, now)
+func (s *Service) processPendingWebhooks(ctx context.Context, now time.Time) error {
+	inboxIDs, err := s.database.pendingWebhookIDs(ctx, now)
 	if err != nil {
 		return err
 	}
@@ -295,7 +301,7 @@ func (d *database) processPendingWebhooks(ctx context.Context, now time.Time) er
 		if err := ctx.Err(); err != nil {
 			return errors.Join(processErr, err)
 		}
-		if err := d.processWebhook(ctx, inboxID, now); err != nil {
+		if err := s.processWebhook(ctx, inboxID, now); err != nil {
 			processErr = errors.Join(processErr, err)
 		}
 	}
