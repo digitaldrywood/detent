@@ -1,12 +1,9 @@
 package toolcache
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -332,16 +329,16 @@ func TestTrimSizeTarget(t *testing.T) {
 		cap                    int64
 		keepRecent, keepNewest bool
 		reclaimed              int64
-		managed                bool
+		repeat                 bool
 		marker                 string
 	}{
 		{"age only below cap", 100, true, true, 10, false, ""},
 		{"exact cap", 24, true, true, 10, false, ""},
 		{"recent retained above target", 14, true, true, 10, false, ""},
 		{"fresh entries and metadata retained", 1, true, true, 10, false, ""},
-		{"managed replacement marker boundary", 70, false, true, 20, true, ""},
-		{"managed counter width boundary", 61, false, false, 30, true, ""},
-		{"managed oversized previous marker", 70, false, true, 20, true, strings.Repeat("x", 1000)},
+		{"replacement marker boundary", 70, true, true, 10, true, ""},
+		{"counter width boundary", 61, true, true, 10, true, ""},
+		{"oversized previous marker", 70, true, true, 10, true, strings.Repeat("x", 1000)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -374,12 +371,9 @@ func TestTrimSizeTarget(t *testing.T) {
 				}
 			}
 			var report Report
-			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, tt.managed)
+			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if tt.managed && report.RetainedBytes > tt.cap {
-				t.Fatalf("retained %d bytes exceeds target %d", report.RetainedBytes, tt.cap)
 			}
 			if reclaimed != tt.reclaimed {
 				t.Fatalf("reclaimed %d, want %d", reclaimed, tt.reclaimed)
@@ -390,13 +384,13 @@ func TestTrimSizeTarget(t *testing.T) {
 					t.Errorf("%s: stat=%v, keep=%t", name, err, keep)
 				}
 			}
-			if tt.managed {
+			if tt.repeat {
 				previous := report.RetainedBytes
 				report = Report{}
-				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, true); err != nil {
+				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report); err != nil {
 					t.Fatal(err)
 				}
-				if report.RetainedBytes > tt.cap || report.RetainedBytes > previous || report.SizeEvictedBytes != 0 {
+				if report.RetainedBytes > previous || report.SizeEvictedBytes != 0 {
 					t.Fatalf("replacement changed retained cache: %+v; previously %d", report, previous)
 				}
 			}
@@ -543,56 +537,26 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestManagedCacheConsumerLifetime(t *testing.T) {
-	if root := os.Getenv("DETENT_CACHE_TEST_CONSUMER"); root != "" {
-		cache, err := NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, release, err := cache.Use(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer release()
-		fmt.Println("cache acquired")
-		if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
 	root := t.TempDir()
-	cache, err := NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+	owner := filepath.Join(root, "runtime.db")
+	cache, err := NewManaged(t.Context(), root, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+	other, err := NewManaged(t.Context(), root, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewManaged(t.Context(), root, filepath.Join(root, "other.db")); err == nil {
-		t.Fatal("different process recovery owner accepted")
+		t.Fatal("different cache owner accepted")
 	}
-	now := time.Now()
-	older := filepath.Join(root, "00", strings.Repeat("0", 64)+"-d")
-	newer := filepath.Join(root, "00", strings.Repeat("1", 64)+"-d")
-	if err := os.MkdirAll(newer, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{older, filepath.Join(newer, "example")} {
-		if err := os.WriteFile(name, []byte(strings.Repeat("x", 700)), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Chtimes(older, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	owner, err := os.Stat(filepath.Join(root, ".detent-owner"))
+	leased, release, err := cache.Use(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := Policy{MaxBytes: 1000 + owner.Size()}
-	leased, release, err := cache.Use(t.Context())
-	if err != nil || ManagedBuildFromContext(leased) != root {
-		t.Fatalf("lease: root=%q err=%v", ManagedBuildFromContext(leased), err)
+	defer release()
+	if ManagedBuildFromContext(leased) != root {
+		t.Fatal("managed cache missing from context")
 	}
 	native, err := Resolve(t.Context())
 	if err != nil {
@@ -600,121 +564,16 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	}
 	managed, err := Resolve(leased)
 	if err != nil || managed.Build != root || managed.Modules != native.Modules {
-		t.Fatalf("leased sandbox paths=%+v native=%+v err=%v", managed, native, err)
+		t.Fatalf("managed paths: %+v %v", managed, err)
 	}
-	waiting, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	blocked := newCancelCacheWaitContext(waiting, cancel)
-	confirmed := false
-	if _, err := other.Maintain(blocked, policy, now, func(context.Context) error {
-		confirmed = true
-		return nil
-	}); !errors.Is(err, context.Canceled) || confirmed || !blocked.waited {
-		t.Fatalf("maintenance reached live consumer: waited=%t confirmed=%t err=%v", blocked.waited, confirmed, err)
-	}
-	if _, err := os.Stat(older); err != nil {
-		t.Fatalf("live output removed: %v", err)
-	}
-	if err := release(); err != nil {
-		t.Fatal(err)
-	}
-	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestManagedCacheConsumerLifetime$")
-	child.Env = append(os.Environ(), "DETENT_CACHE_TEST_CONSUMER="+root)
-	input, err := child.StdinPipe()
+	_, secondRelease, err := other.Use(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	output, err := child.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := child.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = input.Close(); _ = child.Process.Kill() })
-	if line, err := bufio.NewReader(output).ReadString('\n'); err != nil || line != "cache acquired\n" {
-		t.Fatalf("separate consumer startup: %q %v", line, err)
-	}
-	waiting, cancel = context.WithCancel(t.Context())
-	blocked = newCancelCacheWaitContext(waiting, cancel)
-	if _, err := other.Maintain(blocked, policy, now, func(context.Context) error {
-		t.Fatal("maintenance reached separate live consumer")
-		return nil
-	}); !errors.Is(err, context.Canceled) || !blocked.waited {
-		t.Fatalf("separate consumer exclusion: %v", err)
-	}
+	defer secondRelease()
+	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := input.Write([]byte("finish\n")); err != nil {
-		t.Fatal(err)
+	if _, _, err := cache.Use(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled consumer: %v", err)
 	}
-	if err := child.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	orphan := errors.New("recorded child remains alive")
-	if _, err := other.Maintain(t.Context(), policy, now, func(context.Context) error { return orphan }); !errors.Is(err, orphan) {
-		t.Fatalf("unreaped child: %v", err)
-	}
-	if _, err := os.Stat(older); err != nil {
-		t.Fatalf("unreaped output removed: %v", err)
-	}
-	report, err := other.Maintain(t.Context(), policy, now, func(context.Context) error {
-		for _, operation := range []string{"arrival", "constructor"} {
-			waiting, cancel := context.WithCancel(t.Context())
-			blocked := newCancelCacheWaitContext(waiting, cancel)
-			var err error
-			if operation == "arrival" {
-				_, release, useErr := cache.Use(blocked)
-				err = useErr
-				if release != nil {
-					_ = release()
-				}
-			} else {
-				_, err = NewManaged(blocked, root, filepath.Join(root, "runtime.db"))
-			}
-			cancel()
-			if !errors.Is(err, context.Canceled) || !blocked.waited {
-				t.Fatalf("%s entered maintenance: waited=%t err=%v", operation, blocked.waited, err)
-			}
-		}
-		return nil
-	})
-	if err != nil || report.SizeEvictedBytes != 700 || report.RetainedBytes > policy.MaxBytes {
-		t.Fatalf("reclaim: %+v, %v", report, err)
-	}
-	if _, err := os.Stat(older); !os.IsNotExist(err) {
-		t.Fatalf("oldest output retained: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(newer, "example")); err != nil {
-		t.Fatalf("newest executable removed: %v", err)
-	}
-	_, release, err = cache.Use(t.Context())
-	if err != nil {
-		t.Fatalf("admission did not resume: %v", err)
-	}
-	if err := release(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-type cancelCacheWaitContext struct {
-	deadline func() (time.Time, bool)
-	err      func() error
-	value    func(any) any
-	done     func() <-chan struct{}
-	cancel   context.CancelFunc
-	waited   bool
-}
-
-func newCancelCacheWaitContext(ctx context.Context, cancel context.CancelFunc) *cancelCacheWaitContext {
-	return &cancelCacheWaitContext{deadline: ctx.Deadline, err: ctx.Err, value: ctx.Value, done: ctx.Done, cancel: cancel}
-}
-
-func (c *cancelCacheWaitContext) Deadline() (time.Time, bool) { return c.deadline() }
-func (c *cancelCacheWaitContext) Err() error                  { return c.err() }
-func (c *cancelCacheWaitContext) Value(key any) any           { return c.value(key) }
-
-func (c *cancelCacheWaitContext) Done() <-chan struct{} {
-	c.waited = true
-	c.cancel()
-	return c.done()
 }

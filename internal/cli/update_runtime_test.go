@@ -254,12 +254,12 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		managed := &runnerBuildCache{cache: cache, root: cacheRoot, gate: gate, processes: runtimeStore}
+		managed := &runnerBuildCache{cache: cache, root: cacheRoot}
 		if err := managed.trim(ctx, toolcache.Policy{MaxBytes: 1000}, now); err != nil {
 			t.Fatalf("deferred publication blocked quiescent cache reclamation: %v", err)
 		}
-		if report := managed.observe(); report == nil || report.SizeEvictedBytes != 2000 {
-			t.Fatalf("recent output retained during publication hold: %+v", report)
+		if report := managed.observe(); report == nil || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2000 {
+			t.Fatalf("recent output evicted during publication hold: %+v", report)
 		}
 		state, err = tracked.Orchestrator().State(ctx)
 		if err != nil || state.UnsettledWork() != 1 {
