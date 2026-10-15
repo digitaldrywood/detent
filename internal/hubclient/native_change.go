@@ -272,21 +272,16 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				if previous.Number <= previousNumber || previous.Number >= version.Number || previous.Repository != version.Repository || previous.External != nil || previous.AttemptID == "" || !previous.Policy.Gates.GitHubPullRequest || previous.Landing != nil && previous.Landing.Landed {
 					continue
 				}
-				// Recovery keeps a compact set of attempts, which can omit the
-				// push once later versions exist. Read its immutable source owner.
-				attempt, err := e.claim.source.client.NativeAttempt(ctx, e.claim.lease.WorkItemID, previous.AttemptID)
-				if err != nil {
-					return err
-				}
 				ref := tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: previous.ID, HeadSHA: previous.HeadSHA}
-				checkpoint := attempt.Checkpoint
-				if attempt.AttemptID != previous.AttemptID || attempt.RunID != previous.RunID || attempt.PolicyID != previous.PolicyID || checkpoint == nil || checkpoint.ExternalEffect != "git_push" || checkpoint.EffectState != "confirmed" || checkpoint.Change == nil || *checkpoint.Change != ref || checkpoint.HeadSHA != previous.HeadSHA {
-					continue
+				for _, push := range detail.PublicationPushes {
+					if push.Change != ref {
+						continue
+					}
+					pushes = append(pushes, workspace.GitHubPublicationPush{EffectID: push.EffectID, Publication: tracker.NativePRPublication{
+						ChangeID: change.ChangeID, VersionID: previous.ID, Repository: previous.Repository, HeadSHA: previous.HeadSHA, PolicyID: previous.PolicyID,
+						SourceVersion: ref, SourceAttemptID: previous.AttemptID, External: *external,
+					}})
 				}
-				pushes = append(pushes, workspace.GitHubPublicationPush{EffectID: checkpoint.EffectID, Publication: tracker.NativePRPublication{
-					ChangeID: change.ChangeID, VersionID: previous.ID, Repository: previous.Repository, HeadSHA: previous.HeadSHA, PolicyID: previous.PolicyID,
-					SourceVersion: ref, SourceAttemptID: previous.AttemptID, External: *external,
-				}})
 			}
 		}
 		effect := func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
