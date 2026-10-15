@@ -12,17 +12,20 @@ test.afterAll(async () => { await hub?.stop(); });
 test("organization model selection saves and survives reload", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
   await page.goto(`${hub.fixture.url}/settings/organization/models`);
-  await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6.1-sol");
-  await expect(page.getByLabel("Plan stage effort ceiling")).toHaveValue("low");
-  await expect(page.getByLabel("Validator stage effort ceiling")).toHaveValue("medium");
-  await page.getByLabel("Normal model", { exact: true }).fill("gpt-6-sol");
-  await page.getByLabel("Plan stage effort ceiling").selectOption("medium");
-  await page.getByRole("button", { name: "Save model selection", exact: true }).click();
+  await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6.1-sol");
+  await expect(page.getByRole("button", { name: "Plan stage effort ceiling: low", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Validator stage effort ceiling: medium", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("combobox", { name: "Normal model", exact: true }).click();
+  await page.getByRole("option", { name: "Other model ID…", exact: true }).click();
+  await page.getByRole("textbox", { name: "Normal model: other model ID", exact: true }).fill("gpt-6-sol");
+  await page.getByRole("button", { name: "Use", exact: true }).click();
+  await page.getByRole("button", { name: "Plan stage effort ceiling: medium", exact: true }).click();
+  await page.getByRole("region", { name: "Unsaved model selection", exact: true }).getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(page.getByText("Model selection saved.", { exact: true })).toBeVisible();
   await page.reload();
-  await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6-sol");
-  await expect(page.getByLabel("Plan stage effort ceiling")).toHaveValue("medium");
-  await expect(page.getByLabel("Very complex labels")).toHaveValue("complexity:very-complex");
+  await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-sol");
+  await expect(page.getByRole("button", { name: "Plan stage effort ceiling: medium", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Remove complexity:very-complex from Very complex", exact: true })).toBeVisible();
 });
 
 test("project overrides org selection and can restore inheritance", async ({ page }) => {
@@ -30,32 +33,35 @@ test("project overrides org selection and can restore inheritance", async ({ pag
   await page.goto(`${hub.fixture.url}/settings/integrations?project=${hub.fixture.project_id}`);
   const override = page.getByRole("switch", { name: "Override organization model selection" });
   await expect(override).not.toBeChecked();
-  await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6-sol");
-  await expect(page.getByLabel("Normal model", { exact: true })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-sol");
+  await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toBeDisabled();
   await override.click();
-  await page.getByLabel("Normal model", { exact: true }).fill("gpt-6-astra");
-  await page.getByLabel("Code stage effort ceiling").selectOption("medium");
-  await page.getByRole("button", { name: "Save model selection", exact: true }).click();
+  await page.getByRole("combobox", { name: "Normal model", exact: true }).click();
+  await page.getByRole("option", { name: "Other model ID…", exact: true }).click();
+  await page.getByRole("textbox", { name: "Normal model: other model ID", exact: true }).fill("gpt-6-astra");
+  await page.getByRole("button", { name: "Use", exact: true }).click();
+  await page.getByRole("button", { name: "Code stage effort ceiling: medium", exact: true }).click();
+  await page.getByRole("region", { name: "Unsaved model selection", exact: true }).getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(page.getByText("Model selection saved.", { exact: true })).toBeVisible();
   await page.reload();
   await expect(override).toBeChecked();
-  await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6-astra");
-  await expect(page.getByLabel("Code stage effort ceiling")).toHaveValue("medium");
+  await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-astra");
+  await expect(page.getByRole("button", { name: "Code stage effort ceiling: medium", exact: true })).toHaveAttribute("aria-pressed", "true");
   await override.click();
-  await page.getByRole("button", { name: "Save model selection", exact: true }).click();
+  await page.getByRole("region", { name: "Unsaved model selection", exact: true }).getByRole("button", { name: "Save changes", exact: true }).click();
   await expect(page.getByText("Model selection saved.", { exact: true })).toBeVisible();
   await page.reload();
   await expect(override).not.toBeChecked();
-  await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6-sol");
-  await expect(page.getByLabel("Code stage effort ceiling")).toHaveValue("");
+  await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-sol");
+  await expect(page.getByRole("button", { name: "Code stage effort ceiling: level", exact: true })).toHaveAttribute("aria-pressed", "true");
 });
 
 test("viewer can read model selection without editing", async ({ page }) => {
   await page.goto(hub.fixture.accounts.viewer);
   for (const path of ["/settings/organization/models", `/settings/integrations?project=${hub.fixture.project_id}`]) {
     await page.goto(`${hub.fixture.url}${path}`);
-    await expect(page.getByLabel("Normal model", { exact: true })).toHaveValue("gpt-6-sol");
-    await expect(page.getByLabel("Normal model", { exact: true })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Save model selection", exact: true })).toBeDisabled();
+    await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toContainText("gpt-6-sol");
+    await expect(page.getByRole("combobox", { name: "Normal model", exact: true })).toBeDisabled();
+    await expect(page.getByRole("region", { name: "Unsaved model selection", exact: true })).toBeHidden();
   }
 });
