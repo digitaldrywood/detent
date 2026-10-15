@@ -21,6 +21,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 	implementationReview := func(r *tracker.ReviewChange) {
 		r.ImplementationReview, r.Validator = r.Validator, nil
 	}
+	blockingAudit := func(r *tracker.ReviewChange) {
+		r.SecurityAudit.Run.Verdict = "fail"
+		r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "authorization bypass"}}
+		r.SecurityAudit.Verdict = "rework"
+		r.Decision = "changes_requested"
+	}
 	landingAudit := func(r *tracker.ReviewChange) {
 		r.SecurityAudit.Landing = true
 		r.SecurityAudit.VersionID = r.ExpectedVersionID
@@ -60,6 +66,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"security audit metered pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit before required implementation review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
+		{"security audit blocking finding before required implementation review", blockingAudit, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
+		{"security audit stale head before required implementation review", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.HeadSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"security audit OS identity clock precedes audit clock", func(r *tracker.ReviewChange) {
 			r.SecurityAudit.Run.WorkerStartedAt = r.SecurityAudit.Run.StartedAt.Add(-2 * time.Second)
 		}, http.StatusOK, "reviewed", nil},
@@ -85,12 +94,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.SecurityAudit.Verdict = "rework"
 			r.Decision = "changes_requested"
 		}, http.StatusOK, "needs_evidence", nil},
-		{"security audit blocking finding", func(r *tracker.ReviewChange) {
-			r.SecurityAudit.Run.Verdict = "fail"
-			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "authorization bypass"}}
-			r.SecurityAudit.Verdict = "rework"
-			r.Decision = "changes_requested"
-		}, http.StatusOK, "needs_evidence", nil},
+		{"security audit blocking finding", blockingAudit, http.StatusOK, "needs_evidence", nil},
 		{"security audit advisory", func(r *tracker.ReviewChange) {
 			r.SecurityAudit.Run.Verdict = "fail"
 			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "advisory", Severity: "p3", Body: "advisory finding"}}
