@@ -389,50 +389,59 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 	return nil
 }
 
-func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time) (ready, evaluated bool, err error) {
+func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, capacity int, now time.Time) (ready, evaluated bool, landingCapacity int, err error) {
 	if scope == nil {
-		return true, false, nil
+		return true, false, 0, nil
 	}
 	var item, state string
 	if err := query.QueryRowContext(ctx, "SELECT i.native_id, ws.detent_state FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.id = ?", id).Scan(&item, &state); err != nil {
-		return false, false, err
+		return false, false, 0, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
-		return true, false, nil
+		var pending bool
+		if err := query.QueryRowContext(ctx, `SELECT (`+nativePendingLandingClause+`) FROM issues i `+nativeLandingCapacityJoins+` WHERE i.id=?`, id).Scan(&pending); err != nil {
+			return false, false, 0, err
+		}
+		if !pending {
+			return true, false, 0, nil
+		}
 	}
 	change, found, err := readLatestNativeChangeRequest(ctx, query, *scope, item)
 	if err != nil || !found {
-		return false, true, err
+		return false, true, 0, err
 	}
 	if change.CurrentLanding() != nil || change.CurrentVersion == "" {
-		return false, true, nil
+		return false, true, 0, nil
 	}
 	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
 	if err != nil {
-		return false, true, err
+		return false, true, 0, err
 	}
-	if !nativeChangeLandingReady(state, &detail) {
-		return false, true, nil
+	if !nativeChangeLandingReady("Merging", &detail) {
+		return false, true, 0, nil
 	}
 	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
 	if err != nil {
-		return false, true, err
+		return false, true, 0, err
 	}
-	if version.External != nil || version.AttemptID == "" {
-		return true, true, nil
+	if version.External == nil && version.AttemptID != "" {
+		attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
+		if err != nil {
+			return false, true, 0, err
+		}
+		checkpoint := attempt.Checkpoint
+		if checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "unpushed" && checkpoint.HeadSHA == version.HeadSHA {
+			stored, err := nativeChangeSourceStored(ctx, query, version)
+			if err != nil {
+				return false, true, 0, err
+			}
+			if !stored && (attempt.MachineID != machine || attempt.RunnerID != "" && attempt.RunnerID != scope.credential.Runner.RunnerID) {
+				return false, true, 0, nil
+			}
+		}
 	}
-	attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
-	if err != nil {
-		return false, true, err
-	}
-	checkpoint := attempt.Checkpoint
-	if checkpoint == nil || checkpoint.Storage != "local_only" || checkpoint.WorktreeState != "unpushed" || checkpoint.HeadSHA != version.HeadSHA {
-		return true, true, nil
-	}
-	if stored, err := nativeChangeSourceStored(ctx, query, version); err != nil || stored {
-		return stored, true, err
-	}
-	return attempt.MachineID == machine && (attempt.RunnerID == "" || attempt.RunnerID == scope.credential.Runner.RunnerID), true, nil
+	ready, landingCapacity, err = nativeLandingClaimCapacity(ctx, query, id, capacity, now)
+	return ready, true, landingCapacity, err
 }
 
 func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {

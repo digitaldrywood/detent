@@ -2418,9 +2418,10 @@ func buildScheduler(cfg workflowconfig.Config, schedulerFactory schedulerFactory
 }
 
 func defaultSchedulerFactory(cfg workflowconfig.Config) (scheduler.Scheduler, error) {
+	dispatch := orchestrator.ConfigFromWorkflow(cfg)
 	projectScheduler, err := scheduler.NewFromConfig(scheduler.Config{
 		Capacity:        cfg.Agent.MaxConcurrentAgents,
-		CapacityByState: cfg.Agent.MaxConcurrentAgentsByState,
+		CapacityByState: dispatch.MaxConcurrentAgentsByState,
 		CapacityPerHost: maxConcurrentAgentsPerHost(cfg),
 	})
 	if err != nil {

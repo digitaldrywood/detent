@@ -400,6 +400,40 @@ func TestDispatchPlannerPreservesUnblockerCountsWithoutChangingOrder(t *testing.
 	}
 }
 
+func TestConfigFromWorkflowLandingCapacityOwnership(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                     string
+		native, github, explicit bool
+		wantLanding, wantLocal   int
+	}{
+		{name: "native GitHub landing delegates configured ceiling", native: true, github: true, explicit: true, wantLanding: 1},
+		{name: "native GitHub landing delegates default ceiling", native: true, github: true, wantLanding: 6},
+		{name: "native batch retains local ceiling", native: true, explicit: true, wantLocal: 1},
+		{name: "GitHub tracker retains local ceiling", github: true, explicit: true, wantLocal: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workflow := workflowconfig.Default()
+			workflow.Agent.MaxConcurrentAgents = 6
+			workflow.Agent.MaxConcurrentAgentsByState = map[string]int{"Rework": 3}
+			if test.native {
+				workflow.Tracker.Kind = workflowconfig.TrackerHubNative
+			}
+			workflow.Policy.Gates.GitHubPullRequest = test.github
+			if test.explicit {
+				workflow.Agent.MaxConcurrentAgentsByState["Merging"] = 1
+			}
+			got := ConfigFromWorkflow(workflow)
+			if got.NativeLandingCapacity != test.wantLanding || got.MaxConcurrentAgentsByState["merging"] != test.wantLocal || got.MaxConcurrentAgentsByState["rework"] != 3 {
+				t.Fatalf("landing=%d local=%v, want landing=%d local merging=%d and rework=3", got.NativeLandingCapacity, got.MaxConcurrentAgentsByState, test.wantLanding, test.wantLocal)
+			}
+			if test.explicit && workflow.Agent.MaxConcurrentAgentsByState["Merging"] != 1 {
+				t.Fatal("projecting dispatch capacity mutated the authored configuration")
+			}
+		})
+	}
+}
+
 func TestConfigFromWorkflowIncludesDispatchPriorityByState(t *testing.T) {
 	t.Parallel()
 

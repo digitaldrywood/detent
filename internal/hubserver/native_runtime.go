@@ -370,6 +370,9 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		e.Change = &detail
 	}
 	ready := nativeChangeLandingReady(issue.State, e.Change)
+	if issue.ListChange != nil && issue.ListChange.LandingPending {
+		ready = nativeChangeLandingReady("Merging", e.Change)
+	}
 	e.Scheduling = tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner-specific selectors, policy and capacity must also permit this item"}
 	if !ready {
 		e.Scheduling.Outcome = "skipped"
@@ -456,11 +459,17 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	return e, err
 }
 
-func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, ready bool, now time.Time) error {
+func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, ready bool, capacity int, now time.Time) error {
 	decision := tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "ready", Reason: "Current Change version is ready for native landing; runner capacity remains a separate condition"}
 	if !ready {
 		decision.Outcome = "skipped"
 		decision.Reason = "Current Change version is not ready for native landing"
+		switch {
+		case capacity == nativeLandingCapacityUnknown:
+			decision.Reason = "Project landing capacity cannot be determined without the incoming ceiling"
+		case capacity > 0:
+			decision.Reason = "Project landing capacity is full"
+		}
 	}
 	return recordNativeSchedulingOutcome(ctx, tx, scope, id, decision, now)
 }
