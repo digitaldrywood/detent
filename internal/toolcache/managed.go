@@ -87,26 +87,6 @@ func (m *Managed) Use(ctx context.Context) (context.Context, func() error, error
 	return context.WithValue(ctx, managedContextKey{}, m), usage.Close, nil
 }
 
-func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time, confirmQuiescence func(context.Context) error) (report Report, err error) {
-	if m == nil || confirmQuiescence == nil {
-		return Report{}, errors.New("managed Go build cache requires confirmed process quiescence")
-	}
-	queue, err := m.lock(ctx, "admission", false)
-	if err != nil {
-		return Report{}, err
-	}
-	defer func() { err = errors.Join(err, queue.Close()) }()
-	usage, err := m.lock(ctx, "consumers", false)
-	if err != nil {
-		return Report{}, err
-	}
-	defer func() { err = errors.Join(err, usage.Close()) }()
-	if err := confirmQuiescence(ctx); err != nil {
-		return Report{}, err
-	}
-	return trimManaged(ctx, m.root, policy, now)
-}
-
 func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
