@@ -10,11 +10,11 @@ case "$environment" in
   production) host=cloud.detent.build; alias=hub.detent.build ;;
   *) exit 2 ;;
 esac
-[[ "$commit" =~ ^[a-f0-9]{40}$ ]]
+[[ "$commit" =~ ^[a-f0-9]{40}$ ]] || exit 2
 case "$environment:$version" in
-  staging:develop-[a-f0-9]*) [[ "$version" =~ ^develop-[a-f0-9]{7,40}$ ]] ;;
+  staging:develop-[a-f0-9]*) [[ "$version" =~ ^develop-[a-f0-9]{7,40}$ ]] || exit 2 ;;
   *)
-    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-op\.(g?[a-f0-9]{12}|r\.[1-9][0-9]*\.g[a-f0-9]{12}))?$ ]]
+    [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-op\.(g?[a-f0-9]{12}|r\.[1-9][0-9]*\.g[a-f0-9]{12}))?$ ]] || exit 2
     if [[ "$version" == *-op.* ]]; then
       suffix="${version##*.}"
       test "${suffix#g}" = "${commit:0:12}"
