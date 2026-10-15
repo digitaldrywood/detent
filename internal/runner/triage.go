@@ -86,6 +86,11 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		if executionIdentity.Model == "" {
 			executionIdentity.Model = "provider_default"
 		}
+		if runtime, ok := req.Execution.(RuntimeExecution); ok {
+			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: identity}); err != nil {
+				return result, err
+			}
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return result, err
 		}
