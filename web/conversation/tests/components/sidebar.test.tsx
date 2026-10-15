@@ -15,6 +15,7 @@ import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
 import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
 import * as settings from "../../src/hooks/useSettings.ts";
 import { makeClient } from "../../src/runtime/bootstrap.ts";
+import { ClientContext } from "../../src/app/client.ts";
 import type { Bootstrap } from "../../src/contracts/index.ts";
 import bootstrapFixture from "../../src/contracts/fixtures/bootstrap.json";
 import { conversation } from "./builders.ts";
@@ -320,12 +321,17 @@ it("places finding rows below attention issues with one age signal and navigatio
 const mocks = vi.hoisted(() => ({
   listHealthFindings: vi.fn(),
   getWorkItem: vi.fn(),
+  runnerNames: new Map<string, { display: string; host: string }>(),
+  realHttp: false,
   eventsUrl: (id: string) => `/projects/${id}/events`,
 }));
-vi.mock("../../src/app/work/lib/useWork.ts", () => ({ useWorkHttp: () => mocks }));
+vi.mock("../../src/app/work/lib/useWork.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/app/work/lib/useWork.ts")>();
+  return { ...actual, useWorkHttp: () => mocks.realHttp ? actual.useWorkHttp() : mocks };
+});
 vi.mock("../../src/app/work/lib/runnerNames.ts", () => ({
-  useRunnerNames: () => undefined,
-  runnerDisplay: (_names: unknown, id: string) => id === "runner_1" ? "Studio" : id,
+  useRunnerNames: () => mocks.runnerNames,
+  runnerDisplay: (names: typeof mocks.runnerNames, id: string) => names.get(id)?.display ?? (id === "runner_1" ? "Studio" : id),
 }));
 
 class Source extends EventTarget {
@@ -334,7 +340,59 @@ class Source extends EventTarget {
   constructor(readonly url: string) { super(); Source.instances.push(this); }
 }
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.resetAllMocks(); Source.instances = []; });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetAllMocks(); mocks.runnerNames = new Map(); mocks.realHttp = false; Source.instances = []; });
+
+it("bounds findings reads to mount and health ticks across renders and runner name updates", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("EventSource", Source);
+  const projects = ["p1", "p2", "p3", "p4"].map((id) => ({ id, name: `Project ${id}`, can_write: true }));
+  let tick = "2026-10-06T10:00:00Z";
+  let items = [{ id: "hf_runner", class: "instance", summary: "Runner attention", next_action: "Check runner", subject: { kind: "runner", id: "runner_1" }, opened_at: tick, severity: "attention", resolved_at: null }];
+  const request = vi.fn(async (_url: RequestInfo | URL) => new Response(JSON.stringify({ items, last_tick_at: tick })));
+  vi.stubGlobal("fetch", request);
+  mocks.realHttp = true;
+  const client = makeClient({ bootstrap: { ...bootstrapFixture, projects } as Bootstrap });
+  const { result, rerender, unmount } = renderHook(() => useSidebarFindings(projects.map((project) => ({ ...project }))), {
+    wrapper: ({ children }) => <ClientContext.Provider value={client}>{children}</ClientContext.Provider>,
+  });
+  const source = Source.instances[0]!;
+  await act(async () => {
+    source.dispatchEvent(new Event("open"));
+    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+  });
+  expect(result.current[0]?.label).toBe("Studio");
+  const expectReads = (perProject: number) => {
+    for (const project of projects) expect(request.mock.calls.filter(([url]) => String(url).includes(`/projects/${project.id}/health/findings`))).toHaveLength(perProject);
+  };
+  expectReads(1);
+  for (let second = 0; second < 60; second++) {
+    mocks.runnerNames = new Map([["runner_1", { display: `Runner ${second}`, host: "example-host" }]]);
+    rerender();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      source.dispatchEvent(new MessageEvent("activity", { data: String(second) }));
+      source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+    });
+    expectReads(1);
+  }
+  expect(result.current[0]?.label).toBe("Runner 59");
+  expect(Source.instances).toHaveLength(1);
+  items = [];
+  tick = "2026-10-06T10:01:00Z";
+  await act(async () => source.dispatchEvent(new MessageEvent("health.findings", { data: tick })));
+  expectReads(2);
+  expect(result.current).toEqual([]);
+  items = [{ id: "hf_opened", class: "instance", summary: "New runner attention", next_action: "Check runner", subject: { kind: "runner", id: "runner_1" }, opened_at: tick, severity: "attention", resolved_at: null }];
+  tick = "2026-10-06T10:02:00Z";
+  await act(async () => {
+    source.dispatchEvent(new Event("open"));
+    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
+  });
+  expectReads(3);
+  expect(result.current.map((finding) => [finding.id, finding.label, finding.to])).toEqual([["hf_opened", "Runner 59", "/fleet"]]);
+  unmount();
+  expect(source.close).toHaveBeenCalledOnce();
+});
 
 it("shares project events while reading every page, filtering and resolving findings", async () => {
   vi.stubGlobal("EventSource", Source);
@@ -389,11 +447,14 @@ it("shares project events while reading every page, filtering and resolving find
 it("discards an older response after a live refresh", async () => {
   vi.stubGlobal("EventSource", Source);
   let finish: (value: unknown) => void = () => {};
-  mocks.listHealthFindings.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
+  mocks.listHealthFindings.mockResolvedValueOnce({ items: [], last_tick_at: null })
+    .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
     .mockResolvedValueOnce({ items: [], last_tick_at: null });
   const { result } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Detent", can_write: true }]));
-  act(() => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "tick" })));
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "older" })));
   await waitFor(() => expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2));
+  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "newer" })));
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(3);
   await act(async () => finish({ items: [{ id: "stale", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-06T00:00:00Z", severity: "attention", resolved_at: null }], last_tick_at: null }));
   expect(result.current).toEqual([]);
 });

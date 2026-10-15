@@ -20,6 +20,7 @@ export function useSidebarFindings(projects: readonly BootstrapProject[]): reado
     const controller = new AbortController();
     const byProject = new Map<string, readonly SidebarFinding[]>();
     const revisions = new Map<string, number>();
+    let tick: string | null = null;
     const publish = () => {
       const items = new Map<string, SidebarFinding>();
       for (const findings of byProject.values()) {
@@ -35,6 +36,7 @@ export function useSidebarFindings(projects: readonly BootstrapProject[]): reado
         let cursor: string | undefined;
         do {
           const page = await http.listHealthFindings(project.id, cursor, controller.signal);
+          tick ??= page.last_tick_at;
           findings.push(...page.items.filter((finding) => finding.severity === "attention" && finding.resolved_at == null));
           cursor = page.next_cursor || undefined;
         } while (cursor !== undefined && !controller.signal.aborted);
@@ -49,7 +51,7 @@ export function useSidebarFindings(projects: readonly BootstrapProject[]): reado
             }
             return { ...finding, label: await label, to: `/work/i/${encodeURIComponent(subject.id)}?tab=diagnostics` };
           }
-          if (subject.kind === "runner") return { ...finding, label: runnerDisplay(names, subject.id) ?? subject.id, to: "/fleet" };
+          if (subject.kind === "runner") return { ...finding, label: subject.id, to: "/fleet" };
           return { ...finding, label: projects.find((candidate) => candidate.id === subject.id)?.name ?? project.name, to: "/diagnostics" };
         }));
         if (controller.signal.aborted || revisions.get(project.id) !== revision) return;
@@ -61,28 +63,28 @@ export function useSidebarFindings(projects: readonly BootstrapProject[]): reado
         publish();
       }
     };
-    const refreshAll = () => {
-      for (const project of projects) void refresh(project);
-    };
-    refreshAll();
+    const refreshAll = () => Promise.all(projects.map(refresh));
+    const initialRefresh = refreshAll();
     const project = projects[0];
     let unsubscribe: (() => void) | undefined;
     if (project !== undefined && typeof globalThis.EventSource === "function") {
-      let tick: string | null = null;
       unsubscribe = subscribeProjectEvents(http, project.id, {
         "health.findings": ((event: MessageEvent<string>) => {
-          if (tick === event.data) return;
-          tick = event.data;
-          refreshAll();
+          void initialRefresh.then(() => {
+            if (controller.signal.aborted || tick === event.data) return;
+            tick = event.data;
+            void refreshAll();
+          });
         }) as EventListener,
-        open: refreshAll,
       });
     }
     return () => {
       controller.abort();
       unsubscribe?.();
     };
-  }, [http, scope, names]);
+  }, [http, scope]);
 
-  return state.scope === scope ? state.items : [];
+  return React.useMemo(() => state.scope === scope ? state.items.map((finding) => finding.subject.kind === "runner"
+    ? { ...finding, label: runnerDisplay(names, finding.subject.id) ?? finding.subject.id }
+    : finding) : [], [state, scope, names]);
 }
