@@ -57,6 +57,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 		ConnectionInfo:        reflect.TypeFor[struct{}](),
 		AppBootstrapPayload:   reflect.TypeFor[struct{}](),
 		AppUpdates:            reflect.TypeFor[struct{}](),
+		ReleaseNotes:          reflect.TypeFor[ReleaseNotesArguments](),
 		HostedEvents:          reflect.TypeFor[HostedEventArguments](),
 		"get_operator_chat":   reflect.TypeFor[OperatorChatReadArguments](),
 		"post_operator_chat":  reflect.TypeFor[OperatorChatArguments](),
