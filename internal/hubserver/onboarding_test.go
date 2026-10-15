@@ -69,12 +69,13 @@ func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, kind, scope string
-		auto, match       bool
+		name, kind, scope  string
+		auto, match, admin bool
 	}{
-		{"human review", "human_review", "projects", false, true},
-		{"auto merge missing tag", "command", "projects", true, false},
-		{"organization runner without project grant", "human_review", "organization", false, true},
+		{"human review", "human_review", "projects", false, true, false},
+		{"auto merge missing tag", "command", "projects", true, false, false},
+		{"organization runner without project grant", "human_review", "organization", false, true, false},
+		{"administrable sibling project runner", "human_review", "projects", false, true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", tt.name)
@@ -104,15 +105,71 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 				t.Fatal("private runner data exposed")
 			}
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
-			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", other.token, nil)
+			token := other.token
+			if tt.admin {
+				token = testHubAdminToken
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &setup)
-			if tt.scope == "organization" {
+			if tt.admin || tt.scope == "organization" {
 				if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
-					t.Fatalf("organization runner missing from ungranted project: %+v", setup.Runners)
+					t.Fatalf("administrable or organization runner missing from ungranted project: %+v", setup.Runners)
 				}
 			} else if len(setup.Runners) != 0 {
 				t.Fatalf("project-scoped runner exposed to ungranted project: %+v", setup.Runners)
+			}
+			if !tt.admin {
+				return
+			}
+			if !slices.ContainsFunc(setup.Runners[0].Exclusions, func(e runnerauth.Exclusion) bool { return e.Code == "project_access_denied" }) {
+				t.Fatalf("ungranted runner lacks routing exclusion: %+v", setup.Runners[0])
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var before runnerauth.Runner
+			decodeHubResponse(t, response, &before)
+			current := before.Routing
+			current.ProjectRanks = map[tracker.ProjectID]int{f.project.ID: 7}
+			response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", token, runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: current})
+			requireNativeStatus(t, response, http.StatusOK)
+			var routed runnerauth.Runner
+			decodeHubResponse(t, response, &routed)
+			current = routed.Routing
+			current.ProjectIDs = append(current.ProjectIDs, other.project.ID)
+			current.ProjectRanks[other.project.ID] = 0
+			response = performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", token, runnerauth.RoutingChange{ExpectedRevision: routed.Revision, Routing: current})
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &routed)
+			if !slices.Contains(routed.ProjectIDs, f.project.ID) || !slices.Contains(routed.ProjectIDs, other.project.ID) || routed.ProjectRanks[f.project.ID] != 7 {
+				t.Fatalf("routing lost sibling grant or rank: %+v", routed.Routing)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
+			if len(setup.Runners) != 1 || slices.ContainsFunc(setup.Runners[0].Exclusions, func(e runnerauth.Exclusion) bool { return e.Code == "project_access_denied" }) {
+				t.Fatalf("routed runner remains unavailable: %+v", setup.Runners)
+			}
+			for _, visibility := range []struct {
+				name, statement string
+			}{
+				{"removed", "UPDATE runner_identities SET removed_at='2026-01-01T00:00:00Z' WHERE id=?"},
+				{"another organization", "UPDATE runner_identities SET removed_at=NULL, organization_id='org_onboarding_other' WHERE id=?"},
+			} {
+				if visibility.name == "another organization" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES ('org_onboarding_other','Other organization','2026-01-01T00:00:00Z')"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), visibility.statement, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &setup)
+				if len(setup.Runners) != 0 {
+					t.Fatalf("%s runner exposed: %+v", visibility.name, setup.Runners)
+				}
 			}
 		})
 	}
@@ -132,12 +189,34 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			ref, _, _ := seedHostedArtifact(t, f)
+			owner := f.user(t, "runner-owner", "owner", "owner@example.test", "write", "")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT 'prj_onboarding_sibling',organization_id,'Sibling project',profile,states_json,created_at FROM projects WHERE id=?", f.project); err != nil {
+				t.Fatal(err)
+			}
+			binding := runnerauth.NewBinding()
+			enrollmentResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{"prj_onboarding_sibling"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 60})
+			requireNativeStatus(t, enrollmentResponse, http.StatusCreated)
+			var enrollment runnerauth.Enrollment
+			decodeHubResponse(t, enrollmentResponse, &enrollment)
+			credential, err := apikey.GenerateToken()
+			if err != nil {
+				t.Fatal(err)
+			}
+			redemption := runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "example-host", DisplayName: "Example runner", Capacity: 2, Version: "test"}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 			user := f.user(t, "setup-user", tt.role, "setup@example.test", tt.grant, "")
 			response := f.request(t, user, http.MethodGet, f.base+"/onboarding", nil)
 			requireNativeStatus(t, response, tt.read)
 			if tt.read == 200 {
 				var setup onboarding.Project
 				decodeHubResponse(t, response, &setup)
+				wantRunners := 0
+				if tt.role == "owner" {
+					wantRunners = 1
+				}
+				if len(setup.Runners) != wantRunners {
+					t.Fatalf("runner administration boundary: got %+v, want %d runners", setup.Runners, wantRunners)
+				}
 				if len(setup.Artifacts) != 1 || setup.Artifacts[0].ServiceID != ref.ServiceID || setup.Artifacts[0].PublisherTokenID != "" {
 					t.Fatalf("artifact binding = %+v", setup.Artifacts)
 				}
