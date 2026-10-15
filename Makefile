@@ -5,7 +5,9 @@ BINARY_PATH := tmp/$(BINARY_NAME)
 CMD_PACKAGE := ./cmd/detent
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+ifndef DATE
+DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+endif
 LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 DEV_VERSION ?= dev
 COVERPROFILE := tmp/coverage.out
@@ -71,8 +73,8 @@ generate: assets
 	fi
 	@$(MAKE) sqlc
 
-.PHONY: assets generate-docs
-assets: app css
+.PHONY: assets generate-docs release-notes
+assets: app css release-notes
 
 generate-docs:
 	go run ./internal/config/cmd/configdoc -root .
@@ -255,7 +257,10 @@ check-invariants:
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
 
-source-metadata:
+release-notes:
+	go run ./tools/releasenotes -version "$(VERSION)" -commit "$(COMMIT)" -date "$(DATE)"
+
+source-metadata: release-notes
 	@mkdir -p tmp/source-metadata
 	@printf '%s\n' '$(LDFLAGS)' > tmp/source-metadata/BUILD_LDFLAGS
 
