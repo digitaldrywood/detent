@@ -11,6 +11,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -88,6 +89,41 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 		return tracker.NativeIssue{}, err
 	}
 	titleSupplied, bodySupplied := request.Title != "", request.Body != ""
+	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason == "" && !titleSupplied && !bodySupplied && request.Priority == nil {
+		candidate := tracker.NativeIssue{Body: verified.importBody, IssueContract: &issuecontract.State{}}
+		applyScheduledRepairContract(ctx, tx, scope, &candidate, now)
+		project, err := readNativeProject(ctx, tx, scope)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		eligible := false
+		for _, state := range project.States {
+			eligible = eligible || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
+		}
+		if len(candidate.IssueContract.ConfirmedSections) != 0 && eligible {
+			matches, err := resolveNativeDuplicatesTx(ctx, tx, scope, tracker.CreateIssue{Title: request.Title, Body: verified.importBody}, now, true)
+			if err != nil {
+				return tracker.NativeIssue{}, err
+			}
+			if len(matches) != 0 {
+				issue, _, err := readNativeIssue(ctx, tx, scope, string(matches[0].WorkItemID))
+				if err != nil || issue.Terminal {
+					return issue, err
+				}
+				body := fmt.Sprintf("Verified CI report: %s\nRun: %s\nJob: %s\nTested commit: %s\n", canonical, verified.evidence.RunURL, verified.evidence.JobURL, verified.evidence.HeadSHA) + verified.evidence.Stamp()
+				provenance := tracker.Provenance{Provider: "github", ExternalID: "scheduled:" + verified.evidence.OccurrenceKey, AuthorID: "github-actions[bot]", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
+				if err := importGitHubComment(ctx, tx, scope, string(issue.WorkItemID), GitHubImportRecord{Body: body, Provenance: provenance}, now); err != nil {
+					return issue, err
+				}
+				return readLinkedNativeIssue(ctx, tx, scope, string(issue.WorkItemID))
+			}
+			request.State, request.Priority, request.Body = "Todo", new(0), verified.importBody
+			bodySupplied = true
+			scope.sourceActor = nativeIntegrationActor("github")
+		} else if verified.importReason == "" {
+			verified.importReason = "Scheduled CI import requires a dispatchable nonterminal Todo lane"
+		}
+	}
 	if !titleSupplied {
 		request.Title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
 	}
@@ -188,7 +224,11 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, issue.WorkItemID); err != nil {
 		return nil, err
 	}
-	issue, err = persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: canonical}, now)
+	reason := canonical
+	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason != "" {
+		reason += ": " + verified.importReason
+	}
+	issue, err = persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: reason}, now)
 	if err == nil && !completed {
 		err = enqueueLinkedSourceSummary(ctx, tx, scope, issue, "intake", false, now)
 	}

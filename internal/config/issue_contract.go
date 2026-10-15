@@ -113,6 +113,18 @@ func (c IssueContract) ScheduledRepairBody() string {
 	return strings.TrimSpace(body.String())
 }
 
+func (c IssueContract) ScheduledImportBody() string {
+	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
+	if err != nil {
+		return ""
+	}
+	preamble, _, _ := strings.Cut(template, "### ")
+	if strings.TrimSpace(preamble) != "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." {
+		return ""
+	}
+	return c.ScheduledRepairBody()
+}
+
 func IssueContractSectionDigests(body string) map[string]string {
 	sections := issueContractSections(body)
 	digests := make(map[string]string, len(sections))

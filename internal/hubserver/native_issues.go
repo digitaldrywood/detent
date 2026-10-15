@@ -548,7 +548,7 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		author = issue.Provenance.AuthorID
 	}
 	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
-	if machineIntake && issue.Provenance == nil {
+	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
 		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
 	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)

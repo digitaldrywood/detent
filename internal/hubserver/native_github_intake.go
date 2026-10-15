@@ -207,6 +207,9 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 	}
 	result.RepositoryID = &repositoryID
 	for _, scope := range scopes {
+		if imports, ok := ctx.Value(scheduledImportsKey{}).(map[string]*nativeScheduledRepair); ok {
+			scope.scheduledRepair = imports[string(scope.organization)+"/"+string(scope.project)+"/"+canonical]
+		}
 		var id string
 		err := tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE project_id = ? AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope.project, "github:"+canonical, repositoryID, source.Number).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -225,7 +228,7 @@ func applyNativeIssueWebhook(ctx context.Context, tx *sql.Tx, delivery storedWeb
 		if err != nil {
 			return result, true, err
 		}
-		if issue.LinkedSource == nil {
+		if issue.LinkedSource == nil || issue.LinkedSource.URL != canonical {
 			continue
 		}
 		snapshot := linkedSnapshotFromSource(IssueSource{NodeID: source.NodeID, Number: source.Number, URL: canonical, Title: source.Title, Body: source.Body, AuthorID: source.AuthorID, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt}, now)

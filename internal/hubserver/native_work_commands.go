@@ -69,6 +69,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
+			scope.scheduledRepair = s.observeImportedScheduledRepair(ctx, scope, *snapshot)
 			repositoryCtx, cancelRepository := context.WithTimeout(ctx, hubReadTimeout)
 			var found bool
 			_, found, err = resolveWebhookRepositoryID(repositoryCtx, s.database.reader, repository)
@@ -137,7 +138,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 				return nil, err
 			}
 		}
-		if snapshot == nil || issue.LinkedSource == nil {
+		if snapshot == nil || issue.LinkedSource == nil || issue.LinkedSource.URL != snapshot.URL {
 			return issue, err
 		}
 		return intakeLinkedIssueTx(ctx, tx, scope, string(issue.WorkItemID), *snapshot, now)
