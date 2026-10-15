@@ -503,6 +503,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		publicationReference    string
 		publicationRefused      bool
 		publicationHistory      bool
+		publicationRecovery     bool
+		recoveredPushFault      string
 		wantChange              *runner.NativeChange
 		wantDiagnostic          string
 		wantChanges             int
@@ -510,6 +512,16 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "required PR recovers historical confirmed push after stale forge read", requiredPR: true, publicationRecovery: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical push without checkpoint", requiredPR: true, publicationRecovery: true, recoveredPushFault: "missing", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical pending push", requiredPR: true, publicationRecovery: true, recoveredPushFault: "pending", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical ambiguous push", requiredPR: true, publicationRecovery: true, recoveredPushFault: "ambiguous", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical push with tampered digest", requiredPR: true, publicationRecovery: true, recoveredPushFault: "digest", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical push for different source", requiredPR: true, publicationRecovery: true, recoveredPushFault: "source", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical push for different policy", requiredPR: true, publicationRecovery: true, recoveredPushFault: "policy", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical push for different branch", requiredPR: true, publicationRecovery: true, recoveredPushFault: "branch", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical push for different base", requiredPR: true, publicationRecovery: true, recoveredPushFault: "base", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR refuses historical proof for unknown remote head", requiredPR: true, publicationRecovery: true, recoveredPushFault: "remote", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
 		{name: "required PR retains its publication receipt on historical versions", requiredPR: true, publicationHistory: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChanges: 1, wantVersions: 1},
 		{name: "required PR adopts a retained branch under human hold", requiredPR: true, publicationReference: "current", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 1},
 		{name: "required PR reuses the previous version PR after recommit", requiredPR: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
@@ -627,6 +639,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var publicationOwner *nativeExecution
 			var publicationPrevious string
 			var refusedPublication tracker.ChangeVersion
+			var advancePublication func()
+			var publicationHead func() string
+			var replacePublicationHead func()
+			var publicationCapture func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
+			stalePublication := test.publicationRecovery
+			publicationUnavailable := false
 			if test.requiredPR {
 				source := nativeChangeSourceRepo(t)
 				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
@@ -651,6 +669,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					return strings.TrimSpace(string(output))
 				}
 				base = readHead(info.Path)
+				publicationCapture = func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+				}
 				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("existing repair\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -668,6 +689,15 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					}
 				}
 				head = readHead(info.Path)
+				advancePublication = func() {
+					if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("further repair\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					nativeChangeGit(t, info.Path, "add", "README.md")
+					nativeChangeGit(t, info.Path, "commit", "-m", "further repair")
+					head = readHead(info.Path)
+					stalePublication = false
+				}
 				publicationBranch := info.Branch
 				if test.publicationReference != "" {
 					publicationBranch = "manual/recovery"
@@ -690,11 +720,24 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					nativeChangeGit(t, info.Path, "push", "origin", publishedHead+":refs/heads/"+publicationBranch)
 				}
 				test.published, test.checkpointHead = head, head
+				publicationHead = func() string {
+					output, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+publicationBranch).Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					return strings.TrimSpace(string(output))
+				}
+				replacePublicationHead = func() {
+					nativeChangeGit(t, remote, "update-ref", "refs/heads/"+publicationBranch, base)
+				}
 				test.wantChange = &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}
 				test.source = func(context.Context) (tracker.AttemptDiffRequest, bool) {
 					return tracker.AttemptDiffRequest{BaseSHA: base, HeadSHA: head, Files: []tracker.AttemptDiffFile{{Path: "README.md", Status: "modified"}}}, true
 				}
 				client, err := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), DisableConditionalRequests: true, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if publicationUnavailable {
+						return nil, errors.New("forge temporarily unavailable")
+					}
 					pullHead := head
 					if test.publicationReference != "" {
 						output, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+publicationBranch).Output()
@@ -702,6 +745,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							t.Fatal(err)
 						}
 						pullHead = strings.TrimSpace(string(output))
+						if stalePublication {
+							pullHead = publicationPrevious
+						}
 					}
 					pull := fmt.Sprintf(`{"number":7,"state":"open","head":{"sha":%q,"ref":%q,"repo":{"full_name":"example/native-change"}},"base":{"ref":"main","repo":{"full_name":"example/native-change"}}}`, pullHead, publicationBranch)
 					response := "[]"
@@ -798,7 +844,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							previous, external = old.ID, nil
 						}
 					}
-					version := h.publishCapturedExternal(t, item, earlier.ID, test.published, nil, external, previous, base)
+					version := refusedPublication
+					if !test.publicationRecovery {
+						version = h.publishCapturedExternal(t, item, earlier.ID, test.published, nil, external, previous, base)
+					}
 					if test.requiredPR {
 						check := version.Checks[0]
 						if _, err := ci.SubmitChangeCheck(t.Context(), item, earlier.ID, version.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: version.HeadSHA, RunID: version.RunID, PolicyID: version.PolicyID, ConfigDigest: version.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: version.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
@@ -826,6 +875,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
 			publicationOwner = execution.(*nativeExecution)
+			if test.publicationRecovery {
+				publicationOwner.SetChangeSource(publicationCapture)
+			}
 			if publicationSource != nil {
 				execution.(runner.PublicationSourceExecution).SetPublicationSource(publicationSource)
 			}
@@ -867,6 +919,152 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if err := execution.Checkpoint(guarded, checkpoint); err != nil {
 				t.Fatal(err)
+			}
+			if test.publicationRecovery {
+				owner := execution.(*nativeExecution)
+				if err := owner.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				if owner.publication != nil || owner.change == nil || !strings.Contains(owner.change.VersionError, "identity mismatch") || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != "git_push" || owner.data.Handoff.EffectState != "confirmed" {
+					t.Fatalf("stale GET did not retain confirmed push without PR receipt: change=%+v checkpoint=%+v", owner.change, owner.data.Handoff)
+				}
+				pushedVersion, pushedAttempt := owner.change.VersionID, owner.data.AttemptID
+				pushedHead := head
+				if publicationHead() != pushedHead {
+					t.Fatal("stale forge observation did not follow a successful real push")
+				}
+				if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "failed"); err != nil {
+					t.Fatal(err)
+				}
+				advancePublication()
+				// The new attempt runs under a newly approved policy. The old push
+				// must still be checked against its original immutable policy.
+				h.repolicy(t)
+				rules, err := h.admin.ChangeReviewPolicy(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				rules.PolicyID = h.descriptor.ID
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+					t.Fatal(err)
+				}
+				checkpoint.HeadSHA = head
+				startPublication := func() *nativeExecution {
+					candidates := h.candidatesIn(t, h.state(t, issue.ID))
+					if len(candidates) != 1 {
+						t.Fatalf("publication recovery candidates=%d", len(candidates))
+					}
+					if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					resumed := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					resumed.SetPublicationSource(publicationSource)
+					resumed.SetDiffSource(test.source)
+					resumed.SetRepository(nativeChangeRepository)
+					resumed.SetChangeSource(publicationCapture)
+					if err := resumed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleRework, Backend: "codex", Model: "test"}); err != nil {
+						t.Fatal(err)
+					}
+					if err := resumed.Checkpoint(t.Context(), checkpoint); err != nil {
+						t.Fatal(err)
+					}
+					return resumed
+				}
+				// A later version and attempt displace the push owner from the
+				// compact recovery read. Its exact scoped history remains available.
+				publicationUnavailable = true
+				intervening := startPublication()
+				if err := intervening.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil || intervening.change == nil || intervening.change.VersionID == "" || intervening.change.VersionID == pushedVersion || intervening.publication != nil {
+					t.Fatalf("could not retain later unpublished version: change=%+v error=%v", intervening.change, err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+					t.Fatal(err)
+				}
+				publicationUnavailable = false
+				currentIssue, err := h.admin.Issue(t.Context(), item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range []string{"In Review", "In Progress"} {
+					currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				resumed := startPublication()
+				for _, attempt := range resumed.Recovery().Attempts {
+					if attempt.AttemptID == pushedAttempt {
+						t.Fatal("fixture did not displace historical push from compact recovery")
+					}
+				}
+				transport := h.native.client.httpClient.Transport
+				historicalReads := 0
+				retainedHead := pushedHead
+				if test.recoveredPushFault == "remote" {
+					replacePublicationHead()
+					retainedHead = base
+				}
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response, err := transport.RoundTrip(request)
+					if err != nil || !strings.HasSuffix(request.URL.Path, "/attempts/"+pushedAttempt) {
+						return response, err
+					}
+					historicalReads++
+					var attempt tracker.NativeAttempt
+					if err := json.NewDecoder(response.Body).Decode(&attempt); err != nil {
+						t.Fatal(err)
+					}
+					response.Body.Close()
+					switch test.recoveredPushFault {
+					case "missing":
+						attempt.Checkpoint = nil
+					case "pending", "ambiguous":
+						attempt.Checkpoint.EffectState = test.recoveredPushFault
+					case "digest":
+						attempt.Checkpoint.EffectID = "effect_" + strings.Repeat("0", 32)
+					case "source":
+						attempt.Checkpoint.Change.VersionID = refusedPublication.ID
+					case "policy":
+						attempt.PolicyID = h.descriptor.ID
+					case "base", "branch":
+						binding := tracker.NativePRPublication{ChangeID: owner.change.ChangeID, VersionID: pushedVersion, Repository: nativeChangeRepository, HeadSHA: pushedHead, PolicyID: owner.data.PolicyID, BaseRef: "main", Branch: "manual/recovery", SourceVersion: *owner.data.Handoff.Change, SourceAttemptID: pushedAttempt}
+						if test.recoveredPushFault == "base" {
+							binding.BaseRef = "different-base"
+						} else {
+							binding.Branch = "different-branch"
+						}
+						attempt.Checkpoint.EffectID = binding.EffectID("git_push")
+					}
+					body, err := json.Marshal(attempt)
+					if err != nil {
+						t.Fatal(err)
+					}
+					response.Body = io.NopCloser(strings.NewReader(string(body)))
+					return response, nil
+				})
+				if err := resumed.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				if historicalReads == 0 {
+					t.Fatal("publication did not read the retained historical push authority")
+				}
+				if test.recoveredPushFault != "" {
+					if resumed.publication != nil || resumed.change.VersionError == "" || publicationHead() != retainedHead || publicationCalls != 0 {
+						t.Fatalf("invalid historical push changed the PR: fault=%s change=%+v publication=%+v", test.recoveredPushFault, resumed.change, resumed.publication)
+					}
+					return
+				}
+				if resumed.publication == nil || resumed.publication.External.ID != "7" || resumed.publication.HeadSHA != head || publicationCalls != 0 || publicationHead() != head {
+					t.Fatalf("confirmed historical push could not advance the retained PR: previous=%s/%s/%s change=%+v publication=%+v creates=%d", pushedVersion, pushedAttempt, pushedHead, resumed.change, resumed.publication, publicationCalls)
+				}
+				if err := resumed.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				detail, err := h.admin.Change(t.Context(), item, resumed.change.ChangeID)
+				if err != nil || len(detail.Versions) != 3 || detail.Versions[1].ID != pushedVersion || detail.Versions[1].External != nil || detail.Versions[2].External == nil || detail.Versions[2].External.ID != "7" || detail.Versions[2].HeadSHA != head || detail.Change.CurrentLanding() != nil || resumed.change.Reviewed {
+					t.Fatalf("recovery did not persist only the current PR binding while retaining review gates: detail=%+v error=%v", detail, err)
+				}
+				return
 			}
 			if test.loseLease {
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "lost"); err != nil {
