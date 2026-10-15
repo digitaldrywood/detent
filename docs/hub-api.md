@@ -85,6 +85,9 @@ The feed is generated and embedded during the binary build. Serving it makes
 no external requests. Conventional commit types `feat`, `perf`, `fix`, and
 `revert` map to New, Improved, Fixed, and Removed; internal changes are counted
 without publishing their text. Cherry-picks link their original pull request.
+Generic completion subjects use the first non-empty commit-body line. When
+that line has no meaningful title, the entry reads `Maintenance update` with
+the available original pull-request link and derived category.
 
 ## Issue email notifications
 
