@@ -1,3 +1,4 @@
+import { ProviderUsage } from "./ProviderUsage.tsx";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
@@ -233,7 +234,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
               </Section>
             </fieldset>
             <Section title="Running work"><ul className="space-y-2">{runner.leases.map((lease) => <li key={lease.lease_id} className="break-words"><span className="font-medium">#{lease.work_item_id}</span> {lease.title}</li>)}</ul>{runner.leases.length === 0 ? <p className="text-muted-foreground">No running work</p> : null}</Section>
-            <Section title="Provider accounts"><ul className="space-y-2 text-xs text-muted-foreground">{runner.provider_capacity.map((capacity) => <li key={`${capacity.provider}-${capacity.account_alias}`} className="break-words">{capacity.provider} · {capacity.account_alias} · {capacity.availability} · {capacity.state} · {capacity.used} of {capacity.max_concurrent}</li>)}</ul></Section>
+            <Section title="Provider accounts"><ul className="space-y-2 text-xs text-muted-foreground">{runner.provider_capacity.map((capacity) => <li key={capacity.backend} className="break-words">{capacity.provider} · {capacity.account_alias} · {capacity.availability} · {capacity.state} · {capacity.used} of {capacity.max_concurrent}<ProviderUsage capacity={capacity} now={now} /></li>)}</ul></Section>
           </div>
           {canEdit ? (
             <SheetFooter className="block space-y-3">

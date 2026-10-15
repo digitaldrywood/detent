@@ -48,6 +48,43 @@ describe("Sprite bootstrap pin", () => {
 });
 
 describe("runner rows", () => {
+  it.each([
+    ["at risk", 85, 30_000, "At risk"],
+    ["threshold", 80, 30_000, "At risk"],
+    ["below threshold", 79.9, 30_000, null],
+    ["weekly", 40, 30_000, null],
+    ["zero", 0, 30_000, null],
+    ["stale", 85, 120_000, "Stale"],
+    ["future", 85, -1_000, "Stale"],
+    ["unknown", undefined, undefined, "Unknown"],
+  ])("shows subscription usage in the runner row and details: %s", (_name, percent, age, status) => {
+    const window = { kind: "weekly", percent_used: percent, reset_at: new Date(NOW + 3_600_000).toISOString(), observed_at: age === undefined ? undefined : new Date(NOW - age).toISOString() };
+    const capacity = { ...RUNNER.provider_capacity[0]!, usage_windows: [window] };
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    const row = within(screen.getByRole("list", { name: `${capacity.backend} subscription usage` }));
+    expect(row.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();
+    expect(row.getByText(/Resets/)).toBeTruthy();
+    expect(row.getByText(age === undefined ? "Observation unknown" : /Observed/)).toBeTruthy();
+    if (status) expect(row.getByText(status)).toBeTruthy();
+    else expect(row.queryByText("At risk")).toBeNull();
+    expect(row.queryByText("Healthy")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
+    const detail = within(screen.getByRole("dialog"));
+    expect(detail.getByRole("list", { name: `${capacity.backend} subscription usage` })).toBeTruthy();
+    if (status) expect(detail.getByText(status)).toBeTruthy();
+  });
+
+  it("preserves decoded unknown usage and old-runner presentation", () => {
+    const capacity = { ...RUNNER.provider_capacity[0]!, usage_windows: [{ kind: "five_hour" }] };
+    const decoded = decodeFleet({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    expect(decoded.runners[0]!.provider_capacity[0]!.usage_windows).toEqual([{ kind: "five_hour" }]);
+    const { rerender } = render(<RunnersSectionView fleet={decoded} now={NOW} />);
+    expect(screen.getByText("Reset unknown")).toBeTruthy();
+    expect(screen.getByText("Observation unknown")).toBeTruthy();
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} />);
+    expect(screen.queryByText(/Usage unknown|Reset unknown|Observation unknown|At risk|Stale/)).toBeNull();
+  });
+
   it.each([false, true])("shows policy problems independently of update warnings (%s)", (updateWarning) => {
     const problem = {
       code: "policy_mismatch", project_id: "prj_known",

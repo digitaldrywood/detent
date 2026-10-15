@@ -15,18 +15,21 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestRunnerProviderReports(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, account, alias string
-		file, missing, fail  bool
+		name, account, alias       string
+		file, missing, fail, usage bool
 	}{
 		{name: "default and refresh", account: "macbook-pro-m1", alias: "macbook-pro-m1"},
 		{name: "normalized instance", account: "Owner's MacBook", alias: "owner-s-macbook"},
 		{name: "bounded instance alias", account: strings.Repeat("a", 80), alias: strings.Repeat("a", 64)},
 		{name: "explicit file precedence", file: true},
+		{name: "observed default", account: "runner", alias: "runner", usage: true},
+		{name: "observed explicit file", file: true, usage: true},
 		{name: "explicit missing file does not fall back", file: true, missing: true},
 		{name: "catalog failure remains instance owned", fail: true},
 	} {
@@ -47,6 +50,14 @@ func TestRunnerProviderReports(t *testing.T) {
 				}
 			}
 			catalogFailure := errors.New("catalog unavailable")
+			var usage *runner.ProviderUsage
+			observed := now.Add(-time.Hour)
+			percent := 85.0
+			if test.usage {
+				usage = &runner.ProviderUsage{}
+				usage.Observe("codex", &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{WindowKind: "five_hour", PercentUsed: &percent, ObservedAt: &observed}})
+				explicit.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: observed}}
+			}
 			source := runnerProviderReports(t.Context(), cfg, test.account, func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
 				if test.file {
 					t.Fatal("explicit file invoked the default reporter")
@@ -58,7 +69,7 @@ func TestRunnerProviderReports(t *testing.T) {
 					return nil, catalogFailure
 				}
 				return []runner.AgentModel{{ID: "sol", Model: "sol"}, {ID: "astra", Model: "astra"}}, nil
-			})
+			}, usage)
 			for range 6 {
 				reports, err := source()
 				if test.missing || test.fail {
@@ -69,6 +80,9 @@ func TestRunnerProviderReports(t *testing.T) {
 				}
 				if err != nil || len(reports) != 1 {
 					t.Fatalf("reports=%+v, err=%v", reports, err)
+				}
+				if test.usage && (len(reports[0].UsageWindows) != 1 || reports[0].UsageWindows[0].PercentUsed == nil || *reports[0].UsageWindows[0].PercentUsed != 85 || !reports[0].UsageWindows[0].ObservedAt.Equal(observed)) {
+					t.Fatalf("usage changed during heartbeat: %+v", reports[0].UsageWindows)
 				}
 				if test.file {
 					if !reflect.DeepEqual(reports[0], explicit) {

@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account string, now func() time.Time, models func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error)) func() ([]providercapacity.Report, error) {
+func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account string, now func() time.Time, models func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error), usage ...*runner.ProviderUsage) func() ([]providercapacity.Report, error) {
 	account = strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-' {
 			return r
@@ -30,7 +30,12 @@ func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account
 	workflow := workflowconfig.Default().WithAgentDefaults(cfg.Global.Agents, cfg.Global.Budget)
 	return func() ([]providercapacity.Report, error) {
 		if cfg.Client.ProviderCapacityFile != "" {
-			return providercapacity.Load(cfg.Client.ProviderCapacityFile)
+			reports, err := providercapacity.Load(cfg.Client.ProviderCapacityFile)
+			if err != nil {
+				return nil, err
+			}
+			reports = withProviderUsage(reports, usage)
+			return reports, providercapacity.Validate(reports)
 		}
 		var reports []providercapacity.Report
 		for _, backend := range workflow.AgentBackendConfigs() {
@@ -71,6 +76,7 @@ func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account
 			report.ObservedAt = now().UTC()
 			reports = append(reports, report)
 		}
+		reports = withProviderUsage(reports, usage)
 		return reports, providercapacity.Validate(reports)
 	}
 }
@@ -84,4 +90,16 @@ func runnerProviderModels(ctx context.Context, cfg workflowconfig.AgentBackend) 
 		return provider.ListModels(ctx, runner.AgentProcessRequest{})
 	}
 	return nil, nil
+}
+
+func withProviderUsage(reports []providercapacity.Report, usage []*runner.ProviderUsage) []providercapacity.Report {
+	if len(usage) == 0 || usage[0] == nil {
+		return reports
+	}
+	for i := range reports {
+		if windows := usage[0].Windows(reports[i].Backend); len(windows) > 0 {
+			reports[i].UsageWindows = windows
+		}
+	}
+	return reports
 }

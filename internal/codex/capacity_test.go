@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -409,3 +411,37 @@ func TestClassifyCapacityErrorTransportAndProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexUsageWindows(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, raw, kind string
+		want            *float64
+	}{
+		{"weekly", `{"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":1999999999}}`, "weekly", usagePercent(40)},
+		{"five hour", `{"primary":{"usedPercent":85.5,"windowDurationMins":300}}`, "five_hour", usagePercent(85.5)},
+		{"zero", `{"primary":{"usedPercent":0}}`, "primary", usagePercent(0)},
+		{"unknown", `{"secondary":{}}`, "secondary", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var payload rateLimitSnapshotPayload
+			if err := json.Unmarshal([]byte(test.raw), &payload); err != nil {
+				t.Fatal(err)
+			}
+			usage := &runner.ProviderUsage{}
+			usage.Observe("codex", rateLimitsFromCodex(payload.snapshot()))
+			windows := usage.Windows("codex")
+			if len(windows) != 1 || windows[0].Kind != test.kind || windows[0].ObservedAt.IsZero() {
+				t.Fatalf("windows = %+v", windows)
+			}
+			if (test.want == nil) != (windows[0].PercentUsed == nil) || test.want != nil && *windows[0].PercentUsed != *test.want {
+				t.Fatalf("percent = %v, want %v", windows[0].PercentUsed, test.want)
+			}
+			if test.kind == "weekly" && windows[0].ResetAt.Unix() != 1999999999 {
+				t.Fatalf("reset = %v", windows[0].ResetAt)
+			}
+		})
+	}
+}
+
+func usagePercent(value float64) *float64 { return &value }

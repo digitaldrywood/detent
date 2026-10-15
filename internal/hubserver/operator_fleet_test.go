@@ -196,6 +196,10 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 	r.redemption.Capacity = 8
 	r.enroll(t)
+	report := capacityReport(f.service.config.now())
+	percent := 85.0
+	report.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: report.ObservedAt, ResetAt: report.ObservedAt.Add(time.Hour)}}
+	publishCapacity(t, f, r, report)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{
 		ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", Tags: []string{"audit"}, State: "active", CapacityLimit: 8, ProjectIDs: []tracker.ProjectID{f.project.ID}},
 	}), http.StatusOK)
@@ -242,6 +246,18 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 				allowed := tt.authorized
 				if name == operatortool.InstanceHealth || name == operatortool.NativeCapabilities {
 					allowed = true
+				}
+				if err == nil && name == operatortool.GetRunnerCapacity {
+					var response struct {
+						Data runnerCapacityRead `json:"data"`
+					}
+					if err := json.Unmarshal(result.Content, &response); err != nil {
+						t.Fatal(err)
+					}
+					capacity := response.Data
+					if len(capacity.ProviderCapacity) != 1 || len(capacity.ProviderCapacity[0].UsageWindows) != 1 || capacity.ProviderCapacity[0].UsageWindows[0].PercentUsed == nil || *capacity.ProviderCapacity[0].UsageWindows[0].PercentUsed != 85 {
+						t.Fatalf("MCP usage = %+v", capacity.ProviderCapacity)
+					}
 				}
 				if (err == nil) != allowed {
 					t.Fatalf("%s result=%s error=%v", name, result.Content, err)

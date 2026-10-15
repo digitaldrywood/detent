@@ -225,7 +225,7 @@ export function RunnersSectionView({
             <div className="@container/runner-list overflow-hidden rounded-xl border border-border/60 bg-card/40">
               <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Host kind</span><span>Health</span><span>In use</span><span>Projects</span><span /></div>
               <div className="divide-y divide-border/50">
-                {runners.map((runner) => <HostCard key={runner.id} runner={runner} projects={projects} suggestion={suggestions[runner.id]} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} projects={projects} suggestion={suggestions[runner.id]} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
               {spritePools?.(attentionOnly)}

@@ -1627,6 +1627,8 @@ const (
 )
 
 type RateLimitBucket struct {
+	WindowKind     string     `json:"window_kind,omitempty"`
+	PercentUsed    *float64   `json:"percent_used,omitempty"`
 	Remaining      int64      `json:"remaining,omitempty"`
 	Used           int64      `json:"used,omitempty"`
 	Limit          int64      `json:"limit,omitempty"`

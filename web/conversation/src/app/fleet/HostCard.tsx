@@ -2,6 +2,7 @@ import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner, SuggestedLimit } from "../../contracts/account.ts";
+import { ProviderUsage } from "./ProviderUsage.tsx";
 import { SuggestedLimitChip } from "./SuggestedLimit.tsx";
 import { RunnerProblems } from "./RunnerProblems.tsx";
 import { runnerUpdateStatusLabel } from "./format.ts";
@@ -11,12 +12,14 @@ import type { RunnerProject } from "./RunnerDetailSheet.tsx";
 
 export function HostCard({
   runner,
+  now,
   projects = [],
   onOpen,
   onRemove,
   suggestion,
 }: {
   readonly runner: FleetRunner;
+  readonly now?: number;
   readonly suggestion?: SuggestedLimit;
   readonly projects?: readonly RunnerProject[];
   readonly onOpen: () => void;
@@ -60,6 +63,12 @@ export function HostCard({
         <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
         {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}
       </div>
+      {runner.provider_capacity.some((capacity) => capacity.usage_windows?.length) ? <div className="col-span-full min-w-0 space-y-2">
+        {runner.provider_capacity.filter((capacity) => capacity.usage_windows?.length).map((capacity) => <div key={capacity.backend} className="space-y-1">
+          <p className="text-xs font-medium">{capacity.backend} · {capacity.account_alias}</p>
+          <ProviderUsage capacity={capacity} now={now} />
+        </div>)}
+      </div> : null}
       {runner.problems?.length ? <div className="col-span-full min-w-0"><RunnerProblems runner={runner} alert needsHuman /></div> : null}
     </article>
   );

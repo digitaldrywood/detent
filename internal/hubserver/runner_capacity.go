@@ -55,7 +55,7 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 	if err != nil {
 		return nil, err
 	}
-	return runnerCapacityRead{CapacityView: view, Recommendation: recommendation}, nil
+	return runnerCapacityRead{CapacityView: view, Recommendation: recommendation, ProviderCapacity: r.ProviderCapacity}, nil
 }
 
 func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
