@@ -21,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestNativePolicyRetryAfterApproval(t *testing.T) {
+func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name          string
@@ -76,8 +76,8 @@ func TestNativePolicyRetryAfterApproval(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 						t.Fatal(err)
 					}
-					if !approved || request.PolicyID != selected.ID {
-						t.Fatalf("claim reached Hub before selected policy approval: %+v", request)
+					if request.PolicyID != selected.ID {
+						t.Fatalf("claim lost its reported configuration: %+v", request)
 					}
 					claims++
 					if err := json.NewEncoder(w).Encode(tracker.NativeLease{
@@ -121,20 +121,12 @@ func TestNativePolicyRetryAfterApproval(t *testing.T) {
 			native := scheduler.nativeProjects["project"].client
 			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "stable", PolicyID: previous.ID, Claimable: true})
 			request := orchestrator.SchedulingRequest{ProjectID: "project", Policy: selected}
-			for range 2 {
-				issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-				var failure *APIError
-				if !errors.As(err, &failure) || failure.Status != http.StatusConflict || failure.Code != "policy_mismatch" || !connector.IsRetryable(err) || len(issues) != 0 || claims != 0 {
-					t.Fatalf("pending approval accepted or not retryable: %v", err)
-				}
-			}
-			approved = true
 			if err := scheduler.CheckProjectPolicy(t.Context(), "project", "", selected); err != nil {
 				t.Fatalf("unchanged selected policy stayed rejected after approval: %v", err)
 			}
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
 			if err != nil || len(issues) != 1 || issues[0].ID != string(issueID) || !issues[0].AssignedToWorker || claims != 1 {
-				t.Fatalf("claims did not resume after approval: issues=%+v claims=%d error=%v", issues, claims, err)
+				t.Fatalf("reported configuration did not produce a usable claim: issues=%+v claims=%d error=%v", issues, claims, err)
 			}
 			claimed, err := scheduler.AdoptClaim(t.Context(), issues[0], time.Now())
 			if err != nil || claimed.Issue.ID != string(issueID) || !claimed.LeaseExpiresAt.After(time.Now()) {
@@ -151,7 +143,7 @@ func clientTestPolicy() policy.Descriptor {
 	}.WithID()
 }
 
-func TestSchedulerRejectsUnapprovedPolicyBeforeWork(t *testing.T) {
+func TestSchedulerRejectsMissingConfigurationBeforeWork(t *testing.T) {
 	if testing.Short() {
 		t.Skip("loopback network listener integration")
 	}
@@ -162,7 +154,6 @@ func TestSchedulerRejectsUnapprovedPolicyBeforeWork(t *testing.T) {
 		descriptor policy.Descriptor
 	}{
 		{"missing", policy.Descriptor{}},
-		{"changed", func() policy.Descriptor { d := clientTestPolicy(); d.Gates.AutoPromote = true; return d.WithID() }()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			claims := 0
@@ -196,7 +187,7 @@ func TestSchedulerRejectsUnapprovedPolicyBeforeWork(t *testing.T) {
 	}
 }
 
-func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
+func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 	t.Parallel()
 	changed := func() policy.Descriptor { d := clientTestPolicy(); d.Gates.AutoPromote = true; return d.WithID() }()
 	workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{Workflow: []byte("Run the work.\n"), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n"), HasConfig: true, ConfigPath: "detent.yaml"})
@@ -235,13 +226,13 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 		{name: "legacy external load retains approved configuration", loadApproved: true, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "verified legacy source preserves supplied definition", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: &legacy, status: http.StatusOK, local: legacy, reports: 1},
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
-		{name: "canonical version without source remains pending", approved: &previous, status: http.StatusOK, local: current, wantError: true, reports: 1},
+		{name: "canonical version without source is reported", approved: &previous, status: http.StatusOK, local: current, reports: 1},
 		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
 		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
-		{name: "different default branch policy waits for administrator", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, reports: 1},
-		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), wantError: true, wantLost: true, reports: 1},
-		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, wantError: true, reports: 1},
-		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), wantError: true, wantLost: true},
+		{name: "different default branch configuration is reported", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
+		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
+		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "hub unavailable", status: http.StatusServiceUnavailable, local: clientTestPolicy(), wantError: true, reports: 0},
 	} {
@@ -255,6 +246,11 @@ func TestNativeSchedulerReportsItsUnapprovedPolicyOnce(t *testing.T) {
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/projects/prj_site"):
 					_ = json.NewEncoder(w).Encode(tracker.NativeProject{WorkflowMarkdown: "---\ntracker:\n  kind: hub_native\n---\nCloud instructions.\n"})
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/projects/prj_site/policy/observed"):
+					if test.status == http.StatusServiceUnavailable {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})
+						return
+					}
 					var observation policy.Observation
 					if err := json.NewDecoder(r.Body).Decode(&observation); err != nil {
 						t.Error(err)

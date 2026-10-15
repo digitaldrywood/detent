@@ -46,9 +46,6 @@ export function WorkflowRevisions({
   policy,
   observed,
   repository,
-  canApprove,
-  approving,
-  onApprove,
   error,
   onLoadOlder,
   loadingOlder,
@@ -56,9 +53,6 @@ export function WorkflowRevisions({
   readonly policy: PolicyApproval | null;
   readonly observed: readonly ObservedPolicy[];
   readonly repository: string;
-  readonly canApprove: boolean;
-  readonly approving: boolean;
-  readonly onApprove: (policyId: string) => void;
   readonly error: string | null;
   readonly onLoadOlder: () => void;
   readonly loadingOlder: boolean;
@@ -94,23 +88,14 @@ export function WorkflowRevisions({
       {entries.map((entry) => (
         <SettingsRow
           key={entry.key}
-          title={entry.pending ? "Pending revision" : "Applied revision"}
+          title={entry.pending ? "Reported revision" : "Applied revision"}
           description={
             <span>{entry.repository || "Repository not recorded"} · <span className="font-mono">{entry.commit || "Commit not recorded"}</span></span>
           }
           status={entry.pending
-            ? <span>Awaiting approval · Observed at <time dateTime={entry.time}>{entry.time}</time></span>
+            ? <span>Observed at <time dateTime={entry.time}>{entry.time}</time></span>
             : <span>Applied by {entry.actor} at <time dateTime={entry.time}>{entry.time}</time></span>}
-          control={entry.pending && canApprove ? (
-            <Button
-              size="xs"
-              disabled={approving}
-              aria-label={`Approve updated policy ${entry.policyId}`}
-              onClick={() => onApprove(entry.policyId)}
-            >
-              {approving ? "Approving…" : "Approve updated policy"}
-            </Button>
-          ) : undefined}
+
         >
           <DefinitionDiff before={entry.before} after={entry.after} unavailable={entry.unavailable} />
         </SettingsRow>

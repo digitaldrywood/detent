@@ -250,7 +250,7 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 		want      string
 	}{
 		{"stale runner", now.Add(-6 * time.Minute), false, "runner_heartbeat_gap"},
-		{"policy mismatch", now, false, "every_candidate_refused"},
+		{"configuration not yet reported", now, false, "dead_man"},
 		{"policy restored", now, true, "dead_man"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -341,8 +341,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	}{
 		{"instruction-only custom policy", http.MethodPut, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: instructions}},
 		{"changed policy", http.MethodPut, policy.Change{ExpectedID: instructions.ID, Policy: changed}},
-		{"revoked policy", http.MethodDelete, map[string]string{"expected_policy_id": changed.ID}},
-		{"restored policy", http.MethodPut, policy.Change{Policy: hubTestPolicy()}},
+		{"restored policy", http.MethodPut, policy.Change{ExpectedID: changed.ID, Policy: hubTestPolicy()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_dirty_cards"); err != nil {

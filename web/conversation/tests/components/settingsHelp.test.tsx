@@ -38,12 +38,8 @@ function renderProject(canManage = true, overrides: Partial<React.ComponentProps
         observedPolicies={[]}
         onDraftChange={vi.fn()}
         onSave={vi.fn()}
-        onApprovePolicy={vi.fn()}
-        onApprovePastedPolicy={vi.fn()}
         saving={false}
-        approving={false}
         saveError={null}
-        approveError={null}
         onOpenFleet={vi.fn()}
         {...overrides}
       />
@@ -98,16 +94,10 @@ describe("settings help interactions", () => {
       policy: { ...policy.policy, policy_id: "policy_old" }, runner_id: "runner_air", runner_ids: ["runner_air", "runner_pro"], observed_at: "2026-10-05T17:00:00Z",
       conflict: state === "conflict", previously_approved: state === "historical",
     }] });
-    await screen.findByText("Shared project configuration");
+    await screen.findByText("Configuration reported");
     expect(screen.queryByRole("button", { name: /Approve updated policy/ })).toBeNull();
-    if (state === "resolved") {
-      expect(screen.queryByText("Runners have conflicting project configurations.")).toBeNull();
-      expect(screen.getByText("Authorized runners consume this approved project configuration.")).toBeTruthy();
-    } else {
-      expect(screen.getByText("Runners have conflicting project configurations.")).toBeTruthy();
-      expect(screen.getByText("Review policy from runner_air, runner_pro")).toBeTruthy();
-      expect(screen.getByText(/Load the approved shared configuration on the reported runners/)).toBeTruthy();
-    }
+    expect(screen.queryByText("Runners have conflicting project configurations.")).toBeNull();
+
   });
 
   it.each(["", "Acme/Private"])("uses runner checkout settings when Hub transport is unavailable (%s)", async (repository) => {
@@ -116,7 +106,7 @@ describe("settings help interactions", () => {
       integration: { ...integration, repository: "", github_transport_available: false, checkout_repository: repository },
       onOpenSetup,
     });
-    expect((await screen.findByText(/Hub GitHub integration is unavailable/)).textContent).toContain("runner’s approved repository policy");
+    expect((await screen.findByText(/Hub GitHub integration is unavailable/)).textContent).toContain("runner’s repository configuration");
     expect(screen.queryByRole("switch", { name: "Pull requests" })).toBeNull();
     expect(screen.queryByLabelText("Intake", { exact: true })).toBeNull();
     expect(screen.queryByLabelText("Projection", { exact: true })).toBeNull();
@@ -267,38 +257,17 @@ describe("project settings help", () => {
     [true, "approved"], [false, "approved"],
     [true, "missing"], [false, "missing"],
     [true, "pending"], [false, "pending"],
-  ] as const)("keeps policy state visible and technical details closed (%s, %s)", async (canManage, state) => {
+  ] as const)("reports configuration without approval (%s, %s)", async (canManage, state) => {
     const policy = policyFixture as PolicyApproval;
-    const onApprovePolicy = vi.fn();
     renderProject(canManage, {
       policy: state === "missing" ? null : policy,
       observedPolicies: state === "pending" ? [{ policy: { ...policy.policy, policy_id: "pol_updated" }, runner_id: "runner_example", observed_at: "2026-10-05T00:00:00Z" }] : [],
-      onApprovePolicy,
     });
-    expect(await screen.findByText(state === "pending" ? "Needs approval" : state === "missing" ? "Not approved" : "Approved")).toBeTruthy();
+    expect(await screen.findByText(state === "missing" ? "Waiting for runner configuration" : "Configuration reported")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();
     const ownership = screen.getByText("Field ownership").closest("details")!;
     expect(ownership.open).toBe(false);
     expect(ownership.textContent).toContain(Object.values(integration.authority!)[0]);
-    if (state !== "missing") {
-      const approval = screen.getByText("Approval details").closest("details")!;
-      expect(approval.open).toBe(false);
-      expect(approval.textContent).toContain(policy.approved_by);
-    }
-    if (state === "pending") {
-      const review = screen.getByText("Review policy from runner_example").closest("details")!;
-      expect(review.open).toBe(false);
-      const user = userEvent.setup();
-      await user.click(screen.getByText("Review policy from runner_example"));
-      expect(review.open).toBe(true);
-      expect(review.textContent).toContain(JSON.stringify({ ...policy.policy, policy_id: "pol_updated" }, null, 2));
-      if (canManage) {
-        await user.click(screen.getByRole("button", { name: "Approve updated policy pol_updated" }));
-        expect(onApprovePolicy).toHaveBeenCalledWith("pol_updated");
-      } else {
-        expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
-        expect(screen.getByText(/An owner or admin must approve the reported policy/)).toBeTruthy();
-      }
-    }
   });
 
   it.each([
@@ -307,7 +276,6 @@ describe("project settings help", () => {
     ["Existing issues", /import older GitHub issues.*Turning this off prevents manual imports/, "github_compatible"],
     ["Work summaries", /each work item.*linked GitHub issue.*Turning this off stops new summary writes/],
     ["Authority", /native profile.*Detent ownership.*github_compatible profile.*GitHub ownership/],
-    ["Repository policy", /runner upgrade.*stale.*Execution is blocked/],
     ["Runner routing", /matching a tag never grants project access/],
   ])("explains %s even for a reader", async (label, copy, profile = "native") => {
     const user = userEvent.setup();

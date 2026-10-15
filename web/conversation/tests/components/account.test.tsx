@@ -31,7 +31,7 @@ import {
   refusalMessage,
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
-import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
+import { firstUnreadyStep, orderedSteps, Stepper } from "../../src/app/account/Setup.tsx";
 import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
@@ -636,24 +636,6 @@ describe("the project settings", () => {
   });
 });
 
-describe("the pasted policy descriptor", () => {
-  it.each([
-    { name: "an inspect descriptor", text: '{"schema":1,"policy_id":"policy_abc","requirements":{}}', id: "policy_abc" },
-    { name: "one surrounded by whitespace", text: '  {"policy_id":"policy_x"}\n', id: "policy_x" },
-  ])("accepts $name", ({ text, id }) => {
-    expect(parsePolicyDescriptor(text).policy_id).toBe(id);
-  });
-
-  it.each([
-    { name: "text that is not JSON", text: "policy_abc", message: /not JSON/ },
-    { name: "an array", text: "[]", message: /no policy_id/ },
-    { name: "an object without an id", text: '{"schema":1}', message: /no policy_id/ },
-    { name: "a numeric id", text: '{"policy_id":7}', message: /no policy_id/ },
-  ])("refuses $name", ({ text, message }) => {
-    expect(() => parsePolicyDescriptor(text)).toThrow(message);
-  });
-});
-
 describe("the runner hub URL", () => {
   it.each([
     { name: "a standalone hub", url: "https://hub.example.com", base: "", want: "https://hub.example.com" },
@@ -759,7 +741,7 @@ it("keeps old approvals out of pending revisions and does not label a digest as 
     { policy: { ...definition, policy_id: "old" }, runner_id: "runner_old", observed_at: "2026-10-05T10:00:00Z", previously_approved: true },
     { policy: definition, runner_id: "runner_test", observed_at: "2026-10-05T12:00:00Z" },
   ]} />);
-  expect(screen.getAllByRole("heading", { name: "Pending revision" })).toHaveLength(1);
+  expect(screen.getAllByRole("heading", { name: "Reported revision" })).toHaveLength(1);
   expect(screen.getByText("Commit not recorded")).toBeTruthy();
   expect(screen.queryByText(definition.source_revision)).toBeNull();
 });

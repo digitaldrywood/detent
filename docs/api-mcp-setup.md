@@ -35,16 +35,12 @@ returns an explicit constraint; these calls never start or enable a board.
 Verify `registered` and `runtime_registered` through a
 fresh read after a saved removal; a command retry returns its original receipt.
 
-When `policy_mismatch` is true, the selected local policy differs from the
-runner's effective policy. Cloud shows the selected descriptor in the existing
-Integrations policy approval row and marks the runner as needing attention until
-the effective policy matches. To approve it through MCP, pass the entire
-`selected_policy` object unchanged as `approve_project_policy`'s `input.policy`,
-with the current approved ID as `input.expected_policy_id`. Preserve every
-returned field, including `authored`, `profile`, `configuration`, `workflow` and
-`gates.human_review` when present. Reconstructing a subset can invalidate the
-identity digest. Authorized approval executes directly; approval and runner
-application are separate operations.
+Repository configuration reports do not require approval before dispatch.
+A difference between the selected and effective configuration remains diagnostic
+information; it does not by itself block claims, revoke leases or invalidate
+recovered source. The configuration identity records what an attempt used.
+Legacy configuration-management operations remain separate from dispatch and
+still require their documented administrative authority and revisions.
 
 For an external local definition without trusted repository provenance, the
 approved authored Cloud descriptor supplies shared behavior. Private overlays

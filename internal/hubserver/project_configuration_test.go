@@ -148,7 +148,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 				t.Fatalf("approved policy=%+v %v", stored, err)
 			}
 			readReports(0)
-			readHealth(true)
+			readHealth(false)
 			view.EffectivePolicy, view.PolicyMismatch = &selected, true
 			post()
 			readHealth(false)
