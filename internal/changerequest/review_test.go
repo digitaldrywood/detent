@@ -274,7 +274,22 @@ func TestReviewState(t *testing.T) {
 		want    connector.ChangeReview
 	}{
 		{name: "passing checks with missing review", edit: func(d *tracker.ChangeDetail) { d.Reviews = nil }, want: connector.ChangeReview{Current: true}},
-		{name: "failed checks cannot pass", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "failure" }, want: connector.ChangeReview{Current: true}},
+		{name: "failed checks require rework", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "failure" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "cancelled checks require a fresh version", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "cancelled" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "skipped checks require a fresh version", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "skipped" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "missing checks wait for evidence", edit: func(d *tracker.ChangeDetail) { d.Checks = nil }, want: connector.ChangeReview{Current: true}},
+		{name: "stale successful checks wait for evidence", edit: func(d *tracker.ChangeDetail) { d.Checks[0].CompletedAt = d.Checks[0].CompletedAt.Add(-24 * time.Hour) }, want: connector.ChangeReview{Current: true}},
+		{name: "unrequested failure does not require rework", edit: func(d *tracker.ChangeDetail) {
+			other := d.Checks[0]
+			other.CheckRunID, other.Conclusion = "unrequested", "failure"
+			d.Checks = append(d.Checks, other)
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "failed check is actionable despite other missing evidence", edit: func(d *tracker.ChangeDetail) {
+			d.Checks[0].Conclusion = "failure"
+			d.Checks[0].Evidence[0].Availability = "missing"
+			d.Versions[0].Checks = append(d.Versions[0].Checks, d.Versions[0].Checks[0])
+			d.Versions[0].Checks[1].CheckRunID = "missing-run"
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "source review wait is evidence pending", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "commented", ImplementationReview: &gate.ValidatorResult{Verdict: "wait"}})
 			d.Versions[0].Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
