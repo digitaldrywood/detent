@@ -16,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
+var errNativeReviewPending = errors.New("waiting on review evidence for published Change version")
+
 func (o *Orchestrator) completeNativeChangeRun(
 	ctx context.Context,
 	state *State,
@@ -63,39 +65,14 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
+	var reviewInfrastructureErr error
 	if !humanReview && nativeSourceReviewWait(event) {
-		states, err := reader.WorkflowStates(ctx)
-		if err != nil {
-			return handoff(fmt.Errorf("read native workflow states: %w", err))
-		}
-		target, allowed := connector.CompletionLane(states, issue.State, "Blocked", true)
-		resume, resumable := connector.LandingRefusalLane(states, target, cfg.ReworkState, true)
-		if !allowed || dispatchableState(states, target) || !resumable {
-			return handoff(fmt.Errorf("native workflow allows no operator evidence recovery from %s", issue.State))
-		}
-		remedy := fmt.Sprintf("Observe the unavailable source-review evidence for Change %s version %s at head %s, then explicitly resume in %s. Preserve the current source and all human, permission and prerequisite holds.", change.ChangeID, change.VersionID, change.HeadSHA, resume)
-		metadata := workflowLaneMetadata{ReasonDetail: remedy, BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: blockedRecoveryOwnerOperator, Cause: "completed_active_review_transition", CauseFingerprint: blockedCauseHash(change.ChangeID + "\x00" + change.VersionID + "\x00" + change.HeadSHA), Predicate: blockedRecoveryPredicateManaged, TargetState: resume, RunMode: runpkg.RunModeImplement, HoldReason: "Independent source-review evidence is unavailable; implementation is complete.", OperatorRemedy: remedy, WorkAttemptID: running.WorkAttemptID, AttemptError: change.ImplementationReviewError}}
-		if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition", metadata); err != nil {
-			return handoff(fmt.Errorf("hold native source review for operator evidence: %w", err))
-		}
-		heldIssue := cloneIssue(issue)
-		heldIssue.State = target
-		state.Blocked[issueID] = Blocked{Issue: heldIssue, Recovery: metadata.BlockedRecovery}
-		o.observeNativeCompletion(ctx, event, false)
-		if err := o.abandonClaim(ctx, issueID); err != nil {
-			return handoff(err)
-		}
-		terminal := terminalStateForRun(event.Err, finalState)
-		class := runnerWorkAttemptErrorClass(event.Err)
-		if change.ImplementationReviewError != "" {
-			terminal = store.WorkAttemptTerminalCancelled
-			class = workAttemptErrorInterrupted
-		}
-		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, errorString(event.Err), "completed", "source preserved; independent review awaits operator evidence", nativeChangeMetadata(change))
-		o.recordCompletionUsage(ctx, state, event, issue)
-		o.releaseClaim(state, issueID)
-		return true
+		reviewInfrastructureErr = event.Err
+		event.Err = nil
+		finalState = FinalStateCompleted
+		event.Result.FinalState = FinalStateCompleted
 	}
+
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
 		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure)) && !recoveryRequired && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
@@ -200,8 +177,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if err != nil {
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
+	reviewChangesRequested := false
 	if change != nil {
-		change = o.refreshNativeChangeReview(ctx, issueID, change)
+		var reviewErr error
+		var review connector.ChangeReview
+		change, review, reviewErr = o.refreshNativeChangeReview(ctx, issueID, change)
+		if reviewErr != nil {
+			return handoff(reviewErr)
+		}
+		reviewChangesRequested = review.ChangesRequested && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	}
 	needsReview := change != nil && change.VersionError != "" || !changed && !accepted || reported && !accepted
 	review := cfg.reviewTargetState()
@@ -225,11 +209,18 @@ func (o *Orchestrator) completeNativeChangeRun(
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	implementationRework := change != nil && change.ImplementationReview != nil && change.ImplementationReview.Verdict == gate.ValidatorVerdictRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	auditRework := change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
-	unfinished := auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
+	unfinished := reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {
 			target, ok = rework, true
 		}
+	}
+	if !humanReview && !blocked && !unfinished && changed && change.VersionID != "" && change.VersionError == "" && !change.Reviewed && (!reported || accepted) {
+		event.Result.NativeChange = change
+		if reviewInfrastructureErr != nil {
+			return handoff(fmt.Errorf("%w: %w", errNativeReviewPending, reviewInfrastructureErr))
+		}
+		return handoff(errNativeReviewPending)
 	}
 	if !humanReview && !blocked && (change != nil && change.VersionError != "" || !ok && (needsReview || changed && !change.Reviewed)) {
 		o.observeNativeCompletion(ctx, event, false)
@@ -447,29 +438,26 @@ func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage
 	return comment
 }
 
-// refreshNativeChangeReview reads whether the version the run published is
-// reviewed as the completion is applied. A run that published no version has
-// nothing to land, whatever an earlier version's review says. The run captured it when it published the version,
-// and an approval or check that arrives before the completion lands is
-// deliberately left to the completion by the Hub, so the answer the run
-// captured may be stale. A failed read keeps the captured answer.
-func (o *Orchestrator) refreshNativeChangeReview(ctx context.Context, issueID string, change *runpkg.NativeChange) *runpkg.NativeChange {
+func (o *Orchestrator) refreshNativeChangeReview(ctx context.Context, issueID string, change *runpkg.NativeChange) (*runpkg.NativeChange, connector.ChangeReview, error) {
 	reader, ok := o.connector.(connector.ChangeReviewReader)
 	if change.VersionError != "" {
 		refused := *change
 		refused.Reviewed = false
-		return &refused
+		return &refused, connector.ChangeReview{}, nil
 	}
-	if !ok || !change.Changed || change.ChangeID == "" || change.VersionID == "" {
-		return change
+	if !ok || !change.Changed || change.ChangeID == "" || change.VersionID == "" || change.VersionError != "" {
+		return change, connector.ChangeReview{}, nil
 	}
-	reviewed, err := reader.ChangeReviewed(ctx, issueID, change.ChangeID, change.VersionID)
-	if err != nil || reviewed == change.Reviewed {
-		return change
+	review, err := reader.ReadChangeReview(ctx, issueID, change.ChangeID, change.VersionID, change.HeadSHA)
+	if err != nil {
+		return change, review, fmt.Errorf("read published Change review evidence: %w", err)
 	}
 	refreshed := *change
-	refreshed.Reviewed = reviewed
-	return &refreshed
+	refreshed.Reviewed = review.Current && review.Reviewed
+	if !review.Current {
+		refreshed.VersionError = "published Change version no longer matches the current head or policy"
+	}
+	return &refreshed, review, nil
 }
 
 // dispatchableState reports a lane a runner claims work from. A landing lane
@@ -552,15 +540,18 @@ func shortCommit(sha string) string {
 
 func nativeSourceReviewWait(event runpkg.Completion) bool {
 	change := event.Result.NativeChange
-	if change == nil || !change.Changed || change.ChangeID == "" || change.VersionID == "" || change.HeadSHA == "" || change.Error != "" || change.VersionError != "" || event.Err != nil && change.ImplementationReviewError == "" {
+	if change == nil || !change.Changed || change.ChangeID == "" || change.VersionID == "" || change.HeadSHA == "" || change.Error != "" || change.VersionError != "" || event.Err != nil && change.ImplementationReviewError == "" && !errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) {
 		return false
 	}
 	disposition := runpkg.NativeDispositionFromMessage(event.Result.FinalMessage)
 	if disposition == nil || disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
 		return false
 	}
+	if change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictRework || change.SecurityAudit != nil && change.SecurityAudit.Verdict == gate.ValidatorVerdictRework {
+		return false
+	}
 	if review := change.ImplementationReview; review != nil && review.VersionID == change.VersionID && review.HeadSHA == change.HeadSHA && review.Verdict == gate.ValidatorVerdictRework {
 		return false
 	}
-	return change.ImplementationReviewError != "" || change.ImplementationReview != nil && change.ImplementationReview.VersionID == change.VersionID && change.ImplementationReview.HeadSHA == change.HeadSHA && change.ImplementationReview.Verdict == gate.ValidatorVerdictWait
+	return errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || change.ImplementationReviewError != "" || change.ImplementationReview != nil && change.ImplementationReview.VersionID == change.VersionID && change.ImplementationReview.HeadSHA == change.HeadSHA && change.ImplementationReview.Verdict == gate.ValidatorVerdictWait
 }

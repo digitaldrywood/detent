@@ -63,10 +63,6 @@ func terminalTarget(project tracker.NativeProject, current string) string {
 // promoteReviewedChange moves the change's primary issue to the landing lane
 // once its current version is reviewed. It runs after every write that can
 // complete the evidence: an approval, a check result, and a version publish
-// under a policy that requires no review. An issue in a dispatchable lane
-// belongs to the run working it, whose completion moves it, so it is left
-// for that run; so is an issue the workflow cannot move. The evidence is
-// recorded either way.
 func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
 	detail, err := readChangeDetail(ctx, tx, scope, string(change.WorkItemID), change.ID, now)
 	if err != nil {
@@ -85,7 +81,21 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	}
 	for _, state := range project.States {
 		if state.Name == issue.State && state.Dispatchable {
-			return nil
+			var id tracker.WorkItemID
+			var active bool
+			if err := tx.QueryRowContext(ctx, `SELECT i.id, EXISTS (SELECT 1 FROM leases l WHERE l.issue_id = i.id AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)) FROM issues i WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID).Scan(&id, &active); err != nil {
+				return err
+			}
+			if active {
+				return nil
+			}
+			waiting, err := readPublishedReviewWait(ctx, tx, id, now)
+			if err != nil {
+				return err
+			}
+			if waiting.Kind == "" {
+				return nil
+			}
 		}
 	}
 	target := landingTarget(project, issue.State)
