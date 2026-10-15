@@ -122,7 +122,9 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 		{name: "source lock cancellation preserves owners", change: "locked"},
 		{name: "preserve moved source branch", external: true, change: "branch"},
 		{name: "preserve another active source worktree", external: true, change: "held"},
-		{name: "refuse moved fetched PR head", external: true, change: "remote", refusal: LandRefusalHeadMoved},
+		{name: "stale pull ref uses exact published branch", external: true, change: "remote"},
+		{name: "stale pull ref refuses missing published branch", external: true, change: "remote-missing", refusal: LandRefusalHeadMoved},
+		{name: "stale pull ref refuses moved published branch", external: true, change: "remote-moved", refusal: LandRefusalHeadMoved},
 		{name: "refuse cross-project source", external: true, change: "repository", refusal: LandRefusalProtected},
 		{name: "refuse cross-org external reference", external: true, change: "external", refusal: LandRefusalProtected},
 	} {
@@ -180,8 +182,14 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				options.Repository = "https://github.com/another/repo"
 			case "external":
 				options.External.URL = "https://github.com/another/repo/pull/7"
-			case "remote":
+			case "remote", "remote-missing", "remote-moved":
 				runGit(t, fixture.remote, "update-ref", "refs/pull/7/head", fixture.remoteMain(t))
+				if test.change == "remote-missing" {
+					runGit(t, fixture.remote, "update-ref", "-d", "refs/heads/"+branch)
+				}
+				if test.change == "remote-moved" {
+					runGit(t, fixture.remote, "update-ref", "refs/heads/"+branch, fixture.remoteMain(t))
+				}
 			case "branch", "held":
 				runGit(t, receiver, "branch", branch, "main")
 				if test.change == "held" {

@@ -243,18 +243,22 @@ func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeSc
 	return observation, nil
 }
 
-func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential) bool {
+func (s *Service) appAllRunnerGrants(ctx context.Context, credential apiCredential, projects ...tracker.ProjectID) bool {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	if credential.Hosted == nil || !s.hostedAllRunnerGrants(ctx, credential) {
+	if credential.Hosted == nil || s.requireHostedRunnerProjects(ctx, s.database.reader, credential, projects) != nil {
 		return false
 	}
 	if credential.HostedKeyScope == "" {
 		return true
 	}
 	condition, args := credential.projectGrantSQL("p.organization_id", "p.id")
-	args = append([]any{s.config.Hosted.OrganizationID}, args...)
-	var missing int
-	err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND NOT ("+condition+")", args...).Scan(&missing)
-	return err == nil && missing == 0
+	raw, err := marshalNative(projects)
+	if err != nil {
+		return false
+	}
+	args = append(args, s.config.Hosted.OrganizationID, projects == nil, raw)
+	var total, granted int
+	err = s.database.reader.QueryRowContext(ctx, "SELECT count(*), COALESCE(sum("+condition+"),0) FROM projects p WHERE p.deleted_at IS NULL AND p.organization_id = ? AND (? OR p.id IN (SELECT value FROM json_each(?)))", args...).Scan(&total, &granted)
+	return err == nil && total > 0 && total == granted
 }
