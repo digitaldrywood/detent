@@ -13,13 +13,13 @@ func TestSecurityAuditSnapshot(t *testing.T) {
 		native               bool
 		base, head           string
 		limit                int
-		wantError, truncated bool
+		wantError, oversized bool
 	}{
 		{name: "github exact diff", base: "base", head: "head", limit: 100},
 		{name: "native exact diff", native: true, base: "base", head: "head", limit: 100},
 		{name: "head changed", base: "base", head: "other", limit: 100, wantError: true},
 		{name: "base changed", base: "other", head: "head", limit: 100, wantError: true},
-		{name: "oversized diff", base: "base", head: "head", limit: 4, truncated: true},
+		{name: "oversized diff", base: "base", head: "head", limit: 4, oversized: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := Issue{ID: "wi_example", Identifier: "prj_example#1", Title: "Review change", Description: "Issue context"}
@@ -37,11 +37,11 @@ func TestSecurityAuditSnapshot(t *testing.T) {
 			if test.wantError {
 				return
 			}
-			if snapshot.BaseSHA != test.base || snapshot.HeadSHA != test.head || snapshot.IssueID != issue.ID || snapshot.IssueDescription != issue.Description || snapshot.DiffTruncated || snapshot.Diff != diff.Patch || snapshot.DiffBytes != len(diff.Patch) {
+			if snapshot.BaseSHA != test.base || snapshot.HeadSHA != test.head || snapshot.IssueID != issue.ID || snapshot.IssueDescription != issue.Description || snapshot.DiffTruncated || snapshot.Diff != diff.Patch || !snapshot.DiffComplete || snapshot.DiffBytes != len(diff.Patch) {
 				t.Fatalf("snapshot = %+v", snapshot)
 			}
 			_, err = securityaudit.BuildPrompt(snapshot, test.limit)
-			if (err != nil) != test.truncated {
+			if (err != nil) != test.oversized {
 				t.Fatalf("prompt error = %v", err)
 			}
 		})

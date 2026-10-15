@@ -116,7 +116,7 @@ type Evaluation struct {
 }
 
 func ReviewerDigest() string {
-	return reviewerDigest(trustedReviewerInstructions, trustedToolInstructions)
+	return reviewerDigest(trustedReviewerInstructions+"\x00"+chunkInstructions, trustedToolInstructions)
 }
 
 func ServiceIdentity(projectID string) string {
