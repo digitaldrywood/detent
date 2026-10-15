@@ -74,24 +74,30 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 	if err != nil {
 		return false, err
 	}
-	audit, err := r.Audit(ctx, SecurityAuditRequest{Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate})
-	if err != nil {
-		return false, err
+
+	var publisher ValidationEvidenceExecution
+	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
+		publisher = evidence
 	}
-	run := audit.auditRun(snapshot)
-	review := tracker.SecurityAuditReview{Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
-	evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: run.Repository, PRNumber: run.PRNumber, BaseSHA: input.Version.BaseSHA, HeadSHA: input.Version.HeadSHA}, "", cfg.BlockOn)
-	if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
-		return false, errors.New("security audit evidence is incomplete")
-	}
-	review.Verdict = "pass"
-	if !evaluation.Allowed {
-		review.Verdict = "rework"
-	}
-	if err := execution.RecordSecurityAudit(ctx, review); err != nil {
-		return false, err
-	}
-	return evaluation.Allowed, nil
+	_, err = r.Audit(ctx, SecurityAuditRequest{Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
+			run := audit.auditRun(snapshot)
+			review := tracker.SecurityAuditReview{Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
+			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: run.Repository, PRNumber: run.PRNumber, BaseSHA: input.Version.BaseSHA, HeadSHA: input.Version.HeadSHA}, "", cfg.BlockOn)
+			if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
+				return fmt.Errorf("security audit evidence is incomplete: %s", evaluation.Diagnostic())
+			}
+			review.Verdict = "pass"
+			if !evaluation.Allowed {
+				review.Verdict = "rework"
+			}
+			if err := execution.RecordSecurityAudit(ctx, review); err != nil {
+				return err
+			}
+			approved = evaluation.Allowed
+			return nil
+		}})
+	return approved, err
 }
 
 func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target NativeLandingTarget, files workspace.FileDiffs) (review *tracker.SecurityAuditReview, err error) {
@@ -124,21 +130,27 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 		return nil, err
 	}
 	snapshot.DiffTruncated = snapshot.DiffTruncated || files.Truncated
-	audit, err := r.Audit(ctx, SecurityAuditRequest{Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate})
-	if err != nil {
-		return nil, err
+
+	var publisher ValidationEvidenceExecution
+	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
+		publisher = evidence
 	}
-	run := audit.auditRun(snapshot)
-	evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, "", cfg.BlockOn)
-	if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
-		return nil, errors.New("landing security audit evidence is incomplete")
-	}
-	review = &tracker.SecurityAuditReview{VersionID: target.VersionID, Landing: true, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: diff.Digest, Run: run, Verdict: "pass"}
-	if !evaluation.Allowed {
-		review.Verdict = "rework"
-	}
-	if err := execution.RecordSecurityAudit(ctx, *review); err != nil {
-		return nil, err
-	}
-	return review, nil
+	_, err = r.Audit(ctx, SecurityAuditRequest{Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
+			run := audit.auditRun(snapshot)
+			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, "", cfg.BlockOn)
+			if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
+				return fmt.Errorf("landing security audit evidence is incomplete: %s", evaluation.Diagnostic())
+			}
+			result := &tracker.SecurityAuditReview{VersionID: target.VersionID, Landing: true, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: diff.Digest, Run: run, Verdict: "pass"}
+			if !evaluation.Allowed {
+				result.Verdict = "rework"
+			}
+			if err := execution.RecordSecurityAudit(ctx, *result); err != nil {
+				return err
+			}
+			review = result
+			return nil
+		}})
+	return review, err
 }

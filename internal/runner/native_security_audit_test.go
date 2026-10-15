@@ -2,8 +2,12 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,8 +22,12 @@ import (
 
 type nativeSecurityAuditTestExecution struct {
 	attachmentValidatorExecution
-	audit    *tracker.SecurityAuditReview
-	versions int
+	audit          *tracker.SecurityAuditReview
+	versions       int
+	workspace      func() string
+	submitErr      error
+	publicationErr error
+	evidence       []ValidationEvidence
 }
 
 type nativeSecurityAuditIsolationBackend struct {
@@ -45,20 +53,37 @@ func (e *nativeSecurityAuditTestExecution) SecurityAuditVersion(ctx context.Cont
 }
 
 func (e *nativeSecurityAuditTestExecution) RecordSecurityAudit(_ context.Context, review tracker.SecurityAuditReview) error {
+	if _, err := os.Stat(e.workspace()); err != nil {
+		return errors.New("audit workspace disappeared before submission")
+	}
+	if e.submitErr != nil {
+		return e.submitErr
+	}
 	e.audit = &review
 	return nil
+}
+
+func (e *nativeSecurityAuditTestExecution) PublishValidationEvidence(_ context.Context, files []ValidationEvidence) error {
+	if _, err := os.Stat(e.workspace()); err != nil {
+		return errors.New("audit workspace disappeared before publication")
+	}
+	e.evidence = files
+	return e.publicationErr
 }
 
 func TestNativeSecurityAuditStage(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name                       string
-		kind, authentication       string
-		disabled, blocking, failed bool
-		landing                    bool
-		claimPolicy, ambientPolicy bool
-		nonNative                  bool
-		processClockOffset         time.Duration
+		name                        string
+		kind, authentication        string
+		disabled, blocking, failed  bool
+		landing                     bool
+		claimPolicy, ambientPolicy  bool
+		nonNative                   bool
+		processClockOffset          time.Duration
+		rejected, publicationFailed bool
+		missingProcess              bool
+		severity                    string
 	}{
 		{name: "default native Codex subscription pass", kind: config.AgentBackendCodex, authentication: "chatgpt_subscription"},
 		{name: "default native Codex metered pass", kind: config.AgentBackendCodex, authentication: "api_key"},
@@ -68,6 +93,12 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		{name: "default native Claude subscription pass", kind: config.AgentBackendClaudeCode, authentication: "subscription"},
 		{name: "default landing Claude metered pass", kind: config.AgentBackendClaudeCode, authentication: "api_key", landing: true},
 		{name: "blocking finding", blocking: true},
+		{name: "blocking p2 finding", blocking: true, severity: "p2"},
+		{name: "incomplete process identity publishes diagnostics", missingProcess: true, failed: true},
+		{name: "Hub rejection publishes diagnostics", rejected: true, failed: true},
+		{name: "landing Hub rejection publishes diagnostics", rejected: true, failed: true, landing: true},
+		{name: "publication failure retains diagnostics", rejected: true, publicationFailed: true, failed: true},
+		{name: "landing publication failure retains diagnostics", rejected: true, publicationFailed: true, failed: true, landing: true},
 		{name: "explicit false", disabled: true},
 		{name: "backend failure", failed: true},
 		{name: "landing exact integrated identity", landing: true},
@@ -92,9 +123,15 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if test.blocking {
 				output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","body":"Missing authorization"}]}`
 			}
+			if test.severity != "" {
+				output = strings.ReplaceAll(output, `"p1"`, `"`+test.severity+`"`)
+			}
 			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: now.Add(time.Second + test.processClockOffset)}}, {Type: AgentUpdateMessageDelta, Delta: output}}}
+			if test.missingProcess {
+				backend.updates[0].WorkerProcess.PID = 0
+			}
 			backend.result.AuthenticationMode = authentication
-			if test.failed && !test.ambientPolicy {
+			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess {
 				backend.err = errors.New("backend unavailable")
 			}
 			cfg := config.Default()
@@ -119,7 +156,13 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			execution := &nativeSecurityAuditTestExecution{}
+			execution := &nativeSecurityAuditTestExecution{workspace: func() string { return backend.request.Workspace }}
+			if test.rejected {
+				execution.submitErr = errors.New("Hub rejected completed audit")
+			}
+			if test.publicationFailed {
+				execution.publicationErr = errors.New("Hub artifact unavailable")
+			}
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1"}}
 			ctx := t.Context()
 			ambient := isolation.Policy{Tier: isolation.NativeTrusted, HostServices: []string{"unix:/tmp/another-member.sock"}, ExtraNetworkDomains: []string{"another-member.example"}}
@@ -142,6 +185,30 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			}
 			if (err != nil) != test.failed {
 				t.Fatalf("audit error = %v", err)
+			}
+			if test.rejected || test.missingProcess {
+				if len(execution.evidence) != 1 {
+					t.Fatalf("diagnostic evidence = %+v; error=%v", execution.evidence, err)
+				}
+				var diagnostic struct {
+					Run           struct{ ID int64 }
+					Output, Error string
+				}
+				wantFailure := "Hub rejected completed audit"
+				if test.missingProcess {
+					wantFailure = "worker_pid"
+				}
+				if decodeErr := json.Unmarshal(execution.evidence[0].Content, &diagnostic); decodeErr != nil || diagnostic.Run.ID != 73 || diagnostic.Output != output || !strings.Contains(diagnostic.Error, wantFailure) {
+					t.Fatalf("diagnostic = %+v, %v", diagnostic, decodeErr)
+				}
+				_, statErr := os.Stat(filepath.Join(backend.request.Workspace, execution.evidence[0].Name))
+				if test.publicationFailed {
+					if statErr != nil || !strings.Contains(err.Error(), backend.request.Workspace) {
+						t.Fatalf("lost unpublished diagnostics: %v, %v", statErr, err)
+					}
+				} else if !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("published workspace cleanup = %v", statErr)
+				}
 			}
 			if test.failed {
 				if !errors.Is(err, ErrValidatorInfrastructure) || execution.audit != nil {
