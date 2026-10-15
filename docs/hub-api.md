@@ -1210,6 +1210,9 @@ They accept `state=open|resolved` (default `open`), an RFC3339 `since`, and
 or resolved at or after that time. The response includes `items`, an optional
 `next_cursor`, and the tenant detector's `last_tick_at` (null before its first
 successful evaluation).
+The HTTP endpoint additionally accepts `state=all`: open findings are always
+included, while `since` filters only resolved findings. Live consumers can share
+one read for open findings and recent resolutions.
 
 The Hub evaluates static health rules every minute using current state and
 at most 24 hours of recorded events. Findings and their native issue reports

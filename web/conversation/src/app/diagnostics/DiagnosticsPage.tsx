@@ -28,8 +28,7 @@ import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { getQueryData, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
 import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics } from "./diagnosticsQuery.ts";
 import { usePageTitle } from "../pageTitle.ts";
-import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
-import { useWorkHttp } from "../work/lib/useWork.ts";
+import { useHealthFindings } from "./healthFindings.tsx";
 import { CapacityChart } from "./CapacityChart.tsx";
 import { FindingAskWorkspace } from "./FindingAsk.tsx";
 
@@ -69,7 +68,7 @@ export function DiagnosticsRoute(): React.ReactElement {
   usePageTitle("Diagnostics");
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
-  const http = useWorkHttp();
+  const sharedFindings = useHealthFindings();
   const [range, setRange] = useState<Window>("24h");
   const [revision, setRevision] = useState(0);
   const [askedFinding, setAskedFinding] = useState<DiagnosticFinding | null>(null);
@@ -87,78 +86,29 @@ export function DiagnosticsRoute(): React.ReactElement {
     if (findings.key === findingsKey && findings.value !== EMPTY_FINDINGS) setQueryData(findingsKey, findings.value);
   }, [findings, findingsKey]);
   const findingsState = findings.key === findingsKey ? findings.value : getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS;
+  const readScope = `${projectsKey}:${revision}`;
+  const previousScope = React.useRef("");
   useEffect(() => {
-    let current = true;
-    setFindings({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS });
-    let request = 0;
-    let tick: string | null = null;
-    let since: string | undefined;
-    const update = (next: (previous: FindingsState) => FindingsState) => {
-      setFindings((previous) => ({ key: findingsKey, value: next(previous.key === findingsKey ? previous.value : EMPTY_FINDINGS) }));
-    };
-    const refreshFindings = async (live: boolean) => {
-      const version = ++request;
-      try {
-        const [open, resolved] = await Promise.all([
-          api.healthFindings(projects),
-          live ? api.healthFindings(projects, { state: "resolved", since }) : null,
-        ]);
-        if (!current || request !== version) return;
-        since ??= open.last_tick_at ?? undefined;
-        tick = open.last_tick_at;
-        update((previous) => {
-          const findings =
-            open.last_tick_at === null ? null : findingsFromRead(open);
-          const updates = new Map(
-            [
-              ...(resolved === null ? [] : findingsFromRead(resolved)),
-              ...(findings ?? []),
-            ].map((finding) => [finding.id, finding]),
-          );
-          const retained = live
-            ? (previous.findings ?? []).map(
-                (finding) => updates.get(finding.id) ?? finding,
-              )
-            : [];
-          const ids = new Set(retained.map((finding) => finding.id));
-          return {
-            findings:
-              findings === null
-                ? null
-                : [
-                    ...retained,
-                    ...findings.filter((finding) => !ids.has(finding.id)),
-                  ],
-            detectorTick: open.last_tick_at,
-            findingsError: null,
-          };
-        });
-      } catch {
-        if (current && request === version) update((previous) => ({ ...previous, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." }));
-        return;
-      }
-    };
-    void refreshFindings(false);
-    const refreshLive = () => {
-      if (document.visibilityState === "visible") void refreshFindings(true);
-    };
-    const unsubscribe =
-      projects[0] === undefined
-        ? undefined
-        : subscribeProjectEvents(http, projects[0], {
-            "health.findings": ((event: MessageEvent<string>) => {
-              if (tick === event.data) return;
-              refreshLive();
-            }) as EventListener,
-            open: refreshLive,
-          });
-    document.addEventListener("visibilitychange", refreshLive);
-    return () => {
-      current = false;
-      unsubscribe?.();
-      document.removeEventListener("visibilitychange", refreshLive);
-    };
-  }, [api, http, projects, findingsKey, revision]);
+    const read = sharedFindings.read;
+    if (read === null && !sharedFindings.error) return;
+    const live = previousScope.current === readScope;
+    previousScope.current = readScope;
+    const nativeProjects = new Set(projects);
+    const rows = (read === null ? [] : findingsFromRead(read)).filter((finding) => nativeProjects.has(finding.subject.project_id ?? ""));
+    setFindings((previous) => {
+      const prior = previous.key === findingsKey ? previous.value : EMPTY_FINDINGS;
+      if (sharedFindings.error && read === null) return { key: findingsKey, value: { ...prior, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." } };
+      const updates = new Map(rows.map((finding) => [finding.id, finding]));
+      const retained = live || sharedFindings.error ? (prior.findings ?? []).map((finding) => updates.get(finding.id) ?? finding) : [];
+      const ids = new Set(retained.map((finding) => finding.id));
+      return { key: findingsKey, value: {
+        findings: read?.last_tick_at == null ? null : [...retained, ...rows.filter((finding) => finding.resolved_at == null && !ids.has(finding.id))],
+        detectorTick: read?.last_tick_at ?? null,
+        findingsError: sharedFindings.error ? "Unable to refresh findings. Any findings below are from the last successful read." : null,
+      } };
+    });
+  }, [sharedFindings.read, sharedFindings.error, findingsKey, readScope, projects]);
+
   const state = {
     report: reportQuery.data?.report ?? null,
     runners: reportQuery.data?.runners ?? null,
@@ -179,6 +129,7 @@ export function DiagnosticsRoute(): React.ReactElement {
       onRangeChange={setRange}
       onRefresh={() => {
         void reportQuery.refresh();
+        sharedFindings.refresh();
         setRevision((value) => value + 1);
       }}
       onAsk={(finding) => {

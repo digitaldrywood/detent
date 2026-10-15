@@ -1,6 +1,10 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { HealthFindingsProvider } from "../../src/app/diagnostics/healthFindings.tsx";
+import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
+import { makeAccountApi } from "../../src/app/account/api.ts";
+import { makeWorkHttp } from "../../src/app/work/lib/workHttp.ts";
 import { DiagnosticsRoute, DiagnosticsView } from "../../src/app/diagnostics/DiagnosticsPage.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { decodeFleet, type AccountProject } from "../../src/contracts/account.ts";
@@ -12,7 +16,7 @@ import health from "../../src/contracts/fixtures/health-findings.json";
 const mocks = vi.hoisted(() => ({
   api: { diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
   bootstrap: { actor: { can_manage: false }, organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }] },
-  http: { eventsUrl: () => "/events" },
+  http: { eventsUrl: () => "/events", listHealthFindings: vi.fn() },
 }));
 vi.mock("../../src/app/account/context.ts", () => ({ useAccountApi: () => mocks.api, useAccountBootstrap: () => mocks.bootstrap }));
 vi.mock("../../src/app/work/lib/useWork.ts", () => ({ useWorkHttp: () => mocks.http }));
@@ -34,9 +38,11 @@ const healthFinding = decodeHealthFindings(health).items[0]!;
 const original = { ...healthFinding, subject: { ...healthFinding.subject, project_id: "prj_fixture" } };
 const next = { ...original, id: "new_finding", summary: "New finding" };
 const tick = "2026-10-07T10:00:00Z";
+let detectorTick = health.last_tick_at;
 let open = [original];
 let resolved: typeof open = [];
 function emit(at = tick) {
+  detectorTick = at;
   FindingEvents.current.dispatchEvent(new MessageEvent("health.findings", { data: at }));
 }
 function openCount() {
@@ -48,13 +54,14 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FindingEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   open = [original];
-  mocks.bootstrap.projects[0]!.can_write = true;
+  detectorTick = health.last_tick_at;
+  mocks.bootstrap.projects = [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }];
   resolved = [];
   mocks.api.diagnostics.mockResolvedValue(decodeDiagnostics(report));
   mocks.api.fleet.mockResolvedValue({ runners: [] });
-  mocks.api.healthFindings.mockImplementation(async (_projects, options) => ({ items: options?.state === "resolved" ? resolved : open, last_tick_at: options ? tick : health.last_tick_at }));
+  mocks.http.listHealthFindings.mockImplementation(async (_project, _cursor, _signal, options) => ({ items: options?.state === "all" ? [...open, ...resolved] : open, last_tick_at: detectorTick }));
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const projects: readonly AccountProject[] = [
   { id: "prj_main", name: "Example project", profile: "native", can_write: true, can_manage_runners: true, states: [] },
@@ -133,7 +140,7 @@ it.each([
 });
 
 it("updates findings in place, retains resolutions until reload, and restores reopened findings", async () => {
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByText(original.summary);
   expect(openCount()).toBe("1");
   const row = screen.getByText(original.summary).closest("article")!;
@@ -173,18 +180,18 @@ it("updates findings in place, retains resolutions until reload, and restores re
 });
 
 it("catches up on visibility and ignores failed or superseded live reads after unmount", async () => {
-  const view = render(<DiagnosticsRoute />);
+  const view = render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByText(original.summary);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
-  mocks.api.healthFindings.mockClear();
+  mocks.http.listHealthFindings.mockClear();
   act(() => emit());
-  expect(mocks.api.healthFindings).not.toHaveBeenCalled();
+  expect(mocks.http.listHealthFindings).not.toHaveBeenCalled();
   visibility.mockReturnValue("visible");
   open = [original, next];
   act(() => document.dispatchEvent(new Event("visibilitychange")));
   await screen.findByText(next.summary);
   let release!: (value: unknown) => void;
-  mocks.api.healthFindings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  mocks.http.listHealthFindings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
   act(() => emit("older"));
   open = [next];
   resolved = [{ ...original, resolved_at: tick }];
@@ -193,21 +200,21 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   await act(async () => release({ items: [original], last_tick_at: tick }));
   expect(openCount()).toBe("1");
   expect(screen.getByText("Resolved")).toBeTruthy();
-  mocks.api.healthFindings.mockRejectedValueOnce(new Error("offline"));
+  mocks.http.listHealthFindings.mockRejectedValueOnce(new Error("offline"));
   act(() => emit("failed"));
   await screen.findByText(/Unable to refresh findings/);
   expect(screen.getByText("Resolved")).toBeTruthy();
   const source = FindingEvents.current;
   view.unmount();
   expect(source.close).toHaveBeenCalledOnce();
-  mocks.api.healthFindings.mockClear();
+  mocks.http.listHealthFindings.mockClear();
   act(() => { emit("unmounted"); document.dispatchEvent(new Event("visibilitychange")); });
-  expect(mocks.api.healthFindings).not.toHaveBeenCalled();
+  expect(mocks.http.listHealthFindings).not.toHaveBeenCalled();
 });
 
 it("opens the selected finding in its project chat from every Needs attention row", async () => {
   open = [original, next];
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByRole("button", { name: `Ask about ${original.summary}` });
   for (const finding of open) {
     fireEvent.click(screen.getByRole("button", { name: `Ask about ${finding.summary}` }));
@@ -217,9 +224,93 @@ it("opens the selected finding in its project chat from every Needs attention ro
 
 it("keeps Ask visible but unavailable when the viewer cannot write project chat", async () => {
   mocks.bootstrap.projects[0]!.can_write = false;
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   const ask = await screen.findByRole("button", { name: `Ask about ${original.summary}` });
   expect(ask.hasAttribute("disabled")).toBe(true);
   fireEvent.click(ask);
   expect(screen.queryByRole("region", { name: "Ask about this finding" })).toBeNull();
+});
+
+
+it("shares one findings read per project and detector tick between Diagnostics and the sidebar", async () => {
+  vi.useFakeTimers();
+  const projects = ["prj_first", "prj_second", "prj_third", "prj_fourth"].map((id) => ({ id, name: `Project ${id}`, profile: "native", can_write: true }));
+  mocks.bootstrap.projects = projects;
+  const finding = { ...original, id: "shared_finding", severity: "attention", summary: "Shared project finding", subject: { kind: "project", id: "prj_first" }, resolved_at: null as string | null };
+  let items = [finding];
+  let at = health.last_tick_at;
+  let unavailable = false;
+  const request = vi.fn(async (url: string) => {
+    if (unavailable && url.includes("prj_second/")) return Response.json({ error: "temporarily unavailable" }, { status: 503 });
+    const since = new URL(url, "https://example.test").searchParams.get("since");
+    const visible = items.filter((item) => item.resolved_at === null || (since !== null && item.resolved_at >= since));
+    return Response.json({ items: url.includes("prj_first/") ? visible : [], last_tick_at: at });
+  });
+  const options = { origin: "", apiBase: "/api/v2/organizations/org_fixture", csrfToken: "", fetch: request };
+  const http = makeWorkHttp(options);
+  mocks.api.healthFindings.mockImplementation(makeAccountApi(options).healthFindings);
+  mocks.http.listHealthFindings.mockImplementation(http.listHealthFindings);
+  function SidebarProbe() {
+    const findings = useSidebarFindings(projects.map((project) => ({ ...project })));
+    return <nav aria-label="Sidebar findings">{findings.map((item) => <a key={item.id} href={item.to}>{item.summary}</a>)}</nav>;
+  }
+  const view = render(<HealthFindingsProvider projects={projects}><SidebarProbe /></HealthFindingsProvider>);
+  await act(async () => {});
+  view.rerender(<HealthFindingsProvider projects={projects}><SidebarProbe /><DiagnosticsRoute /></HealthFindingsProvider>);
+  await act(async () => {});
+  const expectReads = (perProject: number) => {
+    for (const project of projects) expect(request.mock.calls.filter(([url]) => url.includes(`/projects/${project.id}/health/findings`))).toHaveLength(perProject);
+  };
+  const sidebar = screen.getByRole("navigation", { name: "Sidebar findings" });
+  expect(within(sidebar).getByRole("link", { name: finding.summary }).getAttribute("href")).toBe("/diagnostics");
+  expect(openCount()).toBe("1");
+  expectReads(1);
+  for (let second = 0; second < 60; second++) {
+    view.rerender(<HealthFindingsProvider projects={projects.map((project) => ({ ...project }))}><SidebarProbe /><DiagnosticsRoute /></HealthFindingsProvider>);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      FindingEvents.current.dispatchEvent(new Event("open"));
+      FindingEvents.current.dispatchEvent(new MessageEvent("activity", { data: String(second) }));
+      document.dispatchEvent(new Event("visibilitychange"));
+      emit(at);
+    });
+    expectReads(1);
+  }
+  at = "2026-10-07T10:01:00Z";
+  items = [{ ...finding, resolved_at: at }];
+  await act(async () => emit(at));
+  expectReads(2);
+  expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
+  expect(screen.getByText("Resolved")).toBeTruthy();
+  expect(screen.getByText(finding.summary).closest("article")!.querySelector("time")!.dateTime).toBe(at);
+  expect(openCount()).toBe("0");
+  at = "2026-10-07T10:02:00Z";
+  items = [finding, { ...finding, id: "another_finding", summary: "Another finding" }];
+  await act(async () => emit(at));
+  expectReads(3);
+  expect(screen.queryByText("Resolved")).toBeNull();
+  expect(openCount()).toBe("2");
+  expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
+  expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(8);
+  unavailable = true;
+  at = "2026-10-07T10:03:00Z";
+  items = items.map((item) => item.id === finding.id ? { ...item, resolved_at: at } : item);
+  await act(async () => emit(at));
+  expectReads(4);
+  expect(screen.getByText(/Unable to refresh findings/)).toBeTruthy();
+  at = "2026-10-07T10:04:00Z";
+  await act(async () => emit(at));
+  expectReads(5);
+  expect(screen.getByText(/Unable to refresh findings/)).toBeTruthy();
+  unavailable = false;
+  at = "2026-10-07T10:05:00Z";
+  await act(async () => emit(at));
+  expectReads(6);
+  expect(screen.queryByText(/Unable to refresh findings/)).toBeNull();
+  expect(screen.getByText("Resolved")).toBeTruthy();
+  expect(screen.getByText(finding.summary).closest("article")!.querySelector("time")!.dateTime).toBe("2026-10-07T10:03:00Z");
+  expect(openCount()).toBe("1");
+  expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
+  expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
+  expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(20);
 });
