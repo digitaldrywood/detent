@@ -102,6 +102,7 @@ type NativeIssue struct {
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	Snippet            string              `json:"snippet,omitempty"`
+	SearchScore        float64             `json:"search_score,omitempty"`
 	State              string              `json:"state"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`

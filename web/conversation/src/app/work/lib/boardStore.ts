@@ -391,6 +391,10 @@ export class BoardRead {
       this.frames.set(projectId, [...(this.frames.get(projectId) ?? []), frame]);
       return;
     }
+    if (this.view.q.length > 0 && frame.sequence > (this.entries.find((entry) => entry.project.project_id === projectId)?.sequence ?? 0)) {
+      this.reload();
+      return;
+    }
     this.entries = this.entries.map((entry) => {
       if (entry.project.project_id !== projectId || frame.sequence < (entry.sequence ?? 0)) return entry;
       const issues = new Map(entry.issues.map((issue) => [issue.work_item_id, issue]));
@@ -423,7 +427,6 @@ export class BoardRead {
 
   private matches(issue: NativeIssue, project: NativeProject): boolean {
     const view = this.view;
-    const q = view.q.toLowerCase();
     return (view.createdBy !== "me" || issue.actor.principal_id === this.principalId) && (view.view !== "board" || (!issue.terminal && project.states.some((state) => state.name === issue.state && !state.terminal) &&
       (view.lanes === null || view.lanes.includes(issue.state)))) && (issue.archived === true) === (view.archived === true) &&
       (view.view === "list" ? tabMatches(view.tab, { state: issue.state, terminal: project.states.find((state) => state.name === issue.state)?.terminal ?? issue.terminal })
@@ -431,9 +434,7 @@ export class BoardRead {
       (view.type.length === 0 || issue.type !== undefined && view.type.includes(issue.type)) &&
       (view.label.length === 0 || view.label.some((label) => issue.labels.includes(label))) &&
       (view.assignee.length === 0 || view.assignee.some((assignee) => issue.assignees.includes(assignee))) &&
-      (view.priority.length === 0 || view.priority.some((name) => String(priorityValue(name) ?? name) === String(issue.priority))) &&
-      (q.length === 0 || [issue.title, `${project.name}#${issue.number}`, `${project.project_id}#${issue.number}`, ...issue.labels]
-        .some((value) => value.toLowerCase().includes(q)));
+      (view.priority.length === 0 || view.priority.some((name) => String(priorityValue(name) ?? name) === String(issue.priority)));
   }
 
   reload = (): void => {
@@ -480,6 +481,7 @@ export class BoardRead {
           const previousItems = new Map(this.entries.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue]));
           const current = [...new Map(issues.map((issue) => [issue.work_item_id, issue])).values()]
             .map((issue) => {
+              if (this.view.q.length > 0) return issue;
               const mutation = confirmed.get(issue.work_item_id);
               const previous = previousItems.get(issue.work_item_id);
               const latest = newer(previous?.revision ?? null, mutation?.revision ?? null) ? previous : mutation ?? previous;
@@ -489,6 +491,7 @@ export class BoardRead {
             }).filter((issue) => this.matches(issue, entry.project));
           const ids = new Set(current.map((issue) => issue.work_item_id));
           for (const issue of confirmed.values()) {
+            if (this.view.q.length > 0) break;
             if (issue.project_id !== id || ids.has(issue.work_item_id) || !this.matches(issue, entry.project)) continue;
             current.push(issue);
             changed = true;
@@ -596,6 +599,10 @@ export class BoardRead {
 
   confirm(issue: NativeIssue): void {
     if (!this.scope.includes(issue.project_id)) return;
+    if (this.view.q.length > 0) {
+      this.reload();
+      return;
+    }
     this.entries = this.entries.map((entry) => {
       if (entry.project.project_id !== issue.project_id) return entry;
       const previous = entry.issues.find((candidate) => candidate.work_item_id === issue.work_item_id);

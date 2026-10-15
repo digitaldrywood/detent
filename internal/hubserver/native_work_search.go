@@ -1,9 +1,25 @@
 package hubserver
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 )
+
+func nativeSearchNumber(query string) (int, string) {
+	project, number, qualified := strings.Cut(query, "#")
+	if !qualified {
+		number, project = project, ""
+	}
+	if strings.IndexFunc(number, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+		return 0, ""
+	}
+	value, err := strconv.Atoi(number)
+	if err != nil || value <= 0 {
+		return 0, ""
+	}
+	return value, project
+}
 
 func nativeSearchExpressions(query string) []string {
 	terms := strings.FieldsFunc(query, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
@@ -45,5 +61,11 @@ SELECT issue_id, score, substr(snippet, max(1, instr(snippet, '[') - 60), 240) A
 const nativeLegacySearchText = `i.title || ' ' || i.body || ' ' || i.labels_json || ' ' ||
  (SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number || ' ' || i.project_id || '#' || i.number`
 
-const nativeSearchProjection = `, COALESCE(search.score, 0), COALESCE(search.snippet,
- substr(` + nativeLegacySearchText + `, max(1, instr(lower(` + nativeLegacySearchText + `), lower(?)) - 60), 240))`
+const nativeNumberSearchJoin = ` LEFT JOIN (SELECT ? AS number, ? AS project, ? AS score) number_search
+ ON i.number = number_search.number AND (number_search.project = '' OR lower(number_search.project) = lower(i.project_id)
+ OR lower(number_search.project) = lower((SELECT name FROM projects WHERE id = i.project_id))) `
+
+const nativeSearchScore = `COALESCE(number_search.score, search.score, 0)`
+
+const nativeSearchProjection = `, ` + nativeSearchScore + ` AS search_score, COALESCE(search.snippet,
+ substr(` + nativeLegacySearchText + `, max(1, instr(lower(` + nativeLegacySearchText + `), lower(?)) - 60), 240)) AS search_snippet`
