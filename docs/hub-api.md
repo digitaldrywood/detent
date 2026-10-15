@@ -1811,6 +1811,7 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | Method and suffix | Authority and result |
 | --- | --- |
 | `GET /work-items/{item}/changes` | Project-scoped linked Change Requests |
+| `POST /work-items/{item}/release-pick` | Project operator; associate a verified existing release PR with a dependent native delivery issue |
 | `POST /work-items/{item}/changes` | Worker/operator; `title`, `body`, optional `linked_issues` |
 | `GET /work-items/{item}/changes/{change}` | Consistent detail with versions, decisions, checks, discussion and current summary |
 | `POST /work-items/{item}/changes/{change}/versions` | Publish through the primary issue with `expected_version_id` |
@@ -2044,6 +2045,63 @@ detail. Detail provides version selection, stale/missing-evidence messages,
 discussion provenance, artifact availability, and issue/run navigation. Native
 run recovery uses published change references from ordered issue history rather
 than trusting a stale worker checkpoint to identify the current version.
+
+### Existing release-pick delivery
+
+`POST /work-items/{delivery}/release-pick` and operator MCP
+`associate_release_pick` use the same project-scoped native command. The caller
+needs current operator/admin authority and a write grant for the selected
+project. Runner and worker credentials cannot associate PRs. The project's
+approved policy must use GitHub PR landing and independent review (native
+review policy, validator, automated review, or security audit). This command
+never changes project policy, issue state, holds, assignees, or deployments.
+
+The API accepts `idempotency_key`, string `expected_revision`, and these fields:
+
+| Field | Required identity |
+| --- | --- |
+| `source_issue_id`, `source_change_id` | Same-project source issue and its primary, currently landed native Change |
+| `source_merge_sha` | The Change's recorded merge commit on `develop` |
+| `repository` | Exact enabled project repository URL, such as `https://github.com/example-org/example-project` |
+| `pr_number`, `head_ref`, `head_sha` | Existing open, non-draft PR and its exact branch/head in that repository |
+| `base_ref`, `base_sha` | Existing `release/vX.Y` branch and its current exact head |
+| `frozen_sha` | Frozen source boundary: the merge-base of the recorded release head and current `develop` |
+
+MCP accepts `project_id`, `work_item_id` (delivery), `request_id`, integer
+`expected_revision`, and a `release_pick` object containing the identity fields
+in the table. Native client callers use `AssociateReleasePick`.
+
+The delivery must already have the source as a typed required dependency, with
+dependency admission enabled. The source must be terminal with its native develop
+landing recorded. Active delivery leases, existing Changes, conflicting PR
+associations, stale revisions, and repository or provenance mismatches are
+refused without partial writes. A held delivery may be associated; its existing
+hold and admission predicates remain authoritative. Identical associations are
+idempotent and return the original owner receipt; conflicting replacements are
+refused. Current grants are checked even on replay.
+
+The configured repository transport verifies source ancestry on develop, the
+release branch head and frozen boundary, and the PR's exact head/base and
+repository. This thin slice accepts exactly one commit with one parent equal to
+the recorded release base, one exact `git cherry-pick -x` trailer naming the
+source merge, and the same file paths/status and added/deleted lines as the
+source patch (binary files require matching blob identities). Hunk line numbers
+and unchanged context may differ. Multi-commit PRs, truncated patch responses,
+and adapted conflict resolutions are refused. PR and branch identities are read
+again before native association. The existing landing owner rechecks the live
+PR, protection, review and gate evidence before merging.
+
+The receipt records the source issue/Change/merge, PR repository/head/base,
+frozen source boundary, new delivery Change, actor, and association time.
+Existing work-item reads expose `release_delivery`; existing Change and PR reads
+show the delivery independently. Association opens a draft Change. The normal
+runner captures the exact associated source bundle and publishes its immutable
+version with the existing PR reference. Publication refuses a different head,
+base, repository, or PR. Review and checks belong to that version, not the
+source fix. The landing workspace and gate use the recorded release branch;
+the squash message retains the source `-x` trailer. Ordinary source issues keep
+their normal base. A moved source needing a replacement PR requires a separate
+reviewed delivery; association does not adopt arbitrary new heads.
 
 ## Retention, export and deletion design
 

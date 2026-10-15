@@ -252,7 +252,17 @@ ORDER BY i.native_id`, args...)
 		issue.Dependencies = append(issue.Dependencies, dependency.ID)
 		issue.Blockers = append(issue.Blockers, dependency)
 	}
-	return issue, internalID, rows.Err()
+	if err := rows.Err(); err != nil {
+		return issue, internalID, err
+	}
+	if err := rows.Close(); err != nil {
+		return issue, internalID, err
+	}
+	delivery, associated, err := readReleaseDelivery(ctx, query, scope, string(issue.WorkItemID))
+	if associated {
+		issue.ReleaseDelivery = &delivery
+	}
+	return issue, internalID, err
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
