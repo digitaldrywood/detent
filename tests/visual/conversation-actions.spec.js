@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const fs = require("node:fs/promises");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 let hub;
@@ -14,13 +15,14 @@ test.afterAll(async () => {
   await hub?.stop();
 });
 
-async function projectRead(page, suffix, fixture = hub.fixture) {
-  return page.evaluate(async ({ project, suffix }) => {
-    const bootstrap = await (await fetch("/chat/bootstrap")).json();
-    const response = await fetch(`${bootstrap.api_base}/projects/${project}/${suffix}`);
+async function projectRead(page, suffix, fixture = hub.fixture, timeoutMs) {
+  return page.evaluate(async ({ project, suffix, timeoutMs }) => {
+    const options = timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined;
+    const bootstrap = await (await fetch("/chat/bootstrap", options)).json();
+    const response = await fetch(`${bootstrap.api_base}/projects/${project}/${suffix}`, options);
     if (!response.ok) throw new Error(`Project read failed: ${response.status}`);
     return response.json();
-  }, { project: fixture.project_id, suffix });
+  }, { project: fixture.project_id, suffix, timeoutMs });
 }
 
 async function askLuna(page, text) {
@@ -82,6 +84,30 @@ test("workflow chat previews approval and preserves pending runner adoption", as
     await expect(pending).toContainText(`Effective runner policy: ${original.policy.policy_id}`);
     expect((await read("policy")).policy).toEqual(approved.policy);
     await pending.screenshot({ path: testInfo.outputPath("workflow-pending-adoption.png") });
+  } catch (error) {
+    const evidence = {
+      capture_started_at: new Date().toISOString(),
+      project_id: workflowHub.fixture.project_id,
+    };
+    try {
+      evidence.conversation_id = new URL(page.url()).pathname.split("/").pop();
+      if (!evidence.conversation_id?.startsWith("conv_")) throw new Error("No active conversation in the failed journey");
+      evidence.conversation = await projectRead(page, `conversations/${evidence.conversation_id}`, workflowHub.fixture, 3_000);
+    } catch (captureError) {
+      evidence.capture_error = String(captureError);
+    }
+    evidence.capture_finished_at = new Date().toISOString();
+    try {
+      const path = testInfo.outputPath("workflow-conversation-failure.json");
+      await fs.writeFile(path, JSON.stringify(evidence, null, 2));
+      await testInfo.attach("workflow-conversation-failure", {
+        path,
+        contentType: "application/json",
+      });
+    } catch (attachmentError) {
+      console.warn("Workflow conversation failure evidence could not be attached", attachmentError);
+    }
+    throw error;
   } finally {
     await workflowHub.stop();
   }
