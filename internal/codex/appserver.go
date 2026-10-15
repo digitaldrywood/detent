@@ -348,6 +348,7 @@ type RateLimitSnapshot struct {
 }
 
 type RateLimitWindow struct {
+	missingUsedPercent bool
 	UsedPercent        float64
 	WindowDurationMins *float64
 	ResetsAt           *int64
@@ -2522,7 +2523,7 @@ type rateLimitSnapshotPayload struct {
 }
 
 type rateLimitWindowPayload struct {
-	UsedPercent        float64  `json:"usedPercent"`
+	UsedPercent        *float64 `json:"usedPercent"`
 	WindowDurationMins *float64 `json:"windowDurationMins"`
 	ResetsAt           *int64   `json:"resetsAt"`
 }
@@ -2548,8 +2549,13 @@ func (p *rateLimitWindowPayload) window() *RateLimitWindow {
 	if p == nil {
 		return nil
 	}
+	usedPercent := 0.0
+	if p.UsedPercent != nil {
+		usedPercent = *p.UsedPercent
+	}
 	return &RateLimitWindow{
-		UsedPercent:        p.UsedPercent,
+		UsedPercent:        usedPercent,
+		missingUsedPercent: p.UsedPercent == nil,
 		WindowDurationMins: p.WindowDurationMins,
 		ResetsAt:           p.ResetsAt,
 	}

@@ -114,6 +114,7 @@ func (f AgentBackendFactoryFunc) NewAgentBackend(cfg config.AgentBackend) (Agent
 type durationLimitContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
 type Dependencies struct {
+	ProviderUsage          *ProviderUsage
 	BuildCache             *toolcache.Managed
 	ProjectID              string
 	Workflow               config.Workflow
@@ -145,6 +146,7 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	providerUsage             *ProviderUsage
 	buildCache                *toolcache.Managed
 	sleepInhibitor            func(context.Context, func()) (func(), error)
 	sleepFailures             int
@@ -253,6 +255,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 
 	return &Runner{
 		buildCache:                deps.BuildCache,
+		providerUsage:             deps.ProviderUsage,
 		projectID:                 projectID,
 		workflow:                  deps.Workflow,
 		workspace:                 deps.Workspace,
@@ -1227,6 +1230,7 @@ func (r *Runner) runAgentTurn(
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		r.providerUsage.Observe(initialIdentity.BackendID, update.RateLimits)
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -3709,6 +3713,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		reserveScratch:      r.reserveSessionWorkerScratch(sessionID, info.Path, ""),
 	}, validationTools, validationHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		r.providerUsage.Observe(runtimeIdentity.BackendID, update.RateLimits)
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)

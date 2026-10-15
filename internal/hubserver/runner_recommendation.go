@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -18,7 +19,8 @@ const capacityGiB = 1024 * 1024 * 1024
 
 type runnerCapacityRead struct {
 	runnerauth.CapacityView
-	Recommendation runnerRecommendation `json:"recommendation"`
+	Recommendation   runnerRecommendation    `json:"recommendation"`
+	ProviderCapacity []providercapacity.View `json:"provider_capacity,omitempty"`
 }
 
 type runnerRecommendation struct {

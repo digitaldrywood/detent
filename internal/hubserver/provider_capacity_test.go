@@ -749,3 +749,92 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		t.Fatal("claim preview waited on the held writer")
 	}
 }
+
+func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 15, 15, 0, 0, 0, time.UTC)
+	f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "usage")
+	var organizationBase string
+	for index, backend := range []string{"claude", "codex"} {
+		t.Run(backend, func(t *testing.T) {
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.enroll(t)
+			organizationBase = r.base
+			report := capacityReport(now)
+			report.Backend = backend
+			percent := []float64{85, 40}[index]
+			report.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: now.Add(-30 * time.Second), ResetAt: now.Add(time.Hour)}, {Kind: "weekly"}}
+			publishCapacity(t, f, r, report)
+			check := func(want []providercapacity.UsageWindow) {
+				t.Helper()
+				stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, now)
+				if err != nil || len(stored.ProviderCapacity) != 1 || !reflect.DeepEqual(stored.ProviderCapacity[0].UsageWindows, want) {
+					t.Fatalf("runner = %+v, err = %v, want windows = %+v", stored.ProviderCapacity, err, want)
+				}
+				reports, err := readProviderReports(t.Context(), f.service.database.db, r.binding.RunnerID)
+				if err != nil || len(reports) != 1 || len(reports[0].UsageWindows) != 0 {
+					t.Fatalf("usage leaked into legacy JSON: %+v, %v", reports, err)
+				}
+			}
+			check(report.UsageWindows)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/capacity", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var capacity runnerCapacityRead
+			decodeHubResponse(t, response, &capacity)
+			if len(capacity.ProviderCapacity) != 1 || !reflect.DeepEqual(capacity.ProviderCapacity[0].UsageWindows, report.UsageWindows) {
+				t.Fatalf("capacity API = %+v", capacity)
+			}
+			report.ObservedAt = now.Add(time.Second)
+			now = now.Add(time.Second)
+			publishCapacity(t, f, r, report)
+			check(report.UsageWindows)
+			malformed := report
+			malformed.UsageWindows = []providercapacity.UsageWindow{{Kind: "private-account@example.com"}}
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{malformed}})
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			check(report.UsageWindows)
+		})
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodGet, organizationBase+"/runners", testHubAdminToken, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var fleet []runnerauth.Runner
+	decodeHubResponse(t, response, &fleet)
+	if len(fleet) != 2 {
+		t.Fatalf("API runners = %d, want 2", len(fleet))
+	}
+	for _, r := range fleet {
+		if len(r.ProviderCapacity) != 1 || len(r.ProviderCapacity[0].UsageWindows) != 2 || r.ProviderCapacity[0].UsageWindows[0].PercentUsed == nil {
+			t.Fatalf("API capacity = %+v", r.ProviderCapacity)
+		}
+		want := 85.0
+		if r.ProviderCapacity[0].Backend == "codex" {
+			want = 40
+		}
+		if *r.ProviderCapacity[0].UsageWindows[0].PercentUsed != want {
+			t.Fatalf("API usage = %+v, want %v", r.ProviderCapacity, want)
+		}
+	}
+	runners, err := f.service.database.db.QueryContext(t.Context(), `SELECT runner_id, count(*) FROM runner_provider_usage_windows GROUP BY runner_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runners.Close()
+	count := 0
+	for runners.Next() {
+		var id string
+		var windows int
+		if err := runners.Scan(&id, &windows); err != nil {
+			t.Fatal(err)
+		}
+		if windows != 2 {
+			t.Fatalf("runner %s has %d windows", id, windows)
+		}
+		count++
+	}
+	if err := runners.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("stored runners = %d, want 2", count)
+	}
+}

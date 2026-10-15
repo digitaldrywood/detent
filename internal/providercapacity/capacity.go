@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"slices"
@@ -51,7 +52,21 @@ type ModelDetail struct {
 	Legacy bool `json:"legacy,omitempty"`
 }
 
+const MaxUsageWindows = 8
+
+type UsageWindow struct {
+	Kind        string    `json:"kind"`
+	PercentUsed *float64  `json:"percent_used,omitempty"`
+	ResetAt     time.Time `json:"reset_at,omitzero"`
+	ObservedAt  time.Time `json:"observed_at,omitzero"`
+}
+
+func ValidUsageKind(kind string) bool {
+	return slices.Contains([]string{"primary", "secondary", "five_hour", "weekly", "weekly_opus", "weekly_sonnet", "seven_day", "seven_day_opus", "seven_day_sonnet"}, kind)
+}
+
 type Report struct {
+	UsageWindows       []UsageWindow `json:"usage_windows,omitempty"`
 	Provider           string        `json:"provider"`
 	Backend            string        `json:"backend"`
 	AccountAlias       string        `json:"account_alias"`
@@ -104,6 +119,9 @@ func Validate(reports []Report) error {
 			if !token.MatchString(model) {
 				return errors.New("provider model identifiers must be bounded tokens")
 			}
+		}
+		if err := validateUsageWindows(r.UsageWindows); err != nil {
+			return err
 		}
 		if err := validateModelDetails(r); err != nil {
 			return err
@@ -215,4 +233,24 @@ func (v View) Summary() string {
 
 func (v View) Available() bool {
 	return v.State != "exhausted" && (v.MaxConcurrent == 0 || v.Used < v.MaxConcurrent)
+}
+
+func validateUsageWindows(windows []UsageWindow) error {
+	if len(windows) > MaxUsageWindows {
+		return errors.New("provider usage windows are limited to 8")
+	}
+	seen := make(map[string]bool, len(windows))
+	for _, window := range windows {
+		if !ValidUsageKind(window.Kind) || seen[window.Kind] {
+			return errors.New("provider usage windows need distinct known kinds")
+		}
+		seen[window.Kind] = true
+		if window.PercentUsed != nil && (math.IsNaN(*window.PercentUsed) || math.IsInf(*window.PercentUsed, 0) || *window.PercentUsed < 0 || *window.PercentUsed > 100) {
+			return errors.New("provider usage percent must be between 0 and 100")
+		}
+		if window.ObservedAt.IsZero() && (window.PercentUsed != nil || !window.ResetAt.IsZero()) || !window.ResetAt.IsZero() && !window.ResetAt.After(window.ObservedAt) {
+			return errors.New("provider usage values need an observation time and a later reset")
+		}
+	}
+	return nil
 }

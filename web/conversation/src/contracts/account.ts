@@ -546,6 +546,12 @@ export type ProjectsResponse = typeof ProjectsResponse.Type;
 
 /** One provider account's capacity on a runner (`providercapacity.View`). */
 export const ProviderCapacity = Schema.Struct({
+  usage_windows: Schema.optional(Schema.Array(Schema.Struct({
+    kind: Schema.String,
+    percent_used: Schema.optional(Schema.Number),
+    reset_at: Schema.optional(Schema.String),
+    observed_at: Schema.optional(Schema.String),
+  }))),
   provider: Schema.String,
   backend: Schema.String,
   account_alias: Schema.String,
@@ -658,6 +664,7 @@ export const SuggestedLimit = Schema.Struct({
 export type SuggestedLimit = typeof SuggestedLimit.Type;
 
 export const RunnerCapacityRead = Schema.Struct({
+  provider_capacity: Schema.optional(Schema.Array(ProviderCapacity)),
   recommendation: Schema.optional(Schema.Struct({ suggested_limit: Schema.optional(SuggestedLimit) })),
 });
 export type RunnerCapacityRead = typeof RunnerCapacityRead.Type;

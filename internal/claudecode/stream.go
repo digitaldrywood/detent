@@ -40,10 +40,10 @@ type claudeEvent struct {
 }
 
 type rateLimitInfo struct {
-	Status        string  `json:"status"`
-	ResetsAt      int64   `json:"resetsAt"`
-	RateLimitType string  `json:"rateLimitType"`
-	Utilization   float64 `json:"utilization"`
+	Status        string   `json:"status"`
+	ResetsAt      int64    `json:"resetsAt"`
+	RateLimitType string   `json:"rateLimitType"`
+	Utilization   *float64 `json:"utilization"`
 }
 
 type claudeMessage struct {
@@ -182,12 +182,15 @@ func (s *turnState) applyRateLimit(event claudeEvent, onUpdate runner.AgentUpdat
 		resetAt := time.Unix(info.ResetsAt, 0).UTC()
 		bucket.ResetAt = &resetAt
 	}
-	if info.Utilization > 0 {
+	if info.Utilization != nil {
+		percent := min(max(*info.Utilization*100, 0), 100)
+		bucket.PercentUsed = &percent
 		bucket.Limit = 100
-		bucket.Used = min(max(int64(info.Utilization*100), 0), 100)
+		bucket.Used = min(max(int64(*info.Utilization*100), 0), 100)
 		bucket.Remaining = 100 - bucket.Used
 	}
 	limitType := strings.TrimSpace(info.RateLimitType)
+	bucket.WindowKind = limitType
 	limits := &telemetry.RateLimits{LimitID: "claude", LimitName: "Claude"}
 	if strings.EqualFold(strings.TrimSpace(info.Status), "rejected") {
 		limits.ReachedType = limitType
