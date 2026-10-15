@@ -41,6 +41,9 @@ func nativeContractIssue(issue tracker.NativeIssue) connector.Issue {
 
 func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativeScope) (config.Config, error) {
 	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if errors.Is(err, errNoApprovedRepositoryPolicy) {
+		return config.Default(), nil
+	}
 	if err != nil {
 		return config.Config{}, err
 	}

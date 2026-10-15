@@ -206,7 +206,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-operations-issue"}, Title: "Attachment operations", State: "Todo"})
+	issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-operations-issue"}, Title: "Attachment operations", State: "Backlog"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,12 +229,12 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	}
 	_, page := browser.get("/organizations/org_alpha/organization")
 	csrf := csrfFrom(t, page)
-	foreignIssue := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects/"+otherProject+"/work-items", strings.NewReader(`{"idempotency_key":"foreign-binding-target","title":"Foreign target","state":"Todo"}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+	foreignIssue := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects/"+otherProject+"/work-items", strings.NewReader(`{"idempotency_key":"foreign-binding-target","title":"Foreign target","state":"Backlog"}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
 	var foreignItem tracker.NativeIssue
 	if foreignIssue.Code != http.StatusOK || json.Unmarshal(foreignIssue.Body.Bytes(), &foreignItem) != nil {
 		t.Fatalf("foreign item=%s", foreignIssue.Body.String())
 	}
-	otherItem, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-comment-owner"}, Title: "Other comment owner", State: "Todo"})
+	otherItem, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-comment-owner"}, Title: "Other comment owner", State: "Backlog"})
 	if err != nil {
 		t.Fatal(err)
 	}
