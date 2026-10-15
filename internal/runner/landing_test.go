@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -318,11 +319,14 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			t.Cleanup(func() { http.DefaultClient = originalClient })
 			cfg := config.Config{}
 			cfg.Gate.Run = "true"
+			if !native {
+				cfg.Gate.Run = `test "$DETENT_GO_BUDGET_SLOTS" = 8 && test -n "$DETENT_GO_BUDGET_DIR"`
+			}
 			cfg.Worker.GitHubToken = t.Name()
 			cfg.Tracker.Kind = config.TrackerGitHub
 			cfg.Tracker.Endpoint = "https://native-landing.test/graphql"
 			provider := &fakeCodexClient{}
-			runner, err := NewRunner(Dependencies{ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider})
+			runner, err := NewRunner(Dependencies{ProjectID: "project", Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider, GoBudget: gobudget.New(8, filepath.Join(t.TempDir(), "budget"), "/opt/example/detent")})
 			if err != nil {
 				t.Fatal(err)
 			}

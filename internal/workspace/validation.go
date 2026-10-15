@@ -3,10 +3,13 @@ package workspace
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -26,7 +29,27 @@ func (l *LocalGit) ReviewCommandEvidence(ctx context.Context, info Info, issue I
 	command := commandshell.Command(ctx, "", l.hooks.Shell)
 	command.Dir = normalized.Path
 	command.Env = hookEnv(normalized, issue, l.hooks.StripGitHubTokens)
+	l.applyValidationGoBudget(ctx, command)
 	return reviewCommandEvidence(ctx, command, validation)
+}
+
+func (l *LocalGit) applyValidationGoBudget(ctx context.Context, command *exec.Cmd) {
+	inherited := make(map[string]string)
+	for _, entry := range command.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			inherited[key] = value
+		}
+	}
+	variables, err := gobudget.FromContext(ctx).Environment(inherited["GOFLAGS"])
+	if err != nil {
+		l.logger.Warn("go build budget unavailable; validation Go commands run unqueued", "error", err)
+		return
+	}
+	if _, explicit := inherited["GOMAXPROCS"]; explicit {
+		delete(variables, "GOMAXPROCS")
+	}
+	procgroup.SetEnvironment(command, procgroup.Environment{Variables: variables})
 }
 
 func directGoValidation(validation string) bool {

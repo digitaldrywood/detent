@@ -27,7 +27,7 @@ func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environ
 		}
 		environment.Variables["GOCACHE"] = root
 	}
-	if !isGoModule(workspacePath) {
+	if strings.TrimSpace(workspacePath) == "" {
 		return environment
 	}
 	inherited, explicit := environment.Variables["GOFLAGS"]
@@ -45,6 +45,11 @@ func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environ
 	merged := make(map[string]string, len(environment.Variables)+len(variables))
 	for key, value := range variables {
 		merged[key] = value
+	}
+	if r.lookupEnv != nil {
+		if value := r.lookupEnv("GOMAXPROCS"); value != "" {
+			merged["GOMAXPROCS"] = value
+		}
 	}
 	for key, value := range environment.Variables {
 		if key == "GOFLAGS" {
