@@ -39,3 +39,20 @@ func TestProviderUsageRetainsWindowObservations(t *testing.T) {
 		t.Fatal("observation age or backend isolation changed")
 	}
 }
+
+func TestProviderBillingObservations(t *testing.T) {
+	t.Parallel()
+	usage := &ProviderUsage{}
+	for _, test := range []struct{ backend, billing, want string }{
+		{"claude", "subscription", "subscription"}, {"codex", "api_key", "api_key"},
+		{"claude", "", "subscription"}, {"claude", "invalid", "subscription"}, {"codex", "unknown", "unknown"},
+	} {
+		usage.ObserveUpdate(test.backend, AgentUpdate{Billing: test.billing})
+		if got := usage.Billing(test.backend); got != test.want {
+			t.Fatalf("%s billing = %q, want %q", test.backend, got, test.want)
+		}
+	}
+	if got := usage.Billing("claude"); got != "subscription" {
+		t.Fatalf("other backend overwrote Claude billing: %q", got)
+	}
+}

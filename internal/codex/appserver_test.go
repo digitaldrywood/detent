@@ -2832,3 +2832,25 @@ func mustMarshalJSON(t *testing.T, value any) string {
 	}
 	return string(data)
 }
+
+func TestAccountBillingBasis(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		account Account
+		want    string
+	}{
+		{Account{Type: "chatgpt", PlanType: "pro"}, "subscription"},
+		{Account{Type: "chatgpt", PlanType: "plus"}, "subscription"},
+		{Account{Type: "apiKey"}, "api_key"},
+		{Account{Type: "chatgpt", PlanType: "self_serve_business_usage_based"}, "api_key"},
+		{Account{Type: "chatgpt", PlanType: "enterprise_cbp_usage_based"}, "api_key"},
+		{Account{}, "unknown"},
+		{Account{Type: "future"}, "unknown"},
+	} {
+		t.Run(test.account.Type+"/"+test.account.PlanType, func(t *testing.T) {
+			if got := test.account.BillingBasis(); got != test.want {
+				t.Fatalf("billing = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

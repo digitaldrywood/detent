@@ -5,6 +5,7 @@ import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { cn } from "../../lib/utils.ts";
 import { runnerUpdateStatusLabel } from "./format.ts";
+import { billingLabel, ProviderUsage } from "./ProviderUsage.tsx";
 import { fleetHosts } from "./capacity.ts";
 
 const SLOT_TONES = {
@@ -25,9 +26,11 @@ function runnerState(runner: FleetRunner): string {
   return ({ online: "Online", asleep: "Asleep", outside_hours: "Outside working hours", needs_attention: "Needs attention" } as Record<string, string>)[runner.health] ?? "Status unavailable";
 }
 
-export function CapacityPanel({ runners, appUpdates, onOpen }: {
+export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = true, now }: {
   readonly runners: readonly FleetRunner[];
   readonly appUpdates?: UpdatesReport | null;
+  readonly now?: number;
+  readonly showProviders?: boolean;
   readonly onOpen?: (runner: FleetRunner) => void;
 }): React.ReactElement {
   const hosts = fleetHosts(runners);
@@ -78,6 +81,14 @@ export function CapacityPanel({ runners, appUpdates, onOpen }: {
                 })}
                 {host.capacity > 64 ? <span className="text-xs text-muted-foreground">+{host.capacity - 64} slots</span> : null}
               </div>
+              {showProviders ? <div className="col-span-full min-w-0 space-y-2">
+                {host.runners.map((runner) => <div key={runner.id} className="min-w-0 space-y-2" aria-label={`${runner.display_name || runner.hostname} provider capacity`}>
+                  {runner.provider_capacity.map((capacity) => <div key={capacity.backend} className="min-w-0 space-y-1">
+                    <p className="break-words text-xs font-medium">{runner.display_name || runner.hostname} · {capacity.backend} · {billingLabel(capacity)}</p>
+                    {capacity.billing === "api_key" ? <Link to="/usage" className="text-xs text-muted-foreground hover:underline">View runner-reported API spend in Usage</Link> : <ProviderUsage capacity={capacity} now={now} />}
+                  </div>)}
+                </div>)}
+              </div> : null}
             </div>
           ))}
         </div>

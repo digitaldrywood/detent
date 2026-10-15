@@ -1230,7 +1230,7 @@ func (r *Runner) runAgentTurn(
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
-		r.providerUsage.Observe(initialIdentity.BackendID, update.RateLimits)
+		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -3713,7 +3713,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		reserveScratch:      r.reserveSessionWorkerScratch(sessionID, info.Path, ""),
 	}, validationTools, validationHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
-		r.providerUsage.Observe(runtimeIdentity.BackendID, update.RateLimits)
+		r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)

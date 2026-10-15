@@ -762,17 +762,18 @@ func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 			organizationBase = r.base
 			report := capacityReport(now)
 			report.Backend = backend
+			report.Billing = []string{"subscription", "api_key"}[index]
 			percent := []float64{85, 40}[index]
 			report.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: now.Add(-30 * time.Second), ResetAt: now.Add(time.Hour)}, {Kind: "weekly"}}
 			publishCapacity(t, f, r, report)
 			check := func(want []providercapacity.UsageWindow) {
 				t.Helper()
 				stored, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, now)
-				if err != nil || len(stored.ProviderCapacity) != 1 || !reflect.DeepEqual(stored.ProviderCapacity[0].UsageWindows, want) {
+				if err != nil || len(stored.ProviderCapacity) != 1 || !reflect.DeepEqual(stored.ProviderCapacity[0].UsageWindows, want) || stored.ProviderCapacity[0].Billing != report.BillingBasis() {
 					t.Fatalf("runner = %+v, err = %v, want windows = %+v", stored.ProviderCapacity, err, want)
 				}
 				reports, err := readProviderReports(t.Context(), f.service.database.db, r.binding.RunnerID)
-				if err != nil || len(reports) != 1 || len(reports[0].UsageWindows) != 0 {
+				if err != nil || len(reports) != 1 || len(reports[0].UsageWindows) != 0 || reports[0].Billing != "" {
 					t.Fatalf("usage leaked into legacy JSON: %+v, %v", reports, err)
 				}
 			}
@@ -781,7 +782,7 @@ func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var capacity runnerCapacityRead
 			decodeHubResponse(t, response, &capacity)
-			if len(capacity.ProviderCapacity) != 1 || !reflect.DeepEqual(capacity.ProviderCapacity[0].UsageWindows, report.UsageWindows) {
+			if len(capacity.ProviderCapacity) != 1 || !reflect.DeepEqual(capacity.ProviderCapacity[0].UsageWindows, report.UsageWindows) || capacity.ProviderCapacity[0].Billing != report.Billing {
 				t.Fatalf("capacity API = %+v", capacity)
 			}
 			report.ObservedAt = now.Add(time.Second)
@@ -789,9 +790,21 @@ func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 			publishCapacity(t, f, r, report)
 			check(report.UsageWindows)
 			malformed := report
+			malformed.Billing = "invalid"
+			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{malformed}})
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			check(report.UsageWindows)
+			malformed = report
 			malformed.UsageWindows = []providercapacity.UsageWindow{{Kind: "private-account@example.com"}}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"backend_isolation": r.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "provider_reports": []providercapacity.Report{malformed}})
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			check(report.UsageWindows)
+			savedBilling := report.Billing
+			report.Billing = ""
+			publishCapacity(t, f, r, report)
+			check(report.UsageWindows)
+			report.Billing = savedBilling
+			publishCapacity(t, f, r, report)
 			check(report.UsageWindows)
 		})
 	}
@@ -809,6 +822,13 @@ func TestProviderUsageHeartbeatRoundTrip(t *testing.T) {
 		want := 85.0
 		if r.ProviderCapacity[0].Backend == "codex" {
 			want = 40
+		}
+		wantBilling := "subscription"
+		if r.ProviderCapacity[0].Backend == "codex" {
+			wantBilling = "api_key"
+		}
+		if r.ProviderCapacity[0].Billing != wantBilling {
+			t.Fatalf("API billing = %q, want %q", r.ProviderCapacity[0].Billing, wantBilling)
 		}
 		if *r.ProviderCapacity[0].UsageWindows[0].PercentUsed != want {
 			t.Fatalf("API usage = %+v, want %v", r.ProviderCapacity, want)

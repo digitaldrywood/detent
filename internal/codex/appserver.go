@@ -275,6 +275,20 @@ func (a Account) SubscriptionBased() bool {
 	return plan != "self_serve_business_usage_based" && plan != "enterprise_cbp_usage_based"
 }
 
+func (a Account) BillingBasis() string {
+	switch strings.ToLower(strings.TrimSpace(a.Type)) {
+	case "apikey", "api_key":
+		return "api_key"
+	case "chatgpt":
+		if a.SubscriptionBased() {
+			return "subscription"
+		}
+		return "api_key"
+	default:
+		return "unknown"
+	}
+}
+
 type UpdateHandler func(Update) error
 
 type UpdateType string

@@ -66,6 +66,7 @@ func ValidUsageKind(kind string) bool {
 }
 
 type Report struct {
+	Billing            string        `json:"billing,omitempty"`
 	UsageWindows       []UsageWindow `json:"usage_windows,omitempty"`
 	Provider           string        `json:"provider"`
 	Backend            string        `json:"backend"`
@@ -119,6 +120,9 @@ func Validate(reports []Report) error {
 			if !token.MatchString(model) {
 				return errors.New("provider model identifiers must be bounded tokens")
 			}
+		}
+		if !ValidBilling(r.Billing) {
+			return errors.New("provider billing must be subscription, api_key or unknown")
 		}
 		if err := validateUsageWindows(r.UsageWindows); err != nil {
 			return err
@@ -253,4 +257,15 @@ func validateUsageWindows(windows []UsageWindow) error {
 		}
 	}
 	return nil
+}
+
+func ValidBilling(billing string) bool {
+	return slices.Contains([]string{"", "subscription", "api_key", "unknown"}, billing)
+}
+
+func (r Report) BillingBasis() string {
+	if r.Billing == "" {
+		return "unknown"
+	}
+	return r.Billing
 }

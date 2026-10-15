@@ -23,6 +23,8 @@ func TestRunnerProviderReports(t *testing.T) {
 	for _, test := range []struct {
 		name, account, alias       string
 		file, missing, fail, usage bool
+		billing                    string
+		billingFail                bool
 	}{
 		{name: "default and refresh", account: "macbook-pro-m1", alias: "macbook-pro-m1"},
 		{name: "normalized instance", account: "Owner's MacBook", alias: "owner-s-macbook"},
@@ -30,13 +32,17 @@ func TestRunnerProviderReports(t *testing.T) {
 		{name: "explicit file precedence", file: true},
 		{name: "observed default", account: "runner", alias: "runner", usage: true},
 		{name: "observed explicit file", file: true, usage: true},
+		{name: "native subscription", account: "runner", alias: "runner", billing: "subscription"},
+		{name: "native API key with explicit file", file: true, billing: "api_key"},
+		{name: "native subscription with explicit file", file: true, billing: "subscription"},
+		{name: "unavailable native auth", file: true, billingFail: true},
 		{name: "explicit missing file does not fall back", file: true, missing: true},
 		{name: "catalog failure remains instance owned", fail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 9, 6, 0, 0, 0, time.UTC)
 			cfg := globalconfig.Config{Global: globalconfig.Settings{MaxConcurrentAgents: 4}}
-			explicit := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "mac-studio", Models: []string{"configured-model"}, MaxConcurrent: 12, Availability: "available", ObservedAt: now}
+			explicit := providercapacity.Report{Billing: "unknown", Provider: "openai", Backend: "codex", AccountAlias: "example-runner", Models: []string{"configured-model"}, MaxConcurrent: 12, Availability: "available", ObservedAt: now}
 			if test.file {
 				cfg.Client.ProviderCapacityFile = filepath.Join(t.TempDir(), "capacity.json")
 				if !test.missing {
@@ -55,8 +61,25 @@ func TestRunnerProviderReports(t *testing.T) {
 			percent := 85.0
 			if test.usage {
 				usage = &runner.ProviderUsage{}
+				usage.ObserveBilling("codex", "subscription")
+				explicit.Billing = "subscription"
 				usage.Observe("codex", &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{WindowKind: "five_hour", PercentUsed: &percent, ObservedAt: &observed}})
 				explicit.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: observed}}
+			}
+			var billing func(context.Context, workflowconfig.AgentBackend) (string, error)
+			if test.billing != "" || test.billingFail {
+				billing = func(_ context.Context, backend workflowconfig.AgentBackend) (string, error) {
+					if backend.ID != "codex" {
+						t.Fatalf("billing backend = %q", backend.ID)
+					}
+					if test.billingFail {
+						return "subscription", errors.New("native auth unavailable")
+					}
+					return test.billing, nil
+				}
+				if !test.billingFail {
+					explicit.Billing = test.billing
+				}
 			}
 			source := runnerProviderReports(t.Context(), cfg, test.account, func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
 				if test.file {
@@ -69,7 +92,7 @@ func TestRunnerProviderReports(t *testing.T) {
 					return nil, catalogFailure
 				}
 				return []runner.AgentModel{{ID: "sol", Model: "sol"}, {ID: "astra", Model: "astra"}}, nil
-			}, usage)
+			}, billing, usage)
 			for range 6 {
 				reports, err := source()
 				if test.missing || test.fail {
@@ -81,7 +104,13 @@ func TestRunnerProviderReports(t *testing.T) {
 				if err != nil || len(reports) != 1 {
 					t.Fatalf("reports=%+v, err=%v", reports, err)
 				}
-				if test.usage && (len(reports[0].UsageWindows) != 1 || reports[0].UsageWindows[0].PercentUsed == nil || *reports[0].UsageWindows[0].PercentUsed != 85 || !reports[0].UsageWindows[0].ObservedAt.Equal(observed)) {
+				if test.billing != "" && reports[0].Billing != test.billing {
+					t.Fatalf("billing = %q, want %q", reports[0].Billing, test.billing)
+				}
+				if test.billingFail && reports[0].Billing != "unknown" {
+					t.Fatalf("failed auth billing = %q", reports[0].Billing)
+				}
+				if test.usage && (reports[0].Billing != "subscription" || len(reports[0].UsageWindows) != 1 || reports[0].UsageWindows[0].PercentUsed == nil || *reports[0].UsageWindows[0].PercentUsed != 85 || !reports[0].UsageWindows[0].ObservedAt.Equal(observed)) {
 					t.Fatalf("usage changed during heartbeat: %+v", reports[0].UsageWindows)
 				}
 				if test.file {
@@ -115,4 +144,14 @@ func writeProviderCapacityFixture(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestAPIKeyReportSuppressesQuota(t *testing.T) {
+	t.Parallel()
+	usage := &runner.ProviderUsage{}
+	usage.ObserveBilling("codex", "api_key")
+	reports := withProviderUsage([]providercapacity.Report{{Backend: "codex", UsageWindows: []providercapacity.UsageWindow{{Kind: "weekly"}}}}, []*runner.ProviderUsage{usage})
+	if reports[0].Billing != "api_key" || len(reports[0].UsageWindows) != 0 {
+		t.Fatalf("API report = %+v", reports[0])
+	}
 }

@@ -547,6 +547,7 @@ export type ProjectsResponse = typeof ProjectsResponse.Type;
 
 /** One provider account's capacity on a runner (`providercapacity.View`). */
 export const ProviderCapacity = Schema.Struct({
+  billing: Schema.optional(Schema.Literals(["subscription", "api_key", "unknown"])),
   usage_windows: Schema.optional(Schema.Array(Schema.Struct({
     kind: Schema.String,
     percent_used: Schema.optional(Schema.Number),
