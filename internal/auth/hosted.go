@@ -100,13 +100,29 @@ type HostedProvider interface {
 	RevokeSession(context.Context, string) error
 }
 
-func ValidOrganizationRole(role string) bool {
-	switch role {
-	case "owner", "admin", "member", "reporter", "viewer":
-		return true
-	default:
-		return false
+type OrganizationRole struct {
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func OrganizationRoles() []OrganizationRole {
+	return []OrganizationRole{
+		{Slug: "owner", Name: "Owner", Description: "Owns the organization and manages its settings and members."},
+		{Slug: "admin", Name: "Admin", Description: "Manages the organization, members and projects."},
+		{Slug: "member", Name: "Member", Description: "Works in the projects you give them."},
+		{Slug: "reporter", Name: "Reporter", Description: "Reads issues and files new ones into Triage."},
+		{Slug: "viewer", Name: "Viewer", Description: "Reads the projects you give them."},
 	}
+}
+
+func ValidOrganizationRole(role string) bool {
+	for _, option := range OrganizationRoles() {
+		if option.Slug == role {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidSupportReason(reason string) bool {

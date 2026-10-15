@@ -168,9 +168,10 @@ type hostedInvitationView struct {
 }
 
 type hostedMembersResponse struct {
-	MemberCount int                    `json:"member_count"`
-	Members     []hostedMemberView     `json:"members"`
-	Invitations []hostedInvitationView `json:"invitations"`
+	Roles       []auth.OrganizationRole `json:"roles"`
+	MemberCount int                     `json:"member_count"`
+	Members     []hostedMemberView      `json:"members"`
+	Invitations []hostedInvitationView  `json:"invitations"`
 }
 
 // hostedMemberRank orders the roles the members list groups by: the people who

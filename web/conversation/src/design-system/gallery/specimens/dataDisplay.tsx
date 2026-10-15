@@ -1,6 +1,7 @@
 // Report primitives: tabs, metric tiles and charts.
 import React from "react";
 
+import { Avatar } from "~/components/ui/avatar";
 import { BarMeter, Chart, ChartLegend, ChartPanel, ProportionBar } from "~/components/ui/chart";
 import { MetricTile, MetricTileGroup } from "~/components/ui/metric-tile";
 import { Tabs, TabsList, TabsPanel, TabsTab } from "~/components/ui/tabs";
@@ -174,4 +175,17 @@ export const chart: GalleryDoc = {
       ),
     },
   ],
+};
+
+export const avatar: GalleryDoc = {
+  meta: { name: "Avatar", kind: "primitive", group: "Feedback" },
+  specimens: [{
+    id: "identity",
+    title: "Compact and member sizes, image and initials",
+    render: () => <div className="flex flex-wrap items-center gap-6">
+      <div className="flex items-center gap-2"><Avatar name="Example Member" />Example Member</div>
+      <div className="flex items-center gap-2"><Avatar name="Example Member" size="md" />Example Member</div>
+      <div className="flex items-center gap-2"><Avatar name="Another Member" size="md" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%236b7280'/%3E%3Ccircle cx='16' cy='12' r='6' fill='%23e5e7eb'/%3E%3Cpath d='M4 32a12 12 0 0 1 24 0' fill='%23e5e7eb'/%3E%3C/svg%3E" />Another Member</div>
+    </div>,
+  }],
 };

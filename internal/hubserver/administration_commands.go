@@ -33,7 +33,7 @@ func (s *Service) hostedMembersFor(ctx context.Context, credential apiCredential
 	}
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	response := hostedMembersResponse{Members: []hostedMemberView{}, Invitations: []hostedInvitationView{}}
+	response := hostedMembersResponse{Roles: auth.OrganizationRoles(), Members: []hostedMemberView{}, Invitations: []hostedInvitationView{}}
 	for _, member := range memberships {
 		if member.OrganizationID != credential.Hosted.OrganizationID || member.Status != "active" {
 			continue
