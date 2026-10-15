@@ -15,6 +15,7 @@ import type {
   KeyContext,
   KeyOrganization,
 } from "../../contracts/accessKeys.ts";
+import { Toggle, ToggleGroup } from "../../components/ui/toggle-group.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
@@ -43,7 +44,6 @@ import {
   SettingsPageContainer,
   SettingsRow,
   SettingsSection,
-  SettingsWarning,
   useRelativeTimeTick,
 } from "./settingsLayout.tsx";
 import { formatRelativeTimeLabel } from "../../timestampFormat.ts";
@@ -111,9 +111,266 @@ export function KeyScope({
   );
 }
 
-export function keySetupPrompt(endpoint: string, direct = false): string {
+export function keySetupPrompt(
+  endpoint: string,
+  direct = false,
+  kind?: AccessKey["kind"],
+): string {
   const origin = endpoint.replace(/\/mcp$/, "");
-  return `Use a Detent key from Settings → API keys & MCP. A key never grants more than its owner has. Store it privately as DETENT_API_KEY; never paste it into chat, logs or source files. ${direct ? `Use Authorization: Bearer with that private environment variable at ${origin}/api/v2. Read GET /api/v2/organizations, then GET /api/v2/organizations/ORG_ID/projects to choose a granted organization and project before using documented routes.` : `Configure one Streamable HTTP MCP server at ${endpoint}, with bearer_token_env_var = "DETENT_API_KEY". Initialize MCP, retain Mcp-Session-Id and protocol version, send notifications/initialized and discover every tools/list page. Use organization_list and list_projects to choose granted organization_id and project_id selectors for calls.`} Check the returned organization and project before reporting success. Current membership, project grants, org policy, permission, expiry and revocation apply on every call. Your client's permission settings control sensitive-operation confirmation. This prompt contains no secret.`;
+  return `Use a Detent key from Settings → API keys & MCP. A key never grants more than its owner has. Store it privately as DETENT_API_KEY; never paste it into chat, logs or source files. ${direct ? `Use Authorization: Bearer with that private environment variable at ${origin}/api/v2. Read GET /api/v2/organizations, then GET /api/v2/organizations/ORG_ID/projects to choose a granted organization and project before using documented routes.` : `Configure one Streamable HTTP MCP server at ${endpoint}, with bearer_token_env_var = "DETENT_API_KEY". Initialize MCP, retain Mcp-Session-Id and protocol version, send notifications/initialized and discover every tools/list page. Call connection_info and confirm key.kind is ${kind ? `"${kind}"` : '"personal" or "service"'}${kind ? ", matching the key just created" : " and explain who it acts as"} before reporting success. Use organization_list and list_projects to choose granted organization_id and project_id selectors for calls.`} Check the returned organization and project before reporting success. Current membership, project grants, org policy, permission, expiry and revocation apply on every call. Your client's permission settings control sensitive-operation confirmation. This prompt contains no secret.`;
+}
+
+function CreatedKeySteps({
+  created,
+  endpoint,
+}: {
+  readonly created: CreatedAccessKey;
+  readonly endpoint: string;
+}) {
+  const api = useAccountApi();
+  const account = useAccountBootstrap();
+  const { id, kind, owner, owner_email: ownerEmail } = created;
+  const [revealed, setRevealed] = React.useState(false);
+  const [keyCopied, setKeyCopied] = React.useState(false);
+  const [copied, setCopied] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [transport, setTransport] = React.useState("mcp");
+  const [fullPrompt, setFullPrompt] = React.useState(false);
+  const [firstUse, setFirstUse] = React.useState(created.last_used_at ?? null);
+  const [ownerName, setOwnerName] = React.useState(ownerEmail || owner);
+  useRelativeTimeTick(60_000);
+  const prompt = keySetupPrompt(endpoint, transport === "rest", kind);
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST API"} setup prompt`;
+
+  React.useEffect(() => {
+    if (kind !== "personal") return;
+    let current = true;
+    void api
+      .members()
+      .then(({ members }) => {
+        const member = members.find(
+          (item) => item.user_id === owner || item.email === ownerEmail,
+        );
+        if (current && member?.name) setOwnerName(member.name);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [api, kind, owner, ownerEmail]);
+
+  React.useEffect(() => {
+    let current = true;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        const result = await (kind === "personal"
+          ? api.personalKeys()
+          : api.serviceKeys());
+        if (!current) return;
+        const used = result.keys.find((key) => key.id === id)?.last_used_at;
+        if (used) setFirstUse((previous) => previous ?? used);
+      } catch {
+        if (!current) return;
+      }
+      if (current) timer = setTimeout(() => void poll(), 5_000);
+    }
+    void poll();
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [api, id, kind]);
+
+  async function copy(value: string, target: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setError(null);
+      setCopied(target);
+      if (target === "key" || target === "export") setKeyCopied(true);
+    } catch {
+      setError(
+        "Could not copy. Select and save the key privately before closing.",
+      );
+    }
+  }
+
+  return (
+    <>
+      <DialogPanel className="space-y-5">
+        <ol className="space-y-5">
+          <li className="flex gap-3">
+            <span
+              aria-label={keyCopied ? "Step 1 complete" : "Step 1"}
+              className={
+                keyCopied
+                  ? "font-semibold text-success-foreground"
+                  : "font-semibold text-muted-foreground"
+              }
+            >
+              1
+            </span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">
+                Save the key on your machine
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Store it as DETENT_API_KEY in your shell profile or secret
+                store. Never paste it into a chat with your agent.
+              </p>
+              <Label htmlFor="new-api-key" className="sr-only">
+                New API key
+              </Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="new-api-key"
+                  type={revealed ? "text" : "password"}
+                  value={created.token}
+                  readOnly
+                  autoComplete="off"
+                  className="min-w-0 font-mono"
+                />
+                <Button
+                  variant="outline"
+                  aria-controls="new-api-key"
+                  aria-pressed={revealed}
+                  onClick={() => setRevealed(!revealed)}
+                >
+                  {revealed ? "Hide" : "Reveal"}
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  aria-label="Copy key"
+                  onClick={() => void copy(created.token, "key")}
+                >
+                  {copied === "key" ? "Copied" : "Copy key"}
+                </Button>
+                <Button
+                  size="sm-multiline"
+                  variant="link"
+                  aria-label="Copy as export DETENT_API_KEY=… line"
+                  onClick={() =>
+                    void copy(
+                      `export DETENT_API_KEY='${created.token.replace(/'/g, "'\\''")}'`,
+                      "export",
+                    )
+                  }
+                >
+                  {copied === "export"
+                    ? "Copied"
+                    : "Copy as export DETENT_API_KEY=… line"}
+                </Button>
+              </div>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="font-semibold text-muted-foreground">2</span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">
+                Give your agent the setup prompt
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Paste it into Claude, Codex or any agent. It reads the key from
+                DETENT_API_KEY, so the prompt holds no secret.
+              </p>
+              <ToggleGroup
+                aria-label="Setup connection"
+                value={[transport]}
+                onValueChange={(values) => {
+                  if (values[0]) {
+                    setTransport(values[0]);
+                    setCopied(null);
+                  }
+                }}
+              >
+                <Toggle value="mcp">MCP</Toggle>
+                <Toggle value="rest">REST API</Toggle>
+              </ToggleGroup>
+              <pre
+                aria-label={`${promptLabel} preview`}
+                tabIndex={0}
+                className="max-h-48 overflow-y-auto font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+              >
+                {fullPrompt
+                  ? prompt
+                  : transport === "mcp"
+                    ? `Connect to ${endpoint} using DETENT_API_KEY. Call connection_info and confirm key.kind is "${kind}".`
+                    : `Use Authorization: Bearer with DETENT_API_KEY at ${endpoint.replace(/\/mcp$/, "")}/api/v2.`}
+              </pre>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm-multiline"
+                  variant="outline"
+                  aria-label={`Copy ${promptLabel}`}
+                  onClick={() => void copy(prompt, transport)}
+                >
+                  {copied === transport ? "Copied" : `Copy ${promptLabel}`}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="link"
+                  aria-expanded={fullPrompt}
+                  onClick={() => setFullPrompt(!fullPrompt)}
+                >
+                  {fullPrompt ? "Show less" : "Show full prompt"}
+                </Button>
+              </div>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className={
+                firstUse
+                  ? "font-semibold text-success-foreground"
+                  : "font-semibold text-muted-foreground"
+              }
+            >
+              3
+            </span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">
+                {kind === "personal"
+                  ? "Check it connected as you"
+                  : "Check it connected"}
+              </h3>
+              <p
+                role="status"
+                className="text-sm break-words text-muted-foreground"
+              >
+                {firstUse ? (
+                  <>
+                    First call {formatRelativeTimeLabel(firstUse)} · acting as{" "}
+                    {kind === "personal"
+                      ? ownerName
+                      : `${account?.organization.name} (service)`}
+                  </>
+                ) : (
+                  "Waiting for the first call…"
+                )}
+              </p>
+            </div>
+          </li>
+        </ol>
+        <span role="status" className="sr-only">
+          {copied ? "Copied" : ""}
+        </span>
+        <ControlError message={error} />
+      </DialogPanel>
+      <DialogFooter>
+        <p className="min-w-0 flex-1 text-sm text-muted-foreground">
+          {keyCopied
+            ? "You can close this. The key stays in your list."
+            : "Copy the key before closing. It cannot be shown again."}
+        </p>
+        <DialogClose
+          render={
+            <Button variant={keyCopied ? "default" : "secondary"}>Done</Button>
+          }
+        />
+      </DialogFooter>
+    </>
+  );
 }
 
 export function APIKeysMCPSettings() {
@@ -137,7 +394,6 @@ export function APIKeysMCPSettings() {
     rotate: boolean;
   } | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [copied, setCopied] = React.useState(false);
   const [name, setName] = React.useState("");
   const [permission, setPermission] =
     React.useState<CreateAccessKey["permission"]>("read");
@@ -198,7 +454,6 @@ export function APIKeysMCPSettings() {
     setSelections([]);
     setReach("global");
     setCreated(null);
-    setCopied(false);
     setDialogError(null);
     setOpen(true);
   }
@@ -265,7 +520,6 @@ export function APIKeysMCPSettings() {
       if (result) {
         setService(false);
         setCreated(result);
-        setCopied(false);
         setOpen(true);
       }
       await refresh();
@@ -516,7 +770,6 @@ export function APIKeysMCPSettings() {
           if (!value) {
             setCreated(null);
             setDialogError(null);
-            setCopied(false);
           }
         }}
       >
@@ -524,52 +777,33 @@ export function APIKeysMCPSettings() {
           <DialogHeader>
             <DialogTitle>
               {created
-                ? "Save your key"
+                ? `${created.name} is ready`
                 : service
                   ? "Create service key"
                   : "Create personal key"}
             </DialogTitle>
+            {created && (
+              <div>
+                <Badge variant="outline">
+                  {created.kind === "personal"
+                    ? "Personal · acts as you"
+                    : "Service · acts as the organization"}
+                </Badge>
+              </div>
+            )}
             <DialogDescription>
               {created
-                ? "Save this secret now. It will not be shown again."
+                ? "Three steps to connect your agent. This is the only time the key is shown."
                 : "A key never grants more than its owner has."}
             </DialogDescription>
           </DialogHeader>
           {created ? (
-            <>
-              <DialogPanel className="space-y-4">
-                <SettingsWarning>
-                  Save as DETENT_API_KEY in your private environment or secret
-                  store. Never paste the key into an agent conversation.
-                </SettingsWarning>
-                <Label htmlFor="new-api-key">New API key</Label>
-                <Input
-                  id="new-api-key"
-                  type="password"
-                  value={created.token}
-                  readOnly
-                  autoComplete="off"
-                />
-                <Button
-                  onClick={() => {
-                    void navigator.clipboard
-                      .writeText(created.token)
-                      .then(() => setCopied(true))
-                      .catch(() =>
-                        setDialogError(
-                          "Could not copy. Select and save the key privately before closing.",
-                        ),
-                      );
-                  }}
-                >
-                  {copied ? "Key copied" : "Copy key privately"}
-                </Button>
-                <ControlError message={dialogError} />
-              </DialogPanel>
-              <DialogFooter>
-                <DialogClose render={<Button>Done</Button>} />
-              </DialogFooter>
-            </>
+            open && (
+              <CreatedKeySteps
+                created={created}
+                endpoint={context?.mcp_endpoint ?? ""}
+              />
+            )
           ) : (
             <form className="contents" onSubmit={(event) => void create(event)}>
               <DialogPanel className="space-y-4">
