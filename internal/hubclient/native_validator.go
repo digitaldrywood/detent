@@ -122,9 +122,44 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				}
 			}
 		}
-		return runner.NativeValidation{Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
+		return runner.NativeValidation{SecurityAudit: nativeValidatorSecurityAudit(detail, version, diff.Digest), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
+}
+
+func nativeValidatorSecurityAudit(detail tracker.ChangeDetail, version tracker.ChangeVersion, diffDigest string) *runner.NativeSecurityAuditEvidence {
+	var evidence *runner.NativeSecurityAuditEvidence
+	for _, review := range detail.Reviews {
+		audit := review.SecurityAudit
+		if review.VersionID != version.ID || audit == nil {
+			continue
+		}
+		if review.Decision == "changes_requested" {
+			return nil
+		}
+		run := audit.Run
+		if review.ID == "" || review.Actor.Kind != "runner" || review.Decision != "approved" || audit.Verdict != "pass" || audit.Landing {
+			continue
+		}
+		if audit.DiffDigest != diffDigest || run.IssueID != string(detail.Change.WorkItemID) || audit.SessionID <= 0 || run.ID != audit.SessionID {
+			continue
+		}
+		// The Hub already applied the version's severity policy when accepting
+		// this review. Reuse the audit owner's integrity and binding checks
+		// without replacing that policy with a different severity threshold.
+		key := securityaudit.Key{ProjectID: string(detail.Change.ProjectID), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+		if !securityaudit.Evaluate(run, nil, key, "", []string{"none"}).Allowed {
+			continue
+		}
+		evidence = &runner.NativeSecurityAuditEvidence{
+			ReviewID: review.ID, ProjectID: run.ProjectID, WorkItemID: run.IssueID,
+			ChangeID: detail.Change.ID, VersionID: review.VersionID,
+			Repository: run.Repository, BaseSHA: run.BaseSHA, HeadSHA: run.HeadSHA,
+			DiffDigest: audit.DiffDigest, Verdict: audit.Verdict, SessionID: audit.SessionID,
+			ReviewerVersion: run.ReviewerVersion, ReviewerDigest: run.ReviewerDigest,
+		}
+	}
+	return evidence
 }
 
 func (e *nativeExecution) RecordReview(ctx context.Context, result gate.ValidatorResult) error {
