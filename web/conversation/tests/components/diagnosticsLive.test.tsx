@@ -149,7 +149,7 @@ it("keeps missing runner records unreported and pluralizes the Hub warning", () 
 it.each([true, false])("shows the Hub build and Version column only when updates are available (%s)", async (available) => {
   mocks.api.fleet.mockResolvedValue({ runners });
   if (available) mocks.api.appUpdates.mockResolvedValue(appUpdates);
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByText(original.summary);
   expect(mocks.api.appUpdates).toHaveBeenCalled();
   const hub = screen.queryByText("Hub");

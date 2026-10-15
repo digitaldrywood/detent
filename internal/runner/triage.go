@@ -112,6 +112,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		Environment: environment, MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval,
 		processRSS: r.processRSS,
 	}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
+		r.providerUsage.Observe(identity.BackendID, update.RateLimits)
 		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
 			result.TurnStarted = true
 			turnCount = 1
