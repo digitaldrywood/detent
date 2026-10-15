@@ -37,7 +37,7 @@ func TestGenerateRanges(t *testing.T) {
 	run("tag", "-a", "v1.2.0", "-m", "release")
 	commit("2026-10-14T01:00:00Z", "fix: complete prj_example#12 (#102)", "fix(hub): retain stale pull refs")
 	run("tag", "-a", "v1.2.0-op.r.1.g123456789abc", "-m", "patch")
-	commit("2026-10-14T02:00:00Z", "fix: retain state (#103)", "")
+	commit("2026-10-14T02:00:00Z", "fix: complete prj_example#13 (#103)", "")
 	for i, kind := range []string{"test", "ci", "chore", "docs", "build"} {
 		commit("2026-10-14T02:00:00Z", kind+": internal work", string(rune('a'+i)))
 	}
@@ -62,7 +62,7 @@ func TestGenerateRanges(t *testing.T) {
 			t.Fatalf("build %d=%+v", i, got)
 		}
 	}
-	if builds[1].Entries[0].Text != "Retain stale pull refs" || !builds[0].BuildTime.Equal(at) {
+	if builds[0].Entries[0].Text != "Maintenance update" || builds[1].Entries[0].Text != "Retain stale pull refs" || !builds[0].BuildTime.Equal(at) {
 		t.Fatalf("builds=%+v", builds)
 	}
 	older, err := generate("v1.2.0", "v1.2.0", at.Add(-26*time.Hour))
