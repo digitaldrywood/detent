@@ -9,6 +9,7 @@ import {
   useLocation,
 } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Schema from "effect/Schema";
 
@@ -1398,7 +1399,8 @@ const RELEASES = {
 };
 
 describe("What's new", () => {
-  it("renders releases and category filters, appends the cursor page and marks the running build seen", async () => {
+  it("renders releases with keyboard navigation and category filters, appends the cursor page and marks the running build seen", async () => {
+    const user = userEvent.setup();
     let markSeen: ((value: Response) => void) | undefined;
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       if (String(url).endsWith("/release-notes/seen")) return await new Promise<Response>((resolve) => { markSeen = resolve; });
@@ -1417,6 +1419,18 @@ describe("What's new", () => {
     expect(versions[0]?.getAttribute("href")).toBe("https://github.com/digitaldrywood/detent/releases/tag/v1.2.0");
     expect(screen.getByRole("link", { name: "#101" }).getAttribute("href")).toBe("https://github.com/example-org/example-project/pull/101");
     expect(screen.getByRole("link", { name: "#101" }).getAttribute("target")).toBe("_blank");
+    act(() => screen.getByRole("button", { name: "About" }).focus());
+    const allFilter = screen.getByRole("button", { name: "All" });
+    for (let stops = 0; stops < 50 && document.activeElement !== allFilter; stops++) await user.tab();
+    expect(document.activeElement).toBe(allFilter);
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "New" }));
+    await user.keyboard("{ArrowLeft}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "All" }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "v1.2.0" }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "#101" }));
     expect(screen.getByRole("button", { name: "What's new, new release notes" })).toBeTruthy();
     await waitFor(() => expect(markSeen).toBeTypeOf("function"));
     await act(async () => { markSeen?.(new Response(JSON.stringify({ ...RELEASES, has_unread: false }))); });
