@@ -18,7 +18,8 @@ import type {
   NativeProject,
 } from "../../src/contracts/work.ts";
 import { BoardLane } from "../../src/app/work/components/BoardLane.tsx";
-import { IssueCard } from "../../src/app/work/components/IssueCard.tsx";
+import { DependencyPanels } from "../../src/app/work/components/DependencyDetails.tsx";
+import { IssueCard, statusPill } from "../../src/app/work/components/IssueCard.tsx";
 import { DiffSurface } from "../../src/app/components/surfaces/DiffSurface.tsx";
 import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adapters/surfaces.ts";
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
@@ -253,8 +254,46 @@ describe("the board card", () => {
   });
 
   it.each([
+    { blockers: [], expected: null },
+    { blockers: [{ work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", state: "Todo", terminal: false }], expected: "Waiting on #7" },
+    { blockers: [{ work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", state: "Done", terminal: true }], expected: null },
+    { blockers: [{ work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", state: "Todo", terminal: false }, { work_item_id: "wi_two", project_id: "prj_example", number: 8, title: "Settings", state: "Todo", terminal: false }], expected: "Waiting on 2" },
+  ])("names only open blockers: $expected", ({ blockers, expected }) => {
+    const view = toWorkItemView({ ...itemFixture as unknown as NativeIssue, blockers }, "Example");
+    expect(statusPill(view)?.label ?? null).toBe(expected);
+  });
+
+  it("keeps the dependency popover open while live chips update", async () => {
+    const blocker = { work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", web_url: "/example/project/issues/7", state: "Todo", terminal: false };
+    const view = item({ attempt: null, blockedBy: [blocker.work_item_id], blockers: [blocker], blockedReason: "Waits for the shared foundation.", dependents: [blocker] });
+    const props = { showProject: false, now: NOW, onOpen: vi.fn(), moves: [], onMove: vi.fn() };
+    const rendered = render(<IssueCard {...props} item={view} />);
+    fireEvent.focus(screen.getByRole("button", { name: "Waiting on #7" }));
+    const chip = await screen.findByRole("link", { name: "#7 Foundation" });
+    expect(chip.closest("[data-slot=popover-popup]")?.closest("[data-testid=issue-card]")).toBeNull();
+    expect(screen.getByText("Waits for the shared foundation.")).not.toBeNull();
+    rendered.rerender(<IssueCard {...props} item={{ ...view, blockedReason: undefined, blockers: [{ ...blocker, state: "In Progress", started_at: "2026-09-09T10:00:00Z" }] }} />);
+    expect(await screen.findByRole("link", { name: /#7 Foundation/ })).not.toBeNull();
+    expect(screen.queryByText("Waits for the shared foundation.")).toBeNull();
+    expect(screen.getByText("Unblocks 1")).not.toBeNull();
+  });
+
+  it("shows blocked and unblocks panels without requiring a sentence, then queues from live data", () => {
+    const link = { work_item_id: "wi_one", project_id: "prj_example", number: 7, title: "Foundation", web_url: "/example/project/issues/7", state: "Todo", terminal: false };
+    const view = item({ attempt: null, blockers: [link], dependents: [link], blockedReason: undefined, unblocksReason: "Enables the dependent feature." });
+    const rendered = render(<DependencyPanels item={view} queued />);
+    expect(screen.getByRole("region", { name: "Blocked" })).not.toBeNull();
+    expect(screen.getByRole("region", { name: "Unblocks" }).textContent).toContain("Enables the dependent feature.");
+    rendered.rerender(<DependencyPanels item={{ ...view, blockers: [{ ...link, terminal: true, state: "Done" }] }} queued />);
+    expect(screen.queryByRole("region", { name: "Blocked" })).toBeNull();
+    expect(screen.getByRole("region", { name: "Queued" }).textContent).toContain("Unblocked when #7 Foundation landed; starts when a runner frees up.");
+    rendered.rerender(<DependencyPanels item={{ ...view, dependencyReady: false, blockers: [{ ...link, terminal: true, state: "Done" }] }} queued />);
+    expect(screen.queryByRole("region", { name: "Queued" })).toBeNull();
+  });
+
+  it.each([
     { attemptStatus: "running", priority: "Urgent", blockedBy: [], label: "Running", tone: "text-success-foreground" },
-    { attemptStatus: "failed", priority: "High", blockedBy: ["wi_blocker"], label: "Blocked · 1", tone: "text-error-foreground" },
+    { attemptStatus: "failed", priority: "High", blockedBy: ["wi_blocker"], label: "Waiting on 1", tone: "text-error-foreground" },
     { attemptStatus: "failed", priority: "Urgent", blockedBy: [], label: "Attempt failed", tone: "text-error-foreground" },
     { attemptStatus: "interrupted", priority: "High", blockedBy: [], label: "Interrupted", tone: "text-warning-foreground" },
   ] as const)("keeps nonterminal $label treatment", ({ attemptStatus, priority, blockedBy, label, tone }) => {
@@ -330,7 +369,7 @@ describe("the board card", () => {
     render(
       <IssueCard item={item()} showProject={false} now={NOW} onOpen={vi.fn()} moves={[]} onMove={vi.fn()} />,
     );
-    expect(screen.getByText("Blocked · 1")).not.toBeNull();
+    expect(screen.getByText("Waiting on 1")).not.toBeNull();
   });
 
   it.each(["board", "list"] as const)("links only the PR and preserves it through %s updates", (mode) => {
@@ -491,7 +530,7 @@ describe("a lane", () => {
     expect(lane.getAttribute("data-terminal")).toBe(terminal ? "true" : null);
     expect(lane.className).not.toContain("opacity-");
     expect(screen.queryByText("1 live") !== null).toBe(!terminal);
-    expect(screen.queryByText("Running") !== null).toBe(!terminal);
+    expect(screen.queryByText("Waiting on 1") !== null).toBe(!terminal);
     expect(screen.queryByTestId("worker-strip") !== null).toBe(!terminal);
     expect(screen.getByTestId("issue-card").getAttribute("data-terminal")).toBe(terminal ? "true" : null);
     if (terminal) expect(within(screen.getByTestId("issue-card")).getByText("Retired").className).toContain("text-muted-foreground");
@@ -515,7 +554,7 @@ describe("the list view", () => {
     );
     const rows = screen.getAllByTestId("work-list-row");
     expect(rows).toHaveLength(2);
-    expect(within(rows[0]!).getByText("Blocked · 1")).not.toBeNull();
+    expect(within(rows[0]!).getByText("Waiting on 1")).not.toBeNull();
     expect(within(rows[0]!).getByText("High")).not.toBeNull();
     expect(within(rows[1]!).getByText("Todo")).not.toBeNull();
     expect(within(rows[1]!).getByText("Build Mac")).not.toBeNull();

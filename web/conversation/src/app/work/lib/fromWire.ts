@@ -214,6 +214,11 @@ export function toWorkItemView(
     // Only a blocker that has not reached a terminal state still blocks. The
     // hub filters out blockers the reader cannot see, so this list is what
     // this reader is allowed to know about.
+    dependencyReady: issue.dependency_ready,
+    blockers: issue.blockers,
+    dependents: (issue.dependents ?? []).filter((item) => !item.terminal),
+    blockedReason: issue.blocked_reason?.basis === issue.blocked_reason?.current_basis ? issue.blocked_reason?.text : undefined,
+    unblocksReason: issue.unblocks_reason?.basis === issue.unblocks_reason?.current_basis ? issue.unblocks_reason?.text : undefined,
     blockedBy: issue.blockers
       .filter((blocker) => !blocker.terminal)
       .map((blocker) => blocker.work_item_id),

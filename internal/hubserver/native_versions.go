@@ -2,9 +2,10 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
-	"slices"
 	"strconv"
 
 	"github.com/labstack/echo/v4"
@@ -45,19 +46,26 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 		if err := json.Unmarshal([]byte(body), &issue); err != nil {
 			return nil, err
 		}
-		visible := make(map[tracker.NativeWorkItemID]bool, len(issue.Dependencies))
-		for _, id := range issue.Dependencies {
-			var count int
-			condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-			args := append([]any{scope.organization, id}, grantArgs...)
-			err := s.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
-			if err != nil {
-				return nil, err
+		for _, links := range []*[]tracker.NativeDependency{&issue.Blockers, &issue.Dependents, &issue.Related} {
+			kept := []tracker.NativeDependency{}
+			for _, link := range *links {
+				_, err := readNativeDependencyReference(ctx, s.database.reader, scope, link.ID)
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				kept = append(kept, link)
 			}
-			visible[id] = count != 0
+			*links = kept
 		}
-		issue.Dependencies = slices.DeleteFunc(issue.Dependencies, func(id tracker.NativeWorkItemID) bool { return !visible[id] })
-		issue.Blockers = slices.DeleteFunc(issue.Blockers, func(dependency tracker.NativeDependency) bool { return !visible[dependency.ID] })
+		issue.Dependencies = []tracker.NativeWorkItemID{}
+		for _, link := range issue.Blockers {
+			issue.Dependencies = append(issue.Dependencies, link.ID)
+		}
+		issue.BlockedReason.Text = ""
+		issue.UnblocksReason.Text = ""
 		path, err := readIssueBrowserPath(ctx, s.database.reader, string(issue.WorkItemID))
 		if err != nil {
 			return nil, err
@@ -66,7 +74,16 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 		return json.Marshal(s.nativeIssueResponse(issue))
 	}
 	if recordID == item {
-		return s.nativeIssueJSON(ctx, json.RawMessage(body))
+		var issue tracker.NativeIssue
+		if err := json.Unmarshal([]byte(body), &issue); err != nil {
+			return nil, err
+		}
+		issue.BlockedReason.Text, issue.UnblocksReason.Text = "", ""
+		encoded, err := json.Marshal(issue)
+		if err != nil {
+			return nil, err
+		}
+		return s.nativeIssueJSON(ctx, encoded)
 	}
 	return json.RawMessage(body), nil
 }

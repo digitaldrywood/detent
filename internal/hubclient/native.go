@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -210,6 +211,13 @@ func (c *NativeClient) Dependency(ctx context.Context, id tracker.NativeWorkItem
 		return result, err
 	}
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/dependencies", request, &result)
+	if err == nil && request.RelationshipType != "related" {
+		if generate := runner.DependencyReasonGeneratorFromContext(ctx); generate != nil {
+			if refreshErr := c.refreshDependencyReasons(ctx, id, generate, request.RelatedWorkItemID); refreshErr != nil {
+				slog.Warn("Dependency reason refresh unavailable", "error", refreshErr)
+			}
+		}
+	}
 	return result, err
 }
 

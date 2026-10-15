@@ -509,7 +509,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			}
 			card := page.Cards[0]
 			if test.grant {
-				if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].ID != blocker || card.StatusLine != "Blocked · 1" {
+				if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].ID != blocker || card.StatusLine != "Waiting on #1" {
 					t.Fatalf("granted blocker=%#v", card)
 				}
 			} else if len(card.Issue.Blockers) != 0 || card.StatusLine != "" {
