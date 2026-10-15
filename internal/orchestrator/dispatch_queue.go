@@ -12,9 +12,10 @@ import (
 )
 
 type pendingGlobalDispatch struct {
-	action dispatchAction
-	result <-chan scheduler.DispatchResult
-	cancel func()
+	action   dispatchAction
+	decision scheduler.DispatchGateDecision
+	result   <-chan scheduler.DispatchResult
+	cancel   func()
 }
 
 func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, state *State, action dispatchAction, slotIssue connector.Issue, workerHost string, now time.Time, pressureCapacity int, mergeControlEligible bool) (scheduler.Slot, bool, scheduler.DispatchGateDecision) {
@@ -83,7 +84,7 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 		pending.action = action
 		o.globalDispatchPending[action.issue.ID] = pending
 		gate.Update(pending.result, req, now)
-		return scheduler.Slot{}, false, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGlobalCapacityFull}
+		return scheduler.Slot{}, false, pending.decision
 	}
 	result, cancel, decision := gate.Submit(ctx, o.dispatchProjectCandidate(), req, now, o.globalDispatchReady)
 	select {
@@ -91,7 +92,7 @@ func (o *Orchestrator) acquireOrQueueGlobalDispatchSlot(ctx context.Context, sta
 		cancel()
 		return grant.Slot, grant.Err == nil, grant.Decision
 	default:
-		o.globalDispatchPending[action.issue.ID] = pendingGlobalDispatch{action: action, result: result, cancel: cancel}
+		o.globalDispatchPending[action.issue.ID] = pendingGlobalDispatch{action: action, decision: decision, result: result, cancel: cancel}
 		return scheduler.Slot{}, false, decision
 	}
 }

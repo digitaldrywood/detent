@@ -382,11 +382,10 @@ Review rejects semantic reservation and preemption substitutes.
 Workers inherit the host's native toolchain caches, except that an enrolled
 local Cloud runner may use one runner-owned Go build cache shared across its
 projects and daemon generations. That cache is bound to one canonical runtime
-store. Its existing process recovery owner must account for worker and host
-validation children before recent entries can be reclaimed. Maintenance pauses
-new dispatch, waits for consumers, reaps surviving recorded processes, and
-resumes dispatch after reclamation. The retained-size target applies at these
-maintenance points; it is not a hard bound on a running build's peak usage.
+store. Cache maintenance expires old entries without pausing dispatch, waiting for
+active consumers or evicting recent entries to meet a retained-size target.
+A retained-size target is diagnostic, not an admission limit. Actual low disk
+space retains its existing admission owner.
 
 Explicit operator cache overrides remain native and unmanaged. Local-board and
 SSH workers retain native build caches. The old native build cache is not
