@@ -320,7 +320,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 				keys = append(keys, key)
 			}
 			slices.Sort(keys)
-			if want := "actor,api_base,base_path,capabilities,csrf_token,feature,organization,organizations,plan,preferences,projects,sign_in_path,support"; strings.Join(keys, ",") != want {
+			if want := "actor,api_base,base_path,capabilities,csrf_token,feature,has_unread,organization,organizations,plan,preferences,projects,sign_in_path,support"; strings.Join(keys, ",") != want {
 				t.Fatalf("keys = %v, want %s", keys, want)
 			}
 			for field, want := range map[string]string{
