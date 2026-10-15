@@ -65,12 +65,6 @@ export function draftChanged(a: IntegrationDraft, b: IntegrationDraft): boolean 
  * What a failed save says. A revision conflict is the one worth its own
  * sentence: nothing the reader typed was wrong, and the fix is to look again.
  */
-/**
- * Whether a failed `GET .../policy` means "nothing is approved" rather than
- * "something went wrong". `404` is a project with no policy row; `409
- * policy_mismatch` is a stored approval that no longer describes what the host
- * resolves. Neither is an error the reader can act on except by approving.
- */
 export const OBSERVED_POLICY_REFRESH_MS = 30_000;
 
 export function conflictingPolicies(observed: readonly ObservedPolicy[]): boolean {
@@ -169,8 +163,8 @@ Complete the assigned work.
       <SettingsRow
         title="Project states"
         description={repositoryControlled
-          ? <span className="[overflow-wrap:anywhere]">Controlled by {integration.checkout_repository || integration.repository || "the repository"}: {integration.workflow_source} at revision {integration.workflow_source_revision}. Edit the repository definition, then approve its new policy.</span>
-          : native ? "Author YAML frontmatter and agent instructions in Markdown using the repository workflow schema. Review states and allowed transitions before saving; execution changes require policy approval." : "This workflow is owned by the source tracker."}
+          ? <span className="[overflow-wrap:anywhere]">Controlled by {integration.checkout_repository || integration.repository || "the repository"}: {integration.workflow_source} at revision {integration.workflow_source_revision}. Edit the repository definition; runners report the updated configuration.</span>
+          : native ? "Author YAML frontmatter and agent instructions in Markdown using the repository workflow schema. Review states and allowed transitions before saving." : "This workflow is owned by the source tracker."}
         status={
           <ul className="text-sm [overflow-wrap:anywhere]">
             {(integration.states ?? []).map((state, index) => (
@@ -312,7 +306,7 @@ export function ProjectSettingsView({
           }
         />
         <SettingsUnavailableGroup message={!transportAvailable
-          ? "Hub GitHub integration is unavailable; PR landing uses the runner’s approved repository policy."
+          ? "Hub GitHub integration is unavailable; PR landing uses the runner’s repository configuration."
           : repository === "" ? "Associate a runner checkout to configure repository integration." : undefined}>
           {integration.profile === "native" && installed !== undefined && !unavailable ? (
             <SettingsRow
@@ -350,7 +344,7 @@ export function ProjectSettingsView({
             help={{ label: "Pull requests", text: "Enabling this permits repository and pull request operations, including reading, creating and merging pull requests subject to GitHub permissions and branch protections. Disabling it stops these operations but keeps the immutable repository binding. Existing issues and work summaries are separate settings." }}
             status={<span className="inline-flex items-center gap-2 [overflow-wrap:anywhere]">
               <StatusDot tone={integration.repository_enabled && !unavailable && !waitingForApp && !waitingForRepository ? "ok" : "idle"} />
-              {!transportAvailable ? "Work lands through the runner’s approved repository policy."
+              {!transportAvailable ? "Work lands through the runner’s repository configuration."
                 : !integration.repository_enabled ? "Off. Work lands by git push; no pull requests are created."
                 : waitingForRepository || repository === "" ? "Waiting for repository binding."
                 : waitingForApp ? "Waiting for the GitHub App." : "Detent opens, updates and merges pull requests on this repository."}
@@ -483,12 +477,6 @@ export function ProjectSettingsRoute({
     () => api.integration(projectId),
     [api, projectId],
   );
-  // A project with nothing approved is an answer rather than a failure, and
-  // the hub gives it two shapes: `404` where the project has no policy row at
-  // all, and `409 policy_mismatch` where the stored approval no longer matches
-  // the resolved descriptor (`policyMismatch` in `internal/hubserver/policy.go`
-  // — the hosted preview answers exactly this for a fresh project). Both mean
-  // "nothing is approved": the screen says so and offers the approval.
   const policy = useResource<PolicyApproval | null>(
     () =>
       api.policy(projectId).catch((cause: unknown) => {
@@ -551,8 +539,6 @@ export function ProjectSettingsRoute({
     }
   });
 
-  // What a runner resolved and could not run: the Hub records it so the owner
-  // approves exactly that descriptor instead of pasting it.
   const setup = useResource(() => api.onboarding(projectId), [api, projectId]);
   const observed = setup.value?.observed_policies ?? [];
   const loadOlder = useMutation(async () => {

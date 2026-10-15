@@ -106,7 +106,7 @@ describe("settings help interactions", () => {
       integration: { ...integration, repository: "", github_transport_available: false, checkout_repository: repository },
       onOpenSetup,
     });
-    expect((await screen.findByText(/Hub GitHub integration is unavailable/)).textContent).toContain("runner’s approved repository policy");
+    expect((await screen.findByText(/Hub GitHub integration is unavailable/)).textContent).toContain("runner’s repository configuration");
     expect(screen.queryByRole("switch", { name: "Pull requests" })).toBeNull();
     expect(screen.queryByLabelText("Intake", { exact: true })).toBeNull();
     expect(screen.queryByLabelText("Projection", { exact: true })).toBeNull();

@@ -3,7 +3,7 @@
 // The artifact's screen 5: a 640px card over a dimmed shell, the Detent Cloud
 // logo, a stepper, option rows with checkboxes, and a footer that moves
 // forward. What it drives is exactly what `static/js/hosted-setup.js` drove,
-// step for step and payload for payload — the policy approval, the progress
+// step for step and payload for payload — the configuration, the progress
 // save, the runner enrollment and its routing, the artifact binding, the
 // repository bind and the GitHub integration.
 //
@@ -113,27 +113,6 @@ export function Stepper({
  * The artifact's `.opt` row: an optional checkbox, a leading icon, a name over
  * a monospace detail, and a right-hand status or action.
  */
-/** The command that prints the descriptor a human approves. */
-export const POLICY_INSPECT_COMMAND = "detent hub policy inspect --config <global.yaml> --project <project>";
-
-/**
- * The descriptor pasted from `detent hub policy inspect`. The hub validates
- * it and binds the approval to its identity; this only refuses what is not
- * a descriptor at all, so the reader learns that before the request.
- */
-export function parsePolicyDescriptor(text: string): { readonly policy_id: string } {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new AccountError({ status: 422, code: "invalid_request", message: "The pasted descriptor is not JSON. Paste the whole output of the inspect command." });
-  }
-  if (value === null || typeof value !== "object" || Array.isArray(value) || typeof (value as { policy_id?: unknown }).policy_id !== "string") {
-    throw new AccountError({ status: 422, code: "invalid_request", message: "The pasted JSON is not a policy descriptor: it has no policy_id." });
-  }
-  return value as { readonly policy_id: string };
-}
-
 export function OptionRow({
   checked,
   onCheckedChange,
@@ -611,7 +590,7 @@ export function SetupRoute({
                   onValueChange={setRepository}
                   choices={[
                     { value: "existing", name: "Use existing configuration files", detail: "detent.yaml and WORKFLOW.md are already in the repository" },
-                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on your runner’s computer before approval" },
+                    { value: "generate", name: "Create configuration files", detail: "Create detent.yaml and WORKFLOW.md on your runner’s computer" },
                   ]}
                 />
                 <Button variant="outline" disabled={saveProgress.pending || repository === ""} onClick={() => void saveProgress.call({ repository, doctor: progress?.doctor ?? false, provider: progress?.provider ?? false, artifacts })}>

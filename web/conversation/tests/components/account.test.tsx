@@ -31,7 +31,7 @@ import {
   refusalMessage,
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
-import { firstUnreadyStep, orderedSteps, parsePolicyDescriptor, Stepper } from "../../src/app/account/Setup.tsx";
+import { firstUnreadyStep, orderedSteps, Stepper } from "../../src/app/account/Setup.tsx";
 import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
@@ -633,24 +633,6 @@ describe("the project settings", () => {
       saveMessage(new AccountError({ status: 422, code: "invalid_request", message: "Bad intake" })),
     ).toBe("Bad intake");
     expect(saveMessage(null)).toBeNull();
-  });
-});
-
-describe("the pasted policy descriptor", () => {
-  it.each([
-    { name: "an inspect descriptor", text: '{"schema":1,"policy_id":"policy_abc","requirements":{}}', id: "policy_abc" },
-    { name: "one surrounded by whitespace", text: '  {"policy_id":"policy_x"}\n', id: "policy_x" },
-  ])("accepts $name", ({ text, id }) => {
-    expect(parsePolicyDescriptor(text).policy_id).toBe(id);
-  });
-
-  it.each([
-    { name: "text that is not JSON", text: "policy_abc", message: /not JSON/ },
-    { name: "an array", text: "[]", message: /no policy_id/ },
-    { name: "an object without an id", text: '{"schema":1}', message: /no policy_id/ },
-    { name: "a numeric id", text: '{"policy_id":7}', message: /no policy_id/ },
-  ])("refuses $name", ({ text, message }) => {
-    expect(() => parsePolicyDescriptor(text)).toThrow(message);
   });
 });
 
