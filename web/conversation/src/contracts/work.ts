@@ -120,7 +120,21 @@ export type NativeProject = typeof NativeProject.Type;
 // --- Work items -------------------------------------------------------------
 
 /** A blocker, hydrated with the state that decides whether it still blocks. */
+export const DependencyReason = Schema.Struct({
+  text: Schema.String,
+  basis: Schema.String,
+  current_basis: Schema.String,
+  revision: Schema.Number,
+});
+export type DependencyReason = typeof DependencyReason.Type;
+
 export const NativeDependency = Schema.Struct({
+  number: Schema.optional(Schema.Number),
+  title: Schema.optional(Schema.String),
+  web_url: Schema.optional(Schema.String),
+  started_at: Schema.optional(Schema.String),
+  dispatchable: Schema.optional(Schema.Boolean),
+  closed_at: Schema.optional(Schema.String),
   work_item_id: NativeWorkItemId,
   project_id: ProjectId,
   state: Schema.String,
@@ -193,6 +207,11 @@ export const NativeIssue = Schema.Struct({
    * Blocked; `dependencies` alone cannot answer that.
    */
   blockers: Schema.Array(NativeDependency),
+  dependents: Schema.optional(Schema.Array(NativeDependency)),
+  related: Schema.optional(Schema.Array(NativeDependency)),
+  dependency_ready: Schema.optional(Schema.Boolean),
+  blocked_reason: Schema.optional(DependencyReason),
+  unblocks_reason: Schema.optional(DependencyReason),
   external_references: Schema.Array(ExternalReference),
 });
 export type NativeIssue = typeof NativeIssue.Type;
@@ -477,6 +496,7 @@ export const CollaborationData = Schema.Struct({
   fields: Schema.optional(Schema.Array(Schema.String)),
   comment_id: Schema.optional(Schema.String),
   related_work_item_id: Schema.optional(NativeWorkItemId),
+  related_issue: Schema.optional(NativeDependency),
   operation: Schema.optional(Schema.String),
   from_state: Schema.optional(Schema.String),
   to_state: Schema.optional(Schema.String),

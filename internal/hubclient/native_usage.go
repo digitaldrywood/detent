@@ -3,7 +3,9 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -92,4 +94,16 @@ func mergeNativeUsage(existing []tracker.NativeUsage, entry tracker.NativeUsage)
 		return merged
 	}
 	return append(merged, entry)
+}
+
+func (e *nativeExecution) flushReasonUsage(ctx context.Context, before []tracker.NativeUsage) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if reflect.DeepEqual(before, e.data.Usage) {
+		return nil
+	}
+	data := e.data
+	data.Sequence++
+	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
+	return e.flush(ctx)
 }

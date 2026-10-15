@@ -1040,6 +1040,7 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
 | `POST /work-items/{id}/verification` | `idempotency_key`, optional `expected_revision`, `result` (`verified` or `not_fixed`), and `comment`, required for `not_fixed` |
 | `POST /work-items/{id}/dependencies` | `idempotency_key`, `expected_revision`, `related_work_item_id`, `operation: add` or `remove` |
+| `POST /work-items/{id}/dependency-reasons` | Source issue lease/fencing and `idempotency_key`; target `work_item_id` in the same project, `kind: blocked` or `unblocks`, `text`, current edge-set `basis`, and `expected_revision` of that reason |
 | `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |
 | `GET /work-items/{id}/comments` | Paged discussion with authorship, provenance, revisions, editor and timestamps |
 | `PATCH /work-items/{id}/comments/{comment_id}` | `idempotency_key`, `expected_revision`, explicit `body` |
@@ -1051,6 +1052,15 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
+
+Dependency summaries include reader-scoped blocker and dependent numbers, titles,
+links, workflow state and live attempt start times. Reasons are display-only
+plain text, capped at 140 characters, with separate typed basis and revision
+fields. The basis hashes the sorted directional edge set. A reason write changes
+one issue and refuses an outdated basis or revision with `409 revision_conflict`.
+Reads omit stale text; cross-project edges suppress the corresponding sentence
+for all readers. Runners refresh stale reasons on outcome reporting and dependency
+mutations, including both endpoints, without changing lanes or eligibility.
 
 With project `duplicate_challenge` enabled (the default), native filing may
 return HTTP 409 with `code: possible_duplicates`, up to five

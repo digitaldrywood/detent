@@ -304,6 +304,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return AgentToolResult{Content: "unsupported tool"}, nil
 		}
 	}
+	guarded = r.installDependencyReasonGenerator(guarded, req)
 	result, runErr := r.run(guarded, req)
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())

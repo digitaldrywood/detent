@@ -709,6 +709,9 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "cross-project"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, request), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", testHubAdminToken, request), http.StatusOK)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET blocked_reason=?,blocked_reason_basis=? WHERE native_id=?", "Private dependency details.", dependencyBasis([]string{string(blocker.WorkItemID)}), issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, suffix string
 	}{
@@ -720,6 +723,9 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 			for _, token := range []string{f.token, testHubAdminToken} {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, path+test.suffix, token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
+				if strings.Contains(response.Body.String(), "Private dependency details.") {
+					t.Fatal("cross-project reason leaked")
+				}
 				if visible := strings.Contains(response.Body.String(), string(blocker.WorkItemID)); visible != (token == testHubAdminToken) {
 					t.Fatalf("dependency visibility = %v for administrator %v", visible, token == testHubAdminToken)
 				}

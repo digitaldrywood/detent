@@ -148,5 +148,15 @@ func nativeUsageCorrection(previous, next tracker.NativeRunData) bool {
 	}
 	previous.Usage, next.Usage = nil, nil
 	previous.Sequence, next.Sequence = 0, 0
+	if previous.Runtime != nil && next.Runtime != nil {
+		previousRuntime, nextRuntime := *previous.Runtime, *next.Runtime
+		if len(previousRuntime.Pipeline) == 0 {
+			previousRuntime.Pipeline = nil
+		}
+		if len(nextRuntime.Pipeline) == 0 {
+			nextRuntime.Pipeline = nil
+		}
+		previous.Runtime, next.Runtime = &previousRuntime, &nextRuntime
+	}
 	return reflect.DeepEqual(previous, next)
 }
