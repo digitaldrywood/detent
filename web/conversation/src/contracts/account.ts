@@ -199,6 +199,7 @@ export const AccountBootstrap = Schema.Struct({
   sign_in_path: Schema.optional(Schema.String),
   /** The build the hub is serving, where it publishes one. The About row. */
   version: Schema.optional(Schema.String),
+  has_unread: Schema.optional(Schema.Boolean),
 });
 export type AccountBootstrap = typeof AccountBootstrap.Type;
 
@@ -1012,3 +1013,24 @@ export const SlackIntegrationStatus = Schema.Struct({
   last_status_code: Schema.Number,
 });
 export type SlackIntegrationStatus = typeof SlackIntegrationStatus.Type;
+
+export const ReleaseNotesBuild = Schema.Struct({
+  version: Schema.String,
+  build_time: Schema.String,
+  running: Schema.Boolean,
+  patch: Schema.Boolean,
+  unread: Schema.Boolean,
+  entries: Schema.Array(Schema.Struct({
+    category: Schema.Literals(["New", "Improved", "Fixed", "Removed"]),
+    text: Schema.String,
+    pr_number: Schema.Number,
+    pr_url: Schema.String,
+  })),
+  internal_count: Schema.Number,
+});
+export const ReleaseNotesPage = Schema.Struct({
+  builds: Schema.Array(ReleaseNotesBuild),
+  has_unread: Schema.Boolean,
+  next_cursor: Schema.optional(Schema.String),
+});
+export type ReleaseNotesPage = typeof ReleaseNotesPage.Type;

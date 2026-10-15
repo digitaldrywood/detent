@@ -109,6 +109,7 @@ const SETTINGS_INDEX: readonly IndexEntry[] = [
     targetId: "settings-keybindings",
     keywords: "shortcut keyboard slash",
   },
+  { section: "whats-new", title: "What's new", targetId: "settings-whats-new", keywords: "release notes changelog new improved fixed builds" },
   { section: "about", title: "Detent", targetId: "settings-about", keywords: "version build hub api" },
   {
     section: "about",
