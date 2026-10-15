@@ -228,7 +228,7 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	credential := scope.credential
-	if credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != apiScopeAdmin || credential.NativeOnly) {
+	if credential.Hosted == nil && (credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.organization) || credential.Runner.RunnerID == "" && (credential.Scope != apiScopeAdmin || credential.NativeOnly)) {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
 	var visible bool
@@ -238,7 +238,14 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	return readRunnerWithClock(ctx, s.database.reader, scope.organization, runnerID, s.config.now)
+	runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, runnerID, s.config.now)
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, runnerManagementProjects(runner)...) {
+		return runnerauth.Runner{}, nativeNotFound()
+	}
+	return runner, nil
 }
 
 type runnerRoutingRequest struct {

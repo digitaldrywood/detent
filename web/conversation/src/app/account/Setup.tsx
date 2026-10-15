@@ -478,7 +478,7 @@ export function SetupRoute({
     // as for a missing organization (`nativeNotFound` is the permission
     // status on these routes), so both say the same thing: the access this
     // needs is not there any more.
-    const fleet = (await api.runners().catch((cause: unknown) => {
+    const found = await api.runnerRouting(runner).catch((cause: unknown) => {
       if (cause instanceof AccountError && cause.status === 404) {
         throw new AccountError({
           status: 404,
@@ -487,15 +487,7 @@ export function SetupRoute({
         });
       }
       throw cause;
-    })) as readonly Record<string, unknown>[];
-    const found = fleet.find((entry) => entry["runner_id"] === runner);
-    if (found === undefined) {
-      throw new AccountError({
-        status: 404,
-        code: "not_found",
-        message: "Runner access changed. Reload this project.",
-      });
-    }
+    });
     const projectIds = Array.isArray(found["project_ids"])
       ? (found["project_ids"] as string[])
       : [];

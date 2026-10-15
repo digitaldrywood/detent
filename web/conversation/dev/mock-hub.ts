@@ -2817,16 +2817,20 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       segments.length === 3 &&
       segments[0] === "runners" &&
       segments[2] === "routing" &&
-      method === "PUT"
+      (method === "GET" || method === "PUT")
     ) {
       const runnerId = segments[1] ?? "";
-      const body = await readBody(request);
-      if (refuseReadOnly(response)) return true;
       const entry = account.runners.find((candidate) => candidate.runner.runner_id === runnerId);
       if (entry === undefined) {
         notFound(response, "No such runner.");
         return true;
       }
+      if (method === "GET") {
+        json(response, 200, entry.runner);
+        return true;
+      }
+      const body = await readBody(request);
+      if (refuseReadOnly(response)) return true;
       // A number here, where the integration and progress revisions are
       // strings: this endpoint marshals its counter plainly.
       if (Number(body.expected_revision) !== entry.runner.revision) {

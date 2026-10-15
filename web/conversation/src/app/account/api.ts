@@ -472,6 +472,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       }),
     removeRunner: (runner: string) => send(Empty, "DELETE", `${base}/runners/${encodeURIComponent(runner)}`),
     runners: () => send(Schema.Array(Schema.Unknown), "GET", `${base}/runners`),
+    runnerRouting: (runner: string) => send(Schema.Record(Schema.String, Schema.Unknown), "GET", `${base}/runners/${encodeURIComponent(runner)}/routing`),
     /**
      * Routing is a read-modify-write: only the tags come from the form, and
      * the revision is re-read immediately before the write because a hosted

@@ -242,9 +242,21 @@ it.each([
   const mount = await mountSetup(onNavigate);
   const intervals = vi.spyOn(window, "setInterval");
   let onboardingReads = 0;
+  let scopedRunnerReads = 0;
+  let routedProjects: readonly string[] | undefined;
   const fetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (unrouted && String(input).endsWith("/runners") && (!init?.method || init.method === "GET")) {
+      return Response.json({ code: "not_found", message: "Organization-wide runner access is unavailable" }, { status: 404 });
+    }
+    if (unrouted && String(input).endsWith("/routing") && init?.method === "PUT") {
+      routedProjects = JSON.parse(String(init.body)).project_ids;
+    }
     const response = await fetch(input, init);
+    if (unrouted && String(input).endsWith("/routing") && (!init?.method || init.method === "GET") && response.ok) {
+      scopedRunnerReads += 1;
+      return Response.json({ ...await response.json(), scope: "projects", project_ids: ["proj_alpha"] });
+    }
     if (ready && String(input).endsWith("/integration") && response.ok) {
       return Response.json({ ...await response.json(), checkout_repository: "example-org/example-repository", checkout_verified: true });
     }
@@ -288,6 +300,9 @@ it.each([
     expect(screen.getAllByText("Shared build runner").length).toBeGreaterThan(0);
     expect(screen.getByText("Runner is missing required tag gpu")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Route here" }).hasAttribute("disabled")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Route here" }));
+    await waitFor(() => expect(routedProjects).toEqual(["proj_alpha", "proj_beta"]));
+    expect(scopedRunnerReads).toBe(1);
   }
 
   await user.click(enroll);
