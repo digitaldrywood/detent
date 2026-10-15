@@ -44,7 +44,7 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 	}
 
 	t.Parallel()
-	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset"} {
+	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset", "revoked lease after quota reset"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -432,6 +432,37 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	execution := scheduler.RunExecution(issue.ID)
 	if execution == nil {
 		t.Fatal("native claim has no execution lifecycle")
+	}
+	if unavailable == "revoked lease after quota reset" {
+		held := execution.(*nativeExecution).claim.lease
+		if held.ID == "" || held.FencingToken == 0 {
+			t.Fatalf("missing valid lease: %#v", held)
+		}
+		if err := execution.Validate(t.Context()); err != nil {
+			t.Fatalf("acquired lease invalid: %v", err)
+		}
+		identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
+		report.Availability = "exhausted"
+		report.ResetAt = report.ObservedAt.Add(7 * 24 * time.Hour)
+		if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("quota pause accepted start: %v", err)
+		}
+		if err := execution.(*nativeExecution).claim.source.client.Release(t.Context(), held, "released"); err != nil {
+			t.Fatalf("revoke acquired lease: %v", err)
+		}
+		report.Availability = "available"
+		report.ResetAt = time.Time{}
+		report.ObservedAt = time.Now()
+		if err := execution.(*nativeExecution).validateProviderStart(identity); err != nil {
+			t.Fatalf("quota did not recover: %v", err)
+		}
+		if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("restored quota released revoked lease: %v", err)
+		}
+		if *launches != 0 {
+			t.Fatalf("revoked execution started a provider process: %d", *launches)
+		}
+		return
 	}
 	attemptWorkspace := t.TempDir()
 	process := runner.AgentProcessRequest{Workspace: attemptWorkspace, Environment: procgroup.Environment{Variables: workspace.EnvironmentVariables(workspace.Info{Path: attemptWorkspace}, workspace.Issue{ID: issue.ID, Identifier: issue.Identifier})}}
