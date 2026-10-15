@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -54,7 +56,12 @@ func hubTestPolicy() policy.Descriptor {
 
 func approveHubTestPolicy(t *testing.T, service *Service, path string, descriptor policy.Descriptor) {
 	t.Helper()
-	response := performHubAPIRequest(t, service, http.MethodPut, path, testHubAdminToken, policy.Change{Policy: descriptor})
+	current := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
+	var approval policy.Approval
+	if current.Code == http.StatusOK {
+		decodeHubResponse(t, current, &approval)
+	}
+	response := performHubAPIRequest(t, service, http.MethodPut, path, testHubAdminToken, policy.Change{ExpectedID: approval.Policy.ID, Policy: descriptor})
 	requireNativeStatus(t, response, http.StatusOK)
 }
 
@@ -615,4 +622,35 @@ func TestProjectPolicyApprovalSeedsChangeReviewPolicy(t *testing.T) {
 		})
 	}
 
+}
+
+func seedNativeFixturePolicy(t *testing.T, s *Service, scope string) {
+	t.Helper()
+	seedNativeFixturePolicyContext(t.Context(), t, s, scope)
+}
+
+func seedNativeFixturePolicyContext(ctx context.Context, t *testing.T, s *Service, scope string) {
+	t.Helper()
+	descriptor := hubTestPolicy()
+	raw, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?) ON CONFLICT DO NOTHING", scope, descriptor.ID, string(raw), formatHubTime(s.config.now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.database.db.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT DO NOTHING", scope, descriptor.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func clearNativeFixturePolicy(t *testing.T, f nativeFixture) {
+	t.Helper()
+	scope := string(f.project.OrganizationID) + "/" + string(f.project.ID)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_revisions WHERE scope=? AND approved_by='fixture'", scope); err != nil {
+		t.Fatal(err)
+	}
 }

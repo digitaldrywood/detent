@@ -499,6 +499,12 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	} else {
 		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
 		if err != nil {
+			var refusal *nativeError
+			if errors.As(err, &refusal) && refusal.Code == "issue_contract_unsatisfied" {
+				if err := commit(); err != nil {
+					return tracker.Lease{}, err
+				}
+			}
 			return tracker.Lease{}, err
 		}
 		if restricted && selectedID == 0 {
@@ -535,6 +541,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		return tracker.Lease{}, err
 	}
 	var providerWait error
+	var contractRefusal error
 	for _, id := range ids {
 		if request.WorkItemID > 0 && id != request.WorkItemID {
 			continue
@@ -553,13 +560,16 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			continue
 		}
 		if query.NativeScope != nil {
-			allowed, reason, err := nativeIssueContractClaimable(ctx, tx, *query.NativeScope, id)
+			contract, err := readNativeIssueContractEvaluation(ctx, tx, *query.NativeScope, id)
 			if err != nil {
 				return tracker.Lease{}, err
 			}
-			if !allowed {
-				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason}, now); err != nil {
+			if !contract.Allowed {
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: contract.Reason}, now); err != nil {
 					return tracker.Lease{}, err
+				}
+				if contract.ReasonCode == "issue_contract_unsatisfied" {
+					contractRefusal = &nativeError{Code: contract.ReasonCode, Message: contract.Reason, status: http.StatusConflict, publicMessage: true}
 				}
 				continue
 			}
@@ -677,6 +687,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	}
 	if providerWait != nil {
 		return tracker.Lease{}, providerWait
+	}
+	if contractRefusal != nil {
+		return tracker.Lease{}, contractRefusal
 	}
 	return tracker.Lease{}, ErrNoClaimableWork
 }

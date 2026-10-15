@@ -459,15 +459,15 @@ func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 	}
 	if scope.credential.HostedRole == "reporter" {
 		request.State = "Triage"
-		return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+		return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake, false)
 	}
 	if request.State == "Triage" {
 		return tracker.NativeIssue{}, nativeInvalid("Triage is reserved for linked GitHub issue intake")
 	}
-	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake, false)
 }
 
-func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
+func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake, linkedIntake bool) (tracker.NativeIssue, error) {
 	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
 	if err != nil {
 		return tracker.NativeIssue{}, err
@@ -482,7 +482,10 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE organization_id = ? AND project_id = ? AND native_source_key = ?", scope.organization, scope.project, sourceKey).Scan(&existing)
 		if err == nil {
 			issue, _, err := readNativeIssue(ctx, tx, scope, existing)
-			return issue, err
+			if err != nil {
+				return issue, err
+			}
+			return issue, requireNativeIssueContractAtFiling(ctx, tx, scope, issue)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return tracker.NativeIssue{}, err
@@ -554,10 +557,10 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	_, machineOrigin := issueorigin.Parse(issue.Body)
 	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
-		if !issue.IssueContract.Exempt {
-			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
-				return tracker.NativeIssue{}, err
-			}
+	}
+	if !linkedIntake {
+		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+			return tracker.NativeIssue{}, err
 		}
 	}
 	contractJSON, err := marshalNative(issue.IssueContract)
@@ -648,6 +651,11 @@ func requireNativeEdit(issue tracker.NativeIssue, expected tracker.Revision) err
 }
 
 func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, eventType string, data tracker.CollaborationData, now time.Time) (tracker.NativeIssue, error) {
+	if eventType == "workflow.transitioned" && data.FromState != issue.State || slices.Contains(data.Fields, "body") || eventType == "github.imported" {
+		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+			return issue, err
+		}
+	}
 	if err := tx.QueryRowContext(ctx, "SELECT terminal FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&issue.Terminal); err != nil {
 		return issue, err
 	}

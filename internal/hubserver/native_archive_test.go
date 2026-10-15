@@ -17,6 +17,10 @@ import (
 
 func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count int, state string) []tracker.NativeIssue {
 	t.Helper()
+	seedNativeFixturePolicy(t, service, string(scope.organization)+"/"+string(scope.project))
+	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", scope.project); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := service.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +28,7 @@ func seedArchiveIssues(t *testing.T, service *Service, scope nativeScope, count 
 	defer tx.Rollback()
 	issues := make([]tracker.NativeIssue, 0, count)
 	for i := range count {
-		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: nativeContractTestBody, State: state}, time.Now())
+		issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Seed %d", i), Body: nativeContractTestBody, State: state}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -179,7 +183,7 @@ func TestHostedIssueAllowanceBoundaries(t *testing.T) {
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			scope := nativeScope{organization: tracker.OrganizationID(f.service.config.Hosted.OrganizationID), project: f.project, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 			seedArchiveIssues(t, f.service, scope, count, "Done")
-			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Allocation", State: "Todo"})
+			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Allocation", State: "Todo"})
 			want := http.StatusTooManyRequests
 			if count == 199 {
 				want = http.StatusOK
@@ -223,7 +227,7 @@ func TestHostedIssueArchiveAndDowngrade(t *testing.T) {
 		return result
 	}
 	archived := action(issues[0], "archive", "archive", http.StatusOK)
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new"}, Title: "Replacement", State: "Todo"}
+	request := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "new"}, Title: "Replacement", State: "Todo"}
 	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var replacement tracker.NativeIssue
@@ -269,7 +273,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var archived tracker.NativeIssue
 	decodeHubResponse(t, response, &archived)
-	requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "replacement"}, Title: "Replacement", State: "Todo"}), http.StatusOK)
+	requireNativeStatus(t, f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "replacement"}, Title: "Replacement", State: "Todo"}), http.StatusOK)
 	var group sync.WaitGroup
 	responses := make(chan *httptest.ResponseRecorder, 8)
 	for index := range 8 {
@@ -278,7 +282,7 @@ func TestHostedIssueConcurrentAllocation(t *testing.T) {
 				responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items/"+string(archived.WorkItemID)+"/restore", archiveRequest(archived, "restore-race"))
 				return
 			}
-			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "allocationfixture" + strconv.Itoa(index) + "x", State: "Todo"})
+			responses <- f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: strconv.Itoa(index)}, Title: "allocationfixture" + strconv.Itoa(index) + "x", State: "Todo"})
 		})
 	}
 	group.Wait()
@@ -380,7 +384,8 @@ func TestHostedIssueAllowanceAcrossProjects(t *testing.T) {
 		t.Fatalf("project response=%s", response.Body.String())
 	}
 	base := "/api/v2/organizations/org_security/projects/" + created.ProjectID
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "allocate"}, Title: "Across projects", State: "Todo"}
+	seedNativeFixturePolicy(t, f.service, "org_security/"+created.ProjectID)
+	request := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "allocate"}, Title: "Across projects", State: "Todo"}
 	requireNativeStatus(t, f.request(t, owner, http.MethodPost, base+"/work-items", request), http.StatusTooManyRequests)
 	viewer := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	requireNativeStatus(t, f.request(t, viewer, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/archive", archiveRequest(first, "viewer-archive")), http.StatusNotFound)

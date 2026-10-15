@@ -237,6 +237,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 								readDenied = true
 							case "unselected project", "future project", "future project read key", "future project without user grant", "future project without issuer grant":
 								project = "prj_other"
+								seedNativeFixturePolicy(t, f.service, "org_security/"+project)
 								operatorSQL(t, f, "INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'other',profile,states_json,created_at FROM projects WHERE id=?", project, f.project)
 								operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) SELECT ?,source_name,detent_state,terminal,dispatchable,created_at,updated_at FROM workflow_states WHERE project_id=?", project, f.project)
 								readDenied = access == hostedProjectsSelected
@@ -282,7 +283,7 @@ func TestHostedAPIKeyCurrentAuthority(t *testing.T) {
 							if (read.Code != http.StatusOK) != readDenied {
 								t.Fatalf("API read status=%d want denied=%t", read.Code, readDenied)
 							}
-							write := serve(http.MethodPost, apiBase+"/work-items", `{"title":"key-write","state":"Todo","idempotency_key":"key-write"}`)
+							write := serve(http.MethodPost, apiBase+"/work-items", "{\"body\":\"\\n## Acceptance criteria\\nComplete the requested work.\\n## Must not break\\nExisting behavior.\\n## How we know it worked\\nRun the project checks.\",\"idempotency_key\":\"key-write\",\"state\":\"Todo\",\"title\":\"key-write\"}")
 							if readDenied || writeDenied {
 								if write.Code < 400 {
 									t.Fatalf("API write unexpectedly succeeded: %d", write.Code)

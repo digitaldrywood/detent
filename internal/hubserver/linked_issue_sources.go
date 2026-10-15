@@ -80,7 +80,10 @@ func createLinkedIssueInStateTx(ctx context.Context, tx *sql.Tx, scope nativeSco
 AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope.organization, scope.project, key, integration.RepositoryID, number).Scan(&existing)
 	if err == nil {
 		issue, _, err := readNativeIssue(ctx, tx, scope, existing)
-		return issue, err
+		if err != nil {
+			return issue, err
+		}
+		return issue, requireNativeIssueContractAtFiling(ctx, tx, scope, issue)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeIssue{}, err
@@ -128,7 +131,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 		request.Title = fmt.Sprintf("GitHub issue %s#%d", repository, number)
 	}
 	request.GitHubIssueURL = ""
-	issue, err := createNativeIssueDraft(ctx, tx, scope, request, now, false)
+	issue, err := createNativeIssueDraft(ctx, tx, scope, request, now, false, true)
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -224,6 +227,7 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, issue.WorkItemID); err != nil {
 		return nil, err
 	}
+	issue.LinkedSource.Status = "complete"
 	reason := canonical
 	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason != "" {
 		reason += ": " + verified.importReason

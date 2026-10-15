@@ -52,7 +52,7 @@ func TestEntryKeyCurrentAuthority(t *testing.T) {
 								t.Fatalf("second service key read=%d %s", secondRead.Code, secondRead.Body.String())
 							}
 						}
-						write := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: f.base + "/work-items", body: `{"idempotency_key":"matrix-write","title":"Scope and membership regression","state":"Todo"}`, mutate: mutate})
+						write := f.serve(t, hostedSharedRequest{kind: cloudassert.KindKey, method: http.MethodPost, target: f.base + "/work-items", body: "{\"body\":\"\\n## Acceptance criteria\\nComplete the requested work.\\n## Must not break\\nExisting behavior.\\n## How we know it worked\\nRun the project checks.\",\"idempotency_key\":\"matrix-write\",\"state\":\"Todo\",\"title\":\"Scope and membership regression\"}", mutate: mutate})
 						wantWrite := http.StatusOK
 						if kind == "personal" && !member {
 							wantWrite = http.StatusForbidden

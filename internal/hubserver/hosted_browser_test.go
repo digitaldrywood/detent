@@ -449,9 +449,11 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 	if allocated {
 		fixture.project = fixture.createProject(t, "Browser collaboration")
 		fixture.privateProject = fixture.createProject(t, "Owner private project")
+		seedNativeFixturePolicy(t, service, organization+"/"+fixture.project)
+		seedNativeFixturePolicy(t, service, organization+"/"+fixture.privateProject)
 		response := fixture.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_viewer"}, "project": {fixture.project}})
 		browserHostedStatus(t, response, http.StatusSeeOther)
-		payload, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "browser-preview-issue"}, Title: "Review the invitation flow", Body: "Browser fixture private body", State: "Todo"})
+		payload, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "browser-preview-issue"}, Title: "Review the invitation flow", Body: "Browser fixture private body" + issueContractTestSections, State: "Todo"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -504,6 +506,10 @@ func (f *browserHostedFixture) createProject(t *testing.T, name string) string {
 	project := strings.TrimPrefix(response.Header().Get("Location"), "/projects/")
 	if !strings.HasPrefix(project, "prj_") {
 		t.Fatal("project form returned an invalid project location")
+	}
+	seedNativeFixturePolicy(t, f.service, f.service.config.Hosted.OrganizationID+"/"+project)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project); err != nil {
+		t.Fatal(err)
 	}
 	return project
 }
@@ -753,7 +759,7 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 		"share_history": true,
 		"issue": map[string]any{
 			"title":       "Renew the lease before the handoff completes",
-			"description": "Move the lease renewal behind the handoff acknowledgement.",
+			"description": "Move the lease renewal behind the handoff acknowledgement." + issueContractTestSections,
 		},
 	}, http.StatusOK), &linked)
 	f.workItem = linked.Issue.ID
@@ -767,7 +773,7 @@ func (f *browserHostedFixture) seedConversation(t *testing.T) {
 		return
 	}
 	var issue tracker.NativeIssue
-	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody,
 		Mutation: tracker.Mutation{IdempotencyKey: "browser-worker-issue"}, Title: "Runner session isolation", State: "Todo",
 	}, http.StatusOK), &issue)
 	store := f.service.conversations.store

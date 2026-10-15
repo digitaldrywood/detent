@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -321,7 +322,7 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, now time.Time) error {
+func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, revoking bool, now time.Time) error {
 	organization, projectID, native := strings.Cut(policyScope, "/")
 	if !native || strings.HasPrefix(policyScope, "repository:") {
 		return nil
@@ -344,6 +345,9 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 	currentPolicy, err := readChangeSummaryPolicy(ctx, tx, scope)
 	if err != nil {
 		return err
+	}
+	if revoking {
+		currentPolicy.approval = policy.Approval{}
 	}
 	states := make([]connector.WorkflowState, len(project.States))
 	for i, lane := range project.States {

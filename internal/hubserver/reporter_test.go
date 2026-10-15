@@ -58,6 +58,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			decodeHubResponse(t, created, &project)
 			f.project = project.ID
 			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
+			seedNativeFixturePolicy(t, f.service, "org_security/"+string(project.ID))
 			if test.upgraded {
 				previousStates := reporterPreviousHostedStates()
 				if test.triage != nil {
@@ -160,7 +161,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			requireNativeStatus(t, request(u, http.MethodDelete, f.base+"/attachment-metadata/"+record.ID, nil), http.StatusForbidden)
 			for _, target := range []string{"Backlog", "Todo", "Cancelled"} {
 				var report tracker.NativeIssue
-				r := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "promote-" + target}, Type: "bug", Title: "Intake report", Body: reporterBugSections})
+				r := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "promote-" + target}, Type: "bug", Title: "Intake report", Body: reporterBugSections + issueContractTestSections})
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &report)
 				r = request(member, http.MethodPost, f.base+"/work-items/"+string(report.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "promotion-" + target}, ExpectedRevision: report.Revision, State: target, Reason: "user_requested"})
@@ -171,7 +172,7 @@ func TestReporterNativeCommands(t *testing.T) {
 				}
 			}
 			var other tracker.NativeIssue
-			r := request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "member-file"}, Title: "Member report"})
+			r := request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "member-file"}, Title: "Member report", Body: nativeContractTestBody})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &other)
 			if other.State != "Todo" {
@@ -546,7 +547,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 					f.grantContext(ctx, t, member, true, false)
 					base := "/api/v2/organizations/org_security/projects/" + string(project.ID)
 					for i, state := range []string{"", "Todo", "Planned", "Cancelled", "Triage", "Unknown"} {
-						draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%s-%d", entry, i)}, Type: "bug", Title: "Custom workflow report", Body: reporterBugSections, State: state}
+						draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%s-%d", entry, i)}, Type: "bug", Title: "Custom workflow report", Body: reporterBugSections + issueContractTestSections, State: state}
 						response := f.request(t, reporter, http.MethodPost, base+"/work-items", draft)
 						if i > 0 {
 							requireNativeStatus(t, response, http.StatusConflict)
@@ -567,6 +568,7 @@ func TestReporterCustomHostedProjectCreation(t *testing.T) {
 						if issue.State != "Triage" {
 							t.Fatalf("requested=%q resulting=%q", state, issue.State)
 						}
+						seedNativeFixturePolicyContext(ctx, t, f.service, "org_security/"+string(issue.ProjectID))
 						response = f.request(t, member, http.MethodPost, base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("promote-%s-%d", entry, i)}, ExpectedRevision: issue.Revision, State: test.promotion, Reason: "user_requested"})
 						requireNativeStatus(t, response, http.StatusOK)
 						decodeHubResponse(t, response, &issue)
@@ -677,7 +679,7 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test-owner", policy.Change{Policy: descriptor}); err != nil {
+			if _, err := f.service.database.approvePolicy(t.Context(), "org_security/"+string(f.project), "test-owner", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}); err != nil {
 				t.Fatal(err)
 			}
 			executor := hostedOperatorExecutor{f.service}
@@ -728,8 +730,12 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			}
 			member := f.hostedSecurityFixture.user(t, "member", "member", "member@example.test", "write", "")
 			response = f.request(t, member, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "promote"}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "user_requested"})
-			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &issue)
+			if test.name != "engineering overlap" {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			} else {
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &issue)
+			}
 			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
 			wantReason := "Acceptance criteria"
 			engineeredBody := test.body + issueContractTestSections
@@ -737,11 +743,16 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				wantReason = "A human must confirm"
 				engineeredBody = test.body
 			}
-			if err != nil || claimable || !strings.Contains(reason, wantReason) {
+			if err != nil || test.name == "engineering overlap" && (claimable || !strings.Contains(reason, wantReason)) {
 				t.Fatalf("promoted contract=%t, %s, %v", claimable, reason, err)
 			}
 			response = f.request(t, member, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "engineer"}, ExpectedRevision: issue.Revision, Body: new(engineeredBody)})
 			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &issue)
+			if issue.State == "Triage" {
+				response = f.request(t, member, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "promote-confirmed"}, ExpectedRevision: issue.Revision, State: "Todo", Reason: "user_requested"})
+				requireNativeStatus(t, response, http.StatusOK)
+			}
 			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
 			if err != nil || !claimable || reason != "" {
 				t.Fatalf("engineered contract=%t, %s, %v", claimable, reason, err)

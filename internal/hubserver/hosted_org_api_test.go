@@ -717,7 +717,7 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 				if test.runningGranted {
 					runningProject = f.project
 				}
-				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+runningProject+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-running"}, Title: "Running work", State: "Todo"}, http.StatusOK), &issue)
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+runningProject+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "private-running"}, Title: "Running work", State: "Todo"}, http.StatusOK), &issue)
 				now := f.service.config.now()
 				stamp := formatHubTime(now)
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'routing-lease',id,?,'routing-session',?,?,?,?,? FROM issues WHERE native_id=?`, binding.MachineID, formatHubTime(now.Add(time.Hour)), stamp, stamp, stamp, stamp, issue.WorkItemID); err != nil {

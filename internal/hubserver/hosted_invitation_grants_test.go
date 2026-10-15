@@ -241,7 +241,7 @@ func TestHostedInvitationGrants(t *testing.T) {
 			if len(grants) > 0 && grants[0].Write {
 				writeStatus = http.StatusOK
 			}
-			requireNativeStatus(t, f.request(t, invitee, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "write"}, Title: "New work", State: "Todo"}), writeStatus)
+			requireNativeStatus(t, f.request(t, invitee, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "write"}, Title: "New work", State: "Todo"}), writeStatus)
 			requireNativeStatus(t, f.request(t, owner, http.MethodPut, path, map[string]any{"grants": grants}), http.StatusNotFound)
 		})
 	}

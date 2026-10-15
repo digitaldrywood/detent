@@ -90,7 +90,7 @@ func TestLinkedIssueCreation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: test.name}, Title: test.name, State: test.state, GitHubIssueURL: test.source}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: test.name}, Title: test.name, Body: nativeContractTestBody, State: test.state, GitHubIssueURL: test.source}
 			r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, r, test.want)
 			if test.want != http.StatusOK {
@@ -151,20 +151,23 @@ func linkedSnapshot() tracker.GitHubIssueSnapshot {
 	prov := tracker.Provenance{Provider: "github", ExternalID: "I_source", AuthorID: "author", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute), ObservedAt: now}
 	comment := prov
 	comment.ExternalID = "C_source"
-	return tracker.GitHubIssueSnapshot{URL: "https://github.com/acme/orders/issues/12", Title: "Fetched source title", Body: "Full source body", Provenance: prov, Comments: []tracker.GitHubIssueComment{{Body: "Source discussion", Provenance: comment}}}
+	return tracker.GitHubIssueSnapshot{URL: "https://github.com/acme/orders/issues/12", Title: "Fetched source title", Body: "Full source body" + issueContractTestSections, Provenance: prov, Comments: []tracker.GitHubIssueComment{{Body: "Source discussion", Provenance: comment}}}
 }
 
 func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"unedited", "native edits", "edit back to placeholder"} {
+	for _, mode := range []string{"unedited", "native edits", "edit back to placeholder", "incomplete source contract"} {
 		t.Run(mode, func(t *testing.T) {
 			f := linkedFixture(t)
 			issue := pendingLinkedIssue(t, f)
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
 			title, body := issue.Title, issue.Body
-			if mode != "unedited" {
+			if body == "" {
+				body = nativeContractTestBody
+			}
+			if mode != "unedited" && mode != "incomplete source contract" {
 				if mode == "native edits" {
-					title, body = "Native title", "Native body"
+					title, body = "Native title", "Native body"+issueContractTestSections
 				}
 				r := performHubAPIRequest(t, f.service, http.MethodPatch, path, f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit"}, ExpectedRevision: issue.Revision, Title: &title, Body: &body})
 				requireNativeStatus(t, r, http.StatusOK)
@@ -178,6 +181,17 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 			var lease tracker.NativeLease
 			decodeHubResponse(t, r, &lease)
 			snapshot := linkedSnapshot()
+			if mode == "incomplete source contract" {
+				snapshot.Body = "## Roadmap Summary\nRepair the failed build."
+				request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "incomplete-contract", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Snapshot: snapshot}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request)
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				preserved, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID))
+				if err != nil || preserved.LinkedSource.Status != "pending" || preserved.Body != issue.Body {
+					t.Fatalf("refused intake persisted: %+v, %v", preserved, err)
+				}
+				return
+			}
 			request := tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "intake", LeaseID: lease.ID, FencingToken: lease.FencingToken}, Snapshot: snapshot}
 			invalid := request
 			invalid.IdempotencyKey = "invalid"
@@ -219,7 +233,7 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 				t.Fatalf("comments = %d, error = %v", count, err)
 			}
 			request.IdempotencyKey = "later-source-edit"
-			request.Snapshot.Title, request.Snapshot.Body = "Updated GitHub title", "Updated GitHub body"
+			request.Snapshot.Title, request.Snapshot.Body = "Updated GitHub title", "Updated GitHub body"+issueContractTestSections
 			request.Snapshot.Provenance.UpdatedAt = snapshot.Provenance.UpdatedAt.Add(time.Second)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/source-intake", worker, request), http.StatusOK)
 			r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)

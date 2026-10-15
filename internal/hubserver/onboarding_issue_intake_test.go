@@ -480,7 +480,7 @@ func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
 				for number := first; number <= last; number++ {
 					preview := previewIssue(number, false)
 					snapshot := batchSnapshot(number)
-					snapshot.Body = strings.Repeat("complete-source-body", 100)
+					snapshot.Body = strings.Repeat("complete-source-body", 100) + issueContractTestSections
 					preview.Snapshot = &snapshot
 					preview.Labels = []string{"bug", "phase:one"}
 					if number%2 == 0 {

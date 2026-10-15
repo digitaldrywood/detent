@@ -53,7 +53,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 	}
 	ids := map[string]string{}
 	for _, fixture := range fixtures {
-		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Title: fixture.id, State: fixture.initial}, fixture.created, false)
+		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: fixture.id, State: fixture.initial}, fixture.created, false, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,13 +199,13 @@ VALUES (?,?,1,(SELECT id FROM workflow_states WHERE project_id=? AND detent_stat
 				}
 				return
 			}
-			issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "population", State: "Todo"}, base)
+			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "population", State: "Todo"}, base)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for i := range maxAnalyticsPopulation {
 				if kind == "issues" {
-					_, err = createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: strconv.Itoa(i), State: "Todo"}, base)
+					_, err = createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: strconv.Itoa(i), State: "Todo"}, base)
 				} else {
 					from, to := "Todo", "In Progress"
 					if i%2 == 1 {

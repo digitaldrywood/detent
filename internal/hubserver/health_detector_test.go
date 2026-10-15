@@ -262,6 +262,7 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	f.create(t, "candidate")
+	clearNativeFixturePolicy(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_created_at=? WHERE project_id=?", formatHubTime(now.Add(-time.Hour)), f.project.ID); err != nil {
 		t.Fatal(err)
@@ -608,7 +609,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 			}
 			var resolved sql.NullString
 			var tick string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT resolved_at FROM health_findings").Scan(&resolved); err != nil {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT resolved_at FROM health_findings WHERE fingerprint=?", finding.Fingerprint).Scan(&resolved); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT last_tick_at FROM health_detector_ticks").Scan(&tick); err != nil {
@@ -721,6 +722,7 @@ func TestHealthDetectorTicksAndStops(t *testing.T) {
 func TestHealthSnapshotReadsWithoutTheWriter(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "health-writer")
 	f.create(t, "candidate")
+	clearNativeFixturePolicy(t, f)
 	writer, err := f.service.database.db.Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)

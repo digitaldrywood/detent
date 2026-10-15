@@ -52,7 +52,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			issue := tracker.NativeIssue{}
 			comment := tracker.NativeComment{}
 			if strings.HasPrefix(source, "issue") {
-				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Image issue", Body: body, State: "Todo"}, http.StatusOK)
+				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Image issue", Body: body + issueContractTestSections, State: "Todo"}, http.StatusOK)
 				if err := json.Unmarshal(raw, &issue); err != nil {
 					t.Fatal(err)
 				}
@@ -107,7 +107,7 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				t.Fatalf("referenced_by=%v", metadata.ReferencedBy)
 			}
 			if strings.HasPrefix(source, "issue") {
-				removed := "No image"
+				removed := "No image" + issueContractTestSections
 				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: issue.Revision, Body: &removed}, http.StatusOK)
 			} else {
 				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: comment.Revision, Body: "No image"}, http.StatusOK)

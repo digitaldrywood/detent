@@ -188,7 +188,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 			if old.ID == approved.ID {
 				t.Fatal("historical canonical policy must have a distinct identity")
 			}
-			expectedID := ""
+			expectedID := hubTestPolicy().ID
 			if test.name == "compatible approved revision" {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", old)
 				expectedID = old.ID

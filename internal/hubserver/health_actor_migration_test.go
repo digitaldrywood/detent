@@ -33,7 +33,7 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: test.name, Body: "Retained evidence", State: test.state}, now)
+			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: test.name, Body: "Retained evidence" + issueContractTestSections, State: test.state}, now)
 			if err != nil {
 				t.Fatal(err)
 			}

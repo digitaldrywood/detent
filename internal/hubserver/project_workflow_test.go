@@ -50,7 +50,9 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	f.grant(t, viewer, false, false)
 	f.grant(t, member, true, false)
 	base := organizationBase + "/projects/" + string(f.project)
-	api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "current-task"}, Title: "Preserve project workflow", State: "Todo"}, http.StatusOK)
+	seedNativeFixturePolicy(t, f.service, "org_security/"+string(f.project))
+	operatorSQL(t, f, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+	api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "current-task"}, Title: "Preserve project workflow", Body: nativeContractTestBody, State: "Todo"}, http.StatusOK)
 	var otherProject tracker.NativeProject
 	browserHostedDecode(t, api(t, "owner", http.MethodPost, organizationBase+"/projects", map[string]any{"idempotency_key": "other-project", "name": "Other project", "grant_access": true}, http.StatusCreated), &otherProject)
 	var original tracker.NativeProject
@@ -65,7 +67,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	}
 	currentItem := items.Items[0]
 	var approved policy.Approval
-	browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: hubTestPolicy()}, http.StatusOK), &approved)
+	browserHostedDecode(t, api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: hubTestPolicy()}, http.StatusOK), &approved)
 	var blocker tracker.NativeIssue
 	browserHostedDecode(t, api(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, Title: "Retain prerequisite", Body: nativeContractTestBody, State: "Todo"}, http.StatusOK), &blocker)
 	api(t, "owner", http.MethodPost, base+"/work-items/"+string(currentItem.WorkItemID)+"/dependencies", tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "dependency"}, ExpectedRevision: currentItem.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}, http.StatusOK)
@@ -153,7 +155,7 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		_, err = createNativeIssueTx(t.Context(), tx, worker, request, f.service.config.now())
+		_, err = createNativeFixtureIssueTx(t.Context(), tx, worker, request, f.service.config.now())
 		var failure *nativeError
 		if !errors.As(err, &failure) || failure.Message != "Workflow target requires an operator" {
 			t.Fatalf("worker operator-only admission = %v", err)

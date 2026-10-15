@@ -89,7 +89,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 			if err != nil || input.Version == nil {
 				t.Fatalf("required current-head review unavailable: %+v, %v", input, err)
 			}
-			result := gate.ValidatorResult{VersionID: input.Version.ID, HeadSHA: input.Version.HeadSHA, BaseSHA: input.Version.BaseSHA, Repository: input.Version.Repository, DiffDigest: input.Diff.Digest, Verdict: test.verdict, Summary: "Independent source result", SessionID: 123, Submitted: true, Score: 1, Commands: []gate.CommandResult{receipt}}
+			result := gate.ValidatorResult{VersionID: input.Version.ID, HeadSHA: input.Version.HeadSHA, BaseSHA: input.Version.BaseSHA, Repository: input.Version.Repository, DiffDigest: input.Diff.Digest, Verdict: test.verdict, Summary: "Independent source result", SessionID: 123, Submitted: true, Score: 1, Commands: []gate.CommandResult{receipt}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceReceipt, Reference: "make check", Behavior: "The source command passes for the reviewed head and tree.", ReceiptIDs: []string{receipt.ReceiptID}}}}
 			wrong := result
 			wrong.HeadSHA = strings.Repeat("d", 40)
 			if err := reviewer.RecordReview(ctx, wrong); err == nil {
@@ -285,6 +285,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					}
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictPass
+					result.Commands = []gate.CommandResult{receipt}
 					if err := validator.RecordValidator(ctx, result); err != nil {
 						t.Fatalf("independent acceptance retry was refused: %v", err)
 					}

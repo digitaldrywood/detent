@@ -616,6 +616,9 @@ func TestScopeHostUsage(t *testing.T) {
 func TestHostedFleetHostUsageScope(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", f.service.config.Hosted.OrganizationID+"/"+f.project); err != nil {
+		t.Fatal(err)
+	}
 	organization := browserHostedOrganizationBase
 	for _, project := range []string{f.project, f.privateProject} {
 		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
@@ -624,7 +627,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	descriptor := hubTestPolicy()
 	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""
 	descriptor = descriptor.WithID()
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 	binding := runnerauth.NewBinding()
 	enrollment := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
 	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", enrollment)

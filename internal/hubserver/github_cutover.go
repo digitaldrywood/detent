@@ -277,6 +277,9 @@ SELECT i.id, i.workflow_state_id, i.project_id, ws.detent_state, i.native_id, ?,
 		if err != nil {
 			return err
 		}
+		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+			return err
+		}
 		if err := recordNativeChange(ctx, tx, scope, issue, id, issue.Revision, "issue.cutover", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
 			return err
 		}
