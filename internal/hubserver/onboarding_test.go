@@ -100,8 +100,8 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
 			decodeHubResponse(t, response, &setup)
-			if len(setup.Runners) != 0 {
-				t.Fatalf("runner exposed without administration permission: %+v", setup.Runners)
+			if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
+				t.Fatalf("project-scoped runner missing from its routed project: %+v", setup.Runners)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -207,18 +207,23 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, role, grant  string
-		read, write, admin int
-		routed, manage     bool
+		name, role, grant    string
+		read, write, admin   int
+		routed, manage, owns bool
 	}{
-		{"owner", "owner", "write", 200, 200, 200, false, false},
-		{"admin", "admin", "write", 200, 200, 200, false, false},
-		{"member", "member", "write", 200, 200, 404, false, false},
-		{"member managing runner projects only", "member", "write", 200, 200, 404, false, true},
-		{"member with routed runner", "member", "write", 200, 200, 404, true, false},
-		{"viewer", "viewer", "read", 200, 404, 404, false, false},
-		{"viewer with routed runner", "viewer", "read", 200, 404, 404, true, false},
-		{"ungranted owner", "owner", "", 404, 404, 404, false, false},
+		{"owner", "owner", "write", 200, 200, 200, false, false, false},
+		{"owner reuses own runner", "owner", "write", 200, 200, 200, false, false, true},
+		{"owner with routed runner", "owner", "write", 200, 200, 200, true, false, false},
+		{"admin", "admin", "write", 200, 200, 200, false, false, false},
+		{"admin reuses own runner", "admin", "write", 200, 200, 200, false, false, true},
+		{"member", "member", "write", 200, 200, 404, false, false, false},
+		{"member managing runner projects only", "member", "write", 200, 200, 404, false, true, true},
+		{"member managing unowned runner", "member", "write", 200, 200, 404, false, true, false},
+		{"member managing routed runner", "member", "write", 200, 200, 404, true, true, false},
+		{"member with routed runner", "member", "write", 200, 200, 404, true, false, false},
+		{"viewer", "viewer", "read", 200, 404, 404, false, false, false},
+		{"viewer with routed runner", "viewer", "read", 200, 404, 404, true, false, false},
+		{"ungranted owner", "owner", "", 404, 404, 404, false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
@@ -233,6 +238,8 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				sibling := f
 				sibling.project = "prj_onboarding_sibling"
 				sibling.grant(t, user, true, true)
+			}
+			if tt.owns {
 				owner = user
 			}
 			binding := runnerauth.NewBinding()
@@ -262,6 +269,13 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				wantRoute = http.StatusOK
 			}
 			requireNativeStatus(t, routeRead, wantRoute)
+			if wantRoute == http.StatusOK && !tt.routed && !tt.owns {
+				var before runnerauth.Runner
+				decodeHubResponse(t, routeRead, &before)
+				routing := before.Routing
+				routing.ProjectIDs = append(slices.Clone(routing.ProjectIDs), f.project)
+				requireNativeStatus(t, f.request(t, user, http.MethodPut, route, runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: routing}), http.StatusForbidden)
+			}
 			if wantRoute == http.StatusNotFound && strings.Contains(routeRead.Body.String(), "Sibling project") {
 				t.Fatal("runner read disclosed an inaccessible project name")
 			}
@@ -272,13 +286,13 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				var setup onboarding.Project
 				decodeHubResponse(t, response, &setup)
 				wantRunners := 0
-				if tt.role == "owner" || tt.role == "admin" || tt.manage {
+				if (tt.role == "owner" || tt.role == "admin" || tt.manage) && (tt.routed || tt.owns) {
 					wantRunners = 1
 				}
 				if len(setup.Runners) != wantRunners {
 					t.Fatalf("runner administration boundary: got %+v, want %d runners", setup.Runners, wantRunners)
 				}
-				if tt.manage {
+				if tt.manage && tt.owns {
 					response = f.request(t, user, http.MethodGet, route, nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					var before runnerauth.Runner
