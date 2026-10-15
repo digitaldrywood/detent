@@ -38,7 +38,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 		if version.ID != e.change.VersionID || version.ID != detail.Change.CurrentVersion {
 			continue
 		}
-		if version.HeadSHA != e.lastDiff.HeadSHA || version.BaseSHA != e.lastDiff.BaseSHA || version.PolicyID != e.data.PolicyID {
+		if version.HeadSHA != e.lastDiff.HeadSHA || version.BaseSHA != e.lastDiff.BaseSHA {
 			return runner.NativeValidation{}, errors.New("native validator version differs from the published source")
 		}
 		var discussion runner.NativeReviewDiscussion
