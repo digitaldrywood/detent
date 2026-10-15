@@ -37,6 +37,7 @@ source:
   name_template: "{{ .ProjectName }}_{{ .Version }}_source"
   prefix_template: "{{ .ProjectName }}_{{ .Version }}_source/"
   files:
+    - static/release-notes.json
     - static/app/conversation
     - static/css/output.css
     - docs/config.md

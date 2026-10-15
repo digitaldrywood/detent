@@ -353,6 +353,12 @@ output. Use Node 24 for the same toolchain as staging and release builds.
 For a private operator build, first select the complete source composition in
 this isolated checkout, then run `make build`. When supplying custom Go flags
 or cross-compiling, run `make assets` followed by the desired `go build` command.
+`make assets` also generates `static/release-notes.json` from local Git history.
+Production builds supply the same `VERSION`, `COMMIT`, and `DATE` to this target
+and the binary linker flags, including operator version strings. Generation
+requires a full checkout with release tags and makes no network requests. The
+ignored feed is embedded with the static inputs and included in release source
+archives; it is never committed.
 Always regenerate after changing or integrating client source or the lockfile;
 a direct Go build cannot determine whether existing ignored output is stale.
 A plain checkout compiles without Node or generated assets. Its embedded tree
