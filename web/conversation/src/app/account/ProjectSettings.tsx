@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/button.tsx";
 import { AlertDialog, AlertDialogTrigger, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogClose } from "../../components/ui/alert-dialog.tsx";
 import { hubPath } from "../../runtime/basePath.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
-import type { ObservedPolicy, PolicyApproval, ProjectIntegration } from "../../contracts/account.ts";
+import type { ObservedPolicy, PolicyApproval, ProjectIntegration, ProjectOnboardingSummary } from "../../contracts/account.ts";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -18,6 +18,7 @@ import {
   SettingsUnavailableGroup,
 } from "../settings/settingsLayout.tsx";
 import { RUNNER_HELP } from "../fleet/runnerHelp.ts";
+import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
 import { AccountError } from "./api.ts";
 import { ControlError, NativeSelect, PathValue, StatusDot, ToggleControl } from "./controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "./context.ts";
@@ -341,6 +342,7 @@ export function ProjectSettingsView({
   approveError,
   onOpenFleet,
   onOpenSetup,
+  onboarding,
   intakeHref,
   header,
   sprites,
@@ -363,6 +365,7 @@ export function ProjectSettingsView({
   readonly approveError: string | null;
   readonly onOpenFleet: () => void;
   readonly onOpenSetup?: () => void;
+  readonly onboarding?: ProjectOnboardingSummary;
   readonly intakeHref?: string;
   /**
    * Rendered above the screen, inside its own scroll container. The settings
@@ -435,6 +438,15 @@ export function ProjectSettingsView({
         </SettingsWarning>
       ) : null}
 
+      {onboarding && !onboarding.ready ? (
+        <SettingsSection title="Project setup">
+          <SettingsRow
+            title={setupStepsLeftLabel(onboarding.steps.filter((step) => step.state !== "ready").length)}
+            control={<Button size="sm" onClick={onOpenSetup}>Finish setup</Button>}
+          />
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title="Repository">
         <SettingsRow
           title="Repository"
@@ -481,7 +493,7 @@ export function ProjectSettingsView({
           <SettingsRow
             title="Existing issues"
             help={{ label: "Existing issues", text: "Let members import older GitHub issues and their discussion into Triage. Turning this off prevents manual imports and keeps previously imported work." }}
-            description={<>Let members import older GitHub issues and their discussion into Triage. Import from {intakeHref ? <a className="text-primary underline underline-offset-2" href={intakeHref}>the project's Intake page</a> : "the project's Intake page"}.</>}
+            description={<>Let members import older GitHub issues and their discussion into Triage. Import from {intakeHref ? <a className="text-primary underline underline-offset-2" href={intakeHref}>GitHub issue import in project setup</a> : "GitHub issue import in project setup"}.</>}
             control={!unavailable ? <ToggleControl label="Existing issues" checked={draft.importAllowed} disabled={!canManage || saving}
               onCheckedChange={(importAllowed) => onDraftChange({ ...draft, importAllowed })} /> : null}
           />
@@ -808,6 +820,7 @@ export function ProjectSettingsRoute({
       onOpenFleet={() => onNavigate?.("/settings/runners")}
       intakeHref={`/projects/${projectId}/setup`}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
+      onboarding={setup.value}
       sprites={<><SpritesCard key={projectId} projectId={projectId} canManage={canManage} /></>}
       workflow={
         <>
