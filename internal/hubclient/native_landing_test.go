@@ -800,7 +800,7 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 		t.Fatal(err)
 	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Operator source"})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Operator source", Body: issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -907,11 +907,8 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 10 {
-		issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Batch source"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		item := tracker.NativeWorkItemID(issue.ID)
+		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Batch source", Body: issueContractTestSections, State: "Todo"})
+		item := issue.WorkItemID
 		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Batch source"})
 		if err != nil {
 			t.Fatal(err)
@@ -922,7 +919,7 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Human Review"); err != nil {
+		if err := h.connector.UpdateIssueState(t.Context(), string(issue.WorkItemID), "Human Review"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
@@ -943,7 +940,7 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 			t.Fatalf("target = %#v, %v", target, err)
 		}
 	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Ordinary Code remains bounded"})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Ordinary Code remains bounded", Body: issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}

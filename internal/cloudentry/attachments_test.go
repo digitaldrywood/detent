@@ -630,7 +630,7 @@ func exerciseAttachmentClients(t *testing.T, f entryFixture, browser, anonymous 
 	}
 	for _, mode := range []string{"API", "MCP", "worker"} {
 		t.Run(mode, func(t *testing.T) {
-			issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-issue-" + mode}, Title: map[string]string{"API": "Screenshot rendering", "MCP": "Protocol transfer", "worker": "Worker publication"}[mode], State: "Todo"})
+			issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-issue-" + mode}, Title: map[string]string{"API": "Screenshot rendering", "MCP": "Protocol transfer", "worker": "Worker publication"}[mode], State: "Backlog"})
 			if err != nil {
 				t.Fatal(err)
 			}

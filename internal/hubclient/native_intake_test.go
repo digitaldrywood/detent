@@ -510,7 +510,7 @@ func newLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIssue) {
 func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIssue) {
 	t.Helper()
 	h := newIntakeChangeHub(t)
-	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "GitHub issue acme/orders#12", State: "In Progress"})
+	issue, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "GitHub issue acme/orders#12", Body: issueContractTestSections, State: "In Progress"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +537,7 @@ func intakeSnapshot() tracker.GitHubIssueSnapshot {
 	prov := tracker.Provenance{Provider: "github", ExternalID: "I_source", AuthorID: "source-author", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Minute), ObservedAt: now}
 	comment := prov
 	comment.ExternalID = "C_source"
-	return tracker.GitHubIssueSnapshot{URL: "https://github.com/acme/orders/issues/12", Title: "Imported execution task", Body: "Complete implementation context", Provenance: prov, Comments: []tracker.GitHubIssueComment{{Body: "Useful source discussion", Provenance: comment}}}
+	return tracker.GitHubIssueSnapshot{URL: "https://github.com/acme/orders/issues/12", Title: "Imported execution task", Body: "Complete implementation context" + issueContractTestSections, Provenance: prov, Comments: []tracker.GitHubIssueComment{{Body: "Useful source discussion", Provenance: comment}}}
 }
 
 func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
@@ -671,7 +671,7 @@ func TestNativeEditsDuringSourceFetch(t *testing.T) {
 		t.Fatal(editErr)
 	}
 	recovery := h.scheduler.nativeClaims[string(issue.WorkItemID)].recovery
-	if recovery.Issue.Title != title || recovery.Issue.Body != body || recovery.Issue.LinkedSource.Snapshot.Body != "Complete implementation context" || len(recovery.Discussion) != 1 {
+	if recovery.Issue.Title != title || recovery.Issue.Body != body || recovery.Issue.LinkedSource.Snapshot.Body != "Complete implementation context"+issueContractTestSections || len(recovery.Discussion) != 1 {
 		t.Fatalf("native edits or complete source evidence lost during fetch: %#v", recovery)
 	}
 }
