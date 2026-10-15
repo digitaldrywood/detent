@@ -91,7 +91,7 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"
-    check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m "${lint_scope[@]}" "${lint_packages[@]}"
+    check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
 if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$head" ]; then
     printf 'Landing head changed during validation.\n' >&2
