@@ -494,6 +494,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"source malformed bundle", setSourceBundle([]byte("retained source"))},
 		{"source invalid pack", setSourceBundle(append(bytes.Clone(bytes.SplitN(capture.Bundle, []byte("\n\n"), 2)[0]), []byte("\n\nretained source")...))},
 		{"source truncated pack", setSourceBundle(capture.Bundle[:len(capture.Bundle)-1])},
+		{"source bundle inflation budget", setSourceBundle(append(append(bytes.Clone(bytes.SplitN(capture.Bundle, []byte("\n\n"), 2)[0]), '\n', '\n'), changeTestPack(t, 1, tracker.MaxChangeDiffBytes+1, nil, 1)...))},
 		{"source pack missing reviewed commit", func(a map[string]any) {
 			fakeHead := strings.Repeat("f", 40)
 			changed := bytes.Replace(capture.Bundle, []byte(input.HeadSHA+" refs/heads/main"), []byte(fakeHead+" refs/heads/main"), 1)
@@ -557,7 +558,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				t.Fatal("invalid source publication succeeded")
 			}
 			if strings.Contains(denied.name, "advertised") || denied.name == "source additional refs" || strings.Contains(denied.name, "bundle") || strings.Contains(denied.name, "pack") || strings.Contains(denied.name, "unsupported") {
-				if !bytes.Contains(raw, []byte("git bundle create")) {
+				if !bytes.Contains(raw, []byte("git bundle create")) || strings.Contains(denied.name, "budget") && !bytes.Contains(raw, []byte("verification budget")) {
 					t.Fatalf("source refusal lacks actionable bundle guidance: %s", raw)
 				}
 			}

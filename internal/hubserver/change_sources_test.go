@@ -2,6 +2,10 @@ package hubserver
 
 import (
 	"bytes"
+	"compress/zlib"
+	"context"
+	"encoding/binary"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,12 +24,21 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input, bytes.Repeat([]byte("retained source\n"), 100000))
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}
+	header, _, _ := bytes.Cut(bundle, []byte("\n\n"))
+	withPack := func(pack []byte) []byte {
+		return append(append(bytes.Clone(header), '\n', '\n'), pack...)
+	}
+	delta := binary.AppendUvarint([]byte{1}, tracker.MaxChangeDiffBytes+1)
 	for _, invalid := range []struct {
 		name   string
 		bundle []byte
 	}{
-		{"invalid pack", append(bytes.Clone(bytes.SplitN(bundle, []byte("\n\n"), 2)[0]), []byte("\n\nretained source")...)},
+		{"invalid pack", withPack([]byte("retained source"))},
 		{"truncated pack", bundle[:len(bundle)-1]},
+		{"inflated object budget", withPack(changeTestPack(t, 2, tracker.MaxChangeDiffBytes+1, nil, 1))},
+		{"cumulative inflation budget", withPack(changeTestPack(t, 3, 1<<20, bytes.Repeat([]byte("x"), 1<<20), 128))},
+		{"delta result budget", withPack(changeTestPack(t, 6, uint64(len(delta)), delta, 1))},
+		{"object count budget", withPack(changeTestPack(t, 0, 0, nil, tracker.MaxChangeDiffBytes+1))},
 	} {
 		t.Run(invalid.name, func(t *testing.T) {
 			refused := request
@@ -37,8 +50,20 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 			if !bytes.Contains(response.Body.Bytes(), []byte("git bundle create")) || len(f.detail(t).Versions) != 0 {
 				t.Fatal("unusable source was retained or lacks actionable refusal guidance")
 			}
+			if strings.Contains(invalid.name, "budget") && !bytes.Contains(response.Body.Bytes(), []byte("verification budget")) {
+				t.Fatal("pack reached Git before the verification budget refused it")
+			}
 		})
 	}
+	t.Run("occupied verification slot honors cancellation", func(t *testing.T) {
+		f.service.sourceVerification <- struct{}{}
+		defer func() { <-f.service.sourceVerification }()
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := f.service.verifyChangeSource(ctx, *input.Source, bundle); !errors.Is(err, context.Canceled) {
+			t.Fatalf("occupied verification slot ignored cancellation: %v", err)
+		}
+	})
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion
@@ -74,6 +99,37 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 	}
 }
 
+func changeTestPack(t *testing.T, kind byte, size uint64, content []byte, count uint32) []byte {
+	t.Helper()
+	var pack bytes.Buffer
+	pack.WriteString("PACK")
+	pack.Write(binary.BigEndian.AppendUint32(nil, 2))
+	pack.Write(binary.BigEndian.AppendUint32(nil, count))
+	if kind != 0 {
+		for range count {
+			remaining := size >> 4
+			value := kind<<4 | byte(size&15)
+			for remaining != 0 {
+				pack.WriteByte(value | 128)
+				value, remaining = byte(remaining&127), remaining>>7
+			}
+			pack.WriteByte(value)
+			if kind == 6 {
+				pack.WriteByte(1)
+			}
+			writer := zlib.NewWriter(&pack)
+			if _, err := writer.Write(content); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	pack.Write(make([]byte, 20))
+	return pack.Bytes()
+}
+
 func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content ...[]byte) []byte {
 	t.Helper()
 	directory := t.TempDir()
@@ -97,6 +153,11 @@ func changeTestSource(t *testing.T, input *tracker.ChangeVersionInput, content .
 	data := []byte(input.HeadSHA + "\n")
 	if len(content) > 0 {
 		data = content[0]
+		if err := os.WriteFile(path, append(bytes.Clone(data), []byte("draft source\n")...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "source.txt")
+		git("commit", "-m", "source draft")
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)

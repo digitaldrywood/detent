@@ -432,6 +432,7 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 	}{
 		{"missing fence", func(r *tracker.PublishChangeVersion) { r.LeaseID = "" }, http.StatusConflict},
 		{"stale fence", func(r *tracker.PublishChangeVersion) { r.FencingToken++ }, http.StatusConflict},
+		{"stale fence before invalid source", func(r *tracker.PublishChangeVersion) { r.FencingToken++; r.SourceBundle = []byte("invalid pack") }, http.StatusConflict},
 		{"unrelated run", func(r *tracker.PublishChangeVersion) { r.RunID = newNativeID("run") }, http.StatusNotFound},
 		{"missing run", func(r *tracker.PublishChangeVersion) { r.RunID, r.AttemptID = "", "" }, http.StatusUnprocessableEntity},
 		{"changed source bytes", func(r *tracker.PublishChangeVersion) { r.SourceBundle = []byte("other source") }, http.StatusUnprocessableEntity},

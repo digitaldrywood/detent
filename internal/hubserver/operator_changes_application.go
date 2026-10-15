@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type hubChangeApplication struct {
@@ -201,14 +200,16 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if args.ExpectedVersionID == nil || args.Code == nil {
 			return result, operatortool.ErrInvalidArguments
 		}
-		if args.SourceCapture != nil {
-			if err := workspace.VerifyChangeSource(ctx, *args.SourceCapture, args.SourceBundle); err != nil {
-				return result, &operatortool.RequestError{Code: "invalid_request", Message: err.Error()}
-			}
-		}
 		request := tracker.PublishChangeVersion{Mutation: command, ExpectedVersionID: *args.ExpectedVersionID, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: args.BaseSHA, HeadSHA: args.HeadSHA, MergeBaseSHA: args.MergeBaseSHA, Repository: args.Repository, Code: *args.Code, Source: args.SourceCapture, Artifacts: args.Artifacts, PolicyID: args.PolicyID, External: args.External}, SourceBundle: args.SourceBundle}
 		input = request
 		path += "/versions"
+		if err := s.prepareChangeSource(ctx, scope, args.ItemID, args.ChangeID, method+" "+path, request); err != nil {
+			var failure *nativeError
+			if errors.As(err, &failure) && failure.Code == "invalid_request" {
+				return result, &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
+			}
+			return result, err
+		}
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 			return s.publishChangeVersionCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)
 		}

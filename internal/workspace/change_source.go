@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -113,10 +116,19 @@ func verifyChangeBundle(ctx context.Context, directory, path string) error {
 }
 
 func VerifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if !validLandingHead(source.BaseSHA) || !validLandingHead(source.HeadSHA) {
 		return errors.New("change source verification requires immutable base and head")
 	}
 	if err := source.Validate(source.BaseSHA, source.HeadSHA, bundle); err != nil {
+		return err
+	}
+	_, pack, _ := bytes.Cut(bundle, []byte("\n\n"))
+	if err := changeSourcePackBudget(ctx, pack); err != nil {
 		return err
 	}
 	scratch, err := changeSourceScratch()
@@ -124,16 +136,29 @@ func VerifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle
 		return err
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
-	env := []string{"GIT_DIR=" + scratch, "GIT_COMMON_DIR=" + scratch, "GIT_OBJECT_DIRECTORY=" + filepath.Join(scratch, "objects"), "GIT_ALTERNATE_OBJECT_DIRECTORIES=", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_COUNT=0", "GIT_NO_REPLACE_OBJECTS=1"}
-	if _, err := runGitAtWithEnv(ctx, scratch, env, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
+	git := func(input []byte, args ...string) error {
+		command := exec.CommandContext(ctx, "git")
+		command.Args = append([]string{"git"}, args...)
+		command.Dir = scratch
+		for _, value := range os.Environ() {
+			if !strings.HasPrefix(value, "GIT_") {
+				command.Env = append(command.Env, value)
+			}
+		}
+		command.Env = append(command.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_NO_REPLACE_OBJECTS=1")
+		command.Stdin = bytes.NewReader(input)
+		command.WaitDelay = workspaceCommandWaitDelay
+		procgroup.Configure(ctx, command)
+		return command.Run()
+	}
+	if err := git(nil, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
 		return err
 	}
-	_, pack, _ := bytes.Cut(bundle, []byte("\n\n"))
-	if _, err := runGitAtWithInput(ctx, scratch, env, false, string(pack), "index-pack", "--stdin", "--fsck-objects"); err != nil {
-		return errors.New("source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>")
+	if err := git(pack, "-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=16m", "index-pack", "--stdin", "--fsck-objects"); err != nil {
+		return errors.Join(ctx.Err(), errors.New("source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>"))
 	}
-	if _, err := runGitAtWithEnv(ctx, scratch, env, "cat-file", "-e", source.HeadSHA+"^{commit}"); err != nil {
-		return errors.New("source bundle pack lacks the reviewed commit; recreate it with git bundle create <path> HEAD ^<base>")
+	if err := git(nil, "cat-file", "-e", source.HeadSHA+"^{commit}"); err != nil {
+		return errors.Join(ctx.Err(), errors.New("source bundle pack lacks the reviewed commit; recreate it with git bundle create <path> HEAD ^<base>"))
 	}
 	return nil
 }
