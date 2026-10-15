@@ -36,7 +36,16 @@ test.afterAll(async ({ request }) => {
 });
 test.beforeEach(async ({ page, request }) => {
   await request.post(`${url}/fixture/reset`);
+  let resolveContent;
+  const contentRequested = new Promise(resolve => { resolveContent = resolve; });
+  await page.route('**/*content=1', route => resolveContent(route), { times: 1 });
   await page.goto(url);
+  const content = await contentRequested;
+  try {
+    await expect(page.getByRole('textbox', { name: 'Project access token', exact: true })).not.toBeVisible();
+  } finally {
+    await content.continue();
+  }
   await expect(page.locator('[data-review-form]')).toBeVisible();
 });
 
