@@ -93,60 +93,24 @@ func (s *Scheduler) CheckProjectPolicy(ctx context.Context, project, repository 
 }
 
 func (s *Scheduler) CheckProjectPolicyWithSource(ctx context.Context, project, repository string, descriptor policy.Descriptor, provenance *policy.RepositorySource) error {
-	if source := s.nativeProject(project); source != nil && s.client.runner != nil {
-		s.client.runner.setLocalPolicy(source.client.project, descriptor.ID)
-	}
 	if err := descriptor.Validate(); err != nil {
-		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()}
+		return fmt.Errorf("invalid project configuration: %w", err)
 	}
 	source := s.nativeProject(project)
 	if source == nil {
-		approval, err := s.client.ProjectPolicy(ctx, repository)
+		path, err := repositoryPolicyPath(repository)
 		if err != nil {
-			return fmt.Errorf("check approved repository policy: %w", err)
+			return err
 		}
-		return descriptor.Match(approval.Policy)
+		return s.client.request(ctx, http.MethodPost, path+"/observed", policy.Observation{Descriptor: descriptor, Source: provenance}, nil)
 	}
 	if s.client.runner != nil {
+		s.client.runner.setLocalPolicy(source.client.project, descriptor.ID)
 		if err := s.ensureNativeMachine(ctx, source); err != nil {
 			return err
 		}
 	}
-	approval, err := source.client.ProjectPolicy(ctx)
-	var apiErr *APIError
-	switch {
-	case err == nil:
-		if err := approval.Policy.Validate(); err != nil {
-			return fmt.Errorf("check approved repository policy: %w", &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
-		}
-		err = descriptor.Match(approval.Policy)
-		if err == nil && (descriptor.ID == approval.Policy.ID || descriptor.Authored != nil && approval.Policy.Authored != nil && descriptor.Authored.Version < approval.Policy.Authored.Version) {
-			return s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance})
-		}
-		if err == nil {
-			err = errors.New("policy_mismatch: canonical policy revision has not been applied")
-		}
-		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: err.Error()})
-	case errors.As(err, &apiErr) && apiErr.Code == "policy_mismatch":
-		err = errors.Join(connector.NewRetryableError("repository policy approval pending"), fmt.Errorf("check approved repository policy: %w", err))
-	default:
-		return fmt.Errorf("check approved repository policy: %w", err)
-	}
-	state := source.client.heartbeatProject()
-	state.mu.Lock()
-	state.approvalSet = false
-	state.mu.Unlock()
-	if reportErr := s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance}); reportErr != nil {
-		return errors.Join(err, reportErr)
-	}
-	if descriptor.Authored != nil || provenance != nil && provenance.DefaultBranchReachable {
-		applied, readErr := source.client.ProjectPolicy(ctx)
-		if readErr == nil && descriptor.ID == applied.Policy.ID && descriptor.Match(applied.Policy) == nil {
-			return nil
-		}
-		return errors.Join(err, readErr)
-	}
-	return err
+	return s.reportObservedPolicy(ctx, project, source, policy.Observation{Descriptor: descriptor, Source: provenance})
 }
 
 func (s *Scheduler) ResolveProjectWorkflow(ctx context.Context, project string, workflow workflowconfig.Workflow, provenance *policy.RepositorySource) (workflowconfig.Workflow, error) {
@@ -245,11 +209,18 @@ func (s *Scheduler) checkClaimPolicy(ctx context.Context, issueID, pinnedID stri
 func (s *Scheduler) checkClaimPolicyApproval(ctx context.Context, issueID, pinnedID string) error {
 	s.mu.Lock()
 	pinned, ok := s.claimPolicies[issueID]
+	_, native := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if !ok || pinnedID != pinned.descriptor.ID {
 		return &APIError{Status: http.StatusConflict, Code: "policy_mismatch", Message: "claim has no matching pinned repository policy; release it and request a new claim"}
 	}
-	if s.nativeProjects[pinned.project] != nil {
+	s.projectsMu.RLock()
+	assigned := s.nativeProjects[pinned.project] != nil
+	s.projectsMu.RUnlock()
+	if native && !assigned {
+		return &APIError{Status: http.StatusForbidden, Code: "selector_no_match", Message: "project is no longer assigned to this runner"}
+	}
+	if assigned {
 		return pinned.descriptor.Validate()
 	}
 	return s.CheckProjectPolicy(ctx, pinned.project, pinned.repository, pinned.descriptor)

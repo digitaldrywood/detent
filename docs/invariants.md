@@ -37,11 +37,10 @@ deciding transitions. Admission uses the injected orchestrator writer. Raw
 HTTP tracker writes must not bypass this ownership boundary.
 
 For native projects, a supplied repository workflow definition owns the state
-and transition model through the existing trusted-revision policy approval
-path. Approval applies the resolved model atomically and rejects removal of
-occupied states. Cloud Markdown authoring is available only without repository
-definition authority; UI, API and MCP cannot independently override an approved
-repository workflow. Definition authority does not transfer issue-move ownership.
+and transition model through trusted repository configuration reports. Applying
+the resolved model is atomic and rejects removal of occupied states. Cloud Markdown authoring is available only without repository
+definition authority; UI, API and MCP cannot independently override a repository-controlled
+workflow. Definition authority does not transfer issue-move ownership.
 
 Orphaned provider-session resumes use the new dispatch's durable attempt ID
 and generation in their completion handoff. Resume selection rejects an
@@ -319,6 +318,12 @@ The rolling landing barrier and its Red landing hold, execution, repair,
 bisection and automatic revert owners stay retired. Historical barrier tables
 and migrations, legacy policy decoding and stale-version handling remain
 readable; they do not authorize restarting those owners.
+
+Repository-policy approval matching no longer gates claims, lease renewal,
+source publication or checkpoint recovery. Configuration reports retain source
+provenance and the selected workflow; they are not recurring permission requests.
+Authentication, project access, execution isolation, lease fencing and configured
+review and validation requirements remain enforced.
 
 Server-side MCP confirmation modes, YOLO, pending approval actions and the
 `/chat/approval` page stay retired. The Hub enforces key scope, project access and

@@ -144,6 +144,10 @@ func storeObservedPolicy(ctx context.Context, exec hostedExecer, scope, reporter
 	_, err = exec.ExecContext(ctx, `INSERT INTO project_observed_policies (scope, policy_id, descriptor_json, runner_id, observed_at, source_json) VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(scope, runner_id) DO UPDATE SET policy_id = excluded.policy_id, descriptor_json = excluded.descriptor_json, observed_at = excluded.observed_at,
 source_json = CASE WHEN excluded.source_json = 'null' AND project_observed_policies.policy_id = excluded.policy_id THEN project_observed_policies.source_json ELSE excluded.source_json END`, scope, observation.ID, string(encoded), reporter, formatHubTime(now), string(source))
+	if err != nil {
+		return err
+	}
+	_, err = exec.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", scope, observation.ID, string(encoded), "runner-report", formatHubTime(now))
 	return err
 }
 
@@ -157,7 +161,7 @@ JOIN token_grants g ON g.token_id = t.id AND g.organization_id || '/' || g.proje
 WHERE i.removed_at IS NULL
 )
 SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
-EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id),
+EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id AND r.approved_by <> 'runner-report'),
 (SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope)
 FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), scope, approved.ID)
 	if err != nil {
@@ -320,7 +324,7 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	if err != nil {
 		return result, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", scope, change.Policy.ID, string(raw), actor, formatHubTime(now)); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, policy_id) DO UPDATE SET approved_by = excluded.approved_by, approved_at = excluded.approved_at WHERE policy_revisions.approved_by = 'runner-report' OR ?", scope, change.Policy.ID, string(raw), actor, formatHubTime(now), current != change.Policy.ID); err != nil {
 		return result, err
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT (scope) DO UPDATE SET policy_id = excluded.policy_id WHERE project_policies.policy_id IS NOT excluded.policy_id", scope, change.Policy.ID); err != nil {
@@ -329,11 +333,6 @@ func (d *database) approvePolicyInTx(ctx context.Context, tx *sql.Tx, scope, act
 	reviewChanged, err := followDefaultChangeReviewPolicy(ctx, tx, scope, change.Policy)
 	if err != nil {
 		return result, err
-	}
-	if current != change.Policy.ID {
-		if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, change.Policy.ID, now); err != nil {
-			return result, err
-		}
 	}
 	if current != change.Policy.ID || reviewChanged {
 		if err := resetNativeBoardPolicy(ctx, tx, scope); err != nil {
@@ -507,18 +506,15 @@ func validateClaimPolicy(ctx context.Context, tx *sql.Tx, query claimCandidateQu
 	if err != nil {
 		return "", err
 	}
-	approval, err := readProjectPolicy(ctx, tx, scope)
-	if err != nil {
+	var raw string
+	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", scope, query.PolicyID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nativeInvalid("Claim configuration has not been reported for this project")
+		}
 		return "", err
 	}
-	matches, err := approvedPolicyRevisionMatches(ctx, tx, scope, query.PolicyID, approval.Policy)
+	approval, err := decodeProjectPolicy(raw, policy.Approval{})
 	if err != nil {
-		return "", err
-	}
-	if !matches {
-		return "", policyMismatch("Runner policy is missing or stale; load the approved repository definition and permitted local overrides before claiming work")
-	}
-	if err := validateWorkflowPolicy(ctx, tx, scope, approval.Policy); err != nil {
 		return "", err
 	}
 	var runnerID string
@@ -553,48 +549,6 @@ func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (st
 		return "", nil
 	}
 	return id, err
-}
-
-func requireApprovedLeasePolicy(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID, required bool) error {
-	var pinned, approved string
-	var recorded bool
-	err := tx.QueryRowContext(ctx, `SELECT l.policy_id, coalesce(p.policy_id, ''),
-EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = l.scope AND r.policy_id = l.policy_id)
-FROM lease_policies l LEFT JOIN project_policies p ON p.scope = l.scope WHERE l.lease_id = ?`, lease).Scan(&pinned, &approved, &recorded)
-	if errors.Is(err, sql.ErrNoRows) {
-		if required {
-			return policyMismatch("Legacy lease has no pinned policy; release it and request a new approved claim")
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if pinned == "" || approved == "" || !recorded {
-		return policyMismatch("Pinned policy is missing or project approval has been revoked; stop the attempt and obtain administrator approval before restarting")
-	}
-	return requireLeaseRouting(ctx, tx, lease)
-}
-
-func approvedPolicyRevisionMatches(ctx context.Context, query policyQuerier, scope, id string, approved policy.Descriptor) (bool, error) {
-	if id == "" {
-		return false, nil
-	}
-	if id == approved.ID {
-		return true, nil
-	}
-	var raw string
-	if err := query.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope=? AND policy_id=?", scope, id).Scan(&raw); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	var previous policy.Descriptor
-	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
-		return false, err
-	}
-	return previous.Match(approved) == nil, nil
 }
 
 func requireLeaseRouting(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID) error {
@@ -653,24 +607,5 @@ func (d *database) revokePolicy(ctx context.Context, scope, actor, expectedID st
 }
 
 func revokeProjectPolicyInTx(ctx context.Context, tx *sql.Tx, scope, actor, expectedID string, now time.Time) (any, error) {
-	result, err := tx.ExecContext(ctx, "DELETE FROM project_policies WHERE scope = ? AND policy_id = ?", scope, expectedID)
-	if err != nil {
-		return nil, err
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return nil, err
-	}
-	if count != 1 {
-		return nil, policyMismatch("Policy changed or is already revoked; inspect the current approval before revoking it")
-	}
-	if err := routeStaleNativeLandingChanges(ctx, tx, scope, actor, "", now); err != nil {
-		return nil, err
-	}
-	if err := resetNativeBoardPolicy(ctx, tx, scope); err != nil {
-		return nil, err
-	}
-	return struct {
-		Status string `json:"status"`
-	}{"revoked"}, nil
+	return nil, &nativeError{Code: "operation_retired", Message: "Repository configuration does not require execution approval; pause the runner or remove project access to stop work", status: http.StatusGone}
 }

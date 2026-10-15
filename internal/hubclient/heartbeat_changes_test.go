@@ -390,7 +390,7 @@ func TestRunnerHeartbeatIdleTraffic(t *testing.T) {
 				change func()
 				route  string
 			}{
-				{"approved policy ID", func() { approved.SourceDigest = policy.Digest([]byte("new-source")); approved = approved.WithID() }, "/policy"},
+				{"approved policy ID", func() { approved.SourceDigest = policy.Digest([]byte("new-source")); approved = approved.WithID() }, "/policy/observed"},
 				{"capabilities digest", func() { digest, version = "deploy", "new-build" }, "/capabilities"},
 				{"newly claimable work", func() { claimable = true }, "/claims"},
 				{"item delta", func() {

@@ -17,10 +17,8 @@ import { GitHubIssueIntake } from "./IssueIntake.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../../components/ui/collapsible.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
-import { Textarea } from "../../components/ui/textarea.tsx";
 import type { Onboarding, OnboardingStep, ProjectIntegration } from "../../contracts/account.ts";
 import { ONBOARDING_STEPS } from "../../contracts/account.ts";
 import { cn } from "../../lib/utils.ts";
@@ -379,9 +377,7 @@ export function SetupRoute({
   }, [projectId, savedRepository, savedArtifacts]);
 
   const [repositoryName, setRepositoryName] = React.useState("");
-  const [pastedPolicy, setPastedPolicy] = React.useState("");
   const policyReports = onboarding.value?.observed_policies ?? [];
-  const policyConflict = policyReports.some((entry) => entry.conflict || entry.previously_approved) || new Set(policyReports.map((entry) => entry.policy.policy_id)).size > 1;
   const [enrolling, setEnrolling] = React.useState(false);
   const fleet = useResource(() => enrolling ? api.fleet() : Promise.resolve(undefined), [api, enrolling]);
   const [serviceId, setServiceId] = React.useState("");
@@ -424,27 +420,6 @@ export function SetupRoute({
       return saved;
     },
   );
-
-  const approve = useMutation(async () => {
-    const current = onboarding.value?.policy?.policy;
-    const descriptor = pastedPolicy.trim().length > 0 ? parsePolicyDescriptor(pastedPolicy) : policyConflict ? undefined : policyReports[0]?.policy ?? current;
-    if (descriptor === undefined) {
-      throw new AccountError({
-        status: 422,
-        code: "invalid_request",
-        message: `Paste the output of \`${POLICY_INSPECT_COMMAND}\` from the execution host, then approve it.`,
-      });
-    }
-    const approved = await api.approvePolicy({
-      projectId,
-      expectedPolicyId: current?.policy_id ?? "",
-      policy: descriptor,
-      onboarding: true,
-    });
-    setPastedPolicy("");
-    await onboarding.refresh();
-    return approved;
-  });
 
   const bindRepository = useMutation(async (name: string) => {
     const current = onboarding.value;
@@ -559,7 +534,7 @@ export function SetupRoute({
   const associatedRepository = checkoutRepository || integration.value?.repository;
   const checkoutVerified = integration.value?.checkout_verified === true;
   const configurationChosen = Boolean(progress?.repository) || Boolean(onboarding.value.policy);
-  const policyApproved = Boolean(onboarding.value.policy) && policyReports.length === 0;
+  const configurationReported = Boolean(onboarding.value.policy) || policyReports.length > 0;
   const preparingRunner = onboarding.value.runners?.find((entry) => entry.runner.state === "active" && (entry.runner.connection_health ?? entry.runner.health) === "online");
   const githubApp = integration.value;
   const showGitHubApp = githubApp?.profile === "native" && associatedRepository && githubApp.github_transport_available === true && githubApp.github_app_slug && githubApp.github_app_install_url;
@@ -624,7 +599,7 @@ export function SetupRoute({
             <h2 id="setup-configuration-heading" className="mb-2 text-sm font-medium">Configuration files</h2>
             {configurationChosen ? (
               <p className="mb-3 text-sm text-muted-foreground">
-                {progress?.repository === "generate" && policyReports.length === 0 && !policyApproved ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on your runner’s computer so it can send the settings for review.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
+                {progress?.repository === "generate" && policyReports.length === 0 && !configurationReported ? `Create detent.yaml and WORKFLOW.md in ${associatedRepository} on your runner’s computer so it can load the project settings.` : `The runner reads detent.yaml and WORKFLOW.md from ${associatedRepository} to learn how to build, check and deliver your work.`}
               </p>
             ) : (
               <>
@@ -646,49 +621,7 @@ export function SetupRoute({
             )}
           </section>
         ) : null}
-        {checkoutRepository && configurationChosen ? (
-          <section className="mt-4" aria-labelledby="setup-approval-heading">
-            <h2 id="setup-approval-heading" className="mb-2 text-sm font-medium">{policyApproved ? "Settings approved" : "Approve repository settings"}</h2>
-            {policyApproved ? (
-              <p role="status" className="text-sm text-success-foreground">Approved the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
-            ) : (
-              <>
-                <p className="mb-3 text-sm text-muted-foreground">Your approval lets the runner use these settings to start work.</p>
-                {policyReports.length === 0 ? (
-                  <p role="status" className="mb-3 text-sm text-muted-foreground">Waiting for the runner to report the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
-                ) : (
-                  <p className="mb-3 break-words text-sm">Approve the settings in detent.yaml and WORKFLOW.md from {associatedRepository}.</p>
-                )}
-                {policyConflict ? <p role="alert" className="mb-3 text-sm text-warning-foreground">Runners reported different settings. Open Advanced policy details to inspect and paste the shared configuration you want to approve.</p> : null}
-              </>
-            )}
-            <Collapsible className="mb-3">
-              <CollapsibleTrigger render={<Button variant="outline" size="sm" />}>Advanced policy details</CollapsibleTrigger>
-              <CollapsiblePanel>
-                <div className="mt-3 flex flex-col gap-2">
-                  {policyReports[0] || onboarding.value.policy ? (
-                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(policyReports[0]?.policy ?? onboarding.value.policy?.policy, null, 2)}</pre>
-                  ) : null}
-                  <Label htmlFor="setup-policy-descriptor">Resolved policy descriptor</Label>
-                  <Textarea
-                    id="setup-policy-descriptor"
-                    rows={3}
-                    placeholder='{"schema":1,"policy_id":"policy_…"}'
-                    value={pastedPolicy}
-                    onChange={(event) => setPastedPolicy(event.currentTarget.value)}
-                  />
-                  <p className="break-words text-[13px] text-muted-foreground">If needed, run <code className="font-mono">{POLICY_INSPECT_COMMAND}</code> on your runner’s computer and paste its output. Approval saves the work settings you reviewed.</p>
-                </div>
-              </CollapsiblePanel>
-            </Collapsible>
-            {policyApproved ? null : (
-              <Button disabled={approve.pending || policyReports.length === 0 || (policyConflict && pastedPolicy.trim().length === 0)} onClick={() => void approve.call()}>
-                {approve.pending ? "Approving…" : "Approve settings"}
-              </Button>
-            )}
-            <ControlError message={approve.error?.message ?? null} />
-          </section>
-        ) : null}
+
       </>
     ),
     "Local validation": (
@@ -886,7 +819,7 @@ export function SetupRoute({
       activeIndex={activeIndex}
       onSelectStep={setActiveIndex}
       title={step?.name ?? "Set up this project"}
-      lede={step?.name === "Repository configuration" ? "Connect your repository so Detent can work on your code. Prepare its configuration files, then click Approve settings after reviewing the settings sent by your runner." : step?.detail ?? ""}
+      lede={step?.name === "Repository configuration" ? "Connect your repository so Detent can work on your code. Prepare its configuration files so your runner can load the project settings." : step?.detail ?? ""}
       footer={
         <>
           {activeIndex > 0 ? (

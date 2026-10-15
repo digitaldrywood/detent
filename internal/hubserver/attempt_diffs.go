@@ -163,7 +163,7 @@ func resolveAttemptDiffProducer(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if err := requireCurrentLease(lease, producer.FencingToken, now); err != nil {
 		return "", nativeStaleLease(err, "The producer lease is no longer current")
 	}
-	if err := requireApprovedLeasePolicy(ctx, tx, producer.LeaseID, true); err != nil {
+	if err := requireLeaseRouting(ctx, tx, producer.LeaseID); err != nil {
 		return "", err
 	}
 	if err := requireLeaseRunner(ctx, tx, producer.LeaseID, scope); err != nil {

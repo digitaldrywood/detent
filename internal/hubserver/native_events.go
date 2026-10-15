@@ -89,7 +89,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				return nil, err
 			}
 		}
-		if err := requireApprovedLeasePolicy(ctx, tx, request.Data.LeaseID, true); err != nil {
+		if err := requireLeaseRouting(ctx, tx, request.Data.LeaseID); err != nil {
 			return nil, err
 		}
 		var pinned string

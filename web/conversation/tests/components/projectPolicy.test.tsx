@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-//
-// Project settings after setup: a runner reports the policy it resolved when
-// the repository's detent.yaml or WORKFLOW.md changed, and an owner approves
-// exactly that descriptor with one click, through the route the hosted Hub
-// serves.
 import { RegistryProvider } from "@effect/atom-react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
@@ -91,7 +86,7 @@ describe("repository policy after setup", () => {
     const router = await renderSettings();
     const importLink = await screen.findByRole("link", { name: "GitHub issue import in project setup" }, httpWait);
     expect(importLink.getAttribute("href")).toBe("/projects/proj_alpha/setup");
-    await screen.findByText("Review policy from runner_example", {}, httpWait);
+    await screen.findByText("Configuration reported", {}, httpWait);
     if (ready) {
       expect(screen.queryByText(/setup steps? left/)).toBeNull();
       expect(screen.queryByRole("button", { name: "Finish setup" })).toBeNull();
@@ -149,128 +144,25 @@ describe("repository policy after setup", () => {
     }, httpWait);
   });
 
-  it.each(["immediate", "deferred"] as const)("approves the policy a runner reported with one click (%s onboarding)", async (delivery) => {
-    const { base, approvedId } = await mount();
-    const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    const reported = { ...current.policy, policy_id: "pol_changed", source_revision: "b".repeat(40), gates: { ...(current.policy.gates as Record<string, unknown>), human_review: true } };
-    const posted = await fetch(`${base}/policy/observed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(reported),
-    });
-    expect(posted.status).toBe(204);
-
-    const realFetch = globalThis.fetch;
-    let receivedOnboarding: () => void = () => undefined;
-    const onboardingRequested = new Promise<void>((resolve) => {
-      receivedOnboarding = resolve;
-    });
-    const onboardingHeld = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      if (delivery === "deferred" && (init?.method ?? "GET") === "GET" && String(input).endsWith("/projects/proj_alpha/onboarding")) {
-        receivedOnboarding();
-        await onboardingHeld;
-      }
-      return realFetch(input, init);
-    });
-    await renderSettings();
-    if (delivery === "deferred") {
-      await onboardingRequested;
-      expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull();
-      releaseRead!();
-    }
-    expect(await screen.findByText("A runner is waiting for a new policy.", {}, httpWait)).toBeTruthy();
-    expect(screen.getByText("Needs approval")).toBeTruthy();
-    const review = screen.getByText(/Review policy from/).closest("details")!;
-    expect(review.open).toBe(false);
-    review.open = true;
-    expect(review.textContent).toContain('"human_review": true');
-    const approval = (await screen.findByText("Approval details", {}, httpWait)).closest("details")!;
-    expect(approval.open).toBe(false);
-    approval.open = true;
-    expect(review.textContent).toContain("pol_changed");
-    expect(approval.textContent).toContain(approvedId);
-
-    fireEvent.click(screen.getAllByRole("button", { name: "Approve updated policy" })[0]!);
-    await waitFor(() => expect(screen.queryByText("A runner is waiting for a new policy.")).toBeNull(), httpWait);
-    const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    expect(after.policy.policy_id).toBe("pol_changed");
-    const approvalCall = requests.mock.calls.find(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/policy"));
-    expect(JSON.parse(String(approvalCall?.[1]?.body)).policy.gates.human_review).toBe(true);
-    const puts = requests.mock.calls.filter(([, init]) => init?.method === "PUT").map(([url]) => String(url));
-    expect(puts.some((url) => url.endsWith("/projects/proj_alpha/onboarding/policy"))).toBe(true);
-    expect(puts.some((url) => url.endsWith("/projects/proj_alpha/policy"))).toBe(false);
-    requests.mockRestore();
-    expect(screen.queryByRole("button", { name: "Approve updated policy" })).toBeNull();
-  });
-
-  it("names the current approval even while the policy read is still loading", async () => {
+  it.each([1, 2])("does not require approval for %s reported configurations", async (count) => {
     const { base } = await mount();
     const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    await fetch(`${base}/policy/observed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...current.policy, policy_id: "pol_slow" }),
-    });
-    const realFetch = globalThis.fetch;
-    const policyHeld = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    const requests = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      if ((init?.method ?? "GET") === "GET" && String(input).endsWith("/projects/proj_alpha/policy")) await policyHeld;
-      return realFetch(input, init);
-    });
-    await renderSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Approve updated policy pol_slow" }, httpWait));
-    await waitFor(async () => {
-      const after = (await (await realFetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-      expect(after.policy.policy_id).toBe("pol_slow");
-    }, httpWait);
-    const put = requests.mock.calls.find(([, init]) => init?.method === "PUT");
-    expect(JSON.parse(String(put?.[1]?.body)).expected_policy_id).toBe(current.policy.policy_id);
-    releaseRead!();
-    requests.mockRestore();
-  });
-
-  it("explains conflicting runner configurations and does not alternate approvals", async () => {
-    const { base } = await mount();
-    const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    for (const [runner, id] of [["runner_a", "pol_a"], ["runner_b", "pol_b"]] as const) {
-      await fetch(`${base}/policy/observed?runner=${runner}`, {
+    for (let index = 0; index < count; index++) {
+      const response = await fetch(`${base}/policy/observed?runner=runner_${index}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...current.policy, policy_id: id }),
+        body: JSON.stringify({ ...current.policy, policy_id: `configuration_${index}` }),
       });
+      expect(response.status).toBe(204);
     }
+    const requests = vi.spyOn(globalThis, "fetch");
     await renderSettings();
-    expect(await screen.findByText("Runners have conflicting project configurations.", {}, httpWait)).toBeTruthy();
-    expect(screen.getByText(/Inspect and approve one shared configuration/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Approve updated policy/ })).toBeNull();
-    expect(screen.getByText("Review policy from runner_a")).toBeTruthy();
-    expect(screen.getByText("Review policy from runner_b")).toBeTruthy();
-    const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    expect(after.policy.policy_id).toBe(current.policy.policy_id);
+    expect(await screen.findByText("Configuration reported", {}, httpWait)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Approve|Paste policy/ })).toBeNull();
+    expect(screen.queryByText(/Work is blocked until|waiting for a new policy/)).toBeNull();
+    expect(requests.mock.calls.some(([url, init]) => init?.method === "PUT" && String(url).endsWith("/onboarding/policy"))).toBe(false);
   });
 
-  it("approves a pasted descriptor and refuses one that is not JSON", async () => {
-    const { base } = await mount();
-    const current = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-    await renderSettings();
-    fireEvent.click(await screen.findByRole("button", { name: "Paste policy" }, httpWait));
-    const box = screen.getByLabelText("Policy descriptor");
-    fireEvent.change(box, { target: { value: "not json" } });
-    fireEvent.click(screen.getByRole("button", { name: "Approve policy" }));
-    expect(await screen.findByText(/The pasted descriptor is not JSON/, {}, httpWait)).toBeTruthy();
-
-    fireEvent.change(box, { target: { value: JSON.stringify({ ...current.policy, policy_id: "pol_pasted" }) } });
-    fireEvent.click(screen.getByRole("button", { name: "Approve policy" }));
-    await waitFor(async () => {
-      const after = (await (await fetch(`${base}/policy`)).json()) as { policy: Record<string, unknown> };
-      expect(after.policy.policy_id).toBe("pol_pasted");
-    }, httpWait);
-  });
 });
 
 describe("navigationTarget", () => {

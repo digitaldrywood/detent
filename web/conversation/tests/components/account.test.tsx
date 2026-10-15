@@ -759,7 +759,7 @@ it("keeps old approvals out of pending revisions and does not label a digest as 
     { policy: { ...definition, policy_id: "old" }, runner_id: "runner_old", observed_at: "2026-10-05T10:00:00Z", previously_approved: true },
     { policy: definition, runner_id: "runner_test", observed_at: "2026-10-05T12:00:00Z" },
   ]} />);
-  expect(screen.getAllByRole("heading", { name: "Pending revision" })).toHaveLength(1);
+  expect(screen.getAllByRole("heading", { name: "Reported revision" })).toHaveLength(1);
   expect(screen.getByText("Commit not recorded")).toBeTruthy();
   expect(screen.queryByText(definition.source_revision)).toBeNull();
 });

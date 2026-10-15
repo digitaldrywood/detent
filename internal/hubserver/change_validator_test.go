@@ -93,6 +93,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"security audit implementing session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 41; r.SecurityAudit.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit backend failure", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit landing pass", landingAudit, http.StatusOK, "reviewed", nil},
+		{"security audit landing after configuration change", landingAudit, http.StatusOK, "reviewed", nil},
 		{"security audit landing requires merge execution", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
 		{"security audit landing stale version", func(r *tracker.ReviewChange) { landingAudit(r); r.SecurityAudit.VersionID = "other" }, http.StatusUnprocessableEntity, "reviewed", nil},
 		{"security audit landing backend failure", func(r *tracker.ReviewChange) {
@@ -243,6 +244,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				source.IdempotencyKey = "source-audit"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, source), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				if test.name == "security audit landing after configuration change" {
+					previousID := descriptor.ID
+					descriptor.SourceDigest = policy.Digest([]byte("updated configuration"))
+					descriptor = descriptor.WithID()
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: previousID, Policy: descriptor}), http.StatusOK)
+				}
 				lease = claimNativeAttempt(t, f, worker, "machine", "merge-session", issue.WorkItemID, descriptor.ID)
 				merge := nativeStartedEvent(lease)
 				merge.IdempotencyKey = "merge-start"

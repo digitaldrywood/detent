@@ -553,7 +553,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "old completion frame restores successful deferred publication", restart: true, oldCompletionFrame: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses released authority", restart: true, restoreRefusal: "released", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses another machine", restart: true, restoreRefusal: "machine", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
-		{name: "restart refuses a lease pinned to a superseded policy", restart: true, restoreRefusal: "policy", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "restart retains a lease across configuration changes", restart: true, restoreRefusal: "policy", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses stale fencing", restart: true, restoreRefusal: "fence", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "existing valid different fence cannot inherit deferred completion", restart: true, restoreRefusal: "existing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "existing same lease renewal preserves deferred completion", restart: true, restoreRefusal: "renewed", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
@@ -588,8 +588,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: strings.Repeat("b", 40),
 			wantDiagnostic: "checkpoint head", wantChanges: 1, wantVersions: 1},
-		{name: "rework refuses the same head under a changed policy", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
-			wantDiagnostic: "policy_mismatch", wantChanges: 1, wantVersions: 1},
+		{name: "rework preserves the same head after configuration changes", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "changed review requirements republish the same source", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true, reviewer: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "a policy that asks for a reviewer leaves the version waiting", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), reviewer: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "a remote no https URL names opens the change without a version", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), noRemote: true,
@@ -1488,7 +1490,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							return
 						}
 						_, err = h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: leasePolicy, Repository: nativeChangeRepository}, candidate, saved)
-						if test.restoreRefusal != "" && test.restoreRefusal != "renewed" {
+						if test.restoreRefusal != "" && test.restoreRefusal != "renewed" && test.restoreRefusal != "policy" {
 							if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(h.scheduler.nativeClaims) != 0 {
 								t.Fatalf("invalid authority restored: claims=%v err=%v", h.scheduler.nativeClaims, err)
 							}
@@ -1604,7 +1606,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							if test.requiredPR && current.External == nil {
 								t.Fatal("required PR no edit Rework retained native work but published no operator-visible GitHub PR")
 							}
-							runPublished := test.published != got.HeadSHA || test.repolicy
+							runPublished := test.published != got.HeadSHA
 							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != map[bool]string{false: "reviewed", true: "needs_evidence"}[test.reviewer] || got.Reviewed == test.reviewer {
 								t.Fatalf("version = %#v for native change %#v (summary %#v)", current, got, detail.Summary)
 							}

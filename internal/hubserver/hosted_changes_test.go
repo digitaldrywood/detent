@@ -177,10 +177,18 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			updated.ConfigDigest = policy.Digest([]byte("updated-" + project))
 			updated = updated.WithID()
 			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: descriptor.ID, Policy: updated}), http.StatusOK)
-			publish.IdempotencyKey, publish.ExpectedVersionID = "stale-publish", version.ID
-			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, path+"/versions", publish), http.StatusConflict)
-			publish.IdempotencyKey, publish.PolicyID = "stale-review-policy", updated.ID
-			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, path+"/versions", publish), http.StatusConflict)
+			publish.IdempotencyKey, publish.ExpectedVersionID = "reported-configuration", version.ID
+			response = f.setupRequest(t, "owner", http.MethodPost, path+"/versions", publish)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &version)
+			publish.ExpectedVersionID = version.ID
+			publish.IdempotencyKey, publish.PolicyID = "reported-review-configuration", updated.ID
+			response = f.setupRequest(t, "owner", http.MethodPost, path+"/versions", publish)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &version)
+			if version.ReviewPolicy.PolicyID != updated.ID || len(version.ReviewPolicy.RequiredChecks) != 1 || version.ReviewPolicy.RequiredChecks[0].MaxAgeSeconds != 7200 {
+				t.Fatalf("configuration report lost required review checks: %+v", version.ReviewPolicy)
+			}
 		})
 	}
 	first := "/api/v2/organizations/org_browser_preview/projects/" + f.project

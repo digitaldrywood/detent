@@ -441,8 +441,7 @@ func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace
 		return false
 	}
 	checkpoint, version := previous.Checkpoint, current.Version
-	if previous.PolicyID != recovery.Lease.PolicyID || version.PolicyID != recovery.Lease.PolicyID ||
-		version.Policy.ID != version.PolicyID || !version.Policy.Gates.GitHubPullRequest || version.ID == "" || version.ChangeID == "" || version.Repository == "" ||
+	if version.Policy.ID != version.PolicyID || !version.Policy.Gates.GitHubPullRequest || version.ID == "" || version.ChangeID == "" || version.Repository == "" ||
 		checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 		checkpoint.HeadSHA != version.HeadSHA || checkpoint.EffectID == "" || checkpoint.Availability != "available" || checkpoint.Storage != "local_only" && !checkpoint.GitRef() ||
 		(checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed") || local.HeadSHA != version.HeadSHA ||
@@ -674,14 +673,6 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 	return previous
 }
 
-func nativeCheckpointPolicyChanged(recovery tracker.NativeRecovery) bool {
-	previous := recovery.SourceAttempt()
-	if previous == nil {
-		return false
-	}
-	return previous.Checkpoint != nil && previous.PolicyID != recovery.Lease.PolicyID
-}
-
 func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
 	recovery := req.Execution.Recovery()
 	previous := nativeInterruptedResumeAttempt(recovery)
@@ -748,9 +739,6 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		}
 		return "manual_recovery", "external_effect_uncertain"
 	}
-	if nativeCheckpointPolicyChanged(recovery) {
-		return "fresh_checkout", "session_restart_required"
-	}
 	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA &&
 		len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 && checkpoint.Resume != "manual_recovery" &&
 		(checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
@@ -758,7 +746,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
 	if checkpoint.GitRef() {
-		if !operatorFresh && sameMachine && sessionAvailable && checkpoint.Resume == "resume_session" && previous.PolicyID == recovery.Lease.PolicyID && previous.Identity != nil && *previous.Identity == identity {
+		if !operatorFresh && sameMachine && sessionAvailable && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
 			return "resume_session", "verified_local_session"
 		}
 		return "fresh_checkout", "session_restart_required"
@@ -784,7 +772,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "checkpoint_unavailable"
 	}
 	interrupted := nativeInterruptedResumeAttempt(recovery) != nil
-	if !operatorFresh && checkpointMatches && checkpoint.Resume == "resume_session" && previous.PolicyID == recovery.Lease.PolicyID && previous.Identity != nil && *previous.Identity == identity {
+	if !operatorFresh && checkpointMatches && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
 		if sessionAvailable {
 			return "resume_session", "verified_local_session"
 		}
@@ -1051,7 +1039,7 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 			break
 		}
 	}
-	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.PolicyID != recovery.Lease.PolicyID || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired || current.Source == nil || current.RunID == "" || current.AttemptID == "" {
+	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired || current.Source == nil || current.RunID == "" || current.AttemptID == "" {
 		return nil
 	}
 	if command != "" && (current.Validation == nil || current.Validation.Command != command || current.Validation.ExitCode != 0 || current.Validation.HeadSHA != current.HeadSHA || current.Validation.TreeSHA == "") {
@@ -1120,7 +1108,7 @@ func nativeReviewResumeMatches(recovery tracker.NativeRecovery, local *workspace
 		return false
 	}
 	version := current.Version
-	if *recovery.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) || version.Source == nil || version.PolicyID != recovery.Lease.PolicyID || version.Policy.ID != version.PolicyID {
+	if *recovery.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) || version.Source == nil || version.Policy.ID != version.PolicyID {
 		return false
 	}
 	for _, published := range recovery.ChangeDetail.Versions {

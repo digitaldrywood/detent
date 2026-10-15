@@ -62,7 +62,6 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 		return nil, err
 	}
 	approvals := map[tracker.ProjectID]policy.Approval{}
-	revisions := map[string]policy.Descriptor{}
 	rows, err = tx.QueryContext(ctx, `SELECT p.id, r.policy_id, r.metadata_json, r.approved_by, r.approved_at, coalesce(pp.policy_id,'')=r.policy_id
  FROM policy_revisions r JOIN projects p ON r.scope=p.organization_id||'/'||p.id
  LEFT JOIN project_policies pp ON pp.scope=r.scope WHERE p.organization_id=?`, organization)
@@ -78,11 +77,6 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 		if err := rows.Scan(&id, &policyID, &raw, &approval.ApprovedBy, &approval.ApprovedAt, &current); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		var descriptor policy.Descriptor
-		if err := json.Unmarshal([]byte(raw), &descriptor); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		revisions[string(id)+"/"+policyID] = descriptor
 		if current {
 			approval, err = decodeProjectPolicy(raw, approval)
 			if err != nil {
@@ -94,23 +88,6 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 				result[id] = value
 			}
 		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	observed := map[string]string{}
-	rows, err = tx.QueryContext(ctx, `SELECT p.id,o.runner_id,o.policy_id FROM project_observed_policies o
- JOIN projects p ON o.scope=p.organization_id||'/'||p.id WHERE p.organization_id=?`, organization)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var project, runner, id string
-		if err := rows.Scan(&project, &runner, &id); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		observed[project+"/"+runner] = id
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
@@ -141,8 +118,7 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
-	query := strings.Replace(runnerIdentitySelect, "\nFROM runner_identities", `, r.local_checks_json, r.problems_json, r.project_configuration_json,
- coalesce(json_extract(m.capabilities_json, '$.native_admission.' || r.id),'{}')
+	query := strings.Replace(runnerIdentitySelect, "\nFROM runner_identities", `, r.local_checks_json
  FROM runner_identities`, 1)
 	rows, err = tx.QueryContext(ctx, query+" WHERE r.organization_id=? AND r.removed_at IS NULL ORDER BY r.display_name,r.id", organization)
 	if err != nil {
@@ -150,20 +126,8 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var checksRaw, problemsRaw, configurationsRaw, admissionsRaw string
-		runner, reports, _, err := scanRunnerIdentity(rows, func() time.Time { return now }, &checksRaw, &problemsRaw, &configurationsRaw, &admissionsRaw)
-		if err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		err = applyRunnerPolicyObservations(&runner, problemsRaw, configurationsRaw, admissionsRaw, func(project tracker.ProjectID, id string) (string, policy.Approval, bool, error) {
-			if id == "" {
-				id = observed[string(project)+"/"+runner.RunnerID]
-			}
-			approved := approvals[project]
-			previous, exists := revisions[string(project)+"/"+id]
-			matches := id != "" && approved.Policy.ID != "" && (id == approved.Policy.ID || exists && previous.Match(approved.Policy) == nil)
-			return id, approved, matches, nil
-		})
+		var checksRaw string
+		runner, reports, _, err := scanRunnerIdentity(rows, func() time.Time { return now }, &checksRaw)
 		if err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
