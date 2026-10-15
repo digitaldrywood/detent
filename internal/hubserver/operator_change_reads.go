@@ -61,6 +61,13 @@ func readBoundedChange(ctx context.Context, query nativeQueryer, scope nativeSco
 		}
 		if selection.Section != "versions" {
 			detail.Versions = []tracker.ChangeVersion{boundedChangeVersion(version)}
+			push, found, err := resolveVersionPublicationPush(ctx, query, scope, args.ItemID, version)
+			if err != nil {
+				return result, err
+			}
+			if found {
+				detail.PublicationPushes = append(detail.PublicationPushes, push)
+			}
 		}
 	}
 	result.Detail = &detail
@@ -177,6 +184,13 @@ func readChangeSection(ctx context.Context, query nativeQueryer, args operatorto
 				return operatortool.ChangeReadPage{}, err
 			}
 			detail.Versions = append(detail.Versions, boundedChangeVersion(version))
+			push, found, err := resolveVersionPublicationPush(ctx, query, nativeScope{organization: detail.Change.OrganizationID, project: detail.Change.ProjectID}, args.ItemID, version)
+			if err != nil {
+				return operatortool.ChangeReadPage{}, err
+			}
+			if found {
+				detail.PublicationPushes = append(detail.PublicationPushes, push)
+			}
 		case "reviews":
 			var review tracker.ChangeReview
 			if err := json.Unmarshal(row.raw, &review); err != nil {

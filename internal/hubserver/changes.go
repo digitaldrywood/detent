@@ -237,6 +237,57 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 	return nil
 }
 
+// Limit the indexed event lookup before joining provenance, so malformed
+// evidence cannot cause a scan of older attempts. Checkpoints remain available
+// after event compaction and after the recorder replaces its latest handoff.
+const versionPublicationPushSQL = `WITH checkpoint AS (
+ SELECT data_json FROM collaboration_events
+ WHERE organization_id=? AND project_id=? AND work_item_id=?
+ AND type='run.checkpointed'
+ AND json_extract(data_json,'$.run.handoff.external_effect')='git_push'
+ AND json_extract(data_json,'$.run.handoff.effect_state')='confirmed'
+ AND json_extract(data_json,'$.run.handoff.change.change_id')=?
+ AND json_extract(data_json,'$.run.handoff.change.version_id')=?
+ AND json_extract(data_json,'$.run.handoff.change.head_sha')=?
+ ORDER BY sequence DESC LIMIT 1
+)
+SELECT json_extract(e.data_json,'$.run') FROM checkpoint e
+JOIN native_attempts a ON a.id=json_extract(e.data_json,'$.run.attempt_id')
+ AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?
+ AND a.run_id=json_extract(e.data_json,'$.run.run_id')
+ AND a.lease_id=json_extract(e.data_json,'$.run.lease_id')
+ AND a.fencing_token=json_extract(e.data_json,'$.run.fencing_token')
+ AND json_extract(a.data_json,'$.policy_id')=json_extract(e.data_json,'$.run.policy_id')
+JOIN native_attempt_events ae ON ae.attempt_id=a.id AND ae.sequence=json_extract(e.data_json,'$.run.sequence')
+JOIN leases l ON l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
+JOIN issues i ON i.id=l.issue_id AND i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
+JOIN lease_policies p ON p.lease_id=a.lease_id AND p.scope=a.organization_id || '/' || a.project_id
+ AND p.policy_id=json_extract(e.data_json,'$.run.policy_id')`
+
+func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, scope nativeScope, item string, version tracker.ChangeVersion) (tracker.ChangePublicationPush, bool, error) {
+	if version.External != nil || version.AttemptID == "" || !version.Policy.Gates.GitHubPullRequest || version.Landing != nil && version.Landing.Landed {
+		return tracker.ChangePublicationPush{}, false, nil
+	}
+	var raw string
+	err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tracker.ChangePublicationPush{}, false, nil
+	}
+	if err != nil {
+		return tracker.ChangePublicationPush{}, false, err
+	}
+	var run tracker.NativeRunData
+	if err := json.Unmarshal([]byte(raw), &run); err != nil {
+		return tracker.ChangePublicationPush{}, false, err
+	}
+	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+	checkpoint := run.Handoff
+	if checkpoint == nil || checkpoint.Change == nil || *checkpoint.Change != ref || checkpoint.HeadSHA != version.HeadSHA || !validNativeID(checkpoint.EffectID, "effect") {
+		return tracker.ChangePublicationPush{}, false, nil
+	}
+	return tracker.ChangePublicationPush{Change: ref, RecordingAttemptID: run.AttemptID, EffectID: checkpoint.EffectID}, true, nil
+}
+
 func changeRows[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
 	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
@@ -384,13 +435,19 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 			return result, fmt.Errorf("resolve publication: %w", err)
 		}
 		receipt, err := readVersionLanding(ctx, query, result.Versions[i].ID)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return result, fmt.Errorf("load landing: %w", err)
 		}
-		result.Versions[i].Landing = &receipt
+		if err == nil {
+			result.Versions[i].Landing = &receipt
+		}
+		push, found, err := resolveVersionPublicationPush(ctx, query, scope, item, result.Versions[i])
+		if err != nil {
+			return result, fmt.Errorf("resolve publication push: %w", err)
+		}
+		if found {
+			result.PublicationPushes = append(result.PublicationPushes, push)
+		}
 	}
 	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
