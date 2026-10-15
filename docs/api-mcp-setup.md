@@ -644,7 +644,7 @@ no merge requirement and does not change any project's check policy.
 ## Hosted application context reads
 
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,
-`app_updates`, and `hosted_events` through the same adapter on HTTP and stdio.
+`app_updates`, `release_notes`, and `hosted_events` through the same adapter on HTTP and stdio.
 `app_bootstrap_payload` takes `{}` and returns the current organization/directory,
 actor, readable projects and workspace capabilities, support context, features,
 coordinator availability, model/effort/access preferences, plan summary and hub
@@ -656,6 +656,13 @@ versions, online/behind/refusal context and the behind count. It requires a
 non-viewer member with runner management on every organization project and an API
 key, when used, that can read every project. Removing a role or grant takes effect
 on the next call and discovery; an old catalog grants no access.
+
+`release_notes` takes optional `limit` (default 20, maximum 100) and `cursor`.
+It returns the embedded builds newest first, entries, internal counts, running
+and operator-patch flags, per-user unread state, `has_unread`, and an optional
+`next_cursor`. Viewers can read it. It shares the hosted release-notes API owner
+and performs no external requests; marking seen uses the authenticated browser
+API. Bootstrap also includes `has_unread`.
 
 `hosted_events` takes `project_id`, optional `workspace_id`, and optional `cursor`.
 It returns one current collaboration invalidation sequence, an optional safe
