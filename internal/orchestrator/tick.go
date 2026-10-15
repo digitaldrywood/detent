@@ -772,6 +772,11 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				// again this tick.
 				return false
 			}
+			capacityRequest := runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext()}
+			if _, _, paused := o.backendCapacityDispatch(state, capacityRequest, now); paused {
+				observedReason, observedPredicate = dispatchIssueFailureBackendCapacityPaused, dispatchIssueFailureBackendCapacityPaused
+				return false
+			}
 			preview := state.clone()
 			planner := o.liveDispatchPlanner(ctx, nil)
 			for _, selected := range admitted {
