@@ -258,21 +258,60 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 			}
 		})
 	}
-	for _, path := range []string{".detent/environment.md", ".env.local", "keys/certificate.p12"} {
-		t.Run("capture excludes "+path, func(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		path        string
+		content     string
+		allowed     bool
+		credential  bool
+		emptyCommit bool
+	}{
+		{name: "host setup", path: ".detent/environment.md"},
+		{name: "env", path: ".env"},
+		{name: "local env", path: ".env.local"},
+		{name: "production env", path: "config/.env.production"},
+		{name: "envrc", path: ".envrc"},
+		{name: "private ssh key", path: "keys/id_rsa"},
+		{name: "public ssh key", path: "keys/id_rsa.pub"},
+		{name: "pem", path: "keys/certificate.pem"},
+		{name: "key", path: "keys/certificate.key"},
+		{name: "p12", path: "keys/certificate.p12"},
+		{name: "env template", path: ".env.example", content: "API_TOKEN=''\n", allowed: true},
+		{name: "envrc template", path: ".envrc.example", content: "export API_TOKEN=''\n", allowed: true},
+		{name: "source with empty commit", path: "history.txt", content: "reviewed source\n", allowed: true, emptyCommit: true},
+		{name: "nested env template", path: "config/.env.production.example", content: "API_TOKEN=''\n", allowed: true},
+		{name: "env template credential", path: ".env.example", content: "API_TOKEN=ghp_" + strings.Repeat("Z", 36), credential: true},
+		{name: "envrc template credential", path: ".envrc.example", content: "export API_TOKEN=ghp_" + strings.Repeat("Z", 36), credential: true},
+	} {
+		t.Run("capture path "+test.name, func(t *testing.T) {
 			runGit(t, source, "reset", "--hard", head)
-			if err := os.MkdirAll(filepath.Dir(filepath.Join(source, path)), 0o700); err != nil {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(source, test.path)), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(source, path), []byte("local host setup\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(source, test.path), []byte(test.content), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			runGit(t, source, "add", "--force", path)
-			runGit(t, source, "commit", "-m", "private fixture")
-			privateHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
-			capture, err := CaptureChangeSource(t.Context(), source, base, privateHead)
+			runGit(t, source, "add", "--force", test.path)
+			runGit(t, source, "commit", "-m", "source path fixture")
+			if test.emptyCommit {
+				runGit(t, source, "commit", "--allow-empty", "-m", "empty source history")
+			}
+			selectedHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			capture, err := CaptureChangeSource(t.Context(), source, base, selectedHead)
+			if test.allowed {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := capture.Source.Validate(base, selectedHead, capture.Bundle); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
 			if !errors.Is(err, ErrCheckpointUnsafe) || len(capture.Bundle) != 0 {
-				t.Fatalf("source capture uploaded host-local material: bytes=%d, %v", len(capture.Bundle), err)
+				t.Fatalf("source capture uploaded unsafe material: bytes=%d, %v", len(capture.Bundle), err)
+			}
+			if test.credential && err.Error() != "checkpoint could not be safely published: possible credential in selected content" {
+				t.Fatalf("template credential was not refused by the content scan: %v", err)
 			}
 		})
 	}

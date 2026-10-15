@@ -52,6 +52,9 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 				return s.nativeAPIError(c, err)
 			}
 			if err := s.requireHostedRunnerProjects(c.Request().Context(), s.database.reader, credential, runnerManagementProjects(runner)); err != nil {
+				if c.Request().Method == http.MethodGet {
+					return s.nativeAPIError(c, nativeNotFound())
+				}
 				return c.JSON(http.StatusNotFound, apiErrorResponse{Code: "not_found", Message: err.Error()})
 			}
 			credential.ManageRunners = true

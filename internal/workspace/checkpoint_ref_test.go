@@ -23,9 +23,11 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		validate    func(context.Context) error
 		want        error
 		excluded    string
+		templates   map[string]string
 		transaction *portableReworkCheckpointCase
 	}{
 		{name: "runner killed mid-stage resumes elsewhere", validate: owned},
+		{name: "clean environment templates restore elsewhere", validate: owned, templates: map[string]string{".env.example": "API_TOKEN=''\n", ".envrc.example": "export API_TOKEN=''\n"}},
 		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
 		{name: "periodic resolved rebase restores staged resolution", validate: owned, transaction: &portableReworkCheckpointCase{resolved: true}},
 		{name: "resolved rebase preserves excluded baseline files", validate: owned, transaction: &portableReworkCheckpointCase{resolved: true, baseline: true}},
@@ -87,6 +89,10 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			writeCheckpointFile(t, info.Path, "committed.go", "package committed // edited\n")
 			writeCheckpointFile(t, info.Path, "untracked.go", "package untracked\n")
 			runGit(t, info.Path, "rm", "-q", "README.md")
+			for path, content := range test.templates {
+				writeCheckpointFile(t, info.Path, path, content)
+				runGit(t, info.Path, "add", "--force", "--", path)
+			}
 			if test.edit != nil {
 				test.edit(t, info.Path)
 			}
@@ -139,7 +145,11 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			if current := strings.TrimSpace(runGit(t, restored.Path, "rev-parse", "HEAD")); current != head {
 				t.Fatalf("restored head = %s, want %s", current, head)
 			}
-			for path, want := range map[string]string{"committed.go": "package committed // edited\n", "staged.go": "package staged\n", "untracked.go": "package untracked\n"} {
+			contents := map[string]string{"committed.go": "package committed // edited\n", "staged.go": "package staged\n", "untracked.go": "package untracked\n"}
+			for path, content := range test.templates {
+				contents[path] = content
+			}
+			for path, want := range contents {
 				if got, err := os.ReadFile(filepath.Join(restored.Path, path)); err != nil || string(got) != want {
 					t.Fatalf("restored %s = %q, %v", path, got, err)
 				}
@@ -213,8 +223,8 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 			t.Fatal(err)
 		}
 		writeCheckpointFile(t, first, ".detent/fixture.md", "tracked baseline\n")
-		writeCheckpointFile(t, first, ".env.example", "EXAMPLE=fixture\n")
-		runGit(t, first, "add", "--force", ".detent/fixture.md", ".env.example")
+		writeCheckpointFile(t, first, ".env.local", "EXAMPLE=fixture\n")
+		runGit(t, first, "add", "--force", ".detent/fixture.md", ".env.local")
 	}
 	for path, content := range map[string]string{"later.txt": "initial text\n", "binary.dat": "initial\x00binary", "name.txt": "rename contents\n"} {
 		writeCheckpointFile(t, first, path, content)
@@ -339,8 +349,8 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 					t.Fatal(err)
 				}
 			case "excluded index path":
-				writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=changed\n")
-				runGit(t, info.Path, "add", "--force", ".env.example")
+				writeCheckpointFile(t, info.Path, ".env.local", "EXAMPLE=changed\n")
+				runGit(t, info.Path, "add", "--force", ".env.local")
 			case "unstaged excluded deletion", "staged excluded deletion":
 				if err := os.Remove(filepath.Join(info.Path, ".detent/fixture.md")); err != nil {
 					t.Fatal(err)
@@ -349,7 +359,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 					runGit(t, info.Path, "add", "--force", ".detent/fixture.md")
 				}
 			case "staged excluded credential path deletion":
-				runGit(t, info.Path, "rm", "--", ".env.example")
+				runGit(t, info.Path, "rm", "--", ".env.local")
 			}
 			result, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, checkpoint, validate)
 			if err == nil || want != nil && !errors.Is(err, want) || pushed || result.CommitSHA != checkpoint.CommitSHA {
@@ -365,18 +375,18 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 					t.Fatal(err)
 				}
 			case "excluded index path":
-				runGit(t, info.Path, "reset", "HEAD", "--", ".env.example")
+				runGit(t, info.Path, "reset", "HEAD", "--", ".env.local")
 				if test.baseline {
-					writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=fixture\n")
-				} else if err := os.Remove(filepath.Join(info.Path, ".env.example")); err != nil {
+					writeCheckpointFile(t, info.Path, ".env.local", "EXAMPLE=fixture\n")
+				} else if err := os.Remove(filepath.Join(info.Path, ".env.local")); err != nil {
 					t.Fatal(err)
 				}
 			case "unstaged excluded deletion", "staged excluded deletion":
 				writeCheckpointFile(t, info.Path, ".detent/fixture.md", "tracked baseline\n")
 				runGit(t, info.Path, "add", "--force", ".detent/fixture.md")
 			case "staged excluded credential path deletion":
-				writeCheckpointFile(t, info.Path, ".env.example", "EXAMPLE=fixture\n")
-				runGit(t, info.Path, "add", "--force", ".env.example")
+				writeCheckpointFile(t, info.Path, ".env.local", "EXAMPLE=fixture\n")
+				runGit(t, info.Path, "add", "--force", ".env.local")
 			}
 			runGit(t, info.Path, "add", "staged.txt")
 			writeCheckpointFile(t, info.Path, "staged.txt", before)
@@ -463,7 +473,7 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatal("restored staged diff differs from source runner")
 	}
 	if test.baseline {
-		for path, want := range map[string]string{".detent/fixture.md": "tracked baseline\n", ".env.example": "EXAMPLE=fixture\n"} {
+		for path, want := range map[string]string{".detent/fixture.md": "tracked baseline\n", ".env.local": "EXAMPLE=fixture\n"} {
 			if got := readFile(t, filepath.Join(restored.Path, path)); got != want {
 				t.Fatalf("baseline %s = %q", path, got)
 			}
