@@ -70,7 +70,7 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if scope.credential.Hosted != nil {
 		canManageRunners = s.appAllRunnerGrants(ctx, scope.credential)
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (? OR r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.display_name,r.id`, scope.organization, canManageRunners, scope.organization, scope.project)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND ? ORDER BY r.display_name,r.id`, scope.organization, canManageRunners)
 	if err != nil {
 		return result, err
 	}

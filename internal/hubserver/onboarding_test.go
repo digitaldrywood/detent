@@ -99,6 +99,12 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
 			decodeHubResponse(t, response, &setup)
+			if len(setup.Runners) != 0 {
+				t.Fatalf("runner exposed without administration permission: %+v", setup.Runners)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &setup)
 			if setup.Policy == nil || setup.Policy.Policy.ID != descriptor.ID || len(setup.Runners) != 1 {
 				t.Fatalf("readiness = %+v", setup)
 			}
@@ -110,7 +116,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			}
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
 			token := other.token
-			if tt.admin {
+			if tt.admin || tt.scope == "organization" {
 				token = testHubAdminToken
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
@@ -154,6 +160,24 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			if len(setup.Runners) != 1 || slices.ContainsFunc(setup.Runners[0].Exclusions, func(e runnerauth.Exclusion) bool { return e.Code == "project_access_denied" }) {
 				t.Fatalf("routed runner remains unavailable: %+v", setup.Runners)
 			}
+			if setup.Runners[0].LocalChecks != nil || setup.Steps[1].State == "ready" {
+				t.Fatalf("routing forged local validation evidence: %+v", setup)
+			}
+			for _, doctor := range []string{"failed", "passed"} {
+				checks := runnerauth.LocalChecks{Checkout: "passed", Doctor: doctor, Provider: "passed", ProviderKinds: []string{"codex"}}
+				response = performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 2, "version": "test", "local_checks": checks})
+				requireNativeStatus(t, response, http.StatusOK)
+				response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &setup)
+				if len(setup.Runners) != 1 || setup.Runners[0].LocalChecks == nil {
+					t.Fatalf("newly routed runner lost local checks: %+v", setup.Runners)
+				}
+				reported := setup.Runners[0].LocalChecks
+				if reported.Checkout != "passed" || reported.Doctor != doctor || reported.Provider != "passed" || reported.ObservedAt.IsZero() || (setup.Steps[1].State == "ready") != (doctor == "passed") {
+					t.Fatalf("newly routed runner validation did not follow its report: %+v", setup)
+				}
+			}
 			for _, visibility := range []struct {
 				name, statement string
 			}{
@@ -184,11 +208,15 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 	for _, tt := range []struct {
 		name, role, grant  string
 		read, write, admin int
+		routed             bool
 	}{
-		{"owner", "owner", "write", 200, 200, 200},
-		{"member", "member", "write", 200, 200, 404},
-		{"viewer", "viewer", "read", 200, 404, 404},
-		{"ungranted owner", "owner", "", 404, 404, 404},
+		{"owner", "owner", "write", 200, 200, 200, false},
+		{"admin", "admin", "write", 200, 200, 200, false},
+		{"member", "member", "write", 200, 200, 404, false},
+		{"member with routed runner", "member", "write", 200, 200, 404, true},
+		{"viewer", "viewer", "read", 200, 404, 404, false},
+		{"viewer with routed runner", "viewer", "read", 200, 404, 404, true},
+		{"ungranted owner", "owner", "", 404, 404, 404, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newHostedSecurityFixture(t)
@@ -198,7 +226,11 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			binding := runnerauth.NewBinding()
-			enrollmentResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{"prj_onboarding_sibling"}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 60})
+			projects := []tracker.ProjectID{"prj_onboarding_sibling"}
+			if tt.routed {
+				projects = append(projects, f.project)
+			}
+			enrollmentResponse := f.request(t, owner, http.MethodPost, "/api/v2/organizations/org_security/runner-enrollments", runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: projects, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat}, TTLSeconds: 60})
 			requireNativeStatus(t, enrollmentResponse, http.StatusCreated)
 			var enrollment runnerauth.Enrollment
 			decodeHubResponse(t, enrollmentResponse, &enrollment)
@@ -215,7 +247,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 				var setup onboarding.Project
 				decodeHubResponse(t, response, &setup)
 				wantRunners := 0
-				if tt.role == "owner" {
+				if tt.role == "owner" || tt.role == "admin" {
 					wantRunners = 1
 				}
 				if len(setup.Runners) != wantRunners {
@@ -771,7 +803,7 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 				expected = http.StatusUnprocessableEntity
 			}
 			requireNativeStatus(t, response, expected)
-			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", f.token, nil)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
 			decodeHubResponse(t, response, &setup)
