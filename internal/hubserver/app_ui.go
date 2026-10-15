@@ -417,6 +417,7 @@ type appBootstrapPreferences struct {
 }
 
 type appBootstrap struct {
+	HasUnread     bool                       `json:"has_unread"`
 	Organization  appBootstrapOrganization   `json:"organization"`
 	Organizations []appBootstrapOrganization `json:"organizations"`
 	Actor         appBootstrapActor          `json:"actor"`
@@ -528,6 +529,11 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 	if err != nil {
 		return appBootstrap{}, err
 	}
+	seen, err := s.releaseSeenTime(ctx, credential)
+	if err != nil {
+		return appBootstrap{}, err
+	}
+	payload.HasUnread = s.releasesUnread(seen)
 	payload.Plan = s.appBootstrapPlan(ctx)
 	return payload, nil
 }

@@ -71,8 +71,8 @@ generate: assets
 	fi
 	@$(MAKE) sqlc
 
-.PHONY: assets generate-docs
-assets: app css
+.PHONY: assets generate-docs release-notes
+assets: app css release-notes
 
 generate-docs:
 	go run ./internal/config/cmd/configdoc -root .
@@ -255,7 +255,10 @@ check-invariants:
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
 
-source-metadata:
+release-notes:
+	go run ./tools/releasenotes -version "$(VERSION)" -commit "$(COMMIT)" -date "$(DATE)"
+
+source-metadata: release-notes
 	@mkdir -p tmp/source-metadata
 	@printf '%s\n' '$(LDFLAGS)' > tmp/source-metadata/BUILD_LDFLAGS
 

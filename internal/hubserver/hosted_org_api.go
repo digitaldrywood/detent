@@ -36,6 +36,8 @@ const hostedOrganizationBase = "/api/v2/organizations/:organization"
 
 func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	session := s.hostedSessionOnly
+	e.GET(hostedOrganizationBase+"/release-notes", s.releaseNotesAPI, session)
+	e.PUT(hostedOrganizationBase+"/release-notes/seen", s.releaseNotesAPI, session)
 	administration := s.hostedAdministrationSession
 	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
 	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
