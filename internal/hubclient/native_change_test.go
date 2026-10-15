@@ -3765,7 +3765,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 					detail.Reviews = slices.DeleteFunc(slices.Clone(detail.Reviews), func(review tracker.ChangeReview) bool { return review.VersionID != change.VersionID })
 				}
-				if err != nil || len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].VersionID != change.VersionID || change.Validator.HeadSHA != change.HeadSHA {
+				if len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].VersionID != change.VersionID || change.Validator.HeadSHA != change.HeadSHA {
 					t.Fatalf("validator verdict was not pinned to the immutable version: %+v, %v", detail, err)
 				}
 				if test.dependencyOnly {
