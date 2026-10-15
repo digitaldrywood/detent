@@ -92,10 +92,9 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 	if err != nil {
 		return capture, err
 	}
-	if truncated {
-		return capture, errors.New("change source diff exceeds the source capture limit")
+	if !truncated {
+		capture.Patch = patch
 	}
-	capture.Patch = patch
 	digest, err := changeSourceDiff(ctx, directory, base, head)
 	if err != nil {
 		return capture, err
