@@ -986,9 +986,6 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   // exactly when those pickers are reachable — with the right panel open the
   // column yields its width and its letters together.
 
-  const effort = [item.effort, data.attempts.at(-1)?.identity?.model]
-    .filter((part): part is string => part !== null && part !== undefined && part !== "")
-    .join(" · ");
   const lastAttempt = data.attempts.at(-1);
   const attempts =
     lastAttempt === undefined
@@ -1014,7 +1011,6 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       canWrite={props.canWrite}
       saving={props.saving}
       runner={runner}
-      effort={effort === "" ? "No effort set" : effort}
       attempts={attempts}
       related={related}
       relatedCandidates={props.relatedCandidates}

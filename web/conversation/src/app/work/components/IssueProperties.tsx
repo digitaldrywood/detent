@@ -90,8 +90,6 @@ export interface IssuePropertiesProps {
   readonly saving: boolean;
   /** The runner holding the issue right now, or null. */
   readonly runner: string | null;
-  /** `low · Codex gpt-6-astra`, from the attempt and the effort label. */
-  readonly effort: string;
   readonly attempts: string;
   /** Sibling issues from the history relations, and the originating chat. */
   readonly related: readonly RelatedEntry[];
@@ -252,7 +250,11 @@ export function IssueProperties(props: IssuePropertiesProps): React.ReactElement
 
         <div className={ROW_CLASS} data-testid="issue-effort">
           <GaugeIcon className={ICON_CLASS} />
-          <span className="truncate">{props.effort}</span>
+          <span className="truncate">
+            {item.attempt === null ? "No effort set" : <>
+              {item.attempt.model ?? "unavailable"} · {item.attempt.effort ?? <span className="text-muted-foreground">effort unavailable</span>}
+            </>}
+          </span>
         </div>
 
         <div className={ROW_CLASS} data-testid="issue-attempts">

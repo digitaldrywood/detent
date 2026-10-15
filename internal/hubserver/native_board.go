@@ -109,7 +109,7 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			if err != nil {
 				return err
 			}
-			current.Attempt = &tracker.NativeBoardAttempt{Count: attemptCount, ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: attempt.Identity, StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
+			current.Attempt = &tracker.NativeBoardAttempt{Count: attemptCount, ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}

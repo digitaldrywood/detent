@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -204,6 +205,9 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	}
 	var version tracker.ChangeVersion
 	var lease tracker.NativeLease
+	var start tracker.NativeRunEvent
+	effort := ""
+	model := "test-model"
 	worker := f.worker(t, "board-worker")
 	assertDelta := func(t *testing.T, status string, count int, reset ...bool) {
 		t.Helper()
@@ -241,6 +245,24 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		if status != "" && (card.Attempt == nil || card.Attempt.Status != status || card.Attempt.Count != count) {
 			t.Fatalf("attempt=%#v want status %s count %d", card.Attempt, status, count)
 		}
+		if status != "" {
+			if card.Attempt.Identity == nil || card.Attempt.Identity.ReasoningEffort != effort || card.Attempt.Identity.Model != model {
+				t.Fatalf("board identity=%#v want model %s effort %s", card.Attempt.Identity, model, effort)
+			}
+			var attempts tracker.Page[tracker.NativeAttempt]
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/attempts", worker, nil), &attempts)
+			latest := attempts.Items[len(attempts.Items)-1]
+			if latest.Identity == nil || *latest.Identity != *card.Attempt.Identity {
+				t.Fatalf("attempt identity=%#v board identity=%#v", latest.Identity, card.Attempt.Identity)
+			}
+			if effort != "" && (latest.Runtime == nil || latest.Runtime.Identity.ReasoningEffort.Value != effort) {
+				t.Fatalf("runtime identity differs from projection: %#v", latest.Runtime)
+			}
+			record, err := readNativeAttemptRecord(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID), latest.AttemptID, now)
+			if err != nil || record.Identity == nil || record.Identity.Model != "test-model" || record.Identity.ReasoningEffort != "" {
+				t.Fatalf("display projection changed execution identity=%#v, error=%v", record.Identity, err)
+			}
+		}
 		summary, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{}, f.service.config.now())
 		if err != nil {
 			t.Fatal(err)
@@ -265,12 +287,21 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	}{
 		{"attempt", "running", 1, func(t *testing.T) {
 			lease = claimNativeAttempt(t, f.nativeFixture, worker, "board-machine", "board-session", f.issue.WorkItemID)
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
+			start = nativeStartedEvent(lease)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, start), http.StatusOK)
+		}},
+		{"runtime effort", "running", 1, func(t *testing.T) {
+			effort, model = "high", "resolved-model"
+			event := start
+			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "runtime-effort", 2
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now, Identity: agentidentity.RuntimeUpdate(model, "", effort, "", now)}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 		}},
 		{"release", "interrupted", 1, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
 		}},
 		{"new attempt", "running", 2, func(t *testing.T) {
+			effort, model = "", "test-model"
 			lease = claimNativeAttempt(t, f.nativeFixture, worker, "board-machine", "board-session-2", f.issue.WorkItemID)
 			start := nativeStartedEvent(lease)
 			start.IdempotencyKey = "board-second-start"

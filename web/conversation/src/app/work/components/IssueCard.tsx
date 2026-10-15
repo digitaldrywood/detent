@@ -260,7 +260,9 @@ export function IssueCard({
                 aria-hidden
                 className="size-1.5 shrink-0 rounded-full bg-success motion-safe:animate-status-pulse"
               />
-              <span className="text-foreground">{attempt.model ?? attempt.backend ?? "runner"}</span>
+              <span className="shrink-0 text-foreground">
+                {[attempt.model ?? attempt.backend ?? "runner", attempt.effort].filter(Boolean).join(" · ")}
+              </span>
               <span className="min-w-0 truncate text-muted-foreground">
                 {[attempt.backend, attempt.runner].filter((part) => part !== null).join(" · ")}
               </span>

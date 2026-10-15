@@ -211,12 +211,21 @@ export const NativeWorkSummary = Schema.Struct({
 });
 export type NativeWorkSummary = typeof NativeWorkSummary.Type;
 
+/** A run's identity: which role, on which backend, with which model. */
+export const NativeExecutionIdentity = Schema.Struct({
+  role: Schema.String,
+  backend: Schema.String,
+  model: Schema.String,
+  reasoning_effort: Schema.optional(Schema.String),
+});
+export type NativeExecutionIdentity = typeof NativeExecutionIdentity.Type;
+
 export const NativeBoardCard = Schema.Struct({
   status_line: Schema.optional(Schema.String),
   issue: NativeIssue,
   attempt: Schema.NullOr(Schema.Struct({ count: Schema.optional(Schema.Number), attempt_id: Schema.String, status: Schema.String,
     runner_id: Schema.optional(Schema.String), machine_id: Schema.optional(Schema.String),
-    identity: Schema.optional(Schema.Struct({ role: Schema.String, backend: Schema.String, model: Schema.String })),
+    identity: Schema.optional(NativeExecutionIdentity),
     started_at: Schema.String, expires_at: Schema.optional(Schema.String) })),
   change: Schema.NullOr(Schema.Struct({ change_id: Schema.String, title: Schema.String, status: Schema.String,
     external: Schema.optional(Schema.Struct({ provider: Schema.String, id: Schema.String, url: Schema.String })) })),
@@ -421,14 +430,6 @@ export type NativeComment = typeof NativeComment.Type;
 
 export const CommentPage = Page(NativeComment);
 export type CommentPage = typeof CommentPage.Type;
-
-/** A run's identity: which role, on which backend, with which model. */
-export const NativeExecutionIdentity = Schema.Struct({
-  role: Schema.String,
-  backend: Schema.String,
-  model: Schema.String,
-});
-export type NativeExecutionIdentity = typeof NativeExecutionIdentity.Type;
 
 export const NativeChangeReference = Schema.Struct({
   change_id: Schema.String,

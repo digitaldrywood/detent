@@ -183,6 +183,20 @@ describe("the board card", () => {
   });
 
   it.each([
+    { effort: "high", label: "gpt-6-astra · high" },
+    { effort: null, label: "gpt-6-astra" },
+  ])("renders the worker model with $effort effort and preserves the strip on update", ({ effort, label }) => {
+    const attempt = { ...toAttemptView(ATTEMPTS)!, effort: null };
+    const props = { item: item({ attempt }), showProject: false, now: NOW, onOpen: vi.fn(), moves: [], onMove: vi.fn() };
+    const { rerender } = render(<IssueCard {...props} />);
+    const strip = screen.getByTestId("worker-strip");
+    rerender(<IssueCard {...props} item={item({ attempt: { ...attempt, effort } })} />);
+    expect(screen.getByTestId("worker-strip")).toBe(strip);
+    expect(within(strip).getByText(label)).not.toBeNull();
+    expect(strip.textContent).not.toContain("effort unavailable");
+  });
+
+  it.each([
     { state: "Done", priority: "Urgent", attemptStatus: "failed", showProject: true },
     { state: "Done", priority: "High", attemptStatus: "interrupted", showProject: false },
     { state: "Cancelled", priority: "Urgent", attemptStatus: "running", showProject: true },
@@ -921,6 +935,37 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
 async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("stat-completed").closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("false"));
 }
+
+describe("the issue effort property", () => {
+  it.each([
+    { name: "reported effort", effort: "high", hasAttempt: true, expected: "gpt-6.1-sol · high" },
+    { name: "unreported effort", effort: undefined, hasAttempt: true, expected: "gpt-6.1-sol · effort unavailable" },
+    { name: "no attempt", effort: undefined, hasAttempt: false, expected: "No effort set" },
+  ])("shows $name from the latest attempt instead of labels", async ({ effort, hasAttempt, expected }) => {
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
+      const response = await fetch(input, init);
+      if (/\/attempts(?:\?|$)/.test(String(input))) {
+        return Response.json({ items: hasAttempt ? [ATTEMPTS[0], { ...ATTEMPTS.at(-1)!,
+          identity: { role: "code", backend: "codex", model: "gpt-6.1-sol", ...(effort === undefined ? {} : { reasoning_effort: effort }) },
+        }] : [] });
+      }
+      if (/\/work-items\/[^/?]+$/.test(String(input))) {
+        const body = await response.json();
+        return Response.json({ ...body, labels: ["effort:low"] });
+      }
+      return response;
+    });
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: page.items[0]!.work_item_id } }));
+    const row = await screen.findByTestId("issue-effort");
+    await waitFor(() => expect(row.textContent).toBe(expected));
+    if (hasAttempt && effort === undefined) {
+      expect(within(row).getByText("effort unavailable").className).toBe("text-muted-foreground");
+    }
+  });
+});
 
 describe("the archive period hint", () => {
   it.each([
