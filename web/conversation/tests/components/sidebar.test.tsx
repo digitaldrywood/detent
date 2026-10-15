@@ -11,6 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { subscribeProjectEvents } from "../../src/app/work/lib/projectEvents.ts";
+import { HealthFindingsProvider } from "../../src/app/diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
 import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
 import * as settings from "../../src/hooks/useSettings.ts";
@@ -353,7 +354,7 @@ it("bounds findings reads to mount and health ticks across renders and runner na
   mocks.realHttp = true;
   const client = makeClient({ bootstrap: { ...bootstrapFixture, projects } as Bootstrap });
   const { result, rerender, unmount } = renderHook(() => useSidebarFindings(projects.map((project) => ({ ...project }))), {
-    wrapper: ({ children }) => <ClientContext.Provider value={client}>{children}</ClientContext.Provider>,
+    wrapper: ({ children }) => <ClientContext.Provider value={client}><HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider></ClientContext.Provider>,
   });
   const source = Source.instances[0]!;
   await act(async () => {
@@ -412,13 +413,13 @@ it("shares project events while reading every page, filtering and resolving find
   mocks.getWorkItem.mockResolvedValue({ number: 550, title: "Open findings" });
   const onActivity = vi.fn();
   const unsubscribe = subscribeProjectEvents(mocks, "p1", { activity: onActivity });
-  const { result, unmount } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Detent", can_write: true }, { id: "p2", name: "Other", can_write: true }]));
+  const { result, unmount } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Other", can_write: true }]), { wrapper: ({ children }) => <HealthFindingsProvider projects={[{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Other", can_write: true }]}>{children}</HealthFindingsProvider> });
   await waitFor(() => expect(result.current.map((f) => f.id)).toEqual(["hf_project", "hf_runner", "hf_item"]));
   expect(Source.instances.map((source) => source.url)).toEqual(["/projects/p1/events"]);
   expect(result.current.map((f) => [f.label, f.to])).toEqual([
-    ["Detent", "/diagnostics"], ["Studio", "/fleet"], ["#550 Open findings", "/work/i/wi_1?tab=diagnostics"],
+    ["Example project", "/diagnostics"], ["Studio", "/fleet"], ["#550 Open findings", "/work/i/wi_1?tab=diagnostics"],
   ]);
-  expect(mocks.listHealthFindings).toHaveBeenCalledWith("p1", "page2", expect.any(AbortSignal));
+  expect(mocks.listHealthFindings).toHaveBeenCalledWith("p1", "page2", expect.any(AbortSignal), undefined);
   resolved = true;
   act(() => { for (const source of Source.instances) source.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })); });
   await waitFor(() => expect(result.current).toEqual([]));
@@ -450,7 +451,7 @@ it("discards an older response after a live refresh", async () => {
   mocks.listHealthFindings.mockResolvedValueOnce({ items: [], last_tick_at: null })
     .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
     .mockResolvedValueOnce({ items: [], last_tick_at: null });
-  const { result } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Detent", can_write: true }]));
+  const { result } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Example project", can_write: true }]), { wrapper: ({ children }) => <HealthFindingsProvider projects={[{ id: "p1", name: "Example project", can_write: true }]}>{children}</HealthFindingsProvider> });
   await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "older" })));
   await waitFor(() => expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2));
   await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "newer" })));

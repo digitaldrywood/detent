@@ -169,7 +169,7 @@ export interface WorkHttp {
    * emits `event: activity` with a sequence or a requested board delta frame as its data.
    */
   readonly eventsUrl: (projectId: string, workspaceId?: string, workItemId?: string, board?: { readonly since: number; readonly filters: ListWorkItemsInput }) => string;
-  readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal) => Promise<HealthFindingsRead>;
+  readonly listHealthFindings: (projectId: string, cursor?: string, signal?: AbortSignal, options?: { state: "all"; since: string }) => Promise<HealthFindingsRead>;
   readonly getProject: (projectId: string, signal?: AbortSignal) => Promise<NativeProject>;
   readonly listWorkItems: (input: ListWorkItemsInput) => Promise<WorkItemPage>;
   /** The compact issue-picker projection, searched and paged by the hub. */
@@ -577,7 +577,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         created_by: board?.filters.createdBy, q: board?.filters.q || undefined, type: board?.filters.type, label: board?.filters.label, assignee: board?.filters.assignee,
         priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
         completed_window: board?.filters.completedWindow }),
-    listHealthFindings: (projectId, cursor, signal) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor }), undefined, signal),
+    listHealthFindings: (projectId, cursor, signal, options) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor, ...options }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
     listWorkItems: (input) =>
       send(

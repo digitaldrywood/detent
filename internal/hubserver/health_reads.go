@@ -45,8 +45,8 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if state == "" {
 		state = "open"
 	}
-	if state != "open" && state != "resolved" {
-		return page, nativeInvalid("state must be open or resolved")
+	if state != "open" && state != "resolved" && state != "all" {
+		return page, nativeInvalid("state must be open, resolved or all")
 	}
 	if limit < 1 || limit > 100 {
 		return page, nativeInvalid("limit must be between 1 and 100")
@@ -75,8 +75,8 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	resolved := state == "resolved"
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
  COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
- WHERE organization_id=? AND (resolved_at IS NOT NULL)=? AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
- AND (?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, resolved, scope.project, since, since, since, after, limit+1)
+ WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
+ AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, state, resolved, scope.project, state, since, since, since, after, limit+1)
 	if err != nil {
 		return page, err
 	}

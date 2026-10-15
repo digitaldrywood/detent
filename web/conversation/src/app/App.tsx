@@ -10,6 +10,7 @@ import type { Conversation } from "../contracts/index.ts";
 import { HUB_ENVIRONMENT_ID } from "../contracts/index.ts";
 import type { ConversationClient } from "../runtime/bootstrap.ts";
 import { readLastProject, useClient, writeLastProject } from "./client.ts";
+import { HealthFindingsProvider } from "./diagnostics/healthFindings.tsx";
 import { useSidebarFindings } from "./adapters/sidebarFindings.ts";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
 import { sidebarProjectScopeKey } from "./adapters/shell.ts";
@@ -128,13 +129,16 @@ function useListState(client: ConversationClient) {
 }
 
 export function Shell(): React.ReactElement {
+  const client = useClient();
   const pathname = useRouterState({ select: (state) => withoutBasePath(state.location.pathname) });
 
   return (
     <ToastProvider>
       <AnchoredToastProvider>
         <OrganizationMembersProvider enabled={/^\/settings(\/|$)/.test(pathname)}>
-          <ShellBody />
+          <HealthFindingsProvider projects={client.bootstrap.projects}>
+            <ShellBody />
+          </HealthFindingsProvider>
         </OrganizationMembersProvider>
       </AnchoredToastProvider>
     </ToastProvider>
