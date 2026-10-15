@@ -489,6 +489,33 @@
       "related": ["toast", "badge", "empty"]
     },
     {
+      "id": "avatar",
+      "name": "Avatar",
+      "kind": "primitive",
+      "group": "Feedback",
+      "status": "available",
+      "source": "src/components/ui/avatar.tsx",
+      "exports": [
+        "Avatar"
+      ],
+      "variants": {
+        "size": [
+          "sm",
+          "md"
+        ]
+      },
+      "states": [
+        "image",
+        "initials"
+      ],
+      "keyboard": "Static identity; the surrounding row or link owns focus.",
+      "use": "A person’s image or initials beside their visible identity; sm for compact references and md for member rows.",
+      "avoid": "Project marks (use Project favicon) and stand-alone identity without a visible name.",
+      "related": [
+        "badge"
+      ]
+    },
+    {
       "id": "badge",
       "name": "Badge",
       "kind": "primitive",

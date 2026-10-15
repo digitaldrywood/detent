@@ -17,6 +17,7 @@ import { keySetupPrompt } from "../../src/app/settings/APIKeysMCPSettings.tsx";
 import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
 import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
 import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
+import membersFixture from "../../src/contracts/fixtures/account-members.json";
 import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
 import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
@@ -1226,7 +1227,7 @@ describe("organization settings pages", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
-      if (input.endsWith("/members")) return Response.json({ member_count: removed ? 2 : 3, members: options.removableMember && !removed ? [{ id: "mem_example", user_id: "user_example", email: "member@example.test", role: "member", status: "active", grants: [] }] : [], invitations: [] });
+      if (input.endsWith("/members")) return Response.json({ roles: membersFixture.roles, member_count: removed ? 2 : 3, members: options.removableMember && !removed ? [{ id: "mem_example", user_id: "user_example", email: "member@example.test", role: "member", status: "active", grants: [] }] : [], invitations: [] });
       if (input.endsWith("/members/mem_example") && init?.method === "DELETE") { removed = true; return Response.json({}); }
       if (input.endsWith("/slug")) return Response.json({ slug: "example-team" });
       if (input.endsWith("/model-selection")) return Response.json({ revision: "1", selection: null, effective: { enabled: true, normal_model: "gpt-6.1-sol" } });
@@ -1346,8 +1347,10 @@ describe("organization settings pages", () => {
     stubOrganizationApi({ removableMember: true });
     const { router } = renderSidebarNav("/settings/organization/members", client, null, true);
     await screen.findByRole("button", { name: "Members 3 members" });
-    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
-    const dialog = await screen.findByRole("dialog");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Actions for member@example.test" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Remove from organization" }));
+    const dialog = await screen.findByRole("alertdialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await screen.findByRole("button", { name: "Members 2 members" });
     expect(screen.queryByText("member@example.test")).toBeNull();
@@ -1365,14 +1368,14 @@ describe("organization settings pages", () => {
     expect(screen.getByRole("button", { name: "Copy organization ID" })).toBeTruthy();
   });
 
-  it.each([["/settings/organization/members", "Members", "Invite somebody"], ["/settings/organization/models", "Models", "Model selection"]])("serves the deep link %s and marks its sidebar row", async (path, label, content) => {
+  it.each([["/settings/organization/members", "Members", "Pending invitations"], ["/settings/organization/models", "Models", "Model selection"]])("serves the deep link %s and marks its sidebar row", async (path, label, content) => {
     stubOrganizationApi();
     renderSidebarNav(path!, client, null, true);
     await screen.findByText(content!);
     expect(screen.getByRole("button", { name: label === "Members" ? "Members 3 members" : label }).getAttribute("aria-current")).toBe("page");
     expect(screen.queryByText("Your organizations")).toBeNull();
     if (label === "Members") expect(screen.queryByRole("heading", { name: "Model selection" })).toBeNull();
-    else expect(screen.queryByRole("heading", { name: "Invitations" })).toBeNull();
+    else expect(screen.queryByRole("heading", { name: "Pending invitations" })).toBeNull();
   });
 
   it.each([["invitations", "/settings/organization/members"], ["model selection", "/settings/organization/models"]])("searches %s on its new page", async (query, path) => {

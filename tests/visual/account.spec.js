@@ -15,16 +15,14 @@ const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
-test.describe.configure({ mode: "serial" });
-
 let hub;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("account", { env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" } });
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   await hub?.stop();
   hub = undefined;
 });
@@ -145,20 +143,21 @@ test("the organization page lists the members and gates the controls by role", a
   await expectOneHeadingOne(page, "Settings");
   const table = page.getByRole("table");
   await expect(table).toBeVisible();
-  const identities = table.locator("tbody tr td:first-child > div:first-child");
+  const identities = table.getByRole("row").filter({ has: page.getByRole("button", { name: /^Actions for/ }) });
   await expect(identities).toHaveCount(3);
   for (const identity of await identities.all()) {
     await expect(identity).not.toHaveText(/^\s*$/);
   }
   const unsigned = table.getByRole("row").filter({ hasText: "unsigned@example.test" });
   await expect(unsigned).toContainText("Unsigned Member");
-  await expect(unsigned).toContainText("Hasn't signed in yet");
-  await expect(unsigned.getByRole("button", { name: "Remove" })).toBeEnabled();
+  await expect(unsigned).toContainText("Hasn't signed in");
+  await expect(unsigned.getByRole("button", { name: "Actions for unsigned@example.test" })).toBeEnabled();
   // An owner gets the mutating controls.
-  await expect(page.getByRole("button", { name: "Remove" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Actions for/ }).first()).toBeVisible();
   await expectNoSeriousAxeViolations(page, "/organization as owner");
   expect(errors, "console errors on /organization").toEqual([]);
-  await unsigned.getByRole("button", { name: "Remove" }).click();
+  await unsigned.getByRole("button", { name: "Actions for unsigned@example.test" }).click();
+  await page.getByRole("menuitem", { name: "Remove from organization" }).click();
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   await expect(unsigned).toHaveCount(0);
 
@@ -166,34 +165,34 @@ test("the organization page lists the members and gates the controls by role", a
   await openAs(page, "viewer", "/settings/organization/members");
   await expect(page.getByRole("table")).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Invite member", exact: true })).toHaveCount(0);
   await expectNoSeriousAxeViolations(page, "/organization as viewer");
 });
 
 test("sending invitations resets the form and shows the newest invitation with its enforced expiry", async ({ page }) => {
   await openAs(page, "owner", "/settings/organization/members");
-  const invitations = page.locator("section").filter({ has: page.getByRole("heading", { name: "Invitations", exact: true }) });
+  const invitations = page.getByRole("region", { name: "Pending invitations" });
   for (const email of ["older-invite@example.test", "newest-invite@example.test"]) {
-    await page.getByLabel("Email", { exact: true }).fill(email);
-    await page.getByLabel("Role", { exact: true }).selectOption("viewer");
+    await page.getByRole("button", { name: "Invite member", exact: true }).first().click();
+    await page.getByLabel("Email addresses", { exact: true }).fill(email);
+    await page.getByRole("combobox", { name: "Role", exact: true }).click();
+    await page.getByRole("option", { name: "Viewer", exact: true }).click();
     const responsePromise = page.waitForResponse((response) =>
       response.request().method() === "POST" && response.url().endsWith("/members/invitations"),
     );
-    await page.getByRole("button", { name: "Send invitation", exact: true }).click();
+    await page.getByRole("button", { name: "Send 1 invitation", exact: true }).click();
     const response = await responsePromise;
     expect(response.status()).toBe(201);
     const created = await response.json();
     expect(created.email).toBe(email);
     expect(created.expires_at).toBeTruthy();
-    await expect(page.getByLabel("Email", { exact: true })).toHaveValue("");
-    await expect(page.getByLabel("Role", { exact: true })).toHaveValue("member");
-    await expect(page.getByRole("status").filter({ hasText: `Invitation sent to ${email}.` })).toBeVisible();
-    const row = invitations.locator('[data-slot="settings-row"]').first();
+    await expect(page.getByRole("dialog", { name: "Invite members", exact: true })).toHaveCount(0);
+    const row = invitations.getByRole("group", { name: /^Invitation to/ }).first();
     await expect(row).toBeVisible();
     await expect(row).toContainText(email);
-    await expect(row).toContainText(`Invited as viewer. Expires ${created.expires_at}.`);
+    await expect(row).toContainText(`Invited as Viewer. Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
     await page.reload();
-    await expect(invitations.locator('[data-slot="settings-row"]').first()).toContainText(`Expires ${created.expires_at}.`);
+    await expect(invitations.getByRole("group", { name: /^Invitation to/ }).first()).toContainText(`Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
   }
 });
 
@@ -209,14 +208,15 @@ test("removing the last owner is refused by the hub and said in the page", async
   // never coming.
   const ownerRow = page.getByRole("row").filter({ hasText: hub.fixture.owner_email });
   await expect(ownerRow).toHaveCount(1);
-  const remove = ownerRow.getByRole("button", { name: "Remove" }).first();
+  const remove = ownerRow.getByRole("button", { name: `Actions for ${hub.fixture.owner_email}` });
   await expect(remove).toBeVisible();
   await remove.click();
+  await page.getByRole("menuitem", { name: "Remove from organization" }).click();
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   // The alert is the hub's refusal said in the page, which arrives after a
   // round trip; under a loaded machine that has taken longer than the default
   // expectation window, so this one waits as long as a navigation.
-  await expect(page.getByRole("alert")).toContainText("owner", { timeout: 30_000 });
+  await expect(page.getByRole("alertdialog").getByRole("alert")).toContainText("owner", { timeout: 30_000 });
 });
 
 test("the settings navigation is the sidebar, not a second column", async ({ page }) => {
@@ -297,13 +297,10 @@ test("project settings show the integration and refuse to edit it for a viewer",
 test("pending invitations can be resent and revoked from their row", async ({ page }) => {
   const email = "withdraw@example.test";
   await openAs(page, "owner", "/settings/organization/members");
-  await page.getByLabel("Email", { exact: true }).fill(email);
-  await page.getByRole("button", { name: "Send invitation", exact: true }).click();
-  const row = page.locator('[data-slot="settings-row"]').filter({
-    // The confirmation dialog makes its background inert; the pending row
-    // must remain present through a failed revoke.
-    has: page.getByRole("heading", { name: email, exact: true, includeHidden: true }),
-  });
+  await page.getByRole("button", { name: "Invite member", exact: true }).first().click();
+  await page.getByLabel("Email addresses", { exact: true }).fill(email);
+  await page.getByRole("button", { name: "Send 1 invitation", exact: true }).click();
+  const row = page.getByRole("group", { name: `Invitation to ${email}`, includeHidden: true });
   await expect(row).toBeVisible();
   const providerInvitations = async () => {
     const response = await page.request.get(`${hub.fixture.url}/__preview/invitations`);
@@ -316,7 +313,7 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
   await expect(row.getByRole("status")).toHaveText("Invitation resent.");
   expect(await providerInvitations()).toHaveLength(1);
   await row.getByRole("button", { name: "Revoke", exact: true }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText(`Revoke invitation to ${email}?`);
   await dialog.getByRole("button", { name: "Keep invitation", exact: true }).click();
   await expect(row).toBeVisible();

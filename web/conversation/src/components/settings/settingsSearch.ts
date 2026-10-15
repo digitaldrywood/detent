@@ -54,7 +54,7 @@ const SETTINGS_INDEX: readonly IndexEntry[] = [
     keywords: "entitlement allowance tier",
   },
   { section: "organization/members", targetId: "settings-organization-members", title: "Members", keywords: "people roles owner admin viewer access" },
-  { section: "organization/members", targetId: "settings-organization-invitations", title: "Invite somebody", keywords: "invitations invitation email join" },
+  { section: "organization/members", targetId: "settings-organization-invitations", title: "Invite member", keywords: "invitations invitation email join" },
   {
     section: "projects",
     title: "Projects",

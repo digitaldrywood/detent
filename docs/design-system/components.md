@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception.
+Catalog totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status: 146 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -391,6 +391,19 @@ A persistent inline message in the place the user must act: a warning above a fo
 - Keyboard: Not interactive itself; AlertAction holds focusable actions.
 - Avoid: Transient confirmations (use a toast) and status labels (use Badge). Optional features not set up use muted text and one Set up action; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 - Related: [Toast](#toast), [Badge](#badge), [Empty state](#empty-state).
+
+### Avatar
+
+A person’s image or initials beside their visible identity; sm for compact references and md for member rows.
+
+- Kind: Primitive; status: available; id: `avatar`.
+- Import: `import { Avatar } from "~/components/ui/avatar";`
+- Source: [src/components/ui/avatar.tsx](../../web/conversation/src/components/ui/avatar.tsx).
+- Variants: `size`: `sm`, `md`.
+- States: image, initials.
+- Keyboard: Static identity; the surrounding row or link owns focus.
+- Avoid: Project marks (use Project favicon) and stand-alone identity without a visible name.
+- Related: [Badge](#badge).
 
 ### Badge
 
