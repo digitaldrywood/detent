@@ -19,6 +19,7 @@ import (
 
 type runnerCheckoutError struct {
 	message string
+	summary string
 	fix     string
 	cause   error
 }
@@ -26,6 +27,16 @@ type runnerCheckoutError struct {
 func (e *runnerCheckoutError) Error() string { return e.message }
 
 func (e *runnerCheckoutError) Unwrap() error { return e.cause }
+
+func (e *runnerCheckoutError) guidance() string {
+	value := firstNonBlankString(e.summary, e.message)
+	value = runnerauth.SanitizeProblem(runnerauth.Problem{Message: value}).Message
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 1000 {
+		value = strings.ToValidUTF8(value[:997], "") + "..."
+	}
+	return value
+}
 
 type runnerCheckoutOutput struct {
 	data      [8192]byte
@@ -147,20 +158,26 @@ func newRunnerCheckoutError(cloneURL string, cause, contextErr error, stderr str
 	cause = errors.Join(cause, contextErr)
 	output := runnerauth.SanitizeProblem(runnerauth.Problem{ErrorOutput: runnerCheckoutURLCredentials.ReplaceAllString(stderr, "https://[redacted]@")}).ErrorOutput
 	message := "Cannot clone " + cloneURL + ": " + cause.Error()
+	summary := message
 	if output != "" {
 		message += ": " + output
 	}
 	fix := "Check repository connectivity and the reported git error, then let the runner retry"
+	reason := "git checkout failed"
 	diagnostic := strings.ToLower(stderr)
 	switch {
 	case errors.Is(cause, context.DeadlineExceeded):
+		reason = "checkout timed out"
 		fix = "Repository checkout timed out; check repository size, network throughput and git server availability"
 	case errors.Is(cause, context.Canceled):
+		reason = "checkout canceled"
 		fix = "Repository checkout was canceled; let the runner retry if the project is still assigned"
 	case strings.Contains(diagnostic, "repository not found"), strings.Contains(diagnostic, "not found"):
+		reason = "repository not found"
 		fix = "Verify the repository binding exists and the runner has access to it"
 	case strings.Contains(diagnostic, "authentication failed"), strings.Contains(diagnostic, "could not read username"), strings.Contains(diagnostic, "permission denied (publickey)"), strings.Contains(diagnostic, "invalid username or token"), strings.Contains(diagnostic, "http 401"), strings.Contains(diagnostic, "error: 401"):
+		reason = "authentication failed"
 		fix = "gh auth login --hostname github.com --git-protocol https"
 	}
-	return &runnerCheckoutError{message: message, fix: fix, cause: cause}
+	return &runnerCheckoutError{message: message, summary: reason + ": " + summary, fix: fix, cause: cause}
 }

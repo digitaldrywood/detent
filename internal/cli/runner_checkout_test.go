@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -247,6 +248,10 @@ func TestCloneRunnerRepositoryFailure(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "user:") {
 				t.Fatalf("credentials leaked: %v", err)
+			}
+			checks := runnerauth.LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending", CheckoutMessage: checkoutErr.guidance(), CheckoutFix: checkoutErr.fix}
+			if err := checks.Validate(); err != nil {
+				t.Fatalf("Hub rejected checkout guidance: %v", err)
 			}
 			if test.timeout && !strings.Contains(err.Error(), "transfer stalled") {
 				t.Fatalf("lost stderr: %v", err)

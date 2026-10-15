@@ -31,6 +31,7 @@ type runnerProjects struct {
 	setup       *project.RunnerSetup
 	logger      *slog.Logger
 	checks      map[string]runnerauth.LocalChecks
+	problems    map[string]runnerauth.Problem
 	lastRefresh time.Time
 	apply       func(context.Context, globalconfig.Config) error
 	runtime     func() globalconfig.Config
@@ -52,6 +53,16 @@ func (p *runnerProjects) prepare(ctx context.Context, name string) error {
 	cfg := p.cfg
 	p.mu.Unlock()
 	return p.prepareConfiguration(ctx, cfg, name)
+}
+
+func (p *runnerProjects) reportedProblems() []runnerauth.Problem {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	problems := make([]runnerauth.Problem, 0, len(p.problems))
+	for _, problem := range p.problems {
+		problems = append(problems, problem)
+	}
+	return problems
 }
 
 func (p *runnerProjects) prepareConfiguration(ctx context.Context, cfg globalconfig.Config, name string) error {
@@ -99,7 +110,7 @@ func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.
 			run.checks = runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending"}
 			var checkoutErr *runnerCheckoutError
 			if errors.As(run.err, &checkoutErr) {
-				run.checks.CheckoutMessage, run.checks.CheckoutFix = checkoutErr.message, checkoutErr.fix
+				run.checks.CheckoutMessage, run.checks.CheckoutFix = checkoutErr.guidance(), checkoutErr.fix
 			}
 			return
 		}
@@ -173,11 +184,13 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			default:
 			}
 			delete(p.checks, name)
+			delete(p.problems, name)
 		}
 	}
 	for name := range p.checks {
 		if _, allowed := p.cfg.Client.NativeProjects[name]; !allowed {
 			delete(p.checks, name)
+			delete(p.problems, name)
 		}
 	}
 	for _, selected := range p.cfg.Projects {
@@ -202,8 +215,21 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			run.cancel()
 			delete(p.preparing, selected.ID)
 			p.checks[selected.ID] = run.checks
+			delete(p.problems, selected.ID)
 			changed = changed || !reflect.DeepEqual(previous, run.checks)
 			if run.err != nil {
+				problem := runnerauth.NewProblem("settings_invalid")
+				problem.ProjectID = p.cfg.Client.NativeProjects[selected.ID]
+				problem.Subject = "checkout"
+				problem.ErrorOutput = run.err.Error()
+				problem.ReportedAt = time.Now()
+				if run.checks.CheckoutMessage != "" {
+					problem.Message, problem.FixHint = run.checks.CheckoutMessage, run.checks.CheckoutFix
+				}
+				if p.problems == nil {
+					p.problems = make(map[string]runnerauth.Problem)
+				}
+				p.problems[selected.ID] = runnerauth.SanitizeProblem(problem)
 				p.logger.Warn("prepare assigned runner project failed", "project", selected.ID, "attribution", "instance", "error", run.err)
 			}
 		default:
