@@ -8,6 +8,7 @@ import {
   InfoIcon,
   KeyboardIcon,
   Link2Icon,
+  MegaphoneIcon,
   PaletteIcon,
   PanelsTopLeftIcon,
   PlugIcon,
@@ -58,6 +59,7 @@ export const SETTINGS_SECTION_IDS = [
   "plan",
   "billing",
   "keybindings",
+  "whats-new",
   "about",
 ] as const;
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
@@ -82,6 +84,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>
   plan: "Plan & usage",
   billing: "Billing",
   keybindings: "Keybindings",
+  "whats-new": "What's new",
   about: "About",
 };
 
@@ -137,10 +140,11 @@ export function settingsNavItems({
       reason: WHY_DISABLED,
     },
     { id: "archived", label: "Archive", icon: ArchiveIcon, disabled: true, reason: WHY_DISABLED },
+    { id: "whats-new", label: SETTINGS_SECTION_LABELS["whats-new"], icon: MegaphoneIcon },
     { id: "about", label: SETTINGS_SECTION_LABELS.about, icon: InfoIcon },
   );
   return items.map((item) => ({ ...item,
     label: item.id === "mcp" && !basePath().startsWith("/organizations/") ? "API & MCP" : item.label,
-    group: ["general", "about"].includes(item.id) ? undefined : ["appearance", "keybindings", "snap-shot", "source-control", "connections", "archived"].includes(item.id) ? "account" : "organization",
+    group: ["general", "whats-new", "about"].includes(item.id) ? undefined : ["appearance", "keybindings", "snap-shot", "source-control", "connections", "archived"].includes(item.id) ? "account" : "organization",
   }));
 }

@@ -9,6 +9,7 @@ import {
   useLocation,
 } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Schema from "effect/Schema";
 
@@ -83,6 +84,7 @@ describe("which sections an actor gets", () => {
       "Source Control",
       "Connections",
       "Archive",
+      "What's new",
       "About",
     ]);
   });
@@ -91,6 +93,7 @@ describe("which sections an actor gets", () => {
     const items = settingsNavItems({ canManage: false, supporting: false });
     expect(labelsFor(items)).not.toContain("Plan & usage");
     expect(labelsFor(items)).not.toContain("Billing");
+    expect(items.slice(-2).map((item) => item.id)).toEqual(["whats-new", "about"]);
   });
 
   it("closes billing during a support session, and leaves the plan open", () => {
@@ -753,6 +756,7 @@ describe("the settings navigation in the sidebar", () => {
       "Source Control",
       "Connections",
       "Archive",
+      "What's new",
       "About",
     ]) {
       if (!canManage && ["Plan & usage", "Billing"].includes(label)) expect(screen.queryByRole("button", { name: label })).toBeNull();
@@ -1377,5 +1381,127 @@ describe("organization settings pages", () => {
     fireEvent.change(await screen.findByRole("combobox", { name: "Search settings" }), { target: { value: query } });
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Search settings" }), { key: "Enter" });
     await waitFor(() => expect(router.state.location.pathname).toBe(path));
+  });
+});
+
+const RELEASES = {
+  builds: [{
+    version: "v1.2.0", build_time: "2026-10-14T12:00:00Z", running: true, patch: false, unread: true,
+    entries: [
+      { category: "New", text: "Release feed in settings", pr_number: 101, pr_url: "https://github.com/example-org/example-project/pull/101" },
+      { category: "Improved", text: "Faster project search", pr_number: 102, pr_url: "https://github.com/example-org/example-project/pull/102" },
+      { category: "Fixed", text: "Keep selected filters", pr_number: 103, pr_url: "https://github.com/example-org/example-project/pull/103" },
+    ], internal_count: 5,
+  }, {
+    version: "v1.1.0-op.r.2.g123456789abc", build_time: "2026-10-13T12:00:00Z", running: false, patch: true, unread: false,
+    entries: [{ category: "Removed", text: "Retired old integration", pr_number: 100, pr_url: "https://github.com/example-org/example-project/pull/100" }], internal_count: 0,
+  }], has_unread: true, next_cursor: "older/+build",
+};
+
+describe("What's new", () => {
+  it("renders releases with keyboard navigation and category filters, appends the cursor page and marks the running build seen", async () => {
+    const user = userEvent.setup();
+    let markSeen: ((value: Response) => void) | undefined;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("/release-notes/seen")) return await new Promise<Response>((resolve) => { markSeen = resolve; });
+      if (String(url).includes("cursor=")) return new Response(JSON.stringify({ builds: [{ ...RELEASES.builds[1], version: "v1.0.0" }], has_unread: false }));
+      if (String(url).endsWith("/release-notes")) return new Response(JSON.stringify(RELEASES));
+      return new Response(JSON.stringify({ members: [], invitations: [] }));
+    });
+    renderSidebarNav("/settings/whats-new", { ...OWNER_ACCOUNT, bootstrap: { organization: OWNER_ACCOUNT.account.organization }, account: { ...OWNER_ACCOUNT.account, version: "1.2.0", has_unread: true } }, <SettingsRoute section="whats-new" />);
+    await screen.findByText("Running now");
+    expect(screen.getByText("Running v1.2.0. Each change links to its pull request.")).toBeTruthy();
+    expect(screen.getByText("Patch build")).toBeTruthy();
+    expect(screen.getByText("5 internal changes not shown (tests, CI, release tooling)")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Unread release" })).toBeTruthy();
+    const versions = screen.getAllByRole("link").filter((link) => link.textContent?.startsWith("v"));
+    expect(versions.map((link) => link.textContent)).toEqual(["v1.2.0", "v1.1.0-op.r.2.g123456789abc"]);
+    expect(versions[0]?.getAttribute("href")).toBe("https://github.com/digitaldrywood/detent/releases/tag/v1.2.0");
+    expect(screen.getByRole("link", { name: "#101" }).getAttribute("href")).toBe("https://github.com/example-org/example-project/pull/101");
+    expect(screen.getByRole("link", { name: "#101" }).getAttribute("target")).toBe("_blank");
+    act(() => screen.getByRole("button", { name: "About" }).focus());
+    const allFilter = screen.getByRole("button", { name: "All" });
+    for (let stops = 0; stops < 50 && document.activeElement !== allFilter; stops++) await user.tab();
+    expect(document.activeElement).toBe(allFilter);
+    await user.keyboard("{ArrowRight}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "New" }));
+    await user.keyboard("{ArrowLeft}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "All" }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "v1.2.0" }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "#101" }));
+    expect(screen.getByRole("button", { name: "What's new, new release notes" })).toBeTruthy();
+    await waitFor(() => expect(markSeen).toBeTypeOf("function"));
+    await act(async () => { markSeen?.(new Response(JSON.stringify({ ...RELEASES, has_unread: false }))); });
+    await screen.findByRole("button", { name: "What's new" });
+    const writes = fetch.mock.calls.filter(([url]) => String(url).endsWith("/release-notes/seen"));
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.[1]?.method).toBe("PUT");
+    expect(new Headers(writes[0]?.[1]?.headers).get("X-CSRF-Token")).toBe(accountFixture.csrf_token);
+    for (const [category, pr] of [["New", "#101"], ["Improved", "#102"], ["Fixed", "#103"]]) {
+      fireEvent.click(screen.getByRole("button", { name: category }));
+      expect(screen.getAllByRole("link").filter((link) => link.textContent?.startsWith("#")).map((link) => link.textContent)).toEqual([pr]);
+      expect(screen.queryByText("Patch build")).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("Removed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load older builds" }));
+    await screen.findByRole("link", { name: "v1.0.0" });
+    expect(screen.getByRole("link", { name: "v1.2.0" })).toBeTruthy();
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("?cursor=older%2F%2Bbuild"))).toBe(true);
+    expect(screen.queryByRole("button", { name: "Load older builds" })).toBeNull();
+  });
+
+  it("preserves keyboard focus and announces mark-seen retries before clearing unread state on success", async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    let completeSeen: ((value: Response) => void) | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("/seen")) {
+        if (++attempts === 1) return new Response(JSON.stringify({ code: "unavailable", message: "Please try again." }), { status: 503 });
+        return await new Promise<Response>((resolve) => { completeSeen = resolve; });
+      }
+      if (String(url).includes("release-notes")) return new Response(JSON.stringify(RELEASES));
+      return new Response(JSON.stringify({ members: [], invitations: [] }));
+    });
+    renderSidebarNav("/settings/whats-new", { ...OWNER_ACCOUNT, bootstrap: { organization: OWNER_ACCOUNT.account.organization }, account: { ...OWNER_ACCOUNT.account, has_unread: true } }, <SettingsRoute section="whats-new" />);
+    await screen.findByText("Could not mark release notes as seen");
+    expect(screen.getByRole("button", { name: "What's new, new release notes" })).toBeTruthy();
+    const retry = screen.getByRole("button", { name: "Try again" });
+    expect(screen.getByRole("status").textContent).toContain("Please try again.");
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Try again" })).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(retry.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("status").textContent).toContain("Marking release notes as seen");
+    await user.keyboard("{Enter}");
+    expect(attempts).toBe(2);
+    await act(async () => { completeSeen?.(new Response(JSON.stringify({ code: "unavailable", message: "Still unavailable." }), { status: 503 })); });
+    await screen.findByText("Still unavailable.");
+    expect(screen.getByRole("status").textContent).toContain("Still unavailable.");
+    expect(document.activeElement).toBe(retry);
+    expect(screen.getByRole("button", { name: "What's new, new release notes" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "New" }));
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(retry);
+    await act(async () => { completeSeen?.(new Response(JSON.stringify({ ...RELEASES, has_unread: false }))); });
+    await screen.findByRole("button", { name: "What's new" });
+    expect(screen.getByRole("status").textContent).toContain("Release notes marked as seen");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "New" }));
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(attempts).toBe(3);
+  });
+
+  it.each([true, false])("uses bootstrap unread state (%s) and finds release notes through search", async (has_unread) => {
+    const { navigated } = renderSidebarNav("/settings/general", { ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, has_unread } });
+    const row = await screen.findByRole("button", { name: has_unread ? "What's new, new release notes" : "What's new" });
+    expect(row.querySelector('[aria-hidden="true"].bg-primary') !== null).toBe(has_unread);
+    fireEvent.change(screen.getByRole("combobox", { name: "Search settings" }), { target: { value: "release notes" } });
+    const result = await screen.findByRole("option", { name: /What's new/ });
+    fireEvent.click(result);
+    await waitFor(() => expect(navigated).toContain("/settings/whats-new"));
   });
 });
