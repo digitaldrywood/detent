@@ -131,6 +131,7 @@ type healthProject struct {
 }
 
 type healthWait struct {
+	Reason  string
 	Item    string
 	Project string
 	Since   time.Time
@@ -259,7 +260,14 @@ func humanWaitFinding(now time.Time, w healthWait) (healthFinding, bool) {
 	if id == "" {
 		kind, id = "project", w.Project
 	}
-	return newHealthFinding("unanswered_human_wait", "human", kind, id, "A human question or permission wait has been unanswered for thirty minutes.", "The responsible human answers the question or performs the recorded permission action.", []string{w.Project}, evidence), w.Active && !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow
+	summary := "A human question or permission wait has been unanswered for thirty minutes."
+	action := "The responsible human answers the question or performs the recorded permission action."
+	if w.Reason != "" {
+		summary = "The issue cannot be dispatched until its required contract is completed and confirmed."
+		action = w.Reason
+		evidence.Reason = "issue_contract_unsatisfied"
+	}
+	return newHealthFinding("unanswered_human_wait", "human", kind, id, summary, action, []string{w.Project}, evidence), w.Active && (w.Reason != "" || !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow)
 }
 
 func lifetimeFinding(l healthLimit) (healthFinding, bool) {

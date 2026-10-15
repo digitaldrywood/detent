@@ -103,7 +103,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 	defer tx.Rollback()
 	ids := map[string]string{}
 	for name, seed := range seeds {
-		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: nativeContractTestBody, State: seed.state}, to.Add(-50*time.Hour))
+		issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: nativeContractTestBody, State: seed.state}, to.Add(-50*time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -351,7 +351,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 			}
 			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding", map[string]any{"idempotency_key": "save", "progress": onboarding.Progress{Repository: "existing"}}), tt.write)
 			descriptor := hubTestPolicy()
-			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: descriptor}), tt.admin)
+			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), tt.admin)
 			if tt.role == "owner" && tt.grant != "" {
 				sibling := f
 				sibling.project = "prj_onboarding_sibling"
@@ -424,7 +424,7 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	if setup.Progress.Repository != "existing" || setup.Ready {
 		t.Fatalf("onboarding = %+v", setup)
 	}
-	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required", State: "Todo"}
+	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required" + issueContractTestSections, State: "Todo"}
 	for range 2 {
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", issue), http.StatusOK)
 	}
@@ -593,12 +593,12 @@ func seedHostedOnboardingJourney(t *testing.T, f *browserHostedFixture) *browser
 	descriptor := hubTestPolicy()
 	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""
 	descriptor = descriptor.WithID()
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 	automatic := hubTestPolicy()
 	automatic.Gates.AutoPromote = true
 	automatic.Requirements.RequiredTags = []string{"gpu"}
 	automatic = automatic.WithID()
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, organization+"/projects/"+f.privateProject+"/onboarding/policy", policy.Change{Policy: automatic}), http.StatusOK)
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, organization+"/projects/"+f.privateProject+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: automatic}), http.StatusOK)
 	binding := runnerauth.NewBinding()
 	enrollmentRequest := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
 	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", enrollmentRequest)
@@ -675,6 +675,7 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "observed policy")
+	clearNativeFixturePolicy(t, f)
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	first.enroll(t)
 	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
@@ -862,7 +863,9 @@ func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
 func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "runner checks")
+	clearNativeFixturePolicy(t, f)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other checks")
+	clearNativeFixturePolicy(t, other)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	contexts := make(chan context.Context, 1)

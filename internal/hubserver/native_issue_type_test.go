@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -45,7 +46,7 @@ func TestNativeIssueTypes(t *testing.T) {
 	var typed tracker.NativeIssue
 	for _, issueType := range []string{"", "bug", "change_request"} {
 		t.Run("file/"+issueType, func(t *testing.T) {
-			arguments := map[string]any{"project_id": f.project.ID, "request_id": "file-" + issueType, "title": "Issue classification", "labels": []string{"bug", "enhancement"}}
+			arguments := map[string]any{"project_id": f.project.ID, "request_id": "file-" + issueType, "title": "Issue classification", "description": nativeContractTestBody, "labels": []string{"bug", "enhancement"}}
 			if issueType != "" {
 				arguments["type"] = issueType
 			}
@@ -103,7 +104,7 @@ func TestNativeIssueTypes(t *testing.T) {
 	for _, test := range []struct{ name, token string }{{"member", f.token}, {"worker", f.worker(t, "issue-types-worker")}} {
 		for _, issueType := range []string{"", "bug", "change_request", "question"} {
 			t.Run(test.name+"/"+issueType, func(t *testing.T) {
-				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", test.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: test.name + "-" + issueType}, Type: issueType, Title: "API classification"})
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", test.token, tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: test.name + "-" + issueType}, Type: issueType, Title: "API classification"})
 				if issueType == "question" {
 					requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 					return
@@ -192,7 +193,7 @@ func TestNativeIssueReportContext(t *testing.T) {
 		{"blank", map[string]any{"os": "  "}, nil},
 	} {
 		t.Run("mcp/"+test.name, func(t *testing.T) {
-			arguments := map[string]any{"project_id": f.project.ID, "request_id": "context-" + test.name, "title": "Context " + test.name}
+			arguments := map[string]any{"description": nativeContractTestBody, "project_id": f.project.ID, "request_id": "context-" + test.name, "title": "Context " + test.name}
 			if test.context != nil {
 				arguments["report_context"] = test.context
 			}
@@ -250,7 +251,7 @@ func TestNativeIssueReportContext(t *testing.T) {
 		{"non-string", `{"viewport":["secret"]}`, http.StatusUnprocessableEntity, nil},
 	} {
 		t.Run("rest/"+test.name, func(t *testing.T) {
-			body := json.RawMessage(`{"idempotency_key":"rest-context-` + strings.ReplaceAll(test.name, " ", "-") + `","title":"REST context ` + test.name + `","body":"","state":"","labels":[],"assignees":[],"report_context":` + test.body + `}`)
+			body := json.RawMessage(`{"idempotency_key":"rest-context-` + strings.ReplaceAll(test.name, " ", "-") + `","title":"REST context ` + test.name + `","body":` + strconv.Quote(nativeContractTestBody) + `,"state":"","labels":[],"assignees":[],"report_context":` + test.body + `}`)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, body)
 			requireNativeStatus(t, response, test.status)
 			if test.status != http.StatusOK {

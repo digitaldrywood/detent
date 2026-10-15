@@ -34,7 +34,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 	defer tx.Rollback()
 	ids := map[string]string{}
 	for i, seed := range seeds {
-		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: seed.name, Body: nativeContractTestBody, State: seed.state, Type: seed.kind, Labels: seed.labels, Priority: seed.priority}, to.Add(-30*time.Hour))
+		issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: seed.name, Body: nativeContractTestBody, State: seed.state, Type: seed.kind, Labels: seed.labels, Priority: seed.priority}, to.Add(-30*time.Hour))
 		if err != nil {
 			t.Fatalf("seed %s: %v", seed.name, err)
 		}
@@ -189,7 +189,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if _, err := tx.ExecContext(t.Context(), `INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id=?`, secret.project, f.project); err != nil {
 			t.Fatal(err)
 		}
-		issue, err := createNativeIssueTx(t.Context(), tx, secret, tracker.CreateIssue{Title: "secret", Body: nativeContractTestBody, State: "Todo", Labels: []string{"rpt-secret"}}, to.Add(-3*time.Hour))
+		issue, err := createNativeFixtureIssueTx(t.Context(), tx, secret, tracker.CreateIssue{Title: "secret", Body: nativeContractTestBody, State: "Todo", Labels: []string{"rpt-secret"}}, to.Add(-3*time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}

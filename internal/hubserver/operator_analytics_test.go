@@ -44,7 +44,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 	if err := applyNativeProjectStates(t.Context(), tx, scope, states, now); err != nil {
 		t.Fatal(err)
 	}
-	issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "lane residence", State: "Todo"}, now.Add(-6*time.Minute))
+	issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "lane residence", State: "Todo"}, now.Add(-6*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

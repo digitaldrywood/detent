@@ -72,7 +72,7 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 				body := issueorigin.Stamp("Legacy flow finding", issueorigin.Origin{Kind: "audit", Instance: "health_detector", Source: firstFinding, Fingerprint: finding.Fingerprint})
-				owner, err = createNativeIssueTx(t.Context(), tx, healthIssueScope(f.project.OrganizationID, f.project.ID), tracker.CreateIssue{Title: "intake: legacy flow finding", Body: body, State: "Backlog"}, now)
+				owner, err = createNativeFixtureIssueTx(t.Context(), tx, healthIssueScope(f.project.OrganizationID, f.project.ID), tracker.CreateIssue{Title: "intake: legacy flow finding", Body: body, State: "Backlog"}, now)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -267,7 +267,7 @@ func TestHealthFindingReporterPreservesHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			owner, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "Imported report", Body: body, State: test.state, Priority: new(test.priority), Labels: []string{"migration-hold"}, Provenance: provenance}, now)
+			owner, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "Imported report", Body: body, State: test.state, Priority: new(test.priority), Labels: []string{"migration-hold"}, Provenance: provenance}, now)
 			if err != nil {
 				t.Fatal(err)
 			}

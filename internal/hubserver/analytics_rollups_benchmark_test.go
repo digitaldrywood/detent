@@ -105,7 +105,7 @@ func benchmarkAnalyticsFixture(b *testing.B, events int) nativeFixture {
 	if err := applyNativeProjectStates(b.Context(), tx, scope, nativeFixtureStates(), now); err != nil {
 		b.Fatal(err)
 	}
-	issue, err := createNativeIssueTx(b.Context(), tx, scope, tracker.CreateIssue{Title: "benchmark", State: "Todo"}, now.Add(-8*24*time.Hour))
+	issue, err := createNativeFixtureIssueTx(b.Context(), tx, scope, tracker.CreateIssue{Title: "benchmark", State: "Todo"}, now.Add(-8*24*time.Hour))
 	if err != nil {
 		b.Fatal(err)
 	}

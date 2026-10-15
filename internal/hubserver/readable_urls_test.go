@@ -92,7 +92,7 @@ func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
 	f := newHostedSecurityFixture(t)
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 	hidden := f.user(t, "hidden", "member", "hidden@example.test", "", "")
-	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable", State: "Todo"})
+	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable", State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)
@@ -151,7 +151,7 @@ func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project); err != nil {
 		t.Fatal(err)
 	}
-	response = f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable-duplicate"}, Title: "Readable", State: "Todo"})
+	response = f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "readable-duplicate"}, Title: "Readable", State: "Todo"})
 	requireNativeStatus(t, response, http.StatusConflict)
 	var challenge duplicateChallenge
 	decodeHubResponse(t, response, &challenge)
@@ -184,7 +184,7 @@ func TestReadableIssueRoutesAndSlugEdits(t *testing.T) {
 func TestMCPToolCatalogReadableIssueLinks(t *testing.T) {
 	f := newHostedSecurityFixture(t, func(config *Config) { config.Conversation = &ConversationConfig{Enabled: true} })
 	owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "catalog-issue"}, Title: "Catalog issue", State: "Todo"})
+	response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "catalog-issue"}, Title: "Catalog issue", State: "Todo"})
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, response, &issue)

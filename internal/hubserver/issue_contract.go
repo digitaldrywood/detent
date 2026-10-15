@@ -51,38 +51,35 @@ func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativ
 	return workflow.Config, nil
 }
 
-func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID) (bool, string, error) {
-	var native string
-	if err := q.QueryRowContext(ctx, "SELECT native_id, project_id FROM issues WHERE id = ? AND organization_id = ?", id, scope.organization).Scan(&native, &scope.project); err != nil {
-		return false, "", err
-	}
-	issue, _, err := readNativeIssue(ctx, q, scope, native)
-	if err != nil {
-		return false, "", err
-	}
+type nativeContractEvaluation struct {
+	Allowed    bool
+	ReasonCode string
+	Reason     string
+	Missing    []string
+}
+
+func evaluateNativeIssueContract(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) (nativeContractEvaluation, error) {
+	allowed := nativeContractEvaluation{Allowed: true}
 	if strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
-		return false, "The issue contains detent:no-dispatch; remove the marker to permit dispatch", nil
+		return nativeContractEvaluation{ReasonCode: "no_claimable_work", Reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"}, nil
 	}
-	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" {
-		return true, "", nil
-	}
-	if strings.EqualFold(issue.State, "Triage") || issue.IssueContract.Exempt {
-		return true, "", nil
+	if issue.LinkedSource != nil && issue.LinkedSource.Status != "complete" || strings.EqualFold(issue.State, "Triage") || issue.IssueContract != nil && issue.IssueContract.Exempt {
+		return allowed, nil
 	}
 	cfg, err := nativeIssueContractConfig(ctx, q, scope)
 	if err != nil {
-		return false, "", err
+		return nativeContractEvaluation{}, err
 	}
 	target := cfg.BacklogAdmission.TargetState
 	if target == "" {
 		target = "Todo"
 	}
 	if !strings.EqualFold(issue.State, target) {
-		return true, "", nil
+		return allowed, nil
 	}
 	contract, err := nativeIssueContract(ctx, q, scope)
 	if err != nil {
-		return false, "", err
+		return nativeContractEvaluation{}, err
 	}
 	evaluation := contract.Evaluate(nativeContractIssue(issue))
 	var reasons []string
@@ -92,30 +89,36 @@ func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope na
 	if evaluation.NeedsConfirmation {
 		reasons = append(reasons, "A human must confirm the success criteria by editing or saving the issue body")
 	}
-	return evaluation.Satisfied(), strings.Join(reasons, "; "), nil
+	if evaluation.Satisfied() {
+		return allowed, nil
+	}
+	return nativeContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: strings.Join(reasons, "; "), Missing: evaluation.Missing}, nil
+}
+
+func readNativeIssueContractEvaluation(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID) (nativeContractEvaluation, error) {
+	var native string
+	if err := q.QueryRowContext(ctx, "SELECT native_id, project_id FROM issues WHERE id = ? AND organization_id = ?", id, scope.organization).Scan(&native, &scope.project); err != nil {
+		return nativeContractEvaluation{}, err
+	}
+	issue, _, err := readNativeIssue(ctx, q, scope, native)
+	if err != nil {
+		return nativeContractEvaluation{}, err
+	}
+	return evaluateNativeIssueContract(ctx, q, scope, issue)
+}
+
+func nativeIssueContractClaimable(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.WorkItemID) (bool, string, error) {
+	evaluation, err := readNativeIssueContractEvaluation(ctx, q, scope, id)
+	return evaluation.Allowed, evaluation.Reason, err
 }
 
 func requireNativeIssueContractAtFiling(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) error {
-	if strings.EqualFold(issue.State, "Triage") {
-		return nil
-	}
-	cfg, err := nativeIssueContractConfig(ctx, q, scope)
-	if err != nil {
-		return nil
-	}
-	target := cfg.BacklogAdmission.TargetState
-	if target == "" {
-		target = "Todo"
-	}
-	if !strings.EqualFold(issue.State, target) || strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch") {
-		return nil
-	}
-	contract, err := nativeIssueContract(ctx, q, scope)
+	evaluation, err := evaluateNativeIssueContract(ctx, q, scope, issue)
 	if err != nil {
 		return fmt.Errorf("resolve issue contract: %w", err)
 	}
-	if missing := contract.Evaluate(nativeContractIssue(issue)).Missing; len(missing) > 0 {
-		return nativeWorkflowInvalid(fmt.Sprintf("Add these required issue sections before filing into %s: %s. File into Backlog to draft it first.", issue.State, strings.Join(missing, ", ")))
+	if len(evaluation.Missing) > 0 {
+		return nativeWorkflowInvalid(evaluation.Reason + ". File into Backlog/Triage to draft it first.")
 	}
 	return nil
 }

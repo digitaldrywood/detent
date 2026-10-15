@@ -60,7 +60,7 @@ func TestIssueParticipantEmails(t *testing.T) {
 			}
 			create := func(key string) tracker.NativeIssue {
 				var issue tracker.NativeIssue
-				r := request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Notification example " + key, Body: "private-issue-body-sentinel"})
+				r := request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Notification example " + key, Body: "private-issue-body-sentinel" + issueContractTestSections})
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &issue)
 				return issue
@@ -193,10 +193,11 @@ func TestIssueEmailBatchingAndOptOut(t *testing.T) {
 			decodeHubResponse(t, r, &project)
 			f.project = project.ID
 			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
+			seedNativeFixturePolicy(t, f.service, "org_security/"+string(project.ID))
 			f.grant(t, reporter, true, false)
 			f.grant(t, member, true, false)
 			var issue tracker.NativeIssue
-			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "bug", Title: "Reporter notification example", Body: reporterBugSections + "\nprivate-issue-body-sentinel"})
+			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "bug", Title: "Reporter notification example", Body: reporterBugSections + "\nprivate-issue-body-sentinel" + issueContractTestSections})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &issue)
 			if issue.State != "Triage" {

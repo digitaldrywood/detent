@@ -136,7 +136,7 @@ func TestHostedActivityReads(t *testing.T) {
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	historyScope := scope
 	historyScope.project = tracker.ProjectID(historyProject)
-	historyIssue, err := createNativeIssueTx(t.Context(), tx, historyScope, tracker.CreateIssue{Title: "Historical issue", State: "Todo"}, now.Add(-30*24*time.Hour))
+	historyIssue, err := createNativeFixtureIssueTx(t.Context(), tx, historyScope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "Historical issue", State: "Todo"}, now.Add(-30*24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ SELECT 'activity_seed_history',i.id,l.machine_id,'activity_seed_history_session'
 		if suffix == "1_0" {
 			issueScope.project = tracker.ProjectID(f.privateProject)
 		}
-		issue, err := createNativeIssueTx(t.Context(), tx, issueScope, tracker.CreateIssue{Title: "running issue " + suffix, State: "Todo"}, now.Add(-time.Hour))
+		issue, err := createNativeFixtureIssueTx(t.Context(), tx, issueScope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "running issue " + suffix, State: "Todo"}, now.Add(-time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -428,7 +428,7 @@ func TestActivityPopulationCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "population", State: "Todo"}, now.Add(-time.Hour))
+	issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "population", State: "Todo"}, now.Add(-time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

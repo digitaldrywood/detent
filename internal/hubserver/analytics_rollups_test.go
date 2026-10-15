@@ -245,7 +245,7 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 	other := nativeScope{organization: scope.organization, project: tracker.ProjectID(f.privateProject)}
 	commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
 		for i := range analyticsBackfillBatch + 1 {
-			if _, err := createNativeIssueTx(t.Context(), tx, other, tracker.CreateIssue{Title: "second project history", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
+			if _, err := createNativeFixtureIssueTx(t.Context(), tx, other, tracker.CreateIssue{Body: nativeContractTestBody, Title: "second project history", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -387,7 +387,7 @@ func TestAnalyticsRollupDeferredWork(t *testing.T) {
 	}
 	defer tx.Rollback()
 	for i := range analyticsBackfillBatch + 5 {
-		if _, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "bulk", State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
+		if _, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "bulk", Body: nativeContractTestBody, State: "Todo"}, f.service.config.now().Add(-time.Duration(i+1)*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -563,7 +563,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "completed history", State: "Todo"}, now.Add(-72*time.Hour))
+	issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "completed history", State: "Todo"}, now.Add(-72*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

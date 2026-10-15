@@ -144,7 +144,7 @@ func (f conversationAPIFixture) settle(t *testing.T, id string) {
 func (f conversationAPIFixture) link(t *testing.T, token, id, key string, share bool, title string) *httptest.ResponseRecorder {
 	t.Helper()
 	return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+id+"/link", token, map[string]any{
-		"key": key, "share_history": share, "issue": map[string]any{"title": title, "description": "From the chat"},
+		"key": key, "share_history": share, "issue": map[string]any{"title": title, "description": "From the chat" + issueContractTestSections},
 	})
 }
 
@@ -758,7 +758,7 @@ func TestConversationAPILinkedWorkItem(t *testing.T) {
 		second := f.create(t, f.token, map[string]any{"title": "Priority"}).Conversation
 		link := func(key string, priority any) *httptest.ResponseRecorder {
 			return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+second.ID+"/link", f.token, map[string]any{
-				"key": key, "share_history": true, "issue": map[string]any{"title": "Ranked", "description": "From the chat", "priority": priority},
+				"key": key, "share_history": true, "issue": map[string]any{"title": "Ranked", "description": "From the chat" + issueContractTestSections, "priority": priority},
 			})
 		}
 		requireNativeError(t, link("named", "High"), http.StatusUnprocessableEntity, "invalid_request")

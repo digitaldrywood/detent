@@ -103,7 +103,7 @@ func TestHostedChangePolicyJourney(t *testing.T) {
 			descriptor.Gates.Kind, descriptor.Gates.RequiredChecks, descriptor.Gates.Validator = "human_review", 1, true
 			descriptor.Gates.AutomatedReview = ""
 			descriptor = descriptor.WithID()
-			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 			principal := "ci-" + project
 			seedHubAPIToken(t, f.service, principal, "credential-"+project, apiScopeOperator)
 			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES (?,'org_browser_preview',?)", principal, project); err != nil {

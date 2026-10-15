@@ -216,11 +216,15 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 			r := prepareRunnerForScope(t, f, scenario.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			later := newNativeFixture(t, f.service, f.project.OrganizationID, "future")
+
 			descriptor := hubTestPolicy()
 			if scenario.approved {
 				approveHubTestPolicy(t, f.service, later.base+"/policy", descriptor)
 			}
 			item := later.create(t, "future work")
+			if !scenario.approved {
+				clearNativeFixturePolicy(t, later)
+			}
 			if scenario.deleted {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET deleted_at=? WHERE id=?", formatHubTime(f.service.config.now()), later.project.ID); err != nil {
 					t.Fatal(err)

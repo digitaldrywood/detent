@@ -345,6 +345,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	project := attachmentProject(t, owner, "org_alpha")
+	approveEntryFixturePolicy(t, owner, "org_alpha", project)
 	anonymous := newBrowser(t, f.service.Handler())
 	var pixels bytes.Buffer
 	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
@@ -459,7 +460,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 					}
 				}
 				call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
-				draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference}
+				draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference + "\n\n" + issueContractTestSections}
 				raw, failed := call(operatortool.FileIssue, draft)
 				var challenge struct {
 					Data nativeDuplicateFixture `json:"data"`
@@ -478,7 +479,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 				var issue struct {
 					Data tracker.NativeIssue `json:"data"`
 				}
-				if failed || json.Unmarshal(raw, &issue) != nil || issue.Data.WorkItemID == "" || issue.Data.Body != uploaded.Reference {
+				if failed || json.Unmarshal(raw, &issue) != nil || issue.Data.WorkItemID == "" || issue.Data.Body != uploaded.Reference+"\n\n"+issueContractTestSections {
 					t.Fatalf("file_issue=%s failed=%v", raw, failed)
 				}
 				raw, failed = call(operatortool.AddComment, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-comment", "identifier": string(issue.Data.WorkItemID), "body": uploaded.Reference})

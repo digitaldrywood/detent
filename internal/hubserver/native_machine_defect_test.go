@@ -65,6 +65,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential}
+			seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(project))
 			var owner tracker.NativeIssue
 			for i, evidence := range []string{test.first, test.second} {
 				origin := issueorigin.Origin{Kind: "worker", Instance: "runner-" + strconv.Itoa(i), Source: "attempt-" + strconv.Itoa(i), Fingerprint: "invented-" + strconv.Itoa(i)}
@@ -72,7 +73,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					origin.Kind = "doctor"
 					origin.Instance = "github-actions"
 				}
-				request := tracker.CreateIssue{Title: "Different wording " + strconv.Itoa(i), Body: issueorigin.Stamp(evidence, origin), State: "Backlog", Priority: new(3)}
+				request := tracker.CreateIssue{Title: "Different wording " + strconv.Itoa(i), Body: issueorigin.Stamp(evidence+issueContractTestSections, origin), State: "Backlog", Priority: new(3)}
 				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 				if err != nil {
 					t.Fatal(err)
@@ -122,7 +123,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				previous, _ := issueorigin.Parse(owner.Body)
 				origin.Fingerprint = previous.Fingerprint
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "scheduled-occurrence"}, Title: "Scheduled failure", Body: issueorigin.Stamp(test.second, origin), State: "Todo", Priority: new(1)})
+			response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "scheduled-occurrence"}, Title: "Scheduled failure", Body: issueorigin.Stamp(test.second+issueContractTestSections, origin), State: "Todo", Priority: new(1)})
 			requireNativeStatus(t, response, http.StatusOK)
 			var scheduled tracker.NativeIssue
 			decodeHubResponse(t, response, &scheduled)
@@ -159,7 +160,7 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			var historicalBefore tracker.NativeIssue
 			decodeHubResponse(t, response, &historicalBefore)
 			origin.Source = "new-scheduled-run"
-			request = tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-scheduled-occurrence"}, Title: "Recurring scheduled failure", Body: issueorigin.Stamp(test.second, origin), State: "Todo", Priority: new(1)}
+			request = tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "new-scheduled-occurrence"}, Title: "Recurring scheduled failure", Body: issueorigin.Stamp(test.second+issueContractTestSections, origin), State: "Todo", Priority: new(1)}
 			var current tracker.NativeIssue
 			for replay := range 2 {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items", testHubAdminToken, request)

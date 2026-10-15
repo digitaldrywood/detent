@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -33,6 +34,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	probe.WorkItemID = 0
 	probe.Limit = 100
 	var heads []tracker.WorkItemID
+	var contractRefusal error
 projects:
 	for _, project := range projects {
 		projectScope := scope
@@ -78,13 +80,16 @@ projects:
 				}
 				candidateScope := scope
 				candidateScope.project = project
-				claimable, reason, err := nativeIssueContractClaimable(ctx, tx, candidateScope, id)
+				contract, err := readNativeIssueContractEvaluation(ctx, tx, candidateScope, id)
 				if err != nil {
 					return 0, false, err
 				}
-				if !claimable {
-					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: reason}, now); err != nil {
+				if !contract.Allowed {
+					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: contract.Reason}, now); err != nil {
 						return 0, false, err
+					}
+					if project == query.NativeScope.project && contract.ReasonCode == "issue_contract_unsatisfied" {
+						contractRefusal = &nativeError{Code: contract.ReasonCode, Message: contract.Reason, status: http.StatusConflict, publicMessage: true}
 					}
 					continue
 				}
@@ -142,6 +147,9 @@ projects:
 		if len(ids) > 0 {
 			selected = ids[0]
 		}
+	}
+	if selected == 0 && contractRefusal != nil {
+		return 0, true, contractRefusal
 	}
 	return selected, true, nil
 }

@@ -255,6 +255,7 @@ func TestHostedProjectTools(t *testing.T) {
 			ctx := connect("project-tools")
 			e := hubProjectExecutor{f.service}
 			id := string(f.project)
+			operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", "org_security/"+id)
 			read := func(name string) operatortool.Call {
 				return operatortool.Call{Name: name, Arguments: json.RawMessage(`{"project_id":"` + id + `"}`)}
 			}

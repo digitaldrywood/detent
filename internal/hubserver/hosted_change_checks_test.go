@@ -39,7 +39,7 @@ func TestHostedIndependentChangeChecks(t *testing.T) {
 				descriptor.Gates.AutoPromote = true
 			}
 			descriptor = descriptor.WithID()
-			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+			requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 			reopenCredentialFixture(t, f, true)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/tokens", testHubAdminToken, tokenRequest{Name: "ci-" + test.project, Scope: apiScopeOperator})
 			requireNativeStatus(t, response, http.StatusCreated)

@@ -41,6 +41,7 @@ func newVerificationFixture(t *testing.T) verificationFixture {
 	decodeHubResponse(t, r, &project)
 	v.project = project.ID
 	v.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
+	seedNativeFixturePolicy(t, v.service, "org_security/"+string(project.ID))
 	for _, user := range users {
 		v.grant(t, user, true, false)
 	}
@@ -81,7 +82,7 @@ func (v verificationFixture) move(t *testing.T, issue tracker.NativeIssue, state
 func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracker.Actor, body string, prepare ...func(tracker.NativeIssue)) tracker.NativeIssue {
 	t.Helper()
 	var issue tracker.NativeIssue
-	r := v.request(t, v.users[filer], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file-" + key}, Type: "bug", Title: "Verification example " + key, Body: reporterBugSections})
+	r := v.request(t, v.users[filer], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file-" + key}, Type: "bug", Title: "Verification example " + key, Body: reporterBugSections + issueContractTestSections})
 	requireNativeStatus(t, r, http.StatusOK)
 	decodeHubResponse(t, r, &issue)
 	if actor != nil {

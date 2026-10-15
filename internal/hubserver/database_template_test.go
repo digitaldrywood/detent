@@ -226,7 +226,9 @@ func newDefaultNativeFixture(t *testing.T, cfg Config) nativeFixture {
 	if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", project.ID); err != nil {
 		t.Fatal(err)
 	}
-	return nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: defaultHubOperatorToken}
+	f := nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: defaultHubOperatorToken}
+	seedNativeFixturePolicy(t, service, string(organization)+"/"+string(project.ID))
+	return f
 }
 
 func TestNativeDatabaseTemplateIsolation(t *testing.T) {

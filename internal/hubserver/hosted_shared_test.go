@@ -67,6 +67,7 @@ func newHostedSharedFixture(t *testing.T, configure ...func(*Config)) hostedShar
 			t.Fatal(err)
 		}
 	}
+	seedNativeFixturePolicy(t, service, "org_security/"+string(project))
 	return hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}, key: key}
 }
 
@@ -348,7 +349,7 @@ func TestHostedSharedEntryScopesPagesAndMutations(t *testing.T) {
 		})
 	}
 	mutate := func(claims *cloudassert.Claims) { claims.OrganizationSlug = "example-org" }
-	raw, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "shared-readable"}, Title: "Readable issue", State: "Todo"})
+	raw, err := json.Marshal(tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "shared-readable"}, Title: "Readable issue", State: "Todo"})
 	if err != nil {
 		t.Fatal(err)
 	}

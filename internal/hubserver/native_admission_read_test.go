@@ -51,8 +51,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat admissible", heartbeat: true, outcome: "ready"},
-		{name: "missing issue contract refuses", heartbeat: true, contract: "missing", outcome: "skipped", code: "no_claimable_work", reason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked"},
-		{name: "unconfirmed issue contract refuses", heartbeat: true, contract: "unconfirmed", outcome: "skipped", code: "no_claimable_work", reason: "A human must confirm the success criteria by editing or saving the issue body"},
+		{name: "missing issue contract refuses", heartbeat: true, contract: "missing", outcome: "skipped", code: "issue_contract_unsatisfied", reason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked"},
+		{name: "unconfirmed issue contract refuses", heartbeat: true, contract: "unconfirmed", outcome: "skipped", code: "issue_contract_unsatisfied", reason: "A human must confirm the success criteria by editing or saving the issue body"},
 		{name: "no dispatch marker refuses", heartbeat: true, body: "<!-- detent:no-dispatch -->", outcome: "skipped", code: "no_claimable_work", reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"},
 		{name: "exempt issue contract stays eligible", heartbeat: true, contract: "exempt", outcome: "ready"},
 		{name: "unrelated heartbeat cannot freshen selectors", heartbeat: true, observation: "stale", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
@@ -318,6 +318,21 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				}
 			}
 			explanation := explain.FromNativeEvidence(evidence)
+			if test.code == "issue_contract_unsatisfied" {
+				if explanation.Eligibility.Current == nil || explanation.Eligibility.Current.Reason != test.reason {
+					t.Fatalf("contract reason lost: %+v", explanation.Eligibility.Current)
+				}
+				snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				findings := evaluateHealth(now, snapshot)
+				if !slices.ContainsFunc(findings, func(finding healthFinding) bool {
+					return finding.Subject.ID == string(issue.WorkItemID) && finding.Class == "human" && finding.Evidence.Reason == test.code && finding.NextAction == test.reason
+				}) {
+					t.Fatalf("missing human contract finding: %+v", findings)
+				}
+			}
 			if test.outcome == "skipped" && (len(explanation.Eligibility.Refusals) == 0 || !reflect.DeepEqual(explanation.Eligibility.Refusals[0].UnresolvedDependencies, expectedDependencies) || !slices.Equal(explanation.Eligibility.Refusals[0].Unavailable, a.Unavailable)) {
 				t.Fatalf("explanation dropped current refusal evidence: %#v", explanation.Eligibility)
 			}
@@ -405,7 +420,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					status = http.StatusConflict
 				}
 				requireNativeStatus(t, response, status)
-				if status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"no_claimable_work"`) {
+				if status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
 					t.Fatalf("explanation disagrees with claim refusal: %s", response.Body)
 				}
 				if test.reason != "" {

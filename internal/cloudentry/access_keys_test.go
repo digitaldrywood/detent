@@ -86,6 +86,7 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 			t.Fatalf("projects=%s err=%v", raw, err)
 		}
 		project := projects.Data.Projects[0].ID
+		approveEntryFixturePolicy(t, owner, org, project)
 		createdConversation, failed := call("create_conversation", map[string]any{"organization_id": org, "project_id": project, "request_id": "conversation-" + org, "input": map[string]any{"title": "Command results"}})
 		var conversationResult struct {
 			Data struct {
@@ -184,7 +185,7 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 		if userMessages != 1 {
 			t.Fatalf("replay or result read executed command again: %s", messages)
 		}
-		created, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": "cross-org-" + org, "title": "One key across organizations"})
+		created, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": "cross-org-" + org, "title": "One key across organizations", "description": issueContractTestSections})
 		if failed || !strings.Contains(string(created), "One key across organizations") {
 			t.Fatalf("write %s=%s failed=%v", org, created, failed)
 		}
@@ -442,6 +443,7 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 		t.Fatalf("projects=%s err=%v", raw, err)
 	}
 	project := projects.Data.Projects[0].ID
+	approveEntryFixturePolicy(t, owner, "org_alpha", project)
 	for _, context := range []string{"project", "selected"} {
 		access := "project"
 		if context == "selected" {
@@ -476,7 +478,7 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	if listFailed || !strings.Contains(string(listed), project) {
 		t.Fatalf("service discovery after removal=%s failed=%v", listed, listFailed)
 	}
-	created, failed := serviceCall(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "service-after-removal", "title": "Service key survives creator departure"})
+	created, failed := serviceCall(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "service-after-removal", "title": "Service key survives creator departure", "description": issueContractTestSections})
 	if failed || !strings.Contains(string(created), "Service key survives creator departure") {
 		t.Fatalf("service write=%s failed=%v", created, failed)
 	}

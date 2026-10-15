@@ -54,6 +54,7 @@ func TestRunnerScopeConversion(t *testing.T) {
 				t.Fatalf("conversion changed identity, rank overrides or active lease: %+v", after)
 			}
 			queued := second.create(t, "New project work")
+			clearNativeFixturePolicy(t, second)
 			claim.WorkItemID, claim.SessionID = queued.WorkItemID, "scope-second-project"
 			response = performHubAPIRequest(t, f.service, http.MethodPost, second.base+"/claims", r.redemption.Credential, claim)
 			if response.Code == http.StatusOK {

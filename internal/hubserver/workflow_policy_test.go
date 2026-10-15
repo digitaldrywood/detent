@@ -79,6 +79,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", test.name)
+			clearNativeFixturePolicy(t, f)
 			if !test.bind {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "example-org/example-project", f.project.ID); err != nil {
 					t.Fatal(err)
@@ -148,7 +149,13 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/repository", testHubAdminToken, bindNativeRepositoryRequest{Mutation: tracker.Mutation{IdempotencyKey: "bind-repository"}, ExpectedRevision: integration.Revision, Repository: "example-org/example-project"}), http.StatusOK)
 			}
+			if !test.initial {
+				seedNativeFixturePolicy(t, f.service, string(f.project.OrganizationID)+"/"+string(f.project.ID))
+			}
 			item := f.create(t, "Preserve occupied Todo and revision")
+			if !test.initial {
+				clearNativeFixturePolicy(t, f)
+			}
 			baseline := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item.WorkItemID), f.token, nil)
 			requireNativeStatus(t, baseline, http.StatusOK)
 			decodeHubResponse(t, baseline, &item)

@@ -265,7 +265,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 				}
 			}
 			if tt.authorized {
-				currentPolicyID := ""
+				currentPolicyID := hubTestPolicy().ID
 				for _, policyCase := range []struct {
 					name       string
 					promptSize int

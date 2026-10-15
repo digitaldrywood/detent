@@ -94,7 +94,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 			if test.update != "" {
 				exec(test.update, f.project)
 			}
-			other := f.rawAPI(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+f.privateProject+"/work-items", `{"idempotency_key":"other-project-item","title":"Other project active work","state":"Todo"}`, map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["owner"].Value)})
+			other := f.rawAPI(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+f.privateProject+"/work-items", "{\"body\":\"\\n## Acceptance criteria\\nComplete the requested work.\\n## Must not break\\nExisting behavior.\\n## How we know it worked\\nRun the project checks.\",\"idempotency_key\":\"other-project-item\",\"state\":\"Todo\",\"title\":\"Other project active work\"}", map[string]string{"X-CSRF-Token": hostedCSRF(f.cookies["owner"].Value)})
 			browserHostedStatus(t, other, http.StatusOK)
 			exec("INSERT INTO workspace_sessions(id,organization_id,project_id,subject_work_item_id,ref,state,idle_timeout_seconds,expires_at,requested_expires_at,created_by,created_at,updated_at) SELECT 'other-workspace',organization_id,project_id,native_id,'branch','requested',300,'2999-01-01T00:00:00Z','2999-01-01T00:00:00Z',?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM issues WHERE project_id=?", principal, f.privateProject)
 			before := deletionDataSnapshot(t, db)

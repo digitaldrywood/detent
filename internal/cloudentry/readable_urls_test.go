@@ -81,7 +81,8 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		f.service.Handler().ServeHTTP(response, request)
 		return response
 	}
-	response := send(http.MethodPost, bootstrap.API+"/projects/"+bootstrap.Projects[0].ID+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable issue", State: "Todo"}, bootstrap.CSRF)
+	approveEntryFixturePolicy(t, alice, "org_alpha", bootstrap.Projects[0].ID)
+	response := send(http.MethodPost, bootstrap.API+"/projects/"+bootstrap.Projects[0].ID+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable issue", Body: issueContractTestSections, State: "Todo"}, bootstrap.CSRF)
 	if response.Code != http.StatusOK {
 		t.Fatalf("create=%d %s", response.Code, response.Body.String())
 	}
