@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -657,6 +658,57 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("fresh edit/replay=%s %v", raw, err)
 		}
 	}
+	t.Run("large body correction", func(t *testing.T) {
+		suffix := issueContractTestSections + "\n\nPreserve the final report entry.\n"
+		prefix := "Old finding.\n" + strings.Repeat("Archived report text.\n", 1800)
+		originalBody := prefix + strings.Repeat("x", 42917-len(prefix)-len(suffix)) + suffix
+		correctedBody := "New finding.\n" + originalBody[len("Old finding.\n"):]
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "large-body-create"}, Title: "Large report", Body: originalBody, State: "Todo"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var large tracker.NativeIssue
+		decodeHubResponse(t, response, &large)
+		for range 2 {
+			raw, failed := call(operatortool.EditItem, "large-body-edit", map[string]any{"identifier": large.WorkItemID, "body": correctedBody, "expected_revision": "1"})
+			var edited tracker.NativeIssue
+			if err := json.Unmarshal(raw, &edited); err != nil || failed || edited.Body != correctedBody || edited.Revision != 2 {
+				t.Fatalf("large body correction bytes=%d revision=%d failed=%t err=%v", len(edited.Body), edited.Revision, failed, err)
+			}
+		}
+		for _, test := range []struct {
+			name      string
+			reference tracker.NativeWorkItemID
+		}{
+			{"large stale revision", large.WorkItemID},
+			{"large foreign project", foreign.WorkItemID},
+		} {
+			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "body": originalBody, "expected_revision": "1"})
+			if !failed {
+				t.Fatalf("%s accepted", test.name)
+			}
+			if test.reference == large.WorkItemID {
+				var conflict operatortool.ConflictError
+				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != "revision_conflict" || conflict.CurrentRevision != 2 {
+					t.Fatalf("large stale revision conflict=%s err=%v", raw, err)
+				}
+			} else if len(raw) != 0 {
+				t.Fatal("large foreign edit leaked context")
+			}
+		}
+		current := readWorkItem(t, f, large.WorkItemID, "")
+		if current.Body != correctedBody || current.Revision != 2 || current.IssueContract == nil || !maps.Equal(current.IssueContract.ConfirmedSections, large.IssueContract.ConfirmedSections) {
+			t.Fatal("refused edits or replay changed large body, revision or confirmation")
+		}
+		if current := readWorkItem(t, other, foreign.WorkItemID, ""); current.Body != foreign.Body || current.Revision != foreign.Revision {
+			t.Fatal("large edit changed foreign issue")
+		}
+		response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(large.WorkItemID)+"/versions/1", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var original tracker.NativeIssue
+		decodeHubResponse(t, response, &original)
+		if original.Body != originalBody {
+			t.Fatal("large correction changed original report history")
+		}
+	})
 }
 
 // GitHub-compatible relationships, ordering and priority use the same commands

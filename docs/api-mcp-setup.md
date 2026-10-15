@@ -327,6 +327,20 @@ Native `verify_fix` answers a Done issue whose `verification.state` is `pending`
 
 Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
 
+`edit_item` replaces the body with the complete reviewed text; it never truncates
+or merges partial content. Its body limit is 64 KiB of UTF-8, and the complete
+serialized JSON arguments, including escaping and other fields, must fit 64 KiB.
+An existing body above 32 KiB can be corrected when the full replacement fits
+that request bound. For larger native replacements, use the supported
+`PATCH /api/v2/organizations/{organization_id}/projects/{project_id}/work-items/{work_item_id}`
+with `idempotency_key`, `expected_revision` and the complete `body`, under the
+same write authority and project grants. That application command accepts a
+body up to 256 KiB and a request up to 1 MiB. Personal keys confirm the supplied
+body's issue-contract sections; service and worker keys preserve existing
+confirmations without confirming changed sections. Comment and filing MCP
+limits remain 32 KiB. See [native collaboration](hub-api.md#native-collaboration-protocol)
+for the application request contract.
+
 Native `file_issue` also accepts an optional `report_context` object with `url` (at most 2048 bytes) and `app_build`, `browser`, `os`, `viewport` and `captured_at` (at most 256 bytes each), all single-line strings. Unknown keys, oversized or non-string values are refused with `invalid_request`, and the refusal never repeats the submitted values. `work_item` returns the stored context; list and board reads omit it. A Reporter bug whose `report_context` carries `browser` and `app_build` satisfies the template's Environment section. Upload network HAR exports (`.har`) with `detent attach` or the REST attachment upload API, because `upload_attachment` accepts only about 44 KB; use `upload_attachment` for small console log exports (`.log`). Read either back with `read_attachment`.
 
 Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. The New issue form pre-fills these headings when a type is selected.
