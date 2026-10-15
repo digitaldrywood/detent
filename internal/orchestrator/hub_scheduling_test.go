@@ -37,21 +37,22 @@ func TestHubSchedulingCycle(t *testing.T) {
 	issue.Fields["detent_hub_work_item_id"] = "42"
 
 	tests := []struct {
-		name        string
-		fetchError  error
-		githubPause bool
-		wantRunning bool
-		wantDegrade bool
-		native      bool
-		restPause   bool
-		expired     bool
-		gitLanding  bool
-		interrupted bool
-		mergeOnly   bool
-		slots       int
-		batchSize   int
-		empty       bool
-		repeats     int
+		name         string
+		fetchError   error
+		githubPause  bool
+		wantRunning  bool
+		wantDegrade  bool
+		native       bool
+		restPause    bool
+		expired      bool
+		gitLanding   bool
+		interrupted  bool
+		mergeOnly    bool
+		slots        int
+		batchSize    int
+		empty        bool
+		repeats      int
+		capacityWait string
 	}{
 		{name: "Hub dispatches without connector reads", githubPause: true, wantRunning: true},
 		{name: "Hub outage degrades without spending work budgets", fetchError: errors.Join(ErrSchedulingUnavailable, errors.New("Hub unavailable")), wantDegrade: true},
@@ -65,6 +66,12 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "full capacity refreshes stay healthy", native: true, empty: true, repeats: 4},
 		{name: "partial capacity batch stays healthy", slots: 6, batchSize: 2, wantRunning: true, repeats: 4},
 		{name: "native interrupted Code claim without local retry", native: true, interrupted: true, wantRunning: true},
+		{name: "native backend pause makes zero claims", native: true, capacityWait: "paused"},
+		{name: "native backend pause refuses merging before claim", native: true, capacityWait: "paused", mergeOnly: true},
+		{name: "native backend reset admits a canary", native: true, capacityWait: "reset", wantRunning: true},
+		{name: "native backend probe admits a canary before reset", native: true, capacityWait: "probe", wantRunning: true},
+		{name: "native backend running canary makes zero claims", native: true, capacityWait: "running"},
+		{name: "native other backend stays eligible", native: true, capacityWait: "other", wantRunning: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -124,6 +131,37 @@ func TestHubSchedulingCycle(t *testing.T) {
 				t.Fatalf("New() error = %v", err)
 			}
 			state := newState(cfg)
+			if test.capacityWait != "" {
+				scheduling.issues = []connector.Issue{selected}
+				scheduling.filterReady = true
+				scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+				cfg.SelectorPersona = "capacity-admission"
+				orch.cfg.SelectorPersona = cfg.SelectorPersona
+				orch.capacityController = admissionCapacityController{
+					backendCapacityTestController: backendCapacityTestController{scope: scope},
+					observe: func(request runpkg.RunRequest) {
+						wantMode := runpkg.RunModeImplement
+						if test.mergeOnly {
+							wantMode = runpkg.RunModeMerge
+						}
+						if request.Mode != wantMode || request.Issue.ID != selected.ID || request.SelectorContext.Persona != "capacity-admission" {
+							t.Errorf("capacity admission lost dispatch request: mode=%q issue=%q selector=%+v", request.Mode, request.Issue.ID, request.SelectorContext)
+						}
+					},
+				}
+				outage := BackendOutage{Scope: scope, ResumeAt: now.Add(time.Hour), NextProbeAt: now.Add(time.Minute)}
+				switch test.capacityWait {
+				case "reset":
+					outage.ResumeAt, outage.NextProbeAt = now, time.Time{}
+				case "probe":
+					outage.NextProbeAt = now
+				case "running":
+					outage.NextProbeAt, outage.ProbeIssueID = now, "existing-probe"
+				case "other":
+					outage.Scope.BackendID = "other-backend"
+				}
+				state.BackendOutages[outage.Scope.Key()] = outage
+			}
 			if test.restPause {
 				resume := time.Date(2026, 10, 2, 1, 53, 59, 0, time.UTC)
 				if test.expired {
@@ -156,6 +194,21 @@ func TestHubSchedulingCycle(t *testing.T) {
 				}
 			}
 			request := scheduling.request
+			if test.capacityWait != "" {
+				wantClaims := 0
+				if test.wantRunning {
+					wantClaims = 1
+				}
+				if scheduling.claims != wantClaims || scheduling.releases != 0 {
+					t.Fatalf("native claims = %d, releases = %d; want %d claims without churn", scheduling.claims, scheduling.releases, wantClaims)
+				}
+				if test.capacityWait == "probe" || test.capacityWait == "reset" {
+					running := state.Running[selected.ID]
+					if !running.CapacityProbe || state.BackendOutages[running.CapacityScope.Key()].ProbeIssueID != selected.ID {
+						t.Fatal("dispatch did not retain capacity canary ownership")
+					}
+				}
+			}
 			if candidates, ids := trackerBackend.candidateReads.Load(), trackerBackend.idReads.Load(); candidates != 0 || ids != 0 {
 				t.Fatalf("scheduling-time connector reads = candidates %d ids %d, want zero", candidates, ids)
 			}
@@ -429,6 +482,18 @@ type hubSchedulingSource struct {
 	adoptions       int
 	releases        int
 	filterKnownWait bool
+	filterReady     bool
+	claims          int
+}
+
+type admissionCapacityController struct {
+	backendCapacityTestController
+	observe func(runpkg.RunRequest)
+}
+
+func (c admissionCapacityController) CapacityScope(request runpkg.RunRequest) (backendcapacity.Scope, bool) {
+	c.observe(request)
+	return c.backendCapacityTestController.CapacityScope(request)
 }
 
 func (s *hubSchedulingSource) ObserveNativeAdmission(_ string, current tracker.NativeAdmissionContext) {
@@ -441,7 +506,7 @@ func (s *hubSchedulingSource) HeartbeatInterval() time.Duration {
 	return 30 * time.Second
 }
 
-func (s *hubSchedulingSource) FetchCandidateIssues(_ context.Context, request SchedulingRequest) ([]connector.Issue, error) {
+func (s *hubSchedulingSource) FetchCandidateIssues(ctx context.Context, request SchedulingRequest) ([]connector.Issue, error) {
 	s.fetches++
 	s.request = request
 	if request.Repository != "acme/widgets" {
@@ -457,6 +522,13 @@ func (s *hubSchedulingSource) FetchCandidateIssues(_ context.Context, request Sc
 		var candidates []connector.Issue
 		for _, issue := range s.issues {
 			if stateIn(issue.State, request.WorkflowStates) {
+				if s.filterReady {
+					if !request.CandidateReady(ctx, issue) {
+						continue
+					}
+					s.claims++
+					request.CandidateAdmitted(issue)
+				}
 				candidates = append(candidates, issue)
 			}
 		}
