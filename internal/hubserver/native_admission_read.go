@@ -110,6 +110,10 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			refuse("inactive_state", nonExecutableReason)
 		case len(candidate.IDs) == 0:
 			refuse("no_claimable_work", "The existing native claim candidate query does not select this item")
+			a.AnsweredExclusion = candidate.AnsweredExclusion
+			if a.AnsweredExclusion != nil {
+				a.Reason += "; current answered exclusion: " + a.AnsweredExclusion.Kind
+			}
 			a.UnresolvedDependencies = candidate.UnresolvedDependencies
 			a.Unavailable = append(a.Unavailable, candidate.Unavailable...)
 			if evidence.NativeCandidateExclusion != nil {
