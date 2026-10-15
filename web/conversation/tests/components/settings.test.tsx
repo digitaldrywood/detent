@@ -17,7 +17,6 @@ import { keySetupPrompt } from "../../src/app/settings/APIKeysMCPSettings.tsx";
 import { UsageMeter, formatUsageValue } from "../../src/components/ui/usage-meter.tsx";
 import { approachingPlanLimits, nextFittingPlan } from "../../src/app/settings/planUsage.ts";
 import type { BillingUsageReport, PlanReport } from "../../src/contracts/account.ts";
-import userEvent from "@testing-library/user-event";
 import membersFixture from "../../src/contracts/fixtures/account-members.json";
 import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
 import { accountRoutes } from "../../src/app/routes.account.tsx";
