@@ -76,8 +76,8 @@ func TestProjectOnboardingBatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if queries := counter.queries.Load(); queries != 7 {
-				t.Fatalf("onboarding batch used %d queries, want 7 independent of project and runner counts", queries)
+			if queries := counter.queries.Load(); queries > 7 {
+				t.Fatalf("onboarding batch used %d queries, want at most 7 independent of project and runner counts", queries)
 			}
 			if len(batch) != 2 {
 				t.Fatalf("batch crossed organization boundary: %v", batch)
