@@ -77,7 +77,7 @@ func requireNativeMutationLease(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if err := requireCurrentLease(lease, mutation.FencingToken, now); err != nil {
 		return err
 	}
-	return requireApprovedLeasePolicy(ctx, tx, mutation.LeaseID, true)
+	return requireLeaseRouting(ctx, tx, mutation.LeaseID)
 }
 
 // nativeIssueRowID resolves a work item to its internal row ID with the same

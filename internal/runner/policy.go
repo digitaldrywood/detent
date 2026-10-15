@@ -11,7 +11,7 @@ import (
 func (r *Runner) checkResumePolicy(ctx context.Context, req RunRequest, resume store.AgentResumeState) error {
 	if resume.DetentSessionID == 0 {
 		if req.Policy.ID != "" && (resume.ProviderThreadID != "" || resume.ProviderSessionID != "") {
-			return errors.New("policy_mismatch: provider resume requires a persisted session identity")
+			return errors.New("provider resume requires a persisted session identity")
 		}
 		return nil
 	}
@@ -20,14 +20,11 @@ func (r *Runner) checkResumePolicy(ctx context.Context, req RunRequest, resume s
 		if req.Policy.ID == "" {
 			return nil
 		}
-		return errors.New("policy_mismatch: session policy store is required before resuming a Hub attempt")
+		return errors.New("session configuration store is required before resuming a Hub attempt")
 	}
-	pinned, err := source.SessionPolicy(ctx, req.ProjectID, resume.DetentSessionID)
+	_, err := source.SessionPolicy(ctx, req.ProjectID, resume.DetentSessionID)
 	if err != nil {
-		return fmt.Errorf("policy_mismatch: resume requires the persisted approved policy: %w", err)
+		return fmt.Errorf("resume requires the persisted session configuration: %w", err)
 	}
-	if pinned.ID == "" && req.Policy.ID == "" {
-		return nil
-	}
-	return pinned.Match(req.Policy)
+	return nil
 }

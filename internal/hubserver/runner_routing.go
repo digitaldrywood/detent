@@ -102,9 +102,6 @@ func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tra
 	if err != nil {
 		return r, err
 	}
-	if err := applyRunnerPolicyProblems(ctx, db, &r); err != nil {
-		return r, err
-	}
 	r.ProjectRanks, err = readRunnerProjectRanks(ctx, db, r.RunnerID, r.OrganizationID)
 	if err != nil {
 		return r, err
@@ -586,7 +583,7 @@ func validateRunnerLeaseTx(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 	if err := requireCurrentLease(lease, fencing, now); err != nil {
 		return runnerauth.Runner{}, err
 	}
-	if err := requireApprovedLeasePolicy(ctx, tx, id, true); err != nil {
+	if err := requireLeaseRouting(ctx, tx, id); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	if scope.credential.Runner.RunnerID == "" {

@@ -83,7 +83,7 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   await user.click(screen.getByRole("button", { name: /Repository configuration/ }));
   expect((screen.getByRole("radio", { name: "Create configuration files" }) as HTMLInputElement).checked).toBe(true);
   await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
-  expect(await screen.findByRole("button", { name: "Approve settings" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
   const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`).then((response) => response.json());
   expect(saved.progress).toMatchObject({ repository: "generate", artifacts: "local", revision: "2" });
   await user.click(screen.getByRole("button", { name: /Artifact history/ }));
@@ -151,7 +151,7 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
   const descriptor = approval.policy;
   const repository = "example-org/example-project";
   const configurationChosen = !["no repository", "configuration needed"].includes(state);
-  let reported = ["policy reported", "conflict"].includes(state);
+  const reported = ["policy reported", "conflict"].includes(state);
   const approveRequests: Record<string, unknown>[] = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     if (String(input).endsWith("/onboarding/policy") && init?.method === "PUT") {
@@ -194,43 +194,16 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
     expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
     await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
     await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
-    expect(await screen.findByRole("button", { name: "Approve settings" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
     const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
     expect((await saved.json()).progress.repository).toBe("generate");
     expect(approveRequests).toEqual([]);
     return;
   }
   expect(screen.queryByRole("radio")).toBeNull();
-  if (state === "approved") {
-    expect(await screen.findByText(`Approved the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
-    return;
-  }
-  const approve = await screen.findByRole("button", { name: "Approve settings" });
-  expect(approve.hasAttribute("disabled")).toBe(state !== "policy reported");
-  if (state === "policy pending") {
-    expect(screen.getByText(`Waiting for the runner to report the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Advanced policy details" }));
-    fireEvent.change(screen.getByLabelText("Resolved policy descriptor"), { target: { value: JSON.stringify(descriptor) } });
-    expect(approve.hasAttribute("disabled")).toBe(true);
-    reported = true;
-    await waitFor(() => expect(approve.hasAttribute("disabled")).toBe(false), { timeout: 6_000 });
-    expect(approveRequests).toEqual([]);
-    return;
-  }
-  expect(screen.getByText(`Approve the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
-  if (state === "conflict") {
-    expect(screen.getByRole("alert").textContent).toContain("Runners reported different settings");
-    await user.click(screen.getByRole("button", { name: "Advanced policy details" }));
-    fireEvent.change(screen.getByLabelText("Resolved policy descriptor"), { target: { value: "not JSON" } });
-    await user.click(approve);
-    expect(await screen.findByText(/The pasted descriptor is not JSON/)).toBeTruthy();
-    expect(approveRequests).toEqual([]);
-    fireEvent.change(screen.getByLabelText("Resolved policy descriptor"), { target: { value: JSON.stringify(descriptor) } });
-  }
-  await user.click(approve);
-  expect(await screen.findByText(`Approved the settings in detent.yaml and WORKFLOW.md from ${repository}.`)).toBeTruthy();
-  expect(approveRequests).toEqual([{ expected_policy_id: "", policy: descriptor }]);
+  expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Advanced policy details" })).toBeNull();
+  expect(approveRequests).toEqual([]);
 });
 
 it.each([
@@ -369,7 +342,7 @@ it.each([
 });
 
 
-it("finishes setup by moving forward from repository binding through policy approval", async () => {
+it("finishes setup after the runner reports repository configuration", async () => {
   const onNavigate = vi.fn();
   const mount = await mountSetup(onNavigate);
   const fetch = globalThis.fetch;
@@ -381,7 +354,7 @@ it("finishes setup by moving forward from repository binding through policy appr
       const integration = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/integration`).then((result) => result.json());
       const bound = Boolean(integration.checkout_repository);
       const runners = bound ? onboarding.runners.slice(0, 1).map((row: { runner: object }) => ({ ...row, local_checks: { checkout: "passed", doctor: "passed", provider: "passed", observed_at: new Date().toISOString() } })) : [];
-      const steps = onboarding.steps.map((step: { name: string; state: string }) => ({ ...step, state: step.name === "Execution runner" || step.name === "Local validation" ? bound ? "ready" : "action_required" : step.state }));
+      const steps = onboarding.steps.map((step: { name: string; state: string }) => ({ ...step, state: step.name === "Execution runner" || step.name === "Local validation" || step.name === "Repository configuration" && onboarding.progress.repository !== "" ? bound ? "ready" : "action_required" : step.state }));
       return Response.json({ ...onboarding, runners, steps, observed_policies: bound && !onboarding.policy ? [{ policy: descriptor, runner_id: "runner_example", observed_at: new Date().toISOString() }] : [], ready: bound && steps.every((step: { state: string }) => step.state === "ready") });
     }
     return response;
@@ -402,7 +375,7 @@ it("finishes setup by moving forward from repository binding through policy appr
   expect(await screen.findByRole("heading", { level: 1, name: "Repository configuration" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "Use existing configuration files" }));
   await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
-  await user.click(await screen.findByRole("button", { name: "Approve settings" }));
+  expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
   await user.click(await screen.findByRole("button", { name: "Continue" }));
   expect(await screen.findByRole("heading", { level: 1, name: "Artifact history" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "Your runner (local history)" }));

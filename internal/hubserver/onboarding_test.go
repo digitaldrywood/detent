@@ -744,7 +744,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: changed.ID}), http.StatusUnprocessableEntity)
 }
 
-func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
+func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name     string
@@ -801,8 +801,8 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 				}
 				return scheduler.CheckProjectPolicyWithSource(t.Context(), "selected", "", descriptor, source)
 			}
-			if err := check(); err == nil {
-				t.Fatal("runner loaded an unapproved policy")
+			if err := check(); err != nil {
+				t.Fatalf("reported configuration blocked runner: %v", err)
 			}
 			read := func(base, token string) onboarding.Project {
 				t.Helper()

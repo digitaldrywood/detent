@@ -1000,7 +1000,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"policy changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Lease.PolicyID = "new-policy"
 			r.Attempts[0].Status = "interrupted"
-		}, "fresh_checkout", "session_restart_required", nil},
+		}, "resume_session", "verified_local_session", nil},
 		{"backend changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "claude", Model: "test"}
 		}, "fresh_checkout", "session_restart_required", nil},
@@ -1968,6 +1968,9 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 		want bool
 	}{
 		{"source runner", func(*tracker.NativeRecovery, *workspace.RecoveryState) {}, true},
+		{"configuration changed", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+			r.Lease.PolicyID = "new-configuration"
+		}, true},
 		{"another runner restored the Change source", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
 			local.WorkspaceFingerprint = "fresh-checkout-digest"

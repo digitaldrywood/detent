@@ -43,11 +43,11 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "instruction change with retained history", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 64, status: http.StatusNoContent, applied: true},
 		{name: "instruction change with legacy policy identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "policy", status: http.StatusNoContent, applied: true},
 		{name: "instruction change with legacy review identity", initial: true, autoInitial: true, canonical: true, changedInputs: true, reachable: true, active: true, history: 2, historyLegacy: "review", status: http.StatusNoContent, applied: true},
-		{name: "binding leaves differing repository policy pending", initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent},
+		{name: "binding applies reported repository configuration", initial: true, bind: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "binding without approval applies first repository policy", bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "binding carries same authored approval", initial: true, bind: true, canonical: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "explicit repository adoption enables later updates", initial: true, bind: true, adopt: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
-		{name: "native definition without commit stays pending", initial: true, nativeRevision: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent},
+		{name: "repository configuration replaces unversioned native definition", initial: true, nativeRevision: true, canonical: true, changedInputs: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "external authored definition stays pending against legacy approval", initial: true, canonical: true, fromLegacy: true, local: true, active: true, status: http.StatusNoContent},
 		{name: "default branch replaces legacy approval", initial: true, canonical: true, fromLegacy: true, reachable: true, status: http.StatusNoContent, applied: true},
 		{name: "nil configuration projection carries only authored policy", initial: true, canonical: true, active: true, nilConfiguration: true, forge: "gate", status: http.StatusNoContent, applied: true},
@@ -366,14 +366,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.adopt {
 				approval, err := readProjectPolicy(t.Context(), f.service.database.db, string(f.project.OrganizationID)+"/"+string(f.project.ID))
-				if err != nil || !reflect.DeepEqual(approval, initialApproval) {
-					t.Fatalf("observation replaced approval before adoption: %+v %v", approval, err)
-				}
-				response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: candidate.ID})
-				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &approval)
-				if approval.Policy.ID != candidate.ID || approval.ApprovedBy != initialApproval.ApprovedBy {
-					t.Fatalf("explicit adoption attribution = %+v", approval)
+				if err != nil || approval.Policy.ID != candidate.ID {
+					t.Fatalf("repository report was not applied: %+v %v", approval, err)
 				}
 				original = approval.Policy
 				historyCount++
@@ -395,8 +389,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if err != nil || approval.Policy.ID != original.ID || strings.HasPrefix(approval.ApprovedBy, "runner_") {
 					t.Fatalf("runner replaced administrator approval: %+v %v", approval, err)
 				}
-				fresh := f.create(t, "Second runner waits for approval")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusConflict)
+				fresh := f.create(t, "Second runner uses reported configuration")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusOK)
 			}
 			if test.forge != "" && !test.applied {
@@ -438,7 +432,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			}
 			if test.fleet && !test.applied {
 				fresh := f.create(t, "Differing runner remains pending")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusConflict)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: runner.binding.MachineID, SessionID: "pending", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 			}
 			if test.occupied {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, Policy: candidate}), http.StatusUnprocessableEntity)
@@ -468,9 +462,6 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if test.fleet && !test.humanApproval {
 					fresh := f.create(t, "First runner dispatch authority")
 					claimStatus := http.StatusOK
-					if test.applied && !candidate.SameAuthoredInputs(original) {
-						claimStatus = http.StatusConflict
-					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: pinned.MachineID, SessionID: "continued", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), claimStatus)
 				}
 				policyID, err := f.service.database.leasePolicyID(t.Context(), pinned.ID)
@@ -591,8 +582,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "machine_second", "hostname": "second", "capacity": 1, "version": "test"}), http.StatusOK)
 				fresh := f.create(t, "Claim retained legacy approval after upgrade")
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: "machine_second", SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusConflict)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: original.ID, MachineID: "machine_second", SessionID: "second", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{WorkItemID: fresh.WorkItemID, PolicyID: candidate.ID, MachineID: "machine_second", SessionID: "unapproved", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				current, err := native.ProjectPolicy(t.Context())
 				if err != nil || current.Policy.ID != original.ID || current.ApprovedBy != approval.ApprovedBy || current.ApprovedAt != approval.ApprovedAt || len(current.History) != 0 {
@@ -605,8 +595,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if !reflect.DeepEqual(retained, approval) {
 					t.Fatal("legacy runner load changed operator approval or retained history")
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": original.ID}), http.StatusNoContent)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/policy", testHubAdminToken, map[string]string{"expected_policy_id": original.ID}), http.StatusGone)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(pinned.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: pinned.FencingToken, TTLSeconds: 90}), http.StatusOK)
 			}
 		})
 	}
@@ -642,7 +632,7 @@ func TestObservedCloudWorkflowGuidanceAdoptsSameContract(t *testing.T) {
 	}{
 		{"saved guidance", strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), true},
 		{"unsaved guidance", strings.Replace(markdown, "Existing guidance", "Invented guidance", 1), strings.Replace(markdown, "Existing guidance", "Updated guidance", 1), false},
-		{"new security contract", strings.Replace(markdown, "enabled: false", "enabled: true", 1), strings.Replace(markdown, "enabled: false", "enabled: true", 1), false},
+		{"new security contract", strings.Replace(markdown, "enabled: false", "enabled: true", 1), strings.Replace(markdown, "enabled: false", "enabled: true", 1), true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET workflow_markdown=? WHERE id=?", test.saved, f.project.ID); err != nil {

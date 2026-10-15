@@ -155,37 +155,27 @@ Native defaults permit moves between configured states; explicit
 both authorized issue moves and execution progress. Include completion and
 landing transitions when constraining execution states.
 
-The runner includes bounded state and transition metadata in its repository
-policy descriptor and reports unapproved revisions through the existing policy
-observation path. An authorized owner/admin approves the exact descriptor with
-the current expected policy identity. Approval atomically persists the native
-workflow, repository source and revision alongside the policy. Active leases
-retain their approval. States occupied by issues, including archived issues,
-cannot be removed; move those issues through ordinary authorized transitions
-before removing a state. Approval never remaps work items. Conflicting runner
-reports remain separate candidates for explicit approval. An existing runtime
-applies a changed policy through its settled, paused configuration owner, or
-loads the approved definition on restart.
+The runner reports bounded state and transition metadata with the resolved
+repository configuration. Reports from the bound repository's default-branch
+history apply the shared workflow atomically with its source revision. States
+occupied by issues, including archived issues, cannot be removed; move those
+issues through ordinary authorized transitions before removing a state.
+Configuration changes never remap work items or revoke active leases.
 
-Cloud settings show the approved repository source and revision and direct
-definition edits to the repository. UI, API and MCP definition writes cannot
-override repository authority. Authorized issue moves and other integration
-settings remain available. Older approvals without workflow metadata retain
-their states until an upgraded runner's descriptor is explicitly approved;
-an old descriptor cannot replace an already repository-controlled workflow.
+Cloud settings show the repository source and revision and direct definition
+edits to the repository. UI, API and MCP definition writes cannot override
+repository authority. Authorized issue moves and other integration settings
+remain available.
 
 With no supplied repository definition, the Workflow settings editor accepts
 Markdown using the same legacy frontmatter schema: `tracker.kind: hub_native`,
 `tracker.active_states`, `tracker.observed_states`, `tracker.terminal_states`,
 and optional `server.kanban.allowed_transitions`. The body contains agent
 instructions. Cloud persists that Markdown and derives its lanes with the
-existing parser. Runners load it through the existing definition and policy
-approval path; execution changes still require approval. A saved edit makes
-the prior definition digest stale: claims and approvals must match the current
-Markdown revision. Approval history remains intact. Adding a repository
-definition transfers authority through that approval path without losing work
-items. Repository-controlled definitions cannot be replaced by Cloud Markdown
-or independent state arrays.
+existing parser. Runners load and report the resolved definition. Adding a
+repository definition transfers workflow authority without losing work items.
+Repository-controlled definitions cannot be replaced by Cloud Markdown or
+independent state arrays.
 
 For the shared-site target, use `client.hub_url: https://cloud.detent.build`
 and the selected immutable organization ID. Configure `client.organization_id` and
@@ -195,18 +185,20 @@ reported problems locally. Sign in to the selected agent provider on that host.
 Only checkbox acknowledgments of these local checks are saved in Cloud; they are
 explicitly user-reported and do not override runtime validation.
 
-Run `detent hub policy inspect --config /path/to/config.yaml --project LOCAL_PROJECT`.
-Paste only the resulting descriptor into the policy approval form. The form
-accepts validated, bounded policy metadata, including source revision, digests
-and the resolved native workflow projection, rather than arbitrary runner
-configuration. An organization owner/admin with project write
-access approves it explicitly. Approval retains the existing compare-and-swap
-and active-lease guards. Edit gate, review, auto-promotion, merge and runner
-requirements in the repository, then approve the new descriptor. A running
-runner reports the policy it resolved: Settings, Projects, then the project's
-Settings shows "A runner is waiting for a new policy" with an "Approve reported
-policy" button, so pasting the inspect output is only needed before any runner
-has started.
+Runners report the configuration resolved from `detent.yaml` and `WORKFLOW.md`.
+Repository configuration changes do not require a separate execution approval.
+Edit validation, review, auto-promotion and merge settings in the repository;
+the runner reports the resulting configuration when it reloads. Configuration
+identities remain attached to attempts and published source for provenance.
+A configuration ID change does not revoke an active lease, discard a checkpoint,
+or send completed work back to Rework.
+
+Runner enrollment, organization and project access, execution isolation, lease
+fencing and the project's validation and review requirements still apply.
+Full-machine execution is the operator's chosen trust boundary; a second
+repository-policy approval is not required to use it. The legacy policy-revocation
+operation is retired and returns HTTP 410 without deleting configuration.
+Pause or drain a runner, or remove its project access, to stop execution.
 
 A native project (`tracker.kind: hub_native`) makes no GitHub REST or GraphQL
 calls by default. The runner does not give the agent the instance GitHub

@@ -59,12 +59,6 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 				return snapshot, err
 			}
 		}
-		policyScope := string(organization) + "/" + p.ID
-		approved, err := readProjectPolicy(ctx, q, policyScope)
-		var refusal *nativeError
-		if err != nil && (!errors.As(err, &refusal) || refusal.Code != "policy_mismatch") {
-			return snapshot, err
-		}
 		fallbackReasons := []string{}
 		for _, r := range runners {
 			if !slices.Contains(r.Projects, p.ID) {
@@ -89,19 +83,6 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 				reason = "runner_heartbeat_stale"
 			} else if r.FreeSlots == 0 {
 				reason = "runner_capacity_full"
-			}
-			observed, known := r.Admissions[p.ID]
-			if reason == "" {
-				matches := approved.Policy.ID != ""
-				if matches && known {
-					matches, err = approvedPolicyRevisionMatches(ctx, q, policyScope, observed.Context.PolicyID, approved.Policy)
-					if err != nil {
-						return snapshot, err
-					}
-				}
-				if !matches {
-					reason = "policy_mismatch"
-				}
 			}
 			if reason == "" {
 				p.FreeSlots += r.FreeSlots

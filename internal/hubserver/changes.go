@@ -59,13 +59,6 @@ AND NOT EXISTS (SELECT 1 FROM runner_identities r WHERE r.token_id = t.id)`, cre
 	if err != nil {
 		return err
 	}
-	approved, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
-		return err
-	}
-	if rules.PolicyID != approved.Policy.ID {
-		return nativeNotFound()
-	}
 	for _, check := range rules.RequiredChecks {
 		if check.PrincipalID == credential.ID && check.Source == "independent" {
 			return nil
