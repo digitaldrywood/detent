@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	AssociateReleasePick      = "associate_release_pick"
 	ListChanges               = "list_changes"
 	GetChange                 = "get_change"
 	GetChangeVersion          = "get_change_version"
@@ -42,6 +43,7 @@ var ErrServiceUnavailable = errors.New("change or artifact service is unavailabl
 // ChangeArguments is the typed application selector. Each tool allows only its
 // declared fields; credentials, producer provenance and leases are never input.
 type ChangeArguments struct {
+	ReleasePick       *tracker.ReleasePickInput        `json:"release_pick,omitempty"`
 	Escape            *tracker.QualityEscape           `json:"escape,omitempty"`
 	ProjectID         string                           `json:"project_id"`
 	RequestID         string                           `json:"request_id,omitempty"`
@@ -177,6 +179,7 @@ func ChangeCatalog() []Definition {
 	props["source_capture"] = json.RawMessage(fmt.Sprintf(`{"type":"object","required":["format","base_sha","head_sha","bundle_sha256","diff_sha256","bytes"],"properties":{"format":{"type":"string","enum":["git-bundle"]},"base_sha":{"type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"},"head_sha":{"type":"string","pattern":"^([0-9a-f]{40}|[0-9a-f]{64})$"},"bundle_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"diff_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"bytes":{"type":"integer","minimum":1,"maximum":%d}},"additionalProperties":false}`, tracker.MaxChangeSourceBytes))
 	props["source_bundle"] = json.RawMessage(fmt.Sprintf(`{"type":"string","contentEncoding":"base64","maxLength":%d}`, MaxArgumentBytes))
 	props["external"] = json.RawMessage(`{"type":"object","required":["provider","id","url"],"properties":{"provider":{"type":"string","enum":["github"]},"id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string","minLength":1,"maxLength":2048}},"additionalProperties":false}`)
+	props["release_pick"] = json.RawMessage(`{"type":"object","required":["source_issue_id","source_change_id","source_merge_sha","repository","pr_number","head_ref","head_sha","base_ref","base_sha","frozen_sha"],"properties":{"source_issue_id":{"type":"string"},"source_change_id":{"type":"string"},"source_merge_sha":{"type":"string"},"repository":{"type":"string"},"pr_number":{"type":"integer","minimum":1},"head_ref":{"type":"string"},"head_sha":{"type":"string"},"base_ref":{"type":"string"},"base_sha":{"type":"string"},"frozen_sha":{"type":"string"}},"additionalProperties":false}`)
 	props["title"] = json.RawMessage(`{"type":"string","minLength":1,"maxLength":512}`)
 	props["body"] = json.RawMessage(`{"type":"string","maxLength":32768}`)
 	props["linked_issues"] = json.RawMessage(`{"type":"array","maxItems":32,"items":{"type":"string","pattern":"^wi_[A-Za-z0-9_]+$","maxLength":256}}`)
@@ -224,6 +227,7 @@ func ChangeCatalog() []Definition {
 	add(ArtifactReferences, "Read artifact receipts and availability for an owned work item.", "work_item_id", "limit offset", true, false)
 	add(GetArtifactReference, "Read the exact immutable artifact receipt, including historical revisions.", "work_item_id artifact_id revision", "", true, false)
 	add(ArtifactAccess, "Authorize an exact artifact revision for download/export through existing manifest/object endpoints. Token expires within one minute; send it as Bearer, never in a URL. Replays reauthorize and mint fresh ephemeral access.", "work_item_id artifact_id revision sha256 request_id", "", false, false)
+	add(AssociateReleasePick, "Associate an existing single -x release-pick PR with an unfinished native dependent issue. Verifies the recorded develop source merge, repository, exact PR head/base and frozen source identity; preserves holds and active ownership. Opens the normal Change for runner source capture, independent review, gate and PR landing. Does not merge or deploy.", "work_item_id release_pick expected_revision request_id", "", false, true)
 	add(CreateChange, "Create a Change Request using the existing application command, optionally linking other work items owned by this project.", "work_item_id title request_id", "body linked_issues", false, false)
 	add(PublishChangeVersion, "Publish a genuine operator-authored immutable version without a Run/Attempt. Use an empty expected_version_id for first publication. Optional source_capture metadata and base64 source_bundle use the existing HTTP source owner; complete arguments must fit 64 KiB. Reuses approved policy, artifact validation and promotion; returns the stable published version and live current Change/lane. Unverified artifacts remain unverified; external PR references do not bypass repository protection.", "work_item_id change_id expected_version_id base_sha head_sha merge_base_sha repository code policy_id request_id", "artifacts external source_capture source_bundle", false, false)
 	add(DiscussChange, "Discuss a change or record an evidence-backed escape assessment of its landed version. Human overrides require a browser session. Does not file issues or move workflow state.", "work_item_id change_id body request_id", "version_id escape", false, false)
@@ -287,6 +291,9 @@ func DecodeChangeArguments(name string, raw json.RawMessage) (ChangeArguments, e
 				return args, ErrInvalidArguments
 			}
 		}
+	}
+	if name == AssociateReleasePick && (args.ReleasePick == nil || args.ExpectedRevision < 1) {
+		return args, ErrInvalidArguments
 	}
 	if name == PublishChangeVersion {
 		expected := args.ExpectedVersionID

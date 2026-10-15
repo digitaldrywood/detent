@@ -102,6 +102,15 @@ func (c *pullRequestCache) get(key string, now time.Time) ([]pullRequestView, bo
 	return append([]pullRequestView(nil), entry.views...), true
 }
 
+func (c *pullRequestCache) invalidate(key string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.views, key)
+}
+
 func (c *pullRequestCache) set(key string, views []pullRequestView, now time.Time) {
 	if c == nil {
 		return
@@ -203,6 +212,16 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		ID: change.ID, ChangeID: change.ID, Title: change.Title, State: "open",
 		Head: pullRequestRef{}, Base: pullRequestRef{}, Checks: []pullRequestCheck{}, Reviews: []pullRequestReview{},
 		Labels: []string{}, UpdatedAt: change.UpdatedAt, FetchedAt: change.UpdatedAt,
+	}
+	delivery, err := readReleaseDelivery(ctx, s.database.reader, scope, item)
+	if err != nil {
+		return view, err
+	}
+	if delivery != nil && delivery.ChangeID == change.ID {
+		view.Number = delivery.PRNumber
+		view.URL = fmt.Sprintf("%s/pull/%d", delivery.Repository, delivery.PRNumber)
+		view.Head = pullRequestRef{Ref: delivery.HeadRef, SHA: delivery.HeadSHA, Repository: delivery.Repository}
+		view.Base = pullRequestRef{Ref: delivery.BaseRef, SHA: delivery.BaseSHA, Repository: delivery.Repository}
 	}
 	var current *tracker.ChangeVersion
 	for index := range detail.Versions {

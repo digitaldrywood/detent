@@ -1661,7 +1661,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if landingTarget.External != nil && !landingTarget.GitHubPullRequest {
 			return r.refusedLanding(req, landingTarget, workspace.LandRefusalProtected, "the approved policy does not enable GitHub pull request landing"), nil
 		}
-		workspaceIssue.Landing = &workspace.LandOptions{HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
+		workspaceIssue.Landing = &workspace.LandOptions{TargetBranch: landingTarget.BaseRef, HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
 		if landingTarget.GitHubPullRequest {
 			started := time.Now()
 			scope := &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
