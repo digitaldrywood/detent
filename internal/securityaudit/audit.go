@@ -108,6 +108,7 @@ type Evaluation struct {
 	Running      bool
 	Allowed      bool
 	Reason       string
+	Detail       string
 	RunID        int64
 	Findings     []Finding
 	ActualBytes  int
@@ -141,14 +142,17 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 	evaluation := Evaluation{RunID: run.ID}
 	if run.ID <= 0 {
 		evaluation.Reason = ReasonMissing
+		evaluation.Detail = "run.id is missing or invalid"
 		return evaluation
 	}
-	if strings.TrimSpace(key.BaseSHA) == "" || strings.TrimSpace(key.HeadSHA) == "" || !sameKey(run, key) {
+	if detail := keyMismatch(run, key); detail != "" {
+		evaluation.Detail = detail
 		evaluation.Reason = ReasonStale
 		return evaluation
 	}
 	if run.ReviewerVersion != ReviewerVersion || run.ReviewerDigest != ReviewerDigest() {
 		evaluation.Reason = ReasonReviewerMismatch
+		evaluation.Detail = "run.reviewer_version or run.reviewer_digest differs from the trusted reviewer"
 		return evaluation
 	}
 	if size, ok := ParseDiffTooLargeFailure(run.Failure); ok && run.ExitStatus == ExitStatusFailed {
@@ -158,14 +162,21 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 		return evaluation
 	}
 	if run.ExitStatus != ExitStatusSuccess {
+		evaluation.Detail = "run.exit_status is not success"
 		evaluation.Reason = ReasonFailed
 		return evaluation
 	}
 	if run.OutputBytes <= 0 || strings.TrimSpace(run.OutputDigest) == "" {
 		evaluation.Reason = ReasonEmptyOutput
+		if run.OutputBytes <= 0 {
+			evaluation.Detail = "run.output_bytes is missing or invalid"
+		} else {
+			evaluation.Detail = "run.output_digest is missing"
+		}
 		return evaluation
 	}
-	if !validSuccessfulRun(run) {
+	if detail := successfulRunFailure(run); detail != "" {
+		evaluation.Detail = detail
 		evaluation.Reason = ReasonFailed
 		return evaluation
 	}
@@ -183,32 +194,71 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 	return evaluation
 }
 
-func validSuccessfulRun(run Run) bool {
-	if strings.TrimSpace(run.InvocationID) == "" || run.WorkerPID <= 0 || run.WorkerPGID <= 0 || run.WorkerStartedAt.IsZero() ||
+func (evaluation Evaluation) Diagnostic() string {
+	if evaluation.Detail == "" {
+		return evaluation.Reason
+	}
+	return evaluation.Reason + ": " + evaluation.Detail
+}
 
-		run.StartedAt.IsZero() || run.CompletedAt.IsZero() || run.CompletedAt.Before(run.StartedAt) ||
-		len(strings.TrimSpace(run.OutputDigest)) != sha256.Size*2 || strings.TrimSpace(run.Summary) == "" {
-		return false
+func successfulRunFailure(run Run) string {
+	switch {
+	case strings.TrimSpace(run.InvocationID) == "":
+		return "run.invocation_id is missing"
+	case run.WorkerPID <= 0:
+		return "run.worker_pid is missing or invalid"
+	case run.WorkerPGID <= 0:
+		return "run.worker_pgid is missing or invalid"
+	case run.WorkerStartedAt.IsZero():
+		return "run.worker_started_at is missing"
+	case run.StartedAt.IsZero():
+		return "run.started_at is missing"
+	case run.CompletedAt.IsZero():
+		return "run.completed_at is missing"
+	case run.CompletedAt.Before(run.StartedAt):
+		return "run.completed_at precedes run.started_at"
+	case len(strings.TrimSpace(run.OutputDigest)) != sha256.Size*2:
+		return "run.output_digest is invalid"
+	case strings.TrimSpace(run.Summary) == "":
+		return "run.summary is missing"
 	}
 	if _, err := hex.DecodeString(strings.TrimSpace(run.OutputDigest)); err != nil {
-		return false
+		return "run.output_digest is invalid"
 	}
 	switch run.Verdict {
 	case VerdictPass:
-		return len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) == 0
+		if len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) == 0 {
+			return ""
+		}
 	case VerdictFail:
-		return len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) > 0
-	default:
-		return false
+		if len(unresolvedFindings(run.Findings, nil, "", []string{"p1", "p2", "p3"})) > 0 {
+			return ""
+		}
 	}
+	return "run.verdict is invalid or inconsistent with run.findings"
 }
 
-func sameKey(run Run, key Key) bool {
-	return strings.TrimSpace(run.ProjectID) == strings.TrimSpace(key.ProjectID) &&
-		strings.EqualFold(strings.TrimSpace(run.Repository), strings.TrimSpace(key.Repository)) &&
-		run.PRNumber == key.PRNumber &&
-		strings.TrimSpace(run.BaseSHA) == strings.TrimSpace(key.BaseSHA) &&
-		strings.TrimSpace(run.HeadSHA) == strings.TrimSpace(key.HeadSHA)
+func keyMismatch(run Run, key Key) string {
+	if strings.TrimSpace(key.BaseSHA) == "" {
+		return "key.base_sha is missing"
+	}
+	if strings.TrimSpace(key.HeadSHA) == "" {
+		return "key.head_sha is missing"
+	}
+	switch {
+	case strings.TrimSpace(run.ProjectID) != strings.TrimSpace(key.ProjectID):
+		return "run.project_id differs from key.project_id"
+	case !strings.EqualFold(strings.TrimSpace(run.Repository), strings.TrimSpace(key.Repository)):
+		return "run.repository differs from key.repository"
+	case run.PRNumber != key.PRNumber:
+		return "run.pr_number differs from key.pr_number"
+	case strings.TrimSpace(run.BaseSHA) != strings.TrimSpace(key.BaseSHA):
+		return "run.base_sha differs from key.base_sha"
+	case strings.TrimSpace(run.HeadSHA) != strings.TrimSpace(key.HeadSHA):
+		return "run.head_sha differs from key.head_sha"
+	default:
+		return ""
+	}
 }
 
 func unresolvedFindings(findings []Finding, dispositions []Disposition, serviceIdentity string, blockOn []string) []Finding {

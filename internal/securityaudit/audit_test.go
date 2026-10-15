@@ -9,7 +9,7 @@ import (
 func TestEvaluateRequiresTrustedExactHeadAudit(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
-	key := Key{ProjectID: "pyroapex", Repository: "digitaldrywood/pyroapex", PRNumber: 2025, BaseSHA: "base", HeadSHA: "head"}
+	key := Key{ProjectID: "prj_example", Repository: "example-org/example-project", PRNumber: 2025, BaseSHA: "base", HeadSHA: "head"}
 	base := Run{
 		ID:                 7,
 		InvocationID:       "invocation-7",
@@ -42,25 +42,41 @@ func TestEvaluateRequiresTrustedExactHeadAudit(t *testing.T) {
 		dispositions []Disposition
 		wantAllowed  bool
 		wantReason   string
+		wantDetail   string
 	}{
 		{name: "current trusted subscription audit passes", wantAllowed: true, wantReason: ReasonReady},
-		{name: "missing", mutate: func(run *Run, _ *Key) { *run = Run{} }, wantReason: ReasonMissing},
-		{name: "stale head", mutate: func(_ *Run, key *Key) { key.HeadSHA = "new-head" }, wantReason: ReasonStale},
-		{name: "stale base", mutate: func(_ *Run, key *Key) { key.BaseSHA = "new-base" }, wantReason: ReasonStale},
+		{name: "missing", mutate: func(run *Run, _ *Key) { *run = Run{} }, wantReason: ReasonMissing, wantDetail: "run.id"},
+		{name: "stale head", mutate: func(_ *Run, key *Key) { key.HeadSHA = "new-head" }, wantReason: ReasonStale, wantDetail: "head_sha"},
+		{name: "stale base", mutate: func(_ *Run, key *Key) { key.BaseSHA = "new-base" }, wantReason: ReasonStale, wantDetail: "base_sha"},
+		{name: "missing invocation", mutate: func(run *Run, _ *Key) { run.InvocationID = "" }, wantReason: ReasonFailed, wantDetail: "invocation_id"},
+		{name: "missing key base", mutate: func(_ *Run, key *Key) { key.BaseSHA = "" }, wantReason: ReasonStale, wantDetail: "key.base_sha"},
+		{name: "missing key head", mutate: func(_ *Run, key *Key) { key.HeadSHA = "" }, wantReason: ReasonStale, wantDetail: "key.head_sha"},
+		{name: "different project", mutate: func(run *Run, _ *Key) { run.ProjectID = "prj_other" }, wantReason: ReasonStale, wantDetail: "project_id"},
+		{name: "different repository", mutate: func(run *Run, _ *Key) { run.Repository = "example-org/other-project" }, wantReason: ReasonStale, wantDetail: "repository"},
+		{name: "missing PR number", mutate: func(run *Run, _ *Key) { run.PRNumber = 0 }, wantReason: ReasonStale, wantDetail: "pr_number"},
+		{name: "native audit has no PR number", mutate: func(run *Run, key *Key) { run.PRNumber = 0; key.PRNumber = 0 }, wantAllowed: true, wantReason: ReasonReady},
+		{name: "missing audit start", mutate: func(run *Run, _ *Key) { run.StartedAt = time.Time{} }, wantReason: ReasonFailed, wantDetail: "started_at"},
+		{name: "missing audit completion", mutate: func(run *Run, _ *Key) { run.CompletedAt = time.Time{} }, wantReason: ReasonFailed, wantDetail: "completed_at"},
+		{name: "missing output digest", mutate: func(run *Run, _ *Key) { run.OutputDigest = "" }, wantReason: ReasonEmptyOutput, wantDetail: "output_digest"},
+		{name: "missing summary", mutate: func(run *Run, _ *Key) { run.Summary = "" }, wantReason: ReasonFailed, wantDetail: "summary"},
+		{name: "unresolved p2 finding", mutate: func(run *Run, _ *Key) {
+			run.Verdict = VerdictFail
+			run.Findings = []Finding{{ID: "auth-2", Severity: "p2", Body: "Missing authorization"}}
+		}, wantReason: ReasonUnresolvedFindings},
 		{name: "failed process", mutate: func(run *Run, _ *Key) { run.ExitStatus = ExitStatusFailed }, wantReason: ReasonFailed},
-		{name: "missing process identity", mutate: func(run *Run, _ *Key) { run.WorkerPID = 0 }, wantReason: ReasonFailed},
+		{name: "missing process identity", mutate: func(run *Run, _ *Key) { run.WorkerPID = 0 }, wantReason: ReasonFailed, wantDetail: "worker_pid"},
 		{name: "OS identity clock precedes audit clock", mutate: func(run *Run, _ *Key) { run.WorkerStartedAt = run.StartedAt.Add(-2 * time.Second) }, wantAllowed: true, wantReason: ReasonReady},
 		{name: "OS identity clock follows audit clock", mutate: func(run *Run, _ *Key) { run.WorkerStartedAt = run.CompletedAt.Add(2 * time.Second) }, wantAllowed: true, wantReason: ReasonReady},
-		{name: "missing process group", mutate: func(run *Run, _ *Key) { run.WorkerPGID = 0 }, wantReason: ReasonFailed},
-		{name: "missing process start", mutate: func(run *Run, _ *Key) { run.WorkerStartedAt = time.Time{} }, wantReason: ReasonFailed},
-		{name: "audit finishes before it starts", mutate: func(run *Run, _ *Key) { run.CompletedAt = run.StartedAt.Add(-time.Second) }, wantReason: ReasonFailed},
+		{name: "missing process group", mutate: func(run *Run, _ *Key) { run.WorkerPGID = 0 }, wantReason: ReasonFailed, wantDetail: "worker_pgid"},
+		{name: "missing process start", mutate: func(run *Run, _ *Key) { run.WorkerStartedAt = time.Time{} }, wantReason: ReasonFailed, wantDetail: "worker_started_at"},
+		{name: "audit finishes before it starts", mutate: func(run *Run, _ *Key) { run.CompletedAt = run.StartedAt.Add(-time.Second) }, wantReason: ReasonFailed, wantDetail: "completed_at"},
 		{name: "missing provider identity", mutate: func(run *Run, _ *Key) { run.ProviderThreadID = "" }, wantAllowed: true, wantReason: ReasonReady},
-		{name: "invalid output digest", mutate: func(run *Run, _ *Key) { run.OutputDigest = "not-a-digest" }, wantReason: ReasonFailed},
-		{name: "invalid successful verdict", mutate: func(run *Run, _ *Key) { run.Verdict = "" }, wantReason: ReasonFailed},
-		{name: "empty output", mutate: func(run *Run, _ *Key) { run.OutputBytes = 0 }, wantReason: ReasonEmptyOutput},
+		{name: "invalid output digest", mutate: func(run *Run, _ *Key) { run.OutputDigest = "not-a-digest" }, wantReason: ReasonFailed, wantDetail: "output_digest"},
+		{name: "invalid successful verdict", mutate: func(run *Run, _ *Key) { run.Verdict = "" }, wantReason: ReasonFailed, wantDetail: "verdict"},
+		{name: "empty output", mutate: func(run *Run, _ *Key) { run.OutputBytes = 0 }, wantReason: ReasonEmptyOutput, wantDetail: "output_bytes"},
 		{name: "metered auth", mutate: func(run *Run, _ *Key) { run.AuthenticationMode = "api_key" }, wantAllowed: true, wantReason: ReasonReady},
 		{name: "forged service", mutate: func(run *Run, _ *Key) { run.ServiceIdentity = "implementation-agent" }, wantAllowed: true, wantReason: ReasonReady},
-		{name: "changed reviewer", mutate: func(run *Run, _ *Key) { run.ReviewerDigest = "changed" }, wantReason: ReasonReviewerMismatch},
+		{name: "changed reviewer", mutate: func(run *Run, _ *Key) { run.ReviewerDigest = "changed" }, wantReason: ReasonReviewerMismatch, wantDetail: "reviewer_digest"},
 		{
 			name: "unresolved p1 finding",
 			mutate: func(run *Run, _ *Key) {
@@ -108,6 +124,9 @@ func TestEvaluateRequiresTrustedExactHeadAudit(t *testing.T) {
 				tt.mutate(&run, &testKey)
 			}
 			got := Evaluate(run, tt.dispositions, testKey, "detent-service", []string{"p1", "p2"})
+			if !strings.Contains(got.Diagnostic(), tt.wantReason) || tt.wantDetail != "" && !strings.Contains(got.Diagnostic(), tt.wantDetail) {
+				t.Fatalf("diagnostic = %q, want reason=%q field=%q", got.Diagnostic(), tt.wantReason, tt.wantDetail)
+			}
 			if got.Allowed != tt.wantAllowed || got.Reason != tt.wantReason {
 				t.Fatalf("Evaluate() = %#v, want allowed=%t reason=%q", got, tt.wantAllowed, tt.wantReason)
 			}
