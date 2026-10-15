@@ -101,6 +101,7 @@ func (c *NativeClient) runtimeChange(ctx context.Context, item tracker.NativeWor
 			switch section {
 			case "versions":
 				detail.Versions = append(detail.Versions, next.Detail.Versions...)
+				detail.PublicationPushes = append(detail.PublicationPushes, next.Detail.PublicationPushes...)
 			case "reviews":
 				detail.Reviews = append(detail.Reviews, next.Detail.Reviews...)
 			case "checks":

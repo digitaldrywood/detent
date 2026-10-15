@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -502,6 +503,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		publicationRefused      bool
 		publicationHistory      bool
 		publicationRecovery     bool
+		resumedPush             bool
 		recoveredPushFault      string
 		wantChange              *runner.NativeChange
 		wantDiagnostic          string
@@ -511,9 +513,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		wantVersions int
 	}{
 		{name: "required PR recovers historical confirmed push after stale forge read", requiredPR: true, publicationRecovery: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
+		{name: "required PR recovers historical push recorded by a later resume attempt", requiredPR: true, publicationRecovery: true, resumedPush: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
 		{name: "required PR refuses historical push without checkpoint", requiredPR: true, publicationRecovery: true, recoveredPushFault: "missing", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
-		{name: "required PR refuses historical pending push", requiredPR: true, publicationRecovery: true, recoveredPushFault: "pending", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
-		{name: "required PR refuses historical ambiguous push", requiredPR: true, publicationRecovery: true, recoveredPushFault: "ambiguous", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
 		{name: "required PR refuses historical push with tampered digest", requiredPR: true, publicationRecovery: true, recoveredPushFault: "digest", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
 		{name: "required PR refuses historical push for different source", requiredPR: true, publicationRecovery: true, recoveredPushFault: "source", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
 		{name: "required PR refuses historical push for different policy", requiredPR: true, publicationRecovery: true, recoveredPushFault: "policy", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
@@ -641,7 +642,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var replacePublicationHead func()
 			var publicationCapture func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
 			stalePublication := test.publicationRecovery
-			publicationUnavailable := false
+			publicationUnavailable := test.resumedPush
 			if test.requiredPR {
 				source := nativeChangeSourceRepo(t)
 				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
@@ -918,34 +919,18 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.publicationRecovery {
-				owner := execution.(*nativeExecution)
-				if err := owner.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
-					t.Fatal(err)
+				reopenPublication := func() {
+					currentIssue, err := h.admin.Issue(t.Context(), item)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, state := range []string{"In Review", "In Progress"} {
+						currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
-				if owner.publication != nil || owner.change == nil || !strings.Contains(owner.change.VersionError, "identity mismatch") || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != "git_push" || owner.data.Handoff.EffectState != "confirmed" {
-					t.Fatalf("stale GET did not retain confirmed push without PR receipt: change=%+v checkpoint=%+v", owner.change, owner.data.Handoff)
-				}
-				pushedVersion, pushedAttempt := owner.change.VersionID, owner.data.AttemptID
-				pushedHead := head
-				if publicationHead() != pushedHead {
-					t.Fatal("stale forge observation did not follow a successful real push")
-				}
-				if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "failed"); err != nil {
-					t.Fatal(err)
-				}
-				advancePublication()
-				// The new attempt runs under a newly approved policy. The old push
-				// must still be checked against its original immutable policy.
-				h.repolicy(t)
-				rules, err := h.admin.ChangeReviewPolicy(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				rules.PolicyID = h.descriptor.ID
-				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
-					t.Fatal(err)
-				}
-				checkpoint.HeadSHA = head
 				startPublication := func() *nativeExecution {
 					candidates := h.candidatesIn(t, h.state(t, issue.ID))
 					if len(candidates) != 1 {
@@ -962,10 +947,73 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if err := resumed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleRework, Backend: "codex", Model: "test"}); err != nil {
 						t.Fatal(err)
 					}
+					checkpoint.HeadSHA = head
 					if err := resumed.Checkpoint(t.Context(), checkpoint); err != nil {
 						t.Fatal(err)
 					}
 					return resumed
+				}
+				owner := execution.(*nativeExecution)
+				if err := owner.PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				sourceAttempt := owner.data.AttemptID
+				if test.resumedPush {
+					if owner.change == nil || owner.change.VersionID == "" || owner.publication != nil || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != "none" || publicationHead() != publicationPrevious {
+						t.Fatalf("source attempt did not retain an unpushed version: change=%+v checkpoint=%+v", owner.change, owner.data.Handoff)
+					}
+					sourceVersion := owner.change.VersionID
+					if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "failed"); err != nil {
+						t.Fatal(err)
+					}
+					reopenPublication()
+					publicationUnavailable = false
+					owner = startPublication()
+					if err := owner.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
+						t.Fatal(err)
+					}
+					if owner.data.AttemptID == sourceAttempt || owner.change == nil || owner.change.VersionID != sourceVersion {
+						t.Fatalf("resume did not retain distinct source and recording attempt provenance: source=%s owner=%+v", sourceAttempt, owner.data)
+					}
+				}
+				if owner.publication != nil || owner.change == nil || !strings.Contains(owner.change.VersionError, "identity mismatch") || owner.data.Handoff == nil || owner.data.Handoff.ExternalEffect != "git_push" || owner.data.Handoff.EffectState != "confirmed" {
+					t.Fatalf("stale GET did not retain confirmed push without PR receipt: change=%+v checkpoint=%+v", owner.change, owner.data.Handoff)
+				}
+				pushedVersion, pushedAttempt := owner.change.VersionID, owner.data.AttemptID
+				pushedHead := head
+				if publicationHead() != pushedHead {
+					t.Fatal("stale forge observation did not follow a successful real push")
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+					t.Fatal(err)
+				}
+				if test.resumedPush {
+					detail, err := h.admin.Change(t.Context(), item, owner.change.ChangeID)
+					if err != nil || len(detail.Versions) != 2 || detail.Versions[1].ID != pushedVersion || detail.Versions[1].AttemptID != sourceAttempt || detail.Versions[1].External != nil {
+						t.Fatalf("resume changed immutable source provenance: detail=%+v error=%v", detail, err)
+					}
+					version := detail.Versions[1]
+					recording, err := h.admin.NativeAttempt(t.Context(), item, pushedAttempt)
+					if err != nil || recording.Checkpoint == nil || recording.Checkpoint.Change == nil || recording.Checkpoint.ExternalEffect != "git_push" || recording.Checkpoint.EffectState != "confirmed" {
+						t.Fatalf("resume push has no durable confirmed checkpoint: recording=%+v error=%v", recording, err)
+					}
+					binding := tracker.NativePRPublication{ChangeID: version.ChangeID, VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, PolicyID: version.PolicyID, BaseRef: "main", Branch: "manual/recovery", SourceVersion: tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: sourceAttempt}
+					if *recording.Checkpoint.Change != binding.SourceVersion || recording.Checkpoint.HeadSHA != pushedHead || recording.Checkpoint.EffectID != binding.EffectID("git_push") {
+						t.Fatalf("recorded push did not bind its distinct immutable source owner: checkpoint=%+v source=%+v", recording.Checkpoint, version)
+					}
+					t.Logf("source attempt %s created version %s; resume attempt %s durably confirmed push %s for source attempt %s; real remote head %s, no PR receipt", sourceAttempt, pushedVersion, pushedAttempt, recording.Checkpoint.EffectID, binding.SourceAttemptID, publicationHead())
+				}
+				advancePublication()
+				// The new attempt runs under a newly approved policy. The old push
+				// must still be checked against its original immutable policy.
+				h.repolicy(t)
+				rules, err := h.admin.ChangeReviewPolicy(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				rules.PolicyID = h.descriptor.ID
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+					t.Fatal(err)
 				}
 				// A later version and attempt displace the push owner from the
 				// compact recovery read. Its exact scoped history remains available.
@@ -978,16 +1026,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					t.Fatal(err)
 				}
 				publicationUnavailable = false
-				currentIssue, err := h.admin.Issue(t.Context(), item)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, state := range []string{"In Review", "In Progress"} {
-					currentIssue, err = h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: state, Reason: "user_requested"})
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
+				reopenPublication()
 				resumed := startPublication()
 				for _, attempt := range resumed.Recovery().Attempts {
 					if attempt.AttemptID == pushedAttempt {
@@ -1003,36 +1042,53 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					response, err := transport.RoundTrip(request)
-					if err != nil || !strings.HasSuffix(request.URL.Path, "/attempts/"+pushedAttempt) {
+					if err != nil || request.Method != http.MethodGet || !strings.HasSuffix(request.URL.Path, "/changes/"+owner.change.ChangeID) {
 						return response, err
 					}
-					historicalReads++
-					var attempt tracker.NativeAttempt
-					if err := json.NewDecoder(response.Body).Decode(&attempt); err != nil {
+					var result operatortool.ChangeResult
+					if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 						t.Fatal(err)
 					}
 					response.Body.Close()
-					switch test.recoveredPushFault {
-					case "missing":
-						attempt.Checkpoint = nil
-					case "pending", "ambiguous":
-						attempt.Checkpoint.EffectState = test.recoveredPushFault
-					case "digest":
-						attempt.Checkpoint.EffectID = "effect_" + strings.Repeat("0", 32)
-					case "source":
-						attempt.Checkpoint.Change.VersionID = refusedPublication.ID
-					case "policy":
-						attempt.PolicyID = h.descriptor.ID
-					case "base", "branch":
-						binding := tracker.NativePRPublication{ChangeID: owner.change.ChangeID, VersionID: pushedVersion, Repository: nativeChangeRepository, HeadSHA: pushedHead, PolicyID: owner.data.PolicyID, BaseRef: "main", Branch: "manual/recovery", SourceVersion: *owner.data.Handoff.Change, SourceAttemptID: pushedAttempt}
-						if test.recoveredPushFault == "base" {
-							binding.BaseRef = "different-base"
-						} else {
-							binding.Branch = "different-branch"
-						}
-						attempt.Checkpoint.EffectID = binding.EffectID("git_push")
+					detail := result.Detail
+					if detail == nil {
+						t.Fatal("runtime Change read omitted detail")
 					}
-					body, err := json.Marshal(attempt)
+					var proof *tracker.ChangePublicationPush
+					for i := range detail.PublicationPushes {
+						if detail.PublicationPushes[i].Change.VersionID == pushedVersion {
+							proof = &detail.PublicationPushes[i]
+						}
+					}
+					if proof != nil && proof.RecordingAttemptID != pushedAttempt {
+						t.Fatalf("historical push recorder was not projected: pushes=%+v", detail.PublicationPushes)
+					}
+					if proof != nil {
+						historicalReads++
+						switch test.recoveredPushFault {
+						case "missing":
+							detail.PublicationPushes = nil
+						case "digest":
+							proof.EffectID = "effect_" + strings.Repeat("0", 32)
+						case "source":
+							proof.Change.VersionID = refusedPublication.ID
+						case "policy":
+							for i := range detail.Versions {
+								if detail.Versions[i].ID == pushedVersion {
+									detail.Versions[i].PolicyID = h.descriptor.ID
+								}
+							}
+						case "base", "branch":
+							binding := tracker.NativePRPublication{ChangeID: owner.change.ChangeID, VersionID: pushedVersion, Repository: nativeChangeRepository, HeadSHA: pushedHead, PolicyID: owner.data.PolicyID, BaseRef: "main", Branch: "manual/recovery", SourceVersion: *owner.data.Handoff.Change, SourceAttemptID: pushedAttempt}
+							if test.recoveredPushFault == "base" {
+								binding.BaseRef = "different-base"
+							} else {
+								binding.Branch = "different-branch"
+							}
+							proof.EffectID = binding.EffectID("git_push")
+						}
+					}
+					body, err := json.Marshal(result)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1052,7 +1108,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					return
 				}
 				if resumed.publication == nil || resumed.publication.External.ID != "7" || resumed.publication.HeadSHA != head || publicationCalls != 0 || publicationHead() != head {
-					t.Fatalf("confirmed historical push could not advance the retained PR: previous=%s/%s/%s change=%+v publication=%+v creates=%d", pushedVersion, pushedAttempt, pushedHead, resumed.change, resumed.publication, publicationCalls)
+					t.Fatalf("confirmed historical push could not advance the retained PR: source_attempt=%s recording_attempt=%s recording_attempt_reads=%d previous=%s/%s change=%+v publication=%+v creates=%d", sourceAttempt, pushedAttempt, historicalReads, pushedVersion, pushedHead, resumed.change, resumed.publication, publicationCalls)
 				}
 				if err := resumed.Finish(t.Context(), "succeeded"); err != nil {
 					t.Fatal(err)

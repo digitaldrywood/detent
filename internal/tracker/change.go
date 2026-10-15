@@ -241,14 +241,24 @@ type DiscussChange struct {
 }
 
 type ChangeDetail struct {
-	SourceIssues []ExternalReference `json:"source_issues,omitempty"`
-	External     *PullRequestSummary `json:"external_snapshot,omitempty"`
-	Change       ChangeRequest       `json:"change"`
-	Versions     []ChangeVersion     `json:"versions"`
-	Reviews      []ChangeReview      `json:"reviews"`
-	Checks       []ChangeCheck       `json:"checks"`
-	Discussion   []ChangeDiscussion  `json:"discussion"`
-	Summary      ChangeSummary       `json:"summary"`
+	PublicationPushes []ChangePublicationPush `json:"publication_pushes,omitempty"`
+	SourceIssues      []ExternalReference     `json:"source_issues,omitempty"`
+	External          *PullRequestSummary     `json:"external_snapshot,omitempty"`
+	Change            ChangeRequest           `json:"change"`
+	Versions          []ChangeVersion         `json:"versions"`
+	Reviews           []ChangeReview          `json:"reviews"`
+	Checks            []ChangeCheck           `json:"checks"`
+	Discussion        []ChangeDiscussion      `json:"discussion"`
+	Summary           ChangeSummary           `json:"summary"`
+}
+
+// ChangePublicationPush is read-only evidence from a retained checkpoint. It is
+// not a PR receipt or part of the immutable source version. The recorder may be
+// a later attempt than the source attempt bound by the push effect digest.
+type ChangePublicationPush struct {
+	Change             NativeChangeReference `json:"change"`
+	RecordingAttemptID string                `json:"recording_attempt_id"`
+	EffectID           string                `json:"effect_id"`
 }
 
 type ChangeSummary struct {
