@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -107,6 +108,58 @@ func TestEnvironmentPreparesSlotsAndWrapper(t *testing.T) {
 	}
 	if target, _ := os.Readlink(budget.WrapperPath()); target != relinked {
 		t.Fatalf("wrapper link after relink = %q, want %q", target, relinked)
+	}
+}
+
+func TestEnvironmentConcurrentColdPreparation(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "detent")
+	type result struct {
+		environment map[string]string
+		err         error
+	}
+	for round := range 30 {
+		dir := filepath.Join(root, strconv.Itoa(round))
+		budget := New(8, dir, executable)
+		start := make(chan struct{})
+		results := make(chan result, 16)
+		for range 16 {
+			go func() {
+				<-start
+				environment, err := budget.Environment("-mod=mod")
+				results <- result{environment: environment, err: err}
+			}()
+		}
+		close(start)
+		want := map[string]string{
+			"GOFLAGS":        "-mod=mod -p=2 -trimpath -toolexec=" + filepath.Join(dir, "bin", "detent-go-budget"),
+			"GOMAXPROCS":     "2",
+			DirEnvironment:   dir,
+			SlotsEnvironment: "8",
+		}
+		for range 16 {
+			got := <-results
+			if got.err != nil {
+				t.Errorf("round %d: concurrent Environment() error = %v", round, got.err)
+				continue
+			}
+			for key, value := range want {
+				if got.environment[key] != value {
+					t.Errorf("round %d: Environment()[%s] = %q, want %q", round, key, got.environment[key], value)
+				}
+			}
+		}
+		if t.Failed() {
+			return
+		}
+		target, err := os.Readlink(budget.WrapperPath())
+		if err != nil || target != executable {
+			t.Fatalf("round %d: wrapper link = %q, %v; want %q", round, target, err, executable)
+		}
+		entries, err := os.ReadDir(filepath.Join(dir, "bin"))
+		if err != nil || len(entries) != 1 || entries[0].Name() != "detent-go-budget" {
+			t.Fatalf("round %d: wrapper directory = %v, %v; want only installed wrapper", round, entries, err)
+		}
 	}
 }
 
