@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -702,6 +703,11 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
 	issue.DependencySource = connector.BlockedRefSourceNative
+	if d := native.ReleaseDelivery; d != nil && !native.Terminal {
+		issue.BranchName = d.HeadRef
+		issue.PRRepository = d.Repository
+		issue.PullRequest = &connector.PullRequest{Number: d.PRNumber, URL: fmt.Sprintf("%s/pull/%d", d.Repository, d.PRNumber), State: "OPEN", BranchName: d.HeadRef, HeadSHA: d.HeadSHA, BaseRef: d.BaseRef, BaseSHA: d.BaseSHA}
+	}
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees

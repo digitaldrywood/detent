@@ -46,7 +46,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if prepared != nil {
 		previous := *prepared
-		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
+		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.BaseRef != target.BaseRef || previous.SourceMergeSHA != target.SourceMergeSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
 			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
 		}
 	}
@@ -59,12 +59,15 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		message = "Land " + target.HeadSHA
 	}
 	message += fmt.Sprintf("\n\nChange Request %s, round %d, head %s.", target.ChangeID, target.Number, target.HeadSHA)
+	if target.SourceMergeSHA != "" {
+		message += "\n\n(cherry picked from commit " + target.SourceMergeSHA + ")"
+	}
 	if target.GitHubPullRequest {
 		message = tracker.AppendGitHubIssueClosingReferences(message, target.SourceIssues)
 	}
 	workflow, _, _, _ := r.runtimeSnapshot()
 	effectiveGate := gate.Effective(workflow.Config.Gate)
-	options := workspace.LandOptions{LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	options := workspace.LandOptions{TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	if effectiveGate.CITriggerLabelStaggerSeconds != nil {
 		options.CITriggerLabelStagger = time.Duration(*effectiveGate.CITriggerLabelStaggerSeconds) * time.Second
 	}

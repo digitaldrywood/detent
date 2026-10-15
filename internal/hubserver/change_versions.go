@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -89,6 +91,20 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if change.CurrentVersion != request.ExpectedVersionID {
 		return nil, nativeConflict(change.Revision)
 	}
+	delivery, associated, err := readReleaseDelivery(ctx, tx, scope, item)
+	if err != nil {
+		return nil, err
+	}
+	if associated {
+		if change.ID != delivery.ChangeID || request.Repository != delivery.Repository || request.HeadSHA != delivery.HeadSHA || request.BaseSHA != delivery.BaseSHA || request.MergeBaseSHA != delivery.BaseSHA || request.Source == nil {
+			return nil, nativeInvalid("Release publication must retain the exact associated PR source and base")
+		}
+		external := tracker.ChangeExternalReference{Provider: "github", ID: strconv.Itoa(delivery.PRNumber), URL: fmt.Sprintf("%s/pull/%d", delivery.Repository, delivery.PRNumber)}
+		if request.External != nil && *request.External != external {
+			return nil, nativeInvalid("Release publication differs from the associated PR")
+		}
+		request.External = &external
+	}
 	if err := validateChangeVersion(request.ChangeVersionInput); err != nil {
 		return nil, err
 	}
@@ -129,6 +145,11 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json) VALUES (?, ?, ?, ?)", version.ID, change.ID, version.Number, raw); err != nil {
 		return nil, err
+	}
+	if associated {
+		if _, err := tx.ExecContext(ctx, "UPDATE release_deliveries SET version_id = ? WHERE work_item_id = ?", version.ID, item); err != nil {
+			return nil, err
+		}
 	}
 	if version.Source != nil {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, request.SourceBundle); err != nil {
