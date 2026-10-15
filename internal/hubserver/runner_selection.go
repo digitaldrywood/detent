@@ -33,6 +33,9 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	probe.ProviderCandidates = nil
 	probe.WorkItemID = 0
 	probe.LandingCapacity = 0
+	if query.LandingCapacityKnown {
+		probe.LandingCapacity = nativeLandingCapacityUnknown
+	}
 	probe.Limit = 100
 	var heads []tracker.WorkItemID
 	var contractRefusal error

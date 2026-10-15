@@ -19,21 +19,75 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		unavailable int
 		ready       bool
 		contract    string
+		landing     string
 	}{
-		{"unavailable project yields to ready project", 1, false, ""},
-		{"ready work beyond first candidate page wins", 100, true, ""},
-		{"invalid contract yields to ready project", 1, false, "missing"},
-		{"invalid contract yields to next candidate", 1, true, "missing"},
-		{"dispatch marker yields to next candidate", 1, true, "marker"},
+		{"unavailable project yields to ready project", 1, false, "", ""},
+		{"ready work beyond first candidate page wins", 100, true, "", ""},
+		{"invalid contract yields to ready project", 1, false, "missing", ""},
+		{"invalid contract yields to next candidate", 1, true, "missing", ""},
+		{"dispatch marker yields to next candidate", 1, true, "marker", ""},
+		{"unknown legacy landing ceiling cannot strand another project", 0, false, "", "legacy owner"},
+		{"positive owner pin cannot prove a foreign incoming ceiling", 0, false, "", "pinned owner"},
+		{"native-only request preserves unknown foreign capacity", 0, false, "", "native-only request"},
+		{"all legacy cross-project claims preserve unbounded behavior", 0, false, "", "legacy request"},
+		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 			preferred := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "preferred-provider")
+			var landing landingCapacityFixture
+			if scenario.landing != "" {
+				landing = newLandingCapacityFixture(t, preferred.service, "preferred-landings", true)
+				preferred = landing.nativeFixture
+			}
 			general := newNativeFixture(t, preferred.service, preferred.project.OrganizationID, "general-provider")
 			r := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{preferred.project.ID, general.project.ID}}}
 			requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+			if scenario.landing != "" {
+				approveHubTestPolicy(t, preferred.service, general.base+"/policy", hubTestPolicy())
+				owner := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim)
+				owner.enroll(t)
+				first, next := landing.ready(t, "legacy owner"), landing.ready(t, "next landing")
+				if scenario.landing != "unoccupied" {
+					ownerCapacity := 0
+					if scenario.landing == "pinned owner" || scenario.landing == "native-only request" {
+						ownerCapacity = 3
+					}
+					requireNativeStatus(t, landing.claim(t, owner, first, "legacy-landing", ownerCapacity), http.StatusOK)
+					requireNativeStatus(t, landing.claim(t, r, next, "bounded-landing", 1), http.StatusConflict)
+				}
+				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=1 WHERE id=?", general.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				issue := general.create(t, "ready source work")
+				claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "general-source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				switch scenario.landing {
+				case "native-only request":
+					claim.LandingCapacity = 0
+					claim.Capabilities = append(claim.Capabilities, tracker.NativeLandingCapacityCapability)
+				case "legacy request":
+					claim.LandingCapacity = 0
+				}
+				response := performHubAPIRequest(t, preferred.service, http.MethodPost, general.base+"/claims", r.redemption.Credential, claim)
+				if scenario.landing == "legacy request" || scenario.landing == "unoccupied" {
+					requireNativeStatus(t, response, http.StatusConflict)
+					capacity := 1
+					if scenario.landing == "legacy request" {
+						capacity = 0
+					}
+					requireNativeStatus(t, landing.claim(t, r, next, "preferred-landing", capacity), http.StatusOK)
+					return
+				}
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != issue.WorkItemID {
+					t.Fatalf("unproven competing landing stranded source work: %#v", lease)
+				}
+				return
+			}
 			for _, f := range []nativeFixture{preferred, general} {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}

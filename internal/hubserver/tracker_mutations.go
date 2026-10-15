@@ -219,7 +219,7 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	if !found {
 		return tracker.Lease{}, fmt.Errorf("%w: %s", tracker.ErrLeaseNotFound, request.LeaseID)
 	}
-	if err := requireRenewableLease(ctx, tx, record, request.FencingToken, now, policyRequired, scopes...); err != nil {
+	if err := requireRenewableLease(ctx, tx, record, request.FencingToken, now, policyRequired, landingCapacity, scopes...); err != nil {
 		return tracker.Lease{}, err
 	}
 	if landingCapacity > 0 {
@@ -654,7 +654,7 @@ WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
 	return nil
 }
 
-func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, token tracker.FencingToken, now time.Time, policyRequired bool, scopes ...nativeScope) error {
+func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, token tracker.FencingToken, now time.Time, policyRequired bool, landingCapacity int, scopes ...nativeScope) error {
 	if record.session.FencingToken != token || record.session.ReleasedAt != nil ||
 		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
 		return fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
@@ -671,7 +671,7 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 		}
 	}
 	if !record.session.ExpiresAt.After(now) {
-		if err := requireLandingRenewalCapacity(ctx, tx, record.session.ID, now); err != nil {
+		if err := requireLandingRenewalCapacity(ctx, tx, record.session.ID, landingCapacity, now); err != nil {
 			return err
 		}
 	}

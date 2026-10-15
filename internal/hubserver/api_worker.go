@@ -41,6 +41,7 @@ type claimAPIRequest struct {
 
 type claimCandidateQuery struct {
 	LandingCapacity         int
+	LandingCapacityKnown    bool
 	LandingBatchGroup       string
 	Limit                   int
 	After                   tracker.WorkItemID
@@ -424,6 +425,11 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		if err := checkMonthlyLease(ctx, tx, existing, now); err != nil {
 			return tracker.Lease{}, err
+		}
+		if query.NativeScope != nil && query.LandingCapacity > 0 {
+			if err := tightenNativeLandingCapacity(ctx, tx, existing.session.ID, query.LandingCapacity); err != nil {
+				return tracker.Lease{}, err
+			}
 		}
 		if err := commit(); err != nil {
 			return tracker.Lease{}, fmt.Errorf("commit idempotent hub claim next: %w", err)

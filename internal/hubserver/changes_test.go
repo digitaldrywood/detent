@@ -779,7 +779,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name                                                                                                                            string
-		ownerCapacity, contenderCapacity                                                                                                int
+		ownerCapacity, contenderCapacity, renewalCapacity, replayCapacity, expiredRenewalCapacity                                       int
 		boundary                                                                                                                        string
 		nativeOnly, sameBatch, otherProject, laneChanged, expired, concurrent, fallback, room, renewFree, renewRace, direct, directRace bool
 	}{
@@ -788,6 +788,9 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		{name: "legacy contender cannot bypass owner ceiling", ownerCapacity: 1},
 		{name: "wider contender preserves owner ceiling", ownerCapacity: 1, contenderCapacity: 3},
 		{name: "lower contender retains its ceiling", ownerCapacity: 3, contenderCapacity: 1},
+		{name: "renewal tightens owner ceiling", ownerCapacity: 3, contenderCapacity: 3, renewalCapacity: 1},
+		{name: "claim replay tightens owner ceiling", ownerCapacity: 3, contenderCapacity: 3, replayCapacity: 1},
+		{name: "expired renewal applies incoming tighter ceiling", ownerCapacity: 3, contenderCapacity: 3, expired: true, expiredRenewalCapacity: 1},
 		{name: "configured multiple slots permit capacity", ownerCapacity: 2, contenderCapacity: 2, room: true},
 		{name: "legacy unconfigured claims are unchanged", room: true},
 		{name: "lane change retains live occupancy", ownerCapacity: 1, contenderCapacity: 1, laneChanged: true},
@@ -924,6 +927,14 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			}
 			if pinned != wantPinned {
 				t.Fatalf("claim replay widened the owner ceiling to %d, want %d", pinned, wantPinned)
+			}
+			if test.renewalCapacity > 0 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{LandingCapacity: test.renewalCapacity, FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{LandingCapacity: test.ownerCapacity, FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
+			}
+			if test.replayCapacity > 0 {
+				requireNativeStatus(t, f.claim(t, owner, first, ownerSession, test.replayCapacity), http.StatusOK)
+				requireNativeStatus(t, f.claim(t, owner, first, ownerSession, test.ownerCapacity), http.StatusOK)
 			}
 			if test.direct {
 				response := f.claim(t, waiter, second, waiterSession, test.contenderCapacity)
@@ -1069,7 +1080,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 			}
 			if test.expired && !test.renewFree {
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{LandingCapacity: test.expiredRenewalCapacity, FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusConflict)
 			} else {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)

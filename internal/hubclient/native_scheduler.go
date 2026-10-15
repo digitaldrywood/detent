@@ -401,6 +401,13 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
 	}
+	landingCapacitySupported, err := source.client.HubFeature(ctx, tracker.NativeLandingCapacityCapability)
+	if err != nil {
+		return nil, schedulingError(err)
+	}
+	if landingCapacitySupported {
+		claimRequest.Capabilities = append(claimRequest.Capabilities, tracker.NativeLandingCapacityCapability)
+	}
 	s.mu.Lock()
 	machineCapacity := s.machine.Capacity
 	limit := min(max(1, request.AdmissionLimit), machineCapacity)

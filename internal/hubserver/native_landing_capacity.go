@@ -10,6 +10,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const nativeLandingCapacityUnknown = -1
+
 const nativeLandingCapacityProject = `CASE WHEN project.profile='native' AND lower(ws.detent_state)='merging'
  AND v.id IS NOT NULL AND COALESCE(json_extract(v.record_json,'$.policy.gates.github_pull_request'),0)=0 THEN i.project_id ELSE '' END`
 
@@ -65,6 +67,7 @@ func nativeLandingClaimCapacity(ctx context.Context, query nativeQueryer, id tra
 }
 
 func nativeProjectLandingCapacity(ctx context.Context, query nativeQueryer, project string, capacity int, exclude tracker.LeaseID, now time.Time) (bool, int, error) {
+	unknown := capacity == nativeLandingCapacityUnknown
 	rows, err := query.QueryContext(ctx, `SELECT l.expires_at,l.landing_capacity FROM leases l JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+`
  WHERE i.project_id=? AND l.lease_id<>? AND l.released_at IS NULL AND l.expires_at>=? AND (l.landing_capacity>0 OR `+nativeGitHubLandingCapacityProject+`<>'')`, project, exclude, formatHubTime(now.Add(-time.Second)))
 	if err != nil {
@@ -86,12 +89,15 @@ func nativeProjectLandingCapacity(ctx context.Context, query nativeQueryer, proj
 			continue
 		}
 		used++
-		if declared > 0 && (capacity == 0 || declared < capacity) {
+		if declared > 0 && (capacity <= 0 || declared < capacity) {
 			capacity = declared
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return false, 0, err
+	}
+	if unknown {
+		return used == 0, 0, nil
 	}
 	return capacity == 0 || used < capacity, capacity, nil
 }
@@ -102,7 +108,7 @@ func reserveNativeLandingCapacity(ctx context.Context, tx *sql.Tx, scope nativeS
 		return err
 	}
 	if pinned > 0 {
-		return nil
+		return tightenNativeLandingCapacity(ctx, tx, record.session.ID, capacity)
 	}
 	var item string
 	if err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE id=?", record.issueID).Scan(&item); err != nil {
@@ -140,15 +146,23 @@ func reserveNativeLandingCapacity(ctx context.Context, tx *sql.Tx, scope nativeS
 	return err
 }
 
-func requireLandingRenewalCapacity(ctx context.Context, query nativeQueryer, lease tracker.LeaseID, now time.Time) error {
+func tightenNativeLandingCapacity(ctx context.Context, tx *sql.Tx, lease tracker.LeaseID, capacity int) error {
+	_, err := tx.ExecContext(ctx, "UPDATE leases SET landing_capacity=? WHERE lease_id=? AND landing_capacity>?", capacity, lease, capacity)
+	return err
+}
+
+func requireLandingRenewalCapacity(ctx context.Context, query nativeQueryer, lease tracker.LeaseID, capacity int, now time.Time) error {
 	var project string
-	var capacity int
+	var pinned int
 	if err := query.QueryRowContext(ctx, `SELECT CASE WHEN l.landing_capacity>0 THEN i.project_id ELSE `+nativeGitHubLandingCapacityProject+` END,l.landing_capacity
- FROM leases l JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE l.lease_id=?`, lease).Scan(&project, &capacity); err != nil {
+ FROM leases l JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE l.lease_id=?`, lease).Scan(&project, &pinned); err != nil {
 		return err
 	}
 	if project == "" {
 		return nil
+	}
+	if capacity == 0 || pinned > 0 && pinned < capacity {
+		capacity = pinned
 	}
 	allowed, _, err := nativeProjectLandingCapacity(ctx, query, project, capacity, lease, now)
 	if err != nil {
