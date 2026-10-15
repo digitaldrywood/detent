@@ -440,11 +440,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			})
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			if !test.confirmed && !test.duplicate {
-				status := http.StatusUnprocessableEntity
-				if test.noPolicy || test.stalePolicy {
-					status = http.StatusConflict
-				}
-				requireNativeStatus(t, response, status)
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 				return
 			}
 			requireNativeStatus(t, response, http.StatusOK)
@@ -501,12 +497,14 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 		imported    bool
 		exempt      bool
 		held        bool
+		noPolicy    bool
 		configError bool
 		allowed     bool
 	}{
 		{name: "human Todo", operation: "create", state: "Todo"},
 		{name: "machine Todo", operation: "create", state: "Todo", machine: true},
 		{name: "reuse incomplete Todo", operation: "reuse", state: "Todo", machine: true, allowed: true},
+		{name: "reuse without policy", operation: "reuse", state: "Todo", machine: true, noPolicy: true, allowed: true},
 		{name: "reuse config error", operation: "reuse", state: "Todo", machine: true, configError: true, allowed: true},
 		{name: "MCP Todo", operation: "create", state: "Todo", mcp: true},
 		{name: "MCP Backlog", operation: "create", state: "Backlog", mcp: true, allowed: true},
@@ -518,6 +516,9 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 
 		{name: "move to Todo", operation: "move", state: "Todo"},
 		{name: "edit Todo", operation: "edit", state: "Todo"},
+		{name: "create without policy", operation: "create", state: "Todo", noPolicy: true},
+		{name: "move without policy", operation: "move", state: "Todo", noPolicy: true},
+		{name: "edit without policy", operation: "edit", state: "Todo", noPolicy: true},
 		{name: "create config error", operation: "create", state: "Todo", configError: true},
 		{name: "move config error", operation: "move", state: "Todo", configError: true},
 		{name: "edit config error", operation: "edit", state: "Todo", configError: true},
@@ -544,8 +545,17 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &original)
 			}
+			if test.noPolicy {
+				clearNativeFixturePolicy(t, f)
+			}
 			if test.configError {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
+				descriptor.Configuration = &policy.Configuration{Behavior: json.RawMessage(`{"Unknown":true}`)}
+				descriptor = descriptor.WithID()
+				raw, err := json.Marshal(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE policy_revisions SET metadata_json=? WHERE scope=?", string(raw), string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
 					t.Fatal(err)
 				}
 			}

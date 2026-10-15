@@ -378,7 +378,8 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 		{name: "partial history", partial: true, initial: "Todo"},
 		{name: "incomplete Todo", incomplete: true, initial: "Todo", refused: true},
 		{name: "incomplete Backlog", incomplete: true, initial: "Backlog"},
-		{name: "missing contract policy", initial: "Todo", noPolicy: true, refused: true},
+		{name: "default contract without policy", initial: "Todo", noPolicy: true},
+		{name: "incomplete default contract without policy", incomplete: true, initial: "Todo", noPolicy: true, refused: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := &importFixtureBackend{failPage: test.partial, incompleteBody: test.incomplete}
@@ -434,16 +435,10 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 			if test.refused {
 				before := []tracker.NativeIssue{readWorkItem(t, f, tracker.NativeWorkItemID(job.WorkItemID), ""), readWorkItem(t, f, tracker.NativeWorkItemID(second.WorkItemID), "")}
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/integration/cutover", f.token, request)
-				status := http.StatusUnprocessableEntity
-				if test.noPolicy {
-					status = http.StatusConflict
-				}
-				requireNativeStatus(t, response, status)
-				if !test.noPolicy {
-					for _, section := range []string{"Acceptance criteria", "Must not break", "How we know it worked", "Backlog/Triage"} {
-						if !strings.Contains(response.Body.String(), section) {
-							t.Errorf("cutover refusal missing %q: %s", section, response.Body)
-						}
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				for _, section := range []string{"Acceptance criteria", "Must not break", "How we know it worked", "Backlog/Triage"} {
+					if !strings.Contains(response.Body.String(), section) {
+						t.Errorf("cutover refusal missing %q: %s", section, response.Body)
 					}
 				}
 				var integration ProjectIntegration
