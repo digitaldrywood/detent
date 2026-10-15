@@ -112,8 +112,16 @@ Renaming a mechanism or updating a snapshot does not establish removal or
 consolidation. Provider messages, operator reasons and decision helpers remain
 review boundaries.
 
+The complete-diff security audit uses bounded turns within the existing audit
+session and deadline. Its host-owned aggregation requires every deterministic
+source range and retains all unresolved findings; chunking does not introduce
+another recovery or capacity mechanism or exempt any changed content.
+
 **Enforcement:** `TestRepositorySources` and `TestSourceViolations` in
-`internal/invariants`. Review verifies removal or consolidation.
+`internal/invariants`; `TestChunkCoverage`, `TestLargeAuditAggregation` and
+`TestChunkSourceAndContinuation` in `internal/securityaudit`, and
+`TestRunnerChunkedAudit` in `internal/runner`. Review verifies removal or
+consolidation.
 
 ## INV-4 — Native merge queue
 
