@@ -226,6 +226,13 @@ func (s *Service) landChange(c echo.Context) error {
 		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
 			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
 		}
+		delivery, err := readReleaseDelivery(ctx, tx, scope, string(change.WorkItemID))
+		if err != nil {
+			return nil, err
+		}
+		if delivery != nil && (delivery.ChangeID != change.ID || delivery.VersionID != version.ID || delivery.HeadSHA != version.HeadSHA || delivery.BaseRef != request.BaseRef) {
+			return nil, nativeInvalid("Landing must cover the associated release version and branch")
+		}
 		if landed := change.CurrentLanding(); landed != nil {
 			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
 				return change, nil

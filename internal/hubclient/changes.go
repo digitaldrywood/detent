@@ -247,3 +247,13 @@ func (c *NativeClient) LandChangeVersion(ctx context.Context, item tracker.Nativ
 	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/landing", request, &result)
 	return result, err
 }
+
+func (c *NativeClient) AssociateReleasePick(ctx context.Context, item tracker.NativeWorkItemID, request tracker.AssociateReleasePick) (tracker.ReleaseDelivery, error) {
+	var result tracker.ReleaseDelivery
+	path, err := nativeItemPath(item)
+	if err != nil {
+		return result, err
+	}
+	err = c.client.request(ctx, http.MethodPost, c.base()+path+"/release-pick", request, &result)
+	return result, err
+}

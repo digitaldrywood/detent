@@ -204,6 +204,16 @@ func (s *Service) changePullRequestView(ctx context.Context, scope nativeScope, 
 		Head: pullRequestRef{}, Base: pullRequestRef{}, Checks: []pullRequestCheck{}, Reviews: []pullRequestReview{},
 		Labels: []string{}, UpdatedAt: change.UpdatedAt, FetchedAt: change.UpdatedAt,
 	}
+	delivery, err := readReleaseDelivery(ctx, s.database.reader, scope, item)
+	if err != nil {
+		return view, err
+	}
+	if delivery != nil && delivery.ChangeID == change.ID {
+		view.Number = delivery.PRNumber
+		view.URL = fmt.Sprintf("%s/pull/%d", delivery.Repository, delivery.PRNumber)
+		view.Head = pullRequestRef{Ref: delivery.HeadRef, SHA: delivery.HeadSHA, Repository: delivery.Repository}
+		view.Base = pullRequestRef{Ref: delivery.BaseRef, SHA: delivery.BaseSHA, Repository: delivery.Repository}
+	}
 	var current *tracker.ChangeVersion
 	for index := range detail.Versions {
 		if detail.Versions[index].ID == change.CurrentVersion {
