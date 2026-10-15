@@ -11,7 +11,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -124,7 +123,7 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "workflow", "acme/orders", descriptor, &pendingSource); err == nil || !connector.IsRetryable(err) {
-		t.Fatalf("browser runner's unapproved candidate = %v", err)
+	if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "workflow", "acme/orders", descriptor, &pendingSource); err != nil {
+		t.Fatalf("browser runner configuration report: %v", err)
 	}
 }

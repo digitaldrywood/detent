@@ -440,7 +440,7 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), writeStatus)
 				policyStatus, revokeStatus := http.StatusNotFound, http.StatusNotFound
 				if grant == "write" && (role == "owner" || role == "admin") {
-					policyStatus, revokeStatus = http.StatusOK, http.StatusNoContent
+					policyStatus, revokeStatus = http.StatusOK, http.StatusGone
 				}
 				descriptor := hubTestPolicy()
 				for _, route := range []string{"/policy", "/onboarding/policy"} {

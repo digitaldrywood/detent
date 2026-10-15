@@ -102,7 +102,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 				return nil
 			}
 			change.VersionError = "the final attempt diff does not identify the current Change Request head"
-			if version.PolicyID != e.data.PolicyID || detail.Summary.Status == "stale_policy" {
+			if detail.Summary.Status == "stale_policy" {
 				change.VersionCode = "policy_mismatch"
 			} else if detail.Summary.Status == "reviewed" && detail.Change.CurrentLanding() == nil &&
 				diff.BaseSHA == diff.HeadSHA && len(diff.Files) == 0 && e.integrationSource != nil &&
@@ -224,14 +224,14 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			if err != nil {
 				return err
 			}
-			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || version.PolicyID != e.data.PolicyID || current.Summary.Status == "stale_policy" || current.Change.CurrentLanding() != nil {
-				return errors.New("PR publication source, current version or approved policy changed; reconcile the current Change before retrying")
+			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || current.Summary.Status == "stale_policy" || current.Change.CurrentLanding() != nil {
+				return errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
 			}
 			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint != nil &&
 				(previous.Checkpoint.EffectState == "pending" || previous.Checkpoint.EffectState == "ambiguous") {
 				checkpoint := previous.Checkpoint
 				if e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil ||
-					previous.PolicyID != version.PolicyID || checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
+					checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 					checkpoint.HeadSHA != version.HeadSHA || checkpoint.Storage != "local_only" && !checkpoint.GitRef() || checkpoint.Availability != "available" || e.lastDiff.HeadSHA != version.HeadSHA {
 					return errors.New("uncertain publication requires unchanged verified current Rework source under its newly owned lease; preserve its checkpoint and reconcile the source, version and policy before retrying")
 				}
@@ -367,12 +367,11 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		if version.ID != detail.Change.CurrentVersion || version.HeadSHA != diff.HeadSHA {
 			continue
 		}
-		if version.PolicyID != e.data.PolicyID || detail.Summary.Status == "stale_policy" {
-			if !e.sourceRequired {
-				return "", false, &APIError{Status: 409, Code: "policy_mismatch", Message: "the current head's version no longer matches the approved policy"}
-			}
+
+		if detail.Summary.Status == "stale_policy" {
 			break
 		}
+
 		// Imported versions have no implementing attempt. Native reviews need
 		// that recorded session, so publish this execution's validated source
 		// rather than repeatedly auditing an unreviewable imported version.

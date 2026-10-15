@@ -551,7 +551,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "old completion frame restores successful deferred publication", restart: true, oldCompletionFrame: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses released authority", restart: true, restoreRefusal: "released", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses another machine", restart: true, restoreRefusal: "machine", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
-		{name: "restart refuses a lease pinned to a superseded policy", restart: true, restoreRefusal: "policy", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
+		{name: "restart retains a lease across configuration changes", restart: true, restoreRefusal: "policy", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "restart refuses stale fencing", restart: true, restoreRefusal: "fence", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "existing valid different fence cannot inherit deferred completion", restart: true, restoreRefusal: "existing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "existing same lease renewal preserves deferred completion", restart: true, restoreRefusal: "renewed", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
@@ -585,8 +585,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: strings.Repeat("b", 40),
 			wantDiagnostic: "checkpoint head", wantChanges: 1, wantVersions: 1},
-		{name: "rework refuses the same head under a changed policy", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
-			wantDiagnostic: "policy_mismatch", wantChanges: 1, wantVersions: 1},
+		{name: "rework preserves the same head after configuration changes", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "changed review requirements republish the same source", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true, reviewer: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "a policy that asks for a reviewer leaves the version waiting", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), reviewer: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "a remote no https URL names opens the change without a version", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), noRemote: true,
@@ -1485,7 +1487,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							return
 						}
 						_, err = h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: leasePolicy, Repository: nativeChangeRepository}, candidate, saved)
-						if test.restoreRefusal != "" && test.restoreRefusal != "renewed" {
+						if test.restoreRefusal != "" && test.restoreRefusal != "renewed" && test.restoreRefusal != "policy" {
 							if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(h.scheduler.nativeClaims) != 0 {
 								t.Fatalf("invalid authority restored: claims=%v err=%v", h.scheduler.nativeClaims, err)
 							}
@@ -1601,7 +1603,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							if test.requiredPR && current.External == nil {
 								t.Fatal("required PR no edit Rework retained native work but published no operator-visible GitHub PR")
 							}
-							runPublished := test.published != got.HeadSHA || test.repolicy
+							runPublished := test.published != got.HeadSHA
 							if got.VersionID != current.ID || got.VersionError != "" || detail.Change.CurrentVersion != current.ID || current.HeadSHA != got.HeadSHA || current.BaseSHA != got.BaseSHA || runPublished && (current.RunID == "" || current.AttemptID == "") || current.Repository != nativeChangeRepository || current.Code.Kind != "code" || detail.Summary.Status != map[bool]string{false: "reviewed", true: "needs_evidence"}[test.reviewer] || got.Reviewed == test.reviewer {
 								t.Fatalf("version = %#v for native change %#v (summary %#v)", current, got, detail.Summary)
 							}
@@ -1941,7 +1943,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "confirmed publication retries validator rework after prerequisite repair", publication: "confirmed", rework: true, validator: "rework"},
 		{name: "confirmed publication reuses applicable passing native verdict", publication: "confirmed", rework: true, validator: "pass"},
 		{name: "confirmed publication preserves human hold during validator recovery", publication: "confirmed", rework: true, formal: true, validator: "rework"},
-		{name: "held publication refuses stale validator policy", publication: "lost_create", publicationFault: "policy", rework: true, formal: true, validator: "pass"},
+		{name: "held publication preserves validator authority across configuration changes", publication: "lost_create", publicationFault: "policy", rework: true, formal: true, validator: "pass"},
 		{name: "held publication refuses stale validator head", publication: "lost_create", publicationFault: "changed_head", rework: true, formal: true, validator: "pass"},
 		{name: "held publication reconciles staged work through new Runner lease", publication: "lost_create", rework: true, formal: true, staged: true},
 		{name: "held publication refuses replaced version on new Runner lease", publication: "lost_create", publicationFault: "version", rework: true, formal: true},
@@ -1957,7 +1959,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "held publication refuses missing_remote on new Runner lease", publication: "lost_create", publicationFault: "missing_remote", rework: true, formal: true},
 		{name: "held publication refuses dirty_source on new Runner lease", publication: "lost_create", publicationFault: "dirty_source", rework: true, formal: true},
 		{name: "held publication refuses changed_head on new Runner lease", publication: "lost_create", publicationFault: "changed_head", rework: true, formal: true},
-		{name: "held publication refuses policy on new Runner lease", publication: "lost_create", publicationFault: "policy", rework: true, formal: true},
+		{name: "held publication survives configuration change on new Runner lease", publication: "lost_create", publicationFault: "policy", rework: true, formal: true},
 		{name: "held publication refuses lease on new Runner lease", publication: "lost_create", publicationFault: "lease", rework: true, formal: true},
 		{name: "held publication refuses branch on new Runner lease", publication: "lost_create", publicationFault: "branch", rework: true, formal: true},
 		{name: "absorbed Rework settles the original version on its actual base", absorbed: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
@@ -2022,7 +2024,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			genuinePublication := test.publication != "" && test.validator != "" && test.publicationFault == ""
+			genuinePublication := test.publication != "" && test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy")
 			if test.reconnect || test.continueMessage {
 				useFastConversationTimings(t)
 			}
@@ -3403,7 +3405,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 					return
 				}
-				if test.publicationFault != "" {
+				if test.publicationFault != "" && test.publicationFault != "policy" {
 					if err == nil && (result.NativeChange == nil || result.NativeChange.VersionError == "" && result.NativeChange.Error == "") || owner.publication != nil || forgeCreates != wantCreates || forgePull != prBefore || provider.calls != callsBefore {
 						t.Fatalf("unresolved publication was accepted or rewrote forge/source: fault=%s creates=%d publication=%v provider_calls=%d error=%v", test.publicationFault, forgeCreates, owner.publication != nil, provider.calls-callsBefore, err)
 					}
@@ -3427,7 +3429,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 				}
 
-				if test.publicationFault == "" && (err != nil || result.NativeChange == nil || owner.publication == nil || forgeCreates != 1) {
+				if (test.publicationFault == "" || test.publicationFault == "policy") && (err != nil || result.NativeChange == nil || owner.publication == nil || forgeCreates != 1) {
 					t.Fatalf("real Runner retry failed exact PR adoption: creates=%d publication=%v error=%v", forgeCreates, owner.publication != nil, err)
 				}
 				item := tracker.NativeWorkItemID(issue.ID)
@@ -3443,7 +3445,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					detail.Versions[i].External = nil
 					expected.Versions[i].External = nil
 				}
-				if test.validator != "" && test.publicationFault == "" && expected.Summary.Status != "reviewed" {
+				if test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy") && expected.Summary.Status != "reviewed" {
 					if len(detail.Reviews) != len(expected.Reviews)+1 || detail.Reviews[len(detail.Reviews)-1].Validator == nil || detail.Reviews[len(detail.Reviews)-1].VersionID != expected.Change.CurrentVersion {
 						t.Fatal("publication recovery lost the fresh current-version validator decision")
 					}
@@ -3466,7 +3468,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if detail.Change.CurrentVersion != expected.Change.CurrentVersion || !reflect.DeepEqual(detail.Versions, expected.Versions) || !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Checks, expected.Checks) || detail.Change.Landed != nil {
 					t.Fatal("held retry changed version, reviews, checks or landing identity")
 				}
-				if test.publicationFault != "" {
+				if test.publicationFault != "" && test.publicationFault != "policy" {
 					return
 				}
 				var visible tracker.NativeIssue

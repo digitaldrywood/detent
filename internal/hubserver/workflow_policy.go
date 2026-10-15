@@ -9,16 +9,12 @@ import (
 	"strings"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 )
 
 func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope string, observation policy.Observation) (resultErr error) {
 	source := observation.Source
 	descriptor := observation.Descriptor
-	if strings.HasPrefix(scope, "repository:") {
-		return nil
-	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -36,31 +32,14 @@ func (d *database) applyObservedDefaultBranchPolicy(ctx context.Context, scope s
 		}
 	}
 	current := approval.Policy.ID
-	authoredCarryover := current != "" && descriptor.SameAuthoredInputs(approval.Policy)
-	carryover := authoredCarryover
-	if current != "" && !authoredCarryover {
-		equivalent, err := workflowconfig.SameSharedPolicyBehavior(approval.Policy, descriptor)
-		if err != nil {
+	if current != "" && current != descriptor.ID {
+		var previouslyApplied bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ? AND approved_by <> 'runner-report')", scope, descriptor.ID).Scan(&previouslyApplied); err != nil {
 			return err
 		}
-		delegated := source != nil && approval.Policy.Workflow != nil && validCommitID(approval.Policy.Workflow.Revision)
-		if !equivalent && !delegated {
+		if previouslyApplied {
 			return d.commit(ctx, tx)
 		}
-		var previouslyApproved, repositoryAdopted bool
-		if delegated {
-			if err := tx.QueryRowContext(ctx, `SELECT
-EXISTS (SELECT 1 FROM policy_revisions WHERE scope = ? AND policy_id = ?),
-EXISTS (SELECT 1 FROM project_workflow_applies WHERE scope = ? AND repository = ? COLLATE NOCASE AND source_commit = ? AND definition_digest = ?)`, scope, descriptor.ID, scope, source.Repository, approval.Policy.Workflow.Revision, approval.Policy.SourceDigest).Scan(&previouslyApproved, &repositoryAdopted); err != nil {
-				return err
-			}
-		} else if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM policy_revisions WHERE scope=? AND policy_id=?)", scope, descriptor.ID).Scan(&previouslyApproved); err != nil {
-			return err
-		}
-		if previouslyApproved || !repositoryAdopted && (!equivalent || descriptor.Workflow != nil) {
-			return d.commit(ctx, tx)
-		}
-		carryover = equivalent
 	}
 	if descriptor.Workflow != nil {
 		if source == nil || !validCommitID(source.Commit) || !validCommitID(source.DefaultBranchHead) || source.DefaultBranch == "" || source.Commit != descriptor.Workflow.Revision {
@@ -73,27 +52,14 @@ EXISTS (SELECT 1 FROM project_workflow_applies WHERE scope = ? AND repository = 
 		if repository == "" || !strings.EqualFold(repository, source.Repository) {
 			return d.commit(ctx, tx)
 		}
-		if !authoredCarryover && !source.DefaultBranchReachable {
+		if !source.DefaultBranchReachable && !descriptor.SameAuthoredInputs(approval.Policy) {
 			return d.commit(ctx, tx)
 		}
-	} else {
-		if !carryover {
-			return d.commit(ctx, tx)
-		}
-		if err := validateWorkflowPolicy(ctx, tx, scope, descriptor); err != nil {
-			return err
-		}
-	}
-	if carryover && descriptor.Authored.Version < approval.Policy.Authored.Version {
-		return d.commit(ctx, tx)
 	}
 	if current != descriptor.ID {
 		actor := "repository-default-branch"
-		if authoredCarryover || descriptor.Workflow == nil && carryover {
+		if descriptor.SameAuthoredInputs(approval.Policy) && approval.ApprovedBy != "" {
 			actor = approval.ApprovedBy
-		}
-		if actor == "" || strings.HasPrefix(actor, "runner_") {
-			actor = "repository-default-branch"
 		}
 		if _, err := d.approvePolicyInTx(ctx, tx, scope, actor, policy.Change{ExpectedID: current, Policy: descriptor}); err != nil {
 			return err

@@ -77,7 +77,7 @@ func requireNativeMutationLease(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if err := requireCurrentLease(lease, mutation.FencingToken, now); err != nil {
 		return err
 	}
-	return requireApprovedLeasePolicy(ctx, tx, mutation.LeaseID, true)
+	return requireLeaseRouting(ctx, tx, mutation.LeaseID)
 }
 
 // nativeIssueRowID resolves a work item to its internal row ID with the same
@@ -234,8 +234,8 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 		if err != nil {
 			return false, false, err
 		}
-		if change.CurrentVersion != f.VersionID || data.PolicyID != f.Publication.PolicyID || !version.Policy.Gates.GitHubPullRequest || !f.Publication.Matches(f.ChangeID, version) {
-			return false, false, nativeExecutionConflict("PR publication no longer matches the current Change version, source or approved policy")
+		if change.CurrentVersion != f.VersionID || !version.Policy.Gates.GitHubPullRequest || !f.Publication.Matches(f.ChangeID, version) {
+			return false, false, nativeExecutionConflict("PR publication no longer matches the current Change version or source")
 		}
 		var raw string
 		if err := tx.QueryRowContext(ctx, "SELECT checkpoint_json FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {

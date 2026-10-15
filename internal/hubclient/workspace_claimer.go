@@ -199,9 +199,6 @@ func (c *WorkspaceClaimer) ClaimState() WorkspaceClaimState {
 		state.Reasons = append(state.Reasons, "runner_draining")
 	}
 	if capacity := r.routing.ClaimState; capacity != nil {
-		if approved, ok := capacity.PolicyIDs[c.native.project]; ok && approved != state.PolicyID {
-			state.Reasons = append(state.Reasons, "policy_mismatch")
-		}
 		if len(capacity.Slots) >= capacity.HostCapacity {
 			state.Reasons = append(state.Reasons, "host_capacity")
 		}

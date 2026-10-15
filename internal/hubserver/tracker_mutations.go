@@ -318,7 +318,7 @@ func (d *database) appendEvent(ctx context.Context, event tracker.WorkEvent, pol
 	if err := requireCurrentLease(current, event.FencingToken, now); err != nil {
 		return err
 	}
-	if err := requireApprovedLeasePolicy(ctx, tx, current.session.ID, policyRequired); err != nil {
+	if err := requireLeaseRouting(ctx, tx, current.session.ID); err != nil {
 		return err
 	}
 	if event.MachineID != "" && event.MachineID != current.session.Machine.ID {
@@ -651,7 +651,7 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 		!record.session.ExpiresAt.After(now) && (!policyRequired || len(scopes) == 0) {
 		return fmt.Errorf("%w: lease %s", tracker.ErrStaleFencingToken, record.session.ID)
 	}
-	if err := requireApprovedLeasePolicy(ctx, tx, record.session.ID, policyRequired); err != nil {
+	if err := requireLeaseRouting(ctx, tx, record.session.ID); err != nil {
 		return err
 	}
 	for _, scope := range scopes {

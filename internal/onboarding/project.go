@@ -33,11 +33,9 @@ type Step struct {
 }
 
 type Project struct {
-	LatestRun string           `json:"latest_run,omitempty"`
-	Progress  Progress         `json:"progress"`
-	Policy    *policy.Approval `json:"policy,omitempty"`
-	// ObservedPolicies are the distinct descriptors runners resolved and could
-	// not run, newest first; the approved policy is never among them.
+	LatestRun        string                   `json:"latest_run,omitempty"`
+	Progress         Progress                 `json:"progress"`
+	Policy           *policy.Approval         `json:"policy,omitempty"`
 	ObservedPolicies []policy.ObservedPolicy  `json:"observed_policies,omitempty"`
 	Runners          []runnerauth.Eligibility `json:"runners"`
 	Artifacts        []artifact.Binding       `json:"artifact_services"`
@@ -60,7 +58,7 @@ func (p *Project) Evaluate() {
 		return r.Runner.Health == "online" && r.Runner.State == "active" && r.LocalChecks != nil && r.LocalChecks.Passed()
 	})
 	add("Local validation", validated, "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks.")
-	add("Repository configuration", p.Policy != nil, "The project configuration tells Detent how to work on your code. Review the settings sent by your runner, then click Approve to allow work to start.")
+	add("Repository configuration", p.Policy != nil, "The project configuration tells Detent how to work on your code. Your runner reports these settings from the repository.")
 	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool { return len(r.Exclusions) == 0 })
 	artifactDetail := "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage."
 	add("Artifact history", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
