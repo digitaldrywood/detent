@@ -536,11 +536,12 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 		return
 	}
 	root := t.TempDir()
-	cache, err := NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+	owner := filepath.Join(root, "runtime.db")
+	cache, err := NewManaged(t.Context(), root, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+	other, err := NewManaged(t.Context(), root, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +562,7 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	if err := os.Chtimes(older, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	policy := Policy{MaxBytes: 1000}
+	policy := Policy{MaxBytes: 1000 + int64(len(owner)+1)}
 	leased, release, err := cache.Use(t.Context())
 	if err != nil || ManagedBuildFromContext(leased) != root {
 		t.Fatalf("lease: root=%q err=%v", ManagedBuildFromContext(leased), err)

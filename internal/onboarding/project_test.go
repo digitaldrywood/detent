@@ -1,6 +1,7 @@
 package onboarding
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -14,6 +15,7 @@ func TestProjectReadiness(t *testing.T) {
 		name                                      string
 		policy, doctor, provider, runner, binding bool
 		artifacts                                 string
+		exclusions                                []runnerauth.Exclusion
 		want                                      bool
 	}{
 		{name: "interrupted"},
@@ -22,6 +24,11 @@ func TestProjectReadiness(t *testing.T) {
 		{name: "missing runner", policy: true, doctor: true, provider: true, artifacts: "local"},
 		{name: "missing gateway", policy: true, doctor: true, provider: true, runner: true, artifacts: "customer"},
 		{name: "local ready", policy: true, doctor: true, provider: true, runner: true, artifacts: "local", want: true},
+		{name: "host full", policy: true, doctor: true, provider: true, runner: true, artifacts: "local", exclusions: []runnerauth.Exclusion{{Code: "host_capacity", Message: "Shared host capacity is full or paused"}}, want: true},
+		{name: "runner full", policy: true, doctor: true, provider: true, runner: true, artifacts: "local", exclusions: []runnerauth.Exclusion{{Code: "runner_capacity", Message: "Runner capacity is full or paused"}}, want: true},
+		{name: "host and runner full", policy: true, doctor: true, provider: true, runner: true, artifacts: "local", exclusions: []runnerauth.Exclusion{{Code: "host_capacity"}, {Code: "runner_capacity"}}, want: true},
+		{name: "requirements unmatched", policy: true, doctor: true, provider: true, runner: true, artifacts: "local", exclusions: []runnerauth.Exclusion{{Code: "selector_no_match", Message: "Runner does not match required tags"}}},
+		{name: "requirements unmatched and capacity full", policy: true, doctor: true, provider: true, runner: true, artifacts: "local", exclusions: []runnerauth.Exclusion{{Code: "host_capacity"}, {Code: "runner_capacity"}, {Code: "selector_no_match"}}},
 		{name: "customer configured", policy: true, doctor: true, provider: true, runner: true, binding: true, artifacts: "customer", want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,6 +38,7 @@ func TestProjectReadiness(t *testing.T) {
 			}
 			if tt.runner {
 				p.Runners = []runnerauth.Eligibility{{Runner: runnerauth.Runner{Routing: runnerauth.Routing{State: "active"}, Health: "online"}, LocalChecks: &runnerauth.LocalChecks{Checkout: "passed", Doctor: "failed", Provider: "failed"}}}
+				p.Runners[0].Exclusions = slices.Clone(tt.exclusions)
 				if tt.doctor {
 					p.Runners[0].LocalChecks.Doctor = "passed"
 				}
@@ -45,6 +53,9 @@ func TestProjectReadiness(t *testing.T) {
 			p.Evaluate()
 			if p.Ready != tt.want || len(p.Steps) != 4 {
 				t.Fatalf("readiness = %+v", p)
+			}
+			if tt.runner && !slices.Equal(p.Runners[0].Exclusions, tt.exclusions) {
+				t.Fatalf("exclusions = %+v, want %+v", p.Runners[0].Exclusions, tt.exclusions)
 			}
 		})
 	}
