@@ -72,11 +72,14 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 	if err := validateProviderCandidates(request.ProviderCandidates); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	if request.LandingCapacity < 0 {
+		return s.nativeAPIError(c, nativeInvalid("Landing capacity must be non-negative"))
+	}
 	if request.ProtocolMajor != tracker.NativeProtocolMajor || !slices.Contains(request.Capabilities, "scoped_collaboration") || !slices.Contains(request.Capabilities, "native_issues") {
 		return s.nativeAPIError(c, nativeInvalid("Native protocol and required collaboration capabilities must be negotiated"))
 	}
 	for _, capability := range request.Capabilities {
-		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability}, capability) {
+		if !slices.Contains([]string{"native_issues", "scoped_collaboration", "revision_conflicts", "idempotent_mutations", tracker.NativeExecutionCapability, tracker.NativeProviderCapacityCapability, tracker.NativeWorkspaceCapability, tracker.NativeLandingCapacityCapability}, capability) {
 			return s.nativeAPIError(c, nativeInvalid("Unknown required capability"))
 		}
 	}
@@ -99,6 +102,8 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		}
 	}
 	lease, err := s.database.claimNext(ctx, tracker.ClaimRequest{WorkItemID: id, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}, claimCandidateQuery{
+		LandingCapacity:      request.LandingCapacity,
+		LandingCapacityKnown: request.LandingCapacity > 0 || slices.Contains(request.Capabilities, tracker.NativeLandingCapacityCapability),
 		MinimumRunnerVersion: minimumRunnerVersion(s.config.Version),
 		PolicyID:             request.PolicyID, RequirePolicy: true, ProviderCandidates: request.ProviderCandidates,
 		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
@@ -161,11 +166,14 @@ func (s *Service) renewNativeLease(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
 	}
+	if request.LandingCapacity < 0 {
+		return s.nativeAPIError(c, nativeInvalid("Landing capacity must be non-negative"))
+	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
 		return s.nativeAPIError(c, nativeInvalid("Lease TTL is invalid"))
 	}
-	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true, nativeRequestScope(c))
+	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, TTL: ttl}, true, request.LandingCapacity, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

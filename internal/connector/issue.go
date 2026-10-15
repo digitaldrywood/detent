@@ -50,7 +50,8 @@ type LaneSignalStatus struct {
 }
 
 type Issue struct {
-	IssueContract *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
+	NativeLandingHeadSHA string               `json:"native_landing_head_sha,omitempty" yaml:"-"`
+	IssueContract        *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
 	// CleanupDeliveredHeadSHA is fresh delivery evidence for one cleanup call, never tracker state.
 	CleanupDeliveredHeadSHA string `json:"-" yaml:"-"`
 

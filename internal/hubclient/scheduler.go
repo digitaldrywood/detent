@@ -296,7 +296,7 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	native, isNative := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if isNative {
-		return s.renewNativeClaim(ctx, issueID, native)
+		return s.renewNativeClaim(ctx, issueID, native, 0)
 	}
 	if err := s.ensureMachine(ctx); err != nil {
 		return orchestrator.Claimed{}, err
