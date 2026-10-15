@@ -13,7 +13,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	chatpkg "github.com/digitaldrywood/detent/internal/chat"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -160,7 +162,7 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 }
 
 func TestCloudProjectConfigurationOwner(t *testing.T) {
-	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
+	for _, scenario := range []string{"resume", "resume drained", "resume stale runner", "resume stale configuration", "resume denied", "resume revoked", "drain", "entry personal drain", "entry service drain", "entry revoked drain", "entry expired drain", "entry member removed drain", "entry grant removed drain", "entry scoped drain", "entry service scoped drain", "entry downgraded drain", "entry service downgraded drain", "entry foreign organization drain", "entry rotated drain", "entry missing origin drain", "apply", "cloud apply", "running apply", "drained apply", "refused apply", "storage exhausted", "stale configuration", "stale runner", "foreign runner", "foreign project", "busy", "revoked issuer", "revoked policy", "changed routing", "downgraded issuer", "wrong candidate"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "project-configuration")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
@@ -193,6 +195,64 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			f.service.echo.GET("/api/v2/organizations/:organization/configuration-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-context-test", testHubAdminToken, nil), http.StatusOK)
 			ctx := <-contexts
+			var entryClaims cloudassert.Claims
+			var entryNow time.Time
+			var entryRevoked bool
+			var entryExpires time.Time
+			var entrySubject string
+			var entryResolutions int
+			if strings.HasPrefix(scenario, "entry ") {
+				entryNow = time.Now().UTC()
+				f.service.config.now = func() time.Time { return entryNow }
+				provider := newHostedSecurityProvider()
+				shared := hostedSharedFixture{hostedSecurityFixture: hostedSecurityFixture{service: f.service, provider: provider, project: f.project.ID, base: f.base}}
+				f.service.config.Hosted = hostedSharedTestConfig("", provider, hostedSharedKey(7), 1).Hosted
+				f.service.config.Hosted.OrganizationID = string(f.project.OrganizationID)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_tenant(singleton,organization_id,provider_id,bootstrap_subject,public_url,deployment,allocation_generation) VALUES (1,?,'org_provider','user_owner','https://hub.example.test','shared',1)", f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+				owner := shared.member(t, "configuration-owner", "owner", "")
+				entrySubject = owner.identity.Subject
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_project_grants(user_id,organization_id,project_id,can_write,manage_runner) VALUES (?,?,?,1,1)", entrySubject, f.project.OrganizationID, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				entryClaims = cloudassert.Claims{Issuer: "entry", Audience: string(f.project.OrganizationID), ProviderOrganization: "org_provider", Subject: entrySubject, Role: "owner", Kind: cloudassert.KindKey, Generation: 1, IssuedAt: entryNow, ExpiresAt: entryNow.Add(20 * time.Second), Key: &apikey.KeyAuthority{ID: "key_configuration", CredentialBinding: strings.Repeat("b", 64), Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}}
+				if strings.Contains(scenario, "service") {
+					entryClaims.Key.Kind, entryClaims.Subject = "service", "service:"+entryClaims.Key.ID
+				}
+				f.service.config.Hosted.SharedEntry.ResolveKey = func(_ context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+					entryResolutions++
+					if entryRevoked || !entryExpires.IsZero() && !entryExpires.After(entryNow) || origin.KeyID != entryClaims.Key.ID || origin.CredentialBinding != entryClaims.Key.CredentialBinding || origin.Subject != entryClaims.Subject {
+						return cloudassert.Claims{}, cloudassert.ErrInvalid
+					}
+					fresh := entryClaims
+					fresh.IssuedAt, fresh.ExpiresAt = entryNow, entryNow.Add(20*time.Second)
+					return fresh, nil
+				}
+				credential, _, err := f.service.entryKeyCredential(t.Context(), entryClaims)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resolve := func(context.Context) (apiCredential, error) { return credential, nil }
+				ctx = context.WithValue(ctx, hubOperatorResolverKey{}, resolve)
+				ctx = context.WithValue(ctx, nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) {
+					return nativeScope{organization: f.project.OrganizationID, credential: credential}, nil
+				})
+				connection := operatortool.CurrentConnection(ctx)
+				connection.Identity = operatorIdentity(credential, string(f.project.OrganizationID))
+				connection.Resolve = func(ctx context.Context) (operatortool.Authority, error) {
+					return f.service.operatorCurrentAuthority(ctx, credential, string(f.project.OrganizationID))
+				}
+				ctx = operatortool.WithConnection(ctx, connection)
+				origin, err := json.Marshal(entryauthority.Origin{KeyID: entryClaims.Key.ID, CredentialBinding: entryClaims.Key.CredentialBinding, Subject: entryClaims.Subject, Issuer: "entry", Generation: 1})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "entry missing origin drain" {
+					origin = nil
+				}
+				ctx = context.WithValue(ctx, operatorEntryOriginKey{}, string(origin))
+			}
 			if scenario == "resume denied" {
 				connection := operatortool.CurrentConnection(ctx)
 				resolve := connection.Resolve
@@ -229,13 +289,53 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 			if observed.RunnerID != r.binding.RunnerID || observed.ConfigRevision != view.ConfigRevision || observed.AllowLocalBinding || observed.LocalBindingPolicy == nil || observed.LocalBindingPolicy.ID != candidate.ID {
 				t.Fatalf("configuration=%s", result.Content)
 			}
-			if scenario == "drain" || scenario == "resume drained" {
+			if scenario == "drain" || scenario == "resume drained" || strings.HasPrefix(scenario, "entry ") {
 				args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: observed.RunnerID, ExpectedRunnerRevision: observed.RunnerRevision, RequestID: "drain", ExpectedConfigRevision: observed.ConfigRevision, ExpectedPolicyID: current.ID}
 				result, err := call("drain_local_project", args)
+				if scenario == "entry missing origin drain" {
+					if err == nil {
+						t.Fatal("entry drain queued without a durable origin")
+					}
+					return
+				}
 				if err != nil || !strings.Contains(string(result.Content), `"pending":true`) {
 					t.Fatalf("drain queued=%s %v", result.Content, err)
 				}
+				if strings.HasPrefix(scenario, "entry ") {
+					entryNow = entryNow.Add(time.Minute)
+					switch scenario {
+					case "entry revoked drain":
+						entryRevoked = true
+					case "entry expired drain":
+						entryExpires = entryNow
+					case "entry member removed drain":
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET active=0 WHERE user_id=?", entrySubject); err != nil {
+							t.Fatal(err)
+						}
+					case "entry grant removed drain":
+						if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", entrySubject, f.project.ID); err != nil {
+							t.Fatal(err)
+						}
+					case "entry scoped drain", "entry service scoped drain":
+						entryClaims.Key.ProjectContext = apikey.ProjectContext{Access: "project", Projects: []string{"prj_other"}}
+					case "entry downgraded drain", "entry service downgraded drain":
+						entryClaims.Key.Permission = apikey.ScopeRead
+					case "entry foreign organization drain":
+						entryClaims.Audience = "org_other"
+					case "entry rotated drain":
+						entryClaims.Key.CredentialBinding = strings.Repeat("c", 64)
+					}
+				}
 				request := heartbeat().ProjectConfigurationRequest
+				if strings.HasPrefix(scenario, "entry ") && entryResolutions == 0 {
+					t.Fatal("queued entry authority was not resolved from its current owner")
+				}
+				if strings.HasPrefix(scenario, "entry ") && scenario != "entry personal drain" && scenario != "entry service drain" {
+					if request != nil {
+						t.Fatalf("revoked current entry authority delivered drain: %+v", request)
+					}
+					return
+				}
 				if request == nil || request.Operation != "drain_local_project" || request.RequestID != args.RequestID {
 					t.Fatalf("drain delivery=%+v", request)
 				}
@@ -243,7 +343,7 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				if heartbeat().ProjectConfigurationRequest != nil {
 					t.Fatal("acknowledged drain repeated")
 				}
-				if scenario == "drain" {
+				if scenario == "drain" || strings.HasPrefix(scenario, "entry ") {
 					return
 				}
 				view.RequestID = ""

@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/platformusers"
@@ -229,6 +232,52 @@ func TestHostedSharedEntryRejectsBypass(t *testing.T) {
 			}
 		})
 	}
+	for _, kind := range []string{cloudassert.KindBrowser, cloudassert.KindKey, cloudassert.KindMachine, cloudassert.KindService} {
+		mutate := func(claims *cloudassert.Claims) {
+			claims.OrganizationSlug = "example-org"
+			if kind == cloudassert.KindKey {
+				claims.Subject, claims.ProviderOrganization, claims.Role = owner.identity.Subject, "org_provider", "owner"
+				claims.Key = &apikey.KeyAuthority{ID: "key_routes", Kind: "personal", Permission: apikey.ScopeWrite, ProjectContext: apikey.ProjectContext{Access: "all"}}
+			}
+		}
+		user := &owner
+		bearer := ""
+		if kind != cloudassert.KindBrowser {
+			user = nil
+		}
+		if kind == cloudassert.KindMachine {
+			bearer = "detent_token"
+		}
+		missing := f.serve(t, hostedSharedRequest{user: user, kind: kind, bearer: bearer, target: "/missing-org/work", mutate: func(claims *cloudassert.Claims) {
+			mutate(claims)
+			claims.OrganizationSlug = ""
+		}})
+		if missing.Code != http.StatusNotFound {
+			t.Fatalf("missing slug status = %d: %s", missing.Code, missing.Body.String())
+		}
+		for _, prefix := range []string{"/example-org", "/organizations/org_security"} {
+			for _, path := range []string{
+				"/internal/v1/sessions/revoke", "/internal/v1/github/webhook", "/internal/v1/keys/catalog", "/internal/v1/keys/call",
+				"/organizations/org_security/work", "/login", "/auth/oidc/start", "/auth/oidc/callback", "/invite", "/logout",
+				"/support", "/support/start", "/webhooks/stripe", "/organization/switch", "/organization/create", "/organization/join",
+			} {
+				t.Run(kind+prefix+path, func(t *testing.T) {
+					response := f.serve(t, hostedSharedRequest{user: user, kind: kind, bearer: bearer, method: http.MethodPost, target: prefix + path, body: `{"bindings":["` + strings.Repeat("a", 64) + `"]}`, csrf: cloudassert.CSRFToken("shared-user_owner", "org_security"), mutate: mutate})
+					if response.Code != missing.Code || response.Body.String() != missing.Body.String() {
+						t.Fatalf("refusal = %d %s, want missing slug response %d %s", response.Code, response.Body.String(), missing.Code, missing.Body.String())
+					}
+				})
+			}
+		}
+		if kind == cloudassert.KindBrowser || kind == cloudassert.KindKey {
+			t.Run(kind+" readable API", func(t *testing.T) {
+				response := f.serve(t, hostedSharedRequest{user: user, kind: kind, target: "/example-org" + f.base + "/work-items", mutate: mutate})
+				if response.Code != http.StatusOK {
+					t.Fatalf("readable API status = %d: %s", response.Code, response.Body.String())
+				}
+			})
+		}
+	}
 }
 
 func TestHostedSharedEntryReplayIsDenied(t *testing.T) {
@@ -298,6 +347,24 @@ func TestHostedSharedEntryScopesPagesAndMutations(t *testing.T) {
 			}
 		})
 	}
+	mutate := func(claims *cloudassert.Claims) { claims.OrganizationSlug = "example-org" }
+	raw, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "shared-readable"}, Title: "Readable issue", State: "Todo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: "/example-org" + f.base + "/work-items", body: string(raw), csrf: csrf, mutate: mutate})
+	requireNativeStatus(t, created, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, created, &issue)
+	for _, path := range []string{"/example-org/work", fmt.Sprintf("/example-org/private-project-sentinel/issues/%d", issue.Number)} {
+		t.Run(path, func(t *testing.T) {
+			response := f.serve(t, hostedSharedRequest{user: &owner, target: path, mutate: mutate})
+			requireNativeStatus(t, response, http.StatusOK)
+			if !strings.Contains(response.Body.String(), `<meta name="detent-router-base" content="/example-org">`) {
+				t.Fatal("readable page is missing its router base")
+			}
+		})
+	}
 }
 
 func TestHostedSharedEntryRevokesSessionsAndChecksProvider(t *testing.T) {
@@ -305,6 +372,34 @@ func TestHostedSharedEntryRevokesSessionsAndChecksProvider(t *testing.T) {
 	f := newHostedSharedFixture(t)
 	owner := f.member(t, "owner", "owner", "write")
 	viewer := f.member(t, "viewer", "viewer", "read")
+	for _, handler := range []struct {
+		name string
+		call echo.HandlerFunc
+	}{
+		{"revocation", f.service.revokeHostedSharedSessions},
+		{"owner bootstrap", f.service.bootstrapHostedSharedOwner},
+		{"invitation acceptance", f.service.acceptHostedSharedInvitation},
+		{"billing binding", f.service.hostedSharedBillingBinding},
+		{"billing event", f.service.hostedSharedBillingEvent},
+	} {
+		for _, kind := range []string{"", cloudassert.KindBrowser, cloudassert.KindKey, cloudassert.KindMachine} {
+			t.Run(handler.name+"/"+kind, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodPost, "/internal/v1/test", strings.NewReader(`{"bindings":["`+cloudassert.AuthorizationBinding("shared-user_owner", "org_security", "session_owner")+`"]}`))
+				request.Header.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+				response := httptest.NewRecorder()
+				c := f.service.echo.NewContext(request, response)
+				if kind != "" {
+					c.Set(hostedSharedClaimsKey, f.claims(&owner, kind, request.Method, request.URL.Path, nil))
+				}
+				if err := handler.call(c); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want not found: %s", response.Code, response.Body.String())
+				}
+			})
+		}
+	}
 	target := f.base + "/work-items"
 	if response := f.serve(t, hostedSharedRequest{user: &owner, target: target}); response.Code != http.StatusOK {
 		t.Fatalf("owner read status = %d: %s", response.Code, response.Body.String())
