@@ -62,7 +62,7 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 			}
 			switch entry.Kind {
 			case EvidenceAttachment:
-				if !entry.matchesAttachmentReads(result.AttachmentReads, result.HeadSHA, tree) {
+				if !entry.matchesAttachmentReads(result.AttachmentReads, result.Commands, result.HeadSHA, tree) {
 					entry.Kind = EvidenceNotVerified
 					entry.Behavior = "Observed attachment and matching host read receipt required"
 				}
@@ -92,21 +92,35 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 	}
 }
 
-func (entry CriterionEvidence) matchesAttachmentReads(reads []AttachmentRead, head, tree string) bool {
+func (entry CriterionEvidence) matchesAttachmentReads(reads []AttachmentRead, commands []CommandResult, head, tree string) bool {
 	if entry.Reference == "" || entry.Behavior == "" || len(entry.ReceiptIDs) == 0 || head == "" || entry.HeadSHA != head || entry.TreeSHA == "" || tree != "" && entry.TreeSHA != tree {
 		return false
 	}
 	seen := make(map[string]bool, len(entry.ReceiptIDs))
+	var commandIDs []string
+	observedAttachment := false
 	for _, id := range entry.ReceiptIDs {
 		if id == "" || seen[id] {
 			return false
 		}
 		seen[id] = true
+		if !slices.ContainsFunc(reads, func(read AttachmentRead) bool { return read.ReceiptID == id }) {
+			commandIDs = append(commandIDs, id)
+			continue
+		}
 		if !slices.ContainsFunc(reads, func(read AttachmentRead) bool {
 			return read.ReceiptID == id && read.AttachmentID != "" && read.SHA256 != "" && read.HeadSHA == head && read.TreeSHA == entry.TreeSHA
 		}) {
 			return false
 		}
+		observedAttachment = true
+	}
+	if !observedAttachment {
+		return false
+	}
+	if len(commandIDs) > 0 {
+		entry.ReceiptIDs = commandIDs
+		return entry.normalizeReceipts(commands, head, entry.TreeSHA)
 	}
 	return true
 }

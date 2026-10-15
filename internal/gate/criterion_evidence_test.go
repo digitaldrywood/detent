@@ -15,6 +15,7 @@ func TestCriterionEvidence(t *testing.T) {
 		gaps       []string
 		findings   int
 		receiptIDs []string
+		mixed      bool
 		edit       func(*ValidatorResult)
 		tree       *string
 	}{
@@ -88,6 +89,15 @@ func TestCriterionEvidence(t *testing.T) {
 			r.CriteriaEvidence[0].TreeSHA = ""
 		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 
+		{name: "mixed visual and command evidence", mixed: true, gaps: []string{"Return valid input"}},
+		{name: "mixed failed command", mixed: true, edit: func(r *ValidatorResult) { r.Commands[0].ExitCode = 1 }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed command wrong tree", mixed: true, edit: func(r *ValidatorResult) { r.Commands[0].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed image wrong head", mixed: true, edit: func(r *ValidatorResult) { r.AttachmentReads[1].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed missing receipt", mixed: true, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].ReceiptIDs[2] = "missing" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed duplicate selected receipt", mixed: true, edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].ReceiptIDs = append(r.CriteriaEvidence[0].ReceiptIDs, "timing_app")
+		}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "attachment requires image read", mixed: true, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].ReceiptIDs = []string{"timing_app"} }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "observed attachment", edit: func(r *ValidatorResult) {
 			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "invalid-input.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "The capture shows the error beside the invalid field"}}
 			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "head", TreeSHA: "tree"}}
@@ -104,6 +114,11 @@ func TestCriterionEvidence(t *testing.T) {
 			if test.receiptIDs != nil {
 				result.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check-app; npx playwright test", ReceiptIDs: test.receiptIDs, HeadSHA: "head", TreeSHA: "tree", Behavior: "Both checks reject malformed input"}}
 				result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: "head", TreeSHA: "tree"}}
+			}
+			if test.mixed {
+				result.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "light.png, dark.png; make check-app", ReceiptIDs: []string{"light-read", "dark-read", "timing_app"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "Light and dark narrow views show the error and the application checks pass"}}
+				result.AttachmentReads = []AttachmentRead{{ReceiptID: "light-read", AttachmentID: "light", SHA256: "light-digest", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "dark-read", AttachmentID: "dark", SHA256: "dark-digest", HeadSHA: "head", TreeSHA: "tree"}}
+				result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}}
 			}
 			if test.edit != nil {
 				test.edit(&result)
