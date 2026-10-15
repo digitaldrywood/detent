@@ -37,7 +37,7 @@ func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string
 	}
 	raw, err := yaml.Marshal(map[string]any{
 		"schema":  1,
-		"tracker": map[string]any{"kind": "hub_native", "repository": "acme/orders", "lanes": lanes},
+		"tracker": map[string]any{"kind": "hub_native", "repository": "example-org/example-project", "lanes": lanes},
 		"gate":    map[string]any{"run": "true"},
 		"plan":    map[string]any{"enabled": false},
 		"agent":   map[string]any{"auto_promote": map[string]any{"enabled": promotion}},
@@ -67,7 +67,7 @@ func resolvedWorkflowPolicy(t *testing.T, states []policy.State, revision string
 func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project string) {
 	t.Helper()
 	base := browserHostedOrganizationBase + "/projects/" + project
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "acme/orders", project); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE id = ?", "example-org/example-project", project); err != nil {
 		t.Fatal(err)
 	}
 	binding := runnerauth.NewBinding()
@@ -88,7 +88,7 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Review"}},
 		{Name: "Done", Terminal: true},
 	}, strings.Repeat("b", 40), true)
-	source := &policy.RepositorySource{Repository: "acme/orders", Commit: applied.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: original.Workflow.Revision, DefaultBranchReachable: false}
+	source := &policy.RepositorySource{Repository: "example-org/example-project", Commit: applied.Workflow.Revision, DefaultBranch: "develop", DefaultBranchHead: original.Workflow.Revision, DefaultBranchReachable: false}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/policy/observed", credential, policy.Observation{Descriptor: applied, Source: source}), http.StatusNoContent)
 	f.api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: original.ID, Policy: applied}, http.StatusOK)
 	pending := resolvedWorkflowPolicy(t, []policy.State{
@@ -99,7 +99,7 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 	}, strings.Repeat("c", 40), false)
 	pendingSource := *source
 	pendingSource.DefaultBranchHead = applied.Workflow.Revision
-	pendingSource.Commit, pendingSource.DefaultBranchReachable = pending.Workflow.Revision, false
+	pendingSource.Commit, pendingSource.DefaultBranchReachable = pending.Workflow.Revision, project == f.privateProject
 	client, err := hubclient.New(hubclient.Config{URL: "https://workflow-browser.example.test", TokenSource: func() string { return credential }, HTTPClient: &http.Client{Transport: policyAPITransport{service: f.service}}})
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "workflow", "acme/orders", descriptor, &pendingSource); err != nil {
-		t.Fatalf("browser runner configuration report: %v", err)
+	if err := scheduler.CheckProjectPolicyWithSource(t.Context(), "workflow", "example-org/example-project", descriptor, &pendingSource); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -45,7 +45,7 @@ test("applied and reported workflow revisions show stored before/after changes n
   const original = revisions.nth(2);
   await expect(pending.getByRole("heading", { name: "Reported revision", exact: true })).toBeVisible();
   await expect(applied.getByRole("heading", { name: "Applied revision", exact: true })).toBeVisible();
-  await expect(applied).toContainText("acme/orders");
+  await expect(applied).toContainText("example-org/example-project");
   await expect(applied).toContainText("b".repeat(40));
   await expect(applied).toContainText(/Applied by hosted_/);
   await expect(original.getByRole("heading", { name: "Applied revision", exact: true })).toBeVisible();
@@ -68,7 +68,7 @@ test("applied and reported workflow revisions show stored before/after changes n
   await expect(row(original, "Lane order").getByRole("cell")).toHaveText(["None", "Todo → In Progress → Done → Archive → Blocked"]);
   await expect(row(original, "Execution · Auto promote").getByRole("cell")).toHaveText(["Not set", "false"]);
   await expect(row(pending, "Execution · Auto promote").getByRole("cell")).toHaveText(["true", "false"]);
-  await expect(pending.getByRole("button", { name: /Approve updated policy/ })).toHaveCount(0);
+  await expect(workflow.getByRole("button", { name: /Approve/ })).toHaveCount(0);
   const execution = page.locator("section").filter({ has: page.getByRole("heading", { name: "Execution", exact: true }) });
   await expect(execution.getByRole("button", { name: /Approve updated policy/ })).toHaveCount(0);
   await workflow.scrollIntoViewIfNeeded();
@@ -78,7 +78,7 @@ test("applied and reported workflow revisions show stored before/after changes n
   await expect(workflow.getByRole("button", { name: /Approve updated policy/ })).toHaveCount(0);
 });
 
-test("selecting a project shows its exact reported configuration without approval", async ({ page }) => {
+test("selecting a project shows its automatically applied runner configuration and stored diff", async ({ page }) => {
   const workflow = await openWorkflow(page);
   const selectedProject = new URL(hub.fixture.private_project).pathname.split("/").pop();
   const setupResponse = page.waitForResponse((response) =>
@@ -87,27 +87,27 @@ test("selecting a project shows its exact reported configuration without approva
   await page.getByRole("combobox", { name: "Project", exact: true }).click();
   await page.getByRole("option", { name: "Owner private project", exact: true }).click();
   const setup = await (await setupResponse).json();
-  expect(setup.observed_policies).toHaveLength(1);
-  const candidate = setup.observed_policies[0];
-  expect(candidate.conflict).toBe(false);
-  expect(candidate.policy.authored.version).toBe(3);
-  expect(candidate.policy.authored.files["detent.yaml"]).toContain("lanes:");
-  expect(candidate.policy.configuration.behavior).toBeNull();
-
-  const latest = workflow.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "Reported revision", exact: true }) });
+  expect(setup.observed_policies ?? []).toHaveLength(0);
+  const candidate = setup.policy.policy;
+  expect(candidate.authored.version).toBe(3);
+  expect(candidate.authored.files["detent.yaml"]).toContain("lanes:");
+  expect(candidate.configuration.behavior).toBeNull();
+  const policyResponse = await page.request.get(`${hub.fixture.url}/api/v2/organizations/org_browser_preview/projects/${selectedProject}/policy`);
+  expect(policyResponse.ok()).toBe(true);
+  const stored = await policyResponse.json();
+  expect(stored.history[0].definition).toEqual(candidate);
+  expect(stored.history[0].commit).toBe("c".repeat(40));
+  await expect(workflow.getByRole("heading", { name: "Reported revision", exact: true })).toHaveCount(0);
+  await expect(workflow.getByRole("button", { name: /Approve/ })).toHaveCount(0);
+  const latest = workflow.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "Applied revision", exact: true }) }).first();
   await expect(latest).toContainText("c".repeat(40));
   await expect(row(latest, "Lane: Review").getByRole("cell")).toHaveText(["Nondispatchable", "Dispatchable"]);
   await expect(row(latest, "Execution · Auto promote").getByRole("cell")).toHaveText(["true", "false"]);
-  await expect(latest).toContainText("Observed at");
-  await expect(workflow.getByRole("button", { name: /Approve updated policy/ })).toHaveCount(0);
+  await expect(latest).toContainText("Applied by repository-default-branch");
 });
 
 test("older revision pages keep their stored comparisons", async ({ page }) => {
   const selectedProject = new URL(hub.fixture.private_project).pathname.split("/").pop();
-  const workflow = await openWorkflow(page, "owner", selectedProject);
-  const setupResponse = await page.request.get(`${hub.fixture.url}/api/v2/organizations/org_browser_preview/projects/${selectedProject}/onboarding`);
-  expect(setupResponse.ok()).toBe(true);
-
   await page.route(/\/policy(?:\?.*)?$/, async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     const url = new URL(route.request().url());
@@ -115,12 +115,13 @@ test("older revision pages keep their stored comparisons", async ({ page }) => {
     const response = await route.fetch({ url: url.toString() });
     await route.fulfill({ response });
   });
-  await openWorkflow(page, "owner", selectedProject);
+  const workflow = await openWorkflow(page, "owner", selectedProject);
   const tables = workflow.getByRole("table", { name: "Workflow revision changes" });
   const revisions = workflow.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("table", { name: "Workflow revision changes" }) });
-  await expect(tables).toHaveCount(2);
+  await expect(tables).toHaveCount(1);
   await expect(revisions.nth(0)).toContainText("c".repeat(40));
-
+  await workflow.getByRole("button", { name: "Load older revisions" }).click();
+  await expect(tables).toHaveCount(2);
   await expect(revisions.nth(1)).toContainText("b".repeat(40));
   await expect(row(revisions.nth(1), "Lane: Archive").getByRole("cell")).toHaveText(["Terminal", "Removed"]);
   await expect(row(revisions.nth(1), "Execution · Auto promote").getByRole("cell")).toHaveText(["false", "true"]);
