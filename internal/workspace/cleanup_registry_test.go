@@ -338,8 +338,14 @@ func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
 		wantRemoved   int
 		wantPreserved int
 		wantActive    int
+		external      bool
+		recorded      bool
+		symlink       bool
 	}{
 		{name: "clean without registry", wantRemoved: 1},
+		{name: "external worktree does not block unrecorded cleanup", external: true, wantRemoved: 1},
+		{name: "external worktree does not block recorded cleanup", external: true, recorded: true, wantRemoved: 1},
+		{name: "managed symlink still refused", symlink: true},
 		{name: "dirty without registry", work: "dirty", wantPreserved: 1},
 		{name: "unpushed without registry", work: "unpushed", wantPreserved: 1},
 		{name: "active issue", active: true, wantActive: 1},
@@ -359,6 +365,28 @@ func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
+			}
+			var external string
+			if tt.external {
+				external = filepath.Join(t.TempDir(), "preserved-source")
+				runGit(t, source, "worktree", "add", "-b", "detent/preserved-source", external, "main")
+				if err := os.WriteFile(filepath.Join(external, "recovery.txt"), []byte("retained recovery source"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.recorded {
+				if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.symlink {
+				target := filepath.Join(t.TempDir(), "retained-worktree")
+				if err := os.Rename(info.Path, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, info.Path); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tt.work == "dirty" || tt.work == "unpushed" {
 				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("unique work"), 0o600); err != nil {
@@ -385,6 +413,16 @@ func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
 				active = []Issue{issue}
 			}
 			result, err := backend.ReconcileResiduals(t.Context(), active)
+			if tt.symlink {
+				var pathErr *PathError
+				if !errors.As(err, &pathErr) || pathErr.Reason != "workspace path is a symlink" || result.Removed != 0 {
+					t.Fatalf("unsafe candidate was not refused: %+v, %v", result, err)
+				}
+				if _, err := os.ReadFile(filepath.Join(info.Path, "README.md")); err != nil || !branchExists(t, source, info.Branch) {
+					t.Fatalf("symlink target or branch changed: %v", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("reconcile error = %v", err)
 			}
@@ -401,6 +439,15 @@ func TestLocalGitReconcileUnrecordedWorkspaces(t *testing.T) {
 				}
 			} else if statErr != nil || !branchExists(t, source, info.Branch) {
 				t.Fatalf("retained workspace missing: %v", statErr)
+			}
+			if tt.external {
+				retained, err := os.ReadFile(filepath.Join(external, "recovery.txt"))
+				if err != nil || string(retained) != "retained recovery source" || !branchExists(t, source, "detent/preserved-source") {
+					t.Fatalf("external recovery worktree was modified: %q, %v", retained, err)
+				}
+				if got := runGit(t, external, "rev-parse", "--is-inside-work-tree"); strings.TrimSpace(got) != "true" {
+					t.Fatal("external recovery worktree registration changed")
+				}
 			}
 		})
 	}
