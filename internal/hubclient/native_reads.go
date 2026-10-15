@@ -44,23 +44,23 @@ func (c *NativeClient) PullRequestReferences(ctx context.Context, id tracker.Nat
 
 func (c *NativeClient) CommentsPage(ctx context.Context, id tracker.NativeWorkItemID, cursor string, limit int) (tracker.Page[tracker.NativeComment], error) {
 	var result tracker.Page[tracker.NativeComment]
-	err := c.readItemPage(ctx, id, "comments", cursor, limit, &result)
+	err := c.readItemPage(ctx, id, "comments", "", cursor, limit, &result)
 	return result, err
 }
 
 func (c *NativeClient) HistoryPage(ctx context.Context, id tracker.NativeWorkItemID, cursor string, limit int) (tracker.Page[tracker.CollaborationEvent], error) {
 	var result tracker.Page[tracker.CollaborationEvent]
-	err := c.readItemPage(ctx, id, "history", cursor, limit, &result)
+	err := c.readItemPage(ctx, id, "history", "", cursor, limit, &result)
 	return result, err
 }
 
 func (c *NativeClient) AttemptsPage(ctx context.Context, id tracker.NativeWorkItemID, cursor string, limit int) (tracker.Page[tracker.NativeAttempt], error) {
 	var result tracker.Page[tracker.NativeAttempt]
-	err := c.readItemPage(ctx, id, "attempts", cursor, limit, &result)
+	err := c.readItemPage(ctx, id, "attempts", "", cursor, limit, &result)
 	return result, err
 }
 
-func (c *NativeClient) readItemPage(ctx context.Context, id tracker.NativeWorkItemID, kind, cursor string, limit int, target any) error {
+func (c *NativeClient) readItemPage(ctx context.Context, id tracker.NativeWorkItemID, kind, view, cursor string, limit int, target any) error {
 	path, err := nativeItemPath(id)
 	if err != nil {
 		return err
@@ -69,6 +69,9 @@ func (c *NativeClient) readItemPage(ctx context.Context, id tracker.NativeWorkIt
 		return tracker.ErrInvalidCandidateQuery
 	}
 	params := url.Values{"limit": {strconv.Itoa(limit)}, "cursor": {cursor}}
+	if view != "" {
+		params.Set("view", view)
+	}
 	return c.client.request(ctx, http.MethodGet, c.base()+path+"/"+kind+"?"+params.Encode(), nil, target)
 }
 
@@ -109,7 +112,7 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 		case operatortool.WorkItem, operatortool.WorkComments, operatortool.WorkHistory, operatortool.WorkRuns, operatortool.BoardActivity, operatortool.WorkAttemptReceipt:
 			switch definition.Name {
 			case operatortool.WorkRuns:
-				definition.Description = "Read a bounded page of native work-item attempts, including their recorded attempt IDs and runtime observations."
+				definition.Description = "Read a bounded page of native work-item attempt summaries. Full runtime detail is available through work_attempt_receipt."
 			case operatortool.BoardActivity:
 				definition.Description = "Read a bounded page of durable native work-item activity from the existing history owner."
 			case operatortool.WorkAttemptReceipt:
@@ -240,7 +243,9 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 		case operatortool.WorkHistory, operatortool.BoardActivity:
 			value, err = c.HistoryPage(ctx, id, request.Cursor, request.Limit)
 		case operatortool.WorkRuns:
-			value, err = c.AttemptsPage(ctx, id, request.Cursor, request.Limit)
+			var page tracker.Page[tracker.NativeAttempt]
+			err = c.readItemPage(ctx, id, "attempts", "blockers", request.Cursor, request.Limit, &page)
+			value = page
 		case operatortool.WorkAttemptReceipt:
 			if request.Cursor != "" {
 				return operatortool.Result{}, operatortool.ErrInvalidArguments
@@ -309,6 +314,9 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 	}
 	if err != nil {
 		var refusal *APIError
+		if errors.As(err, &refusal) && refusal.Code == "attempt_record_too_large" {
+			return operatortool.Result{}, &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
+		}
 		if errors.As(err, &refusal) && (refusal.Status == http.StatusForbidden || refusal.Status == http.StatusUnauthorized || refusal.Status == http.StatusNotFound) {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}

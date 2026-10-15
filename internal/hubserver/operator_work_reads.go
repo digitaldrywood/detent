@@ -43,7 +43,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		params.Set("cursor", request.Cursor)
 	}
 	if request.Offset != 0 && name != operatortool.WorkReferences && name != operatortool.BoardSessionHistory {
-		return operatortool.Result{}, operatortool.ErrInvalidArguments
+		return operatortool.Result{}, &operatortool.RequestError{Code: "invalid_request", Message: "offset is not supported here; page with the returned next_cursor"}
 	}
 	if name == operatortool.HealthFindings {
 		page, err := s.readHealthFindings(ctx, scope, request.State, request.Since, request.Cursor, min(request.Limit, 100))
@@ -140,6 +140,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		version, err := s.readVersion(ctx, scope, request.Reference, request.CommentID, request.Revision)
 		return hubWorkResult(r, request, version, err)
 	case operatortool.WorkRuns:
+		params.Set("view", "blockers")
 		page, err := s.readAttempts(ctx, scope, request.Reference, params)
 		return hubWorkResult(r, request, page, err)
 	case operatortool.WorkReferences:
@@ -200,7 +201,7 @@ func safeWorkReadError(err error) error {
 	}
 	var native *nativeError
 	if errors.As(err, &native) && native.status == 422 {
-		return operatortool.ErrInvalidArguments
+		return &operatortool.RequestError{Code: native.Code, Message: native.Message}
 	}
 	return &operatortool.ReadUnavailableError{Err: err}
 }

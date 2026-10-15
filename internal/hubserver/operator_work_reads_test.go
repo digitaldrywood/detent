@@ -81,7 +81,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 						callCtx = broader
 					}
 					call := hostedContextProtocol(t, f.service, callCtx, transport)
-					for _, tool := range []string{operatortool.WorkItem, operatortool.WorkHistory, operatortool.WorkComments, operatortool.WorkRelationships, operatortool.ExplainItem, operatortool.BoardActivity, operatortool.ListComments} {
+					for _, tool := range []string{operatortool.WorkItem, operatortool.WorkRuns, operatortool.WorkHistory, operatortool.WorkComments, operatortool.WorkRelationships, operatortool.ExplainItem, operatortool.BoardActivity, operatortool.ListComments} {
 						t.Run(tool, func(t *testing.T) {
 							logs.Reset()
 							args := map[string]any{"project_id": string(f.project.ID), "reference": test.reference}

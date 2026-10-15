@@ -87,6 +87,7 @@ type LandOptions struct {
 	GitHubClient              GitHubRESTClient
 	External                  *tracker.ChangeExternalReference
 	ExternalHeadSHA           string
+	PublicationPushes         []GitHubPublicationPush
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -90,6 +91,53 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 	}
 	remote, closePeers := nativeSSHExecution(t, t.Context(), e, t.TempDir())
 	defer closePeers()
+	published := map[string]string{}
+	uploadTransport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/comments") {
+			var input tracker.CreateComment
+			if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+				return nil, err
+			}
+			if _, exists := published[input.IdempotencyKey]; !exists {
+				published[input.IdempotencyKey] = input.Body
+			}
+			return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		}
+		if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/attachments") {
+			return uploadTransport.RoundTrip(request)
+		}
+		content, err := io.ReadAll(request.Body)
+		if err != nil {
+			return nil, err
+		}
+		metadata := attachment.Metadata{ID: "att_" + policy.Digest(content)[:32], ProjectID: string(h.native.project), Name: request.Header.Get("X-Attachment-Name"), ContentType: request.Header.Get("Content-Type"), Size: int64(len(content)), SHA256: policy.Digest(content)}
+		metadata.Reference = metadata.Markdown(string(h.native.organization))
+		encoded, err := json.Marshal(metadata)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = uploadTransport })
+	files := []runner.ValidationEvidence{
+		{Name: "security-audit-source.json", ContentType: "application/json", Content: []byte(`{"error":"run.invocation_id is missing"}`)},
+		{Name: "security-audit-landing.json", ContentType: "application/json", Content: []byte(`{"error":"run.worker_pid is missing"}`)},
+	}
+	for _, file := range files {
+		if err := remote.(runner.ValidationEvidenceExecution).PublishValidationEvidence(ctx, []runner.ValidationEvidence{file}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range files {
+		found := false
+		for _, body := range published {
+			found = found || strings.Contains(body, file.Name)
+		}
+		if !found {
+			t.Fatalf("published audit evidence %s is unavailable: %+v", file.Name, published)
+		}
+	}
 	remote.(runner.EvidenceSourceExecution).SetEvidenceSource(func(_ context.Context, path string) (runner.ValidationEvidence, error) {
 		if path != "page.png" {
 			return runner.ValidationEvidence{}, os.ErrPermission

@@ -21,6 +21,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 	implementationReview := func(r *tracker.ReviewChange) {
 		r.ImplementationReview, r.Validator = r.Validator, nil
 	}
+	blockingAudit := func(r *tracker.ReviewChange) {
+		r.SecurityAudit.Run.Verdict = "fail"
+		r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "authorization bypass"}}
+		r.SecurityAudit.Verdict = "rework"
+		r.Decision = "changes_requested"
+	}
 	landingAudit := func(r *tracker.ReviewChange) {
 		r.SecurityAudit.Landing = true
 		r.SecurityAudit.VersionID = r.ExpectedVersionID
@@ -60,12 +66,27 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"security audit metered pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"security audit before required implementation review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
+		{"security audit blocking finding before required implementation review", blockingAudit, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
+		{"security audit stale head before required implementation review", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.HeadSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"security audit OS identity clock precedes audit clock", func(r *tracker.ReviewChange) {
 			r.SecurityAudit.Run.WorkerStartedAt = r.SecurityAudit.Run.StartedAt.Add(-2 * time.Second)
 		}, http.StatusOK, "reviewed", nil},
 		{"security audit OS identity clock follows audit clock", func(r *tracker.ReviewChange) {
 			r.SecurityAudit.Run.WorkerStartedAt = r.SecurityAudit.Run.CompletedAt.Add(2 * time.Second)
 		}, http.StatusOK, "reviewed", nil},
+		{"security audit missing run", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 0 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit missing session", func(r *tracker.ReviewChange) { r.SecurityAudit.SessionID = 0 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit foreign issue", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.IssueID = "wi_other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit foreign project", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ProjectID = "prj_other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit foreign session", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ID = 99 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit p2 finding", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Verdict = "fail"
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p2", Body: "Missing authorization"}}
+			r.SecurityAudit.Verdict = "rework"
+			r.Decision = "changes_requested"
+		}, http.StatusOK, "needs_evidence", nil},
+		{"security audit missing invocation", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.InvocationID = "" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit stale base", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.BaseSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit stale head", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.HeadSHA = "other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit old reviewer", func(r *tracker.ReviewChange) { r.SecurityAudit.Run.ReviewerDigest = "other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -85,12 +106,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.SecurityAudit.Verdict = "rework"
 			r.Decision = "changes_requested"
 		}, http.StatusOK, "needs_evidence", nil},
-		{"security audit blocking finding", func(r *tracker.ReviewChange) {
-			r.SecurityAudit.Run.Verdict = "fail"
-			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "authorization bypass"}}
-			r.SecurityAudit.Verdict = "rework"
-			r.Decision = "changes_requested"
-		}, http.StatusOK, "needs_evidence", nil},
+		{"security audit blocking finding", blockingAudit, http.StatusOK, "needs_evidence", nil},
 		{"security audit advisory", func(r *tracker.ReviewChange) {
 			r.SecurityAudit.Run.Verdict = "fail"
 			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "advisory", Severity: "p3", Body: "advisory finding"}}
@@ -281,7 +297,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request), test.want)
+			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+			requireNativeStatus(t, response, test.want)
+			field := map[string]string{"security audit missing invocation": "invocation_id", "security audit missing run": "run.id", "security audit missing session": "session_id", "security audit foreign issue": "issue_id", "security audit foreign project": "project_id", "security audit foreign session": "session_id", "security audit stale base": "base_sha", "security audit stale head": "head_sha"}[test.name]
+			if field != "" && !strings.Contains(response.Body.String(), field) {
+				t.Fatalf("missing field diagnostic = %s, want %s", response.Body.String(), field)
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var detail tracker.ChangeDetail

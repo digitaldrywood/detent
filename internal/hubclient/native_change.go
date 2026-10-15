@@ -258,11 +258,29 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		}
 		confirmedPR := workspace.GitHubPublication{}
 		external, externalHead := version.External, version.HeadSHA
+		var previousNumber int64
 		if external == nil {
-			var previousNumber int64
 			for _, previous := range detail.Versions {
 				if previous.Number < version.Number && previous.Number > previousNumber && previous.Repository == version.Repository && previous.External != nil && (previous.Landing == nil || !previous.Landing.Landed) {
 					external, externalHead, previousNumber = previous.External, previous.HeadSHA, previous.Number
+				}
+			}
+		}
+		var pushes []workspace.GitHubPublicationPush
+		if external != nil && version.External == nil {
+			for _, previous := range detail.Versions {
+				if previous.Number <= previousNumber || previous.Number >= version.Number || previous.Repository != version.Repository || previous.External != nil || previous.AttemptID == "" || !previous.Policy.Gates.GitHubPullRequest || previous.Landing != nil && previous.Landing.Landed {
+					continue
+				}
+				ref := tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: previous.ID, HeadSHA: previous.HeadSHA}
+				for _, push := range detail.PublicationPushes {
+					if push.Change != ref {
+						continue
+					}
+					pushes = append(pushes, workspace.GitHubPublicationPush{EffectID: push.EffectID, Publication: tracker.NativePRPublication{
+						ChangeID: change.ChangeID, VersionID: previous.ID, Repository: previous.Repository, HeadSHA: previous.HeadSHA, PolicyID: previous.PolicyID,
+						SourceVersion: ref, SourceAttemptID: previous.AttemptID, External: *external,
+					}})
 				}
 			}
 		}
@@ -312,7 +330,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			return nil
 		}
-		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, SourceIssues: detail.SourceIssues})
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues})
 		if err != nil {
 			if e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
 				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; retain source and reconcile the exact existing PR before another write: %w", ErrUnavailable, err)

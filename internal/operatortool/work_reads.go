@@ -131,7 +131,7 @@ func WorkReadCatalog() []Definition {
 		{WorkHistory, "Read durable application history, identifying the tracker or workflow source; separate from recent_activity's live snapshot.", "reference cursor offset limit"},
 		{WorkVersion, "Read a saved native issue or comment revision.", "reference comment_id revision"},
 		{WorkRelationships, "Read authorized dependencies, relationships and external references.", "reference"},
-		{WorkRuns, "Read work-item run history and change/artifact references.", "reference cursor offset limit"},
+		{WorkRuns, "Read bounded work-item run summaries. Full native runtime detail is available through work_attempt_receipt, explain_item and board_session_history.", "reference cursor offset limit"},
 		{WorkReferences, "Read PR, change, diff and artifact identifiers and links; detail is owned by the review/artifact tools.", "reference cursor offset limit"},
 		{WorkBulkExport, "Export complete stored work items and comments in one authorized native project. Cursor pages default to 500 items with a 16 MiB byte budget; total and truncated describe continuation. Reads never refresh linked sources.", "states open labels archived cursor limit"},
 		{WorkExport, "Export the native work-item application resource as JSON.", "reference"},
@@ -213,6 +213,10 @@ func IsWorkRead(name string) bool {
 	return false
 }
 
+func invalidWorkRead(message string) error {
+	return &RequestError{Code: "invalid_request", Message: message}
+}
+
 func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	var request WorkReadRequest
 	if err := decodeArguments(raw, &request); err != nil {
@@ -234,25 +238,25 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	}
 	var value any
 	if json.Unmarshal(raw, &value) != nil || !schema.accepts(value) {
-		return request, ErrInvalidArguments
+		return request, invalidWorkRead("arguments do not match the " + name + " input schema")
 	}
 	var fields map[string]json.RawMessage
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &fields); err != nil {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead("arguments must be a JSON object")
 		}
 	}
 	for field, value := range fields {
 		if string(value) == "null" {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead(field + " must not be null; omit it instead")
 		}
 		if _, ok := schema.Properties[field]; !ok {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead(field + " is not a " + name + " argument")
 		}
 	}
 	for _, field := range schema.Required {
 		if _, ok := fields[field]; !ok {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead(field + " is required")
 		}
 	}
 	maximum := MaxItemLimit
@@ -262,25 +266,25 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	for _, date := range []string{request.CreatedAfter, request.CreatedBefore, request.UpdatedAfter} {
 		if date != "" {
 			if _, err := time.Parse(time.RFC3339Nano, date); err != nil {
-				return request, ErrInvalidArguments
+				return request, invalidWorkRead("date filters must be RFC3339 timestamps")
 			}
 		}
 	}
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
 	request.Reference = strings.TrimSpace(request.Reference)
 	if request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.Reference) > 256 || len(request.Query) > 256 || len(request.CreatedBy) > 256 || len(request.Fingerprint) > 256 || len(request.State) > 256 || len(request.Label) > 256 || len(request.CommentID) > 256 || len(request.Cursor) > 4096 || request.Offset < 0 || request.Offset > 1000000 || request.Limit < 0 || request.Limit > maximum {
-		return request, ErrInvalidArguments
+		return request, invalidWorkRead(fmt.Sprintf("project_id is required, text filters are at most 256 bytes, cursor at most 4096 bytes, offset 0 to 1000000 and limit 1 to %d", maximum))
 	}
 	for _, field := range schema.Required {
 		if field == "reference" && request.Reference == "" || field == "revision" && request.Revision <= 0 || field == "attempt_id" && request.AttemptID <= 0 {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead(field + " is required")
 		}
 	}
 	if rawLimit, ok := fields["limit"]; ok && (string(rawLimit) == "null" || request.Limit == 0) {
-		return request, ErrInvalidArguments
+		return request, invalidWorkRead(fmt.Sprintf("limit must be 1 to %d", maximum))
 	}
 	if _, present := fields["attempt_id"]; present && request.AttemptID <= 0 {
-		return request, ErrInvalidArguments
+		return request, invalidWorkRead("attempt_id must be positive")
 	}
 	for _, filter := range []struct {
 		single   string
@@ -291,15 +295,18 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 			count++
 		}
 		if count > 32 {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead("at most 32 values are allowed per filter")
 		}
 	}
-	if request.Priority != nil && len(request.Priorities) == 32 || slices.Contains(request.Include, "work") && slices.Contains(request.Include, "summary") {
-		return request, ErrInvalidArguments
+	if request.Priority != nil && len(request.Priorities) == 32 {
+		return request, invalidWorkRead("at most 32 values are allowed per filter")
+	}
+	if slices.Contains(request.Include, "work") && slices.Contains(request.Include, "summary") {
+		return request, invalidWorkRead("include accepts summary or work, not both")
 	}
 	if name == HealthFindings && request.Since != "" {
 		if _, err := time.Parse(time.RFC3339Nano, request.Since); err != nil {
-			return request, ErrInvalidArguments
+			return request, invalidWorkRead("since must be an RFC3339 timestamp")
 		}
 	}
 	if name == WorkBulkExport {
@@ -310,10 +317,10 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 		request.Limit = itemLimit(request.Limit)
 	}
 	if name == GitHubScopeTimings && (request.NativeAttemptID == "" || request.RunnerID == "") {
-		return request, ErrInvalidArguments
+		return request, invalidWorkRead("native_attempt_id and runner_id are required")
 	}
 	if len(request.NativeAttemptID) > 128 || request.NativeAttemptID != "" && !strings.HasPrefix(request.NativeAttemptID, "attempt_") || request.AttemptID != 0 && request.NativeAttemptID != "" || name == WorkAttemptReceipt && request.AttemptID <= 0 && request.NativeAttemptID == "" {
-		return request, ErrInvalidArguments
+		return request, invalidWorkRead("give exactly one of attempt_id or native_attempt_id; native_attempt_id starts with attempt_")
 	}
 	return request, nil
 }
