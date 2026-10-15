@@ -159,6 +159,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		legacy         bool
 		retainedSource bool
 		checkpointEdit func(*tracker.NativeCheckpoint)
+		otherVersion   bool
+		newerChange    bool
+		expiredLease   bool
 		reviewOutcome  string
 		publication    string
 		terminal       bool
@@ -225,8 +228,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", newNativeID("effect")
 		}},
 		{name: "typed complete published current version waits for review", reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", readAdmission: true, exclusion: "automated_review_missing"},
+		{name: "same head cannot borrow an unrelated version", otherVersion: true, finalMessage: completeReport, retainedSource: true, publication: "owned", wantCandidate: true},
+		{name: "newer unrelated draft does not hide published review wait", newerChange: true, reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", readAdmission: true, exclusion: "automated_review_missing"},
+		{name: "expired review wait leaves promotion to orchestrator", expiredLease: true, reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", exclusion: "automated_review_missing"},
 		{name: "published version resumes implementation for actionable findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested"},
-		{name: "published version cannot land after failed validation", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check"},
+		{name: "published version retries implementation after failed validation", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check", wantCandidate: true},
 		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active"},
 		{name: "aged published current version still waits for review", finalMessage: completeReport, retainedSource: true, publication: "owned", aged: true, readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
@@ -335,6 +341,29 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &published)
 				changePath = path + "/" + change.ID + "/versions/" + published.ID
+				if test.publication == "owned" || test.publication == "earlier" {
+					finalization := tracker.NativeFinalization{Settled: true, Changed: true, ChangeID: change.ID, VersionID: published.ID, HeadSHA: published.HeadSHA}
+					if test.otherVersion {
+						finalization.VersionID = "version_other"
+					}
+					raw, err := json.Marshal(finalization)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.finalization', json(?)) WHERE id=?", string(raw), f.attempt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.newerChange {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "unrelated-draft", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Unrelated draft", Body: "No published source"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var draft tracker.ChangeRequest
+					decodeHubResponse(t, response, &draft)
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json, '$.created_at', ?) WHERE id=?", formatHubTime(f.now.Add(time.Hour)), draft.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+
 				if test.reviewOutcome != "" {
 					check := changeTestResult(published)
 					if test.reviewOutcome == "failed_check" {
@@ -363,7 +392,13 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			}
 			claim := tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
-			f.release(t)
+			if test.expiredLease {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.now.Add(-time.Minute)), f.lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.release(t)
+			}
 			if f.reload(t).Revision != revision {
 				t.Fatal("completion fabricated an item edit")
 			}
@@ -486,14 +521,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				}
 				request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "review-after-wait"}, Decision: decision, Body: "Review current source"}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
-				want := "Merging"
-				if decision == "changes_requested" || test.reviewOutcome == "failed_check" {
-					want = "Fixing"
-				}
+				want := "Fixing"
 				if current := f.reload(t); current.State != want {
 					t.Fatalf("review result lane=%s want=%s", current.State, want)
 				}
-				if got := f.candidate(t); got != (decision == "changes_requested" || want == "Merging") {
+				if got := f.candidate(t); got != (decision == "changes_requested" || test.reviewOutcome == "failed_check") {
 					t.Fatalf("review result candidate=%t lane=%s", got, want)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)

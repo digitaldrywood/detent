@@ -349,16 +349,15 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 
 func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (tracker.NativeAnsweredExclusion, error) {
 	var scope nativeScope
-	var item, attempt, changeID, raw, checkpoint string
-	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, c.id, a.data_json, a.checkpoint_json
+	var item, attempt, raw, checkpoint string
+	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, a.checkpoint_json
  FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
  JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
- JOIN change_requests c ON c.organization_id = i.organization_id AND c.project_id = i.project_id AND c.work_item_id = i.native_id
  WHERE i.id = ? AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging'
  AND a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
- ORDER BY json_extract(c.record_json, '$.created_at') DESC, c.id DESC LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &changeID, &raw, &checkpoint)
+ LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &raw, &checkpoint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
@@ -390,11 +389,15 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 	if source.EffectState == "pending" || source.EffectState == "ambiguous" {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
-	detail, err := readChangeDetail(ctx, q, scope, item, changeID, now)
+	finalization := data.Finalization
+	if finalization == nil || !finalization.Changed || finalization.ChangeID == "" || finalization.VersionID == "" || finalization.HeadSHA != source.HeadSHA || finalization.VersionError != "" {
+		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	detail, err := readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
 	if err != nil {
 		return tracker.NativeAnsweredExclusion{}, err
 	}
-	review := changerequest.ReviewState(detail, detail.Change.CurrentVersion, source.HeadSHA)
+	review := changerequest.ReviewState(detail, finalization.VersionID, source.HeadSHA)
 	if !review.Current || review.ChangesRequested || detail.Change.CurrentLanding() != nil {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}

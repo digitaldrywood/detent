@@ -81,21 +81,7 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	}
 	for _, state := range project.States {
 		if state.Name == issue.State && state.Dispatchable {
-			var id tracker.WorkItemID
-			var active bool
-			if err := tx.QueryRowContext(ctx, `SELECT i.id, EXISTS (SELECT 1 FROM leases l WHERE l.issue_id = i.id AND l.released_at IS NULL AND julianday(l.expires_at) > julianday(?)) FROM issues i WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, formatHubTime(now), scope.organization, scope.project, issue.WorkItemID).Scan(&id, &active); err != nil {
-				return err
-			}
-			if active {
-				return nil
-			}
-			waiting, err := readPublishedReviewWait(ctx, tx, id, now)
-			if err != nil {
-				return err
-			}
-			if waiting.Kind == "" {
-				return nil
-			}
+			return nil
 		}
 	}
 	target := landingTarget(project, issue.State)

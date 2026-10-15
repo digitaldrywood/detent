@@ -239,6 +239,18 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 		return result
 	}
 	result.ChangesRequested = detail.Summary.NativeReview == "changes_requested"
+	for _, version := range detail.Versions {
+		if version.ID != versionID {
+			continue
+		}
+		for _, expected := range version.Checks {
+			for _, check := range detail.Checks {
+				if check.VersionID == versionID && check.CheckRunID == expected.CheckRunID && check.Conclusion != "success" {
+					result.ChangesRequested = true
+				}
+			}
+		}
+	}
 	sourceRework, validatorRework, auditRework := false, false, false
 	for _, review := range detail.Reviews {
 		if review.VersionID != versionID {
