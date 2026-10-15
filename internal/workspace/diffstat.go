@@ -77,7 +77,7 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	if err != nil {
 		return err
 	}
-	remoteHead, err := fetchReviewHead(ctx, normalized.Path, normalized.Branch, issue, true)
+	remoteHead, err := fetchReviewHead(ctx, normalized.Path, normalized.Branch, issue)
 	if err != nil {
 		return err
 	}
@@ -95,7 +95,7 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 	return err
 }
 
-func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue, allowStalePullRef bool) (string, error) {
+func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue) (string, error) {
 	branch := strings.TrimSpace(issue.PullRequestBranch)
 	if branch == "" {
 		branch = strings.TrimSpace(fallbackBranch)
@@ -121,6 +121,8 @@ func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Iss
 		}
 		remote = "https://github.com/" + repository + ".git"
 	}
+	// GitHub's synthetic pull ref can lag its published branch. Both sources
+	// belong to the authorized repository and must match the exact reviewed SHA.
 	var sourceErr error
 	for _, sourceRef := range sourceRefs {
 		if err := ctx.Err(); err != nil {
@@ -139,9 +141,6 @@ func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Iss
 			return remoteHead, nil
 		}
 		sourceErr = errors.Join(sourceErr, refuse(LandRefusalHeadMoved, fmt.Sprintf("review branch head mismatch: fetched %s, expected %s", remoteHead, strings.TrimSpace(issue.PullRequestHeadSHA))))
-		if !allowStalePullRef {
-			return "", sourceErr
-		}
 	}
 	return "", sourceErr
 }
