@@ -656,14 +656,21 @@ func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.Capaci
 		return observation, err
 	}
 	account, err := s.account(ctx, transport)
-	if err != nil || !account.SubscriptionBased() {
+	if err != nil {
 		return observation, err
+	}
+	if !account.SubscriptionBased() {
+		return observation, runner.ErrCapacityReadUnsupported
 	}
 	if err := sendRequest(ctx, transport, rateLimitsReadRequestID, "account/rateLimits/read", nil); err != nil {
 		return observation, err
 	}
 	result, err := s.awaitResponse(ctx, transport, rateLimitsReadRequestID, nil, nil, nil)
 	if err != nil {
+		var responseErr *ResponseError
+		if errors.As(err, &responseErr) && responseErr.Code == methodNotFoundCode {
+			return observation, errors.Join(runner.ErrCapacityReadUnsupported, err)
+		}
 		return observation, err
 	}
 	var response struct {

@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestAppServerResponseDeadlineSurvivesNotifications(t *testing.T) {
@@ -534,14 +535,15 @@ func TestAppServerAccountReadsResolvedAuthentication(t *testing.T) {
 func TestAppServerReadsCapacityWithoutStartingTurn(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		response  string
-		account   string
-		available bool
-		exhausted bool
-		failed    bool
-		code      int
-		accountID string
+		name        string
+		response    string
+		account     string
+		available   bool
+		exhausted   bool
+		failed      bool
+		code        int
+		accountID   string
+		unsupported bool
 	}{
 		{name: "legacy available", response: `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":20}}}`, available: true},
 		{name: "resolved account", response: `{"accountId":"account-one","ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":20}}}`, available: true, accountID: "account-one"},
@@ -554,9 +556,9 @@ func TestAppServerReadsCapacityWithoutStartingTurn(t *testing.T) {
 		{name: "multi bucket selects codex", response: `{"rateLimits":{"limitId":"codex_other","primary":{"usedPercent":0}},"rateLimitsByLimitId":{"codex":{"rateLimitReachedType":"primary","primary":{"usedPercent":100}}}}`, exhausted: true},
 		{name: "invalid permission", response: `{"ordinaryUsageAllowed":"yes"}`, failed: true},
 		{name: "malformed response", response: `[]`, failed: true},
-		{name: "status unsupported", code: methodNotFoundCode, failed: true},
+		{name: "status unsupported", code: methodNotFoundCode, failed: true, unsupported: true},
 		{name: "status request fails", code: -32000, failed: true},
-		{name: "API key account", account: `{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}`},
+		{name: "API key account", account: `{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}`, failed: true, unsupported: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			account := tt.account
@@ -579,6 +581,9 @@ func TestAppServerReadsCapacityWithoutStartingTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			observation, err := server.ReadCapacity(t.Context())
+			if errors.Is(err, runner.ErrCapacityReadUnsupported) != tt.unsupported {
+				t.Fatalf("unsupported read = %v, want %v", err, tt.unsupported)
+			}
 			if observation.AccountID != tt.accountID {
 				t.Fatalf("account ID = %q, want %q", observation.AccountID, tt.accountID)
 			}

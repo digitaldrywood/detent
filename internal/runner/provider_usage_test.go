@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -14,6 +16,90 @@ import (
 
 func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
 	t.Parallel()
+	for _, resolved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "concurrent profile", true: "concurrent resolved account"}[resolved], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				usage := &ProviderUsage{}
+				cfg := config.CodexAgentBackend(config.Codex{Command: "codex app-server"})
+				now := time.Now()
+				backend := capacityReadBackend{account: "profile-one", read: func(context.Context) (CapacityObservation, error) {
+					return CapacityObservation{AccountID: "account-one", Status: CapacityStatus{Available: true}}, nil
+				}}
+				alias := backend
+				if resolved {
+					alias.account = "profile-alias"
+					for _, owner := range []capacityReadBackend{backend, alias} {
+						if _, err := usage.RefreshCapacity(t.Context(), cfg, owner, now); err != nil {
+							t.Fatal(err)
+						}
+					}
+					now = now.Add(time.Minute)
+				}
+				started := make(chan struct{})
+				release := make(chan struct{})
+				var calls atomic.Int32
+				backend.read = func(ctx context.Context) (CapacityObservation, error) {
+					if calls.Add(1) == 1 {
+						close(started)
+					}
+					select {
+					case <-release:
+						return CapacityObservation{AccountID: "account-one", Status: CapacityStatus{Available: true}}, nil
+					case <-ctx.Done():
+						return CapacityObservation{}, ctx.Err()
+					}
+				}
+				alias.read = backend.read
+				type result struct {
+					observation CapacityObservation
+					err         error
+				}
+				first := make(chan result, 1)
+				go func() {
+					observation, err := usage.RefreshCapacity(t.Context(), cfg, backend, now)
+					first <- result{observation, err}
+				}()
+				<-started
+				second := make(chan result, 1)
+				go func() {
+					observation, err := usage.RefreshCapacity(t.Context(), cfg, alias, now)
+					second <- result{observation, err}
+				}()
+				synctest.Wait()
+				other := capacityReadBackend{account: "profile-two", read: func(context.Context) (CapacityObservation, error) {
+					return CapacityObservation{AccountID: "account-two", Status: CapacityStatus{Exhausted: true}}, nil
+				}}
+				if got, err := usage.RefreshCapacity(t.Context(), cfg, other, now); err != nil || !got.Status.Exhausted || got.AccountID != "account-two" {
+					t.Fatalf("unrelated account blocked or reused evidence: %#v, %v", got, err)
+				}
+				canceled, cancel := context.WithCancel(t.Context())
+				waiting := make(chan error, 1)
+				go func() { _, err := usage.RefreshCapacity(canceled, cfg, alias, now); waiting <- err }()
+				synctest.Wait()
+				cancel()
+				if err := <-waiting; !errors.Is(err, context.Canceled) {
+					t.Fatalf("waiting cancellation = %v", err)
+				}
+				close(release)
+				for _, finished := range []result{<-first, <-second} {
+					if finished.err != nil || !finished.observation.Status.Available || finished.observation.AccountID != "account-one" {
+						t.Fatalf("shared read = %#v", finished)
+					}
+				}
+				if got := calls.Load(); got != 1 {
+					t.Fatalf("concurrent reads = %d, want 1", got)
+				}
+			})
+		})
+	}
+	t.Run("unsupported backend", func(t *testing.T) {
+		for _, kind := range []string{config.AgentBackendClaudeCode, config.AgentBackendPiAgent} {
+			cfg := config.AgentBackend{ID: kind, Kind: kind}
+			if _, err := (&ProviderUsage{}).RefreshCapacity(t.Context(), cfg, nil, time.Now()); !errors.Is(err, ErrCapacityReadUnsupported) {
+				t.Fatalf("%s unsupported read = %v", kind, err)
+			}
+		}
+	})
 	for _, failed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "success", true: "unknown after failure"}[failed], func(t *testing.T) {
 			now := time.Date(2026, 10, 15, 20, 0, 0, 0, time.UTC)

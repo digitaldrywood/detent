@@ -266,22 +266,33 @@ func TestSlippedSubscriptionAttemptsFinishAsCapacityBeforeSessionBrakes(t *testi
 func TestBackendCapacityPollsStatusWithoutWorkClaims(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		status    runpkg.CapacityStatus
-		readErr   error
-		recovered bool
+		name         string
+		status       runpkg.CapacityStatus
+		readErr      error
+		recovered    bool
+		backendKind  string
+		unsupported  bool
+		restoredRead bool
 	}{
 		{name: "early manual or unannounced reset", status: runpkg.CapacityStatus{Available: true}, recovered: true},
 		{name: "repeated exhaustion", status: runpkg.CapacityStatus{Exhausted: true}},
 		{name: "status unavailable"},
 		{name: "transient read failure", status: runpkg.CapacityStatus{Available: true}, readErr: errors.New("status unavailable")},
+		{name: "Codex quota read unsupported", readErr: runpkg.ErrCapacityReadUnsupported, unsupported: true},
+		{name: "Codex quota reader becomes available early", readErr: runpkg.ErrCapacityReadUnsupported, unsupported: true, restoredRead: true},
+		{name: "Claude quota read unsupported", backendKind: "claude_code", readErr: runpkg.ErrCapacityReadUnsupported, unsupported: true},
+		{name: "Pi quota read unsupported", backendKind: "pi_agent", readErr: runpkg.ErrCapacityReadUnsupported, unsupported: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 15, 20, 0, 0, 0, time.UTC)
 			resetAt := now.Add(7 * 24 * time.Hour)
 			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+			if tt.backendKind != "" {
+				scope = backendcapacity.Scope{BackendID: tt.backendKind, BackendKind: tt.backendKind, Provider: "anthropic"}
+			}
 			other := backendcapacity.Scope{BackendID: "other-account", BackendKind: "codex", Provider: "openai"}
 			reads := 0
+			status, readErr := tt.status, tt.readErr
 			controller := backendCapacityTestController{scope: scope, read: func(ctx context.Context, got backendcapacity.Scope, _ time.Time) (runpkg.CapacityObservation, error) {
 				if _, ok := ctx.Deadline(); !ok {
 					t.Fatal("capacity read has no deadline")
@@ -290,12 +301,12 @@ func TestBackendCapacityPollsStatusWithoutWorkClaims(t *testing.T) {
 					t.Fatalf("read scope = %#v", got)
 				}
 				reads++
-				return runpkg.CapacityObservation{Status: tt.status}, tt.readErr
+				return runpkg.CapacityObservation{Status: status}, readErr
 			}}
-			orch := &Orchestrator{capacityController: controller, capacityReader: controller}
+			orch := &Orchestrator{capacityController: controller, capacityReader: controller, validatorCapacity: controller}
 			state := newState(normalizeConfig(Config{}))
 			outage := orch.registerBackendOutage(&state, &backendcapacity.Error{Scope: scope, Details: backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usageLimitExceeded", ResetAt: &resetAt}}, now, false)
-			state.BackendOutages[other.Key()] = BackendOutage{Scope: other, NextProbeAt: resetAt}
+			state.BackendOutages[other.Key()] = BackendOutage{Scope: other, NextProbeAt: resetAt.Add(24 * time.Hour)}
 			trackerHold := BackendOutage{Scope: githubRESTCapacityScope, Kind: githubRESTCapacityKind, NextProbeAt: now, ResumeAt: resetAt}
 			state.BackendOutages[githubRESTCapacityScope.Key()] = trackerHold
 			httpScope := backendcapacity.Scope{BackendID: "http-outage", BackendKind: "codex", Provider: "openai"}
@@ -325,6 +336,79 @@ func TestBackendCapacityPollsStatusWithoutWorkClaims(t *testing.T) {
 			}
 			if state.BackendOutages[githubRESTCapacityScope.Key()] != trackerHold || state.BackendOutages[httpScope.Key()] != httpHold {
 				t.Fatal("provider status polling changed an unrelated tracker or HTTP outage")
+			}
+			if tt.unsupported {
+				for attempt := 1; attempt <= 2; attempt++ {
+					pollAt := due.Add(time.Duration(attempt) * backendCapacityProbeDelay)
+					orch.refreshBackendCapacity(t.Context(), &state, pollAt)
+					if held := state.BackendOutages[scope.Key()]; !held.QuotaReadUnsupported || !held.NextProbeAt.Equal(outage.ResumeAt) || !held.ResetAt.Equal(resetAt) {
+						t.Fatalf("unsupported status changed pause: %#v", held)
+					}
+					if _, _, paused := orch.backendCapacityDispatch(&state, request, pollAt); !paused {
+						t.Fatal("unsupported read released pause before resume")
+					}
+				}
+				if reads != 3 {
+					t.Fatalf("unsupported status polling stopped: reads=%d", reads)
+				}
+				if tt.restoredRead {
+					readErr = errors.New("transient status failure")
+					orch.refreshBackendCapacity(t.Context(), &state, due.Add(3*backendCapacityProbeDelay))
+					if held := state.BackendOutages[scope.Key()]; held.QuotaReadUnsupported || !held.ResumeAt.Equal(outage.ResumeAt) {
+						t.Fatalf("transient failure changed pause: %#v", held)
+					}
+					if _, key, paused := orch.backendCapacityDispatch(&state, request, outage.ResumeAt); !paused || key != "" {
+						t.Fatal("transient failure enabled a quota canary")
+					}
+					status, readErr = runpkg.CapacityStatus{Available: true}, nil
+					orch.refreshBackendCapacity(t.Context(), &state, due.Add(4*backendCapacityProbeDelay))
+					if _, ok := state.BackendOutages[scope.Key()]; ok {
+						t.Fatal("restored reader did not recover quota before reset")
+					}
+					if _, ok := state.BackendOutages[other.Key()]; !ok {
+						t.Fatal("restored reader released another account")
+					}
+					if reads != 5 || len(state.Claimed) != 0 || len(state.Running) != 0 {
+						t.Fatalf("reader recovery used work: reads=%d claims=%v running=%v", reads, state.Claimed, state.Running)
+					}
+					return
+				}
+				probeAt := outage.ResumeAt
+				orch.refreshBackendCapacity(t.Context(), &state, probeAt)
+				for _, dispatch := range []func() (backendcapacity.Scope, string, bool){
+					func() (backendcapacity.Scope, string, bool) {
+						return orch.backendCapacityDispatch(&state, request, probeAt)
+					},
+					func() (backendcapacity.Scope, string, bool) {
+						return orch.validatorCapacityDispatch(&state, request.Issue, probeAt)
+					},
+				} {
+					if _, key, paused := dispatch(); paused || key != scope.Key() {
+						t.Fatalf("unsupported reader lost due canary: key=%s paused=%v", key, paused)
+					}
+				}
+				orch.markBackendCapacityProbe(&state, scope.Key(), request.Issue.ID, probeAt)
+				if _, _, paused := orch.validatorCapacityDispatch(&state, request.Issue, probeAt); !paused {
+					t.Fatal("concurrent canary allowed")
+				}
+				orch.refreshBackendCapacity(t.Context(), &state, probeAt.Add(backendCapacityProbeDelay))
+				if reads != 4 {
+					t.Fatal("status polling interfered with active canary")
+				}
+				freshReset := probeAt.Add(time.Hour)
+				failed := orch.registerBackendOutage(&state, &backendcapacity.Error{Scope: scope, Details: backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usageLimitExceeded", ResetAt: &freshReset}}, probeAt, true)
+				if _, _, paused := orch.backendCapacityDispatch(&state, request, freshReset); !paused || !failed.NextProbeAt.Equal(failed.ResumeAt) {
+					t.Fatalf("fresh exhaustion lost pause: %#v", failed)
+				}
+				orch.markBackendCapacityProbe(&state, scope.Key(), request.Issue.ID, failed.NextProbeAt)
+				orch.recoverBackendCapacity(&state, Running{CapacityScope: scope, CapacityProbe: true}, failed.NextProbeAt)
+				if _, ok := state.BackendOutages[scope.Key()]; ok {
+					t.Fatal("successful unsupported-reader canary did not recover")
+				}
+				if _, ok := state.BackendOutages[other.Key()]; !ok {
+					t.Fatal("unsupported-reader recovery released another backend")
+				}
+				return
 			}
 			if tt.recovered {
 				recovery := state.BackendRecoveries[scope.Key()]

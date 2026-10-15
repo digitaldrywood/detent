@@ -20,6 +20,8 @@ type AgentCapacityStatusProvider interface {
 	CapacityStatus(*telemetry.RateLimits) (CapacityStatus, bool)
 }
 
+var ErrCapacityReadUnsupported = errors.New("provider capacity read unsupported")
+
 type CapacityObservation struct {
 	AccountID  string
 	Status     CapacityStatus
