@@ -66,7 +66,11 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if err != nil {
 		return result, err
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.display_name,r.id`, scope.organization, scope.organization, scope.project)
+	canManageRunners := scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly
+	if scope.credential.Hosted != nil {
+		canManageRunners = true
+	}
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id FROM runner_identities r WHERE r.organization_id=? AND r.removed_at IS NULL AND ? ORDER BY r.display_name,r.id`, scope.organization, canManageRunners)
 	if err != nil {
 		return result, err
 	}
@@ -86,6 +90,18 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, id, s.config.now)
 		if err != nil {
 			return result, err
+		}
+		if scope.credential.Hosted != nil {
+			projects := runnerManagementProjects(runner)
+			if !s.appAllRunnerGrants(ctx, scope.credential, projects...) {
+				continue
+			}
+			if projects != nil && !slices.Contains(projects, scope.project) {
+				projects = append(projects, scope.project)
+				if !s.appAllRunnerGrants(ctx, scope.credential, projects...) {
+					continue
+				}
+			}
 		}
 		exclusions := runner.Exclusions(scope.project, approval.Policy.Requirements, false)
 		runner.Problems = slices.DeleteFunc(slices.Clone(runner.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
