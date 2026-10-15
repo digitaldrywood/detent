@@ -216,7 +216,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 		}
 	}
 	if opts.External != nil {
-		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.ReviewBranch, issue, false); err != nil {
+		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.ReviewBranch, issue); err != nil {
 			return info, false, err
 		}
 	} else if _, err := l.runGit(ctx, "cat-file", "-e", opts.HeadSHA+"^{commit}"); err != nil {
