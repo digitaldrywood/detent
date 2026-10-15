@@ -163,7 +163,8 @@ func TestHealthFindingsReads(t *testing.T) {
 		{"resolved empty", f.base + "/health/findings?state=resolved", http.StatusOK, 0},
 		{"since future", f.base + "/health/findings?since=" + url.QueryEscape(formatHubTime(now.Add(time.Second))), http.StatusOK, 0},
 		{"since exact", f.base + "/health/findings?since=" + url.QueryEscape(formatHubTime(now)), http.StatusOK, 2},
-		{"invalid state", f.base + "/health/findings?state=all", http.StatusUnprocessableEntity, 0},
+		{"all open", f.base + "/health/findings?state=all", http.StatusOK, 2},
+		{"invalid state", f.base + "/health/findings?state=unknown", http.StatusUnprocessableEntity, 0},
 		{"invalid since", f.base + "/health/findings?since=yesterday", http.StatusUnprocessableEntity, 0},
 		{"invalid limit", f.base + "/health/findings?limit=101", http.StatusUnprocessableEntity, 0},
 		{"invalid cursor", f.base + "/health/findings?cursor=bad", http.StatusUnprocessableEntity, 0},
@@ -222,6 +223,36 @@ func TestHealthFindingsReads(t *testing.T) {
 	decodeHubResponse(t, response, &resolved)
 	if len(resolved.Items) != 2 {
 		t.Fatalf("resolved=%+v", resolved)
+	}
+	opened := newHealthFinding("test", "instance", "project", "new-open", "New finding.", "Check project.", []string{string(f.project.ID)}, healthEvidence{})
+	applyTestHealth(t, f, now.Add(2*time.Minute), []healthFinding{opened})
+	for _, test := range []struct {
+		name  string
+		since time.Time
+		count int
+	}{
+		{"includes resolutions", now.Add(time.Minute), 3},
+		{"excludes earlier resolutions", now.Add(time.Minute + time.Second), 1},
+		{"keeps open findings before since", now.Add(3 * time.Minute), 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?state=all&since="+url.QueryEscape(formatHubTime(test.since)), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page healthFindingsPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != test.count {
+				t.Fatalf("findings=%+v", page.Items)
+			}
+			foundOpen := false
+			for _, finding := range page.Items {
+				if finding.Subject.ID == "new-open" && finding.ResolvedAt == nil {
+					foundOpen = true
+				}
+			}
+			if !foundOpen {
+				t.Fatal("combined read lost the open finding")
+			}
+		})
 	}
 }
 
