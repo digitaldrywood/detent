@@ -179,7 +179,13 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		LocalChecks:     localChecks,
 		GitHubIntake:    github.FetchIssueSnapshot,
 		GitHubDiscovery: github.DiscoverIssues,
-		Problems:        reportProblems,
+		Problems: func() []runnerauth.Problem {
+			problems := projects.reportedProblems()
+			if reportProblems != nil {
+				problems = append(problems, reportProblems()...)
+			}
+			return problems
+		},
 		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 			current := cfg
 			if setupOptions.runtimeConfig != nil {
