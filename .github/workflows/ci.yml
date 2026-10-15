@@ -478,7 +478,7 @@ jobs:
     name: Finalize scheduled validation
     timeout-minutes: 5
     needs: [preflight, invariants, lint, verify-fast, generated, app, verify-race, test-cover, security, browser-visual-shard, installer-smoke, goreleaser-snapshot]
-    if: always() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
+    if: always() && !cancelled() && (needs.preflight.result == 'success' || needs.preflight.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -493,11 +493,9 @@ jobs:
       - uses: ./.github/actions/setup-go-cached
         with:
           key: finalize
-      - name: Record operator cancellation
-        if: cancelled()
-        run: echo WORKFLOW_CANCELLED=true >> "$GITHUB_ENV"
       - name: Report source blockers at High and publish validated tag
         env:
+          WORKFLOW_CANCELLED: ${{ cancelled() }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
           CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}
