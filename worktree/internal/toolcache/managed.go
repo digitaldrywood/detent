@@ -1,0 +1,136 @@
+package toolcache
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+type Managed struct {
+	root string
+}
+
+type managedContextKey struct{}
+
+func NewManaged(ctx context.Context, root, owner string) (cache *Managed, err error) {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(owner) {
+		return nil, errors.New("managed Go build cache requires absolute cache and owner paths")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("create managed Go build cache: %w", err)
+	}
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.Join(errors.New("managed Go build cache must be an owned directory"), err)
+	}
+	cache = &Managed{root: filepath.Clean(root)}
+	lock, err := cache.lock(ctx, "admission", false)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, lock.Close()) }()
+	marker := filepath.Join(root, ".detent-owner")
+	existing, err := os.ReadFile(marker)
+	if err == nil {
+		if strings.TrimSpace(string(existing)) != filepath.Clean(owner) {
+			return nil, errors.New("managed Go build cache belongs to another runtime store")
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(marker, []byte(filepath.Clean(owner)+"\n"), 0o600); err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
+	}
+	return cache, nil
+}
+
+func ManagedBuildPath() (string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "detent", "go-build"), nil
+}
+
+func ManagedBuildFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	cache, ok := ctx.Value(managedContextKey{}).(*Managed)
+	if !ok || cache == nil {
+		return ""
+	}
+	return cache.root
+}
+
+func (m *Managed) Use(ctx context.Context) (context.Context, func() error, error) {
+	if m == nil || ManagedBuildFromContext(ctx) == m.root {
+		return ctx, func() error { return nil }, nil
+	}
+	queue, err := m.lock(ctx, "admission", false)
+	if err != nil {
+		return ctx, nil, err
+	}
+	usage, err := m.lock(ctx, "consumers", true)
+	err = errors.Join(err, queue.Close())
+	if err != nil {
+		if usage != nil {
+			err = errors.Join(err, usage.Close())
+		}
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, managedContextKey{}, m), usage.Close, nil
+}
+
+func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time, confirmQuiescence func(context.Context) error) (report Report, err error) {
+	if m == nil || confirmQuiescence == nil {
+		return Report{}, errors.New("managed Go build cache requires confirmed process quiescence")
+	}
+	queue, err := m.lock(ctx, "admission", false)
+	if err != nil {
+		return Report{}, err
+	}
+	defer func() { err = errors.Join(err, queue.Close()) }()
+	usage, err := m.lock(ctx, "consumers", false)
+	if err != nil {
+		return Report{}, err
+	}
+	defer func() { err = errors.Join(err, usage.Close()) }()
+	if err := confirmQuiescence(ctx); err != nil {
+		return Report{}, err
+	}
+	return trimManaged(ctx, m.root, policy, now)
+}
+
+func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(filepath.Join(m.root, ".detent-"+name+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		err = tryCacheLock(file, shared)
+		if err == nil {
+			return file, nil
+		}
+		if !errors.Is(err, errCacheInUse) {
+			return nil, errors.Join(err, file.Close())
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, errors.Join(ctx.Err(), file.Close())
+		case <-timer.C:
+		}
+	}
+}
+
+var errCacheInUse = errors.New("managed Go build cache is in use")

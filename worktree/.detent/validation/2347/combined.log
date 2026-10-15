@@ -1,0 +1,18 @@
+--- FAIL: TestOnboardingProgressRetryAndProjectIsolation (1.78s)
+    database_test.go:691: hub_fixture_open_seconds=0.905728
+    database_test.go:691: hub_fixture_open_seconds=0.804866
+    onboarding_test.go:49: status = 401, want 200: {"code":"unauthorized","message":"Valid scoped API token is required"}
+--- FAIL: TestClaimRecoversDisappearedMachineSessionAfterHubRestart (1.76s)
+    database_test.go:691: hub_fixture_open_seconds=0.860733
+    database_test.go:691: hub_fixture_open_seconds=0.859676
+    tracker_mutations_test.go:402: Claim(replacement) error = tracker work item not found: 1
+2026/09/08 16:15:49 INFO hub serving address=127.0.0.1:52903
+--- FAIL: TestRecoveryInterruptedMigration (0.00s)
+    --- FAIL: TestRecoveryInterruptedMigration/version (0.74s)
+        recovery_migration_test.go:59: interruption helper: fork/exec /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2347-fdfb873546f6/.detent/tmp/go-build3209179611/b001/hubserver.test: no such file or directory: 
+    --- FAIL: TestRecoveryInterruptedMigration/schema (0.74s)
+        recovery_migration_test.go:59: interruption helper: fork/exec /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2347-fdfb873546f6/.detent/tmp/go-build3209179611/b001/hubserver.test: no such file or directory: 
+FAIL
+error generating coverage report: output directory "/Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2347-fdfb873546f6/.detent/tmp/go-build3209179611/b001/gocoverdir" inaccessible (err: stat /Users/corylanou/code/detent-workspaces/detent-digitaldrywood_detent_2347-fdfb873546f6/.detent/tmp/go-build3209179611/b001/gocoverdir: no such file or directory); no coverage data written
+FAIL	github.com/digitaldrywood/detent/internal/hubserver	157.559s
+FAIL
