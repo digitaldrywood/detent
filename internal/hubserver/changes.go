@@ -264,28 +264,28 @@ JOIN issues i ON i.id=l.issue_id AND i.organization_id=a.organization_id AND i.p
 JOIN lease_policies p ON p.lease_id=a.lease_id AND p.scope=a.organization_id || '/' || a.project_id
  AND p.policy_id=json_extract(e.data_json,'$.run.policy_id')`
 
-func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, scope nativeScope, item string, version tracker.ChangeVersion) (*tracker.ChangePublicationPush, error) {
+func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, scope nativeScope, item string, version tracker.ChangeVersion) (tracker.ChangePublicationPush, bool, error) {
 	if version.External != nil || version.AttemptID == "" || !version.Policy.Gates.GitHubPullRequest || version.Landing != nil && version.Landing.Landed {
-		return nil, nil
+		return tracker.ChangePublicationPush{}, false, nil
 	}
 	var raw string
 	err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return tracker.ChangePublicationPush{}, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return tracker.ChangePublicationPush{}, false, err
 	}
 	var run tracker.NativeRunData
 	if err := json.Unmarshal([]byte(raw), &run); err != nil {
-		return nil, err
+		return tracker.ChangePublicationPush{}, false, err
 	}
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	checkpoint := run.Handoff
 	if checkpoint == nil || checkpoint.Change == nil || *checkpoint.Change != ref || checkpoint.HeadSHA != version.HeadSHA || !validNativeID(checkpoint.EffectID, "effect") {
-		return nil, nil
+		return tracker.ChangePublicationPush{}, false, nil
 	}
-	return &tracker.ChangePublicationPush{Change: ref, RecordingAttemptID: run.AttemptID, EffectID: checkpoint.EffectID}, nil
+	return tracker.ChangePublicationPush{Change: ref, RecordingAttemptID: run.AttemptID, EffectID: checkpoint.EffectID}, true, nil
 }
 
 func changeRows[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
@@ -441,12 +441,12 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 		if err == nil {
 			result.Versions[i].Landing = &receipt
 		}
-		push, err := resolveVersionPublicationPush(ctx, query, scope, item, result.Versions[i])
+		push, found, err := resolveVersionPublicationPush(ctx, query, scope, item, result.Versions[i])
 		if err != nil {
 			return result, fmt.Errorf("resolve publication push: %w", err)
 		}
-		if push != nil {
-			result.PublicationPushes = append(result.PublicationPushes, *push)
+		if found {
+			result.PublicationPushes = append(result.PublicationPushes, push)
 		}
 	}
 	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)

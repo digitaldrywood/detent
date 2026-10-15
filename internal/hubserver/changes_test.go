@@ -588,11 +588,11 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			proof, err := resolveVersionPublicationPush(t.Context(), tx, scope, string(f.issue.WorkItemID), version)
-			if err != nil || (proof != nil) != test.want {
+			proof, found, err := resolveVersionPublicationPush(t.Context(), tx, scope, string(f.issue.WorkItemID), version)
+			if err != nil || found != test.want {
 				t.Fatalf("proof=%+v want=%v error=%v", proof, test.want, err)
 			}
-			if proof != nil && (proof.Change != ref || proof.RecordingAttemptID != start.Data.AttemptID || proof.EffectID != binding.EffectID("git_push")) {
+			if found && (proof.Change != ref || proof.RecordingAttemptID != start.Data.AttemptID || proof.EffectID != binding.EffectID("git_push")) {
 				t.Fatalf("checkpoint attribution changed: %+v", proof)
 			}
 			detail, err := readChangeDetail(t.Context(), tx, scope, string(f.issue.WorkItemID), version.ChangeID, f.service.config.now())
