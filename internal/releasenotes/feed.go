@@ -71,10 +71,13 @@ func Derive(commit Commit) (Entry, bool) {
 	subject := strings.TrimSpace(strings.TrimSuffix(commit.Subject, suffix))
 	fallback := completion.MatchString(subject)
 	if fallback {
-		subject = ""
+		subject = "fix: maintenance update"
 		for line := range strings.SplitSeq(commit.Body, "\n") {
 			if strings.TrimSpace(line) != "" {
-				subject = strings.TrimSpace(line)
+				candidate := strings.TrimSpace(pullSuffix.ReplaceAllString(strings.TrimSpace(line), ""))
+				if candidate != "" && !completion.MatchString(candidate) {
+					subject = candidate
+				}
 				break
 			}
 		}
@@ -90,7 +93,10 @@ func Derive(commit Commit) (Entry, bool) {
 	}
 	category := map[string]string{"feat": "New", "perf": "Improved", "fix": "Fixed", "revert": "Removed"}[kind]
 	text = strings.TrimSpace(pullSuffix.ReplaceAllString(text, ""))
-	if category == "" || text == "" || completion.MatchString(subject) {
+	if fallback && text == "" {
+		text = "Maintenance update"
+	}
+	if category == "" || text == "" {
 		return Entry{PRNumber: number}, false
 	}
 	first, size := utf8.DecodeRuneInString(text)
