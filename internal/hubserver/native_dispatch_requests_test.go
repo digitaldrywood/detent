@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -158,6 +159,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		legacy         bool
 		retainedSource bool
 		checkpointEdit func(*tracker.NativeCheckpoint)
+		reviewOutcome  string
 		publication    string
 		terminal       bool
 		readAdmission  bool
@@ -222,6 +224,11 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "ambiguous publication is reconciled by any runner", finalMessage: completeReport, legacy: true, retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", newNativeID("effect")
 		}},
+		{name: "typed complete published current version waits for review", reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", readAdmission: true, exclusion: "automated_review_missing"},
+		{name: "published version resumes implementation for actionable findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested"},
+		{name: "published version cannot land after failed validation", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check"},
+		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active"},
+		{name: "aged published current version still waits for review", finalMessage: completeReport, retainedSource: true, publication: "owned", aged: true, readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
 		{name: "legacy complete with published retained head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head"},
 		{name: "unrelated historical publication preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "unrelated", wantCandidate: true},
@@ -287,8 +294,30 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			var published tracker.ChangeVersion
+			var changePath string
+			if test.reviewOutcome != "" {
+				states := append(append([]tracker.NativeState(nil), f.project.States...), tracker.NativeState{Name: "Fixing", Dispatchable: true, Transitions: []string{"Merging", "Blocked"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
+				raw, err := marshalNative(states)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,?,?,0,1,?,?)", f.project.ID, "Merging", "Merging", formatHubTime(f.now), formatHubTime(f.now)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.publication != "" {
 				rules := tracker.ChangeReviewPolicy{PolicyID: f.policy, RequireReview: true}
+				if test.reviewOutcome != "" {
+					var principal string
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = 'operator-conversation-worker'").Scan(&principal); err != nil {
+						t.Fatal(err)
+					}
+					rules.RequiredChecks = []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
 				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/changes"
 				response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.worker, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, Title: "Retained source", Body: "Owned source publication"})
@@ -302,7 +331,23 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				if test.publication == "unrelated" || test.publication == "earlier" {
 					input.HeadSHA = strings.Repeat("c", 40)
 				}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input}), http.StatusOK)
+				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &published)
+				changePath = path + "/" + change.ID + "/versions/" + published.ID
+				if test.reviewOutcome != "" {
+					check := changeTestResult(published)
+					if test.reviewOutcome == "failed_check" {
+						check.Conclusion = "failure"
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/checks", f.token, check), http.StatusOK)
+				}
+				if test.reviewOutcome == "active" {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "early-review"}, Decision: "approved"}), http.StatusOK)
+					if f.reload(t).State != "Fixing" {
+						t.Fatal("review stole the active completion owner's lane")
+					}
+				}
 			}
 			if test.terminal {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET terminal=1 WHERE project_id=? AND detent_state='Fixing'", f.project.ID); err != nil {
@@ -433,6 +478,28 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				}
 			} else {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
+			}
+			if test.reviewOutcome != "" {
+				decision := "approved"
+				if test.reviewOutcome == "changes_requested" {
+					decision = "changes_requested"
+				}
+				request := tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "review-after-wait"}, Decision: decision, Body: "Review current source"}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+				want := "Merging"
+				if decision == "changes_requested" || test.reviewOutcome == "failed_check" {
+					want = "Fixing"
+				}
+				if current := f.reload(t); current.State != want {
+					t.Fatalf("review result lane=%s want=%s", current.State, want)
+				}
+				if got := f.candidate(t); got != (decision == "changes_requested" || want == "Merging") {
+					t.Fatalf("review result candidate=%t lane=%s", got, want)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)
+				if current := f.reload(t); current.State != want {
+					t.Fatal("review replay changed lane")
+				}
 			}
 		})
 	}

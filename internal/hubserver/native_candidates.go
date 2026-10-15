@@ -3,10 +3,14 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -69,6 +73,15 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 				eligible := updated.Add(30 * time.Minute)
 				snapshot.AnsweredExclusion.RetryEligibleAt = &eligible
 			}
+		}
+	}
+	if snapshot.AnsweredExclusion == nil {
+		waiting, err := readPublishedReviewWait(ctx, q, query.WorkItemID, time.Now().UTC())
+		if err != nil {
+			return snapshot, err
+		}
+		if waiting.Kind != "" {
+			snapshot.AnsweredExclusion = &waiting
 		}
 	}
 	if !dependenciesSatisfied {
@@ -315,5 +328,75 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 		}
 		ids = append(ids, last)
 	}
-	return ids, last, scanned, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, last, scanned, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, last, scanned, err
+	}
+	runnable := ids[:0]
+	for _, id := range ids {
+		waiting, err := readPublishedReviewWait(ctx, q, id, time.Now().UTC())
+		if err != nil {
+			return nil, last, scanned, err
+		}
+		if waiting.Kind == "" {
+			runnable = append(runnable, id)
+		}
+	}
+	return runnable, last, scanned, nil
+}
+
+func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (tracker.NativeAnsweredExclusion, error) {
+	var scope nativeScope
+	var item, attempt, changeID, raw, checkpoint string
+	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, c.id, a.data_json, a.checkpoint_json
+ FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
+ JOIN workflow_states ws ON ws.id = i.workflow_state_id
+ JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
+ JOIN change_requests c ON c.organization_id = i.organization_id AND c.project_id = i.project_id AND c.work_item_id = i.native_id
+ WHERE i.id = ? AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging'
+ AND a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
+ AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
+ ORDER BY json_extract(c.record_json, '$.created_at') DESC, c.id DESC LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &changeID, &raw, &checkpoint)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	if err != nil {
+		return tracker.NativeAnsweredExclusion{}, err
+	}
+	var data tracker.NativeRunData
+	var source tracker.NativeCheckpoint
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return tracker.NativeAnsweredExclusion{}, err
+	}
+	if err := json.Unmarshal([]byte(checkpoint), &source); err != nil {
+		return tracker.NativeAnsweredExclusion{}, err
+	}
+	disposition := data.Disposition
+	if disposition == nil {
+		signal, reported := workpad.SignalFromComment(data.CompletionBody, "", string(scope.project))
+		if !reported || signal == nil || signal.Invalid != nil || signal.Fields["completion_kind"] == "operational" {
+			return tracker.NativeAnsweredExclusion{}, nil
+		}
+		disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode}
+	}
+	if disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" || len(disposition.BlockerEvidence) != 0 {
+		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	if source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) {
+		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	if source.EffectState == "pending" || source.EffectState == "ambiguous" {
+		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	detail, err := readChangeDetail(ctx, q, scope, item, changeID, now)
+	if err != nil {
+		return tracker.NativeAnsweredExclusion{}, err
+	}
+	review := changerequest.ReviewState(detail, detail.Change.CurrentVersion, source.HeadSHA)
+	if !review.Current || review.ChangesRequested || detail.Change.CurrentLanding() != nil {
+		return tracker.NativeAnsweredExclusion{}, nil
+	}
+	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
 }
