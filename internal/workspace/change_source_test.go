@@ -259,11 +259,12 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		})
 	}
 	for _, test := range []struct {
-		name       string
-		path       string
-		content    string
-		allowed    bool
-		credential bool
+		name        string
+		path        string
+		content     string
+		allowed     bool
+		credential  bool
+		emptyCommit bool
 	}{
 		{name: "host setup", path: ".detent/environment.md"},
 		{name: "env", path: ".env"},
@@ -277,6 +278,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "p12", path: "keys/certificate.p12"},
 		{name: "env template", path: ".env.example", content: "API_TOKEN=''\n", allowed: true},
 		{name: "envrc template", path: ".envrc.example", content: "export API_TOKEN=''\n", allowed: true},
+		{name: "source with empty commit", path: "history.txt", content: "reviewed source\n", allowed: true, emptyCommit: true},
 		{name: "nested env template", path: "config/.env.production.example", content: "API_TOKEN=''\n", allowed: true},
 		{name: "env template credential", path: ".env.example", content: "API_TOKEN=ghp_" + strings.Repeat("Z", 36), credential: true},
 		{name: "envrc template credential", path: ".envrc.example", content: "export API_TOKEN=ghp_" + strings.Repeat("Z", 36), credential: true},
@@ -291,6 +293,9 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 			}
 			runGit(t, source, "add", "--force", test.path)
 			runGit(t, source, "commit", "-m", "source path fixture")
+			if test.emptyCommit {
+				runGit(t, source, "commit", "--allow-empty", "-m", "empty source history")
+			}
 			selectedHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
 			capture, err := CaptureChangeSource(t.Context(), source, base, selectedHead)
 			if test.allowed {

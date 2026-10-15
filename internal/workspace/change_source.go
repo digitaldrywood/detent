@@ -51,7 +51,11 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 		if err != nil {
 			return capture, err
 		}
-		paths = append(paths, strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00")...)
+		for _, path := range strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00") {
+			if path != "" {
+				paths = append(paths, path)
+			}
+		}
 	}
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
