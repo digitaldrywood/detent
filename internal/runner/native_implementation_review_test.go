@@ -207,6 +207,7 @@ func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTu
 }
 
 func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
+	isolateAttemptDiffGitConfig(t)
 	for _, test := range []struct {
 		name         string
 		ssh          bool

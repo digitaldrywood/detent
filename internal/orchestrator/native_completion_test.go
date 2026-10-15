@@ -26,13 +26,15 @@ type nativeWorkflowConnector struct {
 	statesErr    error
 	beforeStates func()
 	reasons      []string
+	reasonCodes  []string
 	// reviewed is the change's review state when the completion is applied;
 	// nil answers as a failed read.
 	reviewed *bool
 }
 
 func (c *nativeWorkflowConnector) UpdateIssueState(ctx context.Context, id, state string) error {
-	c.reasons = append(c.reasons, connector.LaneTransitionReason(ctx))
+	c.reasons = append(c.reasons, connector.LaneTransitionReasonDetail(ctx))
+	c.reasonCodes = append(c.reasonCodes, connector.LaneTransitionReason(ctx))
 	return c.autoPromoteTickConnector.UpdateIssueState(ctx, id, state)
 }
 
@@ -148,6 +150,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantState     string
 		wantComment   string
 		wantReason    string
+		laneReason    string
+		details       []string
 		wantSummary   string
 		wantDeferred  bool
 		wantContinue  bool
@@ -262,7 +266,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "native publication authority failure is instance owned", states: workflow, runErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version lands directly without a dispatchable landing lane", change: accepted, states: undispatched, wantDirect: true},
-		{name: "validator rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, wantState: "Rework"},
+		{name: "validator rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Changes requested", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Changes requested"}},
+		{name: "validator rework bounds long summary and retains criteria", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: strings.Repeat("界", workpad.MaxFinalSummaryBytes), NotVerified: []string{"Reject invalid input"}}}, states: customRework, reworkState: "Fixing", humanReview: &no, wantState: "Fixing", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "…"}},
+		{name: "validator rework without findings explains gate", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, finalMessage: unfinishedReport, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"The validator requested changes"}},
 		{name: "source review rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
 		{name: "acknowledged current source rework outranks summary evidence error", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{VersionID: "version", HeadSHA: head, Verdict: "rework"}, ImplementationReviewError: "summary unavailable"}, states: unfinishedWorkflow, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Rework"},
 		{name: "source review wait preserves operator evidence owner", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantWait: true, roundTrip: true},
@@ -278,7 +284,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "source review wait preserves human action", change: sourceWait, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "source review rework preserves prerequisite authority", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "source review rework preserves human action", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
-		{name: "reviewed validator rework cannot land", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Reviewed: true, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "reviewed validator rework cannot land", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Reviewed: true, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Missing validation evidence"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Missing validation evidence"}},
 		{name: "validator rework preserves prerequisite authority", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "validator rework preserves reported human action", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
 		{name: "validated optout remains in human review", change: accepted, states: landing, reviewed: &yes, optout: true, humanReview: &no, wantState: "In Review"},
@@ -396,7 +402,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					t.Fatalf("claim released before lane settlement: updates=%v, want=%s", tick.updates, test.wantState)
 				}
 			}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
+			metrics := &workflowMetricsRecorderSpy{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling, workflowMetrics: metrics}
 			var journey *nativeLandingJourney
 			landingGate := &countingProjectDispatchGate{}
 			if test.wantDirect {
@@ -443,6 +450,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				tick.updates = nil
 				tick.stateIssues[0] = issue
 				tracker.(*nativeWorkflowConnector).reasons = nil
+				tracker.(*nativeWorkflowConnector).reasonCodes = nil
 				state.Running[issue.ID] = running
 			}
 			finalState := test.finalState
@@ -545,6 +553,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
+			if forwarded, ok := tracker.(*nativeWorkflowConnector); ok {
+				for i, code := range forwarded.reasonCodes {
+					if code == "" || code == "worker_progress" || strings.TrimSpace(forwarded.reasons[i]) == "" {
+						t.Fatalf("native completion lost its transition reason: code=%q detail=%q", code, forwarded.reasons[i])
+					}
+				}
+			}
 			if test.preProvider {
 				if len(state.Completed) != 0 || len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || state.FailureBreaker.Count != 0 {
 					t.Fatal("pre-provider native refusal consumed issue failures or acceptance")
@@ -968,6 +983,30 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			if len(tick.comments) != 1 || !strings.Contains(strings.ToLower(tick.comments[0].body), strings.ToLower(test.wantComment)) {
 				t.Fatalf("comments = %#v, want one containing %q", tick.comments, test.wantComment)
+			}
+			if test.laneReason != "" {
+				if len(metrics.events) != 2 || metrics.events[0].Reason != test.laneReason || metrics.events[1].Reason != test.laneReason {
+					t.Fatalf("lane events lost transition reason %q", test.laneReason)
+				}
+				var transition workflowLaneMetadata
+				if err := json.Unmarshal([]byte(metrics.events[0].MetadataJSON), &transition); err != nil {
+					t.Fatal(err)
+				}
+				if len(transition.ReasonDetail) > workpad.MaxFinalSummaryBytes {
+					t.Fatalf("transition detail exceeds the summary bound: %d bytes", len(transition.ReasonDetail))
+				}
+				for _, detail := range test.details {
+					if !strings.Contains(transition.ReasonDetail, detail) {
+						t.Fatalf("transition detail = %q, want %q", transition.ReasonDetail, detail)
+					}
+				}
+				forwarded := tracker.(*nativeWorkflowConnector)
+				if len(forwarded.reasonCodes) != 1 || forwarded.reasonCodes[0] != test.laneReason || forwarded.reasons[0] != transition.ReasonDetail {
+					t.Fatalf("connector lost transition reason: codes=%v details=%v", forwarded.reasonCodes, forwarded.reasons)
+				}
+				if !strings.Contains(tick.comments[0].body, transition.ReasonDetail) || strings.Contains(tick.comments[0].body, "The run succeeded") {
+					t.Fatalf("comment lost the review reason: %q", tick.comments[0].body)
+				}
 			}
 			wantReleases := 1
 			if test.lifecycle == "release" {

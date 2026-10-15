@@ -277,11 +277,6 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", strings.TrimSpace(issue.State)))
 	}
-	if normalizeState(issue.State) != normalizeState(target) {
-		if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, event.CompletedAt, "completed_active_review_transition"); err != nil {
-			return handoff(fmt.Errorf("move native item to %s: %w", target, err))
-		}
-	}
 	var comment string
 	if needsReview {
 		disposition := "no valid complete detent-status disposition"
@@ -296,9 +291,20 @@ func (o *Orchestrator) completeNativeChangeRun(
 		comment = nativeCompletionComment(change, issue.State, target)
 	}
 	if needsReview {
-		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage)
+		comment = nativeCompletionReason(comment, report, event.Result.FinalMessage, nil)
 		if change != nil && change.VersionError != "" {
 			comment += "\n\n" + change.VersionError
+		}
+	}
+	reason := "completed_active_review_transition"
+	if validatorRework {
+		reason = string(AutoPromoteReasonValidatorRework)
+		comment = nativeCompletionComment(change, issue.State, target)
+	}
+	if normalizeState(issue.State) != normalizeState(target) {
+		metadata := workflowLaneMetadata{ReasonDetail: workpad.FinalSummary(comment)}
+		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, reason, metadata); err != nil {
+			return handoff(fmt.Errorf("move native item to %s: %w", target, err))
 		}
 	}
 	if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
@@ -415,7 +421,21 @@ func nativeRetryLane(states []connector.WorkflowState, current, preferred string
 	return "", false
 }
 
-func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage string) string {
+func nativeCompletionReason(comment string, report *workpad.Signal, finalMessage string, validator *gate.ValidatorResult) string {
+	if validator != nil {
+		var detail strings.Builder
+		detail.WriteString(comment)
+		if len(validator.NotVerified) > 0 {
+			detail.WriteString("\n\nAcceptance criteria not verified: " + strings.Join(validator.NotVerified, "; "))
+		}
+		for _, finding := range validator.Findings {
+			fmt.Fprintf(&detail, "\n\n%s %s: %s", finding.Severity, finding.Path, finding.Body)
+		}
+		if summary := workpad.FinalSummary(validator.Summary); summary != "" {
+			detail.WriteString("\n\nValidator summary:\n" + summary)
+		}
+		return workpad.FinalSummary(detail.String())
+	}
 	if report != nil && report.Invalid == nil {
 		if reason := workpad.Reason(report); reason != "" {
 			comment += "\n\nReason: " + workpad.FinalSummary(reason)
@@ -496,6 +516,10 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
+	if change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictRework {
+		comment := fmt.Sprintf("The validator requested changes to Change Request %s (head %s). Moved from %s to %s.", change.ChangeID, shortCommit(change.HeadSHA), from, to)
+		return nativeCompletionReason(comment, nil, "", change.Validator)
+	}
 	if change.VersionError != "" {
 		return fmt.Sprintf("The run completed, but Change Request %s could not publish its final version for head %s: %s. Moved from %s to %s.",
 			change.ChangeID, shortCommit(change.HeadSHA), change.VersionError, from, to)

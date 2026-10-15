@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -811,7 +812,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 				return nil, err
 			}
 		}
-		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready"}, request.Reason) {
+		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready", string(gate.ReasonValidatorRework)}, request.Reason) {
 			return nil, nativeInvalid("Transition reason is invalid")
 		}
 		if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {
