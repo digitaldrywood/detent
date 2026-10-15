@@ -144,6 +144,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				return nil, nativeInvalid("Landing evidence requires the recorded Change landing authority")
 			}
 		}
+		if request.Type == "run.finished" && request.Data.Outcome == "succeeded" && request.Data.Sequence > 0 {
+			if err := normalizeNativeDependencyBlockers(ctx, tx, scope, request.Data.Disposition); err != nil {
+				return nil, err
+			}
+		}
 		publish := true
 		if request.Data.Sequence > 0 {
 			if request.Data.MachineID != "" && request.Data.MachineID != lease.session.Machine.ID || request.Data.SessionID != "" && request.Data.SessionID != lease.session.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {

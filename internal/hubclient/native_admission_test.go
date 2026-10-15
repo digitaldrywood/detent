@@ -219,15 +219,16 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		return store.Open(ctx, store.Config{Path: path})
 	})
 	for _, test := range []struct {
-		name, refusal string
-		reasonCode    string
-		laterLease    string
-		qualified     bool
-		advancePolicy bool
-		dirty         bool
-		second        bool
-		external      bool
-		instance      bool
+		name, refusal   string
+		reasonCode      string
+		laterLease      string
+		qualified       bool
+		repositoryAlias bool
+		advancePolicy   bool
+		dirty           bool
+		second          bool
+		external        bool
+		instance        bool
 	}{
 		{name: "reported prerequisite registers dependency hold"},
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
@@ -237,8 +238,10 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		{name: "instance evidence preserves permission reason", instance: true, reasonCode: "permission_wait", refusal: "reason"},
 		{name: "instance evidence preserves unknown reason", instance: true, reasonCode: "unknown_hold", refusal: "reason"},
 		{name: "canonical native reference", qualified: true},
+		{name: "bound repository references retain both dependencies", repositoryAlias: true, second: true},
+		{name: "bound repository reference preserves human hold", repositoryAlias: true, refusal: "human"},
 		{name: "last reported prerequisite releases hold", second: true},
-		{name: "external prerequisite retains hold", external: true, refusal: "external"},
+		{name: "external prerequisite retains hold", repositoryAlias: true, external: true, refusal: "external"},
 		{name: "dirty1067 canonical prerequisite retains checkpoint and recovery", qualified: true, dirty: true},
 		{name: "new approved policy recovers historical report", advancePolicy: true},
 		{name: "later released claim retains recorded recovery", laterLease: "released", dirty: true},
@@ -262,6 +265,16 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				{Name: "Backlog", Transitions: []string{"Done"}},
 				{Name: "Done", Terminal: true, Transitions: []string{"Backlog"}},
 			}, true, true)
+			if test.repositoryAlias {
+				h.reopen(func(path string) error {
+					db, err := sql.Open("sqlite", path)
+					if err != nil {
+						return err
+					}
+					_, err = db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository = ? WHERE organization_id = ? AND id = ?", "example-org/example-project", h.organization, h.project)
+					return errors.Join(err, db.Close())
+				})
+			}
 			prerequisite, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Actual prerequisite", State: "Backlog"})
 			if err != nil {
 				t.Fatal(err)
@@ -311,6 +324,9 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if test.qualified {
 				reference = string(h.project) + reference
 			}
+			if test.repositoryAlias {
+				reference = "example-org/example-project" + reference
+			}
 			human := "null"
 			if test.refusal == "human" {
 				human = "Approve the release"
@@ -320,7 +336,9 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\nhuman_action: null\n```", reference)
 			}
 			if test.external {
-				report = strings.Replace(report, reference, "vendor/service#42", 1)
+				foreignReference := fmt.Sprintf("vendor/service#%d", prerequisite.Number)
+				report = strings.Replace(report, reference, foreignReference, 1)
+				reference = foreignReference
 			}
 			if test.instance {
 				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: %s\n```", human)
@@ -379,11 +397,23 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			if !valid || prior != "In Progress" {
 				t.Fatalf("current report missing: %+v, %s, %t", attempt, prior, valid)
 			}
+			if test.repositoryAlias {
+				wantReference := reference
+				if !test.external && test.refusal != "human" {
+					wantReference = fmt.Sprintf("%s#%d", h.project, prerequisite.Number)
+				}
+				blocker := attempt.Disposition.BlockerEvidence[0]
+				if blocker.Ref != wantReference || blocker.Predicate.Identifier != wantReference || attempt.CompletionBody != report {
+					t.Fatalf("durable prerequisite identity or original report changed: %+v", attempt)
+				}
+			}
 			if test.dirty {
 				signal, valid := workpad.SignalFromComment(report, "", "")
 				if !valid || signal.Invalid != nil || attempt.Status != "succeeded" || !reflect.DeepEqual(attempt.Checkpoint, &checkpoint) || !reflect.DeepEqual(attempt.Disposition.BlockerEvidence, signal.Blockers) {
 					t.Fatalf("dirty terminal authority or checkpoint lost: %+v", attempt)
 				}
+			}
+			if test.dirty || test.repositoryAlias {
 				page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")
 				if err != nil {
 					t.Fatal(err)
@@ -395,7 +425,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 					}
 				}
 				if !found {
-					t.Fatal("run.finished omitted dirty terminal disposition")
+					t.Fatal("run.finished omitted its durable blocker disposition")
 				}
 			}
 			latestFence := attempt.FencingToken
