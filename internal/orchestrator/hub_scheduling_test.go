@@ -418,16 +418,17 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
-	admission    tracker.NativeAdmissionContext
-	execution    runpkg.Execution
-	issues       []connector.Issue
-	request      SchedulingRequest
-	issue        connector.Issue
-	fetchError   error
-	releaseError error
-	fetches      int
-	adoptions    int
-	releases     int
+	admission       tracker.NativeAdmissionContext
+	execution       runpkg.Execution
+	issues          []connector.Issue
+	request         SchedulingRequest
+	issue           connector.Issue
+	fetchError      error
+	releaseError    error
+	fetches         int
+	adoptions       int
+	releases        int
+	filterKnownWait bool
 }
 
 func (s *hubSchedulingSource) ObserveNativeAdmission(_ string, current tracker.NativeAdmissionContext) {
@@ -448,6 +449,9 @@ func (s *hubSchedulingSource) FetchCandidateIssues(_ context.Context, request Sc
 	}
 	if s.fetchError != nil {
 		return nil, s.fetchError
+	}
+	if s.filterKnownWait && request.CandidateKnownWait(s.issue) {
+		return nil, nil
 	}
 	if s.issues != nil {
 		var candidates []connector.Issue
@@ -606,15 +610,39 @@ func TestHubRefillRetainsNewClaims(t *testing.T) {
 func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
-		name      string
-		state     string
-		setup     func(*State, connector.Issue)
-		want      bool
-		native    bool
-		githubPR  bool
-		knownWait string
+		name            string
+		state           string
+		setup           func(*State, connector.Issue)
+		want            bool
+		native          bool
+		githubPR        bool
+		knownWait       string
+		filterKnownWait bool
+		clearsBlocked   bool
+		dependency      bool
 	}{
 		{name: "ready todo", state: "Todo", want: true},
+		{name: "fresh Rework supersedes project status hold", state: "Rework", native: true, filterKnownWait: true, clearsBlocked: true, want: true, setup: func(s *State, issue connector.Issue) {
+			prior := cloneIssue(issue)
+			prior.State = "Blocked"
+			s.Blocked[issue.ID] = Blocked{Issue: prior, Source: BlockedSourceProjectStatus, Reason: "prior landing refused"}
+		}},
+		{name: "fresh Rework supersedes merge hold", state: "Rework", native: true, filterKnownWait: true, clearsBlocked: true, want: true, setup: func(s *State, issue connector.Issue) {
+			prior := cloneIssue(issue)
+			prior.State = "Blocked"
+			s.Blocked[issue.ID] = Blocked{Issue: prior, Source: BlockedSourceMergeDuration, Reason: "prior landing refused"}
+		}},
+		{name: "fresh Rework preserves same lane hold", state: "Rework", native: true, filterKnownWait: true, knownWait: dispatchSkipBlocked, setup: func(s *State, issue connector.Issue) {
+			s.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceMergeDuration, Reason: "current landing wait"}
+		}},
+		{name: "fresh Rework preserves ownership hold", state: "Rework", native: true, filterKnownWait: true, knownWait: dispatchSkipBlocked, setup: func(s *State, issue connector.Issue) {
+			prior := cloneIssue(issue)
+			prior.State = "Blocked"
+			s.Blocked[issue.ID] = Blocked{Issue: prior, Source: BlockedSourceOwnership}
+		}},
+		{name: "fresh Rework preserves dependency hold", state: "Rework", native: true, filterKnownWait: true, dependency: true, knownWait: dispatchSkipBlockedByDependency, setup: func(s *State, issue connector.Issue) {
+			s.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceDependency, Reason: blockedReasonDependency}
+		}},
 		{name: "full project lookahead does not claim coding", state: "Todo", native: true, setup: func(s *State, _ connector.Issue) {
 			s.Running["first"] = Running{Issue: dispatchTestIssue("first", "Todo")}
 			s.Running["second"] = Running{Issue: dispatchTestIssue("second", "Todo")}
@@ -680,7 +708,10 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
 			issue := dispatchTestIssue("candidate", test.state)
 			issue.DependencySource = connector.BlockedRefSourceNative
-			source := &hubSchedulingSource{issue: issue}
+			if test.dependency {
+				issue.BlockedBy = []connector.BlockedRef{{ID: "dependency", Identifier: "acme/widgets#2", State: "In Progress", Source: connector.BlockedRefSourceNative}}
+			}
+			source := &hubSchedulingSource{issue: issue, filterKnownWait: test.filterKnownWait}
 			cfg.Policy.Gates.GitHubPullRequest = test.githubPR
 			var backend connector.Connector = &hubSchedulingConnector{}
 			if test.native {
@@ -694,8 +725,12 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			beforeRetry, hadRetry := state.Retry[issue.ID]
 			beforeBlocked, hadBlocked := state.Blocked[issue.ID]
 			beforeRunning := len(state.Running)
-			if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
+			candidates, err := o.fetchCandidateIssuesForTick(t.Context(), &state)
+			if err != nil {
 				t.Fatal(err)
+			}
+			if test.filterKnownWait && (len(candidates) == 1) != (test.knownWait == "") {
+				t.Fatalf("pre-claim candidate count = %d, want known wait %q", len(candidates), test.knownWait)
 			}
 			available := o.dispatchPlanner().hardAvailableSlots(&state)
 			candidateLimit := available + dispatchCandidateLookahead
@@ -746,7 +781,14 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			}
 			afterRetry, hasRetry := state.Retry[issue.ID]
 			afterBlocked, hasBlocked := state.Blocked[issue.ID]
-			if hadRetry != hasRetry || hadBlocked != hasBlocked || !reflect.DeepEqual(afterRetry, beforeRetry) || !reflect.DeepEqual(afterBlocked, beforeBlocked) || len(state.Running) != beforeRunning {
+			if test.clearsBlocked {
+				if hasBlocked {
+					t.Fatal("superseded lane hold remains after pre-claim readiness")
+				}
+			} else if hadBlocked != hasBlocked || !reflect.DeepEqual(afterBlocked, beforeBlocked) {
+				t.Fatal("pre-lease readiness changed an applicable hold")
+			}
+			if hadRetry != hasRetry || !reflect.DeepEqual(afterRetry, beforeRetry) || len(state.Running) != beforeRunning {
 				t.Fatal("pre-lease readiness mutated live scheduling state")
 			}
 			outage, paused := activeGitHubRESTCapacityOutage(&state, now)
