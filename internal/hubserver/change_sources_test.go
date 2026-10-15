@@ -15,7 +15,7 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}
 	f := newChangeFixture(t, openTestService(t, config))
 	input := changeTestInput()
-	bundle := bytes.Repeat([]byte("retained source"), 100000)
+	bundle := append([]byte("# v2 git bundle\n"+input.HeadSHA+" HEAD\n\n"), bytes.Repeat([]byte("retained source"), 100000)...)
 	input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request)

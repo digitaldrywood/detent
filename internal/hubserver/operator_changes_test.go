@@ -649,7 +649,7 @@ func TestOperatorChangeCommands(t *testing.T) {
 			input.PolicyID = descriptor.ID
 			input.HeadSHA = strings.Repeat(strconv.Itoa(i+1), 40)
 			input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Output: strings.Repeat("界", 21000), Evidence: &gate.CommandEvidence{}}
-			bundle := []byte("retained admission fixture")
+			bundle := []byte("# v2 git bundle\n" + input.HeadSHA + " HEAD\n\nretained admission fixture")
 			input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "large-version-" + strconv.Itoa(i)}, ExpectedVersionID: current.ID, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)

@@ -200,6 +200,11 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		if args.ExpectedVersionID == nil || args.Code == nil {
 			return result, operatortool.ErrInvalidArguments
 		}
+		if args.SourceCapture != nil {
+			if err := args.SourceCapture.Validate(args.BaseSHA, args.HeadSHA, args.SourceBundle); err != nil {
+				return result, &operatortool.RequestError{Code: "invalid_request", Message: err.Error()}
+			}
+		}
 		request := tracker.PublishChangeVersion{Mutation: command, ExpectedVersionID: *args.ExpectedVersionID, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: args.BaseSHA, HeadSHA: args.HeadSHA, MergeBaseSHA: args.MergeBaseSHA, Repository: args.Repository, Code: *args.Code, Source: args.SourceCapture, Artifacts: args.Artifacts, PolicyID: args.PolicyID, External: args.External}, SourceBundle: args.SourceBundle}
 		input = request
 		path += "/versions"

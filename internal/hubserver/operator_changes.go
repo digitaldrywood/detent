@@ -246,6 +246,10 @@ func hubSafeChangeError(err error) error {
 			return &operatortool.ConflictError{Code: failure.Code, Message: "Inspect get_project_policy and refresh the approved policy inputs before submitting this operation"}
 		}
 	}
+	var request *operatortool.RequestError
+	if errors.As(err, &request) {
+		return request
+	}
 	var allowance *operatortool.AllowanceError
 	if errors.As(err, &allowance) {
 		return allowance

@@ -100,18 +100,14 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 		return capture, err
 	}
 	capture.Source = tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(capture.Bundle), DiffSHA256: digest, Bytes: int64(len(capture.Bundle))}
-	if err := verifyChangeBundle(ctx, directory, path, head); err != nil {
+	if err := verifyChangeBundle(ctx, directory, path); err != nil {
 		return capture, err
 	}
 	return capture, capture.Source.Validate(base, head, capture.Bundle)
 }
 
-func verifyChangeBundle(ctx context.Context, directory, path, head string) error {
-	heads, err := runGitAt(ctx, directory, "bundle", "list-heads", path)
-	if err != nil || strings.TrimSpace(heads) != head+" HEAD" {
-		return errors.Join(errors.New("source bundle does not advertise only the reviewed head"), err)
-	}
-	_, err = runGitAt(ctx, directory, "bundle", "verify", path)
+func verifyChangeBundle(ctx context.Context, directory, path string) error {
+	_, err := runGitAt(ctx, directory, "bundle", "verify", path)
 	return err
 }
 
@@ -143,7 +139,7 @@ func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource)
 	if err := os.WriteFile(path, source.Bundle, 0o600); err != nil {
 		return err
 	}
-	if err := verifyChangeBundle(ctx, l.sourceRoot, path, version.HeadSHA); err != nil {
+	if err := verifyChangeBundle(ctx, l.sourceRoot, path); err != nil {
 		return err
 	}
 	if _, err := l.runGit(ctx, "-c", "fetch.fsckObjects=true", "bundle", "unbundle", path); err != nil {

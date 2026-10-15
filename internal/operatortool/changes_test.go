@@ -36,7 +36,7 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		if err := json.Unmarshal([]byte(publishRaw("", nil)), &fields); err != nil {
 			t.Fatal(err)
 		}
-		bundle := []byte("source")
+		bundle := []byte("# v2 git bundle\n" + strings.Repeat("b", 40) + " HEAD\n\nsource")
 		fields["source_capture"] = tracker.ChangeSource{Format: "git-bundle", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 		fields["source_bundle"] = bundle
 		if key != "" {

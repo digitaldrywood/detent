@@ -444,7 +444,7 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: changeTestInput()}
 			request.RunID, request.AttemptID = event.Data.RunID, event.Data.AttemptID
-			request.SourceBundle = []byte("retained source")
+			request.SourceBundle = []byte("# v2 git bundle\n" + request.HeadSHA + " HEAD\n\nretained source")
 			request.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: request.BaseSHA, HeadSHA: request.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(request.SourceBundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(request.SourceBundle))}
 			test.edit(&request)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request), test.want)
@@ -473,7 +473,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 	input := changeTestInput()
 	input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, start.Data.RunID, start.Data.AttemptID
-	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: []byte("retained source")}
+	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: []byte("# v2 git bundle\n" + input.HeadSHA + " HEAD\n\nretained source")}
 	request.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(request.SourceBundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(request.SourceBundle))}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)

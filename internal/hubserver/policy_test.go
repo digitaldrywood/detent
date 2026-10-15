@@ -227,7 +227,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				path += "/" + change.ID
 				input := changeTestInput()
 				input.PolicyID = descriptor.ID
-				bundle := []byte("retained policy approval fixture")
+				bundle := []byte("# v2 git bundle\n" + input.HeadSHA + " HEAD\n\nretained policy approval fixture")
 				input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
 				return changeFixture{nativeFixture: f, issue: issue, change: change, path: path}

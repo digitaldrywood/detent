@@ -185,7 +185,7 @@ func TestNativeReleaseDeliveryReviewAndLanding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle := []byte("release source retained by runner")
+	bundle := []byte("# v2 git bundle\n" + d.HeadSHA + " HEAD\n\nrelease source retained by runner")
 	source := &tracker.ChangeSource{Format: "git-bundle", BaseSHA: d.BaseSHA, HeadSHA: d.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("a", 64), Bytes: int64(len(bundle))}
 	input := tracker.ChangeVersionInput{BaseSHA: d.BaseSHA, HeadSHA: d.HeadSHA, MergeBaseSHA: d.BaseSHA, Repository: d.Repository, PolicyID: descriptor.Policy.ID, Code: changeTestArtifact("code"), Source: source}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "release-version"}, ChangeVersionInput: input, SourceBundle: bundle})

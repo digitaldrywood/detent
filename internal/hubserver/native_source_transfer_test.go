@@ -100,7 +100,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 			input := changeTestInput()
 			input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-			bundle := []byte("retained source fixture")
+			bundle := []byte("# v2 git bundle\n" + input.HeadSHA + " HEAD\n\nretained source fixture")
 			input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)
