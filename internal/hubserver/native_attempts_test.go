@@ -348,7 +348,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	output := strings.Repeat("<", 64<<10)
 	var fences []tracker.FencingToken
 	var first tracker.NativeLease
-	for index := range 16 {
+	for index := range 51 {
 		if index > 0 {
 			id := newNativeID("lease")
 			result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
@@ -384,6 +384,8 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
 		finish := start
 		finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", fmt.Sprintf("finish-%d", index), 3, "succeeded"
+		finish.Data.CompletionBody = "Completed attempt details"
+		finish.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "test-model", Input: 123, Output: 45, Currency: "USD"}}
 		finish.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", HumanAction: true, FinalSummary: strings.Repeat("x", workpad.MaxFinalSummaryBytes)}
 		finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(),
 			Validation: &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: output},
@@ -465,6 +467,45 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 			}
 		})
 	}
+	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+	for _, transport := range []string{"stdio", "http"} {
+		for _, limit := range []int{1, 20, 200} {
+			t.Run(fmt.Sprintf("work_runs/%s/%d", transport, limit), func(t *testing.T) {
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				args := map[string]any{"project_id": string(f.project.ID), "reference": string(issue.WorkItemID), "limit": limit}
+				seen := 0
+				for {
+					raw := hostedContextData(t, call("tools/call", operatortool.WorkRuns, args), false)
+					var result operatortool.WorkReadResult[tracker.Page[tracker.NativeAttempt]]
+					if err := json.Unmarshal(raw, &result); err != nil {
+						t.Fatal(err)
+					}
+					if len(raw) > operatortool.MaxResultBytes || len(result.Data.Items) == 0 || len(result.Data.Items) > limit {
+						t.Fatalf("invalid run page: bytes=%d items=%d", len(raw), len(result.Data.Items))
+					}
+					for _, attempt := range result.Data.Items {
+						if seen >= len(full) {
+							t.Fatal("repeated attempts")
+						}
+						want := full[seen]
+						want.Runtime = nil
+						want.RuntimeFreshness = "unavailable"
+						if !reflect.DeepEqual(attempt, want) {
+							t.Fatalf("summary changed fields at attempt %d", seen)
+						}
+						seen++
+					}
+					if result.Data.NextCursor == "" {
+						break
+					}
+					args["cursor"] = result.Data.NextCursor
+				}
+				if seen != len(full) {
+					t.Fatalf("read %d attempts, want %d", seen, len(full))
+				}
+			})
+		}
+	}
 	raw, err := json.Marshal(tracker.Page[tracker.NativeAttempt]{Items: full})
 	if err != nil || len(raw) <= 1<<20 {
 		t.Fatalf("old count-only payload bytes=%d, error=%v", len(raw), err)
@@ -531,8 +572,24 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.validation.output', ?) WHERE lease_id = ?`, strings.Repeat("<", 256<<10), first.ID); err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil), http.StatusInternalServerError)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil), http.StatusUnprocessableEntity)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers&limit=1", worker, nil), http.StatusOK)
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE lease_id = ?`, strings.Repeat("<", 64<<10), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []string{"stdio", "http"} {
+		for _, limit := range []int{1, 20, 200} {
+			t.Run(fmt.Sprintf("oversized_summary/%s/%d", transport, limit), func(t *testing.T) {
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				args := map[string]any{"project_id": string(f.project.ID), "reference": string(issue.WorkItemID), "limit": limit}
+				raw := hostedContextData(t, call("tools/call", operatortool.WorkRuns, args), true)
+				var refusal operatortool.RequestError
+				if json.Unmarshal(raw, &refusal) != nil || refusal.Code != "attempt_record_too_large" || !strings.Contains(refusal.Message, "65536-byte") {
+					t.Fatalf("lost page bound: %s", raw)
+				}
+			})
+		}
+	}
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
 	denied := other.worker(t, "denied")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers", denied, nil), http.StatusNotFound)

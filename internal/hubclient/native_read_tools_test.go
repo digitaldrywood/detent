@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -340,6 +341,7 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 
 	at := time.Now().UTC().Add(-2 * time.Second)
 	observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "merging", HeartbeatAt: at, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 42, Generation: 2, Stage: "merge", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at, Spans: []workflowmetrics.ActivitySpan{{ID: "git", Kind: "implementation", Outcome: "running", StartedAt: at}}}}
+	observation.Validation = &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: strings.Repeat("x", 64<<10)}
 	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
@@ -378,6 +380,8 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		{operatortool.ListChanges, map[string]any{"work_item_id": issue.ID, "limit": 1}, change.ID},
 		{operatortool.GetChange, map[string]any{"work_item_id": issue.ID, "change_id": change.ID}, version.HeadSHA},
 		{operatortool.WorkRuns, map[string]any{"reference": issue.ID, "limit": 1}, owner.data.AttemptID},
+		{operatortool.WorkRuns, map[string]any{"reference": issue.ID, "limit": 20}, owner.data.AttemptID},
+		{operatortool.WorkRuns, map[string]any{"reference": issue.ID, "limit": 200}, owner.data.AttemptID},
 		{operatortool.BoardActivity, map[string]any{"reference": issue.ID, "limit": 1}, "next_cursor"},
 		{operatortool.WorkAttemptReceipt, map[string]any{"reference": issue.ID, "native_attempt_id": owner.data.AttemptID}, "validation"},
 		{operatortool.WorkAttemptReceipt, map[string]any{"reference": issue.ID, "attempt_id": 42}, "validation"},
@@ -395,13 +399,22 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 			if strings.Contains(result.Content, nativeChangeAdminToken) || strings.Contains(result.Content, file.Credential) || strings.Contains(result.Content, "Bearer ") {
 				t.Fatal("read exposed a host credential")
 			}
+			if test.name == operatortool.WorkRuns {
+				var runs operatortool.WorkReadResult[tracker.Page[tracker.NativeAttempt]]
+				if err := json.Unmarshal([]byte(result.Content), &runs); err != nil {
+					t.Fatal(err)
+				}
+				if len(runs.Data.Items) != 1 || runs.Data.Items[0].Runtime != nil {
+					t.Fatal("run summary included runtime detail")
+				}
+			}
 			if test.name == operatortool.WorkAttemptReceipt {
 				var receipt operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
 				if err := json.Unmarshal([]byte(result.Content), &receipt); err != nil {
 					t.Fatal(err)
 				}
 				attempt := receipt.Data.Attempt
-				if receipt.GeneratedAt.IsZero() || receipt.GeneratedAt != receipt.Data.ObservedAt || attempt == nil || attempt.AttemptID != owner.data.AttemptID || attempt.RuntimeFreshness != "available" || attempt.Runtime == nil || len(attempt.Runtime.Phases) != 2 || attempt.Runtime.Phases[0].FinishedAt.IsZero() || attempt.Runtime.Activity == nil || len(attempt.Runtime.Activity.Spans) != 0 {
+				if receipt.GeneratedAt.IsZero() || receipt.GeneratedAt != receipt.Data.ObservedAt || attempt == nil || attempt.AttemptID != owner.data.AttemptID || attempt.RuntimeFreshness != "available" || attempt.Runtime == nil || len(attempt.Runtime.Phases) != 2 || attempt.Runtime.Phases[0].FinishedAt.IsZero() || attempt.Runtime.Activity == nil || len(attempt.Runtime.Activity.Spans) != 0 || attempt.Runtime.Validation == nil || attempt.Runtime.Validation.Output != strings.Repeat("x", 64<<10) {
 					t.Fatalf("receipt lost bounded phase/freshness evidence: %s", result.Content)
 				}
 			}
@@ -445,6 +458,26 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		if !errors.Is(err, test.want) || result.Success {
 			t.Fatalf("refusal %s: success=%t error=%v, want %v", test.name, result.Success, err, test.want)
 		}
+	}
+	finished := owner.data
+	finished.Sequence++
+	finished.Outcome = "failed"
+	finished.CompletionBody = strings.Repeat("<", 64<<10)
+	if err := h.native.AppendEvent(t.Context(), item, tracker.NativeRunEvent{Mutation: nativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: finished}); err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int{1, 20, 200} {
+		t.Run("oversized_run_summary/"+strconv.Itoa(limit), func(t *testing.T) {
+			arguments, err := json.Marshal(map[string]any{"project_id": string(h.project), "reference": issue.ID, "limit": limit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkRuns, Arguments: arguments})
+			var refusal operatortool.RequestError
+			if err == nil || result.Success || json.Unmarshal([]byte(result.Content), &refusal) != nil || refusal.Code != "attempt_record_too_large" || !strings.Contains(refusal.Message, "65536-byte") {
+				t.Fatalf("lost run page bound: result=%s error=%v", result.Content, err)
+			}
+		})
 	}
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()

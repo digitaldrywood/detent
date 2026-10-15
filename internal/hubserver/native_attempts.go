@@ -469,7 +469,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		}
 		if len(encoded)+1 > budget {
 			if len(page.Items) == 0 {
-				return tracker.Page[tracker.NativeAttempt]{}, operatortool.ErrReadUnavailable
+				return tracker.Page[tracker.NativeAttempt]{}, &nativeError{Code: "attempt_record_too_large", Message: fmt.Sprintf("Attempt record exceeds the %d-byte page limit", budget), status: http.StatusUnprocessableEntity, publicMessage: true}
 			}
 			hasMore = true
 			break

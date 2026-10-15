@@ -105,13 +105,14 @@ func TestChangeClientFencingAndConnectorRead(t *testing.T) {
 			current := tracker.ChangeVersion{ID: "version_current", ChangeID: "change_example", Number: 2, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("b", 40)}}
 			previous := tracker.ChangeVersion{ID: "version_previous", ChangeID: current.ChangeID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40), External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/acme/repo/pull/7"}, Source: &tracker.ChangeSource{Format: "git-bundle", BundleSHA256: strings.Repeat("c", 64)}}}
 			want := tracker.ChangeDetail{
-				Change:       tracker.ChangeRequest{ID: current.ChangeID, OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: lease.WorkItemID, CurrentVersion: current.ID},
-				Versions:     []tracker.ChangeVersion{previous, current},
-				Reviews:      []tracker.ChangeReview{{ID: "review_current", VersionID: current.ID, Decision: "changes_requested", Validator: &gate.ValidatorResult{HeadSHA: current.HeadSHA, Verdict: "rework", NotVerified: []string{"journey"}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "journey", Kind: gate.EvidenceNotVerified, ReceiptIDs: []string{"receipt_failed"}}}, Commands: []gate.CommandResult{{ReceiptID: "receipt_failed", HeadSHA: current.HeadSHA, ExitCode: 1, Output: "excerpt", OutputTruncated: true}}}}},
-				Checks:       []tracker.ChangeCheck{{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_current", Conclusion: "failure"}}},
-				Discussion:   []tracker.ChangeDiscussion{{ID: "discussion_current", VersionID: current.ID, Body: "preserve feedback"}},
-				Summary:      tracker.ChangeSummary{Status: "changes_requested"},
-				SourceIssues: []tracker.ExternalReference{{Provider: "native", ID: "source_issue"}},
+				PublicationPushes: []tracker.ChangePublicationPush{{Change: tracker.NativeChangeReference{ChangeID: previous.ChangeID, VersionID: previous.ID, HeadSHA: previous.HeadSHA}, RecordingAttemptID: "attempt_resume", EffectID: "effect_push"}},
+				Change:            tracker.ChangeRequest{ID: current.ChangeID, OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: lease.WorkItemID, CurrentVersion: current.ID},
+				Versions:          []tracker.ChangeVersion{previous, current},
+				Reviews:           []tracker.ChangeReview{{ID: "review_current", VersionID: current.ID, Decision: "changes_requested", Validator: &gate.ValidatorResult{HeadSHA: current.HeadSHA, Verdict: "rework", NotVerified: []string{"journey"}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "journey", Kind: gate.EvidenceNotVerified, ReceiptIDs: []string{"receipt_failed"}}}, Commands: []gate.CommandResult{{ReceiptID: "receipt_failed", HeadSHA: current.HeadSHA, ExitCode: 1, Output: "excerpt", OutputTruncated: true}}}}},
+				Checks:            []tracker.ChangeCheck{{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "check_current", Conclusion: "failure"}}},
+				Discussion:        []tracker.ChangeDiscussion{{ID: "discussion_current", VersionID: current.ID, Body: "preserve feedback"}},
+				Summary:           tracker.ChangeSummary{Status: "changes_requested"},
+				SourceIssues:      []tracker.ExternalReference{{Provider: "native", ID: "source_issue"}},
 			}
 			readClient, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Query().Get("view") != "bounded" {
@@ -132,6 +133,7 @@ func TestChangeClientFencingAndConnectorRead(t *testing.T) {
 					switch section {
 					case "versions":
 						value.Detail.Versions = []tracker.ChangeVersion{previous}
+						value.Detail.PublicationPushes = want.PublicationPushes
 					case "reviews":
 						value.Detail.Reviews = want.Reviews
 					case "checks":

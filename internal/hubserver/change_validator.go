@@ -39,6 +39,18 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		required = version.Policy.Gates.SecurityAudit
 	}
 	if !worker || !required || change.CurrentVersion != version.ID || !result.Submitted || result.SessionID <= 0 || result.VersionID != version.ID || result.Repository != version.Repository || (!landingAudit && (result.BaseSHA != version.BaseSHA || result.HeadSHA != version.HeadSHA)) || (landingAudit && (!changerequest.ValidHash(result.BaseSHA, len(version.BaseSHA)) || !changerequest.ValidHash(result.HeadSHA, len(version.HeadSHA)) || result.BaseSHA == result.HeadSHA || version.Policy.Gates.GitHubPullRequest || request.SecurityAudit.VersionID != version.ID)) || !changerequest.ValidHash(result.DiffDigest, 64) || math.IsNaN(result.Score) || math.IsInf(result.Score, 0) || result.Score < 0 || result.Score > 1 {
+		if audit {
+			switch {
+			case result.SessionID <= 0:
+				return "", nativeInvalid("security audit evidence is incomplete: session_id is missing or invalid")
+			case result.Repository != version.Repository:
+				return "", nativeInvalid("security audit evidence is incomplete: run.repository differs from the immutable version")
+			case !landingAudit && result.BaseSHA != version.BaseSHA:
+				return "", nativeInvalid("security audit evidence is incomplete: run.base_sha differs from the immutable version")
+			case !landingAudit && result.HeadSHA != version.HeadSHA:
+				return "", nativeInvalid("security audit evidence is incomplete: run.head_sha differs from the immutable version")
+			}
+		}
 		return "", nativeInvalid("validator review must identify the current immutable version and a fresh validator session")
 	}
 	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
@@ -59,15 +71,22 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	}
 	if audit {
 		run := request.SecurityAudit.Run
-		if run.IssueID != string(change.WorkItemID) || run.ProjectID != string(scope.project) || run.ID != result.SessionID {
-			return "", nativeInvalid("security audit identity differs from the work item")
+		switch {
+		case run.ID <= 0:
+			return "", nativeInvalid("security audit evidence is incomplete: missing: run.id is missing or invalid")
+		case run.IssueID != string(change.WorkItemID):
+			return "", nativeInvalid("security audit identity differs from the work item: run.issue_id")
+		case run.ProjectID != string(scope.project):
+			return "", nativeInvalid("security audit identity differs from the work item: run.project_id")
+		case run.ID != result.SessionID:
+			return "", nativeInvalid("security audit identity differs from the work item: run.id differs from session_id")
 		}
 		evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: result.BaseSHA, HeadSHA: result.HeadSHA}, "", workflow.Config.Gate.SecurityAudit.BlockOn)
 		verdict := gate.ValidatorVerdictPass
 		if evaluation.Reason == securityaudit.ReasonUnresolvedFindings {
 			verdict = gate.ValidatorVerdictRework
 		} else if !evaluation.Allowed {
-			return "", nativeInvalid("security audit evidence is incomplete")
+			return "", nativeInvalid("security audit evidence is incomplete: " + evaluation.Diagnostic())
 		}
 		if result.Verdict != verdict {
 			return "", nativeInvalid("security audit verdict differs from the configured gate")

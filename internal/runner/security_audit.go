@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -46,6 +47,16 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 	}
 	removeAuditWorkspace := true
 	defer func() {
+		if err == nil && req.complete != nil {
+			err = req.complete(ctx, execution)
+			if err != nil {
+				diagnosticErr := r.publishSecurityAuditDiagnostic(ctx, req, execution, auditWorkspace, err)
+				if diagnosticErr != nil {
+					removeAuditWorkspace = false
+					err = errors.Join(err, fmt.Errorf("security audit diagnostics retained at %s: %w", auditWorkspace, diagnosticErr))
+				}
+			}
+		}
 		if !removeAuditWorkspace {
 			return
 		}
@@ -202,4 +213,25 @@ func securityAuditMaxDiffBytes(cfg gate.SecurityAuditConfig) int {
 
 func gateSecurityAuditConfig(cfg config.Config) gate.SecurityAuditConfig {
 	return gate.Effective(cfg.Gate).SecurityAudit
+}
+
+func (r *Runner) publishSecurityAuditDiagnostic(ctx context.Context, req SecurityAuditRequest, execution SecurityAuditExecution, directory string, failure error) error {
+	content, err := json.MarshalIndent(struct {
+		Run    securityaudit.Run
+		Output string
+		Error  string
+	}{Run: execution.auditRun(req.Snapshot), Output: execution.Output, Error: failure.Error()}, "", "  ")
+	if err != nil {
+		return err
+	}
+	name := "security-audit-" + execution.InvocationID + ".json"
+	if err := os.WriteFile(filepath.Join(directory, name), content, 0o600); err != nil {
+		return err
+	}
+	if req.evidence == nil {
+		return errors.New("security audit evidence publisher is unavailable")
+	}
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	defer cancel()
+	return req.evidence.PublishValidationEvidence(publishCtx, []ValidationEvidence{{Name: name, ContentType: "application/json", Content: content}})
 }

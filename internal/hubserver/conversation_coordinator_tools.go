@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -95,8 +96,9 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 				t.coordinator.logger.Warn("coordinator could not persist refusal", "conversation_id", t.state.conversationID, "error", postErr)
 			}
 		}
-		t.coordinator.logger.Warn("coordinator tool failed", "conversation_id", t.state.conversationID, "tool", call.Name, "error", err)
-		return coordinatorToolError(err), nil
+		failure := coordinatorToolError(err)
+		t.coordinator.logger.Warn("coordinator tool failed", "conversation_id", t.state.conversationID, "tool", call.Name, "error", err, "tool_error", failure.Content)
+		return failure, nil
 	}
 	if !coordinatorScreenRead(call.Name) {
 		record, readErr := t.coordinator.readConversation(ctx, t.coordinator.service.store.reader, t.state.conversationID)
@@ -132,8 +134,12 @@ func (t *coordinatorToolset) handle(ctx context.Context, call runner.AgentToolCa
 func coordinatorToolError(err error) runner.AgentToolResult {
 	message := err.Error()
 	var native *nativeError
-	if errors.As(err, &native) && native.Code == "invalid_request" {
+	var request *operatortool.RequestError
+	switch {
+	case errors.As(err, &native) && native.Code == "invalid_request":
 		message = native.Message
+	case errors.As(err, &request) && request.Message != "":
+		message = request.Message
 	}
 	encoded, encodeErr := json.Marshal(map[string]string{"error": boundRunes(message, coordinatorErrorRunes)})
 	if encodeErr != nil {
