@@ -64,6 +64,9 @@ func (b *Backend) RunTurn(ctx context.Context, request runner.AgentTurnRequest, 
 }
 
 func (b *Backend) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handle runner.AgentToolHandler, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if request.TextOnly && len(tools) > 0 {
+		return runner.AgentTurnResult{}, errors.New("text-only turns cannot register tools")
+	}
 	if model := strings.TrimSpace(request.Model); model != "" && model != Model {
 		return runner.AgentTurnResult{}, fmt.Errorf("unsupported coordinator model %q", model)
 	}

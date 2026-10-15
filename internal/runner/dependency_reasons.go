@@ -50,10 +50,16 @@ func (r *Runner) dependencyReasonGenerator(backend AgentBackend, template AgentT
 		defer func() { returnErr = errors.Join(returnErr, os.RemoveAll(scratch)) }()
 		request := template
 		request.Workspace = scratch
+		request.TempDir = scratch
 		request.Environment = r.withGoBudget(ctx, scratch, procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()})
 		request.ExtraWritableRoots = nil
+		request.ExtraNetworkDomains = nil
+		request.AllowLocalBinding = false
+		request.Attachments = nil
+		request.ConversationControl = nil
 		request.Prompt = prompt
 		request.ReadOnly = true
+		request.TextOnly = true
 		request.SupplementalTools = false
 		request.Resume = AgentResume{}
 		request.MaxTurns = 1
