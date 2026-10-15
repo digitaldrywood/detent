@@ -87,6 +87,15 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 	if err != nil {
 		return capture, err
 	}
+	patch, truncated, err := gitDiffArgsWithinLimit(ctx, directory, nil, tracker.MaxChangeDiffBytes,
+		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, head, "--")
+	if err != nil {
+		return capture, err
+	}
+	if truncated {
+		return capture, errors.New("change source diff exceeds the source capture limit")
+	}
+	capture.Patch = patch
 	digest, err := changeSourceDiff(ctx, directory, base, head)
 	if err != nil {
 		return capture, err

@@ -69,25 +69,24 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
-	SecurityAuditRequired     bool
-	SecurityAuditMaxDiffBytes int
-	SecurityAudit             func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`
-	Native                    bool
-	RebaseRequired            bool
-	Validation                *gate.CommandResult
-	LandingMode               string
-	Authorize                 func(context.Context) error                                    `json:"-"`
-	PublicationEffect         func(context.Context, string, string, GitHubPublication) error `json:"-"`
-	ValidationCommand         string
-	RequiredStatusChecks      []string
-	CITriggerLabel            string
-	CITriggerLabelStagger     time.Duration
-	PreviousCI                *tracker.NativeLandingCIReceipt
-	SourceIssues              []tracker.ExternalReference
-	GitHubClient              GitHubRESTClient
-	External                  *tracker.ChangeExternalReference
-	ExternalHeadSHA           string
-	PublicationPushes         []GitHubPublicationPush
+	SecurityAuditRequired bool
+	SecurityAudit         func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`
+	Native                bool
+	RebaseRequired        bool
+	Validation            *gate.CommandResult
+	LandingMode           string
+	Authorize             func(context.Context) error                                    `json:"-"`
+	PublicationEffect     func(context.Context, string, string, GitHubPublication) error `json:"-"`
+	ValidationCommand     string
+	RequiredStatusChecks  []string
+	CITriggerLabel        string
+	CITriggerLabelStagger time.Duration
+	PreviousCI            *tracker.NativeLandingCIReceipt
+	SourceIssues          []tracker.ExternalReference
+	GitHubClient          GitHubRESTClient
+	External              *tracker.ChangeExternalReference
+	ExternalHeadSHA       string
+	PublicationPushes     []GitHubPublicationPush
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string

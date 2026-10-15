@@ -353,9 +353,17 @@ func auditIntegratedLanding(ctx context.Context, path, base, head string, opts L
 	if _, err := runGitAt(ctx, path, "diff", "--quiet", head, "--"); err != nil {
 		return nil, fmt.Errorf("landing security audit requires the integrated source tree: %w", err)
 	}
-	diff, err := GitFileDiffs(ctx, path, base, opts.SecurityAuditMaxDiffBytes)
+	diff, err := GitFileDiffs(ctx, path, base, tracker.MaxChangeDiffBytes)
 	if err != nil {
 		return nil, err
+	}
+	if diff.Truncated {
+		return nil, errors.New("landing security audit diff exceeds the source capture limit")
+	}
+	for _, file := range diff.Files {
+		if file.Patch == "" {
+			return nil, errors.New("landing security audit source patch is incomplete")
+		}
 	}
 	if diff.BaseSHA != base || diff.HeadSHA != head {
 		return nil, errors.New("landing security audit diff differs from the integrated change")
