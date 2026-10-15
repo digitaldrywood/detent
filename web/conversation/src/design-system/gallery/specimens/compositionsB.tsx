@@ -840,7 +840,6 @@ function PropertiesSpecimen({ canWrite }: { readonly canWrite: boolean }) {
         canWrite={canWrite}
         saving={false}
         runner="Mac Studio"
-        effort="high · gpt-6-sol"
         attempts="2 attempts"
         related={[
           { key: "r1", kind: "issue", label: "detent#128 Usage report", category: "completed", onOpen: noop, onRemove: canWrite ? noop : null },

@@ -9,8 +9,10 @@ import * as Schema from "effect/Schema";
 
 import { startMockHub, type MockHub } from "../dev/mock-hub.ts";
 import { loadBootstrap } from "../src/runtime/bootstrap.ts";
-import { NativeIssue } from "../src/contracts/work.ts";
-import { toAttemptView, toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
+import attemptsFixture from "../src/contracts/fixtures/work-attempt-list.json";
+import itemFixture from "../src/contracts/fixtures/work-item.json";
+import { NativeAttempt, NativeBoardCard, NativeIssue } from "../src/contracts/work.ts";
+import { toAttemptView, toBoardCardView, toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
 import { boardStats, searchItems, sortItems, type WorkItemView } from "../src/app/work/lib/model.ts";
 import type { WorkSort } from "../src/app/work/lib/viewState.ts";
 import { moveItem } from "../src/app/work/lib/useWork.ts";
@@ -573,5 +575,25 @@ describe("reviewing a change", () => {
     expect(comment.version_id).toBe(detail.change.current_version_id);
     const after = await http.getChange(PROJECT, itemId, changeId);
     expect(after.discussion.map((entry) => entry.comment_id)).toContain(comment.comment_id);
+  });
+});
+
+
+describe("attempt reasoning effort", () => {
+  it.each([
+    { name: "reported", reasoning_effort: "high", expected: "high" },
+    { name: "older Hub", reasoning_effort: undefined, expected: null },
+    { name: "empty", reasoning_effort: "", expected: null },
+  ])("maps $name effort for issue attempts and board cards", ({ reasoning_effort, expected }) => {
+    const base = attemptsFixture.items.at(-1)!;
+    const identity = { ...base.identity, ...(reasoning_effort === undefined ? {} : { reasoning_effort }) };
+    const attempt = Schema.decodeUnknownSync(NativeAttempt)({ ...base, identity });
+    const card = Schema.decodeUnknownSync(NativeBoardCard)({
+      issue: itemFixture, status_line: "", change: null,
+      attempt: { attempt_id: attempt.attempt_id, status: attempt.status, identity,
+        started_at: attempt.started_at, expires_at: attempt.started_at },
+    });
+    expect(toAttemptView([attempt])?.effort).toBe(expected);
+    expect(toBoardCardView(card, "Example").attempt?.effort).toBe(expected);
   });
 });

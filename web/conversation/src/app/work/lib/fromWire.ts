@@ -100,9 +100,7 @@ export function toAttemptView(
     runner: runnerDisplay(runnerNames, attempt.runner_id ?? attempt.machine_id ?? null),
     backend: attempt.identity?.backend ?? null,
     model: attempt.identity?.model ?? null,
-    // The hub serves no effort or access on an attempt; the artifact's worker
-    // strip shows them, and inventing them here would be decoration.
-    effort: null,
+    effort: attempt.identity?.reasoning_effort || null,
     access: null,
     startedAt: attempt.started_at,
     // No token count and no progress exist anywhere on this resource, so the
@@ -236,7 +234,7 @@ export function toBoardCardView(card: NativeBoardCard, projectName: string): Wor
       id: attempt.attempt_id, status: attempt.status, running: attempt.status === "running",
       runner: runnerDisplay(undefined, attempt.runner_id ?? attempt.machine_id ?? null),
       backend: attempt.identity?.backend ?? null, model: attempt.identity?.model ?? null,
-      effort: null, access: null, startedAt: attempt.started_at, tokens: null, progress: null, attemptNumber: attempt.count ?? 1,
+      effort: attempt.identity?.reasoning_effort || null, access: null, startedAt: attempt.started_at, tokens: null, progress: null, attemptNumber: attempt.count ?? 1,
     },
     change: change === null ? null : { id: change.change_id,
       number: externalNumber !== null && Number.isFinite(externalNumber) ? externalNumber : null,
