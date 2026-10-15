@@ -89,7 +89,7 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 	isolateNativeChangeGit(t)
-	for _, size := range []int{300 << 10, 21 << 20} {
+	for _, size := range []int{300 << 10, 21 << 20, tracker.MaxChangeDiffBytes} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			directory := nativeChangeSourceRepo(t)
 			gitOutput := func(args ...string) string {
@@ -108,11 +108,15 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 			nativeChangeGit(t, directory, "add", ".")
 			nativeChangeGit(t, directory, "commit", "-m", "large source")
 			head := strings.TrimSpace(gitOutput("rev-parse", "HEAD"))
-			original := gitOutput("diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, head, "--")
-			if len(original) <= size {
-				t.Fatal("fixture did not cross source boundary")
+			var original string
+			var expected [sha256.Size]byte
+			if size < tracker.MaxChangeDiffBytes {
+				original = gitOutput("diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, head, "--")
+				if len(original) <= size {
+					t.Fatal("fixture did not cross source boundary")
+				}
+				expected = sha256.Sum256([]byte(original))
 			}
-			expected := sha256.Sum256([]byte(original))
 			captured, err := workspace.GitFileDiffs(t.Context(), directory, base, tracker.MaxDiffBytes)
 			if err != nil {
 				t.Fatal(err)
@@ -161,6 +165,30 @@ func TestNativeSecurityAuditCapturesBeyondStoredDiff(t *testing.T) {
 			execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 				return workspace.CaptureChangeSource(ctx, directory, base, head)
 			})
+			if size >= tracker.MaxChangeDiffBytes {
+				detail.Versions[0].Policy.Gates.SecurityAudit = false
+				if err := execution.retainChangeSource(t.Context(), request); err != nil {
+					t.Fatalf("audit patch limit prevented source retention: %v", err)
+				}
+				retained := execution.retainedSource
+				if retained == nil {
+					t.Fatal("source bundle was not retained")
+				}
+				if err := retained.Source.Validate(base, head, retained.Bundle); err != nil {
+					t.Fatal(err)
+				}
+				if retained.Patch != "" {
+					t.Fatal("oversized audit patch must not be represented as complete")
+				}
+				if input, err := execution.SecurityAuditVersion(t.Context()); err != nil || input.Version != nil {
+					t.Fatalf("disabled audit rejected retained source: version=%v error=%v", input.Version != nil, err)
+				}
+				detail.Versions[0].Policy.Gates.SecurityAudit = true
+				if input, err := execution.SecurityAuditVersion(t.Context()); err == nil || !strings.Contains(err.Error(), "security audit retained source patch is unavailable") || input.Diff != nil {
+					t.Fatalf("incomplete audit source was not refused: diff=%v error=%v", input.Diff != nil, err)
+				}
+				return
+			}
 			input, err := execution.SecurityAuditVersion(t.Context())
 			if err != nil {
 				t.Fatal(err)
