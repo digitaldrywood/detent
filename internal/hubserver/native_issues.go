@@ -235,10 +235,6 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 	if err := readNativeDependencyDetails(ctx, query, scope, &issue); err != nil {
 		return issue, internalID, err
 	}
-	issue.Related, err = readNativeRelated(ctx, query, scope, issue.WorkItemID)
-	if err != nil {
-		return issue, internalID, err
-	}
 	delivery, associated, err := readReleaseDelivery(ctx, query, scope, string(issue.WorkItemID))
 	if associated {
 		issue.ReleaseDelivery = &delivery
