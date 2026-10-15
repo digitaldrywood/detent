@@ -2046,7 +2046,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				return RunResult{}, err
 			}
 			if runtime, ok := req.Execution.(RuntimeExecution); ok {
-				if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: sessionID, Stage: nativeRuntimePhase(req), StartedAt: startedAt, AsOf: r.now(), Status: "running"}}); err != nil {
+				if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: req.WorkAttemptID, Generation: req.Generation, SessionID: sessionID, Stage: nativeRuntimePhase(req), StartedAt: startedAt, AsOf: r.now(), Status: "running"}}); err != nil {
 					return RunResult{}, err
 				}
 			}
