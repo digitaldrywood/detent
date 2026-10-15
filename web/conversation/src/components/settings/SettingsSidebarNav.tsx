@@ -40,6 +40,7 @@ import {
   useSettingsNavItems,
 } from "./useAvailableSettingsSearchItems";
 
+import { useReleaseNotesUnread } from "../../app/account/releaseNotes.ts";
 import { useAccountBootstrap } from "../../app/account/context.ts";
 import { useOrganizationMembers } from "../../app/account/OrganizationMembers.tsx";
 
@@ -60,6 +61,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const navItems = useSettingsNavItems();
   const account = useAccountBootstrap();
+  const hasUnread = useReleaseNotesUnread();
   const members = useOrganizationMembers();
   const memberCount = members.value?.member_count ?? members.value?.members.length;
   const sectionIcons = useMemo<SectionIcons>(
@@ -281,6 +283,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                 const row = (
                   <SidebarMenuButton
                     isActive={isActive}
+                    aria-label={item.id === "whats-new" && hasUnread ? `${item.label}, new release notes` : undefined}
                     aria-current={isActive ? "true" : undefined}
                     aria-disabled={disabled ? "true" : undefined}
                     onClick={() => {
@@ -289,6 +292,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                   >
                     <Icon />
                     <span className="truncate">{item.label}</span>
+                    {item.id === "whats-new" && hasUnread ? <span aria-hidden="true" className="ms-auto size-[7px] shrink-0 rounded-full bg-primary" /> : null}
                   </SidebarMenuButton>
                 );
                 return (

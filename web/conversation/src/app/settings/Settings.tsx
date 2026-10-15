@@ -59,6 +59,7 @@ import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsL
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
 import { SlackSettings } from "./SlackSettings.tsx";
+import { WhatsNewSettings } from "./WhatsNewSettings.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
 import { basePath, signInPath } from "../../runtime/basePath.ts";
 
@@ -898,6 +899,8 @@ function SettingsBody({
       return <BillingSettings />;
     case "keybindings":
       return <KeybindingsSettings />;
+    case "whats-new":
+      return <WhatsNewSettings />;
     case "about":
       return <AboutSettings />;
     case "general":

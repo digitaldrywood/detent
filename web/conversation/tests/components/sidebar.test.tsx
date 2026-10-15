@@ -15,6 +15,10 @@ import { HealthFindingsProvider, useHealthFindings } from "../../src/app/diagnos
 import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
 import { resetUpdateCheckState } from "../../src/app/adapters/detentUpdates.ts";
 import * as settings from "../../src/hooks/useSettings.ts";
+import { setReleaseNotesUnread } from "../../src/app/account/releaseNotes.ts";
+import { AccountBootstrap } from "../../src/contracts/account.ts";
+import * as Schema from "effect/Schema";
+import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 import { makeClient } from "../../src/runtime/bootstrap.ts";
 import { ClientContext } from "../../src/app/client.ts";
 import type { Bootstrap } from "../../src/contracts/index.ts";
@@ -550,4 +554,14 @@ describe("existing thread removal menu", () => {
       await waitFor(() => expect(h.onNavigate).toHaveBeenCalledWith("/chat/p/proj_alpha"));
     }
   });
+});
+
+it.each([true, false])("shows the settings gear unread dot from bootstrap (%s) and observes mark-seen", async (has_unread) => {
+  const account = Schema.decodeUnknownSync(AccountBootstrap)({ ...accountFixture, has_unread });
+  const client = makeClient({ bootstrap: bootstrapFixture as unknown as Bootstrap, account });
+  await renderSidebar({}, { client });
+  const gear = screen.getByRole("button", { name: has_unread ? "Settings, new release notes" : "Settings" });
+  expect(gear.querySelector('[aria-hidden="true"].bg-primary') !== null).toBe(has_unread);
+  act(() => setReleaseNotesUnread(account, false));
+  expect(screen.getByRole("button", { name: "Settings" }).querySelector('[aria-hidden="true"].bg-primary')).toBeNull();
 });

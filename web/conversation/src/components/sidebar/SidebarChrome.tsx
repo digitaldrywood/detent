@@ -11,6 +11,7 @@ import { Link, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-ro
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { useEnvironments } from "../../state/environments";
+import { useReleaseNotesUnread } from "../../app/account/releaseNotes.ts";
 import { DetentWordmark } from "../DetentWordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -114,7 +115,9 @@ function SidebarUtilityItem({
   icon,
   label,
   onClick,
+  unread = false,
 }: {
+  unread?: boolean;
   icon: ReactNode;
   label: string;
   onClick: () => void;
@@ -124,8 +127,9 @@ function SidebarUtilityItem({
       <Tooltip>
         <TooltipTrigger
           render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
+            <SidebarMenuButton aria-label={unread ? `${label}, new release notes` : label} onClick={onClick} size="icon">
               {icon}
+              {unread ? <span aria-hidden="true" className="absolute end-1 top-1 size-[7px] rounded-full bg-primary" /> : null}
             </SidebarMenuButton>
           }
         />
@@ -136,6 +140,7 @@ function SidebarUtilityItem({
 }
 
 export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
+  const hasUnread = useReleaseNotesUnread();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -205,6 +210,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           <SidebarUtilityItem
             icon={<SettingsIcon />}
             label="Settings"
+            unread={hasUnread}
             onClick={handleSettingsClick}
           />
           {pullRequestsSupported ? (
