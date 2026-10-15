@@ -872,6 +872,15 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 					t.Fatal(err)
 				}
+				if test.name == "revoked policy" {
+					f.restart(t)
+					if execution := f.load(t).Execution; execution.Status != conversation.ExecutionRunning || execution.Owner.AttemptID != f.attempt {
+						t.Fatalf("retired policy invalidated live owner: %#v", execution)
+					}
+					requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+					requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "continued", "text": "continued evidence"}), http.StatusAccepted)
+					return
+				}
 				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted {
 					t.Fatalf("reconciliation retained lost owner: %#v", execution)
 				}

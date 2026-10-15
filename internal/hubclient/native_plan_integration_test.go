@@ -57,7 +57,7 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		{name: "planning-enabled Todo refuses recorded code before provider", failure: "recovery", planRecoveryRole: runner.RoleCode},
 		{name: "planning-enabled Todo refuses recorded rework before provider", failure: "recovery", planRecoveryRole: runner.RoleRework},
 		{name: "planning-enabled clean code identity mismatch preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "identity"},
-		{name: "planning-enabled persisted policy refusal preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
+		{name: "planning-enabled changed configuration reaches session recovery and preserves current version", failure: "recovery", planRecoveryRole: runner.RoleCode, resumeCase: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			testNativePlannerHandoff(t, test.abandon, test.failure, test.planRecoveryRole, test.resumeCase)
@@ -361,10 +361,8 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 					refusalAttemptID = run.localAttemptID
 					wantReason := "checkpoint_requires_recovery"
 					switch resumeCase {
-					case "identity":
+					case "identity", "policy":
 						wantReason = "session_restart_required"
-					case "policy":
-						wantReason = "policy_mismatch"
 					}
 					if run.mode != runner.RunModePlan || run.state != "Todo" || run.recordedRole != planRecoveryRole || !errors.Is(run.err, runner.ErrNativeRecoveryRequired) || !strings.Contains(run.err.Error(), wantReason) {
 						t.Fatalf("planning refusal ran the wrong dispatch or failure: mode=%s state=%s recorded_role=%s error=%v", run.mode, run.state, run.recordedRole, run.err)
@@ -411,7 +409,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Errorf("planning refusal changed preserved evidence: state=%s receipt_unchanged=%v change_unchanged=%v calls=%d changes=%d error=%v", current.Issue.State, reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts), reflect.DeepEqual(current.Change, preservedRecovery.Change), provider.calls.Load(), len(changes), err)
 		}
 		assertSetupRefusalReceipt(t, current.Attempts)
-		if resumeCase == "identity" && provider.resumeVerified.Load() != 1 || resumeCase == "policy" && provider.resumeVerified.Load() != 0 {
+		if (resumeCase == "identity" || resumeCase == "policy") && provider.resumeVerified.Load() != 1 {
 			t.Fatalf("resume refusal did not exercise the intended boundary: case=%s verification_calls=%d", resumeCase, provider.resumeVerified.Load())
 		}
 		for range 2 {
