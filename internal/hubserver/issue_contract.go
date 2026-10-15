@@ -143,13 +143,13 @@ func (s *Service) observeScheduledWebhook(ctx context.Context, delivery storedWe
 		return ctx
 	}
 	repository := webhookRepositoryFullName(payload.Repository)
-	_, sourceRepository, _, err := tracker.ParseGitHubIssueURL(source.URL)
+	canonical, sourceRepository, _, err := tracker.ParseGitHubIssueURL(source.URL)
 	if err != nil || !strings.EqualFold(repository, sourceRepository) {
 		return ctx
 	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.organization_id,p.id FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id
 WHERE p.deleted_at IS NULL AND p.profile='native' AND (lower(r.github_owner || '/' || r.github_name)=lower(?) OR lower(p.checkout_repository)=lower(?))
-AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id=p.id AND (i.native_source_key=? OR (i.repository_id=p.repository_id AND i.github_number=?)))`, repository, repository, "github:"+source.URL, source.Number)
+AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id=p.id AND (i.native_source_key=? OR (i.repository_id=p.repository_id AND i.github_number=?)))`, repository, repository, "github:"+canonical, source.Number)
 	if err != nil {
 		return ctx
 	}
@@ -167,7 +167,7 @@ AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id=p.id AND (i.native_sou
 	}
 	imports := make(map[string]*nativeScheduledRepair, len(scopes))
 	for _, scope := range scopes {
-		imports[string(scope.organization)+"/"+string(scope.project)+"/"+source.URL] = s.observeImportedScheduledRepair(ctx, scope, linkedSnapshotFromSource(IssueSource{URL: source.URL, Body: source.Body, AuthorID: source.AuthorID}, s.config.now()))
+		imports[string(scope.organization)+"/"+string(scope.project)+"/"+canonical] = s.observeImportedScheduledRepair(ctx, scope, linkedSnapshotFromSource(IssueSource{URL: canonical, Body: source.Body, AuthorID: source.AuthorID}, s.config.now()))
 	}
 	return context.WithValue(ctx, scheduledImportsKey{}, imports)
 }

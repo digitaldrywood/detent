@@ -28,9 +28,10 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 	const token = "isolated-scheduled-import-administrator-token"
 	const secret = "isolated-scheduled-import-webhook-secret"
 	const criteria = "## Acceptance criteria\nReproduce and minimally repair.\n\n## Must not break\nPreserve intended behavior.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3 and INV-7.\n\n## Safety regression\nPreserve existing regressions."
-	for _, test := range []struct{ name, workflow, state string }{
-		{"authorized CI", ".github/workflows/ci.yml", "Todo"},
-		{"other workflow", ".github/workflows/other.yml", "Triage"},
+	for _, test := range []struct{ name, workflow, state, sourceRepository string }{
+		{"authorized CI", ".github/workflows/ci.yml", "Todo", repository},
+		{"mixed case source URL", ".github/workflows/ci.yml", "Todo", "Example-Org/Example-Project"},
+		{"other workflow", ".github/workflows/other.yml", "Triage", repository},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			sha := strings.Repeat("a", 40)
@@ -95,7 +96,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			api(http.MethodPut, base+"/policy", policy.Change{Policy: descriptor}, nil)
-			payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": "example-project", "full_name": repository, "owner": map[string]string{"login": "example-org"}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + repository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
+			payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": "example-project", "full_name": repository, "owner": map[string]string{"login": "example-org"}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + test.sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
 			if err != nil {
 				t.Fatal(err)
 			}
