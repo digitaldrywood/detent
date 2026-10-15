@@ -1903,6 +1903,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 	instanceDisposition := &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:tool", Owner: workpad.BlockerOwnerInstance, Reason: "effective host gate lacks a passing current-head receipt", Unverifiable: true}}}
 	for _, test := range []struct {
 		sourceFixture        string
+		importedVersion      bool
 		finalMessage         string
 		wantDisposition      *tracker.NativeDisposition
 		enrolled             bool
@@ -1950,6 +1951,8 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		wantChanges          int
 	}{
 		{name: "blocked native729 first unchanged Rework preserves dependency", finalMessage: dependencyMessage, wantDisposition: dependencyDisposition, rework: true},
+		{name: "imported unchanged Rework records implementing attempt before validation", importedVersion: true, rework: true, validator: "pass", land: true, wantChanged: true, wantState: "Merging", wantChanges: 1},
+		{name: "imported unchanged Rework cannot clear existing human rejection", importedVersion: true, rework: true, formal: true, validator: "pass", land: true},
 		{name: "blocked native825 unchanged Rework preserves instance gate blocker", finalMessage: instanceMessage, wantDisposition: instanceDisposition, rework: true},
 		{name: "blocked SSH Rework retains staged source", finalMessage: instanceMessage, wantDisposition: instanceDisposition, rework: true, ssh: true, staged: true},
 		{name: "held publication reconciles lost create through new Runner lease", publication: "lost_create", rework: true, formal: true},
@@ -3618,6 +3621,13 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("unavailable signer did not produce an unsigned final commit: %s, %v", signature, readErr)
 				}
 			}
+			if test.importedVersion && test.formal {
+				detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+				if err == nil || readErr != nil || !reflect.DeepEqual(detail.Versions, expected.Versions) || !reflect.DeepEqual(detail.Reviews, expected.Reviews) || detail.Summary.NativeReview != "changes_requested" || detail.Change.CurrentLanding() != nil {
+					t.Fatalf("imported source superseded human rejection: error=%v read=%v summary=%+v", err, readErr, detail.Summary)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("run: %v", err)
 			}
@@ -3741,7 +3751,21 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatalf("validator did not review the native version in a fresh session: change=%+v calls=%d", change, provider.calls)
 				}
 				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
-				if err != nil || len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].VersionID != change.VersionID || change.Validator.HeadSHA != change.HeadSHA {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.importedVersion {
+					if len(detail.Versions) != len(expected.Versions)+1 || len(detail.Reviews) != len(expected.Reviews)+1 {
+						t.Fatal("imported source did not publish exactly one version and fresh review")
+					}
+					current := detail.Versions[len(detail.Versions)-1]
+					owner := execution.(*nativeExecution).data
+					if current.AttemptID != owner.AttemptID || current.RunID != owner.RunID || current.HeadSHA != expected.Versions[len(expected.Versions)-1].HeadSHA || !reflect.DeepEqual(detail.Versions[:len(expected.Versions)], expected.Versions) || !reflect.DeepEqual(detail.Reviews[:len(expected.Reviews)], expected.Reviews) {
+						t.Fatal("imported source lost attempt provenance, unchanged head, or immutable history")
+					}
+					detail.Reviews = slices.DeleteFunc(slices.Clone(detail.Reviews), func(review tracker.ChangeReview) bool { return review.VersionID != change.VersionID })
+				}
+				if len(detail.Reviews) != 1 || detail.Reviews[0].Validator == nil || detail.Reviews[0].VersionID != change.VersionID || change.Validator.HeadSHA != change.HeadSHA {
 					t.Fatalf("validator verdict was not pinned to the immutable version: %+v, %v", detail, err)
 				}
 				if test.dependencyOnly {
@@ -3891,7 +3915,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					if test.reopened && (detail.Change.CurrentLanding() != nil || !reflect.DeepEqual(detail.Change.Landed, expected.Change.Landed)) {
 						t.Fatal("new publication lost the historical landing or treated it as current")
 					}
-					if test.land && !test.lateConflict && !test.staleBase && !test.reopened {
+					if test.land && !test.lateConflict && !test.staleBase && !test.reopened && !test.importedVersion {
 						if len(detail.Versions) != len(expected.Versions) || change.VersionID != expected.Change.CurrentVersion || change.HeadSHA != expected.Versions[len(expected.Versions)-1].HeadSHA {
 							t.Fatalf("unchanged Rework replaced the immutable version: change=%+v, detail=%+v", change, detail)
 						}
@@ -3903,7 +3927,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 							t.Fatalf("base refresh lost immutable history, exact-head review or issue-owned delta: change=%+v diff=%+v versions=%+v", change, stored, detail.Versions)
 						}
 					}
-					if !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Discussion, expected.Discussion) {
+					historicalReviews := detail.Reviews
+					if test.importedVersion {
+						historicalReviews = detail.Reviews[:len(expected.Reviews)]
+					}
+					if !reflect.DeepEqual(historicalReviews, expected.Reviews) || !reflect.DeepEqual(detail.Discussion, expected.Discussion) {
 						t.Fatal("new version changed historical feedback or fabricated review")
 					}
 					current := detail.Versions[len(detail.Versions)-1]
