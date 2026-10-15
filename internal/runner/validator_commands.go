@@ -99,7 +99,7 @@ func (v *validatorCommands) execute(ctx context.Context, command string, validat
 func (v *validatorCommands) tools() ([]AgentTool, AgentToolHandler) {
 	return []AgentTool{
 			{Name: "detent_run_validation", Description: "Run one required acceptance validation command through the host on the immutable reviewed head; any failed command prevents a passing review. Use detent_read_source for source inspection.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`)},
-			{Name: "detent_read_source", Description: "Read a file or list files from the pinned review head or base. Returns a host command receipt for source inspection, never test execution. A failed read is retained but may be recovered by a successful read; missing criterion evidence remains unverified.", InputSchema: json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["read","list"]},"revision":{"type":"string","enum":["head","base"]},"path":{"type":"string"}},"required":["operation","revision","path"],"additionalProperties":false}`)},
+			{Name: "detent_read_source", Description: "Read a file or list files from the pinned review head or base. Returns a host command receipt for source inspection, never test execution. Pages start at byte offset 0 and default to 16384 bytes; length must be 1..16384. Text boundaries align to complete UTF-8 characters; a short length may return one whole character and an offset within a character includes its beginning. Receipts identify the actual byte range, total size, next_offset and eof; request subsequent relevant pages explicitly. A failed read is retained but may be recovered by a successful read; missing criterion evidence remains unverified.", InputSchema: json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["read","list"]},"revision":{"type":"string","enum":["head","base"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":16384}},"required":["operation","revision","path"],"additionalProperties":false}`)},
 		}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
 			var command string
 			switch call.Name {
@@ -113,10 +113,12 @@ func (v *validatorCommands) tools() ([]AgentTool, AgentToolHandler) {
 				command = input.Command
 			case "detent_read_source":
 				var err error
-				command, err = v.sourceCommand(call.Arguments)
+				var selection workspace.ReviewOutputRange
+				command, selection, err = v.sourceCommand(call.Arguments)
 				if err != nil {
 					return AgentToolResult{Content: err.Error()}, nil
 				}
+				ctx = workspace.WithReviewOutputRange(ctx, selection)
 			default:
 				return AgentToolResult{Content: "unsupported tool"}, nil
 			}
@@ -129,19 +131,28 @@ func (v *validatorCommands) tools() ([]AgentTool, AgentToolHandler) {
 		}
 }
 
-func (v *validatorCommands) sourceCommand(raw json.RawMessage) (string, error) {
+func (v *validatorCommands) sourceCommand(raw json.RawMessage) (string, workspace.ReviewOutputRange, error) {
 	var input struct {
 		Operation string `json:"operation"`
 		Revision  string `json:"revision"`
 		Path      string `json:"path"`
+		Offset    int64  `json:"offset"`
+		Length    *int   `json:"length"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
-		return "", err
+		return "", workspace.ReviewOutputRange{}, err
+	}
+	selection := workspace.ReviewOutputRange{Offset: input.Offset, Length: workspace.ReviewSourcePageBytes}
+	if input.Length != nil {
+		selection.Length = *input.Length
+	}
+	if selection.Offset < 0 || selection.Length < 1 || selection.Length > workspace.ReviewSourcePageBytes {
+		return "", workspace.ReviewOutputRange{}, errors.New("source offset must be nonnegative and length must be 1..16384 bytes")
 	}
 	if !fs.ValidPath(input.Path) || strings.ContainsAny(input.Path, "\x00\\") {
-		return "", errors.New("source path must be a repository-relative file or directory")
+		return "", workspace.ReviewOutputRange{}, errors.New("source path must be a repository-relative file or directory")
 	}
 	commit := v.issue.PullRequestHeadSHA
 	switch input.Revision {
@@ -149,10 +160,10 @@ func (v *validatorCommands) sourceCommand(raw json.RawMessage) (string, error) {
 	case "base":
 		commit = v.base
 	default:
-		return "", errors.New("source revision must be the pinned head or base")
+		return "", workspace.ReviewOutputRange{}, errors.New("source revision must be the pinned head or base")
 	}
 	if !changerequest.ValidHash(commit, 40) && !changerequest.ValidHash(commit, 64) {
-		return "", errors.New("pinned source revision is unavailable")
+		return "", workspace.ReviewOutputRange{}, errors.New("pinned source revision is unavailable")
 	}
 	args := []string{"--no-pager", "--literal-pathspecs"}
 	switch input.Operation {
@@ -161,9 +172,9 @@ func (v *validatorCommands) sourceCommand(raw json.RawMessage) (string, error) {
 	case "list":
 		args = append(args, "ls-tree", "-r", "--name-only", commit, "--", input.Path)
 	default:
-		return "", errors.New("source operation must be read or list")
+		return "", workspace.ReviewOutputRange{}, errors.New("source operation must be read or list")
 	}
-	return commandshell.WithArgs("git", v.shell, args), nil
+	return commandshell.WithArgs("git", v.shell, args), selection, nil
 }
 
 func (v *validatorCommands) apply(result *gate.ValidatorResult) error {

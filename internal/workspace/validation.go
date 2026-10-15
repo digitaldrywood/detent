@@ -13,6 +13,19 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
+const ReviewSourcePageBytes = 16 * 1024
+
+type ReviewOutputRange struct {
+	Offset int64
+	Length int
+}
+
+type reviewOutputRangeKey struct{}
+
+func WithReviewOutputRange(ctx context.Context, selection ReviewOutputRange) context.Context {
+	return context.WithValue(ctx, reviewOutputRangeKey{}, selection)
+}
+
 type ReviewCommandRunner interface {
 	RunReviewCommand(context.Context, Info, Issue, string) (gate.CommandResult, error)
 }
