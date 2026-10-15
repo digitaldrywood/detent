@@ -81,6 +81,100 @@ No safety-critical path is touched; onboarding repository binding and runner che
 		decodeHubResponse(t, response, &page)
 		return page
 	}
+	numberFixture := newNativeFixture(t, nil, "", "number-search")
+	numberForeign := newNativeFixture(t, numberFixture.service, numberFixture.project.OrganizationID, "number-other")
+	numberHidden := numberForeign.create(t, "Separate project number lookup")
+	numbered := numberFixture.create(t, "Number lookup without matching content")
+	mentioned := numberFixture.create(t, "Discussion number mentions")
+	requireNativeStatus(t, performHubAPIRequest(t, numberFixture.service, http.MethodPost, numberFixture.base+"/work-items/"+string(mentioned.WorkItemID)+"/comments", numberFixture.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "number-mentions"}, Body: "References #1 and #10003"}), http.StatusOK)
+	archived := numberFixture.create(t, "Archived number lookup")
+	requireNativeStatus(t, performHubAPIRequest(t, numberFixture.service, http.MethodPost, numberFixture.base+"/work-items/"+string(archived.WorkItemID)+"/archive", numberFixture.token, archiveRequest(archived, "archive-number-search")), http.StatusOK)
+	numberContext := changeOperatorContext(t, numberFixture.service, numberFixture.token, string(numberFixture.project.OrganizationID))
+	numberProtocols := map[string]func(string, string, any) hostedContextReply{}
+	for _, transport := range []string{"stdio", "http"} {
+		numberProtocols[transport] = hostedContextProtocol(t, numberFixture.service, numberContext, transport)
+	}
+	for _, test := range []struct {
+		name, query string
+		fixture     nativeFixture
+		filters     url.Values
+		want        []tracker.NativeWorkItemID
+	}{
+		{"bare number", "1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"hash number", "#1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"project number", numberFixture.project.Name + "#1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"project ID number", string(numberFixture.project.ID) + "#1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"text number only", "10003", numberFixture, nil, []tracker.NativeWorkItemID{mentioned.WorkItemID}},
+		{"nonexistent number", "999999", numberFixture, nil, nil},
+		{"other project number", "1", numberForeign, nil, []tracker.NativeWorkItemID{numberHidden.WorkItemID}},
+		{"archived excluded", "#3", numberFixture, nil, nil},
+		{"archived included", "#3", numberFixture, url.Values{"archived": {"true"}}, []tracker.NativeWorkItemID{archived.WorkItemID}},
+		{"lane excluded", "1", numberFixture, url.Values{"state": {"Backlog"}}, nil},
+		{"lane included", "1", numberFixture, url.Values{"state": {"Todo"}}, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, include := range []string{"summary", "work", "board"} {
+				t.Run(include, func(t *testing.T) {
+					params := url.Values{"q": {test.query}, "include": {include}, "limit": {"1"}}
+					for name, values := range test.filters {
+						params[name] = values
+					}
+					var got []tracker.NativeWorkItemID
+					for {
+						response := performHubAPIRequest(t, numberFixture.service, http.MethodGet, test.fixture.base+"/work-items?"+params.Encode(), test.fixture.token, nil)
+						requireNativeStatus(t, response, http.StatusOK)
+						var page tracker.NativeIssuePage
+						decodeHubResponse(t, response, &page)
+						for _, item := range page.Items {
+							got = append(got, item.WorkItemID)
+							if item.Snippet == "" {
+								t.Fatal("number search lost snippet")
+							}
+						}
+						if include == "work" && test.filters.Get("archived") != "true" {
+							var workIDs []tracker.NativeWorkItemID
+							for _, item := range page.Work.Items {
+								workIDs = append(workIDs, item.WorkItemID)
+							}
+							if !slices.Equal(workIDs, test.want[:min(1, len(test.want))]) {
+								t.Fatalf("work number search = %v, want first of %v", workIDs, test.want)
+							}
+						}
+						if page.NextCursor == "" {
+							break
+						}
+						params.Set("cursor", page.NextCursor)
+					}
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("number search = %v, want %v", got, test.want)
+					}
+				})
+			}
+			if test.fixture.project.ID != numberFixture.project.ID {
+				return
+			}
+			for _, transport := range []string{"stdio", "http"} {
+				t.Run(transport, func(t *testing.T) {
+					args := map[string]any{"project_id": numberFixture.project.ID, "query": test.query}
+					for name := range test.filters {
+						args[name] = test.filters.Get(name)
+					}
+					raw := hostedContextData(t, numberProtocols[transport]("tools/call", operatortool.WorkList, args), false)
+					var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+					if err := json.Unmarshal(raw, &result); err != nil {
+						t.Fatal(err)
+					}
+					var got []tracker.NativeWorkItemID
+					for _, item := range result.Data.Items {
+						got = append(got, item.WorkItemID)
+					}
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("MCP number search = %v, want %v", got, test.want)
+					}
+				})
+			}
+		})
+	}
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	protocols := map[string]func(string, string, any) hostedContextReply{}
 	for _, transport := range []string{"stdio", "http"} {
