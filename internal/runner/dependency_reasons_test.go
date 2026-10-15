@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,7 +18,7 @@ func TestDependencyReasonTurnUsesIsolatedReadOnlyScratch(t *testing.T) {
 		t.Fatalf("reason=%q err=%v", got, err)
 	}
 	request := backend.request
-	if !request.ReadOnly || request.SupplementalTools || request.Resume.ThreadID != "" || request.MaxTurns != 1 || request.Prompt != "Summarize authorized issue data." || filepath.Dir(request.Workspace) != root {
+	if !request.ReadOnly || !request.TextOnly || request.SupplementalTools || request.Resume.ThreadID != "" || request.MaxTurns != 1 || request.Prompt != "Summarize authorized issue data." || filepath.Dir(request.Workspace) != root || !strings.HasPrefix(request.TempDir, root+string(filepath.Separator)) {
 		t.Fatalf("reason request escaped isolated read-only context: %+v", request)
 	}
 	if _, err := os.Stat(request.Workspace); !os.IsNotExist(err) {

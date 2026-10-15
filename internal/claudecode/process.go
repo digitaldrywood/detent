@@ -203,6 +203,9 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 }
 
 func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, map[string]any, error) {
+	if req.TextOnly {
+		req.ReadOnly = true
+	}
 	var verificationSettings map[string]any
 	argv := b.argv(req)
 	if b.options.IsolationPolicy != nil {
@@ -245,7 +248,10 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 			bounded := *b
 			bounded.options.PermissionMode = "acceptEdits"
 			argv = bounded.argv(req)
-			argv = append(argv, "--input-format", "stream-json", "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
+			argv = append(argv, "--input-format", "stream-json")
+			if !req.TextOnly {
+				argv = append(argv, "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
+			}
 		}
 		encoded, err := json.Marshal(settings)
 		if err != nil {
@@ -273,6 +279,9 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 }
 
 func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
+	if req.TextOnly {
+		req.ReadOnly = true
+	}
 	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if model := strings.TrimSpace(req.Model); model != "" {
 		args = append(args, "--model", model)
@@ -323,8 +332,12 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 			"--strict-mcp-config",
 			"--disable-slash-commands",
 			"--no-chrome",
-			"--tools", "Read", "Glob", "Grep",
 		)
+		if req.TextOnly {
+			args = append(args, "--tools", "", "--mcp-config", `{"mcpServers":{}}`)
+		} else {
+			args = append(args, "--tools", "Read", "Glob", "Grep")
+		}
 	}
 	return args
 }
