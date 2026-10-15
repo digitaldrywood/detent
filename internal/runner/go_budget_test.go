@@ -4,7 +4,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gobudget"
@@ -58,6 +61,14 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			workspace: goModule,
 			variables: map[string]string{"A": "1"},
 			want:      map[string]string{"A": "1"},
+		},
+		{
+			name:      "disabled budget preserves nested module overrides",
+			workspace: monorepo,
+			hostFlags: "-mod=mod",
+			hostProcs: "1",
+			variables: map[string]string{"GOFLAGS": "-p=3", "GOMAXPROCS": "3"},
+			want:      map[string]string{"GOFLAGS": "-p=3", "GOMAXPROCS": "3"},
 		},
 		{
 			name:      "host GOFLAGS are preserved",
@@ -150,6 +161,33 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			}
 			got := r.withGoBudget(ctx, tt.workspace, input)
 
+			if runtime.GOOS != "windows" {
+				command := exec.CommandContext(ctx, "/bin/sh", "-c", `printf '%s\n' "$GOFLAGS" "$GOMAXPROCS" "$DETENT_GO_BUDGET_DIR" "$DETENT_GO_BUDGET_SLOTS"`)
+				command.Dir = tt.workspace
+				if tt.workspace == monorepo {
+					command.Dir = filepath.Join(monorepo, "apps", "api")
+				}
+				procgroup.SetEnvironment(command, procgroup.Environment{Variables: map[string]string{
+					"GOFLAGS": tt.hostFlags, "GOMAXPROCS": tt.hostProcs,
+					gobudget.DirEnvironment: "", gobudget.SlotsEnvironment: "",
+				}})
+				procgroup.SetEnvironment(command, got)
+				output, err := command.CombinedOutput()
+				if err != nil {
+					t.Fatalf("worker child failed: %v: %s", err, output)
+				}
+				wantFlags, wantProcs := tt.hostFlags, tt.hostProcs
+				if value, ok := tt.want["GOFLAGS"]; ok {
+					wantFlags = value
+				}
+				if value, ok := tt.want["GOMAXPROCS"]; ok {
+					wantProcs = value
+				}
+				want := strings.Join([]string{wantFlags, wantProcs, tt.want[gobudget.DirEnvironment], tt.want[gobudget.SlotsEnvironment], ""}, "\n")
+				if string(output) != want {
+					t.Fatalf("worker child environment = %q, want %q", output, want)
+				}
+			}
 			if len(got.Variables) != len(tt.want) {
 				t.Fatalf("variables = %v, want %v", got.Variables, tt.want)
 			}
