@@ -1024,7 +1024,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		}
 		descriptors[i] = descriptor
 		if err := runner.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err != nil {
-			t.Fatal(err)
+			t.Fatalf("runner configuration report required approval: %v", err)
 		}
 	}
 	read := func() onboarding.Project {
@@ -1037,7 +1037,10 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 	}
 	initial := read()
 	if initial.Policy == nil || initial.Policy.Policy.ID != descriptors[1].ID {
-		t.Fatalf("latest reported configuration = %+v", initial.Policy)
+		t.Fatalf("latest runner configuration was not selected: %+v", initial.Policy)
+	}
+	if len(initial.ObservedPolicies) != 1 || initial.ObservedPolicies[0].Policy.ID != descriptors[0].ID || !initial.ObservedPolicies[0].PreviouslyApproved || !initial.ObservedPolicies[0].Conflict {
+		t.Fatalf("historical conflicting report lost its provenance: %+v", initial.ObservedPolicies)
 	}
 	combined, err := workflowconfig.ParseWorkflowOverlay(proWorkflow.DefinitionSources.Workflow, []byte("---\nagent:\n  auto_promote:\n    enabled: true\n---\n"), "operator-approved.local.md")
 	if err != nil {

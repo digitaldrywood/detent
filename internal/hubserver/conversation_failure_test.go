@@ -845,12 +845,13 @@ func TestConversationLostAcknowledgementStaysUnknown(t *testing.T) {
 
 func TestConversationHubRestartRecovery(t *testing.T) {
 	t.Parallel()
-	t.Run("restart refuses lost owners", func(t *testing.T) {
+	t.Run("restart reconciles owners", func(t *testing.T) {
 		for _, test := range []struct {
-			name  string
-			query string
+			name         string
+			query        string
+			retainsOwner bool
 		}{
-			{name: "revoked policy", query: "DELETE FROM project_policies WHERE scope = (SELECT scope FROM lease_policies WHERE lease_id = ?)"},
+			{name: "removed policy preserves owner", query: "DELETE FROM project_policies WHERE scope = (SELECT scope FROM lease_policies WHERE lease_id = ?)", retainsOwner: true},
 			{name: "released lease", query: "UPDATE leases SET released_at = acquired_at WHERE lease_id = ?"},
 			{name: "terminal attempt", query: "UPDATE native_attempts SET status = 'succeeded' WHERE lease_id = ?"},
 			{name: "foreign attempt", query: "UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'foreign-attempt') WHERE json_extract(execution_json, '$.lease_id') = ?"},
@@ -863,6 +864,11 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				f := newConversationWorkerFixture(t)
 				requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
 				requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-1", "turn_id": "turn-1"}), http.StatusAccepted)
+				original := f.load(t).Execution
+				wantStatus, wantCapabilities := conversation.ExecutionInterrupted, conversation.Capabilities{}
+				if test.retainsOwner {
+					wantStatus, wantCapabilities = conversation.ExecutionRunning, original.Capabilities
+				}
 				if test.name == "foreign work item" {
 					f.create(t, "foreign-worker-issue")
 				}
@@ -872,21 +878,20 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				if err := f.chat.reconcileExecutions(t.Context()); err != nil {
 					t.Fatal(err)
 				}
-				if test.name == "revoked policy" {
-					f.restart(t)
-					if execution := f.load(t).Execution; execution.Status != conversation.ExecutionRunning || execution.Owner.AttemptID != f.attempt {
-						t.Fatalf("retired policy invalidated live owner: %#v", execution)
+				if execution := f.load(t).Execution; execution.Status != wantStatus {
+					t.Fatalf("reconciled execution = %#v, want status %s", execution, wantStatus)
+				}
+				f.restart(t)
+				if execution := f.load(t).Execution; execution.Status != wantStatus || execution.Capabilities != wantCapabilities {
+					t.Fatalf("restarted execution = %#v, want status %s and capabilities %#v", execution, wantStatus, wantCapabilities)
+				}
+				if test.retainsOwner {
+					if execution := f.load(t).Execution; execution.Owner != original.Owner {
+						t.Fatalf("restart changed execution owner: %#v", execution)
 					}
 					requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
 					requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "continued", "text": "continued evidence"}), http.StatusAccepted)
 					return
-				}
-				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted {
-					t.Fatalf("reconciliation retained lost owner: %#v", execution)
-				}
-				f.restart(t)
-				if execution := f.load(t).Execution; execution.Status != conversation.ExecutionInterrupted || execution.Capabilities != (conversation.Capabilities{}) {
-					t.Fatalf("lost owner remained live after restart: %#v", execution)
 				}
 				requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
 				requireConversationErrorCode(t, f.turnEvents(t, map[string]any{"type": "delta", "provider_item_id": "late", "text": "late evidence"}), http.StatusConflict, "stale_execution")
