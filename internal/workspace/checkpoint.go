@@ -344,7 +344,10 @@ func checkpointPathAllowed(path string) bool {
 		return false
 	}
 	for _, part := range strings.Split(strings.ToLower(path), "/") {
-		if part == ".git" || part == ".env" || strings.HasPrefix(part, ".env.") || part == ".ssh" || part == "node_modules" || part == "tmp" || part == "secrets" || part == "credentials.json" || strings.HasSuffix(part, ".pem") || strings.HasSuffix(part, ".key") {
+		if strings.HasPrefix(part, ".env") && !strings.HasSuffix(part, ".example") {
+			return false
+		}
+		if part == ".git" || part == ".ssh" || part == "node_modules" || part == "tmp" || part == "secrets" || part == "credentials.json" || strings.HasPrefix(part, "id_rsa") || strings.HasSuffix(part, ".pem") || strings.HasSuffix(part, ".key") || strings.HasSuffix(part, ".p12") {
 			return false
 		}
 	}
