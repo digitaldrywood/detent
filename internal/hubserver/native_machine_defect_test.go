@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -21,13 +22,16 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 		state          string
 		scheduledFirst bool
 		disabled       bool
+		legacyBody     string
 	}{
-		{"test failure", "Gate failed:\n--- FAIL: TestHostedChangePolicyJourney (0.03s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.04s", "Another worker found:\n--- FAIL: TestHostedChangePolicyJourney (0.08s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.09s", false, "Todo", false, false},
-		{"migration collision", "panic: goose: duplicate version 20261006023000 detected:\nsprite_placement.sql", "Gate blocked by duplicate migration version 20261006023000: github_references.go and sprite_placement.sql", false, "Todo", false, false},
-		{"compiler diagnostic", "internal/hub/pool.go:23:4: undefined: capacity", "internal/hub/pool.go:31:2: undefined: capacity", false, "Todo", false, false},
-		{"scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", false, "Todo", true, false},
-		{"other project policy", "goose: duplicate version 20261006023000 detected:", "duplicate migration version 20261006023000", true, "Backlog", false, false},
-		{"disabled challenge", "internal/example/check.go:23:4: undefined: capacity", "internal/example/check.go:31:2: undefined: capacity", false, "Todo", false, true},
+		{"test failure", "Gate failed:\n--- FAIL: TestHostedChangePolicyJourney (0.03s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.04s", "Another worker found:\n--- FAIL: TestHostedChangePolicyJourney (0.08s)\nFAIL github.com/digitaldrywood/detent/internal/hubserver 0.09s", false, "Todo", false, false, ""},
+		{"migration collision", "panic: goose: duplicate version 20261006023000 detected:\nsprite_placement.sql", "Gate blocked by duplicate migration version 20261006023000: github_references.go and sprite_placement.sql", false, "Todo", false, false, ""},
+		{"compiler diagnostic", "internal/hub/pool.go:23:4: undefined: capacity", "internal/hub/pool.go:31:2: undefined: capacity", false, "Todo", false, false, ""},
+		{"scheduled owner", "Problem: `go-test:example/hub:TestJourney`", "--- FAIL: TestJourney (0.01s)\nFAIL example/hub 0.02s", false, "Todo", true, false, ""},
+		{"other project policy", "goose: duplicate version 20261006023000 detected:", "duplicate migration version 20261006023000", true, "Backlog", false, false, ""},
+		{"disabled challenge", "internal/example/check.go:23:4: undefined: capacity", "internal/example/check.go:31:2: undefined: capacity", false, "Todo", false, true, ""},
+		{"incomplete legacy Todo", "internal/example/legacy.go:23:4: undefined: capacity", "internal/example/legacy.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build."},
+		{"held legacy Todo", "internal/example/held.go:23:4: undefined: capacity", "internal/example/held.go:31:2: undefined: capacity", false, "Todo", false, false, "## Roadmap Summary\nRepair the failed build.\n<!-- detent:no-dispatch -->"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -88,6 +92,13 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 				}
 				if i == 0 {
 					owner = issue
+					if test.legacyBody != "" {
+						previous, _ := issueorigin.Parse(owner.Body)
+						owner.Body = issueorigin.Stamp(test.legacyBody, previous)
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", owner.Body, owner.WorkItemID); err != nil {
+							t.Fatal(err)
+						}
+					}
 				} else if issue.WorkItemID != owner.WorkItemID || !issue.PublicationReused {
 					t.Fatalf("duplicate report created a second issue: %#v", issue)
 				}
@@ -129,6 +140,19 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			decodeHubResponse(t, response, &scheduled)
 			if scheduled.WorkItemID != owner.WorkItemID || scheduled.State != owner.State || !scheduled.PublicationReused || scheduled.Body != owner.Body {
 				t.Fatalf("scheduled report did not retain worker owner: %#v", scheduled)
+			}
+			if test.legacyBody != "" {
+				var occurrence string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT body FROM native_comments WHERE work_item_id=? AND body LIKE '%scheduled-run%'", owner.WorkItemID).Scan(&occurrence); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(occurrence, test.second) {
+					t.Fatalf("scheduled occurrence lost failure evidence: %q", occurrence)
+				}
+				evaluation, err := evaluateNativeIssueContract(t.Context(), f.service.database.db, scope, scheduled)
+				if err != nil || evaluation.Allowed || evaluation.Reason == "" {
+					t.Fatalf("occurrence admitted incomplete issue: %+v, %v", evaluation, err)
+				}
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Done') WHERE native_id = ?", project, owner.WorkItemID); err != nil {
 				t.Fatal(err)

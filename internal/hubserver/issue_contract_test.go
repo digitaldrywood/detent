@@ -506,7 +506,8 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 	}{
 		{name: "human Todo", operation: "create", state: "Todo"},
 		{name: "machine Todo", operation: "create", state: "Todo", machine: true},
-		{name: "reuse incomplete Todo", operation: "reuse", state: "Todo", machine: true},
+		{name: "reuse incomplete Todo", operation: "reuse", state: "Todo", machine: true, allowed: true},
+		{name: "reuse config error", operation: "reuse", state: "Todo", machine: true, configError: true, allowed: true},
 		{name: "MCP Todo", operation: "create", state: "Todo", mcp: true},
 		{name: "MCP Backlog", operation: "create", state: "Backlog", mcp: true, allowed: true},
 		{name: "imported Todo", operation: "create", state: "Todo", imported: true},
@@ -613,6 +614,20 @@ func TestNativeIssueContractWriteBoundaries(t *testing.T) {
 			}
 			if test.allowed {
 				requireNativeStatus(t, response, http.StatusOK)
+				if test.operation == "reuse" {
+					var reused tracker.NativeIssue
+					decodeHubResponse(t, response, &reused)
+					if reused.WorkItemID != original.WorkItemID || reused.State != original.State || reused.Body != original.Body || !reused.PublicationReused {
+						t.Fatalf("occurrence changed legacy owner: %+v", reused)
+					}
+					var occurrence string
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT body FROM native_comments WHERE work_item_id=?", original.WorkItemID).Scan(&occurrence); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(occurrence, "Repair the failed build.") {
+						t.Fatalf("occurrence lost report evidence: %q", occurrence)
+					}
+				}
 				return
 			}
 			expected := http.StatusUnprocessableEntity

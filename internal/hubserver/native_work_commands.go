@@ -212,9 +212,6 @@ func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 			issue.PublicationReused = true
 			return issue, nil
 		}
-		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
-			return tracker.NativeIssue{}, err
-		}
 		occurrence := issueorigin.Occurrence(request.Body)
 		if len(occurrence) > 64<<10 {
 			return tracker.NativeIssue{}, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
