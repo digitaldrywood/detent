@@ -444,6 +444,16 @@ for (const state of [
       await page.getByRole("switch", { name: "Pull requests", exact: true }).click();
       await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
       await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
+      if (state.width === 390) {
+        for (const name of ["Complexity levels", "Stages"]) {
+          const table = page.getByRole("table", { name, exact: true });
+          await table.focus();
+          await expect(table).toBeFocused();
+          const left = await table.evaluate((element) => element.parentElement.scrollLeft);
+          await page.keyboard.press("ArrowRight");
+          await expect.poll(() => table.evaluate((element) => element.parentElement.scrollLeft)).toBeGreaterThan(left);
+        }
+      }
     } else {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);
       await expect(install).toHaveCount(0);

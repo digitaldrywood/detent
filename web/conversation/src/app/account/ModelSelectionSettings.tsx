@@ -192,7 +192,7 @@ export function ModelSelectionSettings({ projectId, canManage }: {
     </SettingsSection>
     <SettingsSection title="Complexity levels">
       <RadioGroup onKeyDown={radioKeys} aria-label="Default complexity" value={defaultLevel} disabled={disabled} onValueChange={(default_level) => { if (typeof default_level === "string") update({ ...draft, default_level }); }}>
-        <Table aria-label="Complexity levels" className="min-w-3xl">
+        <Table aria-label="Complexity levels" className="min-w-3xl" tabIndex={disabled ? 0 : undefined}>
           <TableHeader><TableRow>{["Level", "Model", "Effort ceiling", "Applied by label", "Default"].map((heading) => <TableHead key={heading}>{heading}</TableHead>)}</TableRow></TableHeader>
           <TableBody>{levels.map(([name, level]) => {
             const rules = (draft.rules ?? []).map((rule, index) => ({ rule, index })).filter(({ rule }) => rule.level === name);
@@ -214,7 +214,7 @@ export function ModelSelectionSettings({ projectId, canManage }: {
       </RadioGroup>
     </SettingsSection>
     <SettingsSection title="Stages">
-      <Table aria-label="Stages" className="min-w-2xl">
+      <Table aria-label="Stages" className="min-w-2xl" tabIndex={disabled ? 0 : undefined}>
         <TableHeader><TableRow><TableHead>Stage</TableHead><TableHead>Model</TableHead><TableHead>Effort ceiling</TableHead></TableRow></TableHeader>
         <TableBody>{stages.map(([name, stage]) => <TableRow key={name}>
           <TableCell className="font-medium whitespace-nowrap">{title(name)}</TableCell>
