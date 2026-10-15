@@ -56,7 +56,7 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 	slices.Sort(paths)
 	paths = slices.Compact(paths)
 	for _, path := range paths {
-		if tracker.DiffPathDenied(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
+		if !checkpointPathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
 			return capture, fmt.Errorf("%w: excluded source path %q", ErrCheckpointUnsafe, path)
 		}
 	}
