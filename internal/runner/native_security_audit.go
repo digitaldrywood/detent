@@ -70,7 +70,7 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 	if input.Diff == nil || input.Version.BaseSHA != input.Diff.BaseSHA || input.Version.HeadSHA != input.Diff.HeadSHA || input.Version.Repository != input.Diff.Repository {
 		return false, errors.New("security audit diff differs from the immutable version")
 	}
-	snapshot, err := connector.SecurityAuditSnapshot(r.projectID, req.Issue, *input.Diff, securityAuditMaxDiffBytes(cfg))
+	snapshot, err := connector.SecurityAuditSnapshot(string(req.Execution.Recovery().Issue.ProjectID), req.Issue, *input.Diff, securityAuditMaxDiffBytes(cfg))
 	if err != nil {
 		return false, err
 	}
@@ -125,7 +125,7 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 	diff.Patch = patch.String()
 	issue := req.Issue
 	issue.PullRequest = nil
-	snapshot, err := connector.SecurityAuditSnapshot(r.projectID, issue, diff, securityAuditMaxDiffBytes(cfg))
+	snapshot, err := connector.SecurityAuditSnapshot(string(req.Execution.Recovery().Issue.ProjectID), issue, diff, securityAuditMaxDiffBytes(cfg))
 	if err != nil {
 		return nil, err
 	}

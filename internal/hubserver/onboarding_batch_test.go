@@ -91,7 +91,7 @@ func TestProjectOnboardingBatch(t *testing.T) {
 				if got.Ready != want || len(got.Runners) != 1 || got.Policy == nil || len(got.Steps) != 4 {
 					t.Fatalf("project %s readiness=%t runners=%d policy=%v steps=%v, want ready=%t", fixture.project.Name, got.Ready, len(got.Runners), got.Policy, got.Steps, want)
 				}
-				detailed, err := f.service.projectOnboarding(t.Context(), nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID})
+				detailed, err := f.service.projectOnboarding(t.Context(), nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}})
 				if err != nil {
 					t.Fatal(err)
 				}
