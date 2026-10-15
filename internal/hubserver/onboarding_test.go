@@ -74,18 +74,27 @@ func TestOnboardingProgressRetryAndProjectIsolation(t *testing.T) {
 func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name, kind, scope  string
-		auto, match, admin bool
+		name, kind, scope                  string
+		auto, match, admin, differentAdmin bool
 	}{
-		{"human review", "human_review", "projects", false, true, false},
-		{"auto merge missing tag", "command", "projects", true, false, false},
-		{"organization runner without project grant", "human_review", "organization", false, true, false},
-		{"administrable sibling project runner", "human_review", "projects", false, true, true},
+		{"human review", "human_review", "projects", false, true, false, false},
+		{"auto merge missing tag", "command", "projects", true, false, false, false},
+		{"organization runner without project grant", "human_review", "organization", false, true, false, false},
+		{"administrable sibling project runner", "human_review", "projects", false, true, true, false},
+		{"unowned sibling project runner", "human_review", "projects", false, true, true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", tt.name)
 			r := prepareRunnerForScope(t, f, tt.scope, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
+			adminToken := testHubAdminToken
+			if tt.differentAdmin {
+				admin, err := f.service.createAPITokenFor(t.Context(), tokenRequest{Name: "other-runner-administrator", Scope: apiScopeAdmin})
+				if err != nil {
+					t.Fatal(err)
+				}
+				adminToken = admin.Token
+			}
 			descriptor := hubTestPolicy()
 			descriptor.Gates.Kind, descriptor.Gates.AutoPromote = tt.kind, tt.auto
 			if tt.kind == "human_review" {
@@ -103,7 +112,7 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
 				t.Fatalf("project-scoped runner missing from its routed project: %+v", setup.Runners)
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", testHubAdminToken, nil)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/onboarding", adminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &setup)
 			if setup.Policy == nil || setup.Policy.Policy.ID != descriptor.ID || len(setup.Runners) != 1 {
@@ -118,11 +127,24 @@ func TestOnboardingRepositoryPoliciesAndRunners(t *testing.T) {
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other")
 			token := other.token
 			if tt.admin || tt.scope == "organization" {
-				token = testHubAdminToken
+				token = adminToken
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/onboarding", token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &setup)
+			if tt.differentAdmin {
+				response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var before runnerauth.Runner
+				decodeHubResponse(t, response, &before)
+				routing := before.Routing
+				routing.ProjectIDs = append(slices.Clone(routing.ProjectIDs), other.project.ID)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", token, runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: routing}), http.StatusForbidden)
+				if len(setup.Runners) != 0 {
+					t.Fatalf("unowned runner exposed for project routing: %+v", setup.Runners)
+				}
+				return
+			}
 			if tt.admin || tt.scope == "organization" {
 				if len(setup.Runners) != 1 || setup.Runners[0].Runner.RunnerID != r.binding.RunnerID {
 					t.Fatalf("administrable or organization runner missing from ungranted project: %+v", setup.Runners)

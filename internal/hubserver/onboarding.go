@@ -91,19 +91,19 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		if err != nil {
 			return result, err
 		}
+		if runner.Scope == "projects" && !slices.Contains(runner.ProjectIDs, scope.project) {
+			owned, err := runnerOwnedBy(ctx, s.database.reader, scope.organization, runner.RunnerID, scope.credential)
+			if err != nil {
+				return result, err
+			}
+			if !owned {
+				continue
+			}
+		}
 		if scope.credential.Hosted != nil {
 			projects := runnerManagementProjects(runner)
 			if !s.appAllRunnerGrants(ctx, scope.credential, projects...) {
 				continue
-			}
-			if runner.Scope == "projects" && !slices.Contains(runner.ProjectIDs, scope.project) {
-				owned, err := runnerOwnedBy(ctx, s.database.reader, scope.organization, runner.RunnerID, scope.credential)
-				if err != nil {
-					return result, err
-				}
-				if !owned {
-					continue
-				}
 			}
 			if projects != nil && !slices.Contains(projects, scope.project) {
 				projects = append(projects, scope.project)
