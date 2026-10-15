@@ -583,6 +583,19 @@ revisions expose later edits. Reads use stored data and never refresh GitHub.
 This tool requires the same read scope and current project grants as `work_item`.
 Existing tools retain their limits and response shapes.
 
+## Associate an existing release-pick PR
+
+The project-scoped `associate_release_pick` MCP tool uses the supported
+[native release-pick delivery contract](hub-api.md#existing-release-pick-delivery).
+Supply the dependent `work_item_id`, its `expected_revision`, a stable
+`request_id`, and the exact source/PR/release identities in `release_pick`.
+The source dependency must already be terminal and its fix merged on develop.
+The owner verifies the repository and commit provenance, opens an independent
+native Change, and preserves all holds. The existing runner captures the exact
+source, reviews, gates, and lands on the recorded frozen release branch.
+The tool does not merge or deploy. Worker completion contracts do not grant
+permission to call this operator mutation.
+
 ## Native validation evidence
 
 `get_change` defaults to the current immutable version and current review,
