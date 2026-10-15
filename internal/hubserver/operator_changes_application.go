@@ -183,6 +183,19 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	path := result.URL
 	method := "POST"
 	switch name {
+	case operatortool.AssociateReleasePick:
+		if args.ReleasePick == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.AssociateReleasePick{Mutation: command, ReleasePickInput: *args.ReleasePick, ExpectedRevision: tracker.Revision(args.ExpectedRevision)}
+		if err := s.prepareReleasePick(ctx, scope, args.ItemID, request); err != nil {
+			return result, err
+		}
+		input = request
+		path += "/release-pick"
+		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+			return s.associateReleasePickCommand(ctx, tx, scope, args.ItemID, request, now)
+		}
 	case operatortool.PublishChangeVersion:
 		if args.ExpectedVersionID == nil || args.Code == nil {
 			return result, operatortool.ErrInvalidArguments
@@ -283,6 +296,9 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
 	if err != nil {
 		return result, err
+	}
+	if name == operatortool.AssociateReleasePick {
+		s.pullRequests.invalidate(pullRequestCacheKey(scope, args.ItemID))
 	}
 	if name == operatortool.PublishChangeVersion {
 		var version tracker.ChangeVersion
