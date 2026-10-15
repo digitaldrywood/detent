@@ -450,7 +450,7 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	if err := origin.Close(); err != nil {
 		t.Fatal(err)
 	}
-	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(true), Logger: logger}}
+	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, Hosted: hosted(true), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true}}}
 	if _, err := hubserver.MigrateHostedSharedOrigin(t.Context(), fixture.config); err != nil {
 		t.Fatal(err)
 	}

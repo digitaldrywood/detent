@@ -292,6 +292,7 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 			reconcileErr := s.billing.reconcile(ctx)
 			s.billing.mu.Unlock()
 			if reconcileErr != nil {
+				s.logStripeFailure(ctx, reconcileErr)
 				return c.JSON(http.StatusServiceUnavailable, apiErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
 			}
 		}

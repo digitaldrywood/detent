@@ -29,6 +29,7 @@ type fakeBilling struct {
 	customers map[string]string
 	creates   int
 	checkouts int
+	returnURL string
 }
 
 func (f *fakeBilling) Reconcile(context.Context, billing.Binding) (billing.Snapshot, error) {
@@ -39,6 +40,7 @@ func (f *fakeBilling) Checkout(_ context.Context, request billing.CheckoutReques
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checkouts++
+	f.returnURL = request.ReturnURL
 	return billing.Session{ID: "cs_test_" + request.CustomerID, URL: "https://checkout.stripe.com/c/pay/" + request.CustomerID, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
@@ -177,6 +179,39 @@ func TestSharedBillingJourney(t *testing.T) {
 	}
 	if stripe.creates != 1 {
 		t.Fatalf("customer creates = %d, want 1", stripe.creates)
+	}
+	stripe.mu.Lock()
+	returnURL := stripe.returnURL
+	stripe.mu.Unlock()
+	parsedReturn, err := url.Parse(returnURL)
+	if err != nil || parsedReturn.Scheme+"://"+parsedReturn.Host != testPublicURL {
+		t.Fatalf("checkout return URL = %q: %v", returnURL, err)
+	}
+	outsider := newBrowser(t, f.service.Handler())
+	for _, suffix := range []string{"?checkout=returned", ""} {
+		t.Run("checkout return "+suffix, func(t *testing.T) {
+			target := parsedReturn.RequestURI() + suffix
+			headers := map[string]string{"Sec-Fetch-Site": "cross-site", "Referer": "https://checkout.stripe.com/"}
+			returned := member.do(http.MethodGet, target, nil, headers)
+			if returned.StatusCode == http.StatusPermanentRedirect {
+				location, err := url.Parse(returned.Header.Get("Location"))
+				if err != nil || location.IsAbs() || location.Host != "" || location.RawQuery != strings.TrimPrefix(suffix, "?") {
+					t.Fatalf("checkout return redirect = %q: %v", returned.Header.Get("Location"), err)
+				}
+				returned = member.do(http.MethodGet, location.RequestURI(), nil, headers)
+			}
+			if returned.StatusCode != http.StatusOK || !strings.Contains(returned.Body, `<div id="root">`) {
+				t.Fatalf("owner checkout return = %d %s", returned.StatusCode, returned.Body)
+			}
+			f.provider.member("user_eve", "porg_"+id, "member")
+			outsider.login("/organizations/"+id+"/organization", "user_eve:porg_"+id)
+			f.provider.removeMember("user_eve", "porg_"+id)
+			f.provider.expireAccess()
+			denied := outsider.do(http.MethodGet, target, nil, headers)
+			if denied.StatusCode != http.StatusForbidden || !strings.Contains(denied.Body, "Access unavailable") {
+				t.Fatalf("non-member checkout return = %d %s", denied.StatusCode, denied.Body)
+			}
+		})
 	}
 	customer := "cus_" + strings.TrimPrefix(id, "org_")
 	status := func(eventID string) string {
