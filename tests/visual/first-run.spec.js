@@ -164,9 +164,7 @@ test("creating the first project lands on its board and the checklist advances",
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
   await expect(page.getByTestId("first-run-progress")).toContainText("of 4 done");
   await expect(page.getByTestId("work-board")).toHaveCount(0);
-  await expect(
-    page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" }),
-  ).toBeEnabled();
+  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "true");
 
   await page.getByTestId("first-run-step-issue").getByRole("button", { name: "New issue" }).click();
   const issue = page.getByRole("dialog", { name: "New issue" });
@@ -180,7 +178,7 @@ test("creating the first project lands on its board and the checklist advances",
   expect(errors).toEqual([]);
 });
 
-test("an organization runner does not complete an unserved project's runner step", async ({ page }) => {
+test("an enrolled runner does not complete an unvalidated project's setup", async ({ page }) => {
   const errors = watchConsole(page);
   await openEmptyWork(page);
   await page.getByTestId("first-run-step-project").getByRole("button", { name: "New project" }).click();
@@ -198,15 +196,16 @@ test("an organization runner does not complete an unserved project's runner step
   const fleetResponse = await page.request.get(new URL("/api/v2/organizations/org_browser_preview/fleet", hub.fixture.url).toString());
   expect(fleetResponse.ok()).toBe(true);
   expect((await fleetResponse.json()).runners.length).toBeGreaterThan(0);
-  expect(onboarding.steps.find((step) => step.name === "Execution runner").state).toBe("action_required");
+  expect(onboarding.steps.find((step) => step.name === "Execution runner").state).toBe("ready");
+  expect(onboarding.steps.find((step) => step.name === "Local validation").state).toBe("action_required");
   const remaining = onboarding.steps.filter((step) => step.state !== "ready").length;
-  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "false");
-  await expect(page.getByTestId("first-run-step-runner").getByText("Done", { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId("first-run-progress")).toHaveText("1 of 4 done");
-  await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "1");
+  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "true");
+  await expect(page.getByTestId("first-run-step-runner").getByText("Done", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("first-run-progress")).toHaveText("2 of 4 done");
+  await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
   await expect(page.getByTestId("first-run-step-setup")).toContainText(`${remaining} setup steps left`);
   await evidence(page, "unserved-project-desktop");
-  await page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" }).click();
+  await page.getByTestId("first-run-step-setup").getByRole("button", { name: "Finish setup" }).click();
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}/setup$`));
   expect(errors).toEqual([]);
 });
