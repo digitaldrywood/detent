@@ -140,7 +140,7 @@ css-watch:
 		echo "No Tailwind input at $(TAILWIND_INPUT); skipping CSS watch."; \
 	fi
 
-build: assets generate-docs
+build: assets generate-docs release-notes
 	@mkdir -p tmp
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) $(CMD_PACKAGE)
 
@@ -255,7 +255,10 @@ check-invariants:
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
 
-source-metadata:
+release-notes:
+	go run ./tools/releasenotes -version "$(VERSION)" -commit "$(COMMIT)" -date "$(DATE)"
+
+source-metadata: release-notes
 	@mkdir -p tmp/source-metadata
 	@printf '%s\n' '$(LDFLAGS)' > tmp/source-metadata/BUILD_LDFLAGS
 
