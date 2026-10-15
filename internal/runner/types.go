@@ -771,6 +771,8 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
+	complete        func(context.Context, SecurityAuditExecution) error
+	evidence        ValidationEvidenceExecution
 	OnUsageUpdate   UsageUpdateHandler
 	Issue           connector.Issue
 	Snapshot        securityaudit.Snapshot

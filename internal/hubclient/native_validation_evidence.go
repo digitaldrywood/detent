@@ -3,9 +3,11 @@ package hubclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -17,7 +19,11 @@ func (e *nativeExecution) PublishValidationEvidence(ctx context.Context, files [
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
-	return e.claim.source.client.PublishValidationEvidence(ctx, e.claim.lease.WorkItemID, tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":validation-evidence", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, files)
+	content, err := json.Marshal(files)
+	if err != nil {
+		return err
+	}
+	return e.claim.source.client.PublishValidationEvidence(ctx, e.claim.lease.WorkItemID, tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":validation-evidence:" + policy.Digest(content), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, files)
 }
 
 func (c *NativeClient) PublishValidationEvidence(ctx context.Context, item tracker.NativeWorkItemID, mutation tracker.Mutation, files []runner.ValidationEvidence) error {
