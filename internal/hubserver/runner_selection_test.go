@@ -86,6 +86,13 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				if lease.WorkItemID != issue.WorkItemID {
 					t.Fatalf("unproven competing landing stranded source work: %#v", lease)
 				}
+				response = performHubAPIRequest(t, preferred.service, http.MethodGet, preferred.base+"/work-items/"+string(next.WorkItemID)+"/runtime", preferred.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var evidence tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, response, &evidence)
+				if evidence.LatestDecision == nil || evidence.LatestDecision.Data.Decision == nil || evidence.LatestDecision.Data.Decision.Reason != "Project landing capacity cannot be determined without the incoming ceiling" {
+					t.Fatalf("foreign capacity refusal blamed reviewed source: %#v", evidence.LatestDecision)
+				}
 				return
 			}
 			for _, f := range []nativeFixture{preferred, general} {

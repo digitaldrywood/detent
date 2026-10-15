@@ -464,7 +464,10 @@ func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nati
 	if !ready {
 		decision.Outcome = "skipped"
 		decision.Reason = "Current Change version is not ready for native landing"
-		if capacity > 0 {
+		switch {
+		case capacity == nativeLandingCapacityUnknown:
+			decision.Reason = "Project landing capacity cannot be determined without the incoming ceiling"
+		case capacity > 0:
 			decision.Reason = "Project landing capacity is full"
 		}
 	}

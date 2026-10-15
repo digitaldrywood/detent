@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -779,27 +781,28 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name                                                                                                                            string
+		admission                                                                                                                       string
 		ownerCapacity, contenderCapacity, renewalCapacity, replayCapacity, expiredRenewalCapacity                                       int
 		boundary                                                                                                                        string
 		nativeOnly, sameBatch, otherProject, laneChanged, expired, concurrent, fallback, room, renewFree, renewRace, direct, directRace bool
 	}{
-		{name: "one project across hosts", ownerCapacity: 1, contenderCapacity: 1},
-		{name: "legacy owner occupies a slot", contenderCapacity: 1},
+		{name: "one project across hosts", ownerCapacity: 1, contenderCapacity: 1, admission: "skipped"},
+		{name: "legacy owner occupies a slot", contenderCapacity: 1, admission: "unknown"},
 		{name: "legacy contender cannot bypass owner ceiling", ownerCapacity: 1},
 		{name: "wider contender preserves owner ceiling", ownerCapacity: 1, contenderCapacity: 3},
-		{name: "lower contender retains its ceiling", ownerCapacity: 3, contenderCapacity: 1},
+		{name: "lower contender retains its ceiling", ownerCapacity: 3, contenderCapacity: 1, admission: "unknown"},
 		{name: "renewal tightens owner ceiling", ownerCapacity: 3, contenderCapacity: 3, renewalCapacity: 1},
 		{name: "claim replay tightens owner ceiling", ownerCapacity: 3, contenderCapacity: 3, replayCapacity: 1},
 		{name: "expired renewal applies incoming tighter ceiling", ownerCapacity: 3, contenderCapacity: 3, expired: true, expiredRenewalCapacity: 1},
-		{name: "configured multiple slots permit capacity", ownerCapacity: 2, contenderCapacity: 2, room: true},
-		{name: "legacy unconfigured claims are unchanged", room: true},
+		{name: "configured multiple slots permit capacity", ownerCapacity: 2, contenderCapacity: 2, room: true, admission: "unknown"},
+		{name: "legacy unconfigured claims are unchanged", room: true, admission: "unknown"},
 		{name: "lane change retains live occupancy", ownerCapacity: 1, contenderCapacity: 1, laneChanged: true},
-		{name: "expired owner frees occupancy", ownerCapacity: 1, contenderCapacity: 1, expired: true},
+		{name: "expired owner frees occupancy", ownerCapacity: 1, contenderCapacity: 1, expired: true, admission: "ready"},
 		{name: "expired owner may renew a free slot", ownerCapacity: 1, contenderCapacity: 1, expired: true, renewFree: true},
 		{name: "expired changed-lane owner cannot renew an occupied slot", ownerCapacity: 1, contenderCapacity: 1, expired: true, laneChanged: true},
 		{name: "negative capacity is invalid", ownerCapacity: -1},
-		{name: "separate project proceeds", ownerCapacity: 1, contenderCapacity: 1, otherProject: true},
-		{name: "native-only landing is unchanged", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true},
+		{name: "separate project proceeds", ownerCapacity: 1, contenderCapacity: 1, otherProject: true, admission: "ready"},
+		{name: "native-only landing is unchanged", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, admission: "ready"},
 		{name: "native batch shares its host slot", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, sameBatch: true},
 		{name: "concurrent claims acquire one slot", ownerCapacity: 1, contenderCapacity: 1, concurrent: true},
 		{name: "expired renewal races a new claim", ownerCapacity: 1, contenderCapacity: 1, concurrent: true, renewRace: true},
@@ -1040,6 +1043,34 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			}
 			if visible != (want == http.StatusOK) {
 				t.Fatalf("preview landing eligibility = %v, claim status = %d", visible, want)
+			}
+			if test.admission != "" {
+				context := tracker.NativeAdmissionContext{ObservedAt: f.service.config.now(), PolicyID: secondFixture.descriptor.ID, WorkflowStates: []string{"Merging"}}
+				raw, err := json.Marshal(context)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := secondFixture.base + "/work-items/" + string(second.WorkItemID) + "/runtime?admission=" + url.QueryEscape(string(raw))
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path, waiter.redemption.Credential, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var evidence tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, response, &evidence)
+				if evidence.Scheduling.Outcome != test.admission {
+					t.Fatalf("runtime scheduling claims an unproved ceiling: %#v", evidence.Scheduling)
+				}
+				found := false
+				for _, admission := range evidence.Admission {
+					if admission.RunnerID != waiter.binding.RunnerID {
+						continue
+					}
+					found = true
+					if admission.Outcome != test.admission || slices.Contains(admission.Unavailable, "project_landing_capacity") != (test.admission == "unknown") {
+						t.Fatalf("runtime admission invents incoming capacity: %#v", admission)
+					}
+				}
+				if !found {
+					t.Fatal("runtime lost the contender's admission evidence")
+				}
 			}
 			requireNativeStatus(t, secondFixture.claim(t, waiter, second, waiterSession, test.contenderCapacity), want)
 			if want == http.StatusConflict && test.ownerCapacity == 1 {

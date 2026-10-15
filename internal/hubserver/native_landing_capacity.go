@@ -97,7 +97,13 @@ func nativeProjectLandingCapacity(ctx context.Context, query nativeQueryer, proj
 		return false, 0, err
 	}
 	if unknown {
-		return used == 0, 0, nil
+		if capacity > 0 && used >= capacity {
+			return false, capacity, nil
+		}
+		if used > 0 {
+			return false, nativeLandingCapacityUnknown, nil
+		}
+		return true, 0, nil
 	}
 	return capacity == 0 || used < capacity, capacity, nil
 }
