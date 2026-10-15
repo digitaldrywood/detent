@@ -30,14 +30,14 @@ func TestSecurityAuditSnapshot(t *testing.T) {
 				number = 0
 			}
 			diff := ValidationDiff{Repository: "example-org/example-project", PRNumber: number, BaseSHA: test.base, HeadSHA: test.head, Patch: "textual diff"}
-			snapshot, err := SecurityAuditSnapshot("prj_example", issue, diff, test.limit)
+			snapshot, err := SecurityAuditSnapshot("prj_example", issue, diff)
 			if (err != nil) != test.wantError {
 				t.Fatalf("snapshot error = %v", err)
 			}
 			if test.wantError {
 				return
 			}
-			if snapshot.BaseSHA != test.base || snapshot.HeadSHA != test.head || snapshot.IssueID != issue.ID || snapshot.IssueDescription != issue.Description || snapshot.DiffTruncated != test.truncated || snapshot.DiffBytes != len(diff.Patch) {
+			if snapshot.BaseSHA != test.base || snapshot.HeadSHA != test.head || snapshot.IssueID != issue.ID || snapshot.IssueDescription != issue.Description || snapshot.DiffTruncated || snapshot.Diff != diff.Patch || snapshot.DiffBytes != len(diff.Patch) {
 				t.Fatalf("snapshot = %+v", snapshot)
 			}
 			_, err = securityaudit.BuildPrompt(snapshot, test.limit)

@@ -111,7 +111,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 		return result, nil
 	}
 	patch, truncated, err := gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes,
-		gitDiagnosticArgs("diff", "--no-ext-diff", "--find-renames", diffBase)...)
+		gitDiagnosticArgs("diff", "--no-ext-diff", "--no-textconv", "--find-renames", diffBase)...)
 	if err != nil {
 		return FileDiffs{}, err
 	}
