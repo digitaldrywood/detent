@@ -435,16 +435,55 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocker := private.seedIssue(t, 1)
+	related := f.seedIssue(t, 2)
+	for _, id := range []tracker.NativeWorkItemID{related, blocker} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_relationships(first_issue_id,second_issue_id,relationship_type,created_at) SELECT min(a.id,b.id),max(a.id,b.id),'related',? FROM issues a,issues b WHERE a.native_id=? AND b.native_id=?", formatHubTime(time.Now()), item, id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies(blocker_issue_id,dependent_issue_id,provenance,created_at,updated_at) SELECT b.id,d.id,'native',?,? FROM issues b,issues d WHERE b.native_id=? AND d.native_id=?", formatHubTime(time.Now()), formatHubTime(time.Now()), blocker, item); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	assertRelated := func(t *testing.T, issue tracker.NativeIssue, granted bool) {
+		t.Helper()
+		ids := []tracker.NativeWorkItemID{}
+		for _, link := range issue.Related {
+			if link.Title == "" || link.Number == 0 || link.WebURL == "" {
+				t.Fatalf("missing related metadata: %#v", link)
+			}
+			ids = append(ids, link.ID)
+		}
+		want := []tracker.NativeWorkItemID{related}
+		if granted {
+			want = append(want, blocker)
+		}
+		slices.Sort(ids)
+		slices.Sort(want)
+		if !slices.Equal(ids, want) {
+			t.Fatalf("related IDs=%v, want %v (granted=%v)", ids, want, granted)
+		}
+	}
+	var stored tracker.NativeBoardCard
+	var raw string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", item).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatal(err)
+	}
+	assertRelated(t, stored.Issue, true)
 	var page tracker.NativeIssuePage
 	response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &page)
+	for _, card := range page.Cards {
+		if card.Issue.WorkItemID == item {
+			assertRelated(t, card.Issue, false)
+		}
+	}
 	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
 	readFrame := func(scanner *bufio.Reader) tracker.NativeBoardFrame {
 		t.Helper()
@@ -476,6 +515,11 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		if delta.Current == nil || delta.Current.Issue.WorkItemID != item {
 			t.Fatalf("delta=%#v", delta)
 		}
+		assertRelated(t, delta.Current.Issue, false)
+		if delta.Previous == nil {
+			t.Fatalf("missing previous card: %#v", delta)
+		}
+		assertRelated(t, delta.Previous.Issue, false)
 	}
 	for readFrame(stream).Sequence != replay.Sequence {
 	}
@@ -504,10 +548,17 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &page)
-			if page.GrantVersion != grantVersion || len(page.Cards) != 1 {
+			if page.GrantVersion != grantVersion || len(page.Cards) != 2 {
 				t.Fatalf("grant snapshot=%#v", page)
 			}
-			card := page.Cards[0]
+			var card tracker.NativeBoardCard
+			for _, candidate := range page.Cards {
+				if candidate.Issue.WorkItemID == item {
+					card = candidate
+					break
+				}
+			}
+			assertRelated(t, card.Issue, test.grant)
 			if test.grant {
 				if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].ID != blocker || card.StatusLine != "Waiting on #1" {
 					t.Fatalf("granted blocker=%#v", card)
@@ -518,6 +569,17 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			resumed := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(replay.Sequence, 10)))
 			if resumed.GrantVersion != grantVersion || len(resumed.Deltas) != 0 || resumed.Gap {
 				t.Fatalf("grant reconnect=%#v", resumed)
+			}
+			replayed := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(initial.Sequence, 10)))
+			if replayed.Gap || len(replayed.Deltas) != 2 {
+				t.Fatalf("grant replay=%#v", replayed)
+			}
+			for _, delta := range replayed.Deltas {
+				if delta.Previous == nil || delta.Current == nil {
+					t.Fatalf("missing replay cards: %#v", delta)
+				}
+				assertRelated(t, delta.Previous.Issue, test.grant)
+				assertRelated(t, delta.Current.Issue, test.grant)
 			}
 		})
 	}
