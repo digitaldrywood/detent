@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -211,7 +212,18 @@ func (e *reworkReviewExecution) NativeChange() *NativeChange {
 }
 func (e *reworkReviewExecution) ObserveRuntime(ctx context.Context, observation tracker.NativeRuntimeObservation) error {
 	if observation.Activity != nil {
-		e.activitySession = observation.Activity.SessionID
+		raw, err := json.Marshal(observation)
+		if err != nil {
+			return err
+		}
+		var submitted tracker.NativeRuntimeObservation
+		if err := json.Unmarshal(raw, &submitted); err != nil {
+			return err
+		}
+		if submitted.Activity.AttemptID != submitted.LocalAttemptID || submitted.Activity.Generation != submitted.Generation {
+			return fmt.Errorf("serialized activity rejected: attempt=%d/%d generation=%d/%d", submitted.Activity.AttemptID, submitted.LocalAttemptID, submitted.Activity.Generation, submitted.Generation)
+		}
+		e.activitySession = submitted.Activity.SessionID
 	}
 	return e.testExecution.ObserveRuntime(ctx, observation)
 }
@@ -490,6 +502,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				request.Execution = &reworkValidationExecution{execution}
 			}
 			if test.reviewResume != "" {
+				request.WorkAttemptID, request.Generation = 41, 7
 				runRunnerGit(t, source, "remote", "set-url", "origin", "https://github.com/example-org/example-project")
 				runRunnerGit(t, source, "config", "url."+remote+".insteadOf", "https://github.com/example-org/example-project")
 				capture, err := workspace.CaptureChangeSource(t.Context(), info.Path, base, original)

@@ -710,6 +710,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				o.recordLocalAdmission(ctx, state, issue, now, false, dispatchSkipBlocked, "local_intake_disabled", nil)
 				return true
 			}
+			o.trackCandidateBlockedStatusIssues(ctx, state, []connector.Issue{issue}, now)
 			if reason := knownDispatchWaitReason(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates); reason != "" {
 				o.recordLocalAdmission(ctx, state, issue, now, false, reason, reason, nil)
 				return true
