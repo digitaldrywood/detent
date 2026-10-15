@@ -431,3 +431,11 @@ func creditsBucketFromCodex(credits *CreditsSnapshot) *telemetry.RateLimitBucket
 		Balance:    credits.Balance,
 	}
 }
+
+func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
+	account, err := b.client.Account(withAgentProcess(ctx, process))
+	if err != nil {
+		return "unknown", err
+	}
+	return account.BillingBasis(), nil
+}

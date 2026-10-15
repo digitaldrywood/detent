@@ -100,7 +100,7 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" || clientConfig.IdentityFile != "" {
-		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels, usage)
+		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels, runnerProviderBilling, usage)
 	}
 	var setupOptions hubSchedulingOptions
 	if len(options) > 0 {

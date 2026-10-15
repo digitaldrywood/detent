@@ -378,3 +378,40 @@ it("shares one findings read per project and detector tick between Diagnostics a
   expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
   expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(20);
 });
+
+it.each([
+  ["subscription", 85, 30_000, "At risk"],
+  ["subscription", 80, 30_000, "At risk"],
+  ["subscription", 40, 30_000, null],
+  ["subscription", 85, 120_000, "Stale"],
+  ["subscription", 85, -1_000, "Stale"],
+  ["subscription", undefined, undefined, "Unknown"],
+  ["api_key", 95, 30_000, null],
+  ["unknown", 95, 30_000, null],
+  [undefined, 95, 30_000, null],
+] as const)("shows capacity billing and quota risk: %s %s %s", (billing, percent, age, status) => {
+  const now = Date.parse("2026-10-15T12:00:00Z");
+  const capacity = { ...base.provider_capacity[0]!, billing, usage_windows: [{ kind: "weekly", percent_used: percent, observed_at: age === undefined ? undefined : new Date(now - age).toISOString(), reset_at: new Date(now + 3_600_000).toISOString() }] };
+  render(<CapacityPanel runners={[{ ...base, provider_capacity: [capacity] }]} now={now} />);
+  const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
+  expect(panel.getByText(new RegExp(`${capacity.backend}.*${billing === "subscription" ? "Subscription" : billing === "api_key" ? "API key" : "Billing unknown"}`))).toBeTruthy();
+  if (billing === "api_key") {
+    expect(panel.getByRole("link", { name: "View runner-reported API spend in Usage" }).getAttribute("href")).toBe("/usage");
+    expect(panel.queryByText(/95% used|At risk|Resets|Observed/)).toBeNull();
+  } else {
+    expect(panel.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();
+    expect(panel.getByText(/Resets/)).toBeTruthy();
+    expect(panel.getByText(age === undefined ? "Observation unknown" : /Observed/)).toBeTruthy();
+    if (status) expect(panel.getByText(status)).toBeTruthy();
+    else expect(panel.queryByText("At risk")).toBeNull();
+  }
+  expect(panel.queryByText("Healthy")).toBeNull();
+});
+
+it("clears subscription risk at reset", () => {
+  const now = Date.parse("2026-10-15T12:00:00Z");
+  render(<CapacityPanel runners={[{ ...base, provider_capacity: [{ ...base.provider_capacity[0]!, billing: "subscription", usage_windows: [{ kind: "five_hour", percent_used: 85, observed_at: new Date(now - 30_000).toISOString(), reset_at: new Date(now).toISOString() }] }] }]} now={now} />);
+  const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
+  expect(panel.getByText("Stale")).toBeTruthy();
+  expect(panel.queryByText("At risk")).toBeNull();
+});

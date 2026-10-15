@@ -241,7 +241,7 @@ export function RunnersSectionView({
       )}
       {fleet.runners.length > 0 ? <details className="space-y-4">
         <summary className="cursor-pointer text-sm text-muted-foreground">Fleet capacity and providers</summary>
-        <CapacityPanel runners={fleet.runners} onOpen={openRunner} />
+        <CapacityPanel runners={fleet.runners} onOpen={openRunner} showProviders={false} />
         <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
           {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
         </SettingsSection>

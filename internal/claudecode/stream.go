@@ -22,6 +22,8 @@ type streamItem struct {
 }
 
 type claudeEvent struct {
+	APIKeySource string         `json:"apiKeySource"`
+	AuthSource   string         `json:"authSource"`
 	Type         string         `json:"type"`
 	Subtype      string         `json:"subtype"`
 	SessionID    string         `json:"session_id"`
@@ -219,6 +221,7 @@ func (s *turnState) applyInit(event claudeEvent, onUpdate runner.AgentUpdateHand
 	s.turnStartedSent = true
 	return emitUpdate(onUpdate, runner.AgentUpdate{
 		Type:              runner.AgentUpdateTurnStarted,
+		Billing:           claudeBilling(event),
 		ThreadID:          event.SessionID,
 		TurnID:            event.SessionID,
 		ProviderSessionID: event.SessionID,
@@ -508,4 +511,20 @@ func addUsage(t *runner.AgentTokenUsage, u claudeUsage) {
 	t.OutputTokens += next.OutputTokens
 	t.ReasoningOutputTokens += next.ReasoningOutputTokens
 	t.TotalTokens += next.TotalTokens
+}
+
+func claudeBilling(event claudeEvent) string {
+	switch event.APIKeySource {
+	case "user", "project", "org", "temporary", "ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key":
+		return "api_key"
+	case "oauth":
+		return "subscription"
+	}
+	switch event.AuthSource {
+	case "oauth", "oauth_token", "claude.ai":
+		return "subscription"
+	case "api_key", "api_key_helper", "third_party", "bedrock", "vertex", "foundry":
+		return "api_key"
+	}
+	return "unknown"
 }

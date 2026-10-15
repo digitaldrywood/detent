@@ -2,7 +2,7 @@ import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner, SuggestedLimit } from "../../contracts/account.ts";
-import { ProviderUsage } from "./ProviderUsage.tsx";
+import { billingLabel, ProviderUsage } from "./ProviderUsage.tsx";
 import { SuggestedLimitChip } from "./SuggestedLimit.tsx";
 import { RunnerProblems } from "./RunnerProblems.tsx";
 import { runnerUpdateStatusLabel } from "./format.ts";
@@ -63,9 +63,9 @@ export function HostCard({
         <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
         {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}
       </div>
-      {runner.provider_capacity.some((capacity) => capacity.usage_windows?.length) ? <div className="col-span-full min-w-0 space-y-2">
-        {runner.provider_capacity.filter((capacity) => capacity.usage_windows?.length).map((capacity) => <div key={capacity.backend} className="space-y-1">
-          <p className="text-xs font-medium">{capacity.backend} · {capacity.account_alias}</p>
+      {runner.provider_capacity.length > 0 ? <div className="col-span-full min-w-0 space-y-2">
+        {runner.provider_capacity.map((capacity) => <div key={capacity.backend} className="space-y-1">
+          <p className="text-xs font-medium">{capacity.backend} · {capacity.account_alias} · {billingLabel(capacity)}</p>
           <ProviderUsage capacity={capacity} now={now} />
         </div>)}
       </div> : null}

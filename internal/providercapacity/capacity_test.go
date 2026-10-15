@@ -57,6 +57,7 @@ func TestReportValidation(t *testing.T) {
 		{"missing models", func(r *Report) { r.Models = nil }},
 		{"too many models", func(r *Report) { r.Models = make([]string, 129) }},
 		{"invalid model", func(r *Report) { r.Models = []string{"raw prompt"} }},
+		{"billing", func(r *Report) { r.Billing = "private-value" }},
 		{"availability", func(r *Report) { r.Availability = "unlimited" }},
 		{"missing observation", func(r *Report) { r.ObservedAt = time.Time{} }},
 		{"reset before observation", func(r *Report) { r.ResetAt = r.ObservedAt.Add(-time.Second) }},
@@ -282,6 +283,26 @@ func TestUsageWindowValidation(t *testing.T) {
 			report.UsageWindows = test.windows
 			if err := Validate([]Report{report}); (err == nil) != test.valid {
 				t.Fatalf("Validate() = %v, valid = %v", err, test.valid)
+			}
+		})
+	}
+}
+
+func TestReportBilling(t *testing.T) {
+	t.Parallel()
+	for _, billing := range []string{"", "unknown", "subscription", "api_key"} {
+		t.Run(billing, func(t *testing.T) {
+			report := testReport()
+			report.Billing = billing
+			if err := Validate([]Report{report}); err != nil {
+				t.Fatal(err)
+			}
+			want := billing
+			if want == "" {
+				want = "unknown"
+			}
+			if got := report.BillingBasis(); got != want {
+				t.Fatalf("billing = %q, want %q", got, want)
 			}
 		})
 	}

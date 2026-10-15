@@ -198,6 +198,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 	r.enroll(t)
 	report := capacityReport(f.service.config.now())
 	percent := 85.0
+	report.Billing = "subscription"
 	report.UsageWindows = []providercapacity.UsageWindow{{Kind: "five_hour", PercentUsed: &percent, ObservedAt: report.ObservedAt, ResetAt: report.ObservedAt.Add(time.Hour)}}
 	publishCapacity(t, f, r, report)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerauth.RoutingChange{
@@ -255,7 +256,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 						t.Fatal(err)
 					}
 					capacity := response.Data
-					if len(capacity.ProviderCapacity) != 1 || len(capacity.ProviderCapacity[0].UsageWindows) != 1 || capacity.ProviderCapacity[0].UsageWindows[0].PercentUsed == nil || *capacity.ProviderCapacity[0].UsageWindows[0].PercentUsed != 85 {
+					if len(capacity.ProviderCapacity) != 1 || len(capacity.ProviderCapacity[0].UsageWindows) != 1 || capacity.ProviderCapacity[0].UsageWindows[0].PercentUsed == nil || *capacity.ProviderCapacity[0].UsageWindows[0].PercentUsed != 85 || capacity.ProviderCapacity[0].Billing != "subscription" {
 						t.Fatalf("MCP usage = %+v", capacity.ProviderCapacity)
 					}
 				}

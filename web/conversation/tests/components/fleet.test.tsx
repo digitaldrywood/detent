@@ -49,6 +49,17 @@ describe("Sprite bootstrap pin", () => {
 
 describe("runner rows", () => {
   it.each([
+    ["subscription", "Subscription"], ["api_key", "API key"], ["unknown", "Billing unknown"], [undefined, "Billing unknown"],
+  ] as const)("shows backend billing in row and details: %s", (billing, label) => {
+    const capacity = { ...RUNNER.provider_capacity[0]!, billing, usage_windows: [{ kind: "weekly", percent_used: 95, observed_at: new Date(NOW - 30_000).toISOString() }] };
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    expect(within(screen.getByTestId("host-card")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
+    if (billing === "api_key") expect(screen.queryByText(/95% used|At risk/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
+    expect(within(screen.getByRole("dialog")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
+  });
+
+  it.each([
     ["at risk", 85, 30_000, "At risk"],
     ["threshold", 80, 30_000, "At risk"],
     ["below threshold", 79.9, 30_000, null],
@@ -59,7 +70,7 @@ describe("runner rows", () => {
     ["unknown", undefined, undefined, "Unknown"],
   ])("shows subscription usage in the runner row and details: %s", (_name, percent, age, status) => {
     const window = { kind: "weekly", percent_used: percent, reset_at: new Date(NOW + 3_600_000).toISOString(), observed_at: age === undefined ? undefined : new Date(NOW - age).toISOString() };
-    const capacity = { ...RUNNER.provider_capacity[0]!, usage_windows: [window] };
+    const capacity = { ...RUNNER.provider_capacity[0]!, billing: "subscription" as const, usage_windows: [window] };
     renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
     const row = within(screen.getByRole("list", { name: `${capacity.backend} subscription usage` }));
     expect(row.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();

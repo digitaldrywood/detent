@@ -11,6 +11,7 @@ import (
 type ProviderUsage struct {
 	mu      sync.Mutex
 	windows map[string][]providercapacity.UsageWindow
+	billing map[string]string
 }
 
 func (u *ProviderUsage) Observe(backend string, limits *telemetry.RateLimits) {
@@ -70,4 +71,33 @@ func (u *ProviderUsage) Windows(backend string) []providercapacity.UsageWindow {
 		}
 	}
 	return windows
+}
+
+func (u *ProviderUsage) ObserveUpdate(backend string, update AgentUpdate) {
+	u.Observe(backend, update.RateLimits)
+	u.ObserveBilling(backend, update.Billing)
+}
+
+func (u *ProviderUsage) ObserveBilling(backend, billing string) {
+	if u == nil || backend == "" || billing == "" || !providercapacity.ValidBilling(billing) {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.billing == nil {
+		u.billing = make(map[string]string)
+	}
+	if _, exists := u.billing[backend]; !exists && len(u.billing) >= 32 {
+		return
+	}
+	u.billing[backend] = billing
+}
+
+func (u *ProviderUsage) Billing(backend string) string {
+	if u == nil {
+		return "unknown"
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return (providercapacity.Report{Billing: u.billing[backend]}).BillingBasis()
 }
