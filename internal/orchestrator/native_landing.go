@@ -45,6 +45,9 @@ func (o *Orchestrator) completeNativeLandingRun(
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
 	if !landing.Landed && (landing.Waiting || landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
+		if landing.Waiting && !mergeWorkerIssue(issue) {
+			issue.NativeLandingHeadSHA = landing.HeadSHA
+		}
 		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true

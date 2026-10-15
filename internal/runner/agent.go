@@ -1634,6 +1634,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
 			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
+				var refusal *workspace.LandRefusal
+				if errors.As(err, &refusal) {
+					target, targetErr := landing.LandingTarget(ctx)
+					if errors.Is(targetErr, ErrLandingNotReviewed) {
+						return r.refusedLanding(req, target, workspace.LandRefusalNothing, targetErr.Error()), nil
+					}
+					if targetErr != nil {
+						return RunResult{}, targetErr
+					}
+					result := r.refusedLanding(req, target, refusal.Kind, refusal.Reason)
+					result.NativeLanding.Waiting = refusal.Kind == ""
+					return result, nil
+				}
 				return RunResult{}, err
 			}
 		}

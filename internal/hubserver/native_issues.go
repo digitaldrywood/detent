@@ -101,7 +101,8 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
  (SELECT json_object('branch', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.base_ref'), '') ELSE '' END,
- 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END)
+ 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END,
+ 'landing_pending', json(CASE WHEN (`+nativePendingLandingClause+`) THEN 'true' ELSE 'false' END))
  FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
  LEFT JOIN change_versions v ON v.id = json_extract(c.record_json, '$.current_version_id') AND v.change_id = c.id
  WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id

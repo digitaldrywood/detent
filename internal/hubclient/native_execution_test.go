@@ -300,7 +300,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				time.Sleep(30 * time.Second)
 				if name == "renewal outage" {
 					offline.Store(true)
-					_, err := scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id])
+					_, err := scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 					if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 						t.Fatalf("transient renewal revoked current lease: %v", err)
 					}
@@ -479,7 +479,7 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
 			switch operation {
 			case "renew":
-				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id])
+				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("old renewal = %v", err)
 				}
