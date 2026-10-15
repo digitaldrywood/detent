@@ -147,7 +147,7 @@ describe("settings help interactions", () => {
     expect(row.textContent).toContain(installed ? "Every issue opened on example-org/example-project enters Triage." : "Waiting for the GitHub App.");
     expect(row.querySelector('span[aria-hidden="true"]')).toBeTruthy();
     expect(screen.getByRole("link", { name: installed ? "Manage installation" : "Install the Detent Cloud GitHub App" }).getAttribute("href")).toContain("github.com/apps/detent-cloud");
-    expect(screen.getByRole("link", { name: "the project's Intake page" }).getAttribute("href")).toBe("/projects/prj_example/setup");
+    expect(screen.getByRole("link", { name: "GitHub issue import in project setup" }).getAttribute("href")).toBe("/projects/prj_example/setup");
     const headings = screen.getAllByRole("heading").map((heading) => heading.textContent).filter((text) =>
       ["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"].includes(text ?? ""));
     expect(headings).toEqual(["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"]);
