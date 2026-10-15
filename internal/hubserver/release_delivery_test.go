@@ -179,15 +179,17 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 
 func TestNativeReleaseDeliveryReviewAndLanding(t *testing.T) {
 	f := newReleaseDeliveryFixture(t)
+	input := changeTestInput()
+	bundle := changeTestSource(t, &input)
+	f.request.BaseSHA, f.request.HeadSHA = input.BaseSHA, input.HeadSHA
+	f.verifier.input = f.request.ReleasePickInput
 	d := f.associate(t, f.request)
 	path := f.itemPath + "/changes/" + d.ChangeID
 	descriptor, err := readProjectPolicy(t.Context(), f.service.database.reader, string(f.project.OrganizationID)+"/"+string(f.project.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle := []byte("# v2 git bundle\n" + d.HeadSHA + " HEAD\n\nrelease source retained by runner")
-	source := &tracker.ChangeSource{Format: "git-bundle", BaseSHA: d.BaseSHA, HeadSHA: d.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("a", 64), Bytes: int64(len(bundle))}
-	input := tracker.ChangeVersionInput{BaseSHA: d.BaseSHA, HeadSHA: d.HeadSHA, MergeBaseSHA: d.BaseSHA, Repository: d.Repository, PolicyID: descriptor.Policy.ID, Code: changeTestArtifact("code"), Source: source}
+	input.Repository, input.PolicyID = d.Repository, descriptor.Policy.ID
 	response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "release-version"}, ChangeVersionInput: input, SourceBundle: bundle})
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion

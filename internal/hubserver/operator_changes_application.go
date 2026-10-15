@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type hubChangeApplication struct {
@@ -201,7 +202,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 			return result, operatortool.ErrInvalidArguments
 		}
 		if args.SourceCapture != nil {
-			if err := args.SourceCapture.Validate(args.BaseSHA, args.HeadSHA, args.SourceBundle); err != nil {
+			if err := workspace.VerifyChangeSource(ctx, *args.SourceCapture, args.SourceBundle); err != nil {
 				return result, &operatortool.RequestError{Code: "invalid_request", Message: err.Error()}
 			}
 		}

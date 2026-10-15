@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
@@ -75,6 +76,11 @@ func (s *Service) publishChangeVersion(c echo.Context) error {
 	var request tracker.PublishChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return invalidAPIRequest(c, err)
+	}
+	if request.Source != nil {
+		if err := workspace.VerifyChangeSource(c.Request().Context(), *request.Source, request.SourceBundle); err != nil {
+			return s.nativeAPIError(c, nativeInvalid(err.Error()))
+		}
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.publishChangeVersionCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), request, now)

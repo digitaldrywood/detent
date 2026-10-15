@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -109,6 +110,32 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 func verifyChangeBundle(ctx context.Context, directory, path string) error {
 	_, err := runGitAt(ctx, directory, "bundle", "verify", path)
 	return err
+}
+
+func VerifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) (err error) {
+	if !validLandingHead(source.BaseSHA) || !validLandingHead(source.HeadSHA) {
+		return errors.New("change source verification requires immutable base and head")
+	}
+	if err := source.Validate(source.BaseSHA, source.HeadSHA, bundle); err != nil {
+		return err
+	}
+	scratch, err := changeSourceScratch()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
+	env := []string{"GIT_DIR=" + scratch, "GIT_COMMON_DIR=" + scratch, "GIT_OBJECT_DIRECTORY=" + filepath.Join(scratch, "objects"), "GIT_ALTERNATE_OBJECT_DIRECTORIES=", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_COUNT=0", "GIT_NO_REPLACE_OBJECTS=1"}
+	if _, err := runGitAtWithEnv(ctx, scratch, env, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
+		return err
+	}
+	_, pack, _ := bytes.Cut(bundle, []byte("\n\n"))
+	if _, err := runGitAtWithInput(ctx, scratch, env, false, string(pack), "index-pack", "--stdin", "--fsck-objects"); err != nil {
+		return errors.New("source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>")
+	}
+	if _, err := runGitAtWithEnv(ctx, scratch, env, "cat-file", "-e", source.HeadSHA+"^{commit}"); err != nil {
+		return errors.New("source bundle pack lacks the reviewed commit; recreate it with git bundle create <path> HEAD ^<base>")
+	}
+	return nil
 }
 
 func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource) (err error) {

@@ -50,7 +50,17 @@ func (s ChangeSource) Validate(base, head string, bundle []byte) error {
 	}
 	advertised := 0
 	for _, line := range lines[1:] {
-		if strings.HasPrefix(line, "-") || strings.HasPrefix(line, "@") {
+		if strings.HasPrefix(line, "-") {
+			id, _, ok := strings.Cut(strings.TrimPrefix(line, "-"), " ")
+			if !ok || id != base {
+				return errors.New("source bundle prerequisites must be the authorized base; recreate it with git bundle create <path> HEAD ^<base>")
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "@") {
+			if lines[0] != "# v3 git bundle" || line != "@object-format=sha1" {
+				return errors.New("source bundle capability is unsupported; recreate it with git bundle create <path> HEAD ^<base>")
+			}
 			continue
 		}
 		id, ref, ok := strings.Cut(line, " ")
