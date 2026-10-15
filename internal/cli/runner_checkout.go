@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -27,6 +26,27 @@ type runnerCheckoutError struct {
 func (e *runnerCheckoutError) Error() string { return e.message }
 
 func (e *runnerCheckoutError) Unwrap() error { return e.cause }
+
+type runnerCheckoutOutput struct {
+	data      [8192]byte
+	size      int
+	truncated bool
+}
+
+func (b *runnerCheckoutOutput) Write(p []byte) (int, error) {
+	n := copy(b.data[b.size:], p)
+	b.size += n
+	b.truncated = b.truncated || n < len(p)
+	return len(p), nil
+}
+
+func (b *runnerCheckoutOutput) String() string {
+	output := string(b.data[:b.size])
+	if b.truncated {
+		return "[stderr truncated]\n" + output
+	}
+	return output
+}
 
 func prepareRunnerCheckout(ctx context.Context, selected globalconfig.Project, cloneURL string) error {
 	return prepareRunnerCheckoutWithClone(ctx, selected, cloneURL, cloneRunnerRepository)
@@ -91,10 +111,10 @@ func cloneRunnerRepositoryWithCommandContext(ctx context.Context, cloneURL, stag
 		}
 		procgroup.Configure(cloneCtx, cmd)
 		cmd.WaitDelay = time.Second
-		var stderr bytes.Buffer
+		var stderr runnerCheckoutOutput
 		cmd.Stderr = &stderr
 		err := cmd.Run()
-		if stderr.Len() > 0 {
+		if stderr.size > 0 {
 			diagnostics = append(diagnostics, stderr.String())
 		}
 		return err
