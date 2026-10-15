@@ -86,6 +86,93 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	for _, transport := range []string{"stdio", "http"} {
 		protocols[transport] = hostedContextProtocol(t, f.service, ctx, transport)
 	}
+	numberFixture := newNativeFixture(t, f.service, f.project.OrganizationID, "number-search")
+	numbered := numberFixture.create(t, "Number lookup without matching content")
+	mentioned := numberFixture.create(t, "References #1 and #10003")
+	archived := numberFixture.create(t, "Archived number lookup")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived = 1 WHERE native_id = ?", archived.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	numberContext := changeOperatorContext(t, f.service, numberFixture.token, string(f.project.OrganizationID))
+	numberProtocols := map[string]func(string, string, any) hostedContextReply{}
+	for _, transport := range []string{"stdio", "http"} {
+		numberProtocols[transport] = hostedContextProtocol(t, f.service, numberContext, transport)
+	}
+	for _, test := range []struct {
+		name, query string
+		fixture     nativeFixture
+		filters     url.Values
+		want        []tracker.NativeWorkItemID
+	}{
+		{"bare number", "1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"hash number", "#1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"project number", numberFixture.project.Name + "#1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"project ID number", string(numberFixture.project.ID) + "#1", numberFixture, nil, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+		{"text number only", "10003", numberFixture, nil, []tracker.NativeWorkItemID{mentioned.WorkItemID}},
+		{"nonexistent number", "999999", numberFixture, nil, nil},
+		{"other project number", "1", foreign, nil, []tracker.NativeWorkItemID{hidden.WorkItemID}},
+		{"archived excluded", "3", numberFixture, nil, nil},
+		{"archived included", "3", numberFixture, url.Values{"archived": {"true"}}, []tracker.NativeWorkItemID{archived.WorkItemID}},
+		{"lane excluded", "1", numberFixture, url.Values{"state": {"Backlog"}}, nil},
+		{"lane included", "1", numberFixture, url.Values{"state": {"Todo"}}, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, include := range []string{"summary", "work", "board"} {
+				t.Run(include, func(t *testing.T) {
+					params := url.Values{"q": {test.query}, "include": {include}}
+					for name, values := range test.filters {
+						params[name] = values
+					}
+					response := performHubAPIRequest(t, f.service, http.MethodGet, test.fixture.base+"/work-items?"+params.Encode(), test.fixture.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var page tracker.NativeIssuePage
+					decodeHubResponse(t, response, &page)
+					var got []tracker.NativeWorkItemID
+					for _, item := range page.Items {
+						got = append(got, item.WorkItemID)
+						if item.Snippet == "" {
+							t.Fatal("number search lost snippet")
+						}
+					}
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("number search = %v, want %v", got, test.want)
+					}
+					if include == "work" && test.filters.Get("archived") != "true" {
+						got = nil
+						for _, item := range page.Work.Items {
+							got = append(got, item.WorkItemID)
+						}
+						if !slices.Equal(got, test.want) {
+							t.Fatalf("work number search = %v, want %v", got, test.want)
+						}
+					}
+				})
+			}
+			if test.fixture.project.ID != numberFixture.project.ID {
+				return
+			}
+			for _, transport := range []string{"stdio", "http"} {
+				t.Run(transport, func(t *testing.T) {
+					args := map[string]any{"project_id": numberFixture.project.ID, "query": test.query}
+					for name := range test.filters {
+						args[name] = test.filters.Get(name)
+					}
+					raw := hostedContextData(t, numberProtocols[transport]("tools/call", operatortool.WorkList, args), false)
+					var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+					if err := json.Unmarshal(raw, &result); err != nil {
+						t.Fatal(err)
+					}
+					var got []tracker.NativeWorkItemID
+					for _, item := range result.Data.Items {
+						got = append(got, item.WorkItemID)
+					}
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("MCP number search = %v, want %v", got, test.want)
+					}
+				})
+			}
+		})
+	}
 	for _, test := range []struct {
 		name, query, matched string
 		want                 tracker.NativeWorkItemID

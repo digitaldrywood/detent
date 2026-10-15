@@ -600,8 +600,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		if err != nil {
 			return "", nil, err
 		}
-		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+"WHERE i.organization_id", 1)
-		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms)}, args...)
+		number, project := nativeSearchNumber(searchQuery)
+		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+nativeNumberSearchJoin+"WHERE i.organization_id", 1)
+		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms), number, project, -len(expressions) - 1}, args...)
 	}
 	var dateClauses strings.Builder
 	for _, filter := range []struct{ name, column, operator string }{
@@ -682,7 +683,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		if !workIncluded {
 			text += " || ' ' || i.body"
 		}
-		query += " AND (search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
+		query += " AND (number_search.number IS NOT NULL OR search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
 			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
 			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
 			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"

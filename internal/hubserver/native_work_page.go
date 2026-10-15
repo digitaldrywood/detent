@@ -57,7 +57,7 @@ AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <
 	itemArgs := append([]any{}, args...)
 	if search != "" {
 		selected = "SELECT i.native_id" + nativeSearchProjection
-		relevance = "COALESCE(search.score, 0), "
+		relevance = nativeSearchScore + ", "
 		itemArgs = append([]any{search}, itemArgs...)
 	}
 	statement = strings.Replace(query, "SELECT i.native_id", selected, 1) + " AND COALESCE(ws.terminal, 0) = 0 ORDER BY " + relevance + live + " DESC, COALESCE(ws.dispatchable, 0) DESC, i.number DESC LIMIT ?"
