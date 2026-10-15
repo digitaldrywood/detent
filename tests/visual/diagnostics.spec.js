@@ -117,7 +117,7 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
     .click();
   await request;
   await page.goto(new URL("/usage", hub.fixture.url).toString());
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: /^Diagnostics(?: \d+)?$/ }).click();
   await expect(page).toHaveURL(/\/diagnostics$/);
 });
 
