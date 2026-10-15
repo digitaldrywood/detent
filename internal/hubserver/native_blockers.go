@@ -62,6 +62,39 @@ func resolveNativeBlockerReference(ctx context.Context, q nativeQueryer, scope n
 	return issue, err
 }
 
+func normalizeNativeDependencyBlockers(ctx context.Context, q nativeQueryer, scope nativeScope, disposition *tracker.NativeDisposition) error {
+	if disposition == nil || disposition.Status != workpad.StatusBlocked || disposition.HumanAction || disposition.ReasonCode != "" || len(disposition.BlockerEvidence) == 0 {
+		return nil
+	}
+	integration, err := readProjectIntegration(ctx, q, scope)
+	if err != nil {
+		return err
+	}
+	repository := integration.Repository
+	if repository == "" {
+		repository = integration.CheckoutRepository
+	}
+	if repository == "" {
+		return nil
+	}
+	for i := range disposition.BlockerEvidence {
+		blocker := &disposition.BlockerEvidence[i]
+		if blocker.Owner != workpad.BlockerOwnerOrchestrator || blocker.Unverifiable || blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
+			continue
+		}
+		for _, reference := range []*string{&blocker.Ref, &blocker.Predicate.Identifier} {
+			parsed, err := workpad.ParseRef(*reference, string(scope.project))
+			if err != nil {
+				continue
+			}
+			if number, ok := strings.CutPrefix(parsed, repository+"#"); ok {
+				*reference = string(scope.project) + "#" + number
+			}
+		}
+	}
+	return nil
+}
+
 func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, disposition *tracker.NativeDisposition, now time.Time) (tracker.NativeIssue, error) {
 	if disposition == nil || disposition.HumanAction {
 		return issue, nil
