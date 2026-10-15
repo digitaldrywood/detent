@@ -373,6 +373,12 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			}
 			break
 		}
+		// Imported versions have no implementing attempt. Native reviews need
+		// that recorded session, so publish this execution's validated source
+		// rather than repeatedly auditing an unreviewable imported version.
+		if version.AttemptID == "" && detail.Summary.NativeReview != "changes_requested" && (version.Policy.Gates.SecurityAudit || version.Policy.Gates.Validator || version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired) {
+			break
+		}
 		return version.ID, detail.Summary.Status == "reviewed", nil
 	}
 	if diff.HeadSHA == diff.BaseSHA || len(diff.Files) == 0 {
