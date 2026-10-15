@@ -18,6 +18,9 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if request.Limit < 0 || request.Limit > 100 {
 		return s.nativeAPIError(c, nativeInvalid("Candidate limit must be between 1 and 100"))
 	}
+	if request.LandingCapacity < 0 {
+		return s.nativeAPIError(c, nativeInvalid("Landing capacity must be non-negative"))
+	}
 	return s.runnerReadTransaction(c, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		scope := nativeRequestScope(c)
 		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
@@ -26,7 +29,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 		if err := authorizeClaimScope(ctx, tx, tracker.ClaimRequest{MachineID: request.MachineID}, &scope); err != nil {
 			return nil, err
 		}
-		query := claimCandidateQuery{DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers, PolicyID: request.PolicyID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
+		query := claimCandidateQuery{LandingCapacity: request.LandingCapacity, DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers, PolicyID: request.PolicyID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
 		query.Limit, query.After, query.AvailableAt = request.Limit, request.After, now
 		if _, err := validateClaimPolicy(ctx, tx, query, request.MachineID); err != nil {
 			return nil, err
@@ -60,7 +63,7 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 			if !claimable {
 				continue
 			}
-			ready, _, err := nativeLandingCandidateReady(ctx, tx, &scope, id, request.MachineID, now)
+			ready, _, _, err := nativeLandingCandidateReady(ctx, tx, &scope, id, request.MachineID, request.LandingCapacity, now)
 			if err != nil {
 				return nil, err
 			}

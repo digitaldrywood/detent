@@ -741,13 +741,14 @@ type landingRunExecution struct {
 	landingStub
 	stopped             bool
 	started             bool
+	startErr            error
 	observations        []tracker.NativeRuntimeObservation
 	landingObservations []NativeLanding
 }
 
 func (e *landingRunExecution) StartLanding(context.Context, int64, uint64) error {
 	e.started = true
-	return nil
+	return e.startErr
 }
 
 func (e *landingRunExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
@@ -764,7 +765,7 @@ func (e *landingRunExecution) Guard(ctx context.Context) (context.Context, func(
 	return ctx, func() { e.stopped = true }, nil
 }
 
-func TestNativeLandingQuotaFinishesRun(t *testing.T) {
+func TestNativeLandingAdmissionAndQuotaOutcomes(t *testing.T) {
 	originalClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: nativeExecutionTransport(func(req *http.Request) (*http.Response, error) {
 		if req.URL.Host != "native-finish.test" || req.URL.Path != "/graphql" {
@@ -776,24 +777,40 @@ func TestNativeLandingQuotaFinishesRun(t *testing.T) {
 	t.Cleanup(func() { http.DefaultClient = originalClient })
 	head := strings.Repeat("c", 40)
 	now := time.Now().UTC()
-	execution := &landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}}
 	quota := &github.StatusError{StatusCode: 403, Err: github.ErrRateLimited, CredentialIdentity: "runner", RateLimitKind: "primary_exhausted", ObservedAt: now, ResetAt: now.Add(time.Hour)}
-	backend := &landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, err: quota}
 	cfg := config.Config{}
 	cfg.Gate.Run = "true"
 	cfg.Worker.GitHubToken = "runner-token"
 	cfg.Tracker.Kind = config.TrackerGitHub
 	cfg.Tracker.Endpoint = "https://native-finish.test/graphql"
-	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution})
-	if result.RuntimeIdentity.Role != RoleMerge || result.RuntimeIdentity.BackendKind != "git" || result.RuntimeIdentity.ResolvedModel.Value != "none" {
-		t.Fatalf("native landing result identity = %#v", result.RuntimeIdentity)
-	}
-	if !errors.Is(err, github.ErrRateLimited) || execution.finish != "failed" || !execution.stopped || len(execution.recorded) != 0 || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed {
-		t.Fatalf("quota run = %#v, execution %#v, error %v", result, execution, err)
+	for _, test := range []struct {
+		name      string
+		admission error
+		waiting   bool
+	}{
+		{name: "GitHub quota remains a capacity error"},
+		{name: "project capacity becomes successful landing wait", admission: &workspace.LandRefusal{Reason: "Project landing capacity is full"}, waiting: true},
+		{name: "unreviewed source remains a nonwaiting refusal", admission: &workspace.LandRefusal{Kind: workspace.LandRefusalNothing, Reason: "Current Change version is not ready for native landing"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &landingRunExecution{startErr: test.admission, landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: "https://github.com/example/repo", GitHubPullRequest: true}}}
+			backend := &landingBackend{Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, err: quota}
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution})
+			if result.RuntimeIdentity.Role != RoleMerge || result.RuntimeIdentity.BackendKind != "git" || result.RuntimeIdentity.ResolvedModel.Value != "none" {
+				t.Fatalf("native landing result identity = %#v", result.RuntimeIdentity)
+			}
+			if test.admission != nil {
+				if err != nil || execution.finish != "succeeded" || !execution.stopped || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed || result.NativeLanding.Waiting != test.waiting || backend.githubCalled {
+					t.Fatalf("admission did not preserve healthy wait/refusal: result%#v, execution%#v, error%v", result, execution, err)
+				}
+			} else if !errors.Is(err, github.ErrRateLimited) || execution.finish != "failed" || !execution.stopped || len(execution.recorded) != 0 || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head || result.NativeLanding.Landed {
+				t.Fatalf("quota run = %#v, execution %#v, error %v", result, execution, err)
+			}
+		})
 	}
 }
 

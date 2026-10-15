@@ -686,6 +686,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	if o.scheduling != nil {
 		request := SchedulingRequest{
+			LandingCapacity:         o.cfg.NativeLandingCapacity,
 			DispatchPriorityByState: append([]string(nil), o.cfg.DispatchPriorityByState...),
 			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),
 			PrioritizeUnblockers:    o.cfg.PrioritizeUnblockers,

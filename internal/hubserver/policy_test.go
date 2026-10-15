@@ -360,7 +360,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", current.issue.WorkItemID).Scan(&id); err != nil {
 					t.Fatal(err)
 				}
-				ready, evaluated, err := nativeLandingCandidateReady(t.Context(), tx, &scope, id, lease.MachineID, f.service.config.now())
+				ready, evaluated, _, err := nativeLandingCandidateReady(t.Context(), tx, &scope, id, lease.MachineID, 0, f.service.config.now())
 				if err != nil || ready || !evaluated {
 					t.Fatalf("stale landing eligibility = %t, evaluated = %t, error = %v", ready, evaluated, err)
 				}

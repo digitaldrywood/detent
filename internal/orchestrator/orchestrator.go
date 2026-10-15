@@ -85,6 +85,7 @@ type Config struct {
 	RefreshFailureThreshold       int
 	MaxConcurrentAgents           int
 	MaxConcurrentAgentsByState    map[string]int
+	NativeLandingCapacity         int
 	DispatchPriorityByState       []string
 	DispatchPriorityByLabel       []string
 	PrioritizeUnblockers          bool
@@ -182,6 +183,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	LandingCapacity         int
 	NativeLandingBatch      bool
 	DispatchPriorityByState []string
 	DispatchPriorityByLabel []string

@@ -21,6 +21,7 @@ import (
 )
 
 type nativeClaim struct {
+	landingCapacity      int
 	execution            *nativeExecution
 	availabilityDeadline time.Time
 	source               *NativeConnector
@@ -361,6 +362,11 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			return nil, schedulingError(err)
 		}
 	}
+	if request.LandingCapacity > 0 {
+		if err := source.client.Negotiate(ctx, tracker.NativeLandingCapacityCapability); err != nil {
+			return nil, schedulingError(err)
+		}
+	}
 	if s.client.runner != nil {
 		s.client.runner.routingMu.Lock()
 		draining := s.client.runner.routing != nil && s.client.runner.routing.Routing.State == "draining"
@@ -386,6 +392,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		}
 	}
 	claimRequest := tracker.NativeClaim{
+		LandingCapacity:         request.LandingCapacity,
 		DispatchPriorityByState: request.DispatchPriorityByState,
 		DispatchPriorityByLabel: request.DispatchPriorityByLabel,
 		PrioritizeUnblockers:    request.PrioritizeUnblockers,
@@ -467,7 +474,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		issue.AssignedToWorker = true
 		issue.IsolationPolicy = lease.IsolationPolicy
 		issues = append(issues, issue)
-		claims = append(claims, nativeClaim{availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
+		claims = append(claims, nativeClaim{landingCapacity: request.LandingCapacity, availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
 	}
 	s.mu.Lock()
 	for _, claim := range claims {
@@ -571,7 +578,7 @@ func nativeAdmissionCapacityFull(err error) bool {
 	}
 }
 
-func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim) (orchestrator.Claimed, error) {
+func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim, landingCapacity int) (orchestrator.Claimed, error) {
 	if err := s.checkClaimPolicyApproval(ctx, issueID, claim.lease.PolicyID); err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
@@ -579,7 +586,7 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}
 	renewStarted := s.now()
-	lease, err := claim.source.client.Renew(ctx, claim.lease, int64(s.leaseTTL/time.Second))
+	lease, err := claim.source.client.renew(ctx, claim.lease, int64(s.leaseTTL/time.Second), landingCapacity)
 	if err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
 	}

@@ -87,6 +87,10 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		evidence.Scheduling.Outcome = "skipped"
 		evidence.Scheduling.Reason = contract.Reason
 	}
+	landingReady, _, err := nativeLandingClaimCapacity(ctx, q, id, 0, now)
+	if err != nil {
+		return err
+	}
 	var supplied *tracker.NativeAdmissionContext
 	if len(contexts) > 0 {
 		supplied = &contexts[0]
@@ -130,6 +134,8 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			}
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
+		case !landingReady:
+			refuse("no_claimable_work", "Project landing capacity is full")
 		default:
 			candidateScope := scope
 			candidateScope.credential.Runner.Binding = r.Binding

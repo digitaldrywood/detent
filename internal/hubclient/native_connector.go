@@ -702,6 +702,9 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
+	if native.ListChange != nil && native.ListChange.LandingPending {
+		issue.NativeLandingHeadSHA = native.ListChange.HeadSHA
+	}
 	issue.DependencySource = connector.BlockedRefSourceNative
 	if d := native.ReleaseDelivery; d != nil && !native.Terminal {
 		issue.BranchName = d.HeadRef

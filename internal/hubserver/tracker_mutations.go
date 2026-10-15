@@ -190,10 +190,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT revision FROM issues WHERE id = ?))`,
 }
 
 func (d *database) Renew(ctx context.Context, request tracker.RenewRequest) (tracker.Lease, error) {
-	return d.renew(ctx, request, false)
+	return d.renew(ctx, request, false, 0)
 }
 
-func (d *database) renew(ctx context.Context, request tracker.RenewRequest, policyRequired bool, scopes ...nativeScope) (lease tracker.Lease, resultErr error) {
+func (d *database) renew(ctx context.Context, request tracker.RenewRequest, policyRequired bool, landingCapacity int, scopes ...nativeScope) (lease tracker.Lease, resultErr error) {
 	request, err := normalizeRenewRequest(request)
 	if err != nil {
 		return tracker.Lease{}, err
@@ -221,6 +221,14 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 	}
 	if err := requireRenewableLease(ctx, tx, record, request.FencingToken, now, policyRequired, scopes...); err != nil {
 		return tracker.Lease{}, err
+	}
+	if landingCapacity > 0 {
+		if len(scopes) != 1 {
+			return tracker.Lease{}, nativeInvalid("Landing admission requires a native project lease")
+		}
+		if err := reserveNativeLandingCapacity(ctx, tx, scopes[0], record, landingCapacity, now); err != nil {
+			return tracker.Lease{}, err
+		}
 	}
 
 	expiresAt := now.Add(request.TTL)
@@ -659,6 +667,11 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 			return err
 		}
 		if err := requireLeaseRunner(ctx, tx, record.session.ID, scope); err != nil {
+			return err
+		}
+	}
+	if !record.session.ExpiresAt.After(now) {
+		if err := requireLandingRenewalCapacity(ctx, tx, record.session.ID, now); err != nil {
 			return err
 		}
 	}

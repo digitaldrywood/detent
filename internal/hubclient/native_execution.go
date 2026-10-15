@@ -207,7 +207,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 			}
 			remaining := e.remaining()
 			if remaining <= 0 {
-				if err := e.renew(guarded); err != nil {
+				if err := e.renew(guarded, 0); err != nil {
 					if !nativeTransportUnavailable(err) {
 						cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
 						return
@@ -267,7 +267,7 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 		return e.validationError(errors.Join(err, context.Cause(ctx)))
 	}
 	if e.remaining() <= 0 {
-		if err := e.renew(ctx); err != nil {
+		if err := e.renew(ctx, 0); err != nil {
 			return e.validationError(err)
 		}
 	}
@@ -277,14 +277,14 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 	return nil
 }
 
-func (e *nativeExecution) renew(ctx context.Context) error {
+func (e *nativeExecution) renew(ctx context.Context, landingCapacity int) error {
 	e.scheduler.mu.Lock()
 	claim, ok := e.scheduler.nativeClaims[string(e.claim.lease.WorkItemID)]
 	e.scheduler.mu.Unlock()
 	if !ok || claim.lease.FencingToken != e.claim.lease.FencingToken {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
-	_, err := e.scheduler.renewNativeClaim(ctx, string(e.claim.lease.WorkItemID), claim)
+	_, err := e.scheduler.renewNativeClaim(ctx, string(e.claim.lease.WorkItemID), claim, landingCapacity)
 	return err
 }
 
@@ -323,7 +323,11 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 		}
 		if e.reconnecting {
 			e.data.Outcome = ""
-			e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+			observation := &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+			if e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
+				observation.Landing = e.data.Runtime.Landing
+			}
+			e.data.Runtime = observation
 			e.data.Finalization = nil
 			e.data.TerminalFailure = nil
 			e.data.Disposition = nil
@@ -419,6 +423,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	e.preparedDisposition = nil
 	if e.ownsIssueCompletion() {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
+	}
+	if outcome == "succeeded" && e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
+		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
 	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
 		err = e.executionError(err)
@@ -560,7 +567,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 		return nil
 	}
 	if e.remaining() <= 0 {
-		if err := e.renew(ctx); err != nil {
+		if err := e.renew(ctx, 0); err != nil {
 			return err
 		}
 	}
@@ -674,7 +681,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	done := e.diagnosticOperation("append." + e.pending.Type)
 	defer func() { done(err) }()
 	if e.remaining() <= 0 {
-		if err := e.renew(ctx); err != nil {
+		if err := e.renew(ctx, 0); err != nil {
 			return e.executionError(err)
 		}
 	}

@@ -32,6 +32,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	probe.Scope = ""
 	probe.ProviderCandidates = nil
 	probe.WorkItemID = 0
+	probe.LandingCapacity = 0
 	probe.Limit = 100
 	var heads []tracker.WorkItemID
 	var contractRefusal error
@@ -93,11 +94,16 @@ projects:
 					}
 					continue
 				}
-				ready, _, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, now)
+				ready, evaluated, capacity, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, projectQuery.LandingCapacity, now)
 				if err != nil {
 					return 0, false, err
 				}
 				if !ready {
+					if evaluated {
+						if err := recordNativeSchedulingDecision(ctx, tx, &candidateScope, id, ready, capacity, now); err != nil {
+							return 0, false, err
+						}
+					}
 					continue
 				}
 				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, query.ProviderCandidates)

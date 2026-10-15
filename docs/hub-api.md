@@ -2307,6 +2307,22 @@ provider compatibility inside the claim transaction. Capacity removes ineligible
 choices from that order; it does not reprioritize work or select a fallback model.
 The negotiated feature is `provider_capacity_reservations`.
 
+Hubs advertising `project_landing_capacity` accept nonnegative
+`landing_capacity` on claims, previews and lease renewal. Native GitHub landing runners send
+their existing configured Merging limit and delegate that lane ceiling to the
+Hub instead of applying it separately on each host. The claim transaction
+counts active project landing leases and pins the effective ceiling on the new
+lease. The strictest positive incoming or active-owner ceiling applies.
+Legacy leases count toward occupancy. Zero supplies no additional ceiling and
+retains existing behavior when no active owner declares one. Claim replay
+cannot widen its pinned ceiling. An expired owner may renew only if the project
+has room; live owners are never preempted. Preview and selection use the same
+capacity predicate, and native-only landing batches retain their existing
+accounting. Direct code-to-landing continuations reserve the same capacity on
+their existing lease through acknowledged renewal before starting landing work.
+An occupied project refuses that transition without revoking the coding lease.
+Clients requiring this feature defer claims against older Hubs.
+
 Hubs advertising `native_dispatch_wait` also accept a preview `limit` of 1–100.
 Omitting it retains the 100-candidate page. The bound applies before issue
 hydration; a page can be empty with a nonzero `next` when current landing

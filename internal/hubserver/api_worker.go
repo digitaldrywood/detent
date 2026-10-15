@@ -40,6 +40,7 @@ type claimAPIRequest struct {
 }
 
 type claimCandidateQuery struct {
+	LandingCapacity         int
 	LandingBatchGroup       string
 	Limit                   int
 	After                   tracker.WorkItemID
@@ -173,7 +174,7 @@ func (s *Service) renewLease(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_lease", Message: err.Error()})
 	}
-	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: leaseID, FencingToken: request.FencingToken, TTL: ttl}, true)
+	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: leaseID, FencingToken: request.FencingToken, TTL: ttl}, true, 0)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -574,12 +575,12 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 				continue
 			}
 		}
-		ready, evaluated, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, request.MachineID, now)
+		ready, evaluated, landingCapacity, err := nativeLandingCandidateReady(ctx, tx, query.NativeScope, id, request.MachineID, query.LandingCapacity, now)
 		if err != nil {
 			return tracker.Lease{}, err
 		}
 		if evaluated {
-			if err := recordNativeSchedulingDecision(ctx, tx, query.NativeScope, id, ready, now); err != nil {
+			if err := recordNativeSchedulingDecision(ctx, tx, query.NativeScope, id, ready, landingCapacity, now); err != nil {
 				return tracker.Lease{}, err
 			}
 		}
@@ -647,6 +648,11 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		lease, err = d.claimInTransaction(ctx, tx, request, now, exposure)
 		if err != nil {
 			return tracker.Lease{}, err
+		}
+		if landingCapacity > 0 {
+			if _, err := tx.ExecContext(ctx, "UPDATE leases SET landing_capacity=? WHERE lease_id=?", landingCapacity, lease.ID); err != nil {
+				return tracker.Lease{}, err
+			}
 		}
 		if query.RequirePolicy {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO lease_policies (lease_id, scope, policy_id) VALUES (?, ?, ?)", lease.ID, policyScope, query.PolicyID); err != nil {
