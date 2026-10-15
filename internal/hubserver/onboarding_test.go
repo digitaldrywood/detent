@@ -744,7 +744,7 @@ func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/onboarding/policy", testHubAdminToken, policy.Change{ExpectedID: original.ID, ObservedPolicyID: changed.ID}), http.StatusUnprocessableEntity)
 }
 
-func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
+func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name     string
@@ -801,8 +801,8 @@ func TestOnboardingPendingRepositoryPolicyApproval(t *testing.T) {
 				}
 				return scheduler.CheckProjectPolicyWithSource(t.Context(), "selected", "", descriptor, source)
 			}
-			if err := check(); err == nil {
-				t.Fatal("runner loaded an unapproved policy")
+			if err := check(); err != nil {
+				t.Fatalf("reported configuration blocked runner: %v", err)
 			}
 			read := func(base, token string) onboarding.Project {
 				t.Helper()
@@ -967,8 +967,8 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 			t.Fatal(err)
 		}
 		descriptors[i] = descriptor
-		if err := runner.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err == nil {
-			t.Fatal("runner executed without approval")
+		if err := runner.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err != nil {
+			t.Fatal(err)
 		}
 	}
 	read := func() onboarding.Project {
@@ -980,14 +980,8 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		return setup
 	}
 	initial := read()
-	if len(initial.ObservedPolicies) != 2 || !initial.ObservedPolicies[0].Conflict || !initial.ObservedPolicies[1].Conflict {
-		t.Fatalf("conflicting reports = %+v", initial.ObservedPolicies)
-	}
-	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptors[0])
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[0].ID, Policy: descriptors[1]}), http.StatusOK)
-	historical := read()
-	if len(historical.ObservedPolicies) != 1 || !historical.ObservedPolicies[0].PreviouslyApproved || !historical.ObservedPolicies[0].Conflict {
-		t.Fatalf("historical report offered as a new approval: %+v", historical.ObservedPolicies)
+	if initial.Policy == nil || initial.Policy.Policy.ID != descriptors[1].ID {
+		t.Fatalf("latest reported configuration = %+v", initial.Policy)
 	}
 	combined, err := workflowconfig.ParseWorkflowOverlay(proWorkflow.DefinitionSources.Workflow, []byte("---\nagent:\n  auto_promote:\n    enabled: true\n---\n"), "operator-approved.local.md")
 	if err != nil {
@@ -997,8 +991,9 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[0].ID, Policy: descriptor}), http.StatusConflict)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptors[1].ID, Policy: descriptor}), http.StatusOK)
+	if err := pro.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err != nil {
+		t.Fatal(err)
+	}
 	for i, runner := range []*hubclient.Scheduler{pro, air} {
 		local := []workflowconfig.Workflow{proWorkflow, airWorkflow}[i]
 		resolved, err := runner.ResolveProjectWorkflow(t.Context(), "shared", local, nil)

@@ -488,7 +488,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		}},
 		{"source diff digest", func(a map[string]any) { s := capture.Source; s.DiffSHA256 = "invalid"; a["source_capture"] = s }},
 		{"source transport bound", func(a map[string]any) { a["source_bundle"] = bytes.Repeat([]byte("x"), operatortool.MaxArgumentBytes) }},
-		{"source stale policy", func(a map[string]any) { a["policy_id"] = "policy_stale" }},
+		{"source unreported configuration", func(a map[string]any) { a["policy_id"] = "policy_stale" }},
 		{"source stale current version", func(a map[string]any) { a["expected_version_id"] = "version_stale" }},
 		{"source foreign project", func(a map[string]any) { a["project_id"] = sourceOther.project.ID }},
 		{"source foreign item", func(a map[string]any) { a["work_item_id"] = sourceOther.issue.WorkItemID }},
@@ -516,15 +516,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				}
 				return
 			}
-			refusal, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
+			_, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
 			if !failed {
 				t.Fatal("invalid source publication succeeded")
-			}
-			if denied.name == "source stale policy" {
-				var conflict operatortool.ConflictError
-				if json.Unmarshal(refusal, &conflict) != nil || conflict.Code != "policy_mismatch" || !strings.Contains(conflict.Message, "get_project_policy") {
-					t.Fatalf("stale publication policy refusal=%s", refusal)
-				}
 			}
 		})
 	}

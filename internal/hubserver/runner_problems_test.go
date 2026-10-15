@@ -143,25 +143,25 @@ func TestRunnerHubProblems(t *testing.T) {
 	}
 }
 
-func TestRunnerApprovedPolicyProblems(t *testing.T) {
+func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		want int
 	}{
 		{"aligned", 0},
-		{"local policies agree but Hub refuses", 1},
+		{"local policies agree but Hub refuses", 0},
 		{"pending selection still claims", 0},
 		{"compatible approved revision", 0},
-		{"compatible unapproved revision", 1},
-		{"admission observation", 1},
+		{"compatible unapproved revision", 0},
+		{"admission observation", 0},
 		{"effective overrides admission", 0},
-		{"policy observation", 1},
-		{"approval revoked", 1},
+		{"policy observation", 0},
+		{"approval revoked", 0},
 		{"unauthorized project", 0},
 		{"no policy evidence", 0},
-		{"multiple projects", 2},
-		{"clears after approval", 1},
-		{"clears after alignment", 1},
+		{"multiple projects", 0},
+		{"clears after approval", 0},
+		{"clears after alignment", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -272,30 +272,10 @@ func TestRunnerApprovedPolicyProblems(t *testing.T) {
 				if len(runner.Problems) != want || (runner.Health == "needs_attention") != (want > 0) {
 					t.Fatalf("runner health=%s problems=%+v, want %d", runner.Health, runner.Problems, want)
 				}
-				for _, problem := range runner.Problems {
-					approvedID := approved.ID
-					if test.name == "approval revoked" {
-						approvedID = "none"
-					}
-					if problem.Code != "policy_mismatch" || problem.ProjectID == "" || !strings.Contains(problem.Message, effective.ID) || !strings.Contains(problem.Message, approvedID) || !strings.Contains(problem.FixHint, "Approve the pending policy") || !strings.Contains(problem.FixHint, "update the runner's project files") || !problem.FirstSeen.Equal(runner.LastHeartbeatAt) {
-						t.Fatalf("policy problem=%+v", problem)
-					}
-				}
 				return runner
 			}
 			read(test.want)
-			if test.name == "local policies agree but Hub refuses" {
-				var problems []runnerauth.Problem
-				var raw string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT problems_json FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&raw); err != nil || json.Unmarshal([]byte(raw), &problems) != nil || len(problems) != 1 {
-					t.Fatalf("first heartbeat problems=%s err=%v", raw, err)
-				}
-			}
 			if test.name == "compatible approved revision" || test.name == "compatible unapproved revision" {
-				matches, err := approvedPolicyRevisionMatches(t.Context(), f.service.database.db, scope, old.ID, approved)
-				if err != nil || matches != (test.want == 0) {
-					t.Fatalf("claim policy compatibility=%v err=%v", matches, err)
-				}
 				f.create(t, "policy capacity candidate")
 				routing, err := json.Marshal(map[string]any{"project_ranks": map[string]int{view.ProjectID: 1}})
 				if err != nil {

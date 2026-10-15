@@ -240,9 +240,8 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 		if err := tx.Rollback(); err != nil {
 			t.Fatal(err)
 		}
-		var failure *nativeError
-		if !errors.As(claimErr, &failure) || failure.Code != "policy_mismatch" {
-			t.Fatalf("stale Cloud workflow claim = %v", claimErr)
+		if claimErr != nil {
+			t.Fatalf("configuration change refused claim: %v", claimErr)
 		}
 		workflow.Definition.Layout = workflowconfig.ProjectDefinitionCloud
 		workflow.Config.Worker.ExtraNetworkDomains = []string{"inherited-host-default.example.test"}

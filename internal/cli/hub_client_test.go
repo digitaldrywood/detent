@@ -24,6 +24,8 @@ func TestNewHubSchedulingRegistersRuntimeCapacityAndVersion(t *testing.T) {
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
+		case "/api/v1/repositories/acme/widgets/policy/observed":
+			response.WriteHeader(http.StatusNoContent)
 		case "/api/v1/repositories/acme/widgets/policy":
 			_ = json.NewEncoder(response).Encode(policy.Approval{Policy: descriptor})
 		case "/api/v1/machines/register":

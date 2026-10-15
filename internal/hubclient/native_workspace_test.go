@@ -711,6 +711,15 @@ func TestWorkspaceClaimerLocalExclusions(t *testing.T) {
 				t.Fatal(err)
 			}
 			state := claimer.ClaimState()
+			if test.reason == "policy_mismatch" {
+				if len(state.Reasons) != 0 {
+					t.Fatalf("configuration change excluded runner: %v", state.Reasons)
+				}
+				if _, err := claimer.ClaimWorkspace(t.Context()); err != nil || claims != 1 || claimedPolicy != "policy_current" {
+					t.Fatalf("reported configuration claim: calls=%d policy=%s error=%v", claims, claimedPolicy, err)
+				}
+				return
+			}
 			if !reflect.DeepEqual(state.Reasons, []string{test.reason}) {
 				t.Fatalf("reasons = %v", state.Reasons)
 			}

@@ -208,7 +208,7 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 	}{
 		{"organization admits future project", "organization", true, false, http.StatusOK},
 		{"project scope stays restricted", "projects", true, false, http.StatusNotFound},
-		{"organization still requires approved policy", "organization", false, false, http.StatusConflict},
+		{"organization requires reported configuration", "organization", false, false, http.StatusUnprocessableEntity},
 		{"organization omits deleted project", "organization", true, true, 0},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {

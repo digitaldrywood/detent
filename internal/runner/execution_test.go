@@ -263,7 +263,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "already paused index changed", rework: true, paused: true, foreign: "index", blocked: true},
 		{name: "already paused hidden index edit", rework: true, paused: true, foreign: "hidden-index", blocked: true},
 		{name: "already paused lease revoked", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
-		{name: "already paused policy changed", rework: true, paused: true, fresh: true, changedPolicy: true},
+		{name: "already paused policy changed", rework: true, paused: true, changedPolicy: true},
 		{name: "already paused unavailable checkpoint", rework: true, paused: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
 		}},
@@ -278,13 +278,13 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "rework foreign head", rework: true, foreign: "head", blocked: true},
 		{name: "rework wrong branch", rework: true, foreign: "branch", blocked: true},
 		{name: "rework lease revoked", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
-		{name: "rework policy changed", rework: true, fresh: true, changedPolicy: true},
-		{name: "published checkpoint policy changed", fresh: true, changedPolicy: true, published: true},
-		{name: "policy changed with ambiguous publication", rework: true, changedPolicy: true, fresh: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+		{name: "rework policy changed", rework: true, changedPolicy: true},
+		{name: "published checkpoint policy changed", changedPolicy: true, published: true},
+		{name: "policy changed with ambiguous publication", rework: true, changedPolicy: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
 			e.recovery.Attempts[0].Checkpoint.EffectState = "ambiguous"
 		}},
-		{name: "policy changed with revoked authority", rework: true, changedPolicy: true, fresh: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
+		{name: "policy changed with revoked authority", rework: true, changedPolicy: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.validateErr = ErrExecutionAuthorityUnavailable }},
 		{name: "rework unavailable checkpoint", rework: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
 		}},
@@ -312,7 +312,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "provider start identity retained", providerNotStarted: true, startupFailsAgain: true, observedProvider: true},
 		{name: "provider identity missing after turn without external effect", providerNotStarted: true, providerHadTurns: true, restartSession: true, startupFailsAgain: true},
 		{name: "dirty provider never started", providerNotStarted: true, dirty: true, blocked: true},
-		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true, fresh: true},
+		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true},
 		{name: "startup host changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
 		{name: "startup digest changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
@@ -323,8 +323,8 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "clean persisted session missing", restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
 		{name: "clean session and worktree missing", restartSession: true, startupFailsAgain: true, missingWorktree: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
 		{name: "rework persisted session missing", rework: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Runtime.LocalAttemptID += 1000 }},
-		{name: "persisted policy differs", dirty: true, blocked: true, changedPolicy: true},
-		{name: "policy changed", dirty: true, changedPolicy: true, fresh: true},
+		{name: "persisted policy differs", dirty: true, changedPolicy: true},
+		{name: "policy changed", dirty: true, changedPolicy: true},
 		{name: "model authority changed", dirty: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Attempts[0].Identity.Model = "other-model" }},
 		{name: "clean checkpoint unavailable", blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.Availability = "inaccessible"
@@ -1000,7 +1000,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"policy changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Lease.PolicyID = "new-policy"
 			r.Attempts[0].Status = "interrupted"
-		}, "fresh_checkout", "session_restart_required", nil},
+		}, "resume_session", "verified_local_session", nil},
 		{"backend changed", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "claude", Model: "test"}
 		}, "fresh_checkout", "session_restart_required", nil},
@@ -1968,6 +1968,9 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 		want bool
 	}{
 		{"source runner", func(*tracker.NativeRecovery, *workspace.RecoveryState) {}, true},
+		{"configuration changed", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+			r.Lease.PolicyID = "new-configuration"
+		}, true},
 		{"another runner restored the Change source", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
 			local.WorkspaceFingerprint = "fresh-checkout-digest"

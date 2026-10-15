@@ -40,13 +40,13 @@ func TestRunnerRoutingClaims(t *testing.T) {
 		{"disabled", nil, "disabled", policy.Requirements{}, http.StatusConflict, "Todo"},
 		{"draining rework", nil, "draining", policy.Requirements{}, http.StatusConflict, "Rework"},
 		{"draining custom lane", nil, "draining", policy.Requirements{}, http.StatusConflict, "Repair Queue"},
-		{"stale policy", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"unreported configuration", nil, "active", policy.Requirements{}, http.StatusUnprocessableEntity, "Todo"},
 		{"host full", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
 		{"draining broad claim", nil, "draining", policy.Requirements{}, http.StatusConflict, "Todo"},
 		{"candidate excluded", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
 		{"intake pending", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
 		{"isolation unsupported", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
-		{"stale policy broad claim", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
+		{"unreported configuration broad claim", nil, "active", policy.Requirements{}, http.StatusUnprocessableEntity, "Todo"},
 		{"host full broad claim", nil, "active", policy.Requirements{}, http.StatusConflict, "Todo"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -84,7 +84,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			switch test.name {
-			case "stale policy", "stale policy broad claim":
+			case "unreported configuration", "unreported configuration broad claim":
 				claim.PolicyID = "stale"
 			case "host full", "host full broad claim":
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
@@ -104,7 +104,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if test.name == "stale policy broad claim" || test.name == "host full broad claim" {
+			if test.name == "unreported configuration broad claim" || test.name == "host full broad claim" {
 				claim.WorkItemID = ""
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
@@ -143,7 +143,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				decodeHubResponse(t, response, &evidence)
 			}
 			readDecision()
-			if test.state == "disabled" {
+			if test.state == "disabled" || test.want == http.StatusUnprocessableEntity {
 				if evidence.LatestDecision != nil {
 					t.Fatal("pre-evaluation refusal manufactured a scheduling decision")
 				}
@@ -177,8 +177,6 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			switch {
 			case test.state == "draining":
 				wantReason = "runner_draining"
-			case test.name == "stale policy" || test.name == "stale policy broad claim":
-				wantReason = "policy_mismatch"
 			case test.name == "host full" || test.name == "host full broad claim":
 				wantReason = "host_capacity"
 			case test.name == "candidate excluded" || test.name == "intake pending" || test.name == "isolation unsupported":
@@ -221,12 +219,12 @@ func TestRunnerRoutingClaims(t *testing.T) {
 			if test.name == "draining" {
 				claim.PolicyID = "stale"
 				for range 2 {
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusUnprocessableEntity)
 				}
 				claim.PolicyID = descriptor.ID
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 2 {
-					t.Fatalf("alternating refusals recorded %d decisions: %v", count, err)
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 1 {
+					t.Fatalf("invalid request changed recorded %d decisions: %v", count, err)
 				}
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", issue.WorkItemID); err != nil {
@@ -263,7 +261,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				if evidence.NativeCandidateExclusion.ID == refusalID {
 					t.Fatal("successful claim did not start a new evaluation cycle")
 				}
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 5 {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 4 {
 					t.Fatalf("claim cycle recorded %d decisions: %v", count, err)
 				}
 				other := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim)
@@ -279,7 +277,7 @@ func TestRunnerRoutingClaims(t *testing.T) {
 				if evidence.NativeCandidateExclusion.Data.Decision.RunnerID != other.binding.RunnerID {
 					t.Fatal("another runner's refusal was deduplicated away")
 				}
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 6 {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 5 {
 					t.Fatalf("runner refusals recorded %d decisions: %v", count, err)
 				}
 			}
@@ -635,7 +633,7 @@ func TestRunnerLeaseValidationAccounting(t *testing.T) {
 		{name: "released lease", apiLimit: 100, statement: "UPDATE leases SET released_at=acquired_at WHERE lease_id=?", target: "lease", status: http.StatusConflict, code: "stale_fencing_token"},
 		{name: "revoked credential", apiLimit: 100, statement: "UPDATE api_tokens SET revoked_at=created_at WHERE id=?", target: "runner", status: http.StatusUnauthorized, code: "unauthorized"},
 		{name: "project access removed", apiLimit: 100, statement: "DELETE FROM token_grants WHERE token_id=?", target: "runner", status: http.StatusNotFound, code: "not_found"},
-		{name: "policy approval removed", apiLimit: 100, statement: "DELETE FROM project_policies WHERE scope=?", target: "project", status: http.StatusConflict, code: "policy_mismatch"},
+		{name: "removed approval preserves lease", apiLimit: 100, statement: "DELETE FROM project_policies WHERE scope=?", target: "project", status: http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)

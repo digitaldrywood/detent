@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -99,12 +100,16 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	} else if len(request.SourceBundle) != 0 {
 		return nil, nativeInvalid("Source bundle requires immutable source metadata")
 	}
-	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
+	var configurationJSON string
+	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", string(scope.organization)+"/"+string(scope.project), request.PolicyID).Scan(&configurationJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nativeInvalid("Change configuration has not been reported for this project")
+		}
 		return nil, err
 	}
-	if request.PolicyID != approved.Policy.ID {
-		return nil, policyMismatch("Publish with the currently approved repository policy")
+	approved, err := decodeProjectPolicy(configurationJSON, policy.Approval{})
+	if err != nil {
+		return nil, err
 	}
 	rules, err := readChangePolicy(ctx, tx, scope)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -112,6 +117,10 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if err != nil {
 		return nil, err
+	}
+	if rules.PolicyID != approved.Policy.ID {
+		rules.PolicyID = approved.Policy.ID
+		rules.ID = changerequest.PolicyID(rules)
 	}
 	if err := changerequest.ValidatePolicy(rules, approved.Policy); err != nil {
 		return nil, policyMismatch(err.Error())
