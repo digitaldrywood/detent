@@ -538,7 +538,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := "org_browser_preview/" + f.project
-	if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
+	if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: current}); err != nil {
 		t.Fatal(err)
 	}
 	view := runnerauth.ProjectConfiguration{ProjectID: f.project, Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}
