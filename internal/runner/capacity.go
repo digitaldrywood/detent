@@ -21,11 +21,13 @@ type AgentCapacityStatusProvider interface {
 }
 
 type CapacityObservation struct {
+	AccountID  string
 	Status     CapacityStatus
 	RateLimits *telemetry.RateLimits
 }
 
 type AgentCapacityReader interface {
+	CapacityAccount() string
 	ReadCapacity(context.Context) (CapacityObservation, error)
 }
 

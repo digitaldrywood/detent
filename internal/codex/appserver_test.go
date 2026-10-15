@@ -541,8 +541,10 @@ func TestAppServerReadsCapacityWithoutStartingTurn(t *testing.T) {
 		exhausted bool
 		failed    bool
 		code      int
+		accountID string
 	}{
 		{name: "legacy available", response: `{"rateLimits":{"limitId":"codex","primary":{"usedPercent":20}}}`, available: true},
+		{name: "resolved account", response: `{"accountId":"account-one","ordinaryUsageAllowed":true,"rateLimits":{"limitId":"codex","primary":{"usedPercent":20}}}`, available: true, accountID: "account-one"},
 		{name: "exhausted until next week", response: `{"rateLimits":{"limitId":"codex","rateLimitReachedType":"primary","primary":{"usedPercent":100,"resetsAt":2000000000}}}`, exhausted: true},
 		{name: "explicit permission restored", response: `{"ordinaryUsageAllowed":true,"rateLimits":{"primary":{"usedPercent":100}}}`, available: true},
 		{name: "provider restricts usage", response: `{"ordinaryUsageAllowed":false,"rateLimits":{"primary":{"usedPercent":0}}}`, exhausted: true},
@@ -577,6 +579,9 @@ func TestAppServerReadsCapacityWithoutStartingTurn(t *testing.T) {
 				t.Fatal(err)
 			}
 			observation, err := server.ReadCapacity(t.Context())
+			if observation.AccountID != tt.accountID {
+				t.Fatalf("account ID = %q, want %q", observation.AccountID, tt.accountID)
+			}
 			if (err != nil) != tt.failed || observation.Status.Available != tt.available || observation.Status.Exhausted != tt.exhausted {
 				t.Fatalf("ReadCapacity() = %#v, %v", observation, err)
 			}

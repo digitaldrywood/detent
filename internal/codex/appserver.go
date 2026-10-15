@@ -161,6 +161,7 @@ func (e *TurnFailedError) BackendErrorStatus() string {
 }
 
 type AppServer struct {
+	capacityAccount  string
 	prepareThread    func(context.Context, string) error
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
@@ -172,6 +173,10 @@ type AppServer struct {
 }
 
 type AppServerOption func(*AppServer)
+
+func WithCapacityAccount(account string) AppServerOption {
+	return func(s *AppServer) { s.capacityAccount = strings.TrimSpace(account) }
+}
 
 type timeoutContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
@@ -662,6 +667,7 @@ func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.Capaci
 		return observation, err
 	}
 	var response struct {
+		AccountID            string                              `json:"accountId"`
 		RateLimits           *rateLimitSnapshotPayload           `json:"rateLimits"`
 		RateLimitsByLimitID  map[string]rateLimitSnapshotPayload `json:"rateLimitsByLimitId"`
 		OrdinaryUsageAllowed json.RawMessage                     `json:"ordinaryUsageAllowed"`
@@ -669,6 +675,7 @@ func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.Capaci
 	if err := json.Unmarshal(result, &response); err != nil {
 		return observation, fmt.Errorf("%w: decode account/rateLimits/read result: %w", ErrInvalidResponse, err)
 	}
+	observation.AccountID = strings.TrimSpace(response.AccountID)
 	if limits, ok := response.RateLimitsByLimitID["codex"]; ok {
 		response.RateLimits = &limits
 	} else if len(response.RateLimitsByLimitID) > 0 || (response.RateLimits != nil && response.RateLimits.LimitID != "" && response.RateLimits.LimitID != "codex") {

@@ -2,12 +2,10 @@ package runner
 
 import (
 	"context"
-	"crypto/sha256"
 	"slices"
+	"strings"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
@@ -16,11 +14,18 @@ import (
 )
 
 type ProviderUsage struct {
-	mu         sync.Mutex
-	windows    map[string][]providercapacity.UsageWindow
-	billing    map[string]string
-	capacityMu sync.Mutex
-	capacity   map[[32]byte]capacityRead
+	mu               sync.Mutex
+	windows          map[string][]providercapacity.UsageWindow
+	billing          map[string]string
+	capacityMu       sync.Mutex
+	capacity         map[capacityReadKey]capacityRead
+	capacityAccounts map[capacityReadKey]capacityReadKey
+}
+
+type capacityReadKey struct {
+	backendKind string
+	provider    string
+	account     string
 }
 
 type capacityRead struct {
@@ -38,22 +43,28 @@ func (u *ProviderUsage) RefreshCapacity(ctx context.Context, cfg config.AgentBac
 	if cfg.Kind == config.AgentBackendCodex && provider != "" && provider != "openai" {
 		return CapacityObservation{}, nil
 	}
-	if u == nil {
+	account := strings.TrimSpace(reader.CapacityAccount())
+	if u == nil || account == "" {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		return reader.ReadCapacity(ctx)
+		observation, err := reader.ReadCapacity(ctx)
+		if err == nil {
+			u.Observe(cfg.ID, observation.RateLimits)
+		}
+		return observation, err
 	}
-	identity := cfg
-	identity.ID = ""
-	raw, err := yaml.Marshal(identity)
-	if err != nil {
-		return CapacityObservation{}, err
+	if provider == "" && cfg.Kind == config.AgentBackendCodex {
+		provider = "openai"
 	}
-	key := sha256.Sum256(raw)
+	owner := capacityReadKey{backendKind: cfg.Kind, provider: provider, account: "profile:" + account}
+	key := owner
 	u.capacityMu.Lock()
 	defer u.capacityMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return CapacityObservation{}, err
+	}
+	if resolved, ok := u.capacityAccounts[owner]; ok {
+		key = resolved
 	}
 	read, found := u.capacity[key]
 	if !found || !now.Before(read.at.Add(time.Minute)) {
@@ -61,8 +72,15 @@ func (u *ProviderUsage) RefreshCapacity(ctx context.Context, cfg config.AgentBac
 		defer cancel()
 		read.observation, read.err = reader.ReadCapacity(ctx)
 		read.at = now
+		if read.err == nil && read.observation.AccountID != "" {
+			key.account = "account:" + read.observation.AccountID
+			if u.capacityAccounts == nil {
+				u.capacityAccounts = make(map[capacityReadKey]capacityReadKey)
+			}
+			u.capacityAccounts[owner] = key
+		}
 		if u.capacity == nil {
-			u.capacity = make(map[[32]byte]capacityRead)
+			u.capacity = make(map[capacityReadKey]capacityRead)
 		}
 		u.capacity[key] = read
 	}

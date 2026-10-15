@@ -248,6 +248,13 @@ func (b *AgentBackend) ReadCapacity(ctx context.Context) (runner.CapacityObserva
 	return b.client.ReadCapacity(ctx)
 }
 
+func (b *AgentBackend) CapacityAccount() string {
+	if b == nil {
+		return ""
+	}
+	return b.client.capacityAccount
+}
+
 func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) {
 	if limits == nil {
 		return runner.CapacityStatus{}, false

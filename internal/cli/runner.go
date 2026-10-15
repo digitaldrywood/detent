@@ -543,7 +543,7 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, pol
 
 	opts := []codex.AppServerOption{codex.WithThreadPreparation(func(ctx context.Context, threadID string) error {
 		return prepareLegacyCodexRollout(ctx, serviceCommand.Environment["CODEX_HOME"], threadID)
-	})}
+	}), codex.WithCapacityAccount(serviceCommand.Environment["CODEX_HOME"])}
 	if timeout := durationFromMillis(cfg.ReadTimeoutMS); timeout > 0 {
 		opts = append(opts, codex.WithReadTimeout(timeout))
 	}

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 
@@ -18,7 +19,8 @@ func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
 			now := time.Date(2026, 10, 15, 20, 0, 0, 0, time.UTC)
 			usage := &ProviderUsage{}
 			calls := 0
-			backend := capacityReadBackend{read: func(ctx context.Context) (CapacityObservation, error) {
+			accountID := "account-one"
+			backend := capacityReadBackend{account: "profile-one", read: func(ctx context.Context) (CapacityObservation, error) {
 				if _, ok := ctx.Deadline(); !ok {
 					t.Fatal("status read has no deadline")
 				}
@@ -26,11 +28,16 @@ func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
 				if failed {
 					return CapacityObservation{}, errors.New("unavailable")
 				}
-				return CapacityObservation{Status: CapacityStatus{Available: true}}, nil
+				return CapacityObservation{AccountID: accountID, Status: CapacityStatus{Available: true}}, nil
 			}}
-			cfg := config.AgentBackend{ID: "one", Kind: config.AgentBackendCodex, Command: "codex app-server"}
-			for _, id := range []string{"one", "two", "one"} {
-				cfg.ID = id
+			cfg := config.CodexAgentBackend(config.Codex{Command: "codex app-server"})
+			for index, variant := range []config.Codex{
+				{Command: "codex app-server", ReadTimeoutMS: 1000, ThreadSandbox: "read-only", ApprovalPolicy: config.StringOrMap{IsString: true, String: "never"}},
+				{Command: "codex app-server", ReadTimeoutMS: 9000, ThreadSandbox: "workspace-write", ApprovalPolicy: config.StringOrMap{IsString: true, String: "on-request"}},
+				{Command: "codex app-server", ReadTimeoutMS: 5000},
+			} {
+				cfg = config.CodexAgentBackend(variant)
+				cfg.ID = "backend-" + strconv.Itoa(index)
 				got, err := usage.RefreshCapacity(t.Context(), cfg, backend, now)
 				if (err != nil) != failed || got.Status.Available == failed {
 					t.Fatalf("read=%#v, %v", got, err)
@@ -39,14 +46,16 @@ func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
 			if calls != 1 {
 				t.Fatalf("coalesced reads=%d", calls)
 			}
-			cfg.Command = "codex app-server -c profile=other-account"
-			if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now); (err != nil) != failed {
+			other := backend
+			other.account = "profile-two"
+			accountID = "account-two"
+			if _, err := usage.RefreshCapacity(t.Context(), cfg, other, now); (err != nil) != failed {
 				t.Fatal(err)
 			}
 			if calls != 2 {
 				t.Fatal("separate account reused capacity evidence")
 			}
-			cfg.Command = "codex app-server"
+			accountID = "account-one"
 			if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now.Add(time.Minute)); (err != nil) != failed {
 				t.Fatal(err)
 			}
@@ -60,14 +69,47 @@ func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
 			if calls != 3 {
 				t.Fatal("local backend read ChatGPT quota")
 			}
+			if !failed {
+				cfg.Provider = "openai"
+				alias := backend
+				alias.account = "profile-alias"
+				if got, err := usage.RefreshCapacity(t.Context(), cfg, alias, now.Add(time.Minute)); err != nil || got.AccountID != "account-one" {
+					t.Fatalf("account discovery = %#v, %v", got, err)
+				}
+				if calls != 4 {
+					t.Fatalf("account discovery reads = %d", calls)
+				}
+				for _, owner := range []capacityReadBackend{alias, backend} {
+					if _, err := usage.RefreshCapacity(t.Context(), cfg, owner, now.Add(2*time.Minute)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if calls != 5 {
+					t.Fatalf("resolved account was polled separately across profiles: %d", calls)
+				}
+				unresolved := backend
+				unresolved.account = ""
+				for _, id := range []string{"account-one", "account-two"} {
+					accountID = id
+					if got, err := usage.RefreshCapacity(t.Context(), cfg, unresolved, now.Add(2*time.Minute)); err != nil || got.AccountID != id {
+						t.Fatalf("unresolved ownership reused another account: %#v, %v", got, err)
+					}
+				}
+				if calls != 7 {
+					t.Fatalf("unresolved owners shared capacity: %d", calls)
+				}
+			}
 		})
 	}
 }
 
 type capacityReadBackend struct {
 	AgentBackend
-	read func(context.Context) (CapacityObservation, error)
+	account string
+	read    func(context.Context) (CapacityObservation, error)
 }
+
+func (b capacityReadBackend) CapacityAccount() string { return b.account }
 
 func (b capacityReadBackend) ReadCapacity(ctx context.Context) (CapacityObservation, error) {
 	return b.read(ctx)
