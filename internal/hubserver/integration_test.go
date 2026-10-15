@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 )
 
 type importFixtureBackend struct {
+	incompleteBody bool
 	failPage       bool
 	omitDependency bool
 	requests       []GitHubImportRequest
@@ -34,7 +36,11 @@ func (b *importFixtureBackend) FetchImportPage(_ context.Context, request GitHub
 	comment := GitHubImportRecord{SourceKey: "comment:" + id, Kind: "comment", Data: json.RawMessage(`{"body":"Full historical comment"}`), Body: "Full historical comment", Provenance: tracker.Provenance{Provider: "github", ExternalID: "C_" + id, AuthorID: "U_author", AuthorDisplayName: "author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 	switch request.Stage {
 	case "issue":
-		return GitHubImportPage{Issue: &IssueSource{NodeID: id, Number: request.IssueNumber, Title: "Imported issue", Body: strings.Repeat("Complete body. ", 100) + issueContractTestSections, URL: fmt.Sprintf("https://github.com/digitaldrywood/detent/issues/%d", request.IssueNumber), State: "open", AuthorID: "author", Labels: []string{"Todo"}, Assignees: []string{}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, Records: []GitHubImportRecord{{SourceKey: "issue:" + id, Kind: "issue", Data: json.RawMessage(`{"id":"` + id + `"}`)}}, Gaps: []string{"Deleted comments and edit revisions are unavailable"}}, nil
+		body := strings.Repeat("Complete body. ", 100) + issueContractTestSections
+		if b.incompleteBody && request.IssueNumber == 2 {
+			body = "## Roadmap Summary\nRepair the failed build."
+		}
+		return GitHubImportPage{Issue: &IssueSource{NodeID: id, Number: request.IssueNumber, Title: "Imported issue", Body: body, URL: fmt.Sprintf("https://github.com/digitaldrywood/detent/issues/%d", request.IssueNumber), State: "open", AuthorID: "author", Labels: []string{"Todo"}, Assignees: []string{}, CreatedAt: now.Add(-time.Hour), UpdatedAt: now}, Records: []GitHubImportRecord{{SourceKey: "issue:" + id, Kind: "issue", Data: json.RawMessage(`{"id":"` + id + `"}`)}}, Gaps: []string{"Deleted comments and edit revisions are unavailable"}}, nil
 	case "comments":
 		if request.Cursor == "" {
 			return GitHubImportPage{Records: []GitHubImportRecord{comment}, NextCursor: "page2"}, nil
@@ -360,16 +366,29 @@ func cutoverFixture(t *testing.T, f nativeFixture, request CutoverRequest) Cutov
 
 func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 	t.Parallel()
-	for _, partial := range []bool{false, true} {
-		t.Run(fmt.Sprintf("page-failure-%t", partial), func(t *testing.T) {
-			backend := &importFixtureBackend{failPage: partial}
+	for _, test := range []struct {
+		name       string
+		partial    bool
+		incomplete bool
+		initial    string
+		noPolicy   bool
+		refused    bool
+	}{
+		{name: "complete", initial: "Todo"},
+		{name: "partial history", partial: true, initial: "Todo"},
+		{name: "incomplete Todo", incomplete: true, initial: "Todo", refused: true},
+		{name: "incomplete Backlog", incomplete: true, initial: "Backlog"},
+		{name: "missing contract policy", initial: "Todo", noPolicy: true, refused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &importFixtureBackend{failPage: test.partial, incompleteBody: test.incomplete}
 			f := newIntegrationFixture(t, backend)
 			job := startImportFixture(t, f, 1, false, 0)
 			job = advanceImportFixture(t, f, job)
 			job = advanceImportFixture(t, f, job)
 			stale := job.Revision
 			job = advanceImportFixture(t, f, job)
-			if partial {
+			if test.partial {
 				if job.Status != "partial" || job.Cursor != "page2" || job.Stage != "comments" || job.LastError == "" {
 					t.Fatalf("partial checkpoint = %+v", job)
 				}
@@ -395,18 +414,74 @@ func TestGitHubImportCheckpointCutoverAndNativeIsolation(t *testing.T) {
 			if receipt.Applied || receipt.UnresolvedDependencies != 1 || len(receipt.Blockers) == 0 {
 				t.Fatalf("cutover must retain unresolved dependency: %+v", receipt)
 			}
-			finishImportFixture(t, f, startImportFixture(t, f, 2, false, 0))
+			second := finishImportFixture(t, f, startImportFixture(t, f, 2, false, 0))
+			if test.initial == "Backlog" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=NULL WHERE project_id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				request.States = append(request.States, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}})
+			}
+			request.InitialState = test.initial
+			if test.noPolicy {
+				clearNativeFixturePolicy(t, f)
+			}
 			request.IdempotencyKey = "preview-ready"
 			receipt = cutoverFixture(t, f, request)
 			if len(receipt.Blockers) != 0 || receipt.IncompleteImports != 0 {
 				t.Fatalf("cutover preview = %+v", receipt)
 			}
 			request.DryRun, request.IdempotencyKey, request.Checkpoint = false, "apply", receipt.Checkpoint
+			if test.refused {
+				before := []tracker.NativeIssue{readWorkItem(t, f, tracker.NativeWorkItemID(job.WorkItemID), ""), readWorkItem(t, f, tracker.NativeWorkItemID(second.WorkItemID), "")}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/integration/cutover", f.token, request)
+				status := http.StatusUnprocessableEntity
+				if test.noPolicy {
+					status = http.StatusConflict
+				}
+				requireNativeStatus(t, response, status)
+				if !test.noPolicy {
+					for _, section := range []string{"Acceptance criteria", "Must not break", "How we know it worked", "Backlog/Triage"} {
+						if !strings.Contains(response.Body.String(), section) {
+							t.Errorf("cutover refusal missing %q: %s", section, response.Body)
+						}
+					}
+				}
+				var integration ProjectIntegration
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/integration", f.token, nil), &integration)
+				if integration.Profile != "github_compatible" || integration.Revision != receipt.Integration.Revision || integration.Intake != receipt.Integration.Intake || len(integration.States) != 0 {
+					t.Fatalf("refused cutover changed integration: %+v", integration)
+				}
+				for _, original := range before {
+					if got := readWorkItem(t, f, original.WorkItemID, ""); !reflect.DeepEqual(got, original) {
+						t.Fatalf("refused cutover changed issue: %+v", got)
+					}
+				}
+				for _, query := range []string{
+					"SELECT count(*) FROM workflow_states WHERE project_id=?",
+					"SELECT count(*) FROM queue_entries WHERE scope=?",
+					"SELECT count(*) FROM github_cutovers WHERE project_id=?",
+					"SELECT count(*) FROM collaboration_events WHERE project_id=? AND type='issue.cutover'",
+				} {
+					var count int
+					if err := f.service.database.db.QueryRowContext(t.Context(), query, f.project.ID).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("refused cutover persisted rows for %q: %d, %v", query, count, err)
+					}
+				}
+				return
+			}
 			receipt = cutoverFixture(t, f, request)
 			if !receipt.Applied || receipt.Integration.Profile != "native" || receipt.Integration.Intake != "automatic" {
 				t.Fatalf("cutover = %+v", receipt)
 			}
 			cutoverFixture(t, f, request)
+			if test.initial == "Backlog" {
+				for _, id := range []string{job.WorkItemID, second.WorkItemID} {
+					if issue := readWorkItem(t, f, tracker.NativeWorkItemID(id), ""); issue.Profile != "native" || issue.State != "Backlog" {
+						t.Fatalf("Backlog cutover issue = %+v", issue)
+					}
+				}
+				return
+			}
 			path := f.base + "/work-items/" + job.WorkItemID
 			r = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 			var issue tracker.NativeIssue
