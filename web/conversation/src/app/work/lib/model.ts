@@ -54,6 +54,7 @@ export interface ChangeView {
 export type Observation = "known" | "unchecked" | "unavailable" | "partial";
 
 export interface WorkItemView {
+  readonly searchScore?: number;
   readonly type?: "bug" | "change_request";
   readonly pullRequest?: { readonly number: number; readonly url: string } | null;
   readonly closedAt?: string | null;
@@ -142,10 +143,15 @@ function time(at: string | null): number {
 export function sortItems(
   items: readonly WorkItemView[],
   sort: WorkSort,
+  searching = false,
 ): readonly WorkItemView[] {
   const byIdentifier = (a: WorkItemView, b: WorkItemView) =>
     a.identifier.localeCompare(b.identifier, undefined, { numeric: true });
   return [...items].sort((a, b) => {
+    if (searching) {
+      const relevance = (a.searchScore ?? 0) - (b.searchScore ?? 0);
+      if (relevance !== 0) return relevance;
+    }
     switch (sort) {
       case "default": {
         const terminal = Number(a.terminal) - Number(b.terminal);

@@ -1504,8 +1504,13 @@ describe("the filter-first Work surface", () => {
     { q: "3421", linked: false },
     { q: "3421", linked: true },
     { q: "older-label", linked: false },
-  ])("finds older $q matches beyond the initial inventory and open selection (linked=$linked)", async ({ q, linked }) => {
-    const fixture = await pagedWork(linked ? `/work?view=list&tab=all&q=${q}` : "/work");
+    { q: "discussion-only-number", linked: true, serverQuery: "Older title needle" },
+  ] satisfies { q: string; linked: boolean; serverQuery?: string }[])("finds older $q matches beyond the initial inventory and open selection (linked=$linked)", async ({ q, linked, serverQuery }) => {
+    const fixture = await pagedWork(linked ? `/work?view=list&tab=all&q=${q}` : "/work", serverQuery === undefined ? undefined : (fetch) => async (input, init) => {
+      const url = new URL(input, "http://fixture.test");
+      if (url.searchParams.get("q") === q) url.searchParams.set("q", serverQuery);
+      return fetch(url.toString(), init);
+    });
     await settledWork();
     if (!linked) {
       fireEvent.click(screen.getByRole("radio", { name: "List" }));
@@ -1521,7 +1526,7 @@ describe("the filter-first Work surface", () => {
     expect(screen.queryByText("Observed later-page worker")).toBeNull();
     expect(screen.getByTestId("stat-completed").textContent).toBe(q === "alpha#3421" || q === "3421" ? "1 shipped · 24h" : "2 shipped · 24h");
     expect(parseViewState(fixture.router.state.location.searchStr).q).toBe(q);
-    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(q);
+    expect(fixture.requests.findLast((request) => request.url.pathname.endsWith("/proj_alpha/work-items"))?.url.searchParams.get("q")).toBe(serverQuery ?? q);
     if (q === "Older title needle") {
       fireEvent.change(screen.getByRole("searchbox", { name: "Search issues" }), { target: { value: "Older title needle b" } });
       await settledWork();

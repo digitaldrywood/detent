@@ -154,7 +154,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
         terminal: board.lanes.find((lane) => lane.name === state)?.terminal ?? item.terminal,
       };
     });
-    return sortItems(applyFilters(overridden, view), effectiveSort(view));
+    return sortItems(applyFilters(overridden, view), effectiveSort(view), view.q.trim().length > 0);
   }, [board.items, board.lanes, moved, view]);
 
   const stats = React.useMemo(() => boardStats(items, board.lanes), [items, board.lanes]);
