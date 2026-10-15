@@ -139,7 +139,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 			return "", nativeInvalid("implementation review and acceptance validation require separate sessions")
 		}
 	}
-	if !implementationReview && !implementationReviewed {
+	if !implementationReview && !audit && !implementationReviewed {
 		return "", nativeInvalid("acceptance validation requires a passing implementation review before acceptance")
 	}
 	return current.MachineID, nil
