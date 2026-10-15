@@ -51,6 +51,11 @@ func CommandWithArgs(ctx context.Context, command string, shellName string, args
 	return CommandWithArgsForOS(ctx, command, shellName, args, runtime.GOOS)
 }
 
+// WithArgs quotes arguments as data for the configured shell.
+func WithArgs(command string, shellName string, args []string) string {
+	return commandWithArgsForOS(command, shellName, args, runtime.GOOS)
+}
+
 func CommandWithArgsForOS(ctx context.Context, command string, shellName string, args []string, goos string) *exec.Cmd {
 	return CommandForOS(ctx, commandWithArgsForOS(command, shellName, args, goos), shellName, goos)
 }

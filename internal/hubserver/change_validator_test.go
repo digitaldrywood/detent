@@ -121,6 +121,14 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"separate session pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"separate session pass with multiple receipts", multipleReceipts, http.StatusOK, "reviewed", nil},
+		{"recovered source inspection retains failed read history", func(r *tracker.ReviewChange) {
+			multipleReceipts(r)
+			r.Validator.Commands = append(r.Validator.Commands,
+				gate.CommandResult{ReceiptID: "timing_missing_source", Command: "git show " + r.Validator.HeadSHA + ":missing.md", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40), ExitCode: 128},
+				gate.CommandResult{ReceiptID: "timing_source", Command: "git show " + r.Validator.HeadSHA + ":README.md", HeadSHA: r.Validator.HeadSHA, TreeSHA: strings.Repeat("d", 40)},
+			)
+			r.Validator.CriteriaEvidence[0].ReceiptIDs = append(r.Validator.CriteriaEvidence[0].ReceiptIDs, "timing_source")
+		}, http.StatusOK, "reviewed", nil},
 		{"artifact gate receipt without finalization", multipleReceipts, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewOff, gateKind: gate.KindArtifact}},
 		{"human gate receipt without finalization", multipleReceipts, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewOff, gateKind: gate.KindHumanReview}},
 		{"failed selected receipt cannot pass", func(r *tracker.ReviewChange) {

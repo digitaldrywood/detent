@@ -3528,7 +3528,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if !ok {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
 		}
-		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
+		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue, base: req.Diff.BaseSHA, shell: workflow.Config.Hooks.Shell}
 		if req.NativeVersion.Validation != nil {
 			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
 			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
@@ -3538,7 +3538,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
 				return receipt.Command == configured.Run && commands.canReuse(ctx, receipt)
 			}) {
-				if _, err := commands.execute(ctx, configured.Run); err != nil {
+				if _, err := commands.execute(ctx, configured.Run, true); err != nil {
 					return gate.ValidatorResult{}, err
 				}
 			}
@@ -3878,15 +3878,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	if commands != nil {
-		validation.Commands, err = commands.evidence()
-		if err != nil {
+		if err := commands.apply(&validation); err != nil {
 			return gate.ValidatorResult{}, err
-		}
-		for _, command := range validation.Commands {
-			if command.ExitCode != 0 && validation.Verdict == gate.ValidatorVerdictPass {
-				validation.Verdict = gate.ValidatorVerdictWait
-				validation.Summary += "\nHost validation command failed; passing test evidence is required."
-			}
 		}
 	}
 	if req.NativeVersion != nil {
