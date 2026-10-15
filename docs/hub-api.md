@@ -64,6 +64,31 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Release notes
+
+Hosted sessions expose `GET /api/v2/organizations/{organization}/release-notes`
+and `PUT /api/v2/organizations/{organization}/release-notes/seen`. Mutations
+require the bootstrap CSRF token; bearer credentials are refused. The write
+marks the running release seen for the current organization and user, without
+a request body. Preferences persist across devices and only advance, so a
+rollback does not make previously seen releases unread.
+
+The response contains `builds` newest first, `has_unread`, and an optional
+`next_cursor`. Each build includes `version`, `build_time`, `running`, `patch`,
+`unread`, `internal_count`, and `entries` with `category`, `text`, `pr_number`,
+and `pr_url`. `limit` defaults to 20 and accepts 1–100; pass `next_cursor` as
+`cursor` to read older builds. `has_unread` covers the whole feed, including
+builds outside the current page, and is also an additive field on app bootstrap.
+A member without a preference is treated as having seen the running release.
+
+The feed is generated and embedded during the binary build. Serving it makes
+no external requests. Conventional commit types `feat`, `perf`, `fix`, and
+`revert` map to New, Improved, Fixed, and Removed; internal changes are counted
+without publishing their text. Cherry-picks link their original pull request.
+Generic completion subjects use the first non-empty commit-body line. When
+that line has no meaningful title, the entry reads `Maintenance update` with
+the available original pull-request link and derived category.
+
 ## Issue email notifications
 
 Hosted sessions expose `GET` and `PUT` at
