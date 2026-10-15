@@ -1324,6 +1324,9 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			t.Cleanup(func() { http.DefaultClient = originalClient })
 			githubCredentialReads := 0
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, lookupEnv: func(key string) string {
+				if key == "GOFLAGS" || key == "GOMAXPROCS" {
+					return ""
+				}
 				githubCredentialReads++
 				if key == "NATIVE_WORKER_GITHUB_TOKEN" {
 					return "native-worker-token"

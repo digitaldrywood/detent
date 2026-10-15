@@ -582,7 +582,7 @@ func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 				t.Fatal("failed intake granted execution authority")
 			}
 			stored, err := h.admin.Issue(t.Context(), issue.WorkItemID)
-			if err != nil || stored.LinkedSource.Status != "pending" || stored.Body != "" || stored.State != "In Progress" {
+			if err != nil || stored.LinkedSource.Status != "pending" || stored.Body != issue.Body || stored.State != "In Progress" {
 				t.Fatalf("failed intake changed issue: %#v, error = %v", stored, err)
 			}
 			// The released failed claim can be claimed immediately using existing
@@ -593,7 +593,7 @@ func TestNativeSourceIntakeRetryBeforeDispatch(t *testing.T) {
 				return intakeSnapshot(), nil
 			}
 			items, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(items) != 1 || items[0].Description != "Complete implementation context" {
+			if err != nil || len(items) != 1 || items[0].Description != "Complete implementation context"+issueContractTestSections {
 				t.Fatalf("retry = %#v, error = %v", items, err)
 			}
 			claim := h.scheduler.nativeClaims[string(issue.WorkItemID)]
