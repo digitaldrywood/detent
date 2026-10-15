@@ -4,6 +4,7 @@ import { Button } from "../../components/ui/button.tsx";
 import type { FleetRunner, SuggestedLimit } from "../../contracts/account.ts";
 import { SuggestedLimitChip } from "./SuggestedLimit.tsx";
 import { RunnerProblems } from "./RunnerProblems.tsx";
+import { runnerUpdateStatusLabel } from "./format.ts";
 import { cn } from "../../lib/utils.ts";
 import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
 import type { RunnerProject } from "./RunnerDetailSheet.tsx";
@@ -26,20 +27,9 @@ export function HostCard({
     : runner.health === "needs_attention" ? "Needs attention"
     : runner.health === "outside_hours" ? "Outside hours"
     : runner.health;
-  const updateLabels: Record<string, string> = {
-    requested: "Update requested",
-    draining: "Waiting for active work",
-    refused: "Update failed",
-    uncertain: "Update needs attention",
-    applied: "Update installed",
-    restart_requested: "Restart requested",
-    running: "Updated",
-    drifted: "Version changed since update",
-    unavailable: "Update unavailable",
-  };
   const updateNeedsHuman = runner.update?.status === "refused" || runner.update?.status === "uncertain";
   const legacyReinstall = !!runner.claim_refusal_reason && (runner.update?.status === "unavailable" || /^v?0\.117\.(?:[0-9]|[1-4][0-9]|50)$/.test(runner.version ?? ""));
-  const updateStatus = runner.update?.desired ? updateLabels[runner.update.status] ?? "Update pending" : undefined;
+  const updateStatus = runner.update?.desired ? runnerUpdateStatusLabel(runner.update.status) : undefined;
   return (
     <article
       id={`runner-${runner.id}`}

@@ -9,9 +9,9 @@ export const diagnosticsKey = (api: AccountApi, range: DiagnosticsWindow) => ["d
 
 export function readDiagnostics(api: AccountApi, range: DiagnosticsWindow) {
   return async () => {
-    const [report, fleet] = await Promise.allSettled([api.diagnostics(range), api.fleet()]);
+    const [report, fleet, updates] = await Promise.allSettled([api.diagnostics(range), api.fleet(), api.appUpdates()]);
     if (report.status === "rejected") throw report.reason;
-    return { report: report.value, runners: fleet.status === "fulfilled" ? fleet.value.runners : null };
+    return { report: report.value, runners: fleet.status === "fulfilled" ? fleet.value.runners : null, appUpdates: updates.status === "fulfilled" ? updates.value : null };
   };
 }
 

@@ -37,3 +37,19 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
   const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   return format.format(Math.round(delta / size), unit);
 }
+
+const RUNNER_UPDATE_LABELS: Record<string, string> = {
+  requested: "Update requested",
+  draining: "Waiting for active work",
+  refused: "Update failed",
+  uncertain: "Update needs attention",
+  applied: "Update installed",
+  restart_requested: "Restart requested",
+  running: "Updated",
+  drifted: "Version changed since update",
+  unavailable: "Update unavailable",
+};
+
+export function runnerUpdateStatusLabel(status: string): string {
+  return RUNNER_UPDATE_LABELS[status] ?? "Update pending";
+}

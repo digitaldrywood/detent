@@ -6,15 +6,17 @@ import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
 import { makeAccountApi } from "../../src/app/account/api.ts";
 import { makeWorkHttp } from "../../src/app/work/lib/workHttp.ts";
 import { DiagnosticsRoute, DiagnosticsView } from "../../src/app/diagnostics/DiagnosticsPage.tsx";
+import { CapacityPanel } from "../../src/app/fleet/CapacityPanel.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
-import { decodeFleet, type AccountProject } from "../../src/contracts/account.ts";
+import { decodeFleet, type AccountProject, type UpdatesReport } from "../../src/contracts/account.ts";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import { decodeDiagnostics, decodeHealthFindings } from "../../src/contracts/diagnostics.ts";
+import updatesFixture from "../../src/contracts/fixtures/account-updates.json";
 import report from "../../src/contracts/fixtures/diagnostics.json";
 import health from "../../src/contracts/fixtures/health-findings.json";
 
 const mocks = vi.hoisted(() => ({
-  api: { diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
+  api: { appUpdates: vi.fn(), diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
   bootstrap: { actor: { can_manage: false }, organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }] },
   http: { eventsUrl: () => "/events", listHealthFindings: vi.fn() },
 }));
@@ -57,6 +59,7 @@ beforeEach(() => {
   detectorTick = health.last_tick_at;
   mocks.bootstrap.projects = [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }];
   resolved = [];
+  mocks.api.appUpdates.mockRejectedValue({ status: 404 });
   mocks.api.diagnostics.mockResolvedValue(decodeDiagnostics(report));
   mocks.api.fleet.mockResolvedValue({ runners: [] });
   mocks.http.listHealthFindings.mockImplementation(async (_project, _cursor, _signal, options) => ({ items: options?.state === "all" ? [...open, ...resolved] : open, last_tick_at: detectorTick }));
@@ -94,13 +97,74 @@ it("puts shared host totals and every runner before grouped typed findings witho
   expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/integrations?project=prj_main");
   expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
   for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
-  const totals = live.textContent;
+  const totals = within(live).getAllByTestId("runner-capacity").map((row) => row.textContent);
   const slots = [...live.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
   view.unmount();
   render(<RunnersSectionView fleet={{ ...decodeFleet(fleetFixture), runners }} />);
   const settingsLive = screen.getByRole("region", { name: "Capacity right now", hidden: true });
-  expect(settingsLive.textContent).toBe(totals);
+  expect(within(settingsLive).getAllByTestId("runner-capacity").map((row) => row.textContent)).toEqual(totals);
   expect([...settingsLive.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
+});
+
+const appUpdates: UpdatesReport = {
+  ...updatesFixture,
+  current: "v1.2.4-op.r.328.g123456789abc",
+  runners: [
+    { runner_id: runners[1]!.id, display_name: "Example laptop", version: "v1.2.3", behind: true, online: true },
+    { runner_id: runners[0]!.id, display_name: "Example desktop", version: "v1.2.4-op.r.328.g123456789abc", behind: false, online: true },
+    { runner_id: runners[2]!.id, display_name: "Example build host", version: "", behind: false, online: true },
+  ],
+};
+
+it("joins reported versions by runner ID and keeps capacity and slot tones intact", () => {
+  const capacityRunners = runners.map((runner, index) => ({ ...runner, version: "unused fleet version", update: index === 1 ? { status: "requested", desired: { version: appUpdates.current } } : undefined }));
+  const view = render(<CapacityPanel runners={capacityRunners} appUpdates={appUpdates} />);
+  expect(screen.getByText("Runner")).toBeTruthy();
+  expect(screen.getByText("Version")).toBeTruthy();
+  expect(screen.getByText("Slots")).toBeTruthy();
+  const rows = screen.getAllByTestId("runner-capacity");
+  expect(within(rows[0]!).getByText(appUpdates.current)).toBeTruthy();
+  expect(within(rows[0]!).getByText("Same as the Hub")).toBeTruthy();
+  expect(within(rows[1]!).getByText("v1.2.3")).toBeTruthy();
+  expect(within(rows[1]!).getByText("Behind the Hub · Update requested").classList.contains("text-warning-foreground")).toBe(true);
+  expect(within(rows[2]!).getByText("Not reported")).toBeTruthy();
+  expect(screen.getByText("1 runner behind the Hub")).toBeTruthy();
+  expect(screen.queryByText("unused fleet version")).toBeNull();
+  const slots = [...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
+  view.rerender(<CapacityPanel runners={capacityRunners} appUpdates={null} />);
+  expect(screen.queryByText("Version")).toBeNull();
+  expect(screen.queryByText(/behind the Hub/)).toBeNull();
+  expect(screen.queryByText("Not reported")).toBeNull();
+  expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
+  expect([...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
+});
+
+it("keeps missing runner records unreported and pluralizes the Hub warning", () => {
+  render(<CapacityPanel runners={runners} appUpdates={{ ...appUpdates, runners: [], behind_count: 2 }} />);
+  expect(screen.getAllByText("Not reported")).toHaveLength(3);
+  expect(screen.getByText("2 runners behind the Hub")).toBeTruthy();
+  expect(screen.queryByText("Same as the Hub")).toBeNull();
+});
+
+it.each([true, false])("shows the Hub build and Version column only when updates are available (%s)", async (available) => {
+  mocks.api.fleet.mockResolvedValue({ runners });
+  if (available) mocks.api.appUpdates.mockResolvedValue(appUpdates);
+  render(<DiagnosticsRoute />);
+  await screen.findByText(original.summary);
+  expect(mocks.api.appUpdates).toHaveBeenCalled();
+  const hub = screen.queryByText("Hub");
+  if (available) {
+    expect(hub?.parentElement?.textContent).toBe(`Hub${appUpdates.current}`);
+    expect(screen.getByText("Version")).toBeTruthy();
+    expect(screen.getByText(/^Behind the Hub/)).toBeTruthy();
+    mocks.api.appUpdates.mockResolvedValue({ ...appUpdates, current: "v1.2.5" });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh diagnostics" }));
+    await waitFor(() => expect(screen.getByText("Hub").parentElement?.textContent).toBe("Hubv1.2.5"));
+  } else {
+    expect(hub).toBeNull();
+    expect(screen.queryByText("Version")).toBeNull();
+    expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
+  }
 });
 
 it("keeps read-only policy review with its administrator and does not group unrelated checks", () => {
@@ -123,7 +187,7 @@ it.each([null, []])("keeps unavailable capacity distinct from no enrolled runner
 it.each([20, 19])("shows active utilization without attention when %i of 20 slots are working", (used) => {
   render(<DiagnosticsView {...viewProps} runners={runners.map((runner, index) => ({ ...runner, state: "active", update: undefined, problems: [], host_used: runner.host_capacity - (index === 2 ? 20 - used : 0), leases: Array.from({ length: runner.host_capacity - (index === 2 ? 20 - used : 0) }, (_, lease) => ({ ...base.leases[0]!, lease_id: `${runner.id}-${lease}` })) }))} />);
   expect(screen.getByText(`${used} of 20 slots running work`)).toBeTruthy();
-  expect(screen.getByText("No open findings.")).toBeTruthy();
+  expect(screen.getByText(/No open findings\./)).toBeTruthy();
   expect(screen.queryByText("Needs attention", { selector: "[data-slot=badge]" })).toBeNull();
 });
 
