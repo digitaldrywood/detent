@@ -140,6 +140,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		version, err := s.readVersion(ctx, scope, request.Reference, request.CommentID, request.Revision)
 		return hubWorkResult(r, request, version, err)
 	case operatortool.WorkRuns:
+		params.Set("view", "blockers")
 		page, err := s.readAttempts(ctx, scope, request.Reference, params)
 		return hubWorkResult(r, request, page, err)
 	case operatortool.WorkReferences:
