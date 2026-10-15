@@ -106,6 +106,7 @@ func TestReviewBrowserFixture(t *testing.T) {
 		if r.URL.Query().Get("content") == "1" {
 			err = templates.ChangeContent(data).Render(r.Context(), w)
 		} else {
+			data.Loading = true
 			err = templates.ChangePage(data).Render(r.Context(), w)
 		}
 		if err != nil && r.Context().Err() == nil {
