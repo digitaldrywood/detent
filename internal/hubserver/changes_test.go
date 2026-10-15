@@ -454,6 +454,176 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 	}
 }
 
+func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
+	t.Parallel()
+	f := newChangeFixture(t, nil)
+	descriptor := hubTestPolicy()
+	descriptor.Gates.GitHubPullRequest = true
+	descriptor = descriptor.WithID()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
+	rules := f.rules
+	rules.PolicyID = descriptor.ID
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "push-policy"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+	worker := f.worker(t, "push-worker")
+	lease := claimNativeAttempt(t, f.nativeFixture, worker, "push-machine", "push-session", f.issue.WorkItemID, descriptor.ID)
+	start := nativeStartedEvent(lease)
+	path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
+	input := changeTestInput()
+	input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, start.Data.RunID, start.Data.AttemptID
+	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: []byte("retained source")}
+	request.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(request.SourceBundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(request.SourceBundle))}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request)
+	requireNativeStatus(t, response, http.StatusOK)
+	var version tracker.ChangeVersion
+	decodeHubResponse(t, response, &version)
+	checkpoint := start
+	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "ordinary-checkpoint", 2
+	checkpoint.Data.Handoff = nativeTestCheckpoint()
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+	binding := tracker.NativePRPublication{ChangeID: version.ChangeID, VersionID: version.ID, Repository: version.Repository, HeadSHA: version.HeadSHA, PolicyID: version.PolicyID, BaseRef: "main", Branch: "retained", SourceVersion: ref, SourceAttemptID: version.AttemptID}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	foreignProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-push-project")
+	foreignOrganization := newNativeFixture(t, f.service, "", "other-push-organization")
+	foreignProjectItem := foreignProject.create(t, "foreign project work")
+	foreignOrganizationItem := foreignOrganization.create(t, "foreign organization work")
+	foreignItem := f.create(t, "foreign work")
+	baseline := f.detail(t)
+	var snapshot string
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		want bool
+	}{
+		{"confirmed", true}, {"overwritten latest checkpoint", true}, {"compacted history", true},
+		{"pending", false}, {"ambiguous", false}, {"missing checkpoint", false},
+		{"foreign organization", false}, {"foreign project", false}, {"foreign work item", false},
+		{"wrong recorder", false}, {"wrong run", false}, {"wrong lease", false}, {"wrong fence", false},
+		{"wrong policy", false}, {"wrong pinned policy", false}, {"wrong attempt policy", false}, {"unrecorded sequence", false},
+		{"wrong change", false}, {"wrong version", false}, {"wrong reference head", false}, {"wrong checkpoint head", false},
+		{"latest malformed recorder", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			run := checkpoint.Data
+			handoff := *checkpoint.Data.Handoff
+			reference := ref
+			handoff.Change, handoff.HeadSHA = &reference, version.HeadSHA
+			handoff.ExternalEffect, handoff.EffectState, handoff.EffectID = "git_push", "confirmed", binding.EffectID("git_push")
+			run.Handoff = &handoff
+			eventScope, eventItem := scope, f.issue.WorkItemID
+			appendCheckpoint := func() {
+				t.Helper()
+				if err := appendNativeHistory(t.Context(), tx, eventScope, string(eventItem), "run.checkpointed", tracker.CollaborationData{Run: &run}, f.service.config.now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Inject corrupt retained rows below the validated event API to prove
+			// the read boundary rejects mismatched attribution independently.
+			switch test.name {
+			case "pending", "ambiguous":
+				handoff.EffectState = test.name
+			case "missing checkpoint":
+				run.Handoff = nil
+			case "foreign organization":
+				eventScope = nativeScope{organization: foreignOrganization.project.OrganizationID, project: foreignOrganization.project.ID}
+				eventItem = foreignOrganizationItem.WorkItemID
+			case "foreign project":
+				eventScope.project, eventItem = foreignProject.project.ID, foreignProjectItem.WorkItemID
+			case "foreign work item":
+				eventItem = foreignItem.WorkItemID
+			case "latest malformed recorder":
+				appendCheckpoint()
+				fallthrough
+			case "wrong recorder":
+				run.AttemptID = newNativeID("attempt")
+			case "wrong run":
+				run.RunID = newNativeID("run")
+			case "wrong lease":
+				run.LeaseID = "foreign-lease"
+			case "wrong fence":
+				run.FencingToken++
+			case "wrong policy":
+				run.PolicyID = hubTestPolicy().ID
+			case "wrong pinned policy":
+				if _, err := tx.ExecContext(t.Context(), "UPDATE lease_policies SET policy_id=? WHERE lease_id=?", hubTestPolicy().ID, lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong attempt policy":
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.policy_id',?) WHERE id=?", hubTestPolicy().ID, run.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+			case "unrecorded sequence":
+				run.Sequence++
+			case "wrong change":
+				reference.ChangeID = newNativeID("change")
+			case "wrong version":
+				reference.VersionID = newNativeID("version")
+			case "wrong reference head":
+				reference.HeadSHA = strings.Repeat("e", 40)
+			case "wrong checkpoint head":
+				handoff.HeadSHA = strings.Repeat("e", 40)
+			}
+			appendCheckpoint()
+			if test.name == "overwritten latest checkpoint" {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET checkpoint_json=NULL WHERE id=?", run.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.name == "compacted history" {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(f.service.config.now()), lease.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := compactEvents(t.Context(), tx, f.service.config.now().Add(31*24*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			proof, err := resolveVersionPublicationPush(t.Context(), tx, scope, string(f.issue.WorkItemID), version)
+			if err != nil || (proof != nil) != test.want {
+				t.Fatalf("proof=%+v want=%v error=%v", proof, test.want, err)
+			}
+			if proof != nil && (proof.Change != ref || proof.RecordingAttemptID != start.Data.AttemptID || proof.EffectID != binding.EffectID("git_push")) {
+				t.Fatalf("checkpoint attribution changed: %+v", proof)
+			}
+			detail, err := readChangeDetail(t.Context(), tx, scope, string(f.issue.WorkItemID), version.ChangeID, f.service.config.now())
+			if err != nil || !reflect.DeepEqual(detail.Versions, baseline.Versions) || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) || !reflect.DeepEqual(detail.Summary, baseline.Summary) || detail.External != nil {
+				t.Fatalf("push proof mutated source or review evidence: detail=%+v error=%v", detail, err)
+			}
+			var after string
+			if err := tx.QueryRowContext(t.Context(), "SELECT record_json FROM change_versions WHERE id=?", version.ID).Scan(&after); err != nil || after != snapshot {
+				t.Fatalf("immutable source snapshot changed: error=%v", err)
+			}
+		})
+	}
+	rows, err := f.service.database.db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+versionPublicationPushSQL, scope.organization, scope.project, f.issue.WorkItemID, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, f.issue.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var description string
+		if err := rows.Scan(&id, &parent, &unused, &description); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(description + "\n")
+	}
+	if err := rows.Err(); err != nil || !strings.Contains(plan.String(), "USING INDEX collaboration_events_publication_push") || strings.Contains(plan.String(), "SCAN collaboration_events") || strings.Contains(plan.String(), "USE TEMP B-TREE") {
+		t.Fatalf("checkpoint lookup is not indexed and bounded: %s error=%v", plan.String(), err)
+	}
+}
+
 func TestChangeInvalidVersionAndReviewPolicy(t *testing.T) {
 	t.Parallel()
 	f := newChangeFixture(t, nil)
