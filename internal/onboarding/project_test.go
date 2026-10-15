@@ -83,16 +83,22 @@ func TestRunnerFirstObservedReadiness(t *testing.T) {
 	for _, tt := range []struct {
 		name, health, checkout, doctor, provider string
 		enrolled, validated                      bool
+		exclusion                                string
 	}{
-		{"missing checkout", "online", "failed", "pending", "pending", true, false},
-		{"failed doctor", "online", "passed", "failed", "passed", true, false},
-		{"missing sign in", "online", "passed", "passed", "failed", true, false},
-		{"successful checks", "online", "passed", "passed", "passed", true, true},
-		{"doctor warnings", "online", "passed", "warning", "passed", true, true},
-		{"offline evidence", "offline", "passed", "passed", "passed", false, false},
+		{"missing checkout", "online", "failed", "pending", "pending", true, false, ""},
+		{"failed doctor", "online", "passed", "failed", "passed", true, false, ""},
+		{"missing sign in", "online", "passed", "passed", "failed", true, false, ""},
+		{"successful checks", "online", "passed", "passed", "passed", true, true, ""},
+		{"doctor warnings", "online", "passed", "warning", "passed", true, true, ""},
+		{"offline evidence", "offline", "passed", "passed", "passed", false, false, ""},
+		{"project access denied", "online", "passed", "passed", "passed", false, false, "project_access_denied"},
+		{"runner full", "online", "passed", "passed", "passed", true, true, "runner_capacity"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := Project{Progress: Progress{Doctor: true, Provider: true, Artifacts: "local"}, Runners: []runnerauth.Eligibility{{Runner: runnerauth.Runner{Routing: runnerauth.Routing{State: "active"}, Health: tt.health}, LocalChecks: &runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider}}}}
+			if tt.exclusion != "" {
+				p.Runners[0].Exclusions = []runnerauth.Exclusion{{Code: tt.exclusion}}
+			}
 			for range 2 {
 				p.Evaluate()
 				if p.Steps[0].Name != "Execution runner" || (p.Steps[0].State == "ready") != tt.enrolled || (p.Steps[1].State == "ready") != tt.validated || p.Steps[2].Name != "Repository configuration" || p.Ready {
