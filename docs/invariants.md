@@ -405,7 +405,12 @@ Apart from that owned build cache, the runner must not set `GOCACHE`,
 `GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE`, `GOFLAGS`, `npm_config_cache`,
 `PNPM_HOME`, `YARN_CACHE_FOLDER`, `CARGO_HOME`, `CARGO_TARGET_DIR`,
 `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH` or `DOCKER_CONFIG`
-unless explicitly passed through by the operator. Preserve host values and
+unless explicitly passed through by the operator, except for the existing
+shared Go admission budget's `-p`, `-trimpath` and `-toolexec` defaults.
+That same budget applies to agent subprocesses and direct review/landing
+validation, including repositories whose Go modules are nested. Explicit Go
+flags and process limits remain authoritative; a missing root `go.mod` does
+not exempt subprocesses from the configured host budget. Preserve host values and
 explicit overrides. New `workspace.*cache*` keys are rejected; the removed
 `workspace.cache_strategy` is ignored with its compatibility warning.
 

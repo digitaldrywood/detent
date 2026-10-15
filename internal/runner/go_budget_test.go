@@ -25,6 +25,13 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonGo := t.TempDir()
+	monorepo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(monorepo, "apps", "api"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(monorepo, "apps", "api", "go.mod"), []byte("module example.com/api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cacheRoot := t.TempDir()
 	cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(cacheRoot, "runtime.db"))
 	if err != nil {
@@ -41,6 +48,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 		workspace string
 		budget    gobudget.Budget
 		hostFlags string
+		hostProcs string
 		variables map[string]string
 		want      map[string]string
 		managed   bool
@@ -63,10 +71,21 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			},
 		},
 		{
+			name:      "host process limit is preserved",
+			workspace: monorepo,
+			budget:    budget,
+			hostProcs: "1",
+			want: map[string]string{
+				"GOFLAGS": "-p=2 -trimpath " + toolexec, "GOMAXPROCS": "1",
+				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8",
+			},
+		},
+		{
 			name:      "worker GOFLAGS and GOMAXPROCS win",
 			workspace: goModule,
 			budget:    budget,
 			hostFlags: "-mod=mod",
+			hostProcs: "1",
 			variables: map[string]string{"GOFLAGS": "-p=1", "GOMAXPROCS": "3"},
 			want: map[string]string{
 				"GOFLAGS": "-p=1 -trimpath " + toolexec, "GOMAXPROCS": "3",
@@ -74,12 +93,24 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			},
 		},
 		{
-			name:      "non-Go workspace leaves environment",
+			name:      "workspace without root module retains budget for subprocesses",
 			workspace: nonGo,
 			budget:    budget,
 			hostFlags: "-mod=mod",
 			variables: map[string]string{"A": "1"},
-			want:      map[string]string{"A": "1"},
+			want: map[string]string{
+				"A": "1", "GOFLAGS": "-mod=mod -p=2 -trimpath " + toolexec, "GOMAXPROCS": "2",
+				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8",
+			},
+		},
+		{
+			name:      "nested Go module retains budget",
+			workspace: monorepo,
+			budget:    budget,
+			want: map[string]string{
+				"GOFLAGS": "-p=2 -trimpath " + toolexec, "GOMAXPROCS": "2",
+				gobudget.DirEnvironment: dir, gobudget.SlotsEnvironment: "8",
+			},
 		},
 		{
 			name:      "managed cache reaches non-Go workspace",
@@ -105,9 +136,11 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := &Runner{
-				goBudget:  tt.budget,
-				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-				lookupEnv: func(key string) string { return map[string]string{"GOFLAGS": tt.hostFlags}[key] },
+				goBudget: tt.budget,
+				logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+				lookupEnv: func(key string) string {
+					return map[string]string{"GOFLAGS": tt.hostFlags, "GOMAXPROCS": tt.hostProcs}[key]
+				},
 			}
 			input := procgroup.Environment{Variables: tt.variables, PathPrefixes: []string{"/shim"}}
 
