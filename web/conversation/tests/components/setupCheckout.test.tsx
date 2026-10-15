@@ -234,15 +234,20 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
 });
 
 it.each([
-  { ready: false, unrouted: false },
-  { ready: true, unrouted: false },
-  { ready: true, unrouted: true },
-])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted)", async ({ ready, unrouted }) => {
+  { ready: false, unrouted: false, capacityFull: false },
+  { ready: true, unrouted: false, capacityFull: false },
+  { ready: true, unrouted: true, capacityFull: false },
+  { ready: true, unrouted: false, capacityFull: true },
+])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted, capacity full: $capacityFull)", async ({ ready, unrouted, capacityFull }) => {
   const onNavigate = vi.fn();
   const mount = await mountSetup(onNavigate);
   const intervals = vi.spyOn(window, "setInterval");
+  const clearInterval = vi.spyOn(window, "clearInterval");
   let onboardingReads = 0;
   const fetch = globalThis.fetch;
+  const approval = capacityFull
+    ? await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/policy`).then((response) => response.json())
+    : undefined;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
     if (ready && String(input).endsWith("/integration") && response.ok) {
@@ -252,6 +257,16 @@ it.each([
       const onboarding = await response.json();
       onboardingReads += 1;
       onboarding.runners = ready ? onboarding.runners : [];
+      if (capacityFull) {
+        onboarding.policy = approval;
+        onboarding.runners = [{
+          ...onboarding.runners[0],
+          exclusions: [
+            { code: "host_capacity", message: "Shared host capacity is full or paused" },
+            { code: "runner_capacity", message: "Runner capacity is full or paused" },
+          ],
+        }];
+      }
       if (unrouted) {
         onboarding.runners = [{
           runner: { ...onboarding.runners[0].runner, scope: "organization", project_ids: [], display_name: "Shared build runner" },
@@ -288,6 +303,14 @@ it.each([
     expect(screen.getAllByText("Shared build runner").length).toBeGreaterThan(0);
     expect(screen.getByText("Runner is missing required tag gpu")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Route here" }).hasAttribute("disabled")).toBe(false);
+  }
+  if (capacityFull) {
+    expect(screen.getByText("Shared host capacity is full or paused · Runner capacity is full or paused")).toBeTruthy();
+    for (const [index, [, timeout]] of intervals.mock.calls.entries()) {
+      if (timeout === 5_000) {
+        expect(clearInterval).toHaveBeenCalledWith(intervals.mock.results[index]?.value);
+      }
+    }
   }
 
   await user.click(enroll);
