@@ -61,7 +61,11 @@ func (p *Project) Evaluate() {
 	})
 	add("Local validation", validated, "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks.")
 	add("Repository configuration", p.Policy != nil, "The project configuration tells Detent how to work on your code. Review the settings sent by your runner, then click Approve to allow work to start.")
-	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool { return len(r.Exclusions) == 0 })
+	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
+		return !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
+			return e.Code != "host_capacity" && e.Code != "runner_capacity"
+		})
+	})
 	artifactDetail := "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage."
 	add("Artifact history", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
 	p.Ready = matching && !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
