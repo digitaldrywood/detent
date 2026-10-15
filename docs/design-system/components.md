@@ -1511,14 +1511,14 @@ Navigation between settings sections, built on the Sidebar primitive.
 
 ### Settings pages
 
-Detent's settings sections (general, projects, integrations, plan, billing, keybindings, about), each composed from the settings layout.
+Detent's settings sections (general, projects, integrations, plan, billing, keybindings, what's new, about), each composed from the settings layout.
 
 - Kind: Composition; status: available; id: `settings-route`.
-- Import: `import { SettingsRoute, GeneralSettings, ProjectsSettings, IntegrationsSettings, PlanSettings, BillingSettings, KeybindingsSettings, AboutSettings } from "~/app/settings/Settings";`
-- Source: [src/app/settings/Settings.tsx](../../web/conversation/src/app/settings/Settings.tsx).
+- Import: `import { SettingsRoute, GeneralSettings, ProjectsSettings, IntegrationsSettings, PlanSettings, BillingSettings, KeybindingsSettings, WhatsNewSettings, AboutSettings } from "~/app/settings/Settings";`
+- Source: [src/app/settings/Settings.tsx](../../web/conversation/src/app/settings/Settings.tsx), with [src/app/settings/WhatsNewSettings.tsx](../../web/conversation/src/app/settings/WhatsNewSettings.tsx).
 - Variants: none.
 - States: loading, error, empty.
-- Keyboard: As the settings layout.
+- Keyboard: As the settings layout. What's new uses Tab and arrow keys for its category filter; release and pull request links are focusable. Mark-seen retries retain focus while pending and on failure, announce their result, and return focus to the selected filter on success.
 - Avoid: New hosted settings screens outside this route.
 - Related: [Settings layout](#settings-layout).
 

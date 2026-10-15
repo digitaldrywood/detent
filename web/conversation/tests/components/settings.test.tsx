@@ -1453,19 +1453,46 @@ describe("What's new", () => {
     expect(screen.queryByRole("button", { name: "Load older builds" })).toBeNull();
   });
 
-  it("retains unread state when marking seen fails and clears it after a successful retry", async () => {
+  it("preserves keyboard focus and announces mark-seen retries before clearing unread state on success", async () => {
+    const user = userEvent.setup();
     let attempts = 0;
+    let completeSeen: ((value: Response) => void) | undefined;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      if (String(url).endsWith("/seen") && ++attempts === 1) return new Response(JSON.stringify({ code: "unavailable", message: "Please try again." }), { status: 503 });
-      if (String(url).includes("release-notes")) return new Response(JSON.stringify({ ...RELEASES, has_unread: !String(url).endsWith("/seen") }));
+      if (String(url).endsWith("/seen")) {
+        if (++attempts === 1) return new Response(JSON.stringify({ code: "unavailable", message: "Please try again." }), { status: 503 });
+        return await new Promise<Response>((resolve) => { completeSeen = resolve; });
+      }
+      if (String(url).includes("release-notes")) return new Response(JSON.stringify(RELEASES));
       return new Response(JSON.stringify({ members: [], invitations: [] }));
     });
     renderSidebarNav("/settings/whats-new", { ...OWNER_ACCOUNT, bootstrap: { organization: OWNER_ACCOUNT.account.organization }, account: { ...OWNER_ACCOUNT.account, has_unread: true } }, <SettingsRoute section="whats-new" />);
     await screen.findByText("Could not mark release notes as seen");
     expect(screen.getByRole("button", { name: "What's new, new release notes" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await screen.findByRole("button", { name: "What's new" });
+    const retry = screen.getByRole("button", { name: "Try again" });
+    expect(screen.getByRole("status").textContent).toContain("Please try again.");
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Try again" })).toBe(retry);
+    expect(document.activeElement).toBe(retry);
+    expect(retry.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByRole("status").textContent).toContain("Marking release notes as seen");
+    await user.keyboard("{Enter}");
     expect(attempts).toBe(2);
+    await act(async () => { completeSeen?.(new Response(JSON.stringify({ code: "unavailable", message: "Still unavailable." }), { status: 503 })); });
+    await screen.findByText("Still unavailable.");
+    expect(screen.getByRole("status").textContent).toContain("Still unavailable.");
+    expect(document.activeElement).toBe(retry);
+    expect(screen.getByRole("button", { name: "What's new, new release notes" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "New" }));
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(document.activeElement).toBe(retry);
+    await act(async () => { completeSeen?.(new Response(JSON.stringify({ ...RELEASES, has_unread: false }))); });
+    await screen.findByRole("button", { name: "What's new" });
+    expect(screen.getByRole("status").textContent).toContain("Release notes marked as seen");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "New" }));
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(attempts).toBe(3);
   });
 
   it.each([true, false])("uses bootstrap unread state (%s) and finds release notes through search", async (has_unread) => {

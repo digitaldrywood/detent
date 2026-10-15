@@ -18,10 +18,15 @@ export function WhatsNewSettings(): React.ReactElement {
   const account = useAccountBootstrap();
   const feed = useResource(() => api.releaseNotes(), [api]);
   const [filter, setFilter] = React.useState<Filter>("All");
+  const filterRef = React.useRef<HTMLButtonElement>(null);
+  const seenRetryRef = React.useRef<HTMLButtonElement>(null);
+  const [markedSeen, setMarkedSeen] = React.useState(false);
   const opened = React.useRef(false);
   const seen = useMutation(async () => {
     const page = await api.markReleaseNotesSeen();
     if (account !== null) setReleaseNotesUnread(account, page.has_unread);
+    if (document.activeElement === seenRetryRef.current) filterRef.current?.focus();
+    setMarkedSeen(true);
     return page;
   });
   const markSeen = seen.call;
@@ -47,11 +52,12 @@ export function WhatsNewSettings(): React.ReactElement {
           <p className="text-[13px] text-muted-foreground">
             {runningVersion ? `Running ${runningVersion}. ` : ""}Each change links to its pull request.
           </p>
+          <span role="status" className="sr-only">{seen.pending ? "Marking release notes as seen…" : seen.error ? `Could not mark release notes as seen. ${seen.error.message}` : markedSeen ? "Release notes marked as seen." : ""}</span>
           <ToggleGroup aria-label="Filter release notes" value={[filter]} onValueChange={(values) => {
             const next = values[0];
             if (filters.includes(next as Filter)) setFilter(next as Filter);
           }}>
-            {filters.map((value) => <ToggleGroupItem key={value} value={value}>{value}</ToggleGroupItem>)}
+            {filters.map((value) => <ToggleGroupItem key={value} ref={value === filter ? filterRef : undefined} value={value}>{value}</ToggleGroupItem>)}
           </ToggleGroup>
         </div>
         {feed.value === undefined ? (
@@ -82,7 +88,7 @@ export function WhatsNewSettings(): React.ReactElement {
           );
         })}
         {feed.value && filter !== "All" && !feed.value.builds.some((build) => build.entries.some((entry) => entry.category === filter)) ? <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">No {filter.toLowerCase()} changes in these builds.</p> : null}
-        {seen.error ? <SettingsRow title="Could not mark release notes as seen" description={seen.error.message} control={<Button size="sm" variant="outline" disabled={seen.pending} onClick={() => void markSeen()}>Try again</Button>} /> : null}
+        {seen.error || seen.pending ? <SettingsRow title={seen.pending ? "Marking release notes as seen…" : "Could not mark release notes as seen"} description={seen.error?.message} control={<Button ref={seenRetryRef} size="sm" variant="outline" aria-disabled={seen.pending} onClick={() => { if (!seen.pending) void markSeen(); }}>Try again</Button>} /> : null}
         {older.error ? <p role="alert" className="px-3 text-sm text-muted-foreground sm:px-4">{older.error.message}</p> : null}
         {feed.value?.next_cursor ? <Button size="sm" variant="outline" disabled={older.pending} onClick={() => void older.call()}>{older.pending ? "Loading…" : "Load older builds"}</Button> : null}
       </SettingsSearchTarget>

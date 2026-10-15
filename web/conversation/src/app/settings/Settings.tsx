@@ -909,5 +909,5 @@ function SettingsBody({
   }
 }
 
-export { isSettingsSectionId, SETTINGS_SECTION_LABELS, settingsNavItems };
+export { isSettingsSectionId, SETTINGS_SECTION_LABELS, settingsNavItems, WhatsNewSettings };
 export type { SettingsSectionId };
