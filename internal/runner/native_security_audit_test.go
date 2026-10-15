@@ -59,6 +59,11 @@ func (e *nativeSecurityAuditTestExecution) RecordSecurityAudit(_ context.Context
 	if e.submitErr != nil {
 		return e.submitErr
 	}
+	// Match the Hub admission boundary: local runner configuration is not
+	// authority for the native project or work item named by audit evidence.
+	if review.Run.ProjectID != string(e.recovery.Issue.ProjectID) || review.Run.IssueID != string(e.recovery.Issue.WorkItemID) {
+		return errors.New("security audit identity differs from the work item")
+	}
 	e.audit = &review
 	return nil
 }
@@ -84,7 +89,10 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		rejected, publicationFailed bool
 		missingProcess              bool
 		severity                    string
+		localProjectID              string
 	}{
+		{name: "source audit uses claimed native project", localProjectID: "example-local-key"},
+		{name: "landing audit uses claimed native project", landing: true, localProjectID: "example-local-key"},
 		{name: "default native Codex subscription pass", kind: config.AgentBackendCodex, authentication: "chatgpt_subscription"},
 		{name: "default native Codex metered pass", kind: config.AgentBackendCodex, authentication: "api_key"},
 		{name: "native OS identity clock precedes audit clock", processClockOffset: -2 * time.Second},
@@ -152,11 +160,16 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				isolatedBackend = &nativeSecurityAuditIsolationBackend{fakeCodexClient: backend}
 				configuredBackend = isolatedBackend
 			}
-			runner, err := NewRunner(Dependencies{ProjectID: "prj_example", Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": configuredBackend}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
+			localProjectID := test.localProjectID
+			if localProjectID == "" {
+				localProjectID = "prj_example"
+			}
+			runner, err := NewRunner(Dependencies{ProjectID: localProjectID, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{}, AgentBackends: map[string]AgentBackend{"audit": configuredBackend}, SecurityAuditRoot: t.TempDir(), Store: &fakeSessionStore{sessionID: 73}, Now: func() time.Time { return now.Add(time.Second) }})
 			if err != nil {
 				t.Fatal(err)
 			}
 			execution := &nativeSecurityAuditTestExecution{workspace: func() string { return backend.request.Workspace }}
+			execution.recovery.Issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example"}}
 			if test.rejected {
 				execution.submitErr = errors.New("Hub rejected completed audit")
 			}
@@ -236,6 +249,9 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			}
 			if backend.calls != 1 || execution.audit == nil || execution.audit.Run.BaseSHA != "base" || execution.audit.Run.HeadSHA != "head" || execution.audit.Run.ReviewerDigest == "" || execution.audit.SessionID != 73 || execution.audit.Identity.Role != RoleSecurityAudit || execution.audit.Identity.BackendKind != kind || execution.audit.Identity.BackendID != "audit" || execution.audit.Run.AuthenticationMode != authentication || backend.request.Model != "audit-model" {
 				t.Fatalf("audit evidence = %+v; turns=%d", execution.audit, backend.calls)
+			}
+			if execution.audit.Run.ProjectID != string(execution.recovery.Issue.ProjectID) {
+				t.Fatalf("audit project = %q, want claimed project %q", execution.audit.Run.ProjectID, execution.recovery.Issue.ProjectID)
 			}
 		})
 	}
