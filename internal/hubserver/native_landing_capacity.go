@@ -55,6 +55,48 @@ func nativeLandingCapacityKey(ctx context.Context, query nativeQueryer, machine 
 	return landingCapacityKey(machine, project, session), nil
 }
 
+func machineClaimUsage(ctx context.Context, query nativeQueryer, machine tracker.MachineID, runnerID string, now time.Time, joining string) (int, int, error) {
+	rows, err := query.QueryContext(ctx, `SELECT l.expires_at, l.session_id, l.lease_id, COALESCE(lr.runner_id, ''), `+nativeLandingCapacityProject+`
+ FROM leases l JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
+ WHERE l.machine_id=? AND l.released_at IS NULL`, machine)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	hostGroups, runnerGroups := map[string]bool{}, map[string]bool{}
+	for rows.Next() {
+		var expiry, session, lease, runner, project string
+		if err := rows.Scan(&expiry, &session, &lease, &runner, &project); err != nil {
+			return 0, 0, err
+		}
+		end, err := parseTimeValue(expiry)
+		if err != nil {
+			return 0, 0, err
+		}
+		if !end.After(now) {
+			continue
+		}
+		key := landingCapacityKey(machine, project, session)
+		if key == "" {
+			key = lease
+		} else {
+			key += "/" + runner
+		}
+		hostGroups[key] = true
+		if runner == runnerID {
+			runnerGroups[key] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	if joining != "" {
+		delete(hostGroups, joining+"/"+runnerID)
+		delete(runnerGroups, joining+"/"+runnerID)
+	}
+	return len(hostGroups), len(runnerGroups), nil
+}
+
 func nativeLandingClaimCapacity(ctx context.Context, query nativeQueryer, id tracker.WorkItemID, capacity int, now time.Time) (bool, int, error) {
 	var project string
 	if err := query.QueryRowContext(ctx, `SELECT CASE WHEN (`+nativePendingLandingClause+`) THEN i.project_id ELSE `+nativeGitHubLandingCapacityProject+` END FROM issues i `+nativeLandingCapacityJoins+` WHERE i.id=?`, id).Scan(&project); err != nil {

@@ -115,16 +115,24 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	return r, reports, now, nil
 }
 
-func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time) (runnerauth.Runner, error) {
-	return readRunnerWithClock(ctx, db, organization, id, func() time.Time { return now })
+func readRunner(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, now time.Time, joining ...string) (runnerauth.Runner, error) {
+	return readRunnerWithClock(ctx, db, organization, id, func() time.Time { return now }, joining...)
 }
 
-func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time) (runnerauth.Runner, error) {
+func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time, joining ...string) (runnerauth.Runner, error) {
 	r, reports, now, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), clock)
 	if err != nil {
 		return r, err
 	}
 	r.ProjectRanks, err = readRunnerProjectRanks(ctx, db, r.RunnerID, r.OrganizationID)
+	if err != nil {
+		return r, err
+	}
+	group := ""
+	if len(joining) > 0 {
+		group = joining[0]
+	}
+	r.HostUsed, r.Used, err = machineClaimUsage(ctx, db, r.MachineID, id, now, group)
 	if err != nil {
 		return r, err
 	}
@@ -148,9 +156,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope WHERE l.machine_id = ? AND 
 			return r, err
 		}
 		if end.After(now) {
-			r.HostUsed++
 			if runner == id {
-				r.Used++
 				lease.ExpiresAt = end
 				if raw != "" {
 					if err := json.Unmarshal([]byte(raw), &lease.Policy); err != nil {
@@ -570,8 +576,8 @@ JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organ
 	return nil
 }
 
-func validateRunnerDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+func validateRunnerDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time, joining ...string) error {
+	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now, joining...)
 	if err != nil {
 		return err
 	}
