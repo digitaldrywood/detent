@@ -24,7 +24,7 @@ import (
 func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 	t.Parallel()
 
-	shared := []byte("---\ntracker:\n  kind: memory\n  assignee: shared\n  active_states: [Todo, In Progress]\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
+	shared := []byte("---\ntracker:\n  kind: memory\n  assignee: shared\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\npolling:\n  interval_ms: 60000\n  conditional: true\nagent:\n  max_turns: 20\n---\nShared direction.\n")
 	tests := []struct {
 		name             string
 		local            string
@@ -49,7 +49,7 @@ func TestParseWorkflowOverlayPrecedence(t *testing.T) {
 		},
 		{
 			name:             "sequences replace shared values",
-			local:            "---\ntracker:\n  active_states: [Backlog]\n---\n",
+			local:            "---\ntracker:\n  lanes:\n    - name: Backlog\n      role: active\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\n---\n",
 			wantAssignee:     "shared",
 			wantInterval:     60000,
 			wantConditional:  true,
@@ -1039,10 +1039,31 @@ tracker:
     fields:
       - name: Track
         value: multi-instance
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Plan Review
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
   state_map:
     Cancelled: Done
   priority_map:
@@ -1477,8 +1498,23 @@ func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
 	workflow, err := ParseWorkflow([]byte(`---
 tracker:
   kind: memory
-  active_states: [Todo]
-  observed_states: [Backlog, Blocked]
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
 retro:
   enabled: true
   target_state: Backlog
@@ -1507,8 +1543,25 @@ tracker:
   api_key: $GITHUB_TOKEN
   github_status_source: issue_field
   repository: digitaldrywood/detent
-  active_states:
-    - Todo
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
 ---
 Prompt
 `)
@@ -1545,8 +1598,25 @@ tracker:
   github_status_source: label
   repository: digitaldrywood/detent
   status_label_prefix: "detent:"
-  active_states:
-    - Todo
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
 ---
 Prompt
 `)
@@ -3233,14 +3303,17 @@ tracker:
   local_sqlite:
     path: .detent/work-items.db
     project_id: video-production
-  active_states:
-    - Todo
-    - Production
-  observed_states:
-    - Review
-    - Blocked
-  terminal_states:
-    - Done
+  lanes:
+    - name: Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: Production
+      role: active
+    - name: Done
+      role: terminal
 workspace:
   kind: filesystem
   root: .detent/workspaces
@@ -3834,14 +3907,17 @@ Prompt
 			raw: `---
 tracker:
   kind: memory
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
-  observed_states:
-    - Blocked
-  terminal_states:
-    - Done
+  lanes:
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Done
+      role: terminal
 agent:
   instructions_by_state:
     "": blank
@@ -3912,9 +3988,27 @@ Prompt
 			raw: `---
 tracker:
   kind: memory
-  active_states:
-    - Todo
-    - In Progress
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
   dependency_auto_unblock:
     enabled: true
     source_states:
@@ -3933,9 +4027,27 @@ Prompt
 			raw: `---
 tracker:
   kind: memory
-  active_states:
-    - Todo
-    - Rework
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: Rework
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
   blocked_recovery:
     enabled: true
     breaker_cooldown_seconds: -1
@@ -3961,9 +4073,27 @@ Prompt
 			raw: `---
 tracker:
   kind: memory
-  active_states:
-    - Todo
-    - In Progress
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
   blocked_recovery:
     enabled: true
     source_states:

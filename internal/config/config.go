@@ -607,9 +607,6 @@ func (c Config) USDBrakes() USDBrakes {
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
 	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
-	if c.Tracker.legacyStates {
-		warnings = append(warnings, LegacyLaneWarning)
-	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
 	}
@@ -1291,11 +1288,20 @@ func LoadWorkflow(path string) (Workflow, error) {
 }
 
 func ParseWorkflow(raw []byte) (Workflow, error) {
+	return parseWorkflow(raw, rejectLegacyTrackerStates)
+}
+
+func parseWorkflow(raw []byte, validate workflowConfigValidator) (Workflow, error) {
 	root, prompt, err := parseWorkflowDocument(raw)
 	if err != nil {
 		return Workflow{}, err
 	}
-	cfg, err := decodeWorkflowConfig(root)
+	if validate != nil {
+		if err := validate(root); err != nil {
+			return Workflow{}, err
+		}
+	}
+	cfg, err := decodeHistoricalWorkflowConfig(root)
 	if err != nil {
 		return Workflow{}, err
 	}
@@ -1320,6 +1326,10 @@ func LocalWorkflowPath(path string) string {
 }
 
 func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (Workflow, error) {
+	return parseWorkflowOverlay(sharedRaw, localRaw, localPath, rejectLegacyTrackerStates)
+}
+
+func parseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string, validate workflowConfigValidator) (Workflow, error) {
 	sharedRoot, sharedPrompt, err := parseWorkflowDocument(sharedRaw)
 	if err != nil {
 		return Workflow{}, err
@@ -1329,13 +1339,20 @@ func ParseWorkflowOverlay(sharedRaw []byte, localRaw []byte, localPath string) (
 		return Workflow{}, fmt.Errorf("parse local workflow overlay %s: %w", localPath, err)
 	}
 
+	if validate != nil {
+		for _, root := range []*yaml.Node{sharedRoot, localRoot} {
+			if err := validate(root); err != nil {
+				return Workflow{}, err
+			}
+		}
+	}
 	if sharedRoot == nil {
 		sharedRoot = &yaml.Node{Kind: yaml.MappingNode}
 	}
 	if localRoot != nil {
 		mergeWorkflowMappings(sharedRoot, localRoot)
 	}
-	cfg, err := decodeWorkflowConfig(sharedRoot)
+	cfg, err := decodeHistoricalWorkflowConfig(sharedRoot)
 	if err != nil {
 		return Workflow{}, err
 	}
@@ -1386,7 +1403,16 @@ func parseWorkflowDocument(raw []byte) (*yaml.Node, []byte, error) {
 	return root, prompt, nil
 }
 
+type workflowConfigValidator func(*yaml.Node) error
+
 func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
+	if err := rejectLegacyTrackerStates(root); err != nil {
+		return Config{}, err
+	}
+	return decodeHistoricalWorkflowConfig(root)
+}
+
+func decodeHistoricalWorkflowConfig(root *yaml.Node) (Config, error) {
 	cfg := Default()
 	if root != nil {
 		normalizeTrackerIDFields(root)

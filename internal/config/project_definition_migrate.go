@@ -262,7 +262,7 @@ func migrationEffectiveWorkflow(
 	layout ProjectDefinitionLayout,
 ) (Workflow, error) {
 	if layout == ProjectDefinitionLegacy {
-		return parseLegacyProjectDefinition(sources, shared, local)
+		return parseLegacyProjectDefinition(sources, shared, local, nil)
 	}
 	if layout != ProjectDefinitionMixed || !sources.HasConfig || !local.hasFrontmatter || sources.HasLocalConfig {
 		return Workflow{}, mixedProjectDefinitionError(sources, shared, local)
@@ -279,7 +279,7 @@ func migrationEffectiveWorkflow(
 		return Workflow{}, errors.New("parse local legacy workflow config: YAML mapping is missing")
 	}
 	mergeWorkflowMappings(sharedRoot, localRoot)
-	cfg, err := decodeWorkflowConfig(sharedRoot)
+	cfg, err := decodeHistoricalWorkflowConfig(sharedRoot)
 	if err != nil {
 		return Workflow{}, err
 	}

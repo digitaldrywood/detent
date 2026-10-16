@@ -141,7 +141,15 @@ func readProjectDefinitionSources(path string) (ProjectDefinitionSources, error)
 	return sources, nil
 }
 
-func ParseProjectDefinition(sources ProjectDefinitionSources) (workflow Workflow, resultErr error) {
+func ParseProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) {
+	return parseProjectDefinition(sources, rejectLegacyTrackerStates)
+}
+
+func ParseHistoricalProjectDefinition(sources ProjectDefinitionSources) (Workflow, error) {
+	return parseProjectDefinition(sources, nil)
+}
+
+func parseProjectDefinition(sources ProjectDefinitionSources, validate workflowConfigValidator) (workflow Workflow, resultErr error) {
 	defer func() {
 		if resultErr == nil {
 			workflow.Authored = &policy.Authored{Version: PolicyCanonicalizationVersion}
@@ -176,7 +184,7 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (workflow Workflow
 
 	switch definition.Layout {
 	case ProjectDefinitionLegacy:
-		workflow, parseErr := parseLegacyProjectDefinition(sources, shared, local)
+		workflow, parseErr := parseLegacyProjectDefinition(sources, shared, local, validate)
 		if parseErr != nil {
 			return Workflow{}, definitionError(definition, parseErr)
 		}
@@ -188,7 +196,7 @@ func ParseProjectDefinition(sources ProjectDefinitionSources) (workflow Workflow
 		}
 		return workflow, nil
 	case ProjectDefinitionSplit:
-		workflow, parseErr := parseSplitProjectDefinition(sources, shared, local)
+		workflow, parseErr := parseSplitProjectDefinition(sources, shared, local, validate)
 		if parseErr != nil {
 			return Workflow{}, definitionError(definition, parseErr)
 		}
@@ -359,6 +367,7 @@ func parseLegacyProjectDefinition(
 	sources ProjectDefinitionSources,
 	shared projectWorkflowDocument,
 	local projectWorkflowDocument,
+	validate workflowConfigValidator,
 ) (Workflow, error) {
 	for _, source := range []struct {
 		raw  []byte
@@ -376,9 +385,9 @@ func parseLegacyProjectDefinition(
 	}
 	sharedRaw := legacyWorkflowBytes(shared)
 	if !sources.HasLocalWorkflow {
-		return ParseWorkflow(sharedRaw)
+		return parseWorkflow(sharedRaw, validate)
 	}
-	return ParseWorkflowOverlay(sharedRaw, legacyWorkflowBytes(local), sources.LocalWorkflowPath)
+	return parseWorkflowOverlay(sharedRaw, legacyWorkflowBytes(local), sources.LocalWorkflowPath, validate)
 }
 
 func legacyWorkflowBytes(doc projectWorkflowDocument) []byte {
@@ -406,6 +415,7 @@ func parseSplitProjectDefinition(
 	sources ProjectDefinitionSources,
 	shared projectWorkflowDocument,
 	local projectWorkflowDocument,
+	validate workflowConfigValidator,
 ) (Workflow, error) {
 	if shared.hasFrontmatter && len(bytes.TrimSpace(shared.frontmatter)) > 0 {
 		return Workflow{}, errors.New("mixed project definition: Detent configuration exists in both detent.yaml and WORKFLOW.md")
@@ -414,15 +424,25 @@ func parseSplitProjectDefinition(
 	if err != nil {
 		return Workflow{}, err
 	}
+	if validate != nil {
+		if err := validate(sharedRoot); err != nil {
+			return Workflow{}, err
+		}
+	}
 	var localRoot *yaml.Node
 	if sources.HasLocalConfig {
 		localRoot, err = parseSchemaConfig(sources.LocalConfig, sources.LocalConfigPath)
 		if err != nil {
 			return Workflow{}, err
 		}
+		if validate != nil {
+			if err := validate(localRoot); err != nil {
+				return Workflow{}, err
+			}
+		}
 		mergeWorkflowMappings(sharedRoot, localRoot)
 	}
-	cfg, err := decodeWorkflowConfig(sharedRoot)
+	cfg, err := decodeHistoricalWorkflowConfig(sharedRoot)
 	if err != nil {
 		path := sources.ConfigPath
 		if sources.HasLocalConfig {

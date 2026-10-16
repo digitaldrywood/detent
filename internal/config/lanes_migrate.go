@@ -42,7 +42,7 @@ func MigrateTrackerLanes(raw []byte, laneOrder ...string) ([]byte, bool, error) 
 			indent = width
 		}
 	}
-	cfg, err := decodeWorkflowConfig(root)
+	cfg, err := decodeHistoricalWorkflowConfig(root)
 	if err != nil {
 		return nil, false, err
 	}
