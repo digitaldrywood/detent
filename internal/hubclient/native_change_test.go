@@ -487,6 +487,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		landingRestart          bool
 		finalMessage            string
 		disposition             *tracker.NativeDisposition
+		releasedBlocked         bool
 		unreadFinal             bool
 		checkpointHead          string
 		existing                bool
@@ -567,7 +568,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "unfinished clean source retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "in_progress"}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "unfinished dirty source retains normalized disposition without publication", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "in_progress"}},
 		{name: "human action retains normalized disposition", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: Approve the rollout\n```", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}, wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
-		{name: "native272 instance report retains typed evidence", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:worker-loopback", Owner: workpad.BlockerOwnerInstance, Reason: "sandbox refused listener with EPERM", Unverifiable: true}}}},
+		{name: "native272 instance report retains typed evidence", releasedBlocked: true, role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:worker-loopback", Owner: workpad.BlockerOwnerInstance, Reason: "sandbox refused listener with EPERM", Unverifiable: true}}}},
 		{name: "dirty instance report retains typed evidence without publication", role: runner.RoleCode, outcome: "succeeded", worktree: "dirty", finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Ref: "instance:worker-loopback", Owner: workpad.BlockerOwnerInstance, Reason: "sandbox refused listener with EPERM", Unverifiable: true}}}},
 		{name: "native273 malformed predicate retains rejection", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - reason: browser unavailable\n    predicate: instance_available\nhuman_action: null\n```", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
 		{name: "invalid report preserves legacy receipt", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "```detent-status\nschema: 99\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}},
@@ -623,7 +624,14 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			var h *nativeChangeHub
-			if test.land {
+			if test.releasedBlocked {
+				h = newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+					{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
+					{Name: "In Progress", Transitions: []string{"Todo", "In Review", "Done"}},
+					{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+					{Name: "Done", Terminal: true},
+				}, true)
+			} else if test.land {
 				h = newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 					{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Human Review", "Done"}},
 					{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
@@ -634,6 +642,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				h = newNativeChangeHub(t, true)
 			}
 			issue := h.createInProgress(t, "Native change")
+			if test.releasedBlocked {
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Todo"); err != nil {
+					t.Fatal(err)
+				}
+				confirmIssueContract(t, h.admin, issue.ID)
+			}
 			item := tracker.NativeWorkItemID(issue.ID)
 			base, head := base, head
 			var publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
@@ -877,6 +891,11 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 			}
 			candidate := h.claim(t, issue.ID)
+			if test.releasedBlocked {
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Progress"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			publicationOwner = execution.(*nativeExecution)
 			if test.publicationRecovery {
@@ -1683,6 +1702,25 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if state := h.state(t, issue.ID); state != "In Progress" {
 				t.Fatalf("the execution moved the item to %s; only the orchestrator moves lanes", state)
+			}
+			if test.releasedBlocked {
+				if evidence.CurrentLease == nil || evidence.Scheduling.Outcome != "claimed" {
+					t.Fatalf("workflow exclusion hid the current fenced owner: %+v", evidence.Scheduling)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+				if err != nil || evidence.CurrentLease != nil || evidence.Attempt == nil || evidence.Attempt.Current || evidence.Attempt.ClaimReleasedAt == nil || evidence.Attempt.Status != "succeeded" || !reflect.DeepEqual(evidence.Attempt.Disposition, test.disposition) {
+					t.Fatalf("released blocked attempt represented as active: %+v, %v", evidence, err)
+				}
+				if len(h.candidates(t)) != 0 {
+					t.Fatal("nondispatchable In Progress unexpectedly became a candidate")
+				}
+				explanation := explain.FromNativeEvidence(evidence)
+				if evidence.Scheduling.Outcome != "skipped" || !strings.Contains(evidence.Scheduling.Reason, "In Progress is not dispatchable") || explanation.Eligibility.Current == nil || !strings.Contains(explanation.Eligibility.Current.Reason, "In Progress is not dispatchable") {
+					t.Fatalf("released blocked settlement exclusion is not actionable: scheduling=%+v eligibility=%+v", evidence.Scheduling, explanation.Eligibility)
+				}
 			}
 			if test.publicationHistory {
 				newVersion := h.publish(t, item, original.Change.ID, head, original.Change.CurrentVersion, base)

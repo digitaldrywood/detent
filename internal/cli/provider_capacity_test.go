@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +83,7 @@ func TestRunnerProviderReports(t *testing.T) {
 					explicit.Billing = test.billing
 				}
 			}
-			source := runnerProviderReports(t.Context(), cfg, test.account, func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
+			source := runnerProviderReports(t.Context(), func() globalconfig.Config { return cfg }, test.account, func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
 				if test.file {
 					t.Fatal("explicit file invoked the default reporter")
 				}
@@ -128,6 +130,144 @@ func TestRunnerProviderReports(t *testing.T) {
 					}
 				}
 				now = now.Add(30 * time.Second)
+			}
+		})
+	}
+}
+
+func TestRunnerProviderProjectReports(t *testing.T) {
+	t.Parallel()
+	for _, catalog := range []bool{false, true} {
+		t.Run(fmt.Sprintf("catalog=%t", catalog), func(t *testing.T) {
+			t.Parallel()
+			cfg := globalconfig.Config{Client: globalconfig.HubClient{IdentityFile: "enrolled"}}
+			write := func(name, backend, kind, model string) globalconfig.Project {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+				raw := fmt.Sprintf("---\nagents:\n  backends:\n    - id: %s\n      kind: %s\n  routes:\n    - name: default\n      default: true\n      backend: %s\n      model: %s\n---\nWork on the issue.\n", backend, kind, backend, model)
+				if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return globalconfig.Project{ID: name, Workflow: path}
+			}
+			cfg.Projects = []globalconfig.Project{write("code", "codex-code", "codex", "sol"), write("design", "claude-design", "claude_code", "opus")}
+			projects := &runnerProjects{cfg: cfg, runtime: func() globalconfig.Config { return cfg }}
+			now := time.Now().UTC()
+			failedBackend := ""
+			source := runnerProviderReports(t.Context(), projects.providerConfiguration, "runner", func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
+				if backend.ID == failedBackend {
+					return nil, errors.New("catalog unavailable")
+				}
+				if !catalog {
+					return nil, nil
+				}
+				if backend.ID == "codex-code" {
+					if backend.CodexOptions().TurnTimeoutMS == 1000 {
+						return []runner.AgentModel{{ID: "astra", Model: "other-code-model"}}, nil
+					}
+					return []runner.AgentModel{{ID: "sol", Model: "code-model"}}, nil
+				}
+				return []runner.AgentModel{{ID: "opus", Model: "design-model"}}, nil
+			}, nil)
+			check := func(designModel string, codeModels ...string) {
+				t.Helper()
+				reports, err := source()
+				if err != nil || len(reports) != 2 {
+					t.Fatalf("project reports=%+v, err=%v", reports, err)
+				}
+				if err := providercapacity.Validate(reports); err != nil {
+					t.Fatalf("invalid project reports: %v", err)
+				}
+				for i, expected := range []struct{ backend, provider, model string }{{"codex-code", "openai", "sol"}, {"claude-design", "anthropic", designModel}} {
+					report := reports[i]
+					want := []string{expected.model, "provider_default"}
+					if catalog {
+						want = []string{expected.model, []string{"code-model", "design-model"}[i], "provider_default"}
+						if i == 1 && designModel != "opus" {
+							want = []string{"opus", "design-model", designModel, "provider_default"}
+						}
+					}
+					if i == 0 {
+						want = append(want, codeModels...)
+					}
+					slices.Sort(want)
+					got := slices.Clone(report.Models)
+					slices.Sort(got)
+					if report.Backend != expected.backend || report.Provider != expected.provider || report.Availability != "unknown" || report.MaxConcurrent != 0 || !slices.Equal(got, want) {
+						t.Fatalf("project report=%+v, want backend=%s models=%v", report, expected.backend, want)
+					}
+				}
+			}
+			check("opus")
+			for _, failed := range []string{"codex-code", "claude-design"} {
+				failedBackend = failed
+				reports, err := source()
+				healthy := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex-code", Model: "sol"}
+				provider := "openai"
+				if failed == "codex-code" {
+					healthy.Backend, healthy.Model, provider = "claude-design", "opus", "anthropic"
+				}
+				if err != nil || len(reports) != 1 || !reports[0].Supports(healthy) || reports[0].Provider != provider || reports[0].AccountAlias != "runner" || reports[0].Availability != "unknown" {
+					t.Fatalf("healthy report lost after %s catalog failure: reports=%+v err=%v", failed, reports, err)
+				}
+				if reports[0].Backend == failed {
+					t.Fatalf("failed backend remained claimable: %+v", reports)
+				}
+			}
+			failedBackend = ""
+			check("opus")
+			raw, err := os.ReadFile(cfg.Projects[1].Workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg.Projects[1].Workflow, []byte(strings.ReplaceAll(string(raw), "model: opus", "model: sonnet")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			check("sonnet")
+			cfg.Projects = append([]globalconfig.Project(nil), cfg.Projects...)
+			cfg.Projects[1] = write("design", "claude-design", "claude_code", "haiku")
+			check("haiku")
+			projects.cfg.Projects = append(projects.cfg.Projects, write("other-code", "codex-code", "codex", "sol"))
+			check("haiku")
+			other := &projects.cfg.Projects[2]
+			raw, err = os.ReadFile(other.Workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = []byte(strings.ReplaceAll(string(raw), "kind: codex", "kind: codex\n      options:\n        turn_timeout_ms: 1000"))
+			raw = []byte(strings.ReplaceAll(string(raw), "model: sol", "model: astra"))
+			if err := os.WriteFile(other.Workflow, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if catalog {
+				check("haiku", "astra", "other-code-model")
+			} else {
+				check("haiku", "astra")
+			}
+			for _, conflict := range []struct{ name, from, to string }{
+				{"provider", "kind: codex", "kind: codex\n      provider: other-provider"},
+				{"account command", "kind: codex", "kind: codex\n      command: env CODEX_HOME=/example/other codex app-server"},
+				{"model provider", "turn_timeout_ms: 1000", "turn_timeout_ms: 1000\n        model_provider: other-provider"},
+				{"shell", "turn_timeout_ms: 1000", "turn_timeout_ms: 1000\n        shell: other-shell"},
+				{"backend kind", "kind: codex\n      options:\n        turn_timeout_ms: 1000", "kind: claude_code"},
+			} {
+				t.Run(conflict.name, func(t *testing.T) {
+					if err := os.WriteFile(other.Workflow, []byte(strings.ReplaceAll(string(raw), conflict.from, conflict.to)), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					reports, err := source()
+					if err != nil || len(reports) != 1 || reports[0].Backend != "claude-design" || reports[0].Provider != "anthropic" || !slices.Contains(reports[0].Models, "haiku") || reports[0].Availability != "unknown" {
+						t.Fatalf("unrelated report after identity conflict=%+v, err=%v", reports, err)
+					}
+					if err := providercapacity.Validate(reports); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, t.TempDir())
+			reports, err := source()
+			if err != nil || len(reports) != 1 || reports[0].Backend != "codex" || !reflect.DeepEqual(reports[0].Models, []string{"provider_default"}) {
+				t.Fatalf("explicit report after reload=%+v, err=%v", reports, err)
 			}
 		})
 	}

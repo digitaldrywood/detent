@@ -71,16 +71,127 @@ func TestRunnerSlotRecommendation(t *testing.T) {
 			h[0].PSISomeSampleCount = 120
 			return h, r
 		}, &slotRange{14, 14}, 24, 10, 0, 0},
-		{"sustained swap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+		{"unchanged swap idle", "free_hours", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].SwapUsedMaxBytes = capacityGiB
+			h[0].SwapSampleCount = 120
 			h[1].SwapUsedMaxBytes = capacityGiB
-			h[1].Slots = 5
+			h[1].SwapSampleCount = 120
+			h[1].Slots = 0
 			return h, r
-		}, &slotRange{4, 4}, 24, 10, 1, 0},
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"unchanged swap fractional", "free_hours", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = capacityGiB
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			h[1].Slots = 0.5
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"unchanged swap single slot", "free_hours", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = capacityGiB
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			h[1].Slots = 1
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"unchanged swap full slots", "free_hours", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = capacityGiB
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			h[1].Slots = 3
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
 		{"isolated swap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			h[0].SwapUsedMaxBytes = capacityGiB
 			return h, r
 		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"idle warn", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].PressureWarnCount = 1
+			h[0].Slots = 0
+			return h, r
+		}, &slotRange{13, 13}, 24, 10, 1, 0},
+		{"fractional critical", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].PressureCriticalCount = 1
+			h[0].Slots = 0.5
+			return h, r
+		}, &slotRange{13, 13}, 24, 10, 1, 0},
+		{"sampled swap growth", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = 0
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			return h, r
+		}, &slotRange{13, 13}, 24, 10, 1, 0},
+		{"swap growth below threshold", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = capacityGiB
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = 2*capacityGiB - 1
+			h[1].SwapSampleCount = 120
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"declining swap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = 2 * capacityGiB
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"swap growth across a gap", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = 0
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			for i := 1; i < len(h); i++ {
+				h[i].Hour = h[i].Hour.Add(time.Hour)
+			}
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"swap growth without previous sample", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = 0
+			h[0].SwapSampleCount = 0
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 120
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"swap growth without current sample", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = 0
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = capacityGiB
+			h[1].SwapSampleCount = 0
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"swap near counter maximum", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].SwapUsedMaxBytes = ^uint64(0) - 1
+			h[0].SwapSampleCount = 120
+			h[1].SwapUsedMaxBytes = ^uint64(0)
+			h[1].SwapSampleCount = 120
+			return h, r
+		}, &slotRange{14, 14}, 24, 10, 0, 0},
+		{"propagated swap growth", "free_hours", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].OverCapacity = true
+			return h, r
+		}, &slotRange{13, 13}, 24, 10, 1, 0},
+		{"CPU exhaustion", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].LogicalCores = 1
+			return h, r
+		}, &slotRange{0, 0}, 24, 10, 0, 0},
+		{"memory exhaustion", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].MemoryTotalBytes = 2 * capacityGiB
+			h[0].MemoryAvailableMinBytes = capacityGiB
+			return h, r
+		}, &slotRange{0, 0}, 24, 10, 0, 0},
+		{"pressure at one occupied slot", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].Slots = 1
+			h[0].PressureWarnCount = 1
+			return h, r
+		}, &slotRange{0, 0}, 24, 10, 1, 0},
+		{"pressure consumes last resource slot", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
+			h[0].LogicalCores = 2
+			h[0].PressureCriticalCount = 1
+			return h, r
+		}, &slotRange{0, 0}, 24, 10, 1, 0},
 		{"hours insufficient", "dedicated", func(h []recommendationHour, r []recommendationRun) ([]recommendationHour, []recommendationRun) {
 			return h[:23], r
 		}, nil, 23, 10, 0, 0},
@@ -265,13 +376,33 @@ func TestRunnerCapacityRecommendationReadOnly(t *testing.T) {
 	other := sharedRunner(t, r)
 	issue := f.create(t, "capacity evidence")
 	hours, runs := recommendationFixture()
-	for _, hour := range hours {
-		raw, err := json.Marshal(hour.Summary)
+	for _, runnerID := range []string{r.binding.RunnerID, other.binding.RunnerID} {
+		for i, hour := range hours {
+			hour.SwapSampleCount = 120
+			hour.SwapUsedMaxBytes = capacityGiB
+			if runnerID == other.binding.RunnerID && i > 0 {
+				hour.SwapUsedMaxBytes = 2 * capacityGiB
+			}
+			raw, err := json.Marshal(hour.Summary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?, '[]')`, f.project.OrganizationID, runnerID, formatHubTime(hour.Hour), string(raw)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		hostHours, err := readRecommendationHostHours(t.Context(), f.service.database.db, runnerauth.Runner{OrganizationID: f.project.OrganizationID, Binding: runnerauth.Binding{RunnerID: runnerID}}, hours[0].Hour, now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO runner_host_hours(organization_id,runner_id,hour,summary_json,segment_ids_json) VALUES(?,?,?,?, '[]')`, f.project.OrganizationID, r.binding.RunnerID, formatHubTime(hour.Hour), string(raw)); err != nil {
-			t.Fatal(err)
+		if len(hostHours) != 24 {
+			t.Fatalf("runner %s has %d host hours, want 24", runnerID, len(hostHours))
+		}
+		for i, hour := range hostHours {
+			wantPressure := runnerID == other.binding.RunnerID && i == 1
+			if hour.OverCapacity != wantPressure {
+				t.Errorf("runner %s hour %d pressure=%t, want %t", runnerID, i, hour.OverCapacity, wantPressure)
+			}
 		}
 	}
 	for i := range 14 {

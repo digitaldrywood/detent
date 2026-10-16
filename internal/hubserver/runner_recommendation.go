@@ -157,6 +157,10 @@ func hostPressured(hour recommendationHour) bool {
 	return hour.PressureWarnCount > 0 || hour.PressureCriticalCount > 0 || hour.PSISomeSampleCount > 0 && hour.PSISomeAvg10Sum/float64(hour.PSISomeSampleCount) > 10
 }
 
+func swapGrowing(hour, previous recommendationHour) bool {
+	return hour.Hour.Sub(previous.Hour) == time.Hour && hour.SwapSampleCount > 0 && previous.SwapSampleCount > 0 && hour.SwapUsedMaxBytes > previous.SwapUsedMaxBytes && hour.SwapUsedMaxBytes-previous.SwapUsedMaxBytes >= capacityGiB
+}
+
 func suggestLimit(current int, timezone string, hours []recommendationHour, skip []bool) suggestedLimit {
 	out := suggestedLimit{Current: current, Direction: "insufficient_evidence", Reasons: []string{}}
 	location, err := time.LoadLocation(timezone)
@@ -185,7 +189,7 @@ func suggestLimit(current int, timezone string, hours []recommendationHour, skip
 			continue
 		}
 		busyHours++
-		swapGrew := follows(i, i-1) && hour.SwapSampleCount > 0 && hours[i-1].SwapSampleCount > 0 && hour.SwapUsedMaxBytes >= hours[i-1].SwapUsedMaxBytes+capacityGiB
+		swapGrew := i > 0 && swapGrowing(hour, hours[i-1])
 		memory := hostPressured(hour) || swapGrew
 		cpu := cpuHot(hour) && (follows(i, i-1) && cpuHot(hours[i-1]) || follows(i+1, i) && cpuHot(hours[i+1]))
 		slots := int(math.Round(hour.Slots))
@@ -288,11 +292,13 @@ func recommendPeriod(period string, hours []recommendationHour, peaks, cores []f
 	lower, upper, observedUpper := 10000, 10000, 0
 	pressureCap := 10000
 	for i, hour := range hours {
-		swapping := hour.SwapUsedMaxBytes > 0 && i > 0 && hours[i-1].SwapUsedMaxBytes > 0 && hour.Hour.Sub(hours[i-1].Hour) == time.Hour
+		swapping := i > 0 && swapGrowing(hour, hours[i-1])
 		pressure := hour.OverCapacity || swapping || hostPressured(hour)
 		if pressure {
 			out.OverCapacityHours++
-			pressureCap = min(pressureCap, max(0, int(math.Ceil(hour.Slots))-1))
+			if hour.Slots >= 1 {
+				pressureCap = min(pressureCap, max(0, int(math.Ceil(hour.Slots))-1))
+			}
 		}
 		if hour.MemorySampleCount == 0 || hour.CPUSampleCount == 0 || hour.DiskSampleCount == 0 {
 			continue
@@ -401,7 +407,7 @@ func readRecommendationHostHours(ctx context.Context, q nativeQueryer, r runnera
 		return nil, err
 	}
 	for i := 1; i < len(hours); i++ {
-		hours[i].OverCapacity = hours[i].SwapUsedMaxBytes > 0 && hours[i-1].SwapUsedMaxBytes > 0 && hours[i].Hour.Sub(hours[i-1].Hour) == time.Hour
+		hours[i].OverCapacity = swapGrowing(hours[i], hours[i-1])
 	}
 	return hours, nil
 }

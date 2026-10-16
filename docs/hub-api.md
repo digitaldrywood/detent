@@ -777,12 +777,15 @@ estimate. GPU is not reserved.
 The range reflects the least and most headroom observed after estimating
 background memory and CPU from host metrics and lease-derived slot hours,
 within the resource ceilings. Any warn/critical macOS pressure, hourly mean
-Linux PSI memory `some` avg10 above 10%, or adjacent swap-bearing host hours
-lowers both bounds by at least one and caps them below the affected hour's
-observed slot usage. Available pressure evidence counts even when other resource
-samples are missing; those hours do not add resource coverage. Swap maxima
-cannot distinguish active swapping from
-retained swap allocation; PSI summaries cannot identify individual sample spikes.
+Linux PSI memory `some` avg10 above 10%, or swap maximum growth of at least
+1 GiB between consecutive host hours with swap samples lowers both bounds by
+at least one. A pressure hour with at least one lease-derived slot-hour also
+caps both bounds at ceil(slot-hours) minus one. Idle or fractional occupancy
+below one slot-hour does not impose that cap. Unchanged or declining swap
+allocation alone does not count as pressure or add to `over_capacity_hours`.
+Available pressure evidence counts even when other resource samples are missing;
+those hours do not add resource coverage. Swap maxima show sampled allocation
+growth, not swap activity; PSI summaries cannot identify individual sample spikes.
 The evidence includes coverage, run counts, p90 memory and CPU, reserves,
 measured disk bytes per slot, slot hours and over-capacity hour counts.
 The result remains advice based on retained telemetry, including a zero range

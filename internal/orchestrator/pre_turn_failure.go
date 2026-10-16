@@ -37,10 +37,21 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 		return false
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCapacity,
-		workAttemptErrorWorkspace, event.Err.Error(), "waiting", telemetry.WorkspaceDiskExhaustionMessage)
-	releaseBackendCapacityProbe(state, running)
-	o.restorePreTurnIssue(ctx, state, running, event.CompletedAt)
+	complete := func() {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCapacity,
+			workAttemptErrorWorkspace, event.Err.Error(), "waiting", telemetry.WorkspaceDiskExhaustionMessage)
+		releaseBackendCapacityProbe(state, running)
+	}
+	if !o.nativeWorkflow() {
+		complete()
+	}
+	if _, _, err := o.restorePreTurnIssue(ctx, state, running, event.CompletedAt); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
+	if o.nativeWorkflow() {
+		complete()
+	}
 	attempt := nextAttempt(running.Attempt)
 	o.scheduleRetry(state, running.Issue, attempt, event.CompletedAt, telemetry.WorkspaceDiskExhaustionMessage, false, running.WorkerHost)
 	o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, o.retryDelay(attempt, false))
@@ -105,22 +116,37 @@ func (o *Orchestrator) handlePreTurnFailure(ctx context.Context, state *State, e
 	if capacityErr, ok := backendcapacity.As(event.Err); ok {
 		metadata = mergeWorkAttemptMetadata(metadata, startupFailureMetadata(capacityErr.Details))
 	}
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, event.Err.Error(), "failed", "instance workspace or startup failure", metadata)
-	releaseBackendCapacityProbe(state, running)
-	o.retryInstanceFailure(ctx, state, running, event.CompletedAt, event.Err.Error())
+	complete := func() {
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminal, class, event.Err.Error(), "failed", "instance workspace or startup failure", metadata)
+		releaseBackendCapacityProbe(state, running)
+	}
+	if !o.nativeWorkflow() {
+		complete()
+	}
+	if err := o.retryInstanceFailure(ctx, state, running, event.CompletedAt, event.Err.Error()); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
+	if o.nativeWorkflow() {
+		complete()
+	}
 	return true
 }
 
 // retryInstanceFailure attributes a failure to the instance: the issue keeps
 // its dispatch lane and retries with backoff, and neither the issue nor the
 // project is parked.
-func (o *Orchestrator) retryInstanceFailure(ctx context.Context, state *State, running Running, at time.Time, message string) {
-	issue, _ := o.restorePreTurnIssue(ctx, state, running, at)
+func (o *Orchestrator) retryInstanceFailure(ctx context.Context, state *State, running Running, at time.Time, message string) error {
+	issue, _, err := o.restorePreTurnIssue(ctx, state, running, at)
+	if err != nil {
+		return err
+	}
 	if !stateIn(issue.State, o.cfg.ActiveStates) {
-		return
+		return nil
 	}
 	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), at, message, false, running.WorkerHost)
 	recordStateEvent(state, telemetry.ActivityEvent{At: at, Event: "instance_failure_retry", Message: "instance failure for " + issueLabel(issue) + "; retrying without parking the issue or pausing the project"})
+	return nil
 }
 
 func preTurnAttempt(attempt telemetry.WorkAttempt) bool {
@@ -141,7 +167,7 @@ func preTurnAttempt(attempt telemetry.WorkAttempt) bool {
 	}
 }
 
-func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, running Running, at time.Time) (connector.Issue, bool) {
+func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, running Running, at time.Time) (connector.Issue, bool, error) {
 	issue := running.Issue
 	changed := false
 	target := strings.TrimSpace(running.CompletionLane)
@@ -151,18 +177,39 @@ func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, ru
 	if target == "" && normalizeState(issue.State) == normalizeState(planImplementationState) && !terminalAttemptHasWorkProduct(issue, running.WorkProductPushed) {
 		target = terminalAttemptTodoState(o.cfg.ActiveStates)
 	}
-	if o.connector != nil && target != "" && normalizeState(issue.State) != normalizeState(target) && (running.DispatchTargetState == "" || normalizeState(issue.State) == normalizeState(running.DispatchTargetState)) {
-		if err := o.updateIssueState(ctx, state, issue, target, at, terminalAttemptWithoutWorkProductReason); err != nil {
-			if o.logger != nil {
-				o.logger.Warn("pre-turn failure lane restoration failed", "issue_id", issue.ID, "error", err)
-			}
-		} else {
-			issue.State = target
-			changed = true
+	reader, native := o.connector.(connector.WorkflowStateReader)
+	if native && running.CompletionLane == "" && (running.DispatchTargetState == "" || normalizeState(issue.State) == normalizeState(running.DispatchTargetState)) {
+		states, err := reader.WorkflowStates(ctx)
+		if err != nil {
+			return issue, false, errors.Join(errors.New("read native workflow states"), err)
 		}
+		if !dispatchableState(states, target) {
+			target = terminalAttemptTodoState(o.cfg.ActiveStates)
+			if running.DiffStats.RecoveryStateAvailable {
+				target = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+			}
+		}
+		var allowed bool
+		target, allowed = nativeRetryLane(states, issue.State, target)
+		if !allowed {
+			return issue, false, errors.New("native workflow allows no instance retry from " + issue.State)
+		}
+	}
+	if o.connector != nil && target != "" && normalizeState(issue.State) != normalizeState(target) && (running.DispatchTargetState == "" || normalizeState(issue.State) == normalizeState(running.DispatchTargetState)) {
+		var err error
+		if native {
+			err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, at, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{})
+		} else {
+			err = o.updateIssueState(ctx, state, issue, target, at, terminalAttemptWithoutWorkProductReason)
+		}
+		if err != nil {
+			return issue, false, err
+		}
+		issue.State = target
+		changed = true
 	}
 	o.releaseTerminalAttemptClaim(ctx, state, issue, at)
 	delete(state.Retry, issue.ID)
 	delete(state.PriorAttempts, issue.ID)
-	return issue, changed
+	return issue, changed, nil
 }

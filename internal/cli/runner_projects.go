@@ -55,6 +55,13 @@ func (p *runnerProjects) prepare(ctx context.Context, name string) error {
 	return p.prepareConfiguration(ctx, cfg, name)
 }
 
+func (p *runnerProjects) providerConfiguration() globalconfig.Config {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.syncRuntimeLocked()
+	return p.cfg
+}
+
 func (p *runnerProjects) reportedProblems() []runnerauth.Problem {
 	p.mu.Lock()
 	defer p.mu.Unlock()
