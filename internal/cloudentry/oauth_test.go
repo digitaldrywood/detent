@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -17,6 +18,38 @@ import (
 
 const testOAuthVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 const testOAuthChallenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
+	f := newEntryFixture(t)
+	b := newBrowser(t, f.service.Handler())
+	for _, name := range []string{"First assistant", "Second assistant"} {
+		client := registerTestOAuth(t, b, name, "none")
+		for range 3 {
+			response := b.do(http.MethodGet, "/oauth/authorize?"+testOAuthQuery(client).Encode(), nil, nil)
+			if response.StatusCode != http.StatusSeeOther {
+				t.Fatalf("authorize=%+v", response)
+			}
+		}
+	}
+	large := oauthClient{Name: "Oversized assistant", RedirectURIs: []string{"https://assistant.example.test/" + strings.Repeat("x", 1900)}}
+	raw, err := json.Marshal(large)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := attachmentRequest(t, b, http.MethodPost, "/oauth/register", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json"})
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("oversized registration=%d", refused.Code)
+	}
+	for _, table := range []string{"oauth_clients", "oauth_requests", "oauth_grants", "oauth_refresh_tokens"} {
+		var count int
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Errorf("anonymous requests persisted %d rows in %s", count, table)
+		}
+	}
+}
 
 func registerTestOAuth(t *testing.T, b *browser, name, method string) oauthClient {
 	t.Helper()
@@ -109,10 +142,6 @@ func TestOAuthDiscoveryAndRegistration(t *testing.T) {
 		if (client.Secret == "") != (method == "none") {
 			t.Fatal("unexpected client secret")
 		}
-		var stored string
-		if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT secret_hash FROM oauth_clients WHERE id=?", client.ID).Scan(&stored); err != nil || stored == client.Secret {
-			t.Fatal("secret not hashed")
-		}
 	}
 	for _, uri := range []string{"http://assistant.example.test/callback", "https://assistant.example.test/callback#fragment", "https://user:pass@assistant.example.test/callback", "javascript:alert(1)"} {
 		raw, _ := json.Marshal(oauthClient{RedirectURIs: []string{uri}})
@@ -149,6 +178,10 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 	}
 	for _, c := range []oauthClient{client, other} {
 		form := approveTestOAuth(t, owner, c, "org_beta")
+		var stored string
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT secret_hash FROM oauth_clients WHERE id=?", c.ID).Scan(&stored); err != nil || stored == c.Secret {
+			t.Fatal("consented client secret not hashed")
+		}
 		token := exchangeTestOAuth(t, owner, form)
 		if response := owner.do(http.MethodPost, "/oauth/token", form, nil); response.StatusCode != 400 {
 			t.Fatal("code replay succeeded")
@@ -202,12 +235,45 @@ func TestOAuthConsentBinding(t *testing.T) {
 	b := newBrowser(t, f.service.Handler())
 	client := registerTestOAuth(t, b, "Assistant", "none")
 	q := testOAuthQuery(client)
-	for _, test := range []struct{ key, value string }{{"redirect_uri", "https://attacker.example.test/callback"}, {"code_challenge_method", "plain"}, {"code_challenge", "invalid"}, {"resource", "https://other.example.test/mcp"}, {"response_type", "token"}, {"scope", "admin"}} {
+	for _, test := range []struct{ key, value string }{{"client_id", client.ID + "x"}, {"redirect_uri", "https://attacker.example.test/callback"}, {"code_challenge_method", "plain"}, {"code_challenge", "invalid"}, {"resource", "https://other.example.test/mcp"}, {"response_type", "token"}, {"scope", "admin"}} {
 		t.Run(test.key, func(t *testing.T) {
 			values, _ := url.ParseQuery(q.Encode())
 			values.Set(test.key, test.value)
 			if p := b.do(http.MethodGet, "/oauth/authorize?"+values.Encode(), nil, nil); p.StatusCode != 400 || p.Header.Get("Location") != "" {
 				t.Fatalf("invalid authorize=%+v", p)
+			}
+		})
+	}
+	for _, scenario := range []string{"tampered cookie", "expired request", "oversized cookie", "wrong request"} {
+		t.Run(scenario, func(t *testing.T) {
+			browser := newBrowser(t, f.service.Handler())
+			start := browser.do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
+			path := start.Header.Get("Location")
+			base, err := url.Parse(browser.origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "tampered cookie", "oversized cookie":
+				for _, cookie := range browser.jar.Cookies(base) {
+					if cookie.Name != f.service.cookieName("oauth") {
+						continue
+					}
+					cookie.Value += "x"
+					if scenario == "oversized cookie" {
+						cookie.Value = strings.Repeat("x", 3801)
+					}
+					browser.jar.SetCookies(base, []*http.Cookie{cookie})
+				}
+			case "expired request":
+				now := f.service.config.now
+				f.service.config.now = func() time.Time { return now().Add(11 * time.Minute) }
+				defer func() { f.service.config.now = now }()
+			case "wrong request":
+				path += "x"
+			}
+			if response := browser.do(http.MethodGet, path, nil, nil); response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("invalid pending request=%+v", response)
 			}
 		})
 	}
@@ -247,6 +313,25 @@ func TestOAuthConsentBinding(t *testing.T) {
 	target, err := url.Parse(denied.Header.Get("Location"))
 	if err != nil || denied.StatusCode != 303 || target.Query().Get("error") != "access_denied" || target.Query().Get("state") != "original-state" || target.Query().Get("iss") != testPublicURL {
 		t.Fatalf("deny=%+v", denied)
+	}
+	start = b.do(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil, nil)
+	path = start.Header.Get("Location")
+	consent = b.do(http.MethodGet, path, nil, nil)
+	form = url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {"org_alpha"}, "decision": {"allow"}}
+	if response := b.do(http.MethodPost, path, form, nil); response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("consent=%+v", response)
+	}
+	base, err := url.Parse(b.origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.jar.SetCookies(base, (&http.Response{Header: start.Header}).Cookies())
+	if response := b.do(http.MethodPost, path, form, nil); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("consent replay=%+v", response)
+	}
+	var grants int
+	if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM oauth_grants").Scan(&grants); err != nil || grants != 1 {
+		t.Fatalf("consent replay left grants=%d err=%v", grants, err)
 	}
 }
 
