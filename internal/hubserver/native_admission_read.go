@@ -72,7 +72,7 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return err
 	}
-	claimable, contractReason, err := nativeIssueContractClaimable(ctx, q, scope, id)
+	contract, err := readNativeIssueContractEvaluation(ctx, q, scope, id)
 	if err != nil {
 		var mismatch *nativeError
 		if errors.As(err, &mismatch) && mismatch.Code == "policy_mismatch" {
@@ -83,9 +83,13 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 		return err
 	}
-	if !claimable && len(candidate.IDs) > 0 && nonExecutableReason == "" {
+	if !contract.Allowed && nonExecutableReason == "" {
 		evidence.Scheduling.Outcome = "skipped"
-		evidence.Scheduling.Reason = contractReason
+		evidence.Scheduling.Reason = contract.Reason
+	}
+	landingReady, landingCapacity, err := nativeLandingClaimCapacity(ctx, q, id, nativeLandingCapacityUnknown, now)
+	if err != nil {
+		return err
 	}
 	var supplied *tracker.NativeAdmissionContext
 	if len(contexts) > 0 {
@@ -108,8 +112,14 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		switch {
 		case nonExecutableReason != "":
 			refuse("inactive_state", nonExecutableReason)
+		case !contract.Allowed:
+			refuse(contract.ReasonCode, contract.Reason)
 		case len(candidate.IDs) == 0:
 			refuse("no_claimable_work", "The existing native claim candidate query does not select this item")
+			a.AnsweredExclusion = candidate.AnsweredExclusion
+			if a.AnsweredExclusion != nil {
+				a.Reason += "; current answered exclusion: " + a.AnsweredExclusion.Kind
+			}
 			a.UnresolvedDependencies = candidate.UnresolvedDependencies
 			a.Unavailable = append(a.Unavailable, candidate.Unavailable...)
 			if evidence.NativeCandidateExclusion != nil {
@@ -122,11 +132,14 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			if len(a.UnresolvedDependencies) > 0 {
 				a.Reason += "; observed required dependencies remain unfinished"
 			}
-		case !claimable:
-			refuse("no_claimable_work", contractReason)
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
+		case !landingReady && landingCapacity != nativeLandingCapacityUnknown:
+			refuse("no_claimable_work", "Project landing capacity is full")
 		default:
+			if !landingReady {
+				a.Unavailable = append(a.Unavailable, "project_landing_capacity")
+			}
 			candidateScope := scope
 			candidateScope.credential.Runner.Binding = r.Binding
 			allowed, reason, err := placementClaimAllowed(ctx, q, candidateScope, r.MachineID, id, now, nil)
@@ -178,14 +191,14 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 						}
 						refuse("no_claimable_work", "Runner does not report support for its configured isolation tier")
 					} else {
-						a.Reason = "Current registered-runner claim selectors, approved routing and capacity permit this native candidate"
+						a.Reason = "Current registered-runner claim selectors and approved routing permit this native candidate"
 						if len(r.ProviderCapacity) > 0 {
 							a.Unavailable = append(a.Unavailable, "provider_candidate_requirement")
 						}
 						if len(a.Unavailable) == 0 {
 							a.Outcome = "ready"
 						} else {
-							a.Reason += "; local provider selection remains unavailable"
+							a.Reason += "; additional admission predicates remain unavailable"
 						}
 					}
 				}

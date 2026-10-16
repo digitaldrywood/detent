@@ -93,5 +93,5 @@ func (s *Service) creationDestination(organization Organization) string {
 	if organization.CheckoutPrice != "" {
 		return "/organizations/" + organization.ID + "/organization/billing?checkout_price=" + url.QueryEscape(organization.CheckoutPrice)
 	}
-	return s.organizationHome(organization.ID)
+	return s.organizationHome(organization)
 }

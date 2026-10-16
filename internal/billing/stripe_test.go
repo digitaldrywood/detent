@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 type stripeFixture struct {
 	responses map[string]string
 	status    int
+	errorBody string
 	mu        sync.Mutex
 	posts     []url.Values
 	keys      []string
@@ -76,8 +78,13 @@ func newStripeFixture(t *testing.T) (*stripeFixture, Provider) {
 			t.Error("disputes were not scoped to the invoice charge")
 		}
 		if f.status != 0 {
+			w.Header().Set("Request-Id", "req_fixture")
 			w.WriteHeader(f.status)
-			fmt.Fprint(w, "private-provider-response-sentinel")
+			body := f.errorBody
+			if body == "" {
+				body = "private-provider-response-sentinel"
+			}
+			fmt.Fprint(w, body)
 			return
 		}
 		body, ok := f.responses[r.URL.Path]
@@ -246,7 +253,9 @@ func TestStripeFailures(t *testing.T) {
 			t.Parallel()
 			f, provider := newStripeFixture(t)
 			f.status = status
-			if _, err := provider.Reconcile(t.Context(), fixtureBinding()); err == nil || strings.Contains(err.Error(), "sentinel") {
+			_, err := provider.Reconcile(t.Context(), fixtureBinding())
+			var failure *StripeError
+			if !errors.As(err, &failure) || failure.StatusCode != status || failure.RequestID != "req_fixture" || strings.Contains(err.Error(), "sentinel") {
 				t.Fatalf("provider error = %v", err)
 			}
 		})
@@ -262,8 +271,43 @@ func TestStripeFailures(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := provider.Reconcile(ctx, fixtureBinding()); err == nil {
-		t.Fatal("canceled reconciliation succeeded")
+	if _, err := provider.Reconcile(ctx, fixtureBinding()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled reconciliation lost its cause: %v", err)
+	}
+}
+
+func TestStripeRequestErrors(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		method, path string
+		status       int
+	}{
+		{http.MethodPost, "checkout/sessions", http.StatusBadRequest},
+		{http.MethodPost, "checkout/sessions", http.StatusServiceUnavailable},
+		{http.MethodGet, "prices/price_test", http.StatusBadRequest},
+		{http.MethodGet, "account", http.StatusUnauthorized},
+		{http.MethodPost, "customers", http.StatusBadRequest},
+		{http.MethodPost, "billing_portal/sessions", http.StatusBadRequest},
+		{http.MethodPost, "payment_intents", http.StatusPaymentRequired},
+	} {
+		t.Run(test.path+strconv.Itoa(test.status), func(t *testing.T) {
+			t.Parallel()
+			f, provider := newStripeFixture(t)
+			f.status = test.status
+			f.errorBody = `{"error":{"type":"invalid_request_error","code":"parameter_missing","param":"tax_code","message":"the product tax code is missing","customer":"customer-content-sentinel"},"private":"secret-sentinel"}`
+			var result struct{}
+			err := provider.(*stripeProvider).request(t.Context(), test.method, test.path, "fixture_key", nil, &result)
+			var failure *StripeError
+			if !errors.As(err, &failure) || failure.StatusCode != test.status || failure.Method != test.method || failure.Path != test.path || failure.Type != "invalid_request_error" || failure.Code != "parameter_missing" || failure.Param != "tax_code" || failure.Message != "the product tax code is missing" || failure.RequestID != "req_fixture" {
+				t.Fatalf("stripe error details = %+v, %v", failure, err)
+			}
+			if errors.Is(err, ErrPaymentFailed) != (test.path == "payment_intents") {
+				t.Fatalf("payment failure classification = %v", err)
+			}
+			if strings.Contains(err.Error(), "sentinel") || strings.Contains(err.Error(), "sk_test_fixture") {
+				t.Fatalf("stripe error exposed private fields: %v", err)
+			}
+		})
 	}
 }
 

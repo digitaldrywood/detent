@@ -117,7 +117,7 @@ func (d *database) commitHostedBilling(ctx context.Context, state hostedBillingS
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE hosted_billing_accounts SET state_json=?,reconciled_at=? WHERE organization_id=?", string(raw), formatHubTime(now), d.hostedOrganization); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE hosted_billing_accounts SET state_json=?,reconciled_at=?,checkout_json=CASE WHEN ? != '' THEN '{}' ELSE checkout_json END WHERE organization_id=?", string(raw), formatHubTime(now), state.Snapshot.SubscriptionID, d.hostedOrganization); err != nil {
 		return err
 	}
 	var plan, version, expiry any

@@ -194,7 +194,7 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 							f.grant(t, f.user, true, false)
 							operatorSQL(t, f.hostedSecurityFixture, "UPDATE api_tokens SET revoked_at=? WHERE id=?", formatHubTime(time.Now()), credential.ID)
 						}
-						arguments, err := json.Marshal(map[string]any{"project_id": string(f.project), "request_id": "catalog-parity-" + strconv.Itoa(index), "title": "Project member write", "description": "Current authority fixture", "state": "Todo"})
+						arguments, err := json.Marshal(map[string]any{"project_id": string(f.project), "request_id": "catalog-parity-" + strconv.Itoa(index), "title": "Project member write", "description": "Current authority fixture" + issueContractTestSections, "state": "Todo"})
 						if err != nil {
 							t.Fatal(err)
 						}

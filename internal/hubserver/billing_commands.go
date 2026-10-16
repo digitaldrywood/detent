@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -21,6 +22,15 @@ type billingAuthorization func(context.Context) (apiCredential, error)
 
 func billingFailure(status int, message string) error {
 	return &nativeError{Code: "billing_unavailable", Message: message, status: status}
+}
+
+func checkoutProviderFailure(message string, err error) error {
+	status := http.StatusServiceUnavailable
+	var failure *billing.StripeError
+	if errors.As(err, &failure) && failure.StatusCode >= 400 && failure.StatusCode < 500 {
+		status, message = http.StatusBadGateway, "Checkout could not be started; contact support"
+	}
+	return errors.Join(billingFailure(status, message), err)
 }
 
 // checkoutBilling is the dashboard purchase command. Pending receipts resume
@@ -70,10 +80,10 @@ func (s *Service) checkoutBilling(ctx context.Context, authorize billingAuthoriz
 		return billingDestination{}, billingFailure(http.StatusConflict, "Billing needs operator repair before a purchase")
 	}
 	if err != nil {
-		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Billing is temporarily unavailable; retry the same purchase")
+		return billingDestination{}, checkoutProviderFailure("Billing is temporarily unavailable; retry the same purchase", fmt.Errorf("ensure billing customer: %w", err))
 	}
 	if err := w.reconcile(ctx); err != nil {
-		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Billing is temporarily unavailable")
+		return billingDestination{}, checkoutProviderFailure("Billing is temporarily unavailable", fmt.Errorf("reconcile billing: %w", err))
 	}
 	state, err := s.database.readHostedBilling(ctx)
 	if err != nil {
@@ -89,7 +99,11 @@ func (s *Service) checkoutBilling(ctx context.Context, authorize billingAuthoriz
 	if checkout.Session.URL == "" {
 		session, err := cfg.Provider.Checkout(ctx, billing.CheckoutRequest{Binding: binding, PriceID: checkout.PriceID, IdempotencyKey: checkout.Key, ExpiresAt: checkout.ExpiresAt, ReturnURL: s.hostedBillingReturn(true)})
 		if err != nil {
-			return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Checkout is temporarily unavailable; retry the same purchase")
+			var stripeErr *billing.StripeError
+			if errors.As(err, &stripeErr) && stripeErr.StatusCode >= 400 && stripeErr.StatusCode < 500 && stripeErr.Method == http.MethodPost && stripeErr.Path == "checkout/sessions" {
+				err = errors.Join(err, s.saveHostedCheckout(ctx, credential.Hosted.Subject, hostedCheckout{}, "checkout_rejected"))
+			}
+			return billingDestination{}, checkoutProviderFailure("Checkout is temporarily unavailable; retry the same purchase", fmt.Errorf("create billing checkout: %w", err))
 		}
 		checkout.Session = session
 		if err := s.saveHostedCheckout(ctx, credential.Hosted.Subject, checkout, "checkout_created"); err != nil {
@@ -151,7 +165,7 @@ func (s *Service) portalBilling(ctx context.Context, authorize billingAuthorizat
 	}
 	session, err := cfg.Provider.Portal(ctx, binding, cfg.PortalConfigurationID, s.hostedBillingReturn(true))
 	if err != nil {
-		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Billing portal is temporarily unavailable")
+		return billingDestination{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "Billing portal is temporarily unavailable"), fmt.Errorf("create billing portal: %w", err))
 	}
 	result := billingDestination{ID: session.ID, URL: session.URL}
 	if key != "" {

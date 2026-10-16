@@ -1,14 +1,20 @@
 package hubserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -154,13 +160,18 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		checkpointEdit func(*tracker.NativeCheckpoint)
 		publication    string
 		terminal       bool
+		readAdmission  bool
+		exclusion      string
+		fullHost       bool
 		aged           bool
 	}{
-		{name: "completed instance report is answered", finalMessage: instanceReport},
+		{name: "continued instance cooldown exposes full host", finalMessage: instanceReport, continued: true, wantCandidate: true, readAdmission: true, fullHost: true},
+		{name: "expired cooldown exposes full host", aged: true, wantCandidate: true, readAdmission: true, fullHost: true},
+		{name: "completed instance report is answered", finalMessage: instanceReport, readAdmission: true, exclusion: "instance_cooldown"},
 		{name: "completed definition blocker is answered with clean source", finalMessage: definitionReport},
 		{name: "completed definition blocker is answered with dirty source", finalMessage: definitionReport, worktreeState: "dirty"},
 		{name: "ordinary comment does not resume dirty definition blocker", finalMessage: definitionReport, worktreeState: "dirty", commented: true},
-		{name: "instance report remains runnable after revision edit", finalMessage: instanceReport, edited: true, wantCandidate: true},
+		{name: "instance report remains runnable after revision edit", finalMessage: instanceReport, edited: true, wantCandidate: true, readAdmission: true},
 		{name: "dirty definition blocker resumes after revision edit", finalMessage: definitionReport, worktreeState: "dirty", edited: true, wantCandidate: true},
 		{name: "definition blocker resumes after continuation", finalMessage: definitionReport, continued: true, wantCandidate: true},
 		{name: "dirty definition blocker resumes after continuation", finalMessage: definitionReport, worktreeState: "dirty", continued: true, wantCandidate: true},
@@ -176,12 +187,12 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "unaccepted completed custom Rework remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, wantCandidate: true},
 		{name: "accepted completion remains answered", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true},
 		{name: "unaccepted completed dirty source remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, worktreeState: "dirty", wantCandidate: true},
-		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}},
+		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, readAdmission: true, exclusion: "external_blocker"},
 		{name: "dirty external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, worktreeState: "dirty"},
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
-		{name: "missing legacy disposition keeps the answer"},
-		{name: "aged attempt without disposition or report retries", aged: true, wantCandidate: true},
+		{name: "missing legacy disposition keeps the answer", readAdmission: true, exclusion: "untyped_cooldown"},
+		{name: "aged attempt without disposition or report retries", aged: true, wantCandidate: true, readAdmission: true},
 		{name: "uncertain push without a disposition is reconciled by any runner", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "git_push", "pending", newNativeID("effect")
 		}},
@@ -215,7 +226,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "legacy complete with published retained head stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head"},
 		{name: "unrelated historical publication preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "unrelated", wantCandidate: true},
 		{name: "earlier published head from same attempt preserves retained source", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "earlier", wantCandidate: true},
-		{name: "aged instance blocker report retries", finalMessage: instanceReport, aged: true, wantCandidate: true},
+		{name: "aged instance blocker report retries", finalMessage: instanceReport, aged: true, wantCandidate: true, readAdmission: true},
 		{name: "aged validation failure retries", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "validation_failed"}, aged: true, wantCandidate: true},
 		{name: "aged moved head retries", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "head_moved"}, aged: true, wantCandidate: true},
 		{name: "confirmed push without a disposition continues", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
@@ -224,10 +235,10 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "confirmed pull request without a disposition continues", retainedSource: true, wantCandidate: true, checkpointEdit: func(c *tracker.NativeCheckpoint) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "confirmed", newNativeID("effect")
 		}},
-		{name: "aged human action stays held", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}, aged: true},
-		{name: "aged permission wait stays held", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}, aged: true},
+		{name: "aged human action stays held", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}, aged: true, readAdmission: true, exclusion: "human_action"},
+		{name: "aged permission wait stays held", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}, aged: true, readAdmission: true, exclusion: "permission_wait"},
 		{name: "aged external blocker stays held", finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), aged: true},
-		{name: "aged accepted completion stays held", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true, aged: true},
+		{name: "aged accepted completion stays held", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true, aged: true, readAdmission: true, exclusion: "recorded_acceptance"},
 		{name: "legacy complete preserves manual hold", finalMessage: completeReport, legacy: true, retainedSource: true, manualHold: true},
 		{name: "legacy complete preserves terminal lane", finalMessage: completeReport, legacy: true, retainedSource: true, terminal: true},
 	} {
@@ -341,6 +352,72 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			}
 			if got := f.candidate(t); got != test.wantCandidate {
 				t.Fatalf("candidate=%t, want %t", got, test.wantCandidate)
+			}
+			if test.readAdmission {
+				r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				r.enroll(t)
+				context := tracker.NativeAdmissionContext{ObservedAt: f.now, PolicyID: f.policy, WorkflowStates: []string{"Fixing"}}
+				payload := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": r.redemption.BackendIsolation, "admission": map[string]any{"context": context, "runner_revision": 1}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, payload), http.StatusOK)
+				if test.fullHost {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=0 WHERE id=?", r.binding.MachineID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/runtime", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var current tracker.NativeRuntimeEvidence
+				decodeHubResponse(t, response, &current)
+				if len(current.Admission) != 1 {
+					t.Fatalf("missing current admission: %s", response.Body)
+				}
+				a := current.Admission[0]
+				if test.exclusion != "" {
+					if a.AnsweredExclusion == nil || a.AnsweredExclusion.Kind != test.exclusion || a.AnsweredExclusion.AttemptID != f.attempt {
+						t.Fatalf("missing answered classification: %s", response.Body)
+					}
+					deadline := a.AnsweredExclusion.RetryEligibleAt
+					if strings.HasSuffix(test.exclusion, "_cooldown") {
+						if deadline == nil || !deadline.Equal(attempt.UpdatedAt.Add(30*time.Minute)) {
+							t.Fatalf("wrong existing cooldown deadline: %s", response.Body)
+						}
+					} else if deadline != nil {
+						t.Fatalf("authoritative hold acquired deadline: %s", response.Body)
+					}
+				} else if a.AnsweredExclusion != nil {
+					t.Fatalf("old answer still excludes current generation: %s", response.Body)
+				}
+				if test.fullHost && a.ReasonCode != "host_capacity" {
+					t.Fatalf("old cooldown hid current host capacity: %s", response.Body)
+				}
+				ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+				call := hostedContextProtocol(t, f.service, ctx, "http")
+				for _, name := range []string{operatortool.ExplainItem, operatortool.BoardSession} {
+					data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID), "reference": strconv.Itoa(f.issue.Number)}), false)
+					var projected tracker.NativeRuntimeEvidence
+					if name == operatortool.ExplainItem {
+						var explanation explain.IssueExplanation
+						if err := json.Unmarshal(data, &explanation); err != nil {
+							t.Fatal(err)
+						}
+						if explanation.NativeRuntime == nil {
+							t.Fatalf("MCP dropped current runtime: %s", data)
+						}
+						projected = *explanation.NativeRuntime
+						if a.Outcome == "skipped" && (len(explanation.Eligibility.Refusals) != 1 || !reflect.DeepEqual(explanation.Eligibility.Refusals[0].AnsweredExclusion, a.AnsweredExclusion) || explanation.Eligibility.Refusals[0].ReasonCode != a.ReasonCode || explanation.Eligibility.Refusals[0].Historical) {
+							t.Fatalf("MCP dropped current refusal: %s", data)
+						}
+					} else {
+						var session operatortool.WorkReadResult[tracker.NativeRuntimeEvidence]
+						if err := json.Unmarshal(data, &session); err != nil {
+							t.Fatal(err)
+						}
+						projected = session.Data
+					}
+					if !reflect.DeepEqual(projected.Admission, current.Admission) || !reflect.DeepEqual(projected.LatestDecision, current.LatestDecision) {
+						t.Fatalf("MCP changed current admission or historical decision: %s", data)
+					}
+				}
 			}
 			if test.wantCandidate {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.nativeFixture.worker(t, "other-worker"), claim), http.StatusNotFound)

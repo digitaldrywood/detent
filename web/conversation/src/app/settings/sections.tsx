@@ -7,8 +7,8 @@ import {
   GitBranchIcon,
   InfoIcon,
   KeyboardIcon,
-  KeyRoundIcon,
   Link2Icon,
+  MegaphoneIcon,
   PaletteIcon,
   PanelsTopLeftIcon,
   PlugIcon,
@@ -22,6 +22,7 @@ import { basePath } from "../../runtime/basePath.ts";
 
 export interface SettingsNavItem {
   readonly id: string;
+  readonly group?: "organization" | "account";
   readonly label: string;
   readonly icon: ComponentType<{ className?: string }>;
   /** A route to navigate to, or nothing for `/settings/<id>`. */
@@ -58,6 +59,7 @@ export const SETTINGS_SECTION_IDS = [
   "plan",
   "billing",
   "keybindings",
+  "whats-new",
   "about",
 ] as const;
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
@@ -78,10 +80,11 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>
   projects: "Projects",
   runners: "Providers & runners",
   integrations: "Integrations",
-  mcp: "API & MCP",
+  mcp: "API keys & MCP",
   plan: "Plan & usage",
   billing: "Billing",
   keybindings: "Keybindings",
+  "whats-new": "What's new",
   about: "About",
 };
 
@@ -103,12 +106,10 @@ export function settingsNavItems({
 }): readonly SettingsNavItem[] {
   const items: SettingsNavItem[] = [
     { id: "general", label: SETTINGS_SECTION_LABELS.general, icon: Settings2Icon },
-    ...(basePath() ? [{ id: "api-keys", label: SETTINGS_SECTION_LABELS["api-keys"], icon: KeyRoundIcon }] : []),
     { id: "organization", label: SETTINGS_SECTION_LABELS.organization, icon: UsersIcon },
     { id: "organization/members", label: "Members", icon: UsersIcon },
     { id: "organization/models", label: "Models", icon: BotIcon },
 
-    { id: "appearance", label: "Appearance", icon: PaletteIcon, disabled: true, reason: WHY_DISABLED },
     { id: "projects", label: SETTINGS_SECTION_LABELS.projects, icon: PanelsTopLeftIcon },
     { id: "runners", label: SETTINGS_SECTION_LABELS.runners, icon: BotIcon },
     { id: "integrations", label: SETTINGS_SECTION_LABELS.integrations, icon: BlocksIcon },
@@ -121,6 +122,7 @@ export function settingsNavItems({
     }
   }
   items.push(
+    { id: "appearance", label: "Appearance", icon: PaletteIcon, disabled: true, reason: WHY_DISABLED },
     { id: "keybindings", label: SETTINGS_SECTION_LABELS.keybindings, icon: KeyboardIcon },
     { id: "snap-shot", label: "SnapShots", icon: SnapShotIcon, disabled: true, reason: WHY_DISABLED },
     {
@@ -138,7 +140,11 @@ export function settingsNavItems({
       reason: WHY_DISABLED,
     },
     { id: "archived", label: "Archive", icon: ArchiveIcon, disabled: true, reason: WHY_DISABLED },
+    { id: "whats-new", label: SETTINGS_SECTION_LABELS["whats-new"], icon: MegaphoneIcon },
     { id: "about", label: SETTINGS_SECTION_LABELS.about, icon: InfoIcon },
   );
-  return items;
+  return items.map((item) => ({ ...item,
+    label: item.id === "mcp" && !basePath().startsWith("/organizations/") ? "API & MCP" : item.label,
+    group: ["general", "whats-new", "about"].includes(item.id) ? undefined : ["appearance", "keybindings", "snap-shot", "source-control", "connections", "archived"].includes(item.id) ? "account" : "organization",
+  }));
 }

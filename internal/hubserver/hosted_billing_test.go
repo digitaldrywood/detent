@@ -302,6 +302,7 @@ func TestHostedBillingLifecycle(t *testing.T) {
 func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	t.Parallel()
 	f, p := newHostedBillingFixture(t)
+	requireNativeStatus(t, f.form(t, "owner", "/organization/billing/checkout", url.Values{"price": {"price_fixture"}}), http.StatusSeeOther)
 	requireNativeStatus(t, postBillingEvent(t, f, "evt_unsigned", "invoice.paid", false), http.StatusBadRequest)
 	var group sync.WaitGroup
 	for range 8 {
@@ -319,6 +320,7 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	if err != nil || entitlement.Source != "base" {
 		t.Fatal("browser or event granted access")
 	}
+	requireNativeStatus(t, postBillingEvent(t, f, "evt_checkout", "checkout.session.completed", true, `{"id":"cs_test_fixture","customer":"cus_fixture","subscription":"sub_fixture"}`), http.StatusOK)
 	p.snapshot = activeBillingSnapshot(time.Now())
 	if err := f.service.billing.reconcile(t.Context()); err != nil {
 		t.Fatal(err)
@@ -326,6 +328,10 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	first, err := f.service.database.readHostedBilling(t.Context())
 	if err != nil {
 		t.Fatal(err)
+	}
+	view := f.billingAPI(t, "owner", http.MethodGet, "/billing", "")
+	if view.Code != http.StatusOK || !strings.Contains(view.Body.String(), `"checkout_pending":false`) {
+		t.Fatalf("completed checkout billing = %d %s", view.Code, view.Body.String())
 	}
 	requireNativeStatus(t, postBillingEvent(t, f, "evt_old_deleted", "customer.subscription.deleted", true), http.StatusOK)
 	if err := f.service.billing.reconcile(t.Context()); err != nil {
@@ -335,7 +341,7 @@ func TestHostedBillingReplayAndRecovery(t *testing.T) {
 	if err != nil || current != first {
 		t.Fatalf("out of order event changed authoritative state: %+v %v", current, err)
 	}
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_audit WHERE action='subscription_reconciled'").Scan(&count); err != nil || count != 1 {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_billing_audit WHERE action='subscription_reconciled'").Scan(&count); err != nil || count != 2 {
 		t.Fatalf("duplicate audit=%d %v", count, err)
 	}
 	p.during = func() {

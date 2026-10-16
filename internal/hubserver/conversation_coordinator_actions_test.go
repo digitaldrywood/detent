@@ -106,6 +106,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					}
 				}
 				var storedToken string
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project); err != nil {
+					t.Fatal(err)
+				}
 				request := f.request
 				if sharedEntry {
 					request = func(t *testing.T, user hostedSecurityUser, method, path string, body any) *httptest.ResponseRecorder {
@@ -458,9 +461,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				case "propose_set_priority":
 					arguments["priority"] = 2
 				case "propose_file_issue", "propose_maintenance_issue":
-					arguments = map[string]any{"title": "Slash issue", "description": "A proposed change", "state": "Todo"}
+					arguments = map[string]any{"title": "Slash issue", "description": "A proposed change" + issueContractTestSections, "state": "Todo"}
 				case operatortool.EditItem:
-					arguments["title"], arguments["body"], arguments["labels"], arguments["priority"] = "Edited by Luna", "", []string{"approved"}, 2
+					arguments["title"], arguments["body"], arguments["labels"], arguments["priority"] = "Edited by Luna", nativeContractTestBody, []string{"approved"}, 2
 				case operatortool.AddComment:
 					arguments["body"] = "Comment approved by the owner"
 				case string(chat.ActionArchiveItems):
@@ -474,9 +477,9 @@ func TestCoordinatorProjectActions(t *testing.T) {
 				case string(chat.ActionIssueSplit):
 					priority := 1
 					arguments = map[string]any{"parent_work_item_id": id, "children": []chat.IssueSplitChild{
-						{Title: "Split storage", Description: "Create storage", Priority: &priority, State: "Todo"},
-						{Title: "Split API", Description: "Use storage", Priority: &priority, State: "Todo"},
-						{Title: "Split UI", Description: "Build UI", Priority: &priority, State: "Todo"},
+						{Title: "Split storage", Description: "Create storage" + issueContractTestSections, Priority: &priority, State: "Todo"},
+						{Title: "Split API", Description: "Use storage" + issueContractTestSections, Priority: &priority, State: "Todo"},
+						{Title: "Split UI", Description: "Build UI" + issueContractTestSections, Priority: &priority, State: "Todo"},
 					}, "edges": []chat.IssueSplitEdge{{Dependent: 2, Blocker: 1}}}
 				case "set_sprite_pool":
 					arguments = map[string]any{"min_runners": 0, "max_runners": 0}
@@ -909,7 +912,7 @@ func assertCoordinatorEffect(t *testing.T, f hostedSecurityFixture, id tracker.N
 		err, actual = readErr, issue.Priority != nil && *issue.Priority == 1
 	case operatortool.EditItem:
 		issue, _, readErr := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: "org_security", project: f.project}, string(id))
-		err, actual = readErr, issue.Title == "Edited by Luna" && issue.Body == "" && issue.Priority != nil && *issue.Priority == 2 && len(issue.Labels) == 1 && issue.Labels[0] == "approved"
+		err, actual = readErr, issue.Title == "Edited by Luna" && issue.Body == nativeContractTestBody && issue.Priority != nil && *issue.Priority == 2 && len(issue.Labels) == 1 && issue.Labels[0] == "approved"
 		if !changed && (issue.Title != "Original issue" || issue.Body != nativeContractTestBody || issue.Priority != nil || len(issue.Labels) != 1 || issue.Labels[0] != "original") {
 			t.Fatalf("unapproved edit changed the issue: %+v", issue)
 		}
@@ -944,7 +947,7 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	seedCoordinatorRepository(t, f.service, tracker.ProjectID(f.project))
 	var issue tracker.NativeIssue
 	base := browserHostedOrganizationBase + "/projects/" + f.project
-	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry.", "state": "Blocked"}, http.StatusOK), &issue)
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry." + issueContractTestSections, "state": "Blocked"}, http.StatusOK), &issue)
 	f.workItem = string(issue.WorkItemID)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 	archiveIssues := seedArchiveIssues(t, f.service, scope, 5, "Todo")
@@ -1019,6 +1022,9 @@ func (f *browserHostedFixture) proposeBrowserIssueSplit(ctx context.Context, han
 	}
 	if cyclic {
 		edges = append(edges, chat.IssueSplitEdge{Dependent: 1, Blocker: 2})
+	}
+	for i := range children {
+		children[i].Description += issueContractTestSections
 	}
 	raw, err := json.Marshal(chat.IssueSplit{ParentID: f.workItem, Children: children, Edges: edges})
 	if err != nil {

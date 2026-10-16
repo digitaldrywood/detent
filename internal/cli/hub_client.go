@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -27,6 +28,7 @@ import (
 )
 
 type hubSchedulingOptions struct {
+	providerUsage *runner.ProviderUsage
 	applyProjects func(context.Context, globalconfig.Config) error
 	setupStore    store.ProjectRunnerSetupStore
 	logger        *slog.Logger
@@ -92,9 +94,13 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
 		checkouts[selected.ID] = selected
 	}
+	var usage *runner.ProviderUsage
+	if len(options) > 0 {
+		usage = options[0].providerUsage
+	}
 	var providerReports func() ([]providercapacity.Report, error)
 	if clientConfig.ProviderCapacityFile != "" || clientConfig.IdentityFile != "" {
-		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels)
+		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels, runnerProviderBilling, usage)
 	}
 	var setupOptions hubSchedulingOptions
 	if len(options) > 0 {
@@ -179,7 +185,13 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		LocalChecks:     localChecks,
 		GitHubIntake:    github.FetchIssueSnapshot,
 		GitHubDiscovery: github.DiscoverIssues,
-		Problems:        reportProblems,
+		Problems: func() []runnerauth.Problem {
+			problems := projects.reportedProblems()
+			if reportProblems != nil {
+				problems = append(problems, reportProblems()...)
+			}
+			return problems
+		},
 		IsolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 			current := cfg
 			if setupOptions.runtimeConfig != nil {

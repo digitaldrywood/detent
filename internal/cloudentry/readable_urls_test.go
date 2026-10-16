@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -80,7 +81,8 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 		f.service.Handler().ServeHTTP(response, request)
 		return response
 	}
-	response := send(http.MethodPost, bootstrap.API+"/projects/"+bootstrap.Projects[0].ID+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable issue", State: "Todo"}, bootstrap.CSRF)
+	approveEntryFixturePolicy(t, alice, "org_alpha", bootstrap.Projects[0].ID)
+	response := send(http.MethodPost, bootstrap.API+"/projects/"+bootstrap.Projects[0].ID+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "readable"}, Title: "Readable issue", Body: issueContractTestSections, State: "Todo"}, bootstrap.CSRF)
 	if response.Code != http.StatusOK {
 		t.Fatalf("create=%d %s", response.Code, response.Body.String())
 	}
@@ -100,6 +102,36 @@ func TestSharedEntryReadableIssueURLs(t *testing.T) {
 	absent, _ := anonymous.get("/missing/secret-project/issues/1")
 	if denied.StatusCode != http.StatusNotFound || absent.StatusCode != http.StatusNotFound || denied.Body != absent.Body {
 		t.Fatalf("denied=%+v missing=%+v", denied, absent)
+	}
+	f.service.config.clientFS = fstest.MapFS{entryClientShell: {Data: []byte(`<html><head></head><body></body></html>`)}}
+	for _, test := range []struct{ path, location string }{
+		{"/alpha", "/alpha/work"},
+		{"/alpha/", "/alpha/work"},
+		{"/alpha/?collapsed=Triage", "/alpha/work?collapsed=Triage"},
+		{"/organizations/org_alpha/work?collapsed=Triage", "/alpha/work?collapsed=Triage"},
+		{"/organizations/org_alpha/settings", "/alpha/settings"},
+	} {
+		response, _ := alice.get(test.path)
+		if response.StatusCode/100 != 3 || response.Header.Get("Location") != test.location {
+			t.Fatalf("%s=%+v want %s", test.path, response, test.location)
+		}
+	}
+	html := map[string]string{"Accept": "text/html"}
+	for _, path := range []string{"/alpha/work", "/alpha", "/missing/work", "/missing"} {
+		response := anonymous.do(http.MethodGet, path, nil, html)
+		if response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != "/auth/oidc/start?return=%2Forganizations" {
+			t.Fatalf("signed-out navigation %s=%+v", path, response)
+		}
+	}
+	if member := alice.do(http.MethodGet, "/alpha/work", nil, html); member.StatusCode == http.StatusSeeOther {
+		t.Fatalf("member navigation=%+v", member)
+	}
+	for _, path := range []string{"/alpha", "/alpha/"} {
+		denied, _ := anonymous.get(path)
+		absent, _ := anonymous.get("/missing" + strings.TrimPrefix(path, "/alpha"))
+		if denied.StatusCode != http.StatusNotFound || denied.Body != absent.Body || denied.Header.Get("Location") != "" {
+			t.Fatalf("anonymous %s=%+v missing=%+v", path, denied, absent)
+		}
 	}
 	slugPath := "/api/cloud/organizations/org_alpha/slug"
 	for _, test := range []struct {

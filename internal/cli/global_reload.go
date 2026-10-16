@@ -115,7 +115,7 @@ func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalCo
 	}
 	latest, err := readRunnerConfiguration(path)
 	if reloader.settings != nil {
-		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path)
+		latest, err = readRuntimeConfiguration(ctx, reloader.settings, path, reloader.current)
 	}
 	update := configwatcher.FileUpdate[globalconfig.Config]{
 		Path:  path,
@@ -171,7 +171,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 		})
 		if r.settings != nil {
 			candidate = r.current
-			latest.Value, latest.Err = readRuntimeConfiguration(ctx, r.settings, update.Path)
+			latest.Value, latest.Err = readRuntimeConfiguration(ctx, r.settings, update.Path, r.current)
 			if latest.Err != nil {
 				logger.Warn("local configuration reload failed", "error", latest.Err)
 				return
@@ -254,7 +254,7 @@ func (r *globalConfigReloader) applyCandidate(
 	update configwatcher.FileUpdate[globalconfig.Config],
 ) (project.ReconcileResult, error) {
 	if r.settings != nil {
-		latest, err := readRuntimeConfiguration(ctx, r.settings, update.Path)
+		latest, err := readRuntimeConfiguration(ctx, r.settings, update.Path, r.current)
 		if err != nil {
 			return project.ReconcileResult{}, err
 		}

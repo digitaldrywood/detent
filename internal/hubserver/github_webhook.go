@@ -155,7 +155,7 @@ func (s *Service) receiveGitHubWebhook(c echo.Context, verifiedByEntry bool) err
 			Message: "GitHub webhook delivery could not be recorded",
 		})
 	}
-	if err := s.database.processWebhook(request.Context(), result.InboxID, now); err != nil {
+	if err := s.processWebhook(request.Context(), result.InboxID, now); err != nil {
 		s.config.Logger.Error("process GitHub webhook", "delivery_id", deliveryID, "error", err)
 	}
 

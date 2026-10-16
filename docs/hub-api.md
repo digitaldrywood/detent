@@ -64,6 +64,31 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Release notes
+
+Hosted sessions expose `GET /api/v2/organizations/{organization}/release-notes`
+and `PUT /api/v2/organizations/{organization}/release-notes/seen`. Mutations
+require the bootstrap CSRF token; bearer credentials are refused. The write
+marks the running release seen for the current organization and user, without
+a request body. Preferences persist across devices and only advance, so a
+rollback does not make previously seen releases unread.
+
+The response contains `builds` newest first, `has_unread`, and an optional
+`next_cursor`. Each build includes `version`, `build_time`, `running`, `patch`,
+`unread`, `internal_count`, and `entries` with `category`, `text`, `pr_number`,
+and `pr_url`. `limit` defaults to 20 and accepts 1–100; pass `next_cursor` as
+`cursor` to read older builds. `has_unread` covers the whole feed, including
+builds outside the current page, and is also an additive field on app bootstrap.
+A member without a preference is treated as having seen the running release.
+
+The feed is generated and embedded during the binary build. Serving it makes
+no external requests. Conventional commit types `feat`, `perf`, `fix`, and
+`revert` map to New, Improved, Fixed, and Removed; internal changes are counted
+without publishing their text. Cherry-picks link their original pull request.
+Generic completion subjects use the first non-empty commit-body line. When
+that line has no meaningful title, the entry reads `Maintenance update` with
+the available original pull-request link and derived category.
+
 ## Issue email notifications
 
 Hosted sessions expose `GET` and `PUT` at
@@ -763,6 +788,27 @@ measured disk bytes per slot, slot hours and over-capacity hour counts.
 The result remains advice based on retained telemetry, including a zero range
 when observed pressure leaves no safe slot estimate.
 
+`recommendation.suggested_limit` turns the same hours into one advisory "Jobs
+at once" value: `limit`, `current`, `direction` (`lower`, `raise`, `hold` or
+`insufficient_evidence`), `hours_covered`, `saturated_hours` and up to three
+`reasons`. An hour counts when it has memory and CPU samples, and is busy when
+slots were in use. Shared runners leave person hours, as split for the periods
+above, out of coverage and saturation because the person's own work loads them;
+those hours still feed the low-disk reason and the adjacent-hour CPU and swap
+checks. A busy hour is saturated when memory pressure warned or was
+critical, PSI `some` avg10 averaged above 10, swap grew by at least 1 GiB over a
+swap-sampled previous hour, or CPU busy averaged 90% or more in it and an
+adjacent hour. Load average is not used. Fewer than 24 counted hours returns
+`insufficient_evidence` without a limit. When more than 5% of busy hours are
+saturated the limit lowers to the highest of the two levels below `current`
+whose hours (rounded slot use, at least three) stayed at or under 5% saturated,
+otherwise to `current` minus one, never below one. When saturation stays at or
+under 5% and every slot was busy (slot use at least 90% of `current`) in at
+least a quarter of the counted hours, it raises by one, up to 10,000. Otherwise
+it holds. Free disk under 10% in any hour adds a reason dated in the runner
+timezone and never changes the limit. The value is stateless and never changes
+routing, capacity or dispatch.
+
 Native Hubs advertise `runner_host_metrics` before runners include optional
 `host_metrics` in a heartbeat. A batch contains at most 24 summaries of at most
 1 KiB each. `host_metrics_acknowledged` identifies processed hours and restart
@@ -1069,7 +1115,8 @@ Titles are limited to 500 bytes, bodies to 256 KiB, comments to 64 KiB, and requ
 to 1 MiB. There are at most 100 labels and 100 assignees, each at most 200 bytes;
 priority ranges from 0 (urgent) to 3 (low). Empty label/assignee arrays clear them.
 Unknown request fields and unsupported query parameters fail validation.
-Workflow reasons are `user_requested`, `worker_progress` and `dependency_ready`.
+Workflow reasons are `user_requested`, `worker_progress`, `validator_rework` and
+`dependency_ready`.
 Workflow mutations may include `reason_detail`, bounded to 8 KiB of UTF-8 text;
 the Hub preserves it in `workflow.transitioned` history. Orchestrator lane writes
 forward the lane ledger's reason as readable text through this field.
@@ -1163,6 +1210,9 @@ They accept `state=open|resolved` (default `open`), an RFC3339 `since`, and
 or resolved at or after that time. The response includes `items`, an optional
 `next_cursor`, and the tenant detector's `last_tick_at` (null before its first
 successful evaluation).
+The HTTP endpoint additionally accepts `state=all`: open findings are always
+included, while `since` filters only resolved findings. Live consumers can share
+one read for open findings and recent resolutions.
 
 The Hub evaluates static health rules every minute using current state and
 at most 24 hours of recorded events. Findings and their native issue reports
@@ -1789,6 +1839,7 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | Method and suffix | Authority and result |
 | --- | --- |
 | `GET /work-items/{item}/changes` | Project-scoped linked Change Requests |
+| `POST /work-items/{item}/release-pick` | Project operator; associate a verified existing release PR with a dependent native delivery issue |
 | `POST /work-items/{item}/changes` | Worker/operator; `title`, `body`, optional `linked_issues` |
 | `GET /work-items/{item}/changes/{change}` | Consistent detail with versions, decisions, checks, discussion and current summary |
 | `POST /work-items/{item}/changes/{change}/versions` | Publish through the primary issue with `expected_version_id` |
@@ -2023,6 +2074,63 @@ discussion provenance, artifact availability, and issue/run navigation. Native
 run recovery uses published change references from ordered issue history rather
 than trusting a stale worker checkpoint to identify the current version.
 
+### Existing release-pick delivery
+
+`POST /work-items/{delivery}/release-pick` and operator MCP
+`associate_release_pick` use the same project-scoped native command. The caller
+needs current operator/admin authority and a write grant for the selected
+project. Runner and worker credentials cannot associate PRs. The project's
+approved policy must use GitHub PR landing and independent review (native
+review policy, validator, automated review, or security audit). This command
+never changes project policy, issue state, holds, assignees, or deployments.
+
+The API accepts `idempotency_key`, string `expected_revision`, and these fields:
+
+| Field | Required identity |
+| --- | --- |
+| `source_issue_id`, `source_change_id` | Same-project source issue and its primary, currently landed native Change |
+| `source_merge_sha` | The Change's recorded merge commit on `develop` |
+| `repository` | Exact enabled project repository URL, such as `https://github.com/example-org/example-project` |
+| `pr_number`, `head_ref`, `head_sha` | Existing open, non-draft PR and its exact branch/head in that repository |
+| `base_ref`, `base_sha` | Existing `release/vX.Y` branch and its current exact head |
+| `frozen_sha` | Frozen source boundary: the merge-base of the recorded release head and current `develop` |
+
+MCP accepts `project_id`, `work_item_id` (delivery), `request_id`, integer
+`expected_revision`, and a `release_pick` object containing the identity fields
+in the table. Native client callers use `AssociateReleasePick`.
+
+The delivery must already have the source as a typed required dependency, with
+dependency admission enabled. The source must be terminal with its native develop
+landing recorded. Active delivery leases, existing Changes, conflicting PR
+associations, stale revisions, and repository or provenance mismatches are
+refused without partial writes. A held delivery may be associated; its existing
+hold and admission predicates remain authoritative. Identical associations are
+idempotent and return the original owner receipt; conflicting replacements are
+refused. Current grants are checked even on replay.
+
+The configured repository transport verifies source ancestry on develop, the
+release branch head and frozen boundary, and the PR's exact head/base and
+repository. This thin slice accepts exactly one commit with one parent equal to
+the recorded release base, one exact `git cherry-pick -x` trailer naming the
+source merge, and the same file paths/status and added/deleted lines as the
+source patch (binary files require matching blob identities). Hunk line numbers
+and unchanged context may differ. Multi-commit PRs, truncated patch responses,
+and adapted conflict resolutions are refused. PR and branch identities are read
+again before native association. The existing landing owner rechecks the live
+PR, protection, review and gate evidence before merging.
+
+The receipt records the source issue/Change/merge, PR repository/head/base,
+frozen source boundary, new delivery Change, actor, and association time.
+Existing work-item reads expose `release_delivery`; existing Change and PR reads
+show the delivery independently. Association opens a draft Change. The normal
+runner captures the exact associated source bundle and publishes its immutable
+version with the existing PR reference. Publication refuses a different head,
+base, repository, or PR. Review and checks belong to that version, not the
+source fix. The landing workspace and gate use the recorded release branch;
+the squash message retains the source `-x` trailer. Ordinary source issues keep
+their normal base. A moved source needing a replacement PR requires a separate
+reviewed delivery; association does not adopt arbitrary new heads.
+
 ## Retention, export and deletion design
 
 Collaboration content, content versions, typed events, idempotency responses and
@@ -2199,6 +2307,32 @@ provider compatibility inside the claim transaction. Capacity removes ineligible
 choices from that order; it does not reprioritize work or select a fallback model.
 The negotiated feature is `provider_capacity_reservations`.
 
+Hubs advertising `project_landing_capacity` accept nonnegative
+`landing_capacity` on claims, previews and lease renewal. Native GitHub landing runners send
+their existing configured Merging limit and delegate that lane ceiling to the
+Hub instead of applying it separately on each host. The claim transaction
+counts active project landing leases and pins the effective ceiling on the new
+lease. The strictest positive incoming or active-owner ceiling applies.
+Legacy leases count toward occupancy. Zero supplies no additional ceiling and
+retains existing behavior when no active owner declares one. Claim replay and
+renewal may tighten a positive pin but cannot widen it. An expired owner may renew only if the project
+has room; live owners are never preempted. Preview and selection use the same
+capacity predicate, and native-only landing batches retain their existing
+accounting. Direct code-to-landing continuations reserve the same capacity on
+their existing lease through acknowledged renewal before starting landing work.
+An occupied project refuses that transition without revoking the coding lease.
+Clients requiring this feature defer claims against older Hubs.
+Feature-aware multi-project selection does not borrow one project's incoming
+ceiling for another. An occupied foreign project's incoming ceiling is unknown,
+so its landing candidates cannot veto ready work in the requested project.
+An unoccupied foreign landing remains eligible for the existing project ranking;
+native-only batches and legacy requests retain their existing behavior.
+Runtime admission reads cannot assume an incoming ceiling when it was not
+reported. They retain a proven full refusal when active positive pins establish
+it; other occupied GitHub landing cases remain `unknown` with
+`project_landing_capacity` in the existing unavailable-predicate list.
+Unoccupied projects and native-only landings retain their usual readiness.
+
 Hubs advertising `native_dispatch_wait` also accept a preview `limit` of 1–100.
 Omitting it retains the 100-candidate page. The bound applies before issue
 hydration; a page can be empty with a nonzero `next` when current landing
@@ -2281,6 +2415,63 @@ failed items roll back independently. Native edits retain field ownership.
 Rate limits stop unstarted work until explicit retry, honoring source deadlines.
 No idle GitHub polling occurs. The wizard refreshes progress only on request.
 Reopening setup resumes persisted selection and results. Webhook intake of new
-issues continues to create linked issues in Triage. New authoring and
+issues creates linked issues in Triage, except for explicitly delegated,
+verified CI repair reports described below. New authoring and
 landing continue through native Hub operations, including the existing Done
 transaction; any later explicit source action keeps its own write authorization.
+
+### Trusted scheduled CI imports
+
+A native project's approved repository workflow may delegate admission of new
+GitHub Actions repair reports through its existing **Scheduled CI repair
+contract**. Before its five required subsections, the section must contain this
+exact authorization sentence:
+
+> New verified GitHub Actions CI repair reports enter Todo with Urgent priority.
+
+The repository's `WORKFLOW.md` supplies the five nonempty contract subsections:
+Acceptance criteria, Must not break, How we know it worked, Invariants touched,
+and Safety regression. The operator approves that exact workflow revision
+through the existing project policy owner. Merely editing a repository file or
+an issue does not grant this delegation. Projects without the approved sentence
+retain their existing confirmation rules; Detent's direct scheduled reporter
+keeps its existing project-specific delegation.
+
+The producer opens an issue in the configured checkout repository using its
+GitHub Actions identity. Its body contains those same five section contents,
+a separate diagnostic-evidence heading, the existing `detent-origin` stamp
+(`doctor`, `github-actions`, stable problem fingerprint and run-attempt URL),
+and one `detent-checks` scheduled occurrence. That occurrence identifies the
+repository, run, attempt, failed job, job name, tested commit and conclusion.
+Place diagnostic text and occurrence metadata under the separate heading so
+they do not change the approved contract section digests. For example, use
+`example-org/example-project` as the fixture repository; production identity
+comes from the selected project.
+
+The signed `issues.opened` webhook is the automatic import path. Explicit
+`POST /work-items` / MCP `file_issue` with only `github_issue_url` and the normal
+request identity uses the same admission after the GitHub App fetches the full
+source. Caller-supplied native title, body or priority retains ordinary intake
+semantics. Historical bulk import and runner-supplied snapshots do not grant
+this delegation.
+
+The Hub requires the authenticated source author `github-actions[bot]`, a source
+repository equal to the configured checkout repository, and the existing
+importer's independent verification of `.github/workflows/ci.yml`. It verifies
+the run attempt, repository and head repository, `develop` or `release/v*`
+branch, scheduled/push/manual event, tested head SHA and completed failed or
+timed-out job. The approved policy and checkout binding are rechecked during
+creation, and Todo must be dispatchable, nonterminal and not operator-only.
+Only then does a new report receive Todo, native priority `0` (Urgent), and
+confirmation of the bounded approved sections. Source diagnostics remain quoted
+as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no
+authority. No review, security, validator or landing gate changes.
+
+Incomplete, untrusted, held or unverifiable scheduled reports remain in Triage
+without delegated confirmation; their `github.imported` history records the
+refusal reason. Existing source identities retain native decisions. A matching
+open machine fingerprint receives one occurrence comment per occurrence key,
+preserving its body, state and priority; terminal matches remain untouched.
+Repeated deliveries cannot readmit, reprioritize or reconfirm existing issues.
+Producer delivery and this admission behavior are independently testable;
+automatic recovery requires both plus the approved project policy.

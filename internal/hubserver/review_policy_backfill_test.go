@@ -25,6 +25,7 @@ func TestBackfillChangeReviewPolicies(t *testing.T) {
 	current := newNativeFixture(t, service, "", "current")
 	pinned := newNativeFixture(t, service, "", "pinned")
 	unapproved := newNativeFixture(t, service, "", "unapproved")
+	clearNativeFixturePolicy(t, unapproved)
 	descriptor := hubTestPolicy()
 	for _, f := range []nativeFixture{missing, legacy, current, pinned} {
 		approveHubTestPolicy(t, service, f.base+"/policy", descriptor)

@@ -26,13 +26,23 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 	if resolved, err := workflowconfig.ResolvePolicyIssueContract(cfg.Policy); err == nil {
 		contract = resolved
 	}
+	stateLimits := cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState)
+	landingCapacity := 0
+	if cfg.Tracker.Kind == workflowconfig.TrackerHubNative && cfg.Policy.Gates.GitHubPullRequest {
+		landingCapacity = cfg.Agent.MaxConcurrentAgents
+		if limit, ok := stateLimits[normalizeState(autoPromoteMergingState)]; ok {
+			landingCapacity = limit
+		}
+		delete(stateLimits, normalizeState(autoPromoteMergingState))
+	}
 	return Config{
 		IssueContract:              &contract,
 		Policy:                     cfg.Policy,
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
 		RefreshFailureThreshold:    cfg.Polling.RefreshFailureThreshold,
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
-		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
+		MaxConcurrentAgentsByState: stateLimits,
+		NativeLandingCapacity:      landingCapacity,
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
 		PrioritizeUnblockers:       cfg.Agent.PrioritizeUnblockers,

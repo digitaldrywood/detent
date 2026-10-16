@@ -6,7 +6,10 @@ import (
 	"errors"
 )
 
-const MaxChangeSourceBytes = 20 << 20
+const (
+	MaxChangeSourceBytes = 20 << 20
+	MaxChangeDiffBytes   = 128 << 20
+)
 
 type ChangeSource struct {
 	Format       string `json:"format"`
@@ -18,6 +21,7 @@ type ChangeSource struct {
 }
 
 type ChangeSourceCapture struct {
+	Patch  string       `json:"patch,omitempty"`
 	Source ChangeSource `json:"source"`
 	Bundle []byte       `json:"bundle"`
 }

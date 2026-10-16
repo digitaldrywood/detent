@@ -48,6 +48,8 @@ type apiCredential struct {
 	Scope               apiScope
 	NativeOnly          bool
 	Runner              runnerauth.Identity
+	// Agent is the assistant acting for this credential's principal.
+	Agent string
 	// runnerRenewal is set only for POST renewal of this bound identity.
 	// Expiry limits ordinary API use, but must not strand a stopped host.
 	runnerRenewal bool

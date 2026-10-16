@@ -403,6 +403,30 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		}
 		return
 	}
+	if failure == "recovery" {
+		attemptID := refusalAttemptID
+		if !planningRecovery {
+			attemptID = 1
+		}
+		deadline, stop := context.WithTimeout(t.Context(), 10*time.Second)
+		defer stop()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			attempt, err := runtimeStore.WorkAttempt(deadline, attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if attempt.Status == store.WorkAttemptStatusTerminal {
+				break
+			}
+			select {
+			case <-ticker.C:
+			case <-deadline.Done():
+				t.Fatalf("recovery refusal did not settle local accounting: status=%s", attempt.Status)
+			}
+		}
+	}
 	if planningRecovery {
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil || current.Issue.State != "Blocked" || (len(current.Attempts) != len(preservedRecovery.Attempts)+1 || !reflect.DeepEqual(current.Attempts[:len(current.Attempts)-1], preservedRecovery.Attempts)) || !reflect.DeepEqual(current.Change, preservedRecovery.Change) || !reflect.DeepEqual(current.ChangeDetail, preservedRecovery.ChangeDetail) || provider.calls.Load() != 0 || !reflect.DeepEqual(changes, preservedChanges) {

@@ -195,6 +195,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 
 func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps startRunningDependencies) error {
 	startedAt := time.Now().UTC()
+	providerUsage := &runnerpkg.ProviderUsage{}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -571,6 +572,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		logger.Info("runner setup observations started")
 		if cfg.Global.Client.Configured() {
 			hubScheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+				providerUsage: providerUsage,
 				applyProjects: func(ctx context.Context, current globalconfig.Config) error {
 					if _, err := manager.Reconcile(ctx, managerConfigWithRuntimeGitHubToken(current, runtimeGitHubToken.get())); err != nil {
 						return err
@@ -640,7 +642,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			Runner:             cfg.Runner,
 		}, runtimeStore, nil, serviceConnection, workerCredentials.Token, runnerIsolationPolicy(cfg.Global.Client.IdentityFile), func(ctx context.Context, selected globalconfig.Project, workflow workflowconfig.Config) (string, error) {
 			return resolveRunnerProjectGitHubToken(ctx, globalConfigState.get(), selected, workflow, runtimeDeps{})
-		})
+		}, providerUsage)
 		resourceWorkers.Go(func() {
 			runRuntimeBuildDriftMonitor(runCtx, cfg.Build, deps.buildDriftInterval, readInstalledBuild, logger)
 		})
@@ -710,7 +712,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			registry := manager.Registry()
 			runPauseMonitor(ctx, pauseMonitorDeps{
 				read: func() (globalconfig.Config, error) {
-					return readRuntimeConfiguration(ctx, runtimeStore, cfg.Global.Path)
+					return readRuntimeConfiguration(ctx, runtimeStore, cfg.Global.Path, globalConfigState.get())
 				},
 				write: func(updated globalconfig.Config) error {
 					return writeRuntimeConfiguration(ctx, runtimeStore, updated)

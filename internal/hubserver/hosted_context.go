@@ -110,8 +110,13 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 			resultErr = errHostedContextUnavailable
 		}
 	}()
+	var notesRequest operatortool.ReleaseNotesArguments
 	var request hostedEventRequest
 	switch call.Name {
+	case operatortool.ReleaseNotes:
+		if err := operatortool.DecodeArguments(call.Arguments, &notesRequest); err != nil {
+			return result, err
+		}
 	case operatortool.HostedEvents:
 		if err := operatortool.DecodeArguments(call.Arguments, &request); err != nil || request.ProjectID == "" || len(request.ProjectID) > 256 || len(request.WorkspaceID) > 256 || len(request.Cursor) > 2048 {
 			return result, operatortool.ErrInvalidArguments
@@ -130,6 +135,12 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	s := e.service
 	var payload any
 	switch call.Name {
+	case operatortool.ReleaseNotes:
+		notes, err := s.readReleaseNotes(ctx, credential, notesRequest)
+		if err != nil {
+			return result, err
+		}
+		payload = notes
 	case operatortool.AppBootstrapPayload:
 		session := auth.Session{}
 		if credential.SessionHash != "" {

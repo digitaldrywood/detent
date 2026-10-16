@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
@@ -21,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -347,7 +351,7 @@ func TestHostedOnboardingPermissionsAndArtifacts(t *testing.T) {
 			}
 			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding", map[string]any{"idempotency_key": "save", "progress": onboarding.Progress{Repository: "existing"}}), tt.write)
 			descriptor := hubTestPolicy()
-			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", policy.Change{Policy: descriptor}), tt.admin)
+			requireNativeStatus(t, f.request(t, user, http.MethodPut, f.base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), tt.admin)
 			if tt.role == "owner" && tt.grant != "" {
 				sibling := f
 				sibling.project = "prj_onboarding_sibling"
@@ -420,7 +424,7 @@ func TestHostedProjectSetupJourney(t *testing.T) {
 	if setup.Progress.Repository != "existing" || setup.Ready {
 		t.Fatalf("onboarding = %+v", setup)
 	}
-	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required", State: "Todo"}
+	issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "first-issue"}, Title: "First native issue", Body: "No GitHub issue required" + issueContractTestSections, State: "Todo"}
 	for range 2 {
 		requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", issue), http.StatusOK)
 	}
@@ -589,12 +593,12 @@ func seedHostedOnboardingJourney(t *testing.T, f *browserHostedFixture) *browser
 	descriptor := hubTestPolicy()
 	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""
 	descriptor = descriptor.WithID()
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 	automatic := hubTestPolicy()
 	automatic.Gates.AutoPromote = true
 	automatic.Requirements.RequiredTags = []string{"gpu"}
 	automatic = automatic.WithID()
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, organization+"/projects/"+f.privateProject+"/onboarding/policy", policy.Change{Policy: automatic}), http.StatusOK)
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, organization+"/projects/"+f.privateProject+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: automatic}), http.StatusOK)
 	binding := runnerauth.NewBinding()
 	enrollmentRequest := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
 	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", enrollmentRequest)
@@ -671,6 +675,7 @@ func TestOnboardingBrowserPreview(t *testing.T) {
 func TestOnboardingOffersThePoliciesRunnersReported(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "observed policy")
+	clearNativeFixturePolicy(t, f)
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	first.enroll(t)
 	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
@@ -858,27 +863,52 @@ func TestOnboardingReportedConfigurationDoesNotBlockRunner(t *testing.T) {
 func TestOnboardingRunnerLocalChecks(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "runner checks")
+	clearNativeFixturePolicy(t, f)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other checks")
+	clearNativeFixturePolicy(t, other)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
+	contexts := make(chan context.Context, 1)
+	f.service.echo.GET("/api/v2/organizations/:organization/checkout-report-test", func(c echo.Context) error {
+		contexts <- c.Request().Context()
+		return c.NoContent(http.StatusOK)
+	}, f.service.operatorAuthority)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/checkout-report-test", testHubAdminToken, nil), http.StatusOK)
+	ctx := operatortool.BindConnection(<-contexts, "checkout-report", "direct-test")
+	executor := hubFleetExecutor{service: f.service}
+	if err := executor.OpenConnection(ctx); err != nil {
+		t.Fatal(err)
+	}
 	path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
 	for _, tt := range []struct {
-		name, checkout, doctor, provider, setup string
-		valid                                   bool
+		name, checkout, doctor, provider, setup, cause string
+		valid                                          bool
 	}{
-		{"missing report", "", "", "", "", true},
-		{"missing checkout", "failed", "pending", "pending", "", true},
-		{"failed doctor", "passed", "failed", "passed", "", true},
-		{"missing auth", "passed", "passed", "failed", "", true},
-		{"success", "passed", "passed", "passed", "", true},
-		{"failed setup", "passed", "passed", "passed", "failed", true},
-		{"repaired setup", "passed", "passed", "passed", "passed", true},
-		{"reject setup output", "passed", "passed", "passed", "secret-token", false},
-		{"reject command output", "passed", "secret-token", "passed", "", false},
+		{"missing report", "", "", "", "", "", true},
+		{"missing checkout", "failed", "pending", "pending", "", "", true},
+		{"failed doctor", "passed", "failed", "passed", "", "", true},
+		{"missing auth", "passed", "passed", "failed", "", "", true},
+		{"checkout timeout", "failed", "pending", "pending", "failed", "context deadline exceeded", true},
+		{"checkout auth", "failed", "pending", "pending", "failed", "authentication failed", true},
+		{"checkout missing repository", "failed", "pending", "pending", "failed", "repository not found", true},
+		{"success", "passed", "passed", "passed", "", "", true},
+		{"failed setup", "passed", "passed", "passed", "failed", "", true},
+		{"repaired setup", "passed", "passed", "passed", "passed", "", true},
+		{"reject setup output", "passed", "passed", "passed", "secret-token", "", false},
+		{"reject command output", "passed", "secret-token", "passed", "", "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			checks := runnerauth.LocalChecks{Checkout: tt.checkout, Doctor: tt.doctor, Provider: tt.provider, ProviderKinds: []string{"codex"}, Setup: tt.setup}
 			body := map[string]any{"capacity": 1, "version": "test"}
+			if tt.cause != "" {
+				checks.CheckoutMessage = "Cannot clone repository: " + tt.cause
+				checks.CheckoutFix = "Check the reported repository failure"
+				problem := runnerauth.NewProblem("settings_invalid")
+				problem.ProjectID, problem.Subject = string(f.project.ID), "checkout"
+				problem.Message, problem.FixHint = checks.CheckoutMessage, checks.CheckoutFix
+				problem.ErrorOutput = "git exited with status 128\n" + tt.cause
+				body["problems"] = []runnerauth.Problem{problem}
+			}
 			if tt.checkout != "" {
 				body["local_checks"] = checks
 			}
@@ -892,14 +922,43 @@ func TestOnboardingRunnerLocalChecks(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var setup onboarding.Project
 			decodeHubResponse(t, response, &setup)
-			if setup.Policy != nil || setup.Steps[0].State != "ready" {
-				t.Fatalf("enrollment depends on policy: %+v", setup)
+			executionState := "ready"
+			if tt.cause != "" {
+				executionState = "action_required"
+				if setup.Runners[0].Runner.ConnectionHealth != "online" {
+					t.Fatalf("checkout failure took runner offline: %+v", setup.Runners[0])
+				}
+			}
+			if setup.Policy != nil || setup.Steps[0].State != executionState {
+				t.Fatalf("enrollment lost runner health: %+v", setup)
 			}
 			if tt.valid && tt.checkout != "" && (setup.Runners[0].LocalChecks == nil || setup.Runners[0].LocalChecks.Doctor != tt.doctor || setup.Runners[0].LocalChecks.Setup != tt.setup || setup.Runners[0].LocalChecks.ObservedAt.IsZero()) {
 				t.Fatalf("report=%+v", setup)
 			}
 			if tt.valid && (setup.Steps[1].State == "ready") != (tt.checkout != "" && checks.Passed()) {
 				t.Fatalf("local validation forged success or lost passed evidence: %+v", setup)
+			}
+			if tt.cause != "" {
+				if setup.Runners[0].LocalChecks.CheckoutMessage != checks.CheckoutMessage || setup.Runners[0].LocalChecks.CheckoutFix != checks.CheckoutFix {
+					t.Fatalf("onboarding lost checkout guidance: %+v", setup.Runners[0])
+				}
+				result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.ListRunnerRouting, Arguments: json.RawMessage(`{"project_id":"` + string(f.project.ID) + `"}`)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var envelope struct {
+					Data struct {
+						Runners []runnerauth.Runner `json:"runners"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(result.Content, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				if len(envelope.Data.Runners) != 1 || !slices.ContainsFunc(envelope.Data.Runners[0].Problems, func(p runnerauth.Problem) bool {
+					return p.ProjectID == string(f.project.ID) && p.Subject == "checkout" && p.Message == checks.CheckoutMessage && strings.Contains(p.ErrorOutput, "128\n"+tt.cause)
+				}) {
+					t.Fatalf("routing lost checkout cause: %s", result.Content)
+				}
 			}
 			if tt.checkout == "" && setup.Runners[0].LocalChecks != nil {
 				t.Fatal("missing report became diagnostic evidence")
@@ -968,7 +1027,7 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 		}
 		descriptors[i] = descriptor
 		if err := runner.CheckProjectPolicy(t.Context(), "shared", "", descriptor); err != nil {
-			t.Fatal(err)
+			t.Fatalf("runner configuration report required approval: %v", err)
 		}
 	}
 	read := func() onboarding.Project {
@@ -981,7 +1040,10 @@ func TestNativeSharedConfigurationAcrossRunners(t *testing.T) {
 	}
 	initial := read()
 	if initial.Policy == nil || initial.Policy.Policy.ID != descriptors[1].ID {
-		t.Fatalf("latest reported configuration = %+v", initial.Policy)
+		t.Fatalf("latest runner configuration was not selected: %+v", initial.Policy)
+	}
+	if len(initial.ObservedPolicies) != 1 || initial.ObservedPolicies[0].Policy.ID != descriptors[0].ID || !initial.ObservedPolicies[0].PreviouslyApproved || !initial.ObservedPolicies[0].Conflict {
+		t.Fatalf("historical conflicting report lost its provenance: %+v", initial.ObservedPolicies)
 	}
 	combined, err := workflowconfig.ParseWorkflowOverlay(proWorkflow.DefinitionSources.Workflow, []byte("---\nagent:\n  auto_promote:\n    enabled: true\n---\n"), "operator-approved.local.md")
 	if err != nil {

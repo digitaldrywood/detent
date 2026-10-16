@@ -8,7 +8,9 @@ import { SpritePoolCard } from "../account/SpritePoolCard.tsx";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Dialog, DialogDescription, DialogFooter, DialogHeader, DialogPanel, DialogPopup, DialogTitle } from "../../components/ui/dialog.tsx";
-import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting } from "../../contracts/account.ts";
+import type { FleetResponse, FleetRunner, ProviderCapacity, RunnerRouting, SuggestedLimit } from "../../contracts/account.ts";
+import type { LoadHostHistory } from "./HostLoad.tsx";
+import { useRunnerSuggestions } from "./runnerSuggestions.ts";
 import { cn } from "../../lib/utils.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useResource } from "../account/useResource.ts";
@@ -117,9 +119,11 @@ export function ProviderSummary({ runners }: { readonly runners: readonly FleetR
 }
 
 export function RunnersSectionView({
-  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner, onAssist, spritePools, spritePoolAttentionCount = 0,
+  fleet, now, organizationName = "this organization", onEnroll, enrollments = [], onSaveRouting, projects = [], onReloadRunner, onRemoveRunner, onAssist, spritePools, spritePoolAttentionCount = 0, suggestions = {}, loadHostHistory,
 }: {
   readonly fleet: FleetResponse;
+  readonly suggestions?: Readonly<Record<string, SuggestedLimit>>;
+  readonly loadHostHistory?: LoadHostHistory;
   readonly onAssist?: () => void;
   readonly spritePools?: (attentionOnly: boolean) => React.ReactNode;
   readonly spritePoolAttentionCount?: number;
@@ -192,7 +196,7 @@ export function RunnersSectionView({
           </DialogFooter>
         </DialogPopup>
       </Dialog>
-      {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={(selectedRunner.editable ?? fleet.editable) !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} /> : null}
+      {selectedRunner ? <RunnerDetailSheet key={selectedRunner.id} runner={selectedRunner} projects={projects} editable={(selectedRunner.editable ?? fleet.editable) !== false && onSaveRouting !== undefined} now={now} onClose={() => setRunnerToOpen(null)} onSave={onSaveRouting} onReload={onReloadRunner} suggestion={suggestions[selectedRunner.id]} loadHostHistory={loadHostHistory} /> : null}
       <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
         <div className="min-w-0 space-y-2">
           <h2 className="text-xl font-semibold tracking-tight">Providers & runners</h2>
@@ -221,7 +225,7 @@ export function RunnersSectionView({
             <div className="@container/runner-list overflow-hidden rounded-xl border border-border/60 bg-card/40">
               <div aria-hidden="true" className="hidden grid-cols-[minmax(0,1.2fr)_6rem_minmax(0,1fr)_7rem_minmax(0,1fr)_11rem] gap-4 border-b border-border/50 px-4 py-3 text-xs text-muted-foreground @[48rem]/runner-list:grid"><span>Runner</span><span>Host kind</span><span>Health</span><span>In use</span><span>Projects</span><span /></div>
               <div className="divide-y divide-border/50">
-                {runners.map((runner) => <HostCard key={runner.id} runner={runner} projects={projects} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
+                {runners.map((runner) => <HostCard key={runner.id} runner={runner} now={now} projects={projects} suggestion={suggestions[runner.id]} onOpen={() => openRunner(runner)} {...(fleet.editable !== false && onRemoveRunner ? { onRemove: () => { setRemoveError(null); setRunnerToRemove(runner); } } : {})} />)}
                 {runners.length === 0 ? <p className="px-4 py-6 text-[13px] text-muted-foreground">No runners need attention.</p> : null}
               </div>
               {spritePools?.(attentionOnly)}
@@ -237,7 +241,7 @@ export function RunnersSectionView({
       )}
       {fleet.runners.length > 0 ? <details className="space-y-4">
         <summary className="cursor-pointer text-sm text-muted-foreground">Fleet capacity and providers</summary>
-        <CapacityPanel runners={fleet.runners} onOpen={openRunner} />
+        <CapacityPanel runners={fleet.runners} onOpen={openRunner} showProviders={false} />
         <SettingsSection id="settings-providers" title="Providers" icon={<BotIcon className="size-3.5" />} className="min-w-0">
           {fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} /> : <SettingsRow title="No provider capacity reported" description="A runner reports the providers it can reach when it heartbeats." />}
         </SettingsSection>
@@ -272,10 +276,13 @@ export function RunnersSettings(): React.ReactElement {
     else void navigate({ to: "/chat" });
   }
   const fleet = useResource(() => api.fleet(), [api]);
+  const loadHostHistory = React.useCallback<LoadHostHistory>((runner, from, to) => api.runnerHostHistory(runner, from, to), [api]);
   const [open, setOpen] = React.useState(false);
   const [enrollmentName, setEnrollmentName] = React.useState("");
   const [enrollments, setEnrollments] = React.useState<readonly PendingEnrollment[]>([]);
   const canEnroll = bootstrap?.actor.can_manage_runners ?? false;
+  const runnerRevisions = React.useMemo(() => fleet.value?.runners.map((runner) => ({ id: runner.id, revision: runner.revision ?? 0 })) ?? [], [fleet.value]);
+  const suggestions = useRunnerSuggestions(api.runnerCapacity, runnerRevisions, canEnroll);
   async function reloadRunner(): Promise<void> {
     fleet.set(await api.fleet());
   }
@@ -313,6 +320,8 @@ export function RunnersSettings(): React.ReactElement {
       ) : (
         <RunnersSectionView
           fleet={fleet.value}
+          suggestions={suggestions}
+          loadHostHistory={loadHostHistory}
           organizationName={bootstrap?.organization.name}
           projects={bootstrap?.projects ?? []}
           onReloadRunner={reloadRunner}

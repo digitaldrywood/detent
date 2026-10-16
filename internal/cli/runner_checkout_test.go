@@ -2,15 +2,26 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -137,20 +148,196 @@ func TestCloneRunnerRepositoryUsesLocalGitConfiguration(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")
 	checkout(t, source)
+	runDoctorWorkflowSourceGit(t, source, "config", "uploadpack.allowFilter", "true")
+	archive := make([]byte, 9*1024*1024)
+	if _, err := rand.Read(archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "archive.bin"), archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDoctorWorkflowSourceGit(t, source, "add", "archive.bin")
+	runDoctorWorkflowSourceGit(t, source, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "archive")
+	historic := strings.TrimSpace(runDoctorWorkflowSourceGit(t, source, "rev-parse", "HEAD"))
+	runDoctorWorkflowSourceGit(t, source, "rm", "archive.bin")
+	runDoctorWorkflowSourceGit(t, source, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "remove archive")
 	gitConfig := filepath.Join(root, "gitconfig")
 	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_COUNT", "0")
 	t.Setenv("GIT_CONFIG_SYSTEM", filepath.Join(root, "absent-system-config"))
-	runDoctorWorkflowSourceGit(t, source, "config", "--file", gitConfig, "url."+filepath.ToSlash(source)+".insteadOf", "https://github.com/acme/orders.git")
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &cgi.Handler{Path: git, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	var throttle atomic.Bool
+	var transferred atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if throttle.Load() {
+			backend.ServeHTTP(&runnerCheckoutTransferWriter{ResponseWriter: w, done: r.Context().Done(), started: time.Now(), transferred: &transferred}, r)
+			return
+		}
+		backend.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	runDoctorWorkflowSourceGit(t, source, "config", "--file", gitConfig, "url."+server.URL+"/source.insteadOf", "https://github.com/example-org/example-project.git")
+	throttle.Store(true)
+	fullCtx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	full := exec.CommandContext(fullCtx, "git", "clone", "--", "https://github.com/example-org/example-project.git", filepath.Join(root, "full-clone"))
+	procgroup.Configure(fullCtx, full)
+	full.WaitDelay = time.Second
+	started := time.Now()
+	if err := full.Run(); err == nil || !errors.Is(fullCtx.Err(), context.DeadlineExceeded) || transferred.Load() < 7*1024*1024 {
+		t.Fatalf("full clone did not exhaust its two-minute transfer budget: bytes=%d error=%v context=%v", transferred.Load(), err, fullCtx.Err())
+	}
+	t.Logf("full clone: %s, %d bytes received before deadline at 64 KiB/s", time.Since(started), transferred.Load())
+	transferred.Store(0)
+	started = time.Now()
 	selected := globalconfig.Project{Workdir: filepath.Join(root, "checkout")}
 	for range 2 {
-		if err := prepareRunnerCheckout(t.Context(), selected, "https://github.com/acme/orders.git"); err != nil {
+		if err := prepareRunnerCheckout(t.Context(), selected, "https://github.com/example-org/example-project.git"); err != nil {
 			t.Fatal(err)
 		}
+	}
+	t.Logf("partial clone: %s, %d bytes received at 64 KiB/s", time.Since(started), transferred.Load())
+	throttle.Store(false)
+	missing := runDoctorWorkflowSourceGit(t, selected.Workdir, "rev-list", "--objects", "--all", "--missing=print")
+	if !strings.Contains(missing, "\n?") {
+		t.Fatalf("clone downloaded obsolete history blobs: %s", missing)
+	}
+	fresh := filepath.Join(root, "exact-workspace")
+	runDoctorWorkflowSourceGit(t, selected.Workdir, "worktree", "add", "--detach", fresh, historic)
+	if body, err := os.ReadFile(filepath.Join(fresh, "archive.bin")); err != nil || len(body) != len(archive) {
+		t.Fatalf("exact historic workspace could not retrieve missing blob: %d bytes, %v", len(body), err)
 	}
 	body, err := os.ReadFile(filepath.Join(selected.Workdir, "WORKFLOW.md"))
 	if err != nil || !strings.Contains(string(body), "Work the issue") {
 		t.Fatalf("local git checkout: %q %v", body, err)
 	}
+}
+
+func TestCloneRunnerRepositoryFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX git fixture")
+	}
+	for _, test := range []struct {
+		name, stderr, fix string
+		timeout           bool
+		oversized         bool
+	}{
+		{name: "authentication", stderr: "fatal: Authentication failed for https://user:password@github.com/example-org/project.git", fix: "gh auth login"},
+		{name: "not found", stderr: "fatal: repository not found", fix: "Verify the repository binding"},
+		{name: "network", stderr: "fatal: Could not resolve host: github.com", fix: "Check repository connectivity"},
+		{name: "timeout", stderr: "transfer stalled", timeout: true, fix: "Repository checkout timed out"},
+		{name: "excessive diagnostics", stderr: "fatal: Authentication failed for https://user:password@github.com/example-org/project.git", fix: "gh auth login", oversized: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			script := "#!/bin/sh\nprintf '%s\\n' \"$CHECKOUT_STDERR\" >&2\nexit 128\n"
+			if test.oversized {
+				script = "#!/bin/sh\nprintf '%s\\n' \"$CHECKOUT_STDERR\" >&2\ni=0\nwhile [ \"$i\" -lt 1024 ]; do printf '%01024d' 0 >&2; i=$((i+1)); done\nprintf discarded-suffix >&2\nexit 128\n"
+			}
+			if test.timeout {
+				script = "#!/bin/sh\nprintf '%s\\n' \"$CHECKOUT_STDERR\" >&2\nprintf ready > \"$CHECKOUT_STARTED\"\nwhile :; do :; done\n"
+			}
+			if err := os.WriteFile(filepath.Join(root, "git"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", root)
+			t.Setenv("CHECKOUT_STDERR", test.stderr)
+			started := filepath.Join(root, "started")
+			t.Setenv("CHECKOUT_STARTED", started)
+			contexts := newControlledRuntimeCommandContexts()
+			contexts.AllowCommand()
+			if test.timeout {
+				done := make(chan struct{})
+				defer close(done)
+				go func() {
+					<-contexts.ready
+					ticker := time.NewTicker(time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-done:
+							return
+						case <-ticker.C:
+							if _, err := os.Stat(started); err == nil {
+								contexts.Expire()
+								return
+							}
+						}
+					}
+				}()
+			}
+			err := cloneRunnerRepositoryWithCommandContext(t.Context(), "https://github.com/example-org/project.git", root, contexts.New)
+			var checkoutErr *runnerCheckoutError
+			if !errors.As(err, &checkoutErr) || !strings.Contains(checkoutErr.fix, test.fix) {
+				t.Fatalf("checkout failure: %v", err)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("lost git exit status: %v", err)
+			}
+			if errors.Is(err, context.DeadlineExceeded) != test.timeout {
+				t.Fatalf("deadline cause: %v", err)
+			}
+			if !test.timeout && exitErr.ExitCode() != 128 {
+				t.Fatalf("exit status = %d", exitErr.ExitCode())
+			}
+			if strings.Contains(err.Error(), "password") || strings.Contains(err.Error(), "user:") {
+				t.Fatalf("credentials leaked: %v", err)
+			}
+			checks := runnerauth.LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "pending", CheckoutMessage: checkoutErr.guidance(), CheckoutFix: checkoutErr.fix}
+			if err := checks.Validate(); err != nil {
+				t.Fatalf("Hub rejected checkout guidance: %v", err)
+			}
+			if test.timeout && !strings.Contains(err.Error(), "transfer stalled") {
+				t.Fatalf("lost stderr: %v", err)
+			}
+			if test.oversized {
+				if len(err.Error()) > 9*1024 || !strings.Contains(err.Error(), "[stderr truncated]") || strings.Contains(err.Error(), "discarded-suffix") {
+					t.Fatalf("stderr was not bounded with a truncation marker: %d bytes", len(err.Error()))
+				}
+				if !strings.Contains(err.Error(), "Authentication failed") {
+					t.Fatal("lost retained stderr")
+				}
+			} else if strings.Contains(err.Error(), "[stderr truncated]") {
+				t.Fatal("short stderr was marked truncated")
+			}
+		})
+	}
+}
+
+type runnerCheckoutTransferWriter struct {
+	http.ResponseWriter
+	done        <-chan struct{}
+	started     time.Time
+	written     int64
+	transferred *atomic.Int64
+}
+
+func (w *runnerCheckoutTransferWriter) Write(p []byte) (int, error) {
+	total := 0
+	for len(p) > 0 {
+		chunk := p[:min(len(p), 16*1024)]
+		due := w.started.Add(time.Duration(w.written+int64(len(chunk))) * time.Second / (64 * 1024))
+		timer := time.NewTimer(time.Until(due))
+		select {
+		case <-w.done:
+			timer.Stop()
+			return total, fmt.Errorf("transfer canceled: %w", context.Canceled)
+		case <-timer.C:
+		}
+		n, err := w.ResponseWriter.Write(chunk)
+		w.written += int64(n)
+		w.transferred.Add(int64(n))
+		total += n
+		if err != nil {
+			return total, err
+		}
+		p = p[n:]
+	}
+	return total, nil
 }

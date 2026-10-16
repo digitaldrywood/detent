@@ -62,7 +62,7 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	create := func(title string, at time.Time) tracker.NativeIssue {
-		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Title: title, State: "Todo"}, at, false)
+		issue, err := createNativeIssueDraft(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: title, State: "Todo"}, at, false, false)
 		if err != nil {
 			t.Fatal(err)
 		}

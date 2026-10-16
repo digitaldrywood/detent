@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func (c *NativeClient) HasRegisteredRunner() bool {
@@ -313,6 +315,21 @@ func runtimeEvidence(observation tracker.NativeRuntimeObservation) tracker.Nativ
 }
 
 func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, generation uint64) error {
+	e.mu.Lock()
+	e.role = runner.RoleMerge
+	e.mu.Unlock()
+	if e.claim.landingCapacity > 0 {
+		if err := e.renew(ctx, e.claim.landingCapacity); err != nil {
+			if nativeAdmissionCapacityFull(err) {
+				return &workspace.LandRefusal{Reason: err.Error()}
+			}
+			var failure *APIError
+			if errors.As(err, &failure) && failure.Code == "no_claimable_work" {
+				return &workspace.LandRefusal{Kind: workspace.LandRefusalNothing, Reason: "Current Change version is not ready for native landing"}
+			}
+			return err
+		}
+	}
 	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
 	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
 		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
@@ -324,7 +341,15 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 	e.mu.Unlock()
 	at := e.scheduler.now().UTC()
 	runtimeIdentity := runner.NativeLandingIdentity(at)
-	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: at, Identity: runtimeIdentity}); err != nil {
+	observation := tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: at, Identity: runtimeIdentity}
+	if current := e.claim.recovery.Issue.ListChange; current != nil && current.LandingPending {
+		target, err := e.LandingTarget(ctx)
+		if err != nil {
+			return err
+		}
+		observation.Landing = &tracker.NativeLandingReceipt{Waiting: true, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, CI: target.CI, ObservedAt: at}
+	}
+	if err := e.ObserveRuntime(ctx, observation); err != nil {
 		return err
 	}
 	if err := e.Start(ctx, identity); err != nil {

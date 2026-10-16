@@ -195,9 +195,9 @@ func TestAppSharedEntry(t *testing.T) {
 	}{
 		{name: "revoked work", user: &revoked, target: prefix + "/work", status: http.StatusSeeOther, location: "/organizations?switch=1"},
 		{name: "revoked chat", user: &revoked, target: prefix + "/chat/c/conv_1", status: http.StatusSeeOther, location: "/organizations?switch=1"},
-		{name: "work", user: &owner, target: prefix + "/work", status: http.StatusOK, shell: true},
-		{name: "chat", user: &owner, target: prefix + "/chat", status: http.StatusOK, shell: true},
-		{name: "viewer settings", user: &viewer, target: prefix + "/settings/general", status: http.StatusOK, shell: true},
+		{name: "work", user: &owner, target: prefix + "/work", status: http.StatusPermanentRedirect, location: "/local-organization/work"},
+		{name: "chat", user: &owner, target: prefix + "/chat?view=all", status: http.StatusPermanentRedirect, location: "/local-organization/chat?view=all"},
+		{name: "viewer settings", user: &viewer, target: prefix + "/settings/general", status: http.StatusPermanentRedirect, location: "/local-organization/settings/general"},
 		{name: "unscoped client route", user: &owner, target: "/work", status: http.StatusNotFound},
 		{name: "unscoped bootstrap", user: &owner, target: "/app/bootstrap", status: http.StatusNotFound},
 		{name: "unscoped static", user: &owner, target: "/static/app/conversation/app.js", status: http.StatusNotFound},
@@ -320,7 +320,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 				keys = append(keys, key)
 			}
 			slices.Sort(keys)
-			if want := "actor,api_base,base_path,capabilities,csrf_token,feature,organization,organizations,plan,preferences,projects,sign_in_path,support"; strings.Join(keys, ",") != want {
+			if want := "actor,api_base,base_path,capabilities,csrf_token,feature,has_unread,organization,organizations,plan,preferences,projects,sign_in_path,support"; strings.Join(keys, ",") != want {
 				t.Fatalf("keys = %v, want %s", keys, want)
 			}
 			for field, want := range map[string]string{

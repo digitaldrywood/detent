@@ -195,8 +195,12 @@ operator-dispatched. Automatic cuts proceed only when no cut, release
 validation, signed build or deployment is active and
 no successful production deployment and smoke completed within one cadence
 derived from the cut workflow's UTC cron. Explicit manual SHA cuts remain
-available within that window. Actions history owns admission; API failures are
-errors, and inactive branches alone do not defer newer uncovered source.
+available within that window and bypass frozen-series admission. Actions history
+and remote release heads own admission; API failures are errors. Outside the
+cadence window, an unfinished current or newer frozen series defers automatic
+cuts until its head has a successful stable-tag production deployment and both
+smokes. Older series superseded by a later successful production series do not
+defer newer uncovered source.
 Automatic source selection uses the newest green develop ancestor
 not already covered by a release series or stable tag, or unreleased develop tip
 if none exists; it succeeds without cutting when develop is already covered.
@@ -401,7 +405,12 @@ Apart from that owned build cache, the runner must not set `GOCACHE`,
 `GOMODCACHE`, `GOBIN`, `GOLANGCI_LINT_CACHE`, `GOFLAGS`, `npm_config_cache`,
 `PNPM_HOME`, `YARN_CACHE_FOLDER`, `CARGO_HOME`, `CARGO_TARGET_DIR`,
 `PIP_CACHE_DIR`, `UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH` or `DOCKER_CONFIG`
-unless explicitly passed through by the operator. Preserve host values and
+unless explicitly passed through by the operator, except for the existing
+shared Go admission budget's `-p`, `-trimpath` and `-toolexec` defaults.
+That same budget applies to agent subprocesses and direct review/landing
+validation, including repositories whose Go modules are nested. Explicit Go
+flags and process limits remain authoritative; a missing root `go.mod` does
+not exempt subprocesses from the configured host budget. Preserve host values and
 explicit overrides. New `workspace.*cache*` keys are rejected; the removed
 `workspace.cache_strategy` is ignored with its compatibility warning.
 
@@ -548,3 +557,23 @@ source transfer are being removed under this rule; no change may extend them.
 **Enforcement:** Review applies this rule to changes in runner, workspace,
 hubclient, recovery and placement code. This is a review rule; it adds no
 check, gate, configuration or runtime mechanism.
+
+## INV-18 — Hub writes stay small
+
+A request's write transaction writes only the rows that request owns. It never
+rebuilds rollups, recounts totals, cleans up, backfills or reprojects other
+rows. Derived data is maintained by background work, one item per short
+transaction, and may lag the request that changed it.
+
+Work inside any write transaction is bounded by the size of the request, never
+by the size of history. Reads use the reader pool, never the writer
+connection.
+
+New Hub tables and columns store typed columns, never JSON documents. Existing
+JSON columns are being migrated to typed columns under this rule, and the
+in-commit board card refresh is being moved to background work; no change may
+extend either.
+
+**Enforcement:** `TestINV18RequestCommitDoesNoDerivedWork` and
+`TestINV18HubMigrationsUseTypedColumns` in `internal/hubserver`. Review applies
+the history bound and reader rule to Hub persistence changes.

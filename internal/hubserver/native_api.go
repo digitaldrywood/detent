@@ -197,6 +197,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/attempts/:attempt/diff", s.getAttemptDiff, read)
 	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
+	e.POST(nativeBase+"/work-items/:item/release-pick", s.associateReleasePick, write)
 	// Workspace sessions (decisions section 18.1). The reads follow the
 	// issue's read rule; the writes need write on the project, and a
 	// terminal in requires needs the grant's runners flag on top.
@@ -357,7 +358,7 @@ func (scope nativeScope) actor() tracker.Actor {
 	if kind == "integration" && scope.credential.HostedKeyKind == "service" {
 		principal = scope.credential.ID
 	}
-	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.viaKey()}
+	return tracker.Actor{Kind: kind, PrincipalID: principal, ViaKey: scope.credential.viaKey(), Agent: scope.credential.Agent}
 }
 
 func (credential apiCredential) viaKey() string {

@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 145 entries; by kind: 56 primitive, 82 composition, 7 surface; by status: 145 available, 0 proposed, 0 exception.
+Catalog totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status: 146 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -392,6 +392,19 @@ A persistent inline message in the place the user must act: a warning above a fo
 - Avoid: Transient confirmations (use a toast) and status labels (use Badge). Optional features not set up use muted text and one Set up action; follow [Feedback and interaction states](patterns.md#feedback-and-interaction-states).
 - Related: [Toast](#toast), [Badge](#badge), [Empty state](#empty-state).
 
+### Avatar
+
+A person’s image or initials beside their visible identity; sm for compact references and md for member rows.
+
+- Kind: Primitive; status: available; id: `avatar`.
+- Import: `import { Avatar } from "~/components/ui/avatar";`
+- Source: [src/components/ui/avatar.tsx](../../web/conversation/src/components/ui/avatar.tsx).
+- Variants: `size`: `sm`, `md`.
+- States: image, initials.
+- Keyboard: Static identity; the surrounding row or link owns focus.
+- Avoid: Project marks (use Project favicon) and stand-alone identity without a visible name.
+- Related: [Badge](#badge).
+
 ### Badge
 
 A short static status or count with semantic colour, paired with text so colour is not the only signal. `variant="label"` renders a code-host label, tinted from the `--label` colour set in `style`.
@@ -644,7 +657,7 @@ A headline number with its label, an optional change against the prior period an
 
 ### Chart
 
-Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`.
+Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout.
 
 - Kind: Primitive; status: available; id: `chart`.
 - Import: `import { Chart, ChartLegend, ChartPanel, ChartSwatch, ProportionBar, BarMeter, ChartCategory, ChartSeries, ChartLegendItem, chartTicks } from "~/components/ui/chart";`
@@ -1511,14 +1524,14 @@ Navigation between settings sections, built on the Sidebar primitive.
 
 ### Settings pages
 
-Detent's settings sections (general, projects, integrations, plan, billing, keybindings, about), each composed from the settings layout.
+Detent's settings sections (general, projects, integrations, plan, billing, keybindings, what's new, about), each composed from the settings layout.
 
 - Kind: Composition; status: available; id: `settings-route`.
-- Import: `import { SettingsRoute, GeneralSettings, ProjectsSettings, IntegrationsSettings, PlanSettings, BillingSettings, KeybindingsSettings, AboutSettings } from "~/app/settings/Settings";`
-- Source: [src/app/settings/Settings.tsx](../../web/conversation/src/app/settings/Settings.tsx).
+- Import: `import { SettingsRoute, GeneralSettings, ProjectsSettings, IntegrationsSettings, PlanSettings, BillingSettings, KeybindingsSettings, WhatsNewSettings, AboutSettings } from "~/app/settings/Settings";`
+- Source: [src/app/settings/Settings.tsx](../../web/conversation/src/app/settings/Settings.tsx), with [src/app/settings/WhatsNewSettings.tsx](../../web/conversation/src/app/settings/WhatsNewSettings.tsx).
 - Variants: none.
 - States: loading, error, empty.
-- Keyboard: As the settings layout.
+- Keyboard: As the settings layout. What's new uses Tab and arrow keys for its category filter; release and pull request links are focusable. Mark-seen retries retain focus while pending and on failure, announce their result, and return focus to the selected filter on success.
 - Avoid: New hosted settings screens outside this route.
 - Related: [Settings layout](#settings-layout).
 

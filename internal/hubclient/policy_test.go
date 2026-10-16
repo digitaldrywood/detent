@@ -54,6 +54,10 @@ func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 				w := httptest.NewRecorder()
 				w.Header().Set("Content-Type", "application/json")
 				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v2/capabilities":
+					if err := json.NewEncoder(w).Encode(map[string][]string{"features": {tracker.NativeLandingCapacityCapability}}); err != nil {
+						t.Fatal(err)
+					}
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policy/observed"):
 					w.WriteHeader(http.StatusNoContent)
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/policy"):

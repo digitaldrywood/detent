@@ -357,6 +357,10 @@ type AgentModelCatalogProvider interface {
 	ListModels(context.Context, AgentProcessRequest) ([]AgentModel, error)
 }
 
+type AgentBillingProvider interface {
+	BillingBasis(context.Context, AgentProcessRequest) (string, error)
+}
+
 type AgentDefaultModelProvider interface {
 	DefaultModel(context.Context, AgentProcessRequest) (string, error)
 }
@@ -486,6 +490,7 @@ type NativeCommandAction struct {
 }
 
 type AgentUpdate struct {
+	Billing             string
 	workerScratchPath   string
 	Type                AgentUpdateType
 	Method              string
@@ -846,6 +851,8 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
+	SourceMergeSHA    string
+	BaseRef           string
 	BaseSHA           string
 	SecurityAudit     bool
 	Validation        *gate.CommandResult

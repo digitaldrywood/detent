@@ -1782,7 +1782,7 @@ func mergeWorkerSlotDecisionAttrs(
 }
 
 func mergeWorkerIssue(issue connector.Issue) bool {
-	return normalizeState(issue.State) == normalizeState(autoPromoteMergingState)
+	return normalizeState(issue.State) == normalizeState(autoPromoteMergingState) || issue.NativeLandingHeadSHA != ""
 }
 
 func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {

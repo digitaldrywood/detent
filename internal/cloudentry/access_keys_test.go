@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -43,6 +45,18 @@ func createTestAccessKey(t *testing.T, b *browser, context string, organizations
 
 func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 	f := newEntryFixture(t)
+	for id, tenant := range f.fixtures {
+		if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE organizations SET managed=1 WHERE id=?", id); err != nil {
+			t.Fatal(err)
+		}
+		organization, err := f.service.registry.Organization(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tenant.config.Hosted.SharedEntry.ResolveKey = func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
+			return f.service.resolveTenantKey(ctx, organization, origin)
+		}
+	}
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations", "user_alice:")
 	key := createTestAccessKey(t, owner, "global", nil, "")
@@ -72,7 +86,106 @@ func TestAccessKeyCrossOrganizationMCP(t *testing.T) {
 			t.Fatalf("projects=%s err=%v", raw, err)
 		}
 		project := projects.Data.Projects[0].ID
-		created, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": "cross-org-" + org, "title": "One key across organizations"})
+		approveEntryFixturePolicy(t, owner, org, project)
+		createdConversation, failed := call("create_conversation", map[string]any{"organization_id": org, "project_id": project, "request_id": "conversation-" + org, "input": map[string]any{"title": "Command results"}})
+		var conversationResult struct {
+			Data struct {
+				Conversation struct {
+					ID string `json:"id"`
+				} `json:"conversation"`
+			} `json:"data"`
+		}
+		if failed || json.Unmarshal(createdConversation, &conversationResult) != nil || conversationResult.Data.Conversation.ID == "" {
+			t.Fatalf("create conversation=%s failed=%v", createdConversation, failed)
+		}
+		command := map[string]any{"organization_id": org, "project_id": project, "conversation_id": conversationResult.Data.Conversation.ID, "request_id": "command-" + org, "input": map[string]any{"kind": "message", "text": "A single message"}}
+		type commandResult struct {
+			ID     string          `json:"action_id"`
+			Status string          `json:"status"`
+			Data   json.RawMessage `json:"data"`
+		}
+		var actionID string
+		var originalData json.RawMessage
+		reconnected := entryMCPClient(t, client, key.Token, "2025-11-25", "/mcp")
+		for _, current := range []struct {
+			name string
+			call func(string, any) (json.RawMessage, bool)
+		}{{"submit", call}, {"same-session replay", call}, {"new-session replay", reconnected}} {
+			if current.name == "new-session replay" {
+				result, failed := current.call(operatortool.ActionResult, map[string]any{"organization_id": org, "action_id": actionID})
+				if !failed || !strings.Contains(string(result), `"not_found"`) {
+					t.Fatalf("unreplayed connection read=%s failed=%v", result, failed)
+				}
+			}
+			raw, failed := current.call("post_conversation_command", command)
+			var receipt commandResult
+			if failed || json.Unmarshal(raw, &receipt) != nil || receipt.ID == "" || receipt.Status != "succeeded" {
+				t.Fatalf("%s command=%s failed=%v", current.name, raw, failed)
+			}
+			if actionID != "" && receipt.ID != actionID {
+				t.Fatalf("replay changed action: %s != %s", receipt.ID, actionID)
+			}
+			actionID = receipt.ID
+			if originalData != nil && !bytes.Equal(receipt.Data, originalData) {
+				t.Fatalf("%s changed command receipt: %s != %s", current.name, receipt.Data, originalData)
+			}
+			originalData = receipt.Data
+			result, failed := current.call(operatortool.ActionResult, map[string]any{"organization_id": org, "action_id": actionID})
+			var read commandResult
+			if failed || json.Unmarshal(result, &read) != nil || read.ID != actionID || read.Status != "succeeded" || !bytes.Equal(read.Data, receipt.Data) {
+				t.Fatalf("action result=%s want=%s failed=%v", result, raw, failed)
+			}
+		}
+		otherKey := createTestAccessKey(t, owner, "global", nil, "")
+		other := entryMCPClient(t, client, otherKey.Token, "2025-11-25", "/mcp")
+		denied, failed := other(operatortool.ActionResult, map[string]any{"organization_id": org, "action_id": actionID})
+		if !failed || !strings.Contains(string(denied), `"not_found"`) {
+			t.Fatalf("other key read=%s failed=%v", denied, failed)
+		}
+		otherOrg := "org_beta"
+		if org == otherOrg {
+			otherOrg = "org_alpha"
+		}
+		denied, failed = call(operatortool.ActionResult, map[string]any{"organization_id": otherOrg, "action_id": actionID})
+		if !failed || !strings.Contains(string(denied), `"not_found"`) {
+			t.Fatalf("other organization read=%s failed=%v", denied, failed)
+		}
+		for _, test := range []struct {
+			name string
+			args map[string]any
+			code string
+		}{
+			{"missing action", map[string]any{"organization_id": org, "action_id": "missing"}, "not_found"},
+			{"missing id", map[string]any{"organization_id": org}, "invalid_request"},
+			{"wrong id type", map[string]any{"organization_id": org, "action_id": 1}, "invalid_request"},
+			{"unknown field", map[string]any{"organization_id": org, "action_id": actionID, "approve": true}, "invalid_request"},
+		} {
+			result, failed := call(operatortool.ActionResult, test.args)
+			if !failed || !strings.Contains(string(result), `"`+test.code+`"`) {
+				t.Fatalf("%s=%s failed=%v", test.name, result, failed)
+			}
+		}
+		messages, failed := call("list_conversation_messages", map[string]any{"organization_id": org, "project_id": project, "conversation_id": conversationResult.Data.Conversation.ID})
+		var history struct {
+			Data struct {
+				Messages []struct {
+					Role string `json:"role"`
+				} `json:"messages"`
+			} `json:"data"`
+		}
+		if failed || json.Unmarshal(messages, &history) != nil {
+			t.Fatalf("conversation messages=%s failed=%v", messages, failed)
+		}
+		userMessages := 0
+		for _, message := range history.Data.Messages {
+			if message.Role == "user" {
+				userMessages++
+			}
+		}
+		if userMessages != 1 {
+			t.Fatalf("replay or result read executed command again: %s", messages)
+		}
+		created, failed := call(operatortool.FileIssue, map[string]any{"organization_id": org, "project_id": project, "request_id": "cross-org-" + org, "title": "One key across organizations", "description": issueContractTestSections})
 		if failed || !strings.Contains(string(created), "One key across organizations") {
 			t.Fatalf("write %s=%s failed=%v", org, created, failed)
 		}
@@ -330,6 +443,7 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 		t.Fatalf("projects=%s err=%v", raw, err)
 	}
 	project := projects.Data.Projects[0].ID
+	approveEntryFixturePolicy(t, owner, "org_alpha", project)
 	for _, context := range []string{"project", "selected"} {
 		access := "project"
 		if context == "selected" {
@@ -364,7 +478,7 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	if listFailed || !strings.Contains(string(listed), project) {
 		t.Fatalf("service discovery after removal=%s failed=%v", listed, listFailed)
 	}
-	created, failed := serviceCall(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "service-after-removal", "title": "Service key survives creator departure"})
+	created, failed := serviceCall(operatortool.FileIssue, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "service-after-removal", "title": "Service key survives creator departure", "description": issueContractTestSections})
 	if failed || !strings.Contains(string(created), "Service key survives creator departure") {
 		t.Fatalf("service write=%s failed=%v", created, failed)
 	}

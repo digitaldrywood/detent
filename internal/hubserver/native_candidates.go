@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -33,6 +34,7 @@ const nativeCandidateRecordedDependenciesSatisfied = `NOT EXISTS (
        AND json_extract(recovered.actor_json, '$.kind') = 'human'))))`
 
 type nativeCandidateSnapshot struct {
+	AnsweredExclusion      *tracker.NativeAnsweredExclusion
 	IDs                    []tracker.WorkItemID
 	UnresolvedDependencies []tracker.NativeDependency
 	Unavailable            []string
@@ -45,11 +47,29 @@ func readNativeCandidateSnapshot(ctx context.Context, q nativeQueryer, query cla
 		return snapshot, err
 	}
 	var dependenciesSatisfied bool
-	err = q.QueryRowContext(ctx, `SELECT `+nativeCandidateDependenciesSatisfied+`
+	var kind, attemptID, updatedAt string
+	err = q.QueryRowContext(ctx, `SELECT `+nativeCandidateDependenciesSatisfied+`,
+ CASE WHEN answered.id IS NULL THEN '' ELSE `+nativeAnsweredClassification+` END,
+ COALESCE(answered.id, ''), COALESCE(answered.updated_at, '')
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
-WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied)
+JOIN workflow_states ws ON ws.id = i.workflow_state_id
+LEFT JOIN native_attempts answered ON answered.id = (SELECT answered.id `+nativeAnsweredAttemptFrom+`
+ AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging')
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &updatedAt)
 	if err != nil {
 		return snapshot, err
+	}
+	if kind != "" {
+		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
+		if kind == "untyped_cooldown" || kind == "instance_cooldown" {
+			updated, err := parseTimeValue(updatedAt)
+			if err != nil {
+				snapshot.Unavailable = append(snapshot.Unavailable, "answered_retry_eligibility")
+			} else {
+				eligible := updated.Add(30 * time.Minute)
+				snapshot.AnsweredExclusion.RetryEligibleAt = &eligible
+			}
+		}
 	}
 	if !dependenciesSatisfied {
 		for _, dependency := range issue.Blockers {
@@ -62,7 +82,7 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 			}
 		}
 	}
-	if len(snapshot.UnresolvedDependencies) > 0 {
+	if len(snapshot.UnresolvedDependencies) > 0 || snapshot.AnsweredExclusion != nil {
 		snapshot.Unavailable = append(snapshot.Unavailable, "other_native_candidate_exclusions")
 	} else {
 		snapshot.Unavailable = append(snapshot.Unavailable, "native_candidate_exclusion")

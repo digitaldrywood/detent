@@ -185,6 +185,30 @@ func (s *Service) Submit(ctx context.Context, action Action) (Action, error) {
 	return cloneActions(current.actions[index : index+1])[0], err
 }
 
+func (s *Service) RestoreActionResult(ctx context.Context, action Action, data json.RawMessage) (Action, error) {
+	current, err := s.connectionSession(ctx)
+	if err != nil {
+		return Action{}, err
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if action.ID == "" || action.Status != ActionSucceeded || action.Mutation.PrincipalID != current.connection.Identity.PrincipalID || action.OrganizationID != current.connection.Identity.OrganizationID {
+		return Action{}, operatortool.ErrAccessDenied
+	}
+	if _, err := authorizeAction(ctx, *current.connection, action); err != nil {
+		return Action{}, err
+	}
+	action.ConnectionID = current.connection.ID
+	action.resultData = append(json.RawMessage(nil), data...)
+	index := actionIndex(current.actions, action.ID)
+	if index < 0 {
+		current.actions = append(current.actions, action)
+	} else {
+		current.actions[index] = action
+	}
+	return cloneActions([]Action{action})[0], nil
+}
+
 // ConnectionResult is the only credential delivery path. Browser conversations
 // never serialize this data. The caller must also recheck resource ownership.
 func (s *Service) ConnectionResult(ctx context.Context, actionID string) (json.RawMessage, error) {

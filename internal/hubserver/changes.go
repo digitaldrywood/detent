@@ -686,7 +686,7 @@ ON CONFLICT (organization_id, project_id) DO UPDATE SET policy_json = excluded.p
 		return nil, err
 	}
 	if previous.ID != rules.ID {
-		if err := routeStaleNativeLandingChanges(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.actor().PrincipalID, "", s.config.now()); err != nil {
+		if err := routeStaleNativeLandingChanges(ctx, tx, string(scope.organization)+"/"+string(scope.project), scope.actor().PrincipalID, "", false, s.config.now()); err != nil {
 			return nil, err
 		}
 		if err := resetNativeBoardPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project)); err != nil {

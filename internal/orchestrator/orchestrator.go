@@ -85,6 +85,7 @@ type Config struct {
 	RefreshFailureThreshold       int
 	MaxConcurrentAgents           int
 	MaxConcurrentAgentsByState    map[string]int
+	NativeLandingCapacity         int
 	DispatchPriorityByState       []string
 	DispatchPriorityByLabel       []string
 	PrioritizeUnblockers          bool
@@ -182,6 +183,7 @@ type ClaimingConfig struct {
 }
 
 type SchedulingRequest struct {
+	LandingCapacity         int
 	NativeLandingBatch      bool
 	DispatchPriorityByState []string
 	DispatchPriorityByLabel []string
@@ -341,6 +343,7 @@ type Orchestrator struct {
 	providerCapacity        runpkg.ProviderCapacityResolver
 	workerHostChecker       runpkg.WorkerHostChecker
 	capacityStatus          runpkg.CapacityStatusController
+	capacityReader          runpkg.CapacityReader
 	validatorCapacity       runpkg.ValidatorCapacityController
 	recoveryInspector       runpkg.BlockedRecoveryInspector
 	workspaceHoldInspector  runpkg.WorkspaceBranchHoldInspector
@@ -553,6 +556,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if candidate, ok := runner.(runpkg.CapacityStatusController); ok {
 		capacityStatus = candidate
 	}
+	var capacityReader runpkg.CapacityReader
+	if candidate, ok := runner.(runpkg.CapacityReader); ok {
+		capacityReader = candidate
+	}
 	var dailyBudgetStatus runpkg.DailyBudgetStatusProvider
 	if candidate, ok := runner.(runpkg.DailyBudgetStatusProvider); ok {
 		dailyBudgetStatus = candidate
@@ -749,6 +756,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		providerCapacity:        providerCapacity,
 		workerHostChecker:       workerHostChecker,
 		capacityStatus:          capacityStatus,
+		capacityReader:          capacityReader,
 		validatorCapacity:       validatorCapacity,
 		recoveryInspector:       blockedRecoveryInspector,
 		workspaceHoldInspector:  workspaceHoldInspector,

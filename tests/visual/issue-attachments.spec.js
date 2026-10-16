@@ -95,6 +95,7 @@ for (const gesture of ["drop", "attach"]) {
     const title = gesture === "drop" ? "Mountain sunrise" : "Ocean sunset";
     await dialog.getByLabel("Title", { exact: true }).fill(title);
     const body = dialog.getByLabel("What needs doing", { exact: true });
+    await body.fill("## Acceptance criteria\nThe issue retains its attachment.\n## Must not break\nExisting issue attachments remain accessible.\n## How we know it worked\nOpen the created issue and view its attachment.\n");
     if (gesture === "drop") await transfer(body, "drop", "mountain-sunrise-panorama.png");
     else {
       const chooser = page.waitForEvent("filechooser");

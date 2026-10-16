@@ -173,7 +173,10 @@ describe("the derived board", () => {
     { sort: "created", expected: [3, 2, 1] },
     { sort: "title", expected: [2, 1, 3] },
     { sort: "closed", expected: [3, 2, 1] },
-  ] satisfies { sort: WorkSort; expected: number[] }[])("keeps $sort ordering independent of other timestamps", async ({ sort, expected }) => {
+    { sort: "default", searching: true, scores: [-3, -1, -3], expected: [1, 3, 2] },
+    { sort: "priority", searching: true, scores: [-3, -1, -3], expected: [3, 1, 2] },
+    { sort: "default", searching: false, scores: [-3, -1, -3], expected: [2, 1, 3] },
+  ] satisfies { sort: WorkSort; expected: number[]; searching?: boolean; scores?: number[] }[])("keeps $sort ordering independent of other timestamps ($searching)", async ({ sort, expected, searching, scores }) => {
     const page = await http.listWorkItems({ projectId: PROJECT, state: "In Progress", limit: 1 });
     const attempts = await http.listAttempts(PROJECT, page.items[0]!.work_item_id);
     const base = toWorkItemView(page.items[0]!, "alpha");
@@ -182,7 +185,13 @@ describe("the derived board", () => {
       { ...base, identifier: "alpha#2", closedAt: "2026-10-01", priority: "High", title: "A", terminal: false, lastActivityAt: "2026-10-04", updatedAt: "2026-10-04", createdAt: "2026-10-04", attempt: null },
       { ...base, identifier: "alpha#3", closedAt: "2026-10-02", priority: "Urgent", title: "C", terminal: true, lastActivityAt: "2026-10-05", updatedAt: "2026-10-03", createdAt: "2026-10-05", attempt: null },
     ];
-    expect(sortItems(items, sort).map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
+    const input = items.map((item, index) => ({
+      ...item,
+      searchScore: toWorkItemView(Schema.decodeUnknownSync(NativeIssue)({
+        ...page.items[0]!, search_score: scores?.[index],
+      }), "alpha").searchScore,
+    }));
+    expect(sortItems(input, sort, searching).map((item) => item.identifier)).toEqual(expected.map((number) => `alpha#${number}`));
   });
 
   it("searches title, identifier and label over the loaded board", async () => {

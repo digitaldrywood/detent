@@ -52,6 +52,7 @@ export const NativeActor = Schema.Struct({
   kind: NativeActorKind,
   principal_id: Schema.String,
   display_name: Schema.optional(Schema.String),
+  agent: Schema.optional(Schema.String),
 });
 export type NativeActor = typeof NativeActor.Type;
 
@@ -169,6 +170,7 @@ export const NativeIssue = Schema.Struct({
   profile: Schema.String,
   title: Schema.String,
   body: Schema.String,
+  search_score: Schema.optional(Schema.Number),
   state: Schema.String,
   terminal: Schema.Boolean,
   archived: Schema.optional(Schema.Boolean),

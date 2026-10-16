@@ -53,6 +53,18 @@ func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, r
 	if err != nil {
 		return err
 	}
+	windows, err := readProviderUsage(ctx, tx, scope.credential.Runner.RunnerID)
+	if err != nil {
+		return err
+	}
+	billing, err := readProviderBilling(ctx, tx, scope.credential.Runner.RunnerID)
+	if err != nil {
+		return err
+	}
+	for i := range previous {
+		previous[i].Billing = billing[previous[i].Backend]
+		previous[i].UsageWindows = windows[previous[i].Backend]
+	}
 	for i, report := range reports {
 		for _, prior := range previous {
 			if prior.Backend != report.Backend || prior.Provider != report.Provider || prior.AccountAlias != report.AccountAlias || prior.SharedAccountAlias != report.SharedAccountAlias || prior.ObservedAt.After(now) {
@@ -63,7 +75,18 @@ func updateProviderReports(ctx context.Context, tx *sql.Tx, scope nativeScope, r
 			}
 		}
 	}
-	raw, err := json.Marshal(reports)
+	if err := writeProviderUsage(ctx, tx, scope.credential.Runner.RunnerID, reports); err != nil {
+		return err
+	}
+	if err := writeProviderBilling(ctx, tx, scope.credential.Runner.RunnerID, reports); err != nil {
+		return err
+	}
+	stored := slices.Clone(reports)
+	for i := range stored {
+		stored[i].UsageWindows = nil
+		stored[i].Billing = ""
+	}
+	raw, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}

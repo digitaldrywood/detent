@@ -16,7 +16,7 @@ import {
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { AccountProject, FleetRunner } from "../../contracts/account.ts";
+import type { AccountProject, FleetRunner, UpdatesReport } from "../../contracts/account.ts";
 import {
   findingDestination,
   findingsFromRead,
@@ -28,8 +28,7 @@ import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { getQueryData, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
 import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics } from "./diagnosticsQuery.ts";
 import { usePageTitle } from "../pageTitle.ts";
-import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
-import { useWorkHttp } from "../work/lib/useWork.ts";
+import { useHealthFindings } from "./healthFindings.tsx";
 import { CapacityChart } from "./CapacityChart.tsx";
 import { FindingAskWorkspace } from "./FindingAsk.tsx";
 
@@ -69,7 +68,7 @@ export function DiagnosticsRoute(): React.ReactElement {
   usePageTitle("Diagnostics");
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
-  const http = useWorkHttp();
+  const sharedFindings = useHealthFindings();
   const [range, setRange] = useState<Window>("24h");
   const [revision, setRevision] = useState(0);
   const [askedFinding, setAskedFinding] = useState<DiagnosticFinding | null>(null);
@@ -87,81 +86,33 @@ export function DiagnosticsRoute(): React.ReactElement {
     if (findings.key === findingsKey && findings.value !== EMPTY_FINDINGS) setQueryData(findingsKey, findings.value);
   }, [findings, findingsKey]);
   const findingsState = findings.key === findingsKey ? findings.value : getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS;
+  const readScope = `${projectsKey}:${revision}`;
+  const previousScope = React.useRef("");
   useEffect(() => {
-    let current = true;
-    setFindings({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS });
-    let request = 0;
-    let tick: string | null = null;
-    let since: string | undefined;
-    const update = (next: (previous: FindingsState) => FindingsState) => {
-      setFindings((previous) => ({ key: findingsKey, value: next(previous.key === findingsKey ? previous.value : EMPTY_FINDINGS) }));
-    };
-    const refreshFindings = async (live: boolean) => {
-      const version = ++request;
-      try {
-        const [open, resolved] = await Promise.all([
-          api.healthFindings(projects),
-          live ? api.healthFindings(projects, { state: "resolved", since }) : null,
-        ]);
-        if (!current || request !== version) return;
-        since ??= open.last_tick_at ?? undefined;
-        tick = open.last_tick_at;
-        update((previous) => {
-          const findings =
-            open.last_tick_at === null ? null : findingsFromRead(open);
-          const updates = new Map(
-            [
-              ...(resolved === null ? [] : findingsFromRead(resolved)),
-              ...(findings ?? []),
-            ].map((finding) => [finding.id, finding]),
-          );
-          const retained = live
-            ? (previous.findings ?? []).map(
-                (finding) => updates.get(finding.id) ?? finding,
-              )
-            : [];
-          const ids = new Set(retained.map((finding) => finding.id));
-          return {
-            findings:
-              findings === null
-                ? null
-                : [
-                    ...retained,
-                    ...findings.filter((finding) => !ids.has(finding.id)),
-                  ],
-            detectorTick: open.last_tick_at,
-            findingsError: null,
-          };
-        });
-      } catch {
-        if (current && request === version) update((previous) => ({ ...previous, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." }));
-        return;
-      }
-    };
-    void refreshFindings(false);
-    const refreshLive = () => {
-      if (document.visibilityState === "visible") void refreshFindings(true);
-    };
-    const unsubscribe =
-      projects[0] === undefined
-        ? undefined
-        : subscribeProjectEvents(http, projects[0], {
-            "health.findings": ((event: MessageEvent<string>) => {
-              if (tick === event.data) return;
-              refreshLive();
-            }) as EventListener,
-            open: refreshLive,
-          });
-    document.addEventListener("visibilitychange", refreshLive);
-    return () => {
-      current = false;
-      unsubscribe?.();
-      document.removeEventListener("visibilitychange", refreshLive);
-    };
-  }, [api, http, projects, findingsKey, revision]);
+    const read = sharedFindings.read;
+    if (read === null && !sharedFindings.error) return;
+    const live = previousScope.current === readScope;
+    previousScope.current = readScope;
+    const nativeProjects = new Set(projects);
+    const rows = (read === null ? [] : findingsFromRead(read)).filter((finding) => nativeProjects.has(finding.subject.project_id ?? ""));
+    setFindings((previous) => {
+      const prior = previous.key === findingsKey ? previous.value : EMPTY_FINDINGS;
+      if (sharedFindings.error && read === null) return { key: findingsKey, value: { ...prior, findingsError: "Unable to refresh findings. Any findings below are from the last successful read." } };
+      const updates = new Map(rows.map((finding) => [finding.id, finding]));
+      const retained = live || sharedFindings.error ? (prior.findings ?? []).map((finding) => updates.get(finding.id) ?? finding) : [];
+      const ids = new Set(retained.map((finding) => finding.id));
+      return { key: findingsKey, value: {
+        findings: read?.last_tick_at == null ? null : [...retained, ...rows.filter((finding) => finding.resolved_at == null && !ids.has(finding.id))],
+        detectorTick: read?.last_tick_at ?? null,
+        findingsError: sharedFindings.error ? "Unable to refresh findings. Any findings below are from the last successful read." : null,
+      } };
+    });
+  }, [sharedFindings.read, sharedFindings.error, findingsKey, readScope, projects]);
+
   const state = {
     report: reportQuery.data?.report ?? null,
     runners: reportQuery.data?.runners ?? null,
+    appUpdates: reportQuery.data?.appUpdates ?? null,
     ...findingsState,
     pending: reportQuery.pending,
     error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
@@ -179,6 +130,7 @@ export function DiagnosticsRoute(): React.ReactElement {
       onRangeChange={setRange}
       onRefresh={() => {
         void reportQuery.refresh();
+        sharedFindings.refresh();
         setRevision((value) => value + 1);
       }}
       onAsk={(finding) => {
@@ -225,6 +177,7 @@ function Unavailable({
 
 export function DiagnosticsView({
   report,
+  appUpdates = null,
   runners,
   findings: findingRows = report?.findings ?? null,
   detectorTick = report?.detector_tick ?? null,
@@ -245,6 +198,7 @@ export function DiagnosticsView({
   readonly canManage?: boolean;
   readonly findingsError?: string | null;
   readonly report: DiagnosticsReport | null;
+  readonly appUpdates?: UpdatesReport | null;
   readonly runners: readonly FleetRunner[] | null;
   readonly findings?: readonly DiagnosticFinding[] | null;
   readonly detectorTick?: string | null;
@@ -291,6 +245,10 @@ export function DiagnosticsView({
         </WorkspaceBreadcrumb>
         <div className="ms-auto flex items-center gap-2">
           {panelControls}
+          {appUpdates ? <p className="flex min-w-0 items-baseline gap-1.5 text-xs text-muted-foreground" title={`Hub ${appUpdates.current}`}>
+            <span>Hub</span>
+            <span className="max-w-28 truncate font-mono sm:max-w-none">{appUpdates.current}</span>
+          </p> : null}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -315,11 +273,11 @@ export function DiagnosticsView({
             </div>
           ) : (
             <>
-              {runners === null ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : <CapacityPanel runners={runners} />}
+              {runners === null ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : <CapacityPanel runners={runners} appUpdates={appUpdates} />}
               <Section title="Needs attention">
                 {findingsError ? <Unavailable>{findingsError}</Unavailable> : null}
                 {problems.length > 0 ? <div className="divide-y divide-border">
-                  {problems.map((problem) => <article key={problem.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                  {problems.map((problem) => <article key={problem.id} className="grid min-w-0 gap-2 py-3 sm:grid-cols-[minmax(0,2.35fr)_minmax(0,1.3fr)]">
                     <div className="min-w-0 space-y-1 break-words">
                       <p className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
                         {problem.runners.map((runner) => <Link key={runner.id} to="/settings/runners" className="break-all hover:underline">{runner.display_name || runner.hostname}</Link>)}
@@ -327,9 +285,8 @@ export function DiagnosticsView({
                       </p>
                       <p className="text-sm font-medium">{problem.summary}</p>
                       <p className="text-xs text-muted-foreground">{problem.impact}</p>
-                      {!problem.destination ? <p className="text-xs text-muted-foreground">{problem.action}</p> : null}
                     </div>
-                    {problem.destination ? <Button variant="outline" size="sm" render={<Link to={problem.destination} />}>{problem.action}</Button> : null}
+                    <div className="min-w-0">{problem.destination ? <Button variant="outline" size="sm" render={<Link to={problem.destination} />}>{problem.action}</Button> : <p className="text-xs text-muted-foreground">{problem.action}</p>}</div>
                   </article>)}
                 </div> : null}
                 {findings === null ? (
@@ -338,7 +295,7 @@ export function DiagnosticsView({
                     them.
                   </Unavailable>
                 ) : findings.length === 0 ? (
-                  <Unavailable>{problems.length === 0 ? "No open findings." : "No additional open findings."}</Unavailable>
+                  <p className="text-xs text-muted-foreground">{problems.length === 0 ? "No open findings." : "No additional open findings."} {detectorTick ? `Findings last checked ${timestamp(detectorTick)}.` : "Findings have not been checked yet."}</p>
                 ) : (
                   <div className="divide-y divide-border">
                     {findings.map((finding) => {
@@ -405,7 +362,7 @@ export function DiagnosticsView({
                   </div>
                 )}
               </Section>
-              <p className="text-xs text-muted-foreground">{detectorTick ? `Findings last checked ${timestamp(detectorTick)}.` : "Findings have not been checked yet."}</p>
+              {findings === null || findings.length > 0 ? <p className="text-xs text-muted-foreground">{detectorTick ? `Findings last checked ${timestamp(detectorTick)}.` : "Findings have not been checked yet."}</p> : null}
               <section aria-label="Capacity and throughput history" className="flex min-w-0 flex-col gap-6 border-t border-border pt-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h2 className="text-sm font-medium">Capacity and throughput history</h2>

@@ -18,17 +18,18 @@ import (
 )
 
 const (
-	initializeRequestID   = 1
-	threadStartRequestID  = 2
-	turnStartRequestID    = 3
-	threadResumeRequestID = 4
-	configReadRequestID   = 5
-	modelListRequestID    = 6
-	threadReadRequestID   = 7
-	accountReadRequestID  = 8
-	methodNotFoundCode    = -32601
-	chromeDevToolsServer  = "chrome-devtools"
-	mcpToolApprovalKind   = "mcp_tool_call"
+	initializeRequestID     = 1
+	threadStartRequestID    = 2
+	turnStartRequestID      = 3
+	threadResumeRequestID   = 4
+	configReadRequestID     = 5
+	modelListRequestID      = 6
+	threadReadRequestID     = 7
+	accountReadRequestID    = 8
+	rateLimitsReadRequestID = 9
+	methodNotFoundCode      = -32601
+	chromeDevToolsServer    = "chrome-devtools"
+	mcpToolApprovalKind     = "mcp_tool_call"
 
 	defaultClientName    = "detent-orchestrator"
 	defaultClientTitle   = "Detent Orchestrator"
@@ -160,6 +161,7 @@ func (e *TurnFailedError) BackendErrorStatus() string {
 }
 
 type AppServer struct {
+	capacityAccount  string
 	prepareThread    func(context.Context, string) error
 	transportFactory TransportFactory
 	clientInfo       ClientInfo
@@ -171,6 +173,10 @@ type AppServer struct {
 }
 
 type AppServerOption func(*AppServer)
+
+func WithCapacityAccount(account string) AppServerOption {
+	return func(s *AppServer) { s.capacityAccount = strings.TrimSpace(account) }
+}
 
 type timeoutContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
@@ -275,6 +281,20 @@ func (a Account) SubscriptionBased() bool {
 	return plan != "self_serve_business_usage_based" && plan != "enterprise_cbp_usage_based"
 }
 
+func (a Account) BillingBasis() string {
+	switch strings.ToLower(strings.TrimSpace(a.Type)) {
+	case "apikey", "api_key":
+		return "api_key"
+	case "chatgpt":
+		if a.SubscriptionBased() {
+			return "subscription"
+		}
+		return "api_key"
+	default:
+		return "unknown"
+	}
+}
+
 type UpdateHandler func(Update) error
 
 type UpdateType string
@@ -348,6 +368,7 @@ type RateLimitSnapshot struct {
 }
 
 type RateLimitWindow struct {
+	missingUsedPercent bool
 	UsedPercent        float64
 	WindowDurationMins *float64
 	ResetsAt           *int64
@@ -620,6 +641,70 @@ func (s *AppServer) Account(ctx context.Context) (account Account, err error) {
 		return Account{}, err
 	}
 	return s.account(ctx, transport)
+}
+
+func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.CapacityObservation, err error) {
+	ctx = contextOrBackground(ctx)
+	transport, err := s.transportFactory.NewTransport(ctx)
+	if err != nil {
+		return observation, fmt.Errorf("start codex app-server transport: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, closeTransport(ctx, transport, s.readTimeout))
+	}()
+	if err := s.initialize(ctx, transport, nil); err != nil {
+		return observation, err
+	}
+	account, err := s.account(ctx, transport)
+	if err != nil {
+		return observation, err
+	}
+	if !account.SubscriptionBased() {
+		return observation, runner.ErrCapacityReadUnsupported
+	}
+	if err := sendRequest(ctx, transport, rateLimitsReadRequestID, "account/rateLimits/read", nil); err != nil {
+		return observation, err
+	}
+	result, err := s.awaitResponse(ctx, transport, rateLimitsReadRequestID, nil, nil, nil)
+	if err != nil {
+		var responseErr *ResponseError
+		if errors.As(err, &responseErr) && responseErr.Code == methodNotFoundCode {
+			return observation, errors.Join(runner.ErrCapacityReadUnsupported, err)
+		}
+		return observation, err
+	}
+	var response struct {
+		AccountID            string                              `json:"accountId"`
+		RateLimits           *rateLimitSnapshotPayload           `json:"rateLimits"`
+		RateLimitsByLimitID  map[string]rateLimitSnapshotPayload `json:"rateLimitsByLimitId"`
+		OrdinaryUsageAllowed json.RawMessage                     `json:"ordinaryUsageAllowed"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return observation, fmt.Errorf("%w: decode account/rateLimits/read result: %w", ErrInvalidResponse, err)
+	}
+	observation.AccountID = strings.TrimSpace(response.AccountID)
+	if limits, ok := response.RateLimitsByLimitID["codex"]; ok {
+		response.RateLimits = &limits
+	} else if len(response.RateLimitsByLimitID) > 0 || (response.RateLimits != nil && response.RateLimits.LimitID != "" && response.RateLimits.LimitID != "codex") {
+		return observation, nil
+	}
+	if response.RateLimits != nil {
+		observation.RateLimits = rateLimitsFromCodex(response.RateLimits.snapshot())
+		observation.Status, _ = CapacityStatus(observation.RateLimits)
+	}
+	if len(response.OrdinaryUsageAllowed) > 0 {
+		var allowed *bool
+		if err := json.Unmarshal(response.OrdinaryUsageAllowed, &allowed); err != nil {
+			return runner.CapacityObservation{}, fmt.Errorf("%w: decode ordinary usage permission: %w", ErrInvalidResponse, err)
+		}
+		observation.Status.Available = allowed != nil && *allowed
+		if allowed != nil {
+			observation.Status.Exhausted = !*allowed
+		} else {
+			observation.Status = runner.CapacityStatus{}
+		}
+	}
+	return observation, nil
 }
 
 func (s *AppServer) account(ctx context.Context, transport Transport) (account Account, err error) {
@@ -2522,7 +2607,7 @@ type rateLimitSnapshotPayload struct {
 }
 
 type rateLimitWindowPayload struct {
-	UsedPercent        float64  `json:"usedPercent"`
+	UsedPercent        *float64 `json:"usedPercent"`
 	WindowDurationMins *float64 `json:"windowDurationMins"`
 	ResetsAt           *int64   `json:"resetsAt"`
 }
@@ -2548,8 +2633,13 @@ func (p *rateLimitWindowPayload) window() *RateLimitWindow {
 	if p == nil {
 		return nil
 	}
+	usedPercent := 0.0
+	if p.UsedPercent != nil {
+		usedPercent = *p.UsedPercent
+	}
 	return &RateLimitWindow{
-		UsedPercent:        p.UsedPercent,
+		UsedPercent:        usedPercent,
+		missingUsedPercent: p.UsedPercent == nil,
 		WindowDurationMins: p.WindowDurationMins,
 		ResetsAt:           p.ResetsAt,
 	}

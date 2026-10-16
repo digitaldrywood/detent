@@ -1,19 +1,26 @@
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
-import type { FleetRunner } from "../../contracts/account.ts";
+import type { FleetRunner, SuggestedLimit } from "../../contracts/account.ts";
+import { billingLabel, ProviderUsage } from "./ProviderUsage.tsx";
+import { SuggestedLimitChip } from "./SuggestedLimit.tsx";
 import { RunnerProblems } from "./RunnerProblems.tsx";
+import { runnerUpdateStatusLabel } from "./format.ts";
 import { cn } from "../../lib/utils.ts";
 import { RunnerStatusDot } from "../../components/RunnerStatusDot.tsx";
 import type { RunnerProject } from "./RunnerDetailSheet.tsx";
 
 export function HostCard({
   runner,
+  now,
   projects = [],
   onOpen,
   onRemove,
+  suggestion,
 }: {
   readonly runner: FleetRunner;
+  readonly now?: number;
+  readonly suggestion?: SuggestedLimit;
   readonly projects?: readonly RunnerProject[];
   readonly onOpen: () => void;
   readonly onRemove?: () => void;
@@ -23,20 +30,9 @@ export function HostCard({
     : runner.health === "needs_attention" ? "Needs attention"
     : runner.health === "outside_hours" ? "Outside hours"
     : runner.health;
-  const updateLabels: Record<string, string> = {
-    requested: "Update requested",
-    draining: "Waiting for active work",
-    refused: "Update failed",
-    uncertain: "Update needs attention",
-    applied: "Update installed",
-    restart_requested: "Restart requested",
-    running: "Updated",
-    drifted: "Version changed since update",
-    unavailable: "Update unavailable",
-  };
   const updateNeedsHuman = runner.update?.status === "refused" || runner.update?.status === "uncertain";
   const legacyReinstall = !!runner.claim_refusal_reason && (runner.update?.status === "unavailable" || /^v?0\.117\.(?:[0-9]|[1-4][0-9]|50)$/.test(runner.version ?? ""));
-  const updateStatus = runner.update?.desired ? updateLabels[runner.update.status] ?? "Update pending" : undefined;
+  const updateStatus = runner.update?.desired ? runnerUpdateStatusLabel(runner.update.status) : undefined;
   return (
     <article
       id={`runner-${runner.id}`}
@@ -56,6 +52,7 @@ export function HostCard({
       <div className={cn("space-y-1 text-xs text-muted-foreground", runner.health === "needs_attention" && "text-warning-foreground")}>
         <p>{runner.claim_refusal_reason ? "Can’t take work" : health}</p>
         <p>{runner.state} · Limit {runner.capacity_limit}</p>
+        <SuggestedLimitChip suggestion={suggestion} />
       </div>
       <div className="min-w-0 space-y-1 text-xs">
         <p className="text-muted-foreground @[48rem]/runner-list:sr-only">Running</p>
@@ -66,6 +63,12 @@ export function HostCard({
         <Button size="xs" variant="outline" aria-label={`Manage ${runner.display_name}`} onClick={onOpen}>Manage</Button>
         {onRemove ? <Button size="xs" variant="outline" aria-label={`Remove runner ${runner.display_name}`} onClick={onRemove}>Remove runner</Button> : null}
       </div>
+      {runner.provider_capacity.length > 0 ? <div className="col-span-full min-w-0 space-y-2">
+        {runner.provider_capacity.map((capacity) => <div key={capacity.backend} className="space-y-1">
+          <p className="text-xs font-medium">{capacity.backend} · {capacity.account_alias} · {billingLabel(capacity)}</p>
+          <ProviderUsage capacity={capacity} now={now} />
+        </div>)}
+      </div> : null}
       {runner.problems?.length ? <div className="col-span-full min-w-0"><RunnerProblems runner={runner} alert needsHuman /></div> : null}
     </article>
   );

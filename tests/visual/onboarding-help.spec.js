@@ -148,6 +148,7 @@ for (const width of [1280, 390]) {
     await expect(page.getByText(/The runner reads detent.yaml and WORKFLOW.md/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Advanced policy details", exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Resolved policy descriptor", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Approve settings", exact: true })).toHaveCount(0);
     await context.close();
   });
 }

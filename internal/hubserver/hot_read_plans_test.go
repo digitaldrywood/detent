@@ -255,7 +255,9 @@ func TestAnalyticsCommitPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	statements = statements[:0]
-	f.service.database.refreshAnalyticsRollups(ctx, tx)
+	if err := f.service.database.projectAnalyticsBatch(ctx, tx, f.service.config.now(), analyticsBackfillBatch); err != nil {
+		t.Fatal(err)
+	}
 	traced := slices.Clone(statements)
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)

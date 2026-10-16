@@ -145,16 +145,17 @@ type Lane struct {
 }
 
 type Transition struct {
-	EvidenceID string     `json:"evidence_id"`
-	From       string     `json:"from,omitempty"`
-	To         string     `json:"to"`
-	At         time.Time  `json:"at"`
-	Source     string     `json:"source,omitempty"`
-	Actor      *Actor     `json:"actor,omitempty"`
-	Reason     string     `json:"reason,omitempty"`
-	Provenance Provenance `json:"provenance"`
-	PRNumber   *int64     `json:"pr_number,omitempty"`
-	SessionID  int64      `json:"session_id,omitempty"`
+	EvidenceID   string     `json:"evidence_id"`
+	From         string     `json:"from,omitempty"`
+	To           string     `json:"to"`
+	At           time.Time  `json:"at"`
+	Source       string     `json:"source,omitempty"`
+	Actor        *Actor     `json:"actor,omitempty"`
+	Reason       string     `json:"reason,omitempty"`
+	ReasonDetail string     `json:"reason_detail,omitempty"`
+	Provenance   Provenance `json:"provenance"`
+	PRNumber     *int64     `json:"pr_number,omitempty"`
+	SessionID    int64      `json:"session_id,omitempty"`
 }
 
 type Actor struct {
@@ -187,19 +188,20 @@ type Eligibility struct {
 }
 
 type EligibilityDecision struct {
-	UnresolvedDependencies []tracker.NativeDependency `json:"unresolved_dependencies,omitempty"`
-	Unavailable            []string                   `json:"unavailable,omitempty"`
-	RunnerID               string                     `json:"runner_id,omitempty"`
-	Historical             bool                       `json:"historical,omitempty"`
-	EvidenceID             string                     `json:"evidence_id"`
-	Source                 string                     `json:"source"`
-	State                  EligibilityState           `json:"state"`
-	Outcome                string                     `json:"outcome"`
-	Reason                 string                     `json:"reason,omitempty"`
-	ReasonCode             string                     `json:"reason_code,omitempty"`
-	AttemptNumber          int                        `json:"attempt_number,omitempty"`
-	SelectionEvidenceID    string                     `json:"selection_evidence_id,omitempty"`
-	At                     time.Time                  `json:"at"`
+	AnsweredExclusion      *tracker.NativeAnsweredExclusion `json:"answered_exclusion,omitempty"`
+	UnresolvedDependencies []tracker.NativeDependency       `json:"unresolved_dependencies,omitempty"`
+	Unavailable            []string                         `json:"unavailable,omitempty"`
+	RunnerID               string                           `json:"runner_id,omitempty"`
+	Historical             bool                             `json:"historical,omitempty"`
+	EvidenceID             string                           `json:"evidence_id"`
+	Source                 string                           `json:"source"`
+	State                  EligibilityState                 `json:"state"`
+	Outcome                string                           `json:"outcome"`
+	Reason                 string                           `json:"reason,omitempty"`
+	ReasonCode             string                           `json:"reason_code,omitempty"`
+	AttemptNumber          int                              `json:"attempt_number,omitempty"`
+	SelectionEvidenceID    string                           `json:"selection_evidence_id,omitempty"`
+	At                     time.Time                        `json:"at"`
 	sequence               int64
 }
 

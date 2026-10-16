@@ -112,7 +112,7 @@ for (const [selection, title, body] of [
     const created = await hubAPI(page, "POST", `/projects/${issueProject}/work-items`, {
       idempotency_key: `issue-link-${selection}`,
       title,
-      body,
+      body: `${body}\n\n## Acceptance criteria\nOpen the linked issue in its project.\n## Must not break\nRemembered project selection.\n## How we know it worked\nThe issue page shows the saved title and body.`,
       state: "Todo",
     });
     expect(created.status).toBe(200);

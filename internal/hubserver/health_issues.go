@@ -32,6 +32,7 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 		Labels:   []string{"infrastructure"},
 	}
 	body := fmt.Sprintf("Finding: `%s`\nClass: %s\nSubject: %s %s\nOpened: %s\nObserved: %s\n\n%s\n\nNext action: %s\n\nEvidence:\n```json\n%s\n```\n\n```detent-agent\nschema: 1\neffort: high\n```", f.ID, f.Class, f.Subject.Kind, f.Subject.ID, formatHubTime(f.OpenedAt), formatHubTime(f.LastSeenAt), f.Summary, f.NextAction, evidence)
+	body += "\n\n## Acceptance criteria\nResolve the recorded instance finding using its evidence and next action.\n\n## Must not break\nPreserve project behavior, workflow authority, and unrelated running work.\n\n## How we know it worked\nThe existing health detector records the finding as resolved after the next action is verified."
 	request.Body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "audit", Instance: "health_detector", Source: f.ID, Fingerprint: f.Fingerprint})
 	return request, nil
 }

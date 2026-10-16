@@ -25,7 +25,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 	}{
 		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false},
 		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false},
-		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address", 0, false, false},
+		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false},
 		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false},
 		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false},
 		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false},
@@ -36,7 +36,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
 			f := newNativeFixture(t, service, "", "duplicates")
 			first := f.create(t, "Runner checkout deadlocks")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ? WHERE native_id = ?", "Checkout hangs during repository association", first.WorkItemID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ? WHERE native_id = ?", "Checkout hangs during repository association"+issueContractTestSections, first.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 			foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign")
@@ -54,7 +54,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body, State: "Todo"}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: "Todo"}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			wantStatus := http.StatusOK
 			if test.challenge {
@@ -147,7 +147,7 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge = 1 WHERE id = ?", f.project.ID); err != nil {
 		t.Fatal(err)
 	}
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bound"}, Title: first.Title, Body: "Independent description", State: "Todo"}
+	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "bound"}, Title: first.Title, Body: "Independent description" + issueContractTestSections, State: "Todo"}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 	requireNativeStatus(t, response, http.StatusConflict)
 	var challenge duplicateChallenge
@@ -223,7 +223,7 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lifetime"}, Title: first.Title, Body: "Independent description", State: "Todo"}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "lifetime"}, Title: first.Title, Body: "Independent description" + issueContractTestSections, State: "Todo"}
 			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
 			var challenge duplicateChallenge
 			decodeHubResponse(t, response, &challenge)
@@ -343,7 +343,7 @@ func TestNativeDuplicateMCP(t *testing.T) {
 				}
 				return result.Content.Data
 			}
-			args := map[string]any{"request_id": "mcp-duplicate", "title": first.Title, "description": "Private submitted description", "state": "Todo"}
+			args := map[string]any{"request_id": "mcp-duplicate", "title": first.Title, "description": "Private submitted description" + issueContractTestSections, "state": "Todo"}
 			raw := call(operatortool.FileIssue, args)
 			var challenge duplicateChallenge
 			if err := json.Unmarshal(raw, &challenge); err != nil {

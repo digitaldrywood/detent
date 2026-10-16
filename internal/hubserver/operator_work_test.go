@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,7 +60,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		}
 		return content.Data, envelope.Result.IsError
 	}
-	raw, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body", "state": "Todo"})
+	raw, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body" + issueContractTestSections, "state": "Todo"})
 	var created tracker.NativeIssue
 	if err := json.Unmarshal(raw, &created); err != nil || failed || created.WorkItemID == "" {
 		t.Fatalf("create=%s %v failed=%t", raw, err, failed)
@@ -81,7 +82,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("%s native refusal=%s failed=%t", tool, refused, failed)
 		}
 	}
-	replay, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body", "state": "Todo"})
+	replay, failed := call("file_issue", "create", map[string]any{"title": "Created", "description": "Keep body" + issueContractTestSections, "state": "Todo"})
 	if failed || string(raw) != string(replay) {
 		t.Fatalf("creation replay=%s", replay)
 	}
@@ -106,7 +107,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				_, err := conn.ExecContext(t.Context(), "ROLLBACK")
 				released <- errors.Join(err, conn.Close())
 			}()
-			fields := map[string]any{"title": "Contended", "description": "Written while replication holds the lock", "state": "Todo"}
+			fields := map[string]any{"title": "Contended", "description": "Written while replication holds the lock" + issueContractTestSections, "state": "Todo"}
 			if tool == operatortool.AddComment {
 				fields = map[string]any{"identifier": contended.WorkItemID, "body": "Written while replication holds the lock"}
 			}
@@ -135,7 +136,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		body := record.Markdown(string(f.project.OrganizationID))
+		body := record.Markdown(string(f.project.OrganizationID)) + issueContractTestSections
 		var items []tracker.NativeIssue
 		for _, key := range []string{"first-attachment", "second-attachment"} {
 			fields := map[string]any{"title": key, "description": body, "state": "Todo"}
@@ -186,7 +187,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		}
 	})
 	for rank := 1; rank <= 4; rank++ {
-		fields := map[string]any{"title": "Priority", "description": "Exact rank", "priority": rank}
+		fields := map[string]any{"title": "Priority", "description": "Exact rank" + issueContractTestSections, "priority": rank}
 		raw, failed := call("file_issue", "rank-"+strconv.Itoa(rank), fields)
 		var item tracker.NativeIssue
 		if err := json.Unmarshal(raw, &item); err != nil || failed || item.Priority == nil || *item.Priority != rank-1 || item.State != "Todo" {
@@ -276,9 +277,9 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		if err := json.Unmarshal(raw, &refusal); err != nil || !failed || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "get_project_integration") || !strings.Contains(refusal.Message, "bind_native_repository") {
 			t.Fatalf("missing association refusal=%s failed=%t err=%v", raw, failed, err)
 		}
-		raw, failed = call("file_issue", "unbound-native", map[string]any{"title": "Native without repository", "state": "Todo"})
+		raw, failed = call("file_issue", "unbound-native", map[string]any{"description": nativeContractTestBody, "title": "Native without repository", "state": "Todo"})
 		var native tracker.NativeIssue
-		if err := json.Unmarshal(raw, &native); err != nil || failed || native.LinkedSource != nil || native.Body != "" || native.Number != linked.Number+1 {
+		if err := json.Unmarshal(raw, &native); err != nil || failed || native.LinkedSource != nil || native.Body != nativeContractTestBody || native.Number != linked.Number+1 {
 			t.Fatalf("unbound native creation=%s failed=%t err=%v", raw, failed, err)
 		}
 		states := append([]tracker.NativeState(nil), f.project.States...)
@@ -322,7 +323,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		{"explicit unlinked Triage", "Triage", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			raw, failed := call("file_issue", test.name, map[string]any{"title": test.name, "state": test.state})
+			raw, failed := call("file_issue", test.name, map[string]any{"description": nativeContractTestBody, "title": test.name, "state": test.state})
 			if failed != test.failed {
 				t.Fatalf("creation=%s failed=%t", raw, failed)
 			}
@@ -379,7 +380,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}{
 		{"edit", "edit_item", map[string]any{"title": "Edited", "priority": 2, "expected_revision": createdFields["revision"]}, false},
 		{"stale", "edit_item", map[string]any{"title": "Stale", "expected_revision": "1"}, true},
-		{"direct body clear", "edit_item", map[string]any{"body": "", "expected_revision": 2}, false},
+		{"direct body replacement", "edit_item", map[string]any{"body": nativeContractTestBody, "expected_revision": 2}, false},
 		{"comment edit", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Edited comment", "expected_revision": commentFields["revision"]}, false},
 		{"stale comment", "edit_comment", map[string]any{"comment_id": comment.ID, "body": "Stale", "expected_revision": "1"}, true},
 		{"foreign item", "add_comment", map[string]any{"identifier": "wi_foreign", "body": "Foreign"}, true},
@@ -399,7 +400,7 @@ func TestHubMCPWorkCommands(t *testing.T) {
 		})
 	}
 	current := readWorkItem(t, f, created.WorkItemID, "")
-	if current.Title != "Edited" || current.Revision != 3 || current.Body != "" || current.Priority == nil || *current.Priority != 2 {
+	if current.Title != "Edited" || current.Revision != 3 || current.Body != nativeContractTestBody || current.Priority == nil || *current.Priority != 2 {
 		t.Fatalf("mutation result=%+v", current)
 	}
 	for _, reference := range []string{identifier, strconv.Itoa(created.Number), id} {
@@ -651,6 +652,57 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatalf("fresh edit/replay=%s %v", raw, err)
 		}
 	}
+	t.Run("large body correction", func(t *testing.T) {
+		suffix := issueContractTestSections + "\n\nPreserve the final report entry.\n"
+		prefix := "Old finding.\n" + strings.Repeat("Archived report text.\n", 1800)
+		originalBody := prefix + strings.Repeat("x", 42917-len(prefix)-len(suffix)) + suffix
+		correctedBody := "New finding.\n" + originalBody[len("Old finding.\n"):]
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "large-body-create"}, Title: "Large report", Body: originalBody, State: "Todo"})
+		requireNativeStatus(t, response, http.StatusOK)
+		var large tracker.NativeIssue
+		decodeHubResponse(t, response, &large)
+		for range 2 {
+			raw, failed := call(operatortool.EditItem, "large-body-edit", map[string]any{"identifier": large.WorkItemID, "body": correctedBody, "expected_revision": "1"})
+			var edited tracker.NativeIssue
+			if err := json.Unmarshal(raw, &edited); err != nil || failed || edited.Body != correctedBody || edited.Revision != 2 {
+				t.Fatalf("large body correction bytes=%d revision=%d failed=%t err=%v", len(edited.Body), edited.Revision, failed, err)
+			}
+		}
+		for _, test := range []struct {
+			name      string
+			reference tracker.NativeWorkItemID
+		}{
+			{"large stale revision", large.WorkItemID},
+			{"large foreign project", foreign.WorkItemID},
+		} {
+			raw, failed := call(operatortool.EditItem, test.name, map[string]any{"identifier": test.reference, "body": originalBody, "expected_revision": "1"})
+			if !failed {
+				t.Fatalf("%s accepted", test.name)
+			}
+			if test.reference == large.WorkItemID {
+				var conflict operatortool.ConflictError
+				if err := json.Unmarshal(raw, &conflict); err != nil || conflict.Code != "revision_conflict" || conflict.CurrentRevision != 2 {
+					t.Fatalf("large stale revision conflict=%s err=%v", raw, err)
+				}
+			} else if len(raw) != 0 {
+				t.Fatal("large foreign edit leaked context")
+			}
+		}
+		current := readWorkItem(t, f, large.WorkItemID, "")
+		if current.Body != correctedBody || current.Revision != 2 || current.IssueContract == nil || !maps.Equal(current.IssueContract.ConfirmedSections, large.IssueContract.ConfirmedSections) {
+			t.Fatal("refused edits or replay changed large body, revision or confirmation")
+		}
+		if current := readWorkItem(t, other, foreign.WorkItemID, ""); current.Body != foreign.Body || current.Revision != foreign.Revision {
+			t.Fatal("large edit changed foreign issue")
+		}
+		response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(large.WorkItemID)+"/versions/1", f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var original tracker.NativeIssue
+		decodeHubResponse(t, response, &original)
+		if original.Body != originalBody {
+			t.Fatal("large correction changed original report history")
+		}
+	})
 }
 
 // GitHub-compatible relationships, ordering and priority use the same commands

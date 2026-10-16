@@ -148,8 +148,6 @@ agent:
       max_drafts_per_run: 1
   followups:
     enabled: true
-agents:
-  model_selection: {}
 gate:
   landing_mode: per_landing
   kind: command

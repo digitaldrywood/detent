@@ -32,7 +32,7 @@ func TestImportedGitHubReferenceMapping(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			id := fmt.Sprintf("I_mapping_%d", index)
 			now := time.Now().UTC().Add(-time.Hour)
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: id}, Title: test.name, Body: test.body, State: "Todo", Provenance: &tracker.Provenance{Provider: test.provider, ExternalID: id, AuthorID: "source-author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: id}, Title: test.name, Body: test.body + issueContractTestSections, State: "Todo", Provenance: &tracker.Provenance{Provider: test.provider, ExternalID: id, AuthorID: "source-author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var created tracker.NativeIssue
@@ -45,7 +45,7 @@ func TestImportedGitHubReferenceMapping(t *testing.T) {
 			if !reflect.DeepEqual(created.ExternalReferences, []tracker.ExternalReference{want}) || !reflect.DeepEqual(read.ExternalReferences, created.ExternalReferences) {
 				t.Fatalf("create/read references = %+v / %+v, want %+v", created.ExternalReferences, read.ExternalReferences, want)
 			}
-			body := "Edited native body"
+			body := "Edited native body" + issueContractTestSections
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(created.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: id + "-edit"}, ExpectedRevision: created.Revision, Body: &body}), http.StatusOK)
 			read = readWorkItem(t, f, created.WorkItemID, "")
 			if !reflect.DeepEqual(read.ExternalReferences, created.ExternalReferences) {
@@ -81,7 +81,7 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 			}
 			id := fmt.Sprintf("I_backfill_%d", index)
 			now := time.Now().UTC().Add(-time.Hour)
-			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: id}, Title: test.name, Body: test.body, State: "Todo", Provenance: &tracker.Provenance{Provider: "github", ExternalID: id, AuthorID: "source-author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
+			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: id}, Title: test.name, Body: test.body + issueContractTestSections, State: "Todo", Provenance: &tracker.Provenance{Provider: "github", ExternalID: id, AuthorID: "source-author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}}
 			response := performHubAPIRequest(t, fixture.service, http.MethodPost, fixture.base+"/work-items", fixture.token, request)
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue

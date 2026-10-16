@@ -95,6 +95,15 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 		if complete {
 			diff.Patch = patch.String()
 		}
+		if stage == "security_audit" && e.sourceRequired {
+			if err := e.retainChangeSource(ctx, *e.lastDiff); err != nil {
+				return runner.NativeValidation{}, err
+			}
+			if e.retainedSource == nil || e.retainedSource.Patch == "" {
+				return runner.NativeValidation{}, errors.New("security audit retained source patch is unavailable")
+			}
+			diff.Patch = e.retainedSource.Patch
+		}
 		runtime, err := e.claim.source.client.RuntimeEvidence(ctx, e.claim.lease.WorkItemID, e.data.AttemptID)
 		if err != nil {
 			return runner.NativeValidation{}, err

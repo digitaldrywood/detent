@@ -190,6 +190,7 @@ describe("the activity merge", () => {
       actorLabel({ kind: "runner", principal_id: "runner_be4aaeec1c424bb6afbe94aea6d605d6" }, null, null),
     ).toBe("runner_be4aaeec");
     expect(actorLabel({ kind: "human", principal_id: "me" }, "me", null)).toBe("You");
+    expect(actorLabel({ kind: "human", principal_id: "me", agent: "Luna (gpt-6.1-sol)" }, "me", null)).toBe("You via Luna (gpt-6.1-sol)");
     expect(
       actorLabel({ kind: "human", principal_id: "0".repeat(40) }, null, null),
     ).toBe(`${"0".repeat(18)}…`);

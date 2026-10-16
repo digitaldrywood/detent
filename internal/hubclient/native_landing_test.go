@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // TestNativeExecutionLandsReviewedVersion drives one item from a finished
@@ -38,7 +40,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		batch        bool
 		otherMachine string
 		policyChange func(*policy.Descriptor)
-		wantRework   bool
+		wantStale    bool
 		refusal      string
 	}{
 		{name: "plain git by default"},
@@ -46,6 +48,9 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		{name: "protected base receipt returns to review", refusal: "base_protected"},
 		{name: "landing command failure receipt returns to Rework", refusal: "validation"},
 		{name: "approved GitHub PR policy", github: true},
+		{name: "landing admission outage preserves claim and retries", github: true, refusal: "admission_unavailable"},
+		{name: "landing capacity refusal preserves claim and retries", github: true, refusal: "admission_refused"},
+		{name: "direct landing capacity wait resumes on another machine", github: true, refusal: "direct_capacity_wait"},
 		{name: "SSH native landing", ssh: true},
 		{name: "landing and coding in one refresh", batch: true},
 		{name: "local reviewed head stays on its source machine", otherMachine: "unpushed"},
@@ -56,18 +61,18 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 			p.SourceDigest = policy.Digest([]byte("new source"))
 			p.Profile = "updated"
 		}},
-		{name: "merge method change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantRework: true},
-		{name: "validator change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantRework: true},
-		{name: "required check floor change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantRework: true},
+		{name: "merge method change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.MergeMethod = "merge" }, wantStale: true},
+		{name: "validator change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.Validator = true }, wantStale: true},
+		{name: "required check floor change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.RequiredChecks++ }, wantStale: true},
 		{name: "GitHub CI contract change requires fresh review evidence", policyChange: func(p *policy.Descriptor) {
 			p.Gates.GitHubPullRequest, p.Gates.GitHubCIDigest = true, policy.Digest([]byte("Full CI run-full-ci"))
-		}, wantRework: true},
-		{name: "review change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantRework: true},
-		{name: "GitHub landing gate change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantRework: true},
+		}, wantStale: true},
+		{name: "review change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.HumanReview = true }, wantStale: true},
+		{name: "GitHub landing gate change requires fresh review evidence", policyChange: func(p *policy.Descriptor) { p.Gates.GitHubPullRequest = true }, wantStale: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine, test.policyChange, test.wantRework, test.refusal)
+			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine, test.policyChange, test.wantStale, test.refusal)
 		})
 	}
 }
@@ -94,8 +99,12 @@ func TestLinkedNativeIssueLandsWithoutGitHub(t *testing.T) {
 	}
 }
 
-func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantRework bool, refusalKinds ...string) {
+func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantStale bool, refusalKinds ...string) {
 	t.Helper()
+	directWait := len(refusalKinds) > 0 && refusalKinds[0] == "direct_capacity_wait"
+	if directWait {
+		refusalKinds[0] = "admission_refused"
+	}
 	intakeCalls := 0
 	backend := intakeRepositoryBackend{snapshot: func(request hubserver.GitHubImportRequest) tracker.GitHubIssueSnapshot {
 		if request.Stage == "issue" {
@@ -166,7 +175,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatal(err)
 	}
 	work.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(head, "README.md"))
-	if otherMachine == "clean" {
+	if otherMachine == "clean" || directWait {
 		work.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return nativeChangeSourceFixture(base, head), nil
 		})
@@ -209,6 +218,17 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if state := h.state(t, issue.ID); state != "Merging" {
 		t.Fatalf("after approval the item is in %s, want Merging", state)
 	}
+	if directWait {
+		for _, state := range []string{"Human Review", "In Progress"} {
+			current, err := h.admin.Issue(t.Context(), item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
+				t.Fatalf("returning reviewed source to %s: %v", state, err)
+			}
+		}
+	}
 	publishedPolicyID := h.descriptor.ID
 	if policyChange != nil {
 		next := h.descriptor
@@ -218,7 +238,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		h.descriptor = next
-		if wantRework {
+		if wantStale {
 			if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 || len(h.scheduler.nativeClaims) != 0 {
 				t.Fatalf("stale gates were claimed for landing: %+v", candidates)
 			}
@@ -227,7 +247,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			}
 			detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
 			if err != nil || detail.Change.CurrentVersion != change.VersionID || detail.Change.Landed != nil || len(detail.Versions) != 1 || detail.Versions[0].HeadSHA != head || detail.Summary.Status != "stale_policy" {
-				t.Fatalf("Rework changed immutable source or landing evidence: %+v, %v", detail, err)
+				t.Fatalf("stale configuration changed immutable source or landing evidence: %+v, %v", detail, err)
 			}
 			return
 		}
@@ -294,14 +314,20 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 				t.Fatalf("parallel coding event missing: %+v", recovery.Attempts)
 			}
 		}
+	} else if directWait {
+		candidates = h.candidatesIn(t, "In Progress")
 	} else {
 		candidates = h.candidatesIn(t, "Merging")
 	}
-	if len(candidates) != want || candidates[0].ID != issue.ID || candidates[0].State != "Merging" {
+	landingState := "Merging"
+	if directWait {
+		landingState = "In Progress"
+	}
+	if len(candidates) != want || candidates[0].ID != issue.ID || candidates[0].State != landingState {
 		t.Fatalf("landing candidates = %#v", candidates)
 	}
 	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("adopting landing claim: %v", err)
 	}
 	landing := h.scheduler.RunExecution(issue.ID)
 	if landing == nil {
@@ -309,7 +335,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	guarded, stop, err = landing.Guard(t.Context())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("guarding landing claim: %v", err)
 	}
 	defer stop()
 	nativeLanding := landing
@@ -320,8 +346,161 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if !ok {
 		t.Fatalf("execution %T cannot land", landing)
 	}
+	if directWait {
+		if err := landing.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatalf("starting direct code execution: %v", err)
+		}
+	}
+	if len(refusalKinds) > 0 && strings.HasPrefix(refusalKinds[0], "admission_") {
+		failure := refusalKinds[0]
+		refusalKinds[0] = ""
+		original := h.native.client.httpClient.Transport
+		h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			if strings.HasSuffix(request.URL.Path, "/renew") {
+				var mutation tracker.NativeLeaseMutation
+				if err := json.NewDecoder(request.Body).Decode(&mutation); err != nil {
+					return nil, err
+				}
+				if mutation.LandingCapacity != 1 {
+					t.Errorf("landing admission omitted configured ceiling: %d", mutation.LandingCapacity)
+				}
+				if failure == "admission_unavailable" {
+					return nil, errors.New("injected landing admission outage")
+				}
+				return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"runner_capacity"}`)), Request: request}, nil
+			}
+			return original.RoundTrip(request)
+		})
+		err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 168, 27)
+		h.native.client.httpClient.Transport = original
+		if err == nil {
+			t.Fatal("landing proceeded without acknowledged admission")
+		}
+		var refusal *workspace.LandRefusal
+		if failure == "admission_refused" && (!errors.As(err, &refusal) || refusal.Kind != "") {
+			t.Fatalf("capacity admission did not use the existing landing wait: %v", err)
+		}
+		if _, found := h.scheduler.nativeClaims[issue.ID]; !found {
+			t.Fatal("capacity admission failure revoked execution authority")
+		}
+		if nativeLanding.(*nativeExecution).pending != nil {
+			t.Fatal("capacity admission failure left a rejected event pending")
+		}
+	}
+	var resumeLanding func(string) (runner.Execution, context.Context, func())
+	if directWait {
+		waiting := runner.NativeLanding{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: head, Waiting: true, Refusal: "Project landing capacity is full"}
+		if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, waiting); err != nil {
+			t.Fatalf("observing direct landing wait: %v", err)
+		}
+		if err := landing.(runner.CompletionExecution).PrepareFinish(guarded, "succeeded", "", nil); err != nil {
+			t.Fatalf("preparing direct waiting finish: %v", err)
+		}
+		if err := landing.Finish(guarded, "succeeded"); err != nil {
+			t.Fatalf("finishing direct waiting execution: %v", err)
+		}
+		recovery, err := h.admin.Recovery(t.Context(), item)
+		if err != nil || len(recovery.Attempts) != 2 {
+			t.Fatalf("direct capacity wait attempts=%d: %v", len(recovery.Attempts), err)
+		}
+		waited := recovery.Attempts[1]
+		if !waited.Current || waited.Status != "succeeded" || waited.Disposition == nil || waited.Disposition.Status != "in_progress" || waited.Runtime == nil || waited.Runtime.Landing == nil || !waited.Runtime.Landing.Waiting {
+			t.Fatalf("direct capacity wait did not finish successfully: %+v", waited)
+		}
+		resumeLanding = func(machine string) (runner.Execution, context.Context, func()) {
+			t.Helper()
+			stop()
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "released"); err != nil {
+				t.Fatalf("releasing direct waiting claim: %v", err)
+			}
+			other, err := NewScheduler(h.scheduler.client, SchedulerConfig{
+				OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
+				Machine: Machine{ID: tracker.MachineID(machine), Hostname: machine, Capacity: 1, Version: "test"}, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.scheduler = other
+			resumed := h.candidatesIn(t, "In Progress")
+			if len(resumed) != 1 || resumed[0].ID != issue.ID || resumed[0].NativeLandingHeadSHA != head {
+				t.Fatalf("fresh machine did not receive waiting reviewed source: %+v", resumed)
+			}
+			if _, err := h.scheduler.AdoptClaim(t.Context(), resumed[0], time.Now()); err != nil {
+				t.Fatalf("adopting direct waiting source: %v", err)
+			}
+			next := h.scheduler.RunExecution(issue.ID)
+			if next == nil {
+				t.Fatal("replacement claim has no execution")
+			}
+			nextContext, nextStop, err := next.Guard(t.Context())
+			if err != nil {
+				t.Fatalf("guarding replacement landing execution: %v", err)
+			}
+			t.Cleanup(nextStop)
+			return next, nextContext, nextStop
+		}
+		landing, guarded, stop = resumeLanding("replacement-machine")
+		nativeLanding = landing
+		execution = landing.(runner.LandingExecution)
+	}
 	if err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 168, 27); err != nil {
-		t.Fatal(err)
+		t.Fatalf("starting admitted landing: %v", err)
+	}
+	if directWait {
+		stop()
+		recovery, err := h.admin.Recovery(t.Context(), item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim := h.scheduler.nativeClaims[issue.ID]
+		claim.execution, claim.recovery = nil, recovery
+		h.scheduler.nativeClaims[issue.ID] = claim
+		landing = h.scheduler.RunExecution(issue.ID)
+		if landing == nil {
+			t.Fatal("live lease reconnect has no execution")
+		}
+		guarded, stop, err = landing.Guard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(stop)
+		original := h.native.client.httpClient.Transport
+		interrupted := false
+		h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			var event tracker.NativeRunEvent
+			if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") {
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				request.Body = io.NopCloser(strings.NewReader(string(body)))
+				if err := json.Unmarshal(body, &event); err != nil {
+					return nil, err
+				}
+			}
+			response, err := original.RoundTrip(request)
+			if err == nil && event.Type == "run.observed" && event.Data.Runtime != nil && event.Data.Runtime.Phase == "implementation" {
+				interrupted = true
+				response.Body.Close()
+				return nil, errors.New("injected interruption after reconnect receipt")
+			}
+			return response, err
+		})
+		reconnectErr := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 168, 27)
+		h.native.client.httpClient.Transport = original
+		if reconnectErr == nil || !interrupted {
+			t.Fatalf("live-lease reconnect did not interrupt at committed receipt: %v", reconnectErr)
+		}
+		current, err := h.admin.Issue(t.Context(), item)
+		if err != nil || current.ListChange == nil || !current.ListChange.LandingPending || current.ListChange.HeadSHA != head {
+			t.Fatalf("interrupted live-lease reconnect lost pending reviewed source: %+v, %v", current.ListChange, err)
+		}
+		landing, guarded, stop = resumeLanding("restarted-machine")
+		nativeLanding = landing
+		execution = landing.(runner.LandingExecution)
+		if err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 168, 27); err != nil {
+			t.Fatalf("restarting interrupted landing: %v", err)
+		}
 	}
 	if batch {
 		recovery, err := h.admin.Recovery(t.Context(), item)
@@ -373,7 +552,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
-		if err != nil || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, waiting.CI) || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != "Merging" {
+		if err != nil || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, waiting.CI) || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != landingState {
 			t.Fatalf("waiting CI lost durable native receipt: %+v, %v", evidence, err)
 		}
 		resumed, err := execution.LandingTarget(guarded)
@@ -413,7 +592,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("refusal replay changed receipt: %#v, error %v", evidence, err)
 	}
 	detail, err := h.admin.Change(t.Context(), item, change.ChangeID)
-	if err != nil || len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, &refusalReceipt) || refusalReceipt.Refusal != refusalKind || refusalReceipt.FromState != "Merging" {
+	if err != nil || len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, &refusalReceipt) || refusalReceipt.Refusal != refusalKind || refusalReceipt.FromState != landingState {
 		t.Fatalf("version refusal receipt = %#v, error %v", detail, err)
 	}
 	if len(refusalKinds) > 0 && refusalKinds[0] != "" {
@@ -497,7 +676,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing) || detail.Versions[0].Landing.FromState != "Merging" || detail.Versions[0].Landing.TargetState != "Done" || detail.Versions[0].PolicyID != publishedPolicyID || detail.Change.Landed == nil || !detail.Change.Landed.Rebased || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
+	if len(detail.Versions) != 1 || !reflect.DeepEqual(detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing) || detail.Versions[0].Landing.FromState != landingState || detail.Versions[0].Landing.TargetState != "Done" || detail.Versions[0].PolicyID != publishedPolicyID || detail.Change.Landed == nil || !detail.Change.Landed.Rebased || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" {
 		t.Fatalf("landed change = %#v, summary %#v", detail.Change.Landed, detail.Summary)
 	}
 	if otherMachine != "" {
@@ -587,7 +766,11 @@ func TestNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T) {
 
 func (h *nativeChangeHub) candidatesIn(t *testing.T, states ...string) []connector.Issue {
 	t.Helper()
-	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: states})
+	capacity := 0
+	if h.descriptor.Gates.GitHubPullRequest {
+		capacity = 1
+	}
+	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{LandingCapacity: capacity, Policy: h.descriptor, ProjectID: "local", WorkflowStates: states})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +800,7 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 		t.Fatal(err)
 	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Operator source"})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Operator source", Body: issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,11 +907,8 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 10 {
-		issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Batch source"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		item := tracker.NativeWorkItemID(issue.ID)
+		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Batch source", Body: issueContractTestSections, State: "Todo"})
+		item := issue.WorkItemID
 		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Batch source"})
 		if err != nil {
 			t.Fatal(err)
@@ -739,7 +919,7 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Human Review"); err != nil {
+		if err := h.connector.UpdateIssueState(t.Context(), string(issue.WorkItemID), "Human Review"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved"}); err != nil {
@@ -760,7 +940,7 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 			t.Fatalf("target = %#v, %v", target, err)
 		}
 	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Ordinary Code remains bounded"})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Ordinary Code remains bounded", Body: issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}

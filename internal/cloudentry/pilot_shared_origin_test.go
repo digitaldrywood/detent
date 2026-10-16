@@ -740,7 +740,7 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 						errs <- fmt.Errorf("tab %s read %d", tab.self.id, page.status)
 						return
 					}
-					issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("tab-%s-%d", tab.self.id, i)}, Title: fmt.Sprintf("%s tab issue %d", tab.self.projectName, i), State: "Todo"}
+					issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("tab-%s-%d", tab.self.id, i)}, Title: fmt.Sprintf("%s tab issue %d", tab.self.projectName, i), State: "Backlog"}
 					created := fay.json(http.MethodPost, tab.self.projectAPI()+"/work-items", fayCSRF[tab.self.id], issue)
 					requests.Add(1)
 					if created.status == http.StatusConflict {
@@ -1061,7 +1061,7 @@ func seedSharedOriginPreview(t *testing.T, p *sharedOriginPilot) map[string]stri
 		}
 		fay.get("/auth/oidc/callback?" + url.Values{"code": {"user_fay:"}, "state": {provider.Query().Get("state")}}.Encode())
 		pilotStatus(t, "grant", owner.form("/organizations/"+id+"/organization/grants", url.Values{"user": {"user_fay"}, "project": {o.project}, "write": {"true"}, "csrf": {o.ownerCSRF}}), http.StatusSeeOther)
-		issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "seed"}, Title: seed.name + " native issue", State: "Todo"}
+		issue := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "seed"}, Title: seed.name + " native issue", Body: issueContractTestSections, State: "Todo"}
 		pilotStatus(t, "issue", owner.json(http.MethodPost, o.projectAPI()+"/work-items", o.ownerCSRF, issue), http.StatusOK)
 		organizations[seed.user] = o
 	}
@@ -1138,7 +1138,7 @@ func TestSharedOriginAPIKeyConnection(t *testing.T) {
 	o.project = strings.TrimPrefix(project.location, "/organizations/"+o.id+"/projects/")
 	mount := "/organizations/" + o.id
 	api := mount + o.api()
-	pilotStatus(t, "seed readable work", owner.json(http.MethodPost, api+"/projects/"+o.project+"/work-items", o.ownerCSRF, map[string]any{"title": "Shared key read", "state": "Todo", "idempotency_key": "shared-key-read"}), http.StatusOK)
+	pilotStatus(t, "seed readable work", owner.json(http.MethodPost, api+"/projects/"+o.project+"/work-items", o.ownerCSRF, map[string]any{"title": "Shared key read", "state": "Backlog", "idempotency_key": "shared-key-read"}), http.StatusOK)
 	issued := owner.json(http.MethodPost, api+"/api-keys", o.ownerCSRF, map[string]any{"name": "external-client", "scope": "read", "expires_days": 7, "project_ids": []string{o.project}})
 	pilotStatus(t, "create shared key", issued, http.StatusCreated)
 	var key struct {

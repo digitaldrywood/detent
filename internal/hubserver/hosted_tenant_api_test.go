@@ -340,10 +340,11 @@ func TestHostedSharedTenantAPI(t *testing.T) {
 	api := "/api/v2/organizations/org_security"
 	invite := `{"email":"shared@example.test","role":"member","idempotency_key":"shared"}`
 	for _, test := range []struct {
-		name    string
-		request hostedSharedRequest
-		status  int
-		shell   bool
+		name     string
+		request  hostedSharedRequest
+		status   int
+		shell    bool
+		location string
 	}{
 		{name: "owner members", request: hostedSharedRequest{user: &owner, target: api + "/members"}, status: http.StatusOK},
 		{name: "viewer members", request: hostedSharedRequest{user: &viewer, target: api + "/members"}, status: http.StatusOK},
@@ -354,16 +355,19 @@ func TestHostedSharedTenantAPI(t *testing.T) {
 		{name: "invite with the entry CSRF", request: hostedSharedRequest{user: &owner, method: http.MethodPost, target: api + "/members/invitations", body: invite, csrf: ownerCSRF}, status: http.StatusCreated},
 		{name: "other organization API", request: hostedSharedRequest{user: &owner, target: "/api/v2/organizations/org_other/members"}, status: http.StatusNotFound},
 		{name: "platform member uses tenant role", request: hostedSharedRequest{user: &staff, target: api + "/members"}, status: http.StatusOK},
-		{name: "member root", request: hostedSharedRequest{user: &owner, target: "/organizations/org_security"}, status: http.StatusOK, shell: true},
-		{name: "member project", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security"}, status: http.StatusOK, shell: true},
+		{name: "member root", request: hostedSharedRequest{user: &owner, target: "/organizations/org_security"}, status: http.StatusPermanentRedirect, location: "/local-organization/work"},
+		{name: "member project", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security"}, status: http.StatusPermanentRedirect, location: "/local-organization/projects/prj_security"},
 		{name: "member project issue", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security/issues/wi_any"}, status: http.StatusNotFound},
-		{name: "member project changes", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security/changes"}, status: http.StatusOK, shell: true},
-		{name: "platform member uses tenant shell", request: hostedSharedRequest{user: &staff, target: "/organizations/org_security"}, status: http.StatusOK, shell: true},
+		{name: "member project changes", request: hostedSharedRequest{user: &viewer, target: "/organizations/org_security/projects/prj_security/changes"}, status: http.StatusPermanentRedirect, location: "/local-organization/projects/prj_security/changes"},
+		{name: "platform member uses tenant shell", request: hostedSharedRequest{user: &staff, target: "/organizations/org_security"}, status: http.StatusPermanentRedirect, location: "/local-organization/work"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.serve(t, test.request)
 			if response.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+			if got := response.Header().Get("Location"); got != test.location {
+				t.Fatalf("location = %q, want %q", got, test.location)
 			}
 			if got := response.Body.String() == appShellWant("/organizations/org_security", "/organizations?switch=1"); got != test.shell {
 				t.Fatalf("shell served = %t, want %t: %s", got, test.shell, response.Body.String())
@@ -612,6 +616,9 @@ func TestScopeHostUsage(t *testing.T) {
 func TestHostedFleetHostUsageScope(t *testing.T) {
 	t.Parallel()
 	f := newBrowserHostedFixture(t, true)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", f.service.config.Hosted.OrganizationID+"/"+f.project); err != nil {
+		t.Fatal(err)
+	}
 	organization := browserHostedOrganizationBase
 	for _, project := range []string{f.project, f.privateProject} {
 		requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_owner"}, "project": {project}, "write": {"true"}, "runner": {"true"}}), http.StatusSeeOther)
@@ -620,7 +627,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	descriptor := hubTestPolicy()
 	descriptor.Gates.Kind, descriptor.Gates.AutomatedReview = "human_review", ""
 	descriptor = descriptor.WithID()
-	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: descriptor}), http.StatusOK)
+	requireNativeStatus(t, f.setupRequest(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor}), http.StatusOK)
 	binding := runnerauth.NewBinding()
 	enrollment := runnerauth.EnrollmentRequest{Binding: binding, ProjectIDs: []tracker.ProjectID{tracker.ProjectID(f.project), tracker.ProjectID(f.privateProject)}, Operations: []string{runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events}, TTLSeconds: 900}
 	response := f.setupRequest(t, "owner", http.MethodPost, organization+"/runner-enrollments", enrollment)

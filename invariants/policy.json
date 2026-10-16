@@ -181,7 +181,9 @@
       "TestMergedCompletionEvidence"
     ],
     "./internal/hubserver": [
-      "TestClaimCandidatesRequireUnansweredWorkItem"
+      "TestClaimCandidatesRequireUnansweredWorkItem",
+      "TestINV18RequestCommitDoesNoDerivedWork",
+      "TestINV18HubMigrationsUseTypedColumns"
     ],
     "./internal/web": [
       "TestOperationsWorkpadHumanAction"

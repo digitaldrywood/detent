@@ -13,6 +13,7 @@ import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts
 import * as Schema from "effect/Schema";
 
 import {
+  ReleaseNotesPage,
   CreatedOperatorAPIKey,
   OperatorAPIKeys,
   BillingReport,
@@ -20,7 +21,10 @@ import {
   CheckoutResponse,
   CreateOrganizationResponse,
   FleetResponse,
+  UpdatesReport,
   FleetNamesResponse,
+  RunnerCapacityRead,
+  RunnerHostHour,
   Member,
   MembersResponse,
   NextResponse,
@@ -196,6 +200,8 @@ export function makeAccountApi(options: AccountApiOptions) {
   const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
   const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    releaseNotes: (cursor?: string) => send(ReleaseNotesPage, "GET", `${base}/release-notes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    markReleaseNotesSeen: () => send(ReleaseNotesPage, "PUT", `${base}/release-notes/seen`, {}),
     issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
     saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
     personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
@@ -543,6 +549,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       }
       return send(ActivityReport, "GET", `${base}/activity?${params.toString()}`, undefined, signal);
     },
+    appUpdates: () => send(UpdatesReport, "GET", hubPath("/app/updates")),
     fleet: (signal?: AbortSignal) => send(FleetResponse, "GET", `${base}/fleet`, undefined, signal),
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters) =>
@@ -574,6 +581,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       };
     },
     fleetNames: () => send(FleetNamesResponse, "GET", `${base}/fleet?include=names`),
+    runnerCapacity: (runner: string) => send(RunnerCapacityRead, "GET", `${base}/runners/${encodeURIComponent(runner)}/capacity`),
+    runnerHostHistory: (runner: string, from: string, to: string) =>
+      send(Schema.Array(RunnerHostHour), "GET", `${base}/fleet?include=host_metrics&runner_id=${encodeURIComponent(runner)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
     billingUsage: () => send(BillingUsageReport, "GET", `${base}/billing?view=usage`),

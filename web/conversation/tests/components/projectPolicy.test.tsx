@@ -51,7 +51,7 @@ if (typeof globalThis.PointerEvent === "undefined") {
   globalThis.PointerEvent = globalThis.MouseEvent as unknown as typeof PointerEvent;
 }
 
-async function renderSettings(): Promise<void> {
+async function renderSettings() {
   const router = makeRouter(createMemoryHistory({ initialEntries: ["/settings/integrations?project=proj_alpha"] }));
   await router.load();
   await act(async () => {
@@ -63,9 +63,40 @@ async function renderSettings(): Promise<void> {
       </RegistryProvider>,
     );
   });
+  return router;
 }
 
 describe("repository policy after setup", () => {
+  it.each([false, true])("offers project setup only while unfinished (ready=%s)", async (ready) => {
+    const { base } = await mount();
+    const realFetch = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const response = await realFetch(input, init);
+      if ((init?.method ?? "GET") === "GET" && String(input) === `${base}/onboarding`) {
+        const onboarding = await response.json();
+        return Response.json({
+          ...onboarding,
+          ready,
+          steps: onboarding.steps.map((step: { state: string }, index: number) => ({ ...step, state: ready || index < 2 ? "ready" : "action_required" })),
+          observed_policies: [{ policy: { ...onboarding.policy.policy, policy_id: "pol_reported" }, runner_id: "runner_example", observed_at: "2026-10-13T12:00:00Z" }],
+        });
+      }
+      return response;
+    });
+    const router = await renderSettings();
+    const importLink = await screen.findByRole("link", { name: "GitHub issue import in project setup" }, httpWait);
+    expect(importLink.getAttribute("href")).toBe("/projects/proj_alpha/setup");
+    await screen.findByText("Configuration reported", {}, httpWait);
+    if (ready) {
+      expect(screen.queryByText(/setup steps? left/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Finish setup" })).toBeNull();
+    } else {
+      await screen.findByText("2 setup steps left", {}, httpWait);
+      fireEvent.click(screen.getByRole("button", { name: "Finish setup" }));
+      await waitFor(() => expect(router.state.location.pathname).toBe("/projects/proj_alpha/setup"), httpWait);
+    }
+  });
+
   it.each([
     { name: "native bound settings", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", workflow: false, expectedIntake: "disabled" },
     { name: "native manual import allowed", profile: "native", repository: "acme/orders", checkout_repository: "", intake: "automatic", manual_import_enabled: true, workflow: false, expectedIntake: "manual" },

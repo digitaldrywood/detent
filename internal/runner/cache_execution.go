@@ -6,12 +6,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gobudget"
 )
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (result RunResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = gobudget.WithContext(ctx, r.goBudget)
 	ctx, release, err := r.buildCache.Use(ctx)
 	if err != nil {
 		return result, err
@@ -51,6 +53,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (result gat
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = gobudget.WithContext(ctx, r.goBudget)
 	ctx, release, err := r.buildCache.Use(ctx)
 	if err != nil {
 		return result, err
@@ -64,6 +67,7 @@ func (r *Runner) Audit(ctx context.Context, req SecurityAuditRequest) (result Se
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx = gobudget.WithContext(ctx, r.goBudget)
 	ctx, release, err := r.buildCache.Use(ctx)
 	if err != nil {
 		return result, err

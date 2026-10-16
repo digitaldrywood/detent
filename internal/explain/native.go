@@ -22,7 +22,7 @@ func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 		r.Evidence = append(r.Evidence, EvidenceReference{ID: event.ID, Kind: EvidenceScheduler, ObservedAt: &event.RecordedAt})
 	}
 	if event := e.LatestTransition; event != nil {
-		r.LatestTransition = &Transition{EvidenceID: event.ID, From: event.Data.FromState, To: event.Data.ToState, At: event.RecordedAt, Source: "native", Reason: event.Data.Reason, Actor: &Actor{Kind: event.Actor.Kind}, Provenance: Provenance{State: SourceAvailable, Schema: event.SchemaVersion, Origin: event.Actor.Kind, Initiator: event.Actor.Kind, Basis: "native_event", Trustworthy: true}}
+		r.LatestTransition = &Transition{EvidenceID: event.ID, From: event.Data.FromState, To: event.Data.ToState, At: event.RecordedAt, Source: "native", Reason: event.Data.Reason, ReasonDetail: event.Data.ReasonDetail, Actor: &Actor{Kind: event.Actor.Kind}, Provenance: Provenance{State: SourceAvailable, Schema: event.SchemaVersion, Origin: event.Actor.Kind, Initiator: event.Actor.Kind, Basis: "native_event", Trustworthy: true}}
 		r.CurrentLane.EvidenceID = event.ID
 		r.Evidence = append(r.Evidence, EvidenceReference{ID: event.ID, Kind: EvidenceWorkflow, ObservedAt: &event.RecordedAt})
 	}
@@ -55,7 +55,7 @@ func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 			continue
 		}
 		r.Eligibility.Refusals = append(r.Eligibility.Refusals, EligibilityDecision{
-			UnresolvedDependencies: admission.UnresolvedDependencies, Unavailable: admission.Unavailable,
+			AnsweredExclusion: admission.AnsweredExclusion, UnresolvedDependencies: admission.UnresolvedDependencies, Unavailable: admission.Unavailable,
 			RunnerID: admission.RunnerID, Source: admission.Source, State: EligibilityRefused,
 			Outcome: admission.Outcome, Reason: admission.Reason, ReasonCode: admission.ReasonCode, At: admission.ObservedAt,
 		})

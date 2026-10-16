@@ -602,7 +602,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 			}
 			switch test.tool {
 			case operatortool.MoveItem:
-				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create", "title": "Terminal move", "state": "Todo"})
+				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create", "title": "Terminal move", "description": nativeContractTestBody, "state": "Todo"})
 				result, err := executor.Execute(human, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
 				var created struct {
 					Data tracker.NativeIssue `json:"data"`
@@ -618,7 +618,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				raw, _ := json.Marshal(map[string]any{"project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
+				raw, _ := json.Marshal(map[string]any{"description": nativeContractTestBody, "project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			default:
 				current, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)

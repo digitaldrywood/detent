@@ -22,6 +22,8 @@ type streamItem struct {
 }
 
 type claudeEvent struct {
+	APIKeySource string         `json:"apiKeySource"`
+	AuthSource   string         `json:"authSource"`
 	Type         string         `json:"type"`
 	Subtype      string         `json:"subtype"`
 	SessionID    string         `json:"session_id"`
@@ -40,10 +42,10 @@ type claudeEvent struct {
 }
 
 type rateLimitInfo struct {
-	Status        string  `json:"status"`
-	ResetsAt      int64   `json:"resetsAt"`
-	RateLimitType string  `json:"rateLimitType"`
-	Utilization   float64 `json:"utilization"`
+	Status        string   `json:"status"`
+	ResetsAt      int64    `json:"resetsAt"`
+	RateLimitType string   `json:"rateLimitType"`
+	Utilization   *float64 `json:"utilization"`
 }
 
 type claudeMessage struct {
@@ -182,12 +184,15 @@ func (s *turnState) applyRateLimit(event claudeEvent, onUpdate runner.AgentUpdat
 		resetAt := time.Unix(info.ResetsAt, 0).UTC()
 		bucket.ResetAt = &resetAt
 	}
-	if info.Utilization > 0 {
+	if info.Utilization != nil {
+		percent := min(max(*info.Utilization*100, 0), 100)
+		bucket.PercentUsed = &percent
 		bucket.Limit = 100
-		bucket.Used = min(max(int64(info.Utilization*100), 0), 100)
+		bucket.Used = min(max(int64(*info.Utilization*100), 0), 100)
 		bucket.Remaining = 100 - bucket.Used
 	}
 	limitType := strings.TrimSpace(info.RateLimitType)
+	bucket.WindowKind = limitType
 	limits := &telemetry.RateLimits{LimitID: "claude", LimitName: "Claude"}
 	if strings.EqualFold(strings.TrimSpace(info.Status), "rejected") {
 		limits.ReachedType = limitType
@@ -216,6 +221,7 @@ func (s *turnState) applyInit(event claudeEvent, onUpdate runner.AgentUpdateHand
 	s.turnStartedSent = true
 	return emitUpdate(onUpdate, runner.AgentUpdate{
 		Type:              runner.AgentUpdateTurnStarted,
+		Billing:           claudeBilling(event),
 		ThreadID:          event.SessionID,
 		TurnID:            event.SessionID,
 		ProviderSessionID: event.SessionID,
@@ -505,4 +511,20 @@ func addUsage(t *runner.AgentTokenUsage, u claudeUsage) {
 	t.OutputTokens += next.OutputTokens
 	t.ReasoningOutputTokens += next.ReasoningOutputTokens
 	t.TotalTokens += next.TotalTokens
+}
+
+func claudeBilling(event claudeEvent) string {
+	switch event.APIKeySource {
+	case "user", "project", "org", "temporary", "ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key":
+		return "api_key"
+	case "oauth":
+		return "subscription"
+	}
+	switch event.AuthSource {
+	case "oauth", "oauth_token", "claude.ai":
+		return "subscription"
+	case "api_key", "api_key_helper", "third_party", "bedrock", "vertex", "foundry":
+		return "api_key"
+	}
+	return "unknown"
 }

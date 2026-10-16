@@ -48,7 +48,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	if e.remaining() <= 0 {
-		if err := e.renew(ctx); err != nil {
+		if err := e.renew(ctx, 0); err != nil {
 			return err
 		}
 	}
@@ -210,7 +210,7 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				return fmt.Errorf("%w: PR publication has an unresolved external effect; preserve source and reconcile its checkpoint before resuming", ErrUnavailable)
 			}
 			if e.remaining() <= 0 {
-				if err := e.renew(ctx); err != nil {
+				if err := e.renew(ctx, 0); err != nil {
 					return e.executionError(err)
 				}
 			}

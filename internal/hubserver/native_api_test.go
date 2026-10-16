@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -51,7 +53,9 @@ func newNativeFixture(t *testing.T, service *Service, organization tracker.Organ
 	decodeHubResponse(t, response, &token)
 	response = performHubAPIRequest(t, service, http.MethodPost, "/api/v2/tokens/"+token.ID+"/grants", testHubAdminToken, map[string]any{"organization_id": organization, "project_id": project.ID})
 	requireNativeStatus(t, response, http.StatusNoContent)
-	return nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: token.Token}
+	f := nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: token.Token}
+	seedNativeFixturePolicy(t, service, string(organization)+"/"+string(project.ID))
+	return f
 }
 
 func requireNativeStatus(t *testing.T, response *httptest.ResponseRecorder, want int) {
@@ -65,6 +69,9 @@ const issueContractTestSections = "\n## Acceptance criteria\nComplete the reques
 
 func createIndependentNativeIssue(t *testing.T, request tracker.CreateIssue, send func(tracker.CreateIssue) *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
+	if !strings.Contains(request.Body, "## Acceptance criteria") {
+		request.Body += issueContractTestSections
+	}
 	response := send(request)
 	if response.Code == http.StatusConflict {
 		var failure apiErrorResponse
@@ -171,7 +178,7 @@ func TestNativeIssueWebURL(t *testing.T) {
 				}
 				return issue
 			}
-			create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create-url"}, Title: "Linked work item", State: "Todo"}
+			create := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "create-url"}, Title: "Linked work item", State: "Todo"}
 			response := request(http.MethodPost, base+"/work-items", create)
 			requireNativeStatus(t, response, http.StatusOK)
 			issue := assertURL(t, response.Body.Bytes())
@@ -557,7 +564,7 @@ func TestNativeImportsAndAdministrationBoundaries(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
 	sourceTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
-	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "import"}, Title: "Imported issue", Body: "Complete body", State: "Todo", Provenance: &tracker.Provenance{Provider: "github", ExternalID: "external-issue", AuthorID: "source-author", CreatedAt: sourceTime, UpdatedAt: sourceTime, ObservedAt: sourceTime.Add(time.Hour)}}
+	request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "import"}, Title: "Imported issue", Body: "Complete body" + issueContractTestSections, State: "Todo", Provenance: &tracker.Provenance{Provider: "github", ExternalID: "external-issue", AuthorID: "source-author", CreatedAt: sourceTime, UpdatedAt: sourceTime, ObservedAt: sourceTime.Add(time.Hour)}}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var issue tracker.NativeIssue
@@ -787,4 +794,23 @@ func TestNativeDependenciesAndTransitions(t *testing.T) {
 	if len(page.Items) != 1 || page.NextCursor == "" {
 		t.Fatalf("history page = %#v", page)
 	}
+}
+
+func createNativeFixtureIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time) (tracker.NativeIssue, error) {
+	descriptor := hubTestPolicy()
+	raw, err := json.Marshal(descriptor)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	policyScope := string(scope.organization) + "/" + string(scope.project)
+	if _, err := tx.ExecContext(ctx, "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?) ON CONFLICT DO NOTHING", policyScope, descriptor.ID, string(raw), formatHubTime(now)); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT DO NOTHING", policyScope, descriptor.ID); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if !strings.Contains(request.Body, "## Acceptance criteria") {
+		request.Body += issueContractTestSections
+	}
+	return createNativeIssueTx(ctx, tx, scope, request, now)
 }

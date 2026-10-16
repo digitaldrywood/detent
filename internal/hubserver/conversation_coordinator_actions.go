@@ -291,6 +291,7 @@ func (t *coordinatorToolset) submitCoordinatorAction(ctx context.Context, record
 	action.OrganizationID = string(record.OrganizationID)
 	action.ConversationID = record.ID
 	action.ID = action.RequestID
+	action.Agent = coordinatorAgent(t.state.model)
 	if err := t.coordinator.write(ctx, record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		data, err := json.Marshal(map[string]any{"operator_action": map[string]any{"action": action, "conversation_id": record.ID}})
 		if err != nil {
@@ -311,6 +312,14 @@ func (s *Service) executeCoordinatorAction(ctx context.Context, action chat.Acti
 	ctx, err := s.authorizeCoordinatorAction(ctx, action)
 	if err != nil {
 		return chat.ActionExecution{}, err
+	}
+	agent, err := s.coordinatorProposalAgent(ctx, action)
+	if err != nil {
+		return chat.ActionExecution{}, err
+	}
+	ctx = withCoordinatorAgent(ctx, agent)
+	if coordinatorCatalogWrite(string(action.Kind)) {
+		return s.executeCoordinatorCatalogCall(ctx, action)
 	}
 	ctx = mutation.WithContext(ctx, action.Mutation)
 	if coordinatorSettingsTool(string(action.Kind)) {
@@ -412,6 +421,9 @@ func (s *Service) authorizeCoordinatorAction(ctx context.Context, action chat.Ac
 	if coordinatorSettingsTool(string(action.Kind)) {
 		requirement = coordinatorSettingsRequirement(string(action.Kind), action.ProjectID)
 	}
+	if coordinatorCatalogWrite(string(action.Kind)) {
+		requirement = coordinatorCatalogRequirement(action)
+	}
 	if action.Kind == chat.ActionArchiveItems || action.Kind == chat.ActionFileIssue {
 		requirement.ResourceKind = ""
 	}
@@ -500,7 +512,7 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	if err := s.conversations.authorizeWrite(readCtx, s.database.reader, scope, record); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
+	if (!coordinatorSettingsTool(string(action.Kind)) && !coordinatorWorkflowMutation(string(action.Kind)) && !coordinatorCatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.project) || action.RequestID == "" || len(action.RequestID) > 128 {
 		return invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
 	identity := operatortool.ConnectionIdentity(ctx)
