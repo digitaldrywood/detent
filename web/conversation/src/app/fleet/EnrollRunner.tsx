@@ -25,7 +25,7 @@ import { AccountError } from "../account/api.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
-import { runnerAccessOptions, type RunnerAccessTier } from "./runnerAccess.ts";
+import { runnerAccessOptions, spriteSandboxUnavailableReason, type RunnerAccessTier } from "./runnerAccess.ts";
 
 /** The operations a runner needs to take issue runs and coordinator turns. */
 const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "events"] as const;
@@ -426,8 +426,8 @@ export function EnrollRunnerDialog({
                 <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setIsolationTier(value as RunnerAccessTier)}>
                   {runnerAccessOptions.map(({ tier, label, hint }) => (
                     <label key={tier} className="flex cursor-pointer items-start gap-2">
-                      <Radio value={tier} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
-                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{hint}</span></span>
+                      <Radio value={tier} disabled={location === "sprite" && tier === "sandbox"} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
+                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{location === "sprite" && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
                     </label>
                   ))}
                 </RadioGroup>
@@ -439,6 +439,7 @@ export function EnrollRunnerDialog({
                   <label key={value} className="flex items-center gap-2">
                     <input type="radio" name="runner-location" value={value} checked={location === value} onChange={() => {
                       setLocation(value);
+                      if (value === "sprite") setIsolationTier("native-trusted");
                       if (value === "sprite") setName(name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "") || `detent-${globalThis.crypto.randomUUID().slice(0, 8)}`);
                     }} />
                     {label}
