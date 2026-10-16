@@ -336,9 +336,9 @@ export function makeAccountApi(options: AccountApiOptions) {
     // --- Project settings ---------------------------------------------------
     spritesSecret: (projectId: string) =>
       send(ProjectSecretStatus, "GET", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
-    spritePool: (_projectId: string) =>
+    spritePool: () =>
       send(SpritePool, "GET", `${base}/sprite-pool`),
-    setSpritePool: (_projectId: string, settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
+    setSpritePool: (settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
       send(SpritePool, "PUT", `${base}/sprite-pool`, settings),
     setSpritesSecret: (projectId: string, token: string) =>
       send(ProjectSecretStatus, "PUT", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`, { token }),
