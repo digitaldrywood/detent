@@ -288,6 +288,7 @@ export type WorkItem = typeof WorkItem.Type;
 
 export const Conversation = Schema.Struct({
   id: ConversationId,
+  web_url: Schema.optional(Schema.String),
   organization_id: Schema.String,
   project_id: Schema.String,
   title: Schema.String,

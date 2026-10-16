@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -1393,6 +1394,10 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 	if diagnostic != nil {
 		return diagnostic, nil
 	}
+	snapshot.Conversation.WebURL, err = s.canonicalBrowserLink(ctx, "/chat/c/"+url.PathEscape(snapshot.Conversation.ID)+"?project_id="+url.QueryEscape(string(snapshot.Conversation.ProjectID)))
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(snapshot)
 }
 
@@ -1489,7 +1494,12 @@ func (s *Service) readConversationsPage(ctx context.Context, scope nativeScope, 
 	}
 	page := conversationListPage{Conversations: make([]conversationResource, 0, len(records)), NextCursor: conversationOptional(next)}
 	for _, record := range records {
-		page.Conversations = append(page.Conversations, projectConversation(record))
+		resource := projectConversation(record)
+		resource.WebURL, err = s.canonicalBrowserLink(ctx, "/chat/c/"+url.PathEscape(record.ID)+"?project_id="+url.QueryEscape(string(record.ProjectID)))
+		if err != nil {
+			return nil, err
+		}
+		page.Conversations = append(page.Conversations, resource)
 	}
 	return json.Marshal(page)
 }

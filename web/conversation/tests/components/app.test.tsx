@@ -32,6 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   cleanup();
   client?.handles.clear();
   client = undefined;
@@ -118,6 +119,61 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it("copies an exact read-only conversation handoff without posting or dispatching", async () => {
+    let conversationId = "";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", new Proxy(navigator, {
+      get: (target, key) => key === "clipboard" ? { writeText } : Reflect.get(target, key, target),
+    }));
+    const fetchWithLists = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const response = await fetchWithLists(input, init);
+      if (new URL(String(input)).pathname === "/api/v2/organizations/org_mock/conversations") {
+        return Response.json({ conversations: [], next_cursor: null });
+      }
+      return response;
+    });
+    const { hub, client } = await mountApp({
+      readOnly: true,
+      storedProject: "proj_beta",
+      seed: async (hubUrl) => {
+        const response = await fetch(`${hubUrl}/api/v2/organizations/org_mock/projects/proj_alpha/conversations`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "seed-handoff", title: "Private handoff" }),
+        });
+        conversationId = (await response.json()).conversation.id;
+      },
+      path: () => `/chat/c/${conversationId}?project_id=proj_alpha&panel=files#transient`,
+    });
+    const endpoint = `${hub.url}/api/v2/organizations/org_mock/projects/proj_alpha/conversations/${conversationId}`;
+    const before = await (await fetch(endpoint)).json();
+    const copy = async (name: string) => {
+      fireEvent.click(await screen.findByRole("button", { name: "Thread actions for Private handoff" }, { timeout: 5000 }));
+      fireEvent.click(await screen.findByRole("button", { name }));
+      await waitFor(() => expect(writeText).toHaveBeenCalled());
+    };
+    await copy("Copy link");
+    const url = `${globalThis.location.origin}/chat/c/${conversationId}?project_id=proj_alpha`;
+    expect(writeText).toHaveBeenLastCalledWith(url);
+    writeText.mockClear();
+    await copy("Copy conversation ID");
+    expect(writeText).toHaveBeenLastCalledWith(conversationId);
+    writeText.mockClear();
+    await copy("Copy for local AI");
+    const handoff = writeText.mock.calls[0]![0] as string;
+    expect(handoff).toContain(JSON.stringify({ organization_id: "org_mock", project_id: "proj_alpha", conversation_id: conversationId, web_url: url }, null, 2));
+    expect(handoff).toContain("list_conversation_messages");
+    expect(handoff).toContain("get_conversation_attachment");
+    expect(handoff).toContain("access_denied");
+    expect(handoff).not.toContain("transient");
+    expect(handoff).not.toContain(client.bootstrap.csrf_token);
+    expect(await (await fetch(endpoint)).json()).toEqual(before);
+    writeText.mockRejectedValueOnce(new Error("denied"));
+    fireEvent.click(screen.getByRole("button", { name: "Thread actions for Private handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy link" }));
+    expect(await screen.findByText("Could not copy to clipboard")).toBeTruthy();
+  });
+
   it("switches sidebar search scope without mixing Work and Chat queries", async () => {
     const { router } = await mountApp({ path: "/work?q=invitation" });
     const search = await screen.findByRole<HTMLInputElement>("searchbox", { name: "Search issues" });
