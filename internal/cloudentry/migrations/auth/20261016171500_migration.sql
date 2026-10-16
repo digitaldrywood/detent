@@ -6,11 +6,6 @@ CREATE TABLE oauth_clients (
     secret_hash TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-CREATE TABLE oauth_redirect_uris (
-    client_id TEXT NOT NULL REFERENCES oauth_clients(id),
-    uri TEXT NOT NULL,
-    PRIMARY KEY (client_id, uri)
-);
 CREATE TABLE oauth_grants (
     id TEXT PRIMARY KEY,
     client_id TEXT NOT NULL REFERENCES oauth_clients(id),
@@ -30,14 +25,11 @@ CREATE TABLE oauth_requests (
     id TEXT PRIMARY KEY,
     client_id TEXT NOT NULL REFERENCES oauth_clients(id),
     redirect_uri TEXT NOT NULL,
-    state TEXT NOT NULL,
     challenge TEXT NOT NULL,
     resource TEXT NOT NULL,
-    browser_hash TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    code_hash TEXT UNIQUE,
-    code_expires_at TEXT,
-    grant_id TEXT REFERENCES oauth_grants(id),
+    code_hash TEXT NOT NULL UNIQUE,
+    code_expires_at TEXT NOT NULL,
+    grant_id TEXT NOT NULL REFERENCES oauth_grants(id),
     consumed_at TEXT
 );
 CREATE TABLE oauth_refresh_tokens (
@@ -52,5 +44,4 @@ CREATE INDEX oauth_refresh_grant ON oauth_refresh_tokens(grant_id);
 DROP TABLE oauth_refresh_tokens;
 DROP TABLE oauth_requests;
 DROP TABLE oauth_grants;
-DROP TABLE oauth_redirect_uris;
 DROP TABLE oauth_clients;
