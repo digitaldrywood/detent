@@ -192,6 +192,10 @@ func hubWorkResult[T any](r operatorWorkReads, request operatortool.WorkReadRequ
 }
 
 func safeWorkReadError(err error) error {
+	var export *operatortool.WorkBulkExportItemError
+	if errors.As(err, &export) {
+		return err
+	}
 	var ambiguous *explain.AmbiguousIdentityError
 	if errors.Is(err, explain.ErrNotFound) || errors.Is(err, operatortool.ErrProjectScopeRequired) || errors.Is(err, operatortool.ErrAccessDenied) || errors.Is(err, operatortool.ErrInvalidArguments) || errors.As(err, &ambiguous) {
 		return err

@@ -281,7 +281,7 @@ func TestMCPToolCatalogReadableIssueLinks(t *testing.T) {
 			}
 		})
 	}
-	projection, err := f.service.canonicalToolResult(t.Context(), operatortool.Result{Content: json.RawMessage(`{"sequence":9223372036854775807,"url":"https://github.com/example/repo/issues/wi_external","manifest_url":"/api/v2/work-items/wi_external/download"}`)})
+	projection, err := f.service.canonicalToolResult(t.Context(), operatortool.Result{Content: json.RawMessage(`{"sequence":9223372036854775807,"url":"https://github.com/example/repo/issues/wi_external","manifest_url":"/api/v2/work-items/wi_external/download"}`)}, operatortool.WorkItem)
 	if err != nil {
 		t.Fatal(err)
 	}

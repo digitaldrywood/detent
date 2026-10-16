@@ -33,6 +33,7 @@ type implementationReviewExecution struct {
 	validation        *gate.CommandResult
 	discussion        NativeReviewDiscussion
 	head              string
+	securityAudit     *NativeSecurityAuditEvidence
 }
 
 func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeValidation, error) {
@@ -81,6 +82,7 @@ func (e *implementationReviewExecution) ValidatorVersion(ctx context.Context) (N
 	}
 	input.Commands = append(input.Commands, e.commands...)
 	input.Commands = append(input.Commands, e.reviewResult.Commands...)
+	input.SecurityAudit = e.securityAudit
 	if e.validation != nil {
 		input.Version.Validation = e.validation
 	}
@@ -151,10 +153,12 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 
 type implementationReviewBackend struct {
 	fakeCodexClient
-	t          *testing.T
-	events     *[]string
-	response   string
-	discussion *NativeReviewDiscussion
+	t                 *testing.T
+	events            *[]string
+	response          string
+	discussion        *NativeReviewDiscussion
+	securityAudit     *NativeSecurityAuditEvidence
+	validatorResponse string
 }
 
 type implementationReviewWorkspace struct {
@@ -203,32 +207,47 @@ func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTu
 	if request.Model == "validator-model" || response == "" {
 		response = `{"verdict":"pass","score":1,"summary":"Current immutable source has no defects","criteria_evidence":[]}`
 	}
+	if request.Model == "validator-model" && b.securityAudit != nil {
+		for _, identity := range []string{b.securityAudit.ReviewID, b.securityAudit.VersionID, b.securityAudit.DiffDigest, b.securityAudit.ReviewerDigest, "does not approve this validator's decision"} {
+			if !strings.Contains(request.Prompt, identity) {
+				b.t.Fatalf("validator lost accepted security audit context %q", identity)
+			}
+		}
+		if b.validatorResponse != "" {
+			response = b.validatorResponse
+		}
+	}
 	return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: response})
 }
 
 func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	for _, test := range []struct {
-		name         string
-		ssh          bool
-		validator    bool
-		verdict      string
-		recordError  error
-		editReceipt  func(*gate.CommandResult)
-		prior        bool
-		latestFailed bool
-		latestPassed bool
-		replayedPass bool
-		command      string
-		missingTree  bool
-		wantRuns     int
-		wrapped      bool
-		linterState  string
-		unsupported  bool
-		shadow       bool
-		gateFailure  bool
+		name             string
+		ssh              bool
+		validator        bool
+		verdict          string
+		recordError      error
+		editReceipt      func(*gate.CommandResult)
+		prior            bool
+		latestFailed     bool
+		latestPassed     bool
+		replayedPass     bool
+		command          string
+		missingTree      bool
+		wantRuns         int
+		wrapped          bool
+		linterState      string
+		unsupported      bool
+		shadow           bool
+		gateFailure      bool
+		securityAudit    bool
+		acceptanceRework bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
+		{name: "accepted audit reaches validator", validator: true, verdict: "pass", securityAudit: true},
+		{name: "accepted audit crosses SSH", validator: true, verdict: "pass", securityAudit: true, ssh: true},
+		{name: "accepted audit does not approve acceptance", validator: true, verdict: "pass", securityAudit: true, acceptanceRework: true},
 		{name: "direct Go launcher requires independent commands", validator: true, verdict: "pass", command: "go build ./...", wrapped: true, wantRuns: 2},
 		{name: "source review without acceptance validator", verdict: "pass"},
 		{name: "source rework without acceptance validator", verdict: "rework"},
@@ -392,6 +411,13 @@ fi
 				t.Fatal(err)
 			}
 			execution := &implementationReviewExecution{events: &events, validatorDisabled: !test.validator, recordError: test.recordError, validation: &receipt}
+			if test.securityAudit {
+				execution.securityAudit = &NativeSecurityAuditEvidence{ReviewID: "review_security_accepted", VersionID: "version_example", Repository: "example-org/example-project", BaseSHA: "base", HeadSHA: "head", DiffDigest: "digest", Verdict: "pass", SessionID: 123, ReviewerVersion: "2", ReviewerDigest: "security-reviewer-digest"}
+				backend.securityAudit = execution.securityAudit
+				if test.acceptanceRework {
+					backend.validatorResponse = `{"verdict":"rework","score":0,"summary":"Behavior remains unverified despite a passing security audit","criteria_evidence":[{"criterion":"Preserve existing behavior","kind":"not_verified","reference":"Missing behavioral evidence"}]}`
+				}
+			}
 			if test.wrapped {
 				execution.head = receipt.HeadSHA
 			}
@@ -440,6 +466,9 @@ fi
 			}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("native completion omitted or reordered independent review: got %v, want %v", events, want)
+			}
+			if test.acceptanceRework && execution.validatorResult.Verdict != gate.ValidatorVerdictRework {
+				t.Fatalf("accepted security audit overrode independent acceptance: %+v", execution.validatorResult)
 			}
 			wantVerdict := test.verdict
 			if test.gateFailure {
