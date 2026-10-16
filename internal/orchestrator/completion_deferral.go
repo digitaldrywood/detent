@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -78,6 +79,27 @@ type deferredCompletionAvailability struct {
 	Scope   connector.TrackerAvailabilityScope `json:"scope"`
 	Class   string                             `json:"class,omitempty"`
 	Message string                             `json:"message"`
+}
+
+func (r deferredCompletion) statusMessage() string {
+	if r.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
+		return errNativeReviewPending.Error()
+	}
+	return deferredCompletionStatus
+}
+
+func (r deferredCompletion) nextAction() string {
+	if r.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
+		return "refresh published Change review evidence"
+	}
+	return deferredCompletionNextAction
+}
+
+func (r deferredCompletion) waitReason() string {
+	if r.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
+		return r.Availability.Class
+	}
+	return connector.TrackerUnavailableCondition
 }
 
 func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr error, deferredAt time.Time) deferredCompletion {
@@ -247,6 +269,9 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	}
 	o.observeTrackerReadFailure(state, "", fenceErr, deferredAt)
 	record := newDeferredCompletion(event, running, fenceErr, deferredAt)
+	if errors.Is(fenceErr, errNativeReviewPending) {
+		record.Availability.Class = string(gate.ReasonAutomatedReviewMissing)
+	}
 	o.captureDeferredExecution(&record)
 	record.AuthorityRestored = true
 	record.FenceRetryAt = o.completionFenceRetryAt(state, fenceErr, deferredAt, event.RetryDelay)
@@ -276,7 +301,7 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 		Issue:              cloneIssue(running.Issue),
 		Attempt:            running.Attempt,
 		DueAt:              record.FenceRetryAt,
-		Error:              deferredCompletionStatus,
+		Error:              record.statusMessage(),
 		WorkerHost:         running.WorkerHost,
 		TrackerUnavailable: true,
 		CompletionDeferred: true,
@@ -348,15 +373,15 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 		AttemptID:              record.Running.WorkAttemptID,
 		HeartbeatAt:            record.DeferredAt,
 		Phase:                  deferredCompletionPhase,
-		StatusMessage:          deferredCompletionStatus,
-		WaitReason:             connector.TrackerUnavailableCondition,
+		StatusMessage:          record.statusMessage(),
+		WaitReason:             record.waitReason(),
 		GitHubRateSnapshotJSON: o.githubRateSnapshotJSON(state),
 		CIState:                workAttemptCIState(record.Running.Issue),
 		CapacitySnapshotJSON:   o.capacitySnapshotJSON(state, record.Running.Issue),
 		WorkerMetadataJSON:     metadata,
 		MetricsJSON:            runningWorkAttemptMetricsJSON(record.Running),
-		NextAction:             deferredCompletionNextAction,
-		ErrorClass:             connector.TrackerUnavailableCondition,
+		NextAction:             record.nextAction(),
+		ErrorClass:             record.waitReason(),
 		ErrorMessage:           record.Availability.Message,
 		DetentSessionID:        record.Running.DetentSessionID,
 		ProviderSessionID:      record.Running.SessionID,
@@ -458,7 +483,7 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 			Issue:              cloneIssue(record.Running.Issue),
 			Attempt:            record.Running.Attempt,
 			DueAt:              dueAt,
-			Error:              deferredCompletionStatus,
+			Error:              record.statusMessage(),
 			WorkerHost:         record.Running.WorkerHost,
 			TrackerUnavailable: true,
 			CompletionDeferred: true,

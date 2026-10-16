@@ -3828,9 +3828,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				t.Fatalf("native change = %#v, want changed = %t", change, test.wantChanged)
 			}
 			if test.reopened {
-				reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ChangeID, change.VersionID)
-				if err != nil || !reviewed {
-					t.Fatalf("completed Rework lost current review after an earlier landing: reviewed=%t, error=%v", reviewed, err)
+				reviewed, err := h.connector.ReadChangeReview(t.Context(), issue.ID, change.ChangeID, change.VersionID, change.HeadSHA)
+				if err != nil || !reviewed.Reviewed {
+					t.Fatalf("completed Rework lost current review after an earlier landing: reviewed=%t, error=%v", reviewed.Reviewed, err)
 				}
 			}
 			if test.reconnect {
@@ -4366,23 +4366,26 @@ func TestNativeConnectorChangeReviewed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, first.ID); err != nil || reviewed {
-		t.Fatalf("for a version that is no longer current ChangeReviewed = %t, %v; want not reviewed", reviewed, err)
+	if reviewed, err := h.connector.ReadChangeReview(t.Context(), issue.ID, change.ID, first.ID, head); err != nil || reviewed.Reviewed {
+		t.Fatalf("for a version that is no longer current ReadChangeReview = %+v, %v; want not reviewed", reviewed, err)
 	}
-	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, ""); err != nil || reviewed {
-		t.Fatalf("for no version ChangeReviewed = %t, %v; want not reviewed", reviewed, err)
+	if reviewed, err := h.connector.ReadChangeReview(t.Context(), issue.ID, change.ID, "", head); err != nil || reviewed.Reviewed {
+		t.Fatalf("for no version ReadChangeReview = %+v, %v; want not reviewed", reviewed, err)
 	}
-	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, second.ID); err != nil || !reviewed {
-		t.Fatalf("under the default policy ChangeReviewed = %t, %v; want reviewed", reviewed, err)
+	if reviewed, err := h.connector.ReadChangeReview(t.Context(), issue.ID, change.ID, second.ID, head); err != nil || !reviewed.Reviewed {
+		t.Fatalf("under the default policy ReadChangeReview = %+v, %v; want reviewed", reviewed, err)
+	}
+	if review, err := h.connector.ReadChangeReview(t.Context(), issue.ID, change.ID, second.ID, strings.Repeat("d", 40)); err != nil || review.Current || review.Reviewed {
+		t.Fatalf("mismatched head accepted: %+v %v", review, err)
 	}
 	rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
 		t.Fatal(err)
 	}
-	if reviewed, err := h.connector.ChangeReviewed(t.Context(), issue.ID, change.ID, second.ID); err != nil || reviewed {
-		t.Fatalf("after the policy asks for review ChangeReviewed = %t, %v; want not reviewed", reviewed, err)
+	if reviewed, err := h.connector.ReadChangeReview(t.Context(), issue.ID, change.ID, second.ID, head); err != nil || reviewed.Reviewed || reviewed.Current {
+		t.Fatalf("after the policy asks for review ReadChangeReview = %+v, %v; want stale policy", reviewed, err)
 	}
-	if _, err := h.connector.ChangeReviewed(t.Context(), issue.ID, "change_"+strings.Repeat("0", 32), second.ID); err == nil {
+	if _, err := h.connector.ReadChangeReview(t.Context(), issue.ID, "change_"+strings.Repeat("0", 32), second.ID, head); err == nil {
 		t.Fatal("an unknown change read as a review state")
 	}
 }

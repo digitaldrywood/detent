@@ -29,7 +29,9 @@ type nativeWorkflowConnector struct {
 	reasonCodes  []string
 	// reviewed is the change's review state when the completion is applied;
 	// nil answers as a failed read.
-	reviewed *bool
+	reviewed    *bool
+	reviewState *connector.ChangeReview
+	reviewErr   error
 }
 
 func (c *nativeWorkflowConnector) UpdateIssueState(ctx context.Context, id, state string) error {
@@ -38,11 +40,14 @@ func (c *nativeWorkflowConnector) UpdateIssueState(ctx context.Context, id, stat
 	return c.autoPromoteTickConnector.UpdateIssueState(ctx, id, state)
 }
 
-func (c *nativeWorkflowConnector) ChangeReviewed(context.Context, string, string, string) (bool, error) {
-	if c.reviewed == nil {
-		return false, errors.New("hub unavailable")
+func (c *nativeWorkflowConnector) ReadChangeReview(context.Context, string, string, string, string) (connector.ChangeReview, error) {
+	if c.reviewErr != nil {
+		return connector.ChangeReview{}, c.reviewErr
 	}
-	return *c.reviewed, nil
+	if c.reviewState != nil {
+		return *c.reviewState, nil
+	}
+	return connector.ChangeReview{Current: true, Reviewed: c.reviewed != nil && *c.reviewed}, nil
 }
 
 func (c *nativeWorkflowConnector) WorkflowStates(context.Context) ([]connector.WorkflowState, error) {
@@ -128,7 +133,6 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		finalMessage  string
 		runErr        error
 		wantHuman     bool
-		wantWait      bool
 		noUsage       bool
 		change        *runpkg.NativeChange
 		states        []connector.WorkflowState
@@ -229,7 +233,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "four lane reviewed change lands during drain", change: accepted, states: fourLanes, humanReview: &no, draining: true, wantDirect: true},
 		{name: "four lane reviewed optout waits for human review", change: accepted, states: fourLanes, reviewed: &yes, optout: true, humanReview: &no, wantState: "Human Review"},
 		{name: "four lane failed run returns to Todo", lifecycle: "settle", roundTrip: true, change: accepted, states: fourLanes, humanReview: &no, runErr: errors.New("provider failed"), wantState: "Todo"},
-		{name: "four lane unreviewed version settles without acceptance", change: waiting, states: fourLanes, humanReview: &no, wantSettled: true},
+		{name: "four lane unreviewed version retains completion", change: waiting, states: fourLanes, humanReview: &no, wantDeferred: true},
 		{name: "four lane unfinished source settles without a Rework move", change: accepted, states: fourLanes, humanReview: &no, finalMessage: unfinishedReport, wantSettled: true},
 		{name: "reason only report settles without acceptance", change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", wantSettled: true},
 		{name: "human action comment retains agent reason and summary", change: accepted, states: workflow, finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", wantHuman: true, wantReason: "permission_wait", wantSummary: "The operator must approve the migration."},
@@ -253,7 +257,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "commits move to the configured review lane", change: waiting, states: workflow, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "a version that needs no reviewer goes straight to landing", change: accepted, states: landing, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "a version waiting for a reviewer goes to review", change: waiting, states: landing, wantState: "In Review", wantComment: "opened Change Request change_1"},
-		{name: "disabled review settles unaccepted change without acceptance", change: waiting, states: blockedLanding, humanReview: &no, wantSettled: true},
+		{name: "published passing version waits for review without implementation redispatch", lifecycle: "review_wait", change: waiting, states: unfinishedWorkflow, humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published version retains audit infrastructure failure", lifecycle: "review_audit", runErr: fmt.Errorf("%w: landing security audit: unavailable", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published review wait survives retained source in Rework", lifecycle: "review_wait", change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published review wait resumes after Hub timeout", lifecycle: "review_timeout", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published review wait receives actionable findings", lifecycle: "review_rework", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published review wait refuses changed head", lifecycle: "review_head", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published review wait rejects expired authority", lifecycle: "review_expired", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "published review wait preserves operator hold", lifecycle: "review_operator", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "disabled review lands accepted change", change: accepted, states: blockedLanding, humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "disabled review complete source settles publication refusal", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", HeadSHA: head, VersionID: "version_1", Reviewed: true, VersionError: "the final attempt diff does not identify the current Change Request head", VersionCode: "policy_mismatch"}, states: unfinishedWorkflow, humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, roundTrip: true},
 		{name: "an accepted version without a landing move lands directly", change: accepted, states: workflow, wantDirect: true},
@@ -271,13 +282,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "validator rework without findings explains gate", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, finalMessage: unfinishedReport, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"The validator requested changes"}},
 		{name: "source review rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
 		{name: "acknowledged current source rework outranks summary evidence error", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, ImplementationReview: &gate.ValidatorResult{VersionID: "version", HeadSHA: head, Verdict: "rework"}, ImplementationReviewError: "summary unavailable"}, states: unfinishedWorkflow, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Rework"},
-		{name: "source review wait preserves operator evidence owner", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Blocked", wantWait: true, roundTrip: true},
-		{name: "source review producer failure retains operator evidence owner", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, ImplementationReviewError: "required source review backend unavailable"}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", runErr: runpkg.NewSSHRunResponse(runpkg.RunResult{}, &runpkg.NativeImplementationReviewError{Err: errors.New("required source review backend unavailable")}).Err(), wantState: "Blocked", wantWait: true, roundTrip: true},
+		{name: "source review wait retains completion ownership", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantDeferred: true, roundTrip: true},
+		{name: "source review producer failure resumes from retained completion", lifecycle: "review_source", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, ImplementationReviewError: "required source review backend unavailable"}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", runErr: runpkg.NewSSHRunResponse(runpkg.RunResult{}, &runpkg.NativeImplementationReviewError{Err: errors.New("required source review backend unavailable")}).Err(), wantDeferred: true, roundTrip: true},
 		{name: "source review evidence hold publication refusal retains completion", change: sourceWait, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("tracker unavailable"), wantDeferred: true},
 		{name: "source review evidence hold needs an executable recovery destination", change: sourceWait, states: append(append([]connector.WorkflowState(nil), unfinishedWorkflow[:len(unfinishedWorkflow)-2]...), connector.WorkflowState{Name: "Blocked"}, unfinishedWorkflow[len(unfinishedWorkflow)-1]), sourceState: "Rework", humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantDeferred: true},
-		{name: "source review wait respects custom Rework", change: sourceWait, states: customRework, reworkState: "Fixing", humanReview: &no, wantSettled: true},
-		{name: "source review wait with disabled Rework settles", change: sourceWait, states: noDispatchRework, humanReview: &no, wantSettled: true},
-		{name: "source review wait without Rework settles", change: sourceWait, states: fourLanes, humanReview: &no, wantSettled: true},
+		{name: "source review wait respects custom Rework", change: sourceWait, states: customRework, reworkState: "Fixing", humanReview: &no, wantDeferred: true},
+		{name: "source review wait with disabled Rework settles", change: sourceWait, states: noDispatchRework, humanReview: &no, wantDeferred: true},
+		{name: "source review wait without Rework settles", change: sourceWait, states: fourLanes, humanReview: &no, wantDeferred: true},
 		{name: "source review wait retains human review lane", change: sourceWait, states: unfinishedWorkflow, wantState: "In Review"},
 		{name: "source review wait without review destination defers", change: sourceWait, states: hosted, wantDeferred: true},
 		{name: "source review wait preserves prerequisite authority", change: sourceWait, states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
@@ -330,7 +341,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "typed accepted current version lands normally", change: accepted, states: landing, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "completed reviewed Rework reaches landing", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "refused completed Rework landing retains completion ownership", change: accepted, states: rework, sourceState: "Rework", humanReview: &no, reviewed: &yes, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", updateErr: errors.New("stale fencing token"), wantState: "Merging", wantDeferred: true, roundTrip: true},
-		{name: "publication outage retries current publisher", republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
+		{name: "publication outage retries current publisher", reviewed: &yes, republish: true, change: &runpkg.NativeChange{Error: "hub unavailable"}, states: landing, wantDeferred: true},
 		{name: "an unopened change is handed off, not reviewed", change: &runpkg.NativeChange{Changed: true, Error: "hub unavailable", HeadSHA: head, Files: 1}, states: workflow, wantDeferred: true},
 		{name: "a workflow without the review lane is handed off, never ended", change: waiting, states: hosted, wantDeferred: true},
 		{name: "a workflow without a terminal move is handed off", change: &runpkg.NativeChange{}, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Blocked"}}, {Name: "Blocked"}}, wantDeferred: true},
@@ -404,6 +415,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			}
 			metrics := &workflowMetricsRecorderSpy{}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling, workflowMetrics: metrics}
+			if native, ok := tracker.(*nativeWorkflowConnector); ok && test.reviewed == nil && test.change != nil {
+				native.reviewed = &test.change.Reviewed
+			}
 			var journey *nativeLandingJourney
 			landingGate := &countingProjectDispatchGate{}
 			if test.wantDirect {
@@ -466,7 +480,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				diffStats = DiffStats{Status: "clean", HeadSHA: head}
 			}
 			var advance func()
-			if test.lifecycle != "" {
+			if strings.HasPrefix(test.lifecycle, "review_") {
+				orch.now = func() time.Time { return now }
+			}
+			if test.lifecycle != "" && !strings.HasPrefix(test.lifecycle, "review_") {
 				cfg.Claiming.LeaseTTL = 90 * time.Second
 				cfg.Claiming.HeartbeatInterval = 30 * time.Second
 				orch.cfg = cfg
@@ -553,6 +570,76 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("nil native result bypassed ordinary continuation ownership")
 			}
 			orch.handleRunResult(t.Context(), &state, event)
+			if strings.HasPrefix(test.lifecycle, "review_") {
+				if len(state.deferredCompletions) != 1 || !state.Retry[issue.ID].CompletionDeferred || scheduling.releases != 0 || len(attempts.completions) != 0 || tick.stateIssues[0].State != issue.State {
+					t.Fatalf("published unreviewed version lost completion ownership: deferred=%d releases=%d completions=%d lane=%s", len(state.deferredCompletions), scheduling.releases, len(attempts.completions), tick.stateIssues[0].State)
+				}
+				native := tracker.(*nativeWorkflowConnector)
+				for range 3 {
+					now = now.Add(time.Minute)
+					if orch.retryDeferredCompletions(t.Context(), &state, now) {
+						t.Fatal("unreviewed version settled")
+					}
+					if result := orch.dispatchIssueWithOutcome(t.Context(), &state, issue, 2, now, ""); result.dispatched || result.reason != dispatchSkipCompletionDeferred {
+						t.Fatalf("review wait allowed implementation: %+v", result)
+					}
+				}
+				last := attempts.heartbeats[len(attempts.heartbeats)-1]
+				if last.WaitReason != string(gate.ReasonAutomatedReviewMissing) || !strings.Contains(last.StatusMessage, "waiting on review evidence") || strings.Contains(last.StatusMessage, "without work product") {
+					t.Fatalf("missing review cause: %+v", last)
+				}
+				record, err := decodeDeferredCompletion(store.WorkAttempt{ID: 42, WorkerMetadataJSON: last.WorkerMetadataJSON})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if record.Result.NativeChange.VersionID != "version_1" || record.Result.NativeChange.HeadSHA != head {
+					t.Fatal("review wait lost immutable source")
+				}
+				state = newState(cfg)
+				orch.recoverDeferredCompletions(t.Context(), &state, []store.WorkAttempt{{ID: 42, Phase: deferredCompletionPhase, WorkerMetadataJSON: last.WorkerMetadataJSON}}, now)
+				now = now.Add(time.Minute)
+				native.reviewed = &yes
+				expected := "Merging"
+				switch test.lifecycle {
+				case "review_timeout":
+					native.reviewErr = context.DeadlineExceeded
+					if orch.retryDeferredCompletions(t.Context(), &state, now) || scheduling.releases != 0 {
+						t.Fatal("Hub timeout lost completion")
+					}
+					now = now.Add(time.Minute)
+					native.reviewErr = nil
+					tick.updateErr = context.DeadlineExceeded
+					if orch.retryDeferredCompletions(t.Context(), &state, now) || scheduling.releases != 0 {
+						t.Fatal("lane timeout lost completion")
+					}
+					now = now.Add(time.Minute)
+					tick.updateErr = nil
+				case "review_rework":
+					native.reviewState = &connector.ChangeReview{Current: true, ChangesRequested: true}
+					expected = "Rework"
+				case "review_head":
+					native.reviewState = &connector.ChangeReview{}
+					expected = issue.State
+				case "review_operator":
+					tick.stateIssues[0].State = "Blocked"
+					expected = "Blocked"
+				case "review_expired":
+					orch.scheduling = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: runpkg.ErrExecutionAuthorityUnavailable}
+					record := state.deferredCompletions[issue.ID]
+					record.AuthorityRestored = false
+					state.deferredCompletions[issue.ID] = record
+					expected = issue.State
+				}
+				if !orch.retryDeferredCompletions(t.Context(), &state, now) || len(state.deferredCompletions) != 0 {
+					t.Fatal("genuine review result did not settle")
+				}
+				orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Minute))
+				if tick.stateIssues[0].State != expected || len(attempts.completions) != 1 {
+					t.Fatalf("review replay: lane=%s want=%s completions=%d", tick.stateIssues[0].State, expected, len(attempts.completions))
+				}
+				return
+			}
+
 			if forwarded, ok := tracker.(*nativeWorkflowConnector); ok {
 				for i, code := range forwarded.reasonCodes {
 					if code == "" || code == "worker_progress" || strings.TrimSpace(forwarded.reasons[i]) == "" {
@@ -683,25 +770,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if test.wantWait {
-				if tick.stateIssues[0].State != "Blocked" || len(state.Retry) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
-					t.Fatalf("source review wait remained runnable or lost settlement: state=%s retry=%v releases=%d", tick.stateIssues[0].State, state.Retry, scheduling.releases)
-				}
-				blocked, held := state.Blocked[issue.ID]
-				if !held || blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerOperator || blocked.Recovery.Predicate != blockedRecoveryPredicateManaged || blocked.Recovery.OperatorRemedy == "" {
-					t.Fatalf("technical wait has no protected operator owner: %+v", blocked)
-				}
-				if len(tick.comments) < 2 || !strings.Contains(tick.comments[0].body, "operator") || !strings.Contains(tick.comments[len(tick.comments)-1].body, "applied") {
-					t.Fatalf("operator hold was not published: %+v", tick.comments)
-				}
-				for range 3 {
-					orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
-				}
-				if len(state.Retry) != 0 || scheduling.releases != 1 {
-					t.Fatal("technical evidence wait started automatic retry")
-				}
-				return
-			}
+
 			if test.wantSettled {
 				if test.republish && test.runErr == nil && finalState == runpkg.FinalStateCompleted {
 					if len(publisher.observations) == 0 || publisher.observations[len(publisher.observations)-1].Completion == nil || publisher.observations[len(publisher.observations)-1].Completion.AcceptanceRecorded || publisher.observations[len(publisher.observations)-1].Completion.ObservedAt.IsZero() {
