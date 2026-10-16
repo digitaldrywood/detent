@@ -11,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -719,12 +720,10 @@ type workflowFrontmatter struct {
 }
 
 type workflowTracker struct {
-	Kind           string            `yaml:"kind"`
-	ActiveStates   []string          `yaml:"active_states"`
-	ObservedStates []string          `yaml:"observed_states"`
-	TerminalStates []string          `yaml:"terminal_states"`
-	StateMap       map[string]string `yaml:"state_map"`
-	Issues         []connector.Issue `yaml:"issues"`
+	Kind     string                `yaml:"kind"`
+	Lanes    []workflowconfig.Lane `yaml:"lanes"`
+	StateMap map[string]string     `yaml:"state_map"`
+	Issues   []connector.Issue     `yaml:"issues"`
 }
 
 type workflowPolling struct {
@@ -794,12 +793,14 @@ func writeWorkflow(path string, input workflowInput) error {
 	}
 	frontmatter := workflowFrontmatter{
 		Tracker: workflowTracker{
-			Kind:           input.TrackerMode,
-			ActiveStates:   activeStates,
-			ObservedStates: observedStates,
-			TerminalStates: terminalStates,
-			StateMap:       map[string]string{},
-			Issues:         append([]connector.Issue(nil), input.Issues...),
+			Kind: input.TrackerMode,
+			Lanes: (workflowconfig.Tracker{
+				ActiveStates:   activeStates,
+				ObservedStates: observedStates,
+				TerminalStates: terminalStates,
+			}).WorkflowLanes(),
+			StateMap: map[string]string{},
+			Issues:   append([]connector.Issue(nil), input.Issues...),
 		},
 		Polling: workflowPolling{IntervalMS: 60000},
 		Workspace: workflowWorkspace{
