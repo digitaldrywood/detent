@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -95,11 +96,16 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 			return result, err
 		}
 	}
+	cacheCtx, releaseCache, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer func() { err = errors.Join(err, releaseCache()) }()
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, identity, store.AgentResumeState{}, "", "")
 	if err != nil {
 		return result, err
 	}
-	sessionCtx, cancelSession := r.sessionLimit(ctx, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS), ErrSessionDurationExceeded)
+	sessionCtx, cancelSession := r.sessionLimit(cacheCtx, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS), ErrSessionDurationExceeded)
 	defer cancelSession()
 	result = RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: identity, budgetProjection: budgetProjection}
 	provider, tier, effort := agentTurnIdentityOptions(backendConfig)
@@ -149,7 +155,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	}
 	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
 	removeWorkspace = reapErr == nil
-	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
+	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr), releaseCache())
 	turnErr = classifyAgentCapacityError(backend, selection, backendConfig, result.RuntimeIdentity, turnErr, result.RateLimits, startedAt)
 	result.TurnCount = turnCount
 	result.Output = output.String()
