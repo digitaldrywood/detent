@@ -372,11 +372,13 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 		return errors.New("native landing execution is unavailable")
 	}
 	slotIssue := cloneIssue(running.Issue)
+	workerHost := running.WorkerHost
 	if reviewOnly {
 		delete(state.Running, event.IssueID)
-		planner := o.dispatchPlanner()
+		planner := o.liveDispatchPlanner(ctx, nil)
 		planner.now = o.clockNow()
-		available = planner.availableSlots(state) > 0 && planner.workerHostSlotsAvailable(state, running.WorkerHost) && o.projectStateSlotStats(slotIssue, state).available > 0
+		workerHost, available = planner.selectWorkerHost(state, "")
+		available = available && planner.availableSlots(state) > 0 && o.projectStateSlotStats(slotIssue, state).available > 0
 		state.Running[event.IssueID] = running
 		if !available {
 			return runpkg.ErrModelPermitUnavailable
@@ -384,7 +386,7 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	} else {
 		slotIssue.State = autoPromoteMergingState
 	}
-	slot, available, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, running.WorkerHost, o.clockNow(), 0)
+	slot, available, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, o.clockNow(), 0)
 	if !available {
 		return fmt.Errorf("native landing capacity unavailable: %s", decision.Reason)
 	}
@@ -400,7 +402,7 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.Attempt = running.Attempt
 	request.WorkAttemptID = running.WorkAttemptID
 	request.Generation = running.Generation
-	request.WorkerHost = running.WorkerHost
+	request.WorkerHost = workerHost
 	request.DeferExecutionFinish = true
 	request.AcquireModelPermit = nil
 	runCtx, cancel := context.WithTimeoutCause(ctx, o.cfg.MergeWorkerMaxDuration, runpkg.ErrMergeWorkerDurationExceeded)
@@ -412,6 +414,7 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 		request.OnActivityUpdate = o.activityUpdateHandler(runCtx, running.Issue)
 	}
 	running.Mode = request.Mode
+	running.WorkerHost = workerHost
 	running.ModelPermitExempt = !reviewOnly
 	running.globalSlot = slot
 	running.cancel = cancel
