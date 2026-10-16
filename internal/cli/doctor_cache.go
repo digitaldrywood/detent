@@ -40,7 +40,7 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 			if uint64(policy.NormalizedForCapacity(capacity).MaxBytes) > capacity/10 {
 				check.Status = doctorWarn
 				check.Detail += "; effective build cache size target exceeds 10% of cache-volume capacity"
-				check.Hint = "global.cache.max_bytes is a reporting target; recent outputs may exceed it."
+				check.Hint = "global.cache.max_bytes bounds the managed runner cache after protected consumers finish; native operator caches retain age-only expiry."
 			}
 		}
 		policy = policy.NormalizedForCapacity(capacity)
@@ -48,9 +48,8 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 	policy = policy.NormalizedForCapacity(0)
 	check.Detail += "; build cache size target: " + toolcache.FormatBytes(policy.MaxBytes)
 	if report.SizeEvictedBytes > 0 {
-		check.Status = doctorWarn
 		check.Detail += "; last recorded size eviction: " + toolcache.FormatBytes(report.SizeEvictedBytes)
-		check.Hint = "An older runner evicted entries to enforce global.cache.max_bytes; current runners preserve recent outputs above the size target. Last recorded sweep retained " + toolcache.FormatBytes(report.RetainedBytes) + "."
+		check.Hint = "The managed runner cache reclaims eligible entries under its consumer locks to enforce global.cache.max_bytes. Last recorded sweep retained " + toolcache.FormatBytes(report.RetainedBytes) + "."
 	}
 	lastTrim := report.LastTrim
 	if lastTrim == "" {
