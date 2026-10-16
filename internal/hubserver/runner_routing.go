@@ -26,20 +26,21 @@ r.problems_json, r.backend_isolation_json, r.reported_protocol_major, r.settings
 m.version, o.urgent_runner_update_json,
 (SELECT json_group_array(json_object('backend', backend, 'kind', kind, 'percent_used', percent_used, 'reset_at', reset_at, 'observed_at', observed_at))
 FROM (SELECT * FROM runner_provider_usage_windows WHERE runner_id = r.id ORDER BY backend, kind)),
-(SELECT json_group_object(backend, billing) FROM runner_provider_billing WHERE runner_id = r.id)
+(SELECT json_group_object(backend, billing) FROM runner_provider_billing WHERE runner_id = r.id),
+COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),'')
 FROM runner_identities r JOIN machines m ON m.id = r.machine_id JOIN api_tokens t ON t.id = r.token_id JOIN organizations o ON o.id = r.organization_id`
 
 func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.Time, extra ...any) (runnerauth.Runner, []providercapacity.Report, time.Time, error) {
 	var r runnerauth.Runner
 	var tags, operations, heartbeat, created, expires, token, settings string
 	var projects, problems, isolationRaw, capacityRaw, providerRaw, updateRaw, configurationRaw string
-	var version, urgentRaw, usageRaw, billingRaw string
+	var version, urgentRaw, usageRaw, billingRaw, spriteName string
 	var protocol int
 	var rejected bool
 	var revoked sql.NullString
 	destinations := []any{&r.RunnerID, &r.OrganizationID, &r.MachineID, &token, &r.DisplayName, &tags, &r.State, &r.CapacityLimit,
 		&r.ReportedCapacity, &r.OS, &r.Architecture, &heartbeat, &r.Revision, &operations, &settings,
-		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw, &r.Scope, &version, &urgentRaw, &usageRaw, &billingRaw}
+		&r.Hostname, &r.HostDisplayName, &r.HostCapacity, &r.HostRevision, &created, &expires, &revoked, &projects, &problems, &isolationRaw, &protocol, &rejected, &capacityRaw, &providerRaw, &updateRaw, &configurationRaw, &r.Scope, &version, &urgentRaw, &usageRaw, &billingRaw, &spriteName}
 	err := row.Scan(append(destinations, extra...)...)
 	if err != nil {
 		return r, nil, time.Time{}, err
@@ -77,6 +78,14 @@ func scanRunnerIdentity(row interface{ Scan(...any) error }, clock func() time.T
 	}
 	if err := applyRunnerProblems(&r, problems, isolationRaw, protocol, rejected); err != nil {
 		return r, nil, time.Time{}, err
+	}
+	if spriteName != "" && spriteName == r.Hostname && r.IsolationTier == "sandbox" {
+		for i := range r.Problems {
+			if r.Problems[i].Code == "tier_unavailable" {
+				r.Problems[i].Message = spriteSandboxUnavailableReason
+				r.Problems[i].FixHint = "Ask an organization owner or admin to approve switching this runner to Full access. Projects requiring sandbox cannot use it with Full access."
+			}
+		}
 	}
 	if err := json.Unmarshal([]byte(updateRaw), &r.Update); err != nil {
 		return r, nil, time.Time{}, err
