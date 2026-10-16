@@ -136,6 +136,53 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 	}
 }
 
+func TestProviderProjectBackendReservations(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 16, 3, 0, 0, 0, time.UTC)
+	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+	code := newNativeFixture(t, service, "", "code")
+	design := newNativeFixture(t, service, code.project.OrganizationID, "design")
+	r := prepareRunnerForScope(t, code, "organization", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	r.enroll(t)
+	reports := []providercapacity.Report{
+		{Provider: "openai", Backend: "codex-code", AccountAlias: "runner", Models: []string{"sol", "code-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
+		{Provider: "anthropic", Backend: "claude-design", AccountAlias: "runner", Models: []string{"opus", "design-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
+	}
+	publishCapacity(t, code, r, reports...)
+	for _, test := range []struct {
+		fixture        nativeFixture
+		backend, model string
+	}{{code, "codex-code", "sol"}, {design, "claude-design", "opus"}} {
+		t.Run(test.backend, func(t *testing.T) {
+			f := test.fixture
+			approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())
+			issue := f.create(t, "work")
+			claim := providerClaim(r, issue, test.backend)
+			claim.ProviderCandidates[0].Requirement.Backend = test.backend
+			claim.ProviderCandidates[0].Requirement.Model = test.model
+			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			if lease.WorkItemID != issue.WorkItemID || lease.ProviderReservation == nil || lease.ProviderReservation.Backend != test.backend || lease.ProviderReservation.Model != test.model || lease.ProviderReservation.Report.Backend != test.backend || lease.ProviderReservation.Report.Availability != "unknown" {
+				t.Fatalf("project reservation=%+v", lease)
+			}
+		})
+	}
+	response := performHubAPIRequest(t, service, http.MethodGet, r.identityPath()+"/capacity", testHubAdminToken, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var capacity runnerCapacityRead
+	decodeHubResponse(t, response, &capacity)
+	if len(capacity.ProviderCapacity) != 2 {
+		t.Fatalf("capacity=%+v", capacity)
+	}
+	for _, view := range capacity.ProviderCapacity {
+		if view.Used != 1 || view.State != "unknown" || view.Reason == "" {
+			t.Fatalf("project capacity observation=%+v", view)
+		}
+	}
+}
+
 func TestProviderSharedCapacityConcurrentRecovery(t *testing.T) {
 	t.Parallel()
 	for _, sharing := range []string{"declared", "unknown", "same local alias", "mixed", "mixed reversed"} {
