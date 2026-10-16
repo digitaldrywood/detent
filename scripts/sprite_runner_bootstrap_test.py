@@ -280,14 +280,15 @@ class SpriteBootstrapTests(unittest.TestCase):
                     self.assertEqual(args[args.index("--isolation-tier") + 1], "sandbox")
                 self.assertNotIn(TOKEN, result.stdout + result.stderr + str(self.calls()))
 
-    def test_pressure_floor_config_merge(self):
+    def test_resource_config_merge(self):
         cases = (
             ("fresh", None, {"client": {"hub_url": "https://hub.example"}, "global": {"max_concurrent_agents": 2}}, 1, 1),
             ("no global", "client: {hub_url: https://hub.example}\n", {"client": {"hub_url": "https://hub.example"}}, 1, 1),
             ("missing keys", "# operator config\nclient: {capacity: 4}\nglobal:\n  max_concurrent_agents: 4\n  io:\n    pressure_full_avg10_threshold: 8\n  cpu:\n    pressure_some_avg10_threshold: 60\n",
              {"client": {"capacity": 4}, "global": {"max_concurrent_agents": 4, "io": {"pressure_full_avg10_threshold": 8}, "cpu": {"pressure_some_avg10_threshold": 60}}}, 1, 1),
             ("partial floor", "global: {io: {degraded_max_concurrent_agents: 0}}\n", {"global": {}}, 0, 1),
-            ("operator floors", "# keep these floors\nglobal:\n  io: {degraded_max_concurrent_agents: 0}\n  cpu: {degraded_max_concurrent_agents: 3}\nprojects: []\n", {"global": {}, "projects": []}, 0, 3),
+            ("operator floors", "# keep these floors\nglobal:\n  io: {degraded_max_concurrent_agents: 0}\n  cpu: {degraded_max_concurrent_agents: 3, go_build_budget: 6}\nprojects: []\n", {"global": {"cpu": {"go_build_budget": 6}}, "projects": []}, 0, 3),
+            ("automatic budget", "global: {cpu: {go_build_budget: 0}}\n", {"global": {"cpu": {"go_build_budget": 0}}}, 1, 1),
             ("null sections", "global:\n  io:\n  cpu:\n", {"global": {}}, 1, 1),
         )
         for name, original, preserved, io_floor, cpu_floor in cases:
@@ -310,8 +311,10 @@ class SpriteBootstrapTests(unittest.TestCase):
                 pressure = expected.setdefault("global", {})
                 pressure.setdefault("io", {})["degraded_max_concurrent_agents"] = io_floor
                 pressure.setdefault("cpu", {})["degraded_max_concurrent_agents"] = cpu_floor
+                budget = pressure["cpu"].setdefault("go_build_budget", 2)
                 self.assertEqual(json.loads(parsed.stdout), expected)
                 self.assertIn(f"Sprite pressure capacity: io={io_floor}, cpu={cpu_floor}", result.stdout)
+                self.assertIn(f"Sprite Go build budget: {budget}", result.stdout)
                 if original is not None:
                     self.assertEqual(identity.read_text(), "operator identity\n")
                     self.assertEqual(config.stat().st_mode & 0o777, 0o640)

@@ -229,6 +229,87 @@ proceed under I/O or CPU pressure. Project, pool, provider, and other capacity
 limits still apply. The printed summary shows the configured floors. See
 [host pressure configuration](config.md).
 
+### Execution resource profile
+
+Start with one runner and one agent slot per Sprite. A slot limits agent
+attempts, not the build tools each attempt starts. The bootstrap also fills a
+missing `global.cpu.go_build_budget` with `2`; explicit values, including `0`
+(automatic sizing), survive reruns. This existing host-wide budget queues Go
+compiler, linker and vet processes across attempts while retaining native
+build and module caches. Existing runners with an explicit larger budget need
+an operator to select `2` to use this candidate profile.
+
+Sprites do not expose a machine-size selector in the published
+[create](https://docs.fly.io/sprites/api/sprites/create-a-sprite) or
+[update](https://docs.fly.io/sprites/api/sprites/update-a-sprite) API. The
+[resource policy](https://docs.fly.io/sprites/api/network-policy/set-resources-policy)
+supports memory `limit_mb` and `autoscale`; these are separate provider settings,
+not a CPU-size control. Record the actual guest resources and current policy
+for every validation. Do not assume that two Sprites have the same memory, or
+change memory autoscaling, provider plans or billing mode as part of setup.
+
+Bound nested builds through the project's existing `gate.run` command. For a
+project whose required gate is `make check-fast` and whose Makefile honors
+`CHECK_FAST_JOBS`, use this candidate Linux profile:
+
+```yaml
+gate:
+  run: nice -n 5 ionice -c 2 -n 7 env CHECK_FAST_JOBS=2 TEST_PROCS=2 MAKEFLAGS=-l2 make check-fast
+```
+
+Keep the project's complete required command and all its checks. Review and
+approve a changed repository-owned policy through the existing policy owner.
+This example does not change Detent's own `make check-landing` policy. Other
+build systems need their supported worker limits in the same command.
+`MAKEFLAGS=-l2` limits new parallel Make recipes under load, including nested
+makes with explicit `-j`; it is not a hard CPU quota and cannot bound a tool's
+own threads. `CHECK_FAST_JOBS` and `TEST_PROCS` only affect Makefiles that read
+them. Verify the actual frontend, test and lint worker counts; reduce them
+through their supported controls if the gate still saturates the guest.
+
+Worker backends already lower their CPU scheduling priority relative to the
+runner. The command additionally applies a CPU nice increment of `5` and
+best-effort I/O priority `7` before launching the gate, so descendants inherit
+them while runner heartbeat and probe work keeps its original priority. Ensure
+`nice` and `ionice` are installed by `hooks.runner_setup`, verify the effective
+priorities, and retain a failed command if the guest refuses either operation.
+Some storage schedulers ignore I/O priority; only measurements establish its
+effect. Do not lower the priority of the runner Service itself. Hook exports
+do not persist into later jobs, and editing the generated Service launcher is
+not durable project configuration.
+
+The profile is a candidate, not ready, until an explicitly authorized provider
+test budget covers representative cold and warm runs. The operator performing
+that validation retains acceptance on the original work item:
+
+1. Record the maximum spend, duration, Sprite identity, runner version, source
+   SHA, approved policy, complete gate command, concurrency settings and
+   provider memory policy. Use an independently enrolled disposable runner;
+   never copy an identity or credential-bearing checkpoint to another Sprite.
+2. Record `nproc`, `/proc/meminfo`, cgroup CPU and memory limits where present,
+   and the storage scheduler. Capture timestamped `vmstat 1`, CPU/I/O/memory
+   `/proc/pressure` samples, load, effective worker priorities and gate elapsed
+   time before and during both the baseline and candidate runs. Record actual
+   resources, rather than treating an advertised maximum as an allocation.
+3. Use the same exact source and every required check for both profiles. Test
+   from a provider-cold wake and an initially cold native cache on the disposable
+   runner, then repeat warm with those native caches intact. Distinguish provider
+   cold state from tool-cache cold state. Do not clear an active runner's caches
+   or create per-job Go or lint caches. Close consoles and diagnostic exec
+   sessions before the cold wake; collect inside the job and retrieve afterward
+   so observation does not hold the Sprite awake.
+4. Correlate Hub-observed heartbeat gaps, backend probe durations/errors, task
+   hold activity and lease renewals/fencing with the gate's timestamps through
+   existing runner logs and native attempt/API reads. A passing shell command
+   alone does not prove the claim survived. Record every lease loss, missed
+   heartbeat deadline, probe timeout and stale-fencing rejection.
+5. Attach the bounded before/after measurements and gate results to the original
+   native work item. Mark ready only when the cold and warm gates pass with
+   responsive heartbeats/probes, continuous lease ownership, and no lost claim
+   or stale-fencing failure. Unexecuted runs remain unverified; a failure retains
+   its measured limitation and fails readiness. Do not weaken checks, extend
+   probe/lease deadlines or change provider billing mode to obtain a pass.
+
 ### Standard runner toolset
 
 Every runner receives the standard tools during bootstrap, so agents can

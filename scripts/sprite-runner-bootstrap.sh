@@ -405,6 +405,10 @@ for (const signal of ['io', 'cpu']) {
         changed = true;
     }
 }
+if (!config.hasIn(['global', 'cpu', 'go_build_budget'])) {
+    config.setIn(['global', 'cpu', 'go_build_budget'], 2);
+    changed = true;
+}
 if (changed) {
     const temporary = `${configPath}.sprite-bootstrap-${process.pid}`;
     try {
@@ -417,6 +421,7 @@ if (changed) {
     }
 }
 console.log(`Sprite pressure capacity: io=${config.getIn(['global', 'io', 'degraded_max_concurrent_agents'])}, cpu=${config.getIn(['global', 'cpu', 'degraded_max_concurrent_agents'])} (missing floors default to 1; operator values preserved).`);
+console.log(`Sprite Go build budget: ${config.getIn(['global', 'cpu', 'go_build_budget'])} (missing budget defaults to 2; operator values preserved). Resource profile requires cold and warm gate verification before readiness.`);
 NODE
 )
 
