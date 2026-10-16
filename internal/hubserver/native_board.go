@@ -94,7 +94,7 @@ func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 }
 
 func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO native_board_dirty SELECT work_item_id FROM native_board_items WHERE running=1 AND expires_at<=?", now.UTC().Format("2006-01-02T15:04:05.000000000Z")); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO native_board_dirty SELECT work_item_id FROM native_board_items WHERE (running=1 OR json_extract(record_json,'$.execution') IS NOT NULL) AND expires_at<=?", now.UTC().Format("2006-01-02T15:04:05.000000000Z")); err != nil {
 		return err
 	}
 	ids, err := nativePageIDs(ctx, tx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
@@ -135,6 +135,7 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 			return err
 		}
 		current = &tracker.NativeBoardCard{Issue: issue}
+		var latest *tracker.NativeAttempt
 		var attemptID string
 		var attemptCount int
 		err = tx.QueryRowContext(ctx, `SELECT id,(SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?)
@@ -146,7 +147,12 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 				return err
 			}
 			current.Attempt = &tracker.NativeBoardAttempt{Count: attemptCount, ID: attempt.AttemptID, Status: attempt.Status, RunnerID: attempt.RunnerID, MachineID: string(attempt.MachineID), Identity: nativeAttemptDisplayIdentity(attempt), StartedAt: attempt.StartedAt, ExpiresAt: attempt.LeaseExpiresAt}
+			latest = &attempt
 		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		current.Execution, err = readNativeBoardExecution(ctx, tx, scope, id, latest, now)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, id)
@@ -221,7 +227,10 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 		if current.Attempt != nil {
 			expires = current.Attempt.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		}
-		running := !issue.Terminal && current.Attempt != nil && current.Attempt.Status == "running"
+		if current.Execution != nil {
+			expires = current.Execution.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
+		}
+		running := !issue.Terminal && current.Execution != nil && current.Execution.Running
 		if _, err := tx.ExecContext(ctx, `INSERT INTO native_board_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, issue.OrganizationID, issue.ProjectID, issue.State, issue.Archived, issue.Terminal, running, rank, priority, missing, activity, string(issue.ProjectID)+"#"+strconv.Itoa(issue.Number), closed, expires, string(raw)); err != nil {
 			return err
 		}
@@ -397,8 +406,16 @@ func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
 		}
 		return "Waiting on " + strconv.Itoa(blockers)
 	}
-	if card.Attempt != nil && card.Attempt.Status == "running" {
-		return "Running"
+	if card.Execution != nil {
+		if label := nativeBoardExecutionLabel(card.Execution.Stage); label != "" {
+			return label
+		}
+		if card.Execution.Running {
+			return "Running"
+		}
+		if card.Attempt == nil || card.Attempt.ID != card.Execution.ID {
+			return ""
+		}
 	}
 	if card.Attempt != nil {
 		switch card.Attempt.Status {

@@ -27,7 +27,7 @@ import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
 import { WorkToolbar } from "../../src/app/work/components/WorkToolbar.tsx";
 import { CompletedCounter } from "../../src/app/work/components/CompletedCounter.tsx";
 import { LiveCounter } from "../../src/app/work/components/LiveCounter.tsx";
-import { toAttemptView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
+import { toAttemptView, toBoardCardView, toWorkItemView, transitionsFrom } from "../../src/app/work/lib/fromWire.ts";
 import { boardStats, isBlocked, isLive, type Lane, type WorkItemView } from "../../src/app/work/lib/model.ts";
 
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
@@ -1885,4 +1885,26 @@ describe("the filter-first Work surface", () => {
     await waitFor(() => expect(current.refreshing).toBe(false));
   });
 
+});
+
+
+describe("current board execution", () => {
+  it.each([
+    { stage: "implementation", running: true, label: "Implementing" },
+    { stage: "merging", running: true, label: "Merging" },
+    { stage: "finalizing", running: false, label: "Finalizing" },
+    { stage: "", running: false, label: null },
+    { stage: "unreported-stage", running: true, label: "Running" },
+  ])("shows $stage without attributing historical attempt identity", ({ stage, running, label }) => {
+    const view = toBoardCardView({
+      issue: { ...itemFixture, terminal: false, blockers: [] } as unknown as NativeIssue,
+      attempt: { attempt_id: "attempt_previous", count: 2, status: "succeeded", started_at: "2026-10-15T12:00:00Z",
+        identity: { role: "code", backend: "codex", model: "previous-model" } },
+      execution: { id: "runner_current/42/3", running, stage, runner_id: "runner_current", started_at: "2026-10-16T12:00:00Z", expires_at: "2026-10-16T12:01:30Z" },
+      change: null,
+    }, "example-project");
+    expect(view.attempt).toMatchObject({ id: "runner_current/42/3", running, model: null, stage, attemptNumber: 2 });
+    expect(statusPill(view)?.label ?? null).toBe(label);
+    expect(isLive(view)).toBe(running);
+  });
 });

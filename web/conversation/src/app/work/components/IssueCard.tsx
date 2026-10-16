@@ -35,6 +35,10 @@ export function statusPill(item: WorkItemView, terminal = item.terminal): { tone
       tone: "err",
       label: waitingLabel(item),
     };
+  const stage = ({ implementation: "Implementing", implementing: "Implementing", code: "Implementing", rework: "Reworking", reworking: "Reworking",
+    planning: "Planning", plan: "Planning", validation: "Validating", validating: "Validating", review: "Validating", security_audit: "Validating",
+    merging: "Merging", merge: "Merging", finalizing: "Finalizing" } as Record<string, string>)[item.attempt?.stage ?? ""];
+  if (stage) return { tone: isLive(item, terminal) ? "ok" : "mute", label: stage };
   if (isLive(item, terminal)) return { tone: "ok", label: "Running" };
   if (item.attempt !== null && item.attempt.status === "failed")
     return { tone: "err", label: "Attempt failed" };

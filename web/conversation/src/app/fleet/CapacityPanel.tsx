@@ -68,12 +68,12 @@ export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = tru
       <h2 className="text-sm font-medium">Capacity right now</h2>
       {hosts.length === 0 ? <p className="text-sm text-muted-foreground">No runners enrolled.</p> : <>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <p className="text-base font-medium tabular-nums">{used} of {total} slots running work</p>
+          <p className="text-base font-medium tabular-nums">{used} of {total} slots occupied</p>
           <p className="text-xs text-muted-foreground">{free} free</p>
           {unavailable > 0 ? <p className="text-xs text-warning-foreground">{unavailable} slots can't take work</p> : null}
           {appUpdates && appUpdates.behind_count > 0 ? <p className="text-xs text-warning-foreground">{appUpdates.behind_count} {appUpdates.behind_count === 1 ? "runner" : "runners"} behind the Hub</p> : null}
         </div>
-        <p className="text-xs text-muted-foreground">Reported capacity; new work also depends on project access and provider availability.{appUpdates ? " Versions are what each runner’s last heartbeat reported." : ""}</p>
+        <p className="text-xs text-muted-foreground">Occupied slots include execution, finalization and merging across projects. Work board live counts follow its filters. New work also depends on project access and provider availability.{appUpdates ? " Versions are what each runner’s last heartbeat reported." : ""}</p>
         <Table className="w-auto text-xs">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
@@ -121,11 +121,11 @@ export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = tru
                 </div>
               </TableCell> : null}
               <TableCell rowSpan={span} className="align-top">
-                <div className="flex w-39 flex-wrap gap-1" aria-label={`${host.used} of ${host.capacity} slots running work on ${host.runner.display_name || host.runner.hostname} · ${host.free} free · ${Math.max(0, host.capacity - host.used - host.free)} can't take work`}>
+                <div className="flex w-39 flex-wrap gap-1" aria-label={`${host.used} of ${host.capacity} slots occupied on ${host.runner.display_name || host.runner.hostname} · ${host.free} free · ${Math.max(0, host.capacity - host.used - host.free)} can't take work`}>
                   {Array.from({ length: Math.min(64, host.capacity) }, (_, index) => {
                     const lease = host.leases[index];
                     const state = index < host.used ? "running" : index < host.used + host.free ? "free" : "unavailable";
-                    return <span key={index} data-slot-state={state} title={lease ? "#" + lease.work_item_id + " " + lease.title : state === "running" ? "Running work" : state === "free" ? "Free slot" : "Can't take work"} className={cn("size-4 shrink-0 rounded-sm border", SLOT_TONES[state])} />;
+                    return <span key={index} data-slot-state={state} title={lease ? "#" + lease.work_item_id + " " + lease.title : state === "running" ? "Occupied slot" : state === "free" ? "Free slot" : "Can't take work"} className={cn("size-4 shrink-0 rounded-sm border", SLOT_TONES[state])} />;
                   })}
                   {host.capacity > 64 ? <span className="text-muted-foreground">+{host.capacity - 64}</span> : null}
                 </div>
@@ -152,7 +152,7 @@ export function CapacityPanel({ runners, appUpdates, onOpen, showProviders = tru
           })}
         </Table>
         <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground" aria-label="Slot legend">
-          {([["running", "Running work"], ["free", "Free"], ["unavailable", "Can't take work"]] as const).map(([state, label]) => <span key={state} className="flex items-center gap-2"><span aria-hidden="true" className={cn("size-3 rounded-sm border", SLOT_TONES[state])} />{label}</span>)}
+          {([["running", "Occupied"], ["free", "Free"], ["unavailable", "Can't take work"]] as const).map(([state, label]) => <span key={state} className="flex items-center gap-2"><span aria-hidden="true" className={cn("size-3 rounded-sm border", SLOT_TONES[state])} />{label}</span>)}
         </div>
       </>}
     </section>
