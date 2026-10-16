@@ -33,7 +33,10 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 
 func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bool, error) {
 	var id string
-	err := d.reader.QueryRowContext(ctx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1").Scan(&id)
+	err := d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM native_board_dirty
+UNION SELECT work_item_id FROM native_board_items
+WHERE (running=1 OR json_extract(record_json,'$.execution') IS NOT NULL) AND expires_at<=?
+ORDER BY work_item_id LIMIT 1`, now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -94,9 +97,6 @@ func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 }
 
 func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO native_board_dirty SELECT work_item_id FROM native_board_items WHERE (running=1 OR json_extract(record_json,'$.execution') IS NOT NULL) AND expires_at<=?", now.UTC().Format("2006-01-02T15:04:05.000000000Z")); err != nil {
-		return err
-	}
 	ids, err := nativePageIDs(ctx, tx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
 	if err != nil {
 		return err

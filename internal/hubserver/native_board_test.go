@@ -25,12 +25,13 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 	now := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
 	type currentWork struct {
-		fixture nativeFixture
-		runner  runnerFixture
-		issue   tracker.NativeIssue
-		worker  string
-		lease   tracker.NativeLease
-		event   tracker.NativeRunEvent
+		fixture     nativeFixture
+		runner      runnerFixture
+		issue       tracker.NativeIssue
+		worker      string
+		lease       tracker.NativeLease
+		event       tracker.NativeRunEvent
+		completedAt time.Time
 	}
 	var work []currentWork
 	for _, name := range []string{"example-project", "example-library"} {
@@ -66,16 +67,39 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 		{"wrong project", "", false},
 		{"finalizing", "Finalizing", false},
 		{"claim only", "", false},
+		{"native running", "Implementing", true},
+		{"diagnostic completion", "Finalizing", false},
+		{"stale completion runtime", "", false},
+		{"stale completion snapshot", "", false},
 		{"provider completed", "", false},
 		{"native completed", "", false},
 		{"released", "", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now = now.Add(time.Second)
+			if test.name == "stale completion runtime" {
+				now = now.Add(runnerauth.HeartbeatTimeout + time.Second)
+			}
 			for index, w := range work {
 				f, r, issue, lease := w.fixture, w.runner, w.issue, w.lease
+				if test.name == "native running" {
+					w.event = nativeStartedEvent(lease)
+					w.event.IdempotencyKey = "current-start"
+					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", w.worker, w.event), http.StatusOK)
+					work[index].event = w.event
+				}
 				local := runnerauth.DiagnosticAttempt{Key: "local:42", IssueID: string(issue.WorkItemID), LocalAttemptID: 42, Generation: 3, Stage: "implementing", Membership: []string{"running", "durable_active", "claimed"}, LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt}
 				claim := runnerauth.DiagnosticAttempt{Key: "native:attempt_current", IssueID: string(issue.WorkItemID), NativeAttemptID: "attempt_current_" + string(f.project.ID), Fence: uint64(lease.FencingToken), Membership: []string{"native_claim"}}
+				if w.event.Data.AttemptID != "" {
+					claim.NativeAttemptID = w.event.Data.AttemptID
+				}
+				if test.name == "diagnostic completion" {
+					w.completedAt = now
+					work[index].completedAt = now
+				}
+				if test.name == "diagnostic completion" || test.name == "stale completion runtime" || test.name == "stale completion snapshot" {
+					claim.ProviderCompletedAt, claim.HostOperation, claim.OperationPending = w.completedAt, "workspace.finalize_native_work", true
+				}
 				if test.name == "unknown stage" {
 					local.Stage = "unreported"
 				}
@@ -93,6 +117,12 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 				if test.name == "stale runtime" {
 					view.Diagnostics.RuntimeObservedAt = now.Add(-10 * time.Minute)
 				}
+				if test.name == "stale completion runtime" || test.name == "stale completion snapshot" {
+					view.Diagnostics.RuntimeObservedAt = w.completedAt
+				}
+				if test.name == "stale completion snapshot" {
+					view.Diagnostics.ObservedAt, view.ObservedAt = w.completedAt, w.completedAt
+				}
 				if test.name == "wrong project" {
 					view.ProjectID = "prj_other"
 				}
@@ -107,9 +137,6 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 					event := w.event
 					if test.name == "provider completed" {
-						event = nativeStartedEvent(lease)
-						event.IdempotencyKey = "current-start"
-						requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, w.worker, event), http.StatusOK)
 						event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "provider-completed", 2
 						event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: now}
 					} else {
@@ -118,7 +145,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 					requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, w.worker, event), http.StatusOK)
 					work[index].event = event
 				}
-				mutation := tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90, Reason: "released"}
+				mutation := tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 600, Reason: "released"}
 				endpoint, status := "/renew", http.StatusOK
 				if test.name == "released" {
 					endpoint, status = "/release", http.StatusNoContent
@@ -140,7 +167,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 					t.Fatalf("unlinked execution=%+v", card.Execution)
 				}
 				wantAttemptStatus := "succeeded"
-				if test.name == "provider completed" {
+				if w.event.Data.AttemptID != "" && test.name != "native completed" && test.name != "released" {
 					wantAttemptStatus = "running"
 				}
 				if card.Attempt == nil || card.Attempt.Status != wantAttemptStatus {
@@ -481,6 +508,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
+			f.service.maintainNativeBoard(t.Context())
 		}},
 		{"version", "", 2, func(t *testing.T) { version = f.publish(t, "board-version", "") }},
 		{"review", "", 2, func(t *testing.T) {

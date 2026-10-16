@@ -52,16 +52,14 @@ AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(
 		return nil, err
 	}
 	d := view.Diagnostics
-	if d == nil || view.ProjectID != string(scope.project) || d.ObservedAt.Before(started) || d.ObservedAt.After(now) || now.Sub(d.ObservedAt) > runnerauth.HeartbeatTimeout {
+	if d == nil || view.ProjectID != string(scope.project) || d.ObservedAt.Before(started) || d.ObservedAt.After(now) {
 		return execution, nil
 	}
 	asOf := d.RuntimeObservedAt
 	if asOf.IsZero() {
 		asOf = d.ObservedAt
 	}
-	if asOf.Before(started) || asOf.After(now) || now.Sub(asOf) > runnerauth.HeartbeatTimeout {
-		return execution, nil
-	}
+	fresh := !asOf.Before(started) && !asOf.After(now) && now.Sub(asOf) <= runnerauth.HeartbeatTimeout && now.Sub(d.ObservedAt) <= runnerauth.HeartbeatTimeout
 	var local *runnerauth.DiagnosticAttempt
 	var claim *runnerauth.DiagnosticAttempt
 	count := 0
@@ -78,7 +76,7 @@ AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(
 			count++
 		}
 	}
-	if count == 1 && local != nil && !terminal {
+	if count == 1 && local != nil && !terminal && fresh {
 		execution.ID = runner + "/" + strconv.FormatInt(local.LocalAttemptID, 10) + "/" + strconv.FormatUint(local.Generation, 10)
 		if local.NativeAttemptID != "" {
 			execution.ID = local.NativeAttemptID
@@ -94,7 +92,7 @@ AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(
 	completed := local != nil && !local.ProviderCompletedAt.Before(started) && !local.ProviderCompletedAt.After(now) || claim != nil && !claim.ProviderCompletedAt.Before(started) && !claim.ProviderCompletedAt.After(now)
 	if completed {
 		execution.Running, execution.Stage = false, ""
-		if claim != nil && claim.OperationPending && claim.HostOperation == "workspace.finalize_native_work" || local != nil && local.OperationPending && local.HostOperation == "workspace.finalize_native_work" {
+		if fresh && (claim != nil && claim.OperationPending && claim.HostOperation == "workspace.finalize_native_work" || local != nil && local.OperationPending && local.HostOperation == "workspace.finalize_native_work") {
 			execution.Stage = "finalizing"
 		}
 	}
