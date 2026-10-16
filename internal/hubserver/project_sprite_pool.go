@@ -28,12 +28,13 @@ type spritePoolSettings struct {
 }
 
 type spritePoolMember struct {
-	Name         string    `json:"name"`
-	State        string    `json:"state"`
-	BootstrapLog string    `json:"bootstrap_log"`
-	RunnerID     string    `json:"runner_id"`
-	IdleSince    time.Time `json:"idle_since"`
-	EnrollmentID string    `json:"-"`
+	Name                string            `json:"name"`
+	AllocationProjectID tracker.ProjectID `json:"allocation_project_id,omitempty"`
+	State               string            `json:"state"`
+	BootstrapLog        string            `json:"bootstrap_log"`
+	RunnerID            string            `json:"runner_id"`
+	IdleSince           time.Time         `json:"idle_since"`
+	EnrollmentID        string            `json:"-"`
 }
 
 type spritePoolView struct {
@@ -71,6 +72,8 @@ func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
 	read := s.requireNativeScope(apiScopeOperator, apiScopeAdmin)
 	e.GET(nativeBase+"/sprite-pool", s.getSpritePool, read)
 	e.PUT(nativeBase+"/sprite-pool", s.setSpritePool, read)
+	e.GET(nativeBase+"/sprite-pool/allocation", s.getProjectSpriteAllocation, read)
+	e.PUT(nativeBase+"/sprite-pool/allocation", s.setProjectSpriteAllocation, read)
 }
 
 func (s *Service) getSpritePool(c echo.Context) error {
@@ -110,7 +113,7 @@ func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (sprite
 	}
 	resolved := view.Placement.Resolved()
 	view.Placement = &resolved
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT m.name,m.state,m.bootstrap_log,m.enrollment_id,COALESCE(r.id,''),m.idle_since FROM organization_sprite_members m LEFT JOIN runner_identities r ON r.enrollment_id=m.enrollment_id WHERE m.organization_id=? AND (m.state<>'deleted' OR m.name IN (SELECT name FROM organization_sprite_members WHERE organization_id=m.organization_id AND state='deleted' ORDER BY created_at DESC,name DESC LIMIT 20)) ORDER BY m.created_at,m.name`, scope.organization)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT m.allocation_project_id,m.name,m.state,m.bootstrap_log,m.enrollment_id,COALESCE(r.id,''),m.idle_since FROM organization_sprite_members m LEFT JOIN runner_identities r ON r.enrollment_id=m.enrollment_id WHERE m.organization_id=? AND (m.state<>'deleted' OR m.name IN (SELECT name FROM organization_sprite_members WHERE organization_id=m.organization_id AND state='deleted' ORDER BY created_at DESC,name DESC LIMIT 20)) ORDER BY m.created_at,m.name`, scope.organization)
 	if err != nil {
 		return view, err
 	}
@@ -118,7 +121,7 @@ func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (sprite
 	for rows.Next() {
 		var member spritePoolMember
 		var idle string
-		if err := rows.Scan(&member.Name, &member.State, &member.BootstrapLog, &member.EnrollmentID, &member.RunnerID, &idle); err != nil {
+		if err := rows.Scan(&member.AllocationProjectID, &member.Name, &member.State, &member.BootstrapLog, &member.EnrollmentID, &member.RunnerID, &idle); err != nil {
 			return view, err
 		}
 		member.IdleSince, err = parseTimeValue(idle)
@@ -239,7 +242,13 @@ WHERE p.organization_id=? AND (t.expires_at IS NULL OR julianday(t.expires_at)>j
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	scope.project = ""
+	allocation, err := readProjectSpriteAllocation(readCtx, s.database.reader, scope)
+	if err != nil {
+		return spriteScaleInput{}, nil, err
+	}
+	if !allocation.Managed {
+		scope.project = ""
+	}
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
 	now := s.config.now()
 	placement, err := readOrganizationPlacementSnapshot(readCtx, s.database.reader, scope, now)
@@ -266,9 +275,17 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 	if placement.Policy.Mode == "local_first" {
 		input.Floor = min(input.Floor, placement.Policy.OverflowSlots)
 	}
+	if scope.project != "" {
+		allocation, err := readProjectSpriteAllocation(ctx, s.database.reader, scope)
+		if err != nil {
+			return input, nil, err
+		}
+		input.Depth, input.Free, input.Pending = 0, 0, 0
+		input.Floor, input.Ceiling = allocation.DesiredCount, allocation.DesiredCount
+	}
 	idle := []spritePoolMember{}
 	for _, member := range view.Members {
-		if member.State == "deleted" {
+		if member.State == "deleted" || member.AllocationProjectID != scope.project {
 			continue
 		}
 		input.Count++
@@ -312,6 +329,7 @@ func (s *Service) spritePoolMemberRetention(ctx context.Context, scope nativeSco
 }
 
 func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowCreate bool) error {
+	scope.project = ""
 	view, err := s.readSpritePool(ctx, scope)
 	if err != nil || view.Revision == 0 {
 		return err
@@ -339,7 +357,7 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 			}
 		}
 		if member.State == "deleting" {
-			if err := s.deletePoolSprite(ctx, scope, member); err != nil {
+			if err := s.deletePoolSprite(ctx, nativeScope{organization: scope.organization, project: member.AllocationProjectID}, member); err != nil {
 				return err
 			}
 		}
@@ -348,17 +366,25 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 	if err != nil {
 		return err
 	}
-	input, idle, err := s.spritePoolSnapshot(ctx, scope, view)
+	projects, err := readSpriteAllocationProjects(ctx, s.database.reader, scope)
 	if err != nil {
 		return err
 	}
-	decision := decideSpriteScale(input)
-	for i := range decision.Delete {
-		if err := s.deletePoolSprite(ctx, scope, idle[i]); err != nil {
+	for _, project := range append([]tracker.ProjectID{""}, projects...) {
+		owner := scope
+		owner.project = project
+		input, idle, err := s.spritePoolSnapshot(ctx, owner, view)
+		if err != nil {
 			return err
 		}
+		decision := decideSpriteScale(input)
+		for i := range decision.Delete {
+			if err := s.deletePoolSprite(ctx, owner, idle[i]); err != nil {
+				return err
+			}
+		}
 	}
-	if !allowCreate {
+	if !allowCreate && len(projects) == 0 {
 		return nil
 	}
 	for range view.MaxRunners {
@@ -366,12 +392,12 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 		if err != nil {
 			return err
 		}
-		input, _, err = s.spritePoolSnapshot(ctx, scope, view)
-		if err != nil || decideSpriteScale(input).Create == 0 {
+		created, err := s.createPoolSprite(ctx, scope, view.spritePoolSettings, allowCreate)
+		if err != nil {
 			return err
 		}
-		if err := s.createPoolSprite(ctx, scope, view.spritePoolSettings); err != nil {
-			return err
+		if !created {
+			break
 		}
 	}
 	return nil
@@ -392,7 +418,7 @@ func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope nativeSc
 func (s *Service) maintainSpritePools(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT DISTINCT organization_id FROM organization_sprite_members WHERE state<>'deleted'`)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT organization_id FROM organization_sprite_members WHERE state<>'deleted' UNION SELECT organization_id FROM project_sprite_allocations WHERE desired_count>0`)
 	if err != nil {
 		return
 	}

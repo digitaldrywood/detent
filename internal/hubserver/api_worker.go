@@ -593,6 +593,15 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		if !ready {
 			continue
 		}
+		if query.NativeScope != nil && query.WorkspaceLane {
+			allowed, err := spriteAllocationRunnerAllowed(ctx, tx, *query.NativeScope, request.MachineID)
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			if !allowed {
+				continue
+			}
+		}
 		if query.NativeScope != nil && !query.WorkspaceLane {
 			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates)
 			if err != nil {
