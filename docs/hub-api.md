@@ -1049,7 +1049,7 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /work-items/{id}/dependency-reasons` | Source issue lease/fencing and `idempotency_key`; target `work_item_id` in the same project, `kind: blocked` or `unblocks`, `text`, current edge-set `basis`, and `expected_revision` of that reason |
 | `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |
 | `GET /work-items/{id}/comments` | Paged discussion with authorship, provenance, revisions, editor and timestamps |
-| `PATCH /work-items/{id}/comments/{comment_id}` | `idempotency_key`, `expected_revision`, explicit `body` |
+| `PATCH /work-items/{id}/comments/{comment_id}` | `idempotency_key`, `expected_revision`, explicit `body`; `deleted: true` soft-deletes the comment |
 | `GET /work-items/{id}/history` | Paged typed collaboration and run events |
 | `GET /work-items/{id}/versions/{revision}` | Immutable issue content snapshot |
 | `GET /work-items/{id}/comments/{comment_id}/versions/{revision}` | Immutable comment content snapshot |
@@ -1205,7 +1205,11 @@ resumable history retrieval, explicit cutover, optional summaries and limitation
 attaching provenance alone is not a claim that all external history was imported.
 
 Workers can edit their own comments. Operators can edit project comments, with
-the editor recorded separately from the original actor and provenance. Explicit
+the editor recorded separately from the original actor and provenance. Hosted
+users can edit or soft-delete only their own comments, regardless of organization
+role. Soft deletion clears the current body and sets `deleted: true`, preserving
+the original author, creation time, revision snapshots and attachment references.
+Deleted comments cannot be edited or restored. Explicit
 issue and comment content can contain code or secrets and is retained as
 collaboration data. The service does not promise that authored text is secret-free.
 

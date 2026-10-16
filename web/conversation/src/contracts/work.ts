@@ -441,6 +441,7 @@ export const NativeComment = Schema.Struct({
   body: Schema.String,
   actor: NativeActor,
   edited_by: Schema.optional(NativeActor),
+  deleted: Schema.optional(Schema.Boolean),
   provenance: Schema.optional(Provenance),
   created_at: Schema.String,
   updated_at: Schema.String,

@@ -241,6 +241,7 @@ type NativeComment struct {
 	Body           string           `json:"body"`
 	Actor          Actor            `json:"actor"`
 	EditedBy       *Actor           `json:"edited_by,omitempty"`
+	Deleted        bool             `json:"deleted,omitempty"`
 	Provenance     *Provenance      `json:"provenance,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 	UpdatedAt      time.Time        `json:"updated_at"`
@@ -375,6 +376,7 @@ type UpdateComment struct {
 	Mutation
 	ExpectedRevision Revision `json:"expected_revision,string"`
 	Body             string   `json:"body"`
+	Deleted          bool     `json:"deleted,omitempty"`
 }
 
 const (
