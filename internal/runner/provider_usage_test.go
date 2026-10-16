@@ -148,12 +148,14 @@ func TestProviderUsageCoalescesCapacityReads(t *testing.T) {
 			if calls != 3 {
 				t.Fatal("capacity was not refreshed")
 			}
-			cfg.Provider = "local_ollama"
-			if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now); err != nil {
-				t.Fatal(err)
-			}
-			if calls != 3 {
-				t.Fatal("local backend read ChatGPT quota")
+			for _, provider := range []string{"local_ollama", "anthropic"} {
+				cfg.Provider = provider
+				if _, err := usage.RefreshCapacity(t.Context(), cfg, backend, now); !errors.Is(err, ErrCapacityReadUnsupported) {
+					t.Fatalf("%s unsupported quota read = %v", provider, err)
+				}
+				if calls != 3 {
+					t.Fatalf("%s backend read ChatGPT quota", provider)
+				}
 			}
 			if !failed {
 				cfg.Provider = "openai"
