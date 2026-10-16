@@ -45,7 +45,7 @@ func (u *ProviderUsage) RefreshCapacity(ctx context.Context, cfg config.AgentBac
 	}
 	provider := configuredCapacityScope(RouteSelection{BackendID: cfg.ID}, cfg, agentidentity.Identity{}).Provider
 	if cfg.Kind == config.AgentBackendCodex && provider != "" && provider != "openai" {
-		return CapacityObservation{}, nil
+		return CapacityObservation{}, ErrCapacityReadUnsupported
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
