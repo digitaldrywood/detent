@@ -58,6 +58,8 @@ type activityObservation struct {
 
 type activityRecorder struct {
 	mu         sync.Mutex
+	runtimeMu  sync.Mutex
+	cacheWait  string
 	checkTails map[string]string
 	queue      chan activityObservation
 	wake       chan struct{}
@@ -246,7 +248,14 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
 			if runtime, ok := request.Execution.(RuntimeExecution); ok {
-				if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: stage, HeartbeatAt: profile.AsOf, Activity: &profile}); err != nil {
+				recorder.runtimeMu.Lock()
+				phase := stage
+				if recorder.cacheWait != "" {
+					phase = "waiting_cache_" + recorder.cacheWait
+				}
+				err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: request.WorkAttemptID, Generation: request.Generation, Phase: phase, HeartbeatAt: profile.AsOf, Activity: &profile})
+				recorder.runtimeMu.Unlock()
+				if err != nil {
 					r.logger.Warn("native activity observation unavailable", "session_id", sessionID, "error", err)
 				}
 			}
