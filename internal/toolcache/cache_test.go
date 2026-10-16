@@ -3,6 +3,7 @@ package toolcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,14 +332,18 @@ func TestTrimSizeTarget(t *testing.T) {
 		reclaimed              int64
 		repeat                 bool
 		marker                 string
+		managed                bool
 	}{
-		{"age only below cap", 100, true, true, 10, false, ""},
-		{"exact cap", 24, true, true, 10, false, ""},
-		{"recent retained above target", 14, true, true, 10, false, ""},
-		{"fresh entries and metadata retained", 1, true, true, 10, false, ""},
-		{"replacement marker boundary", 70, true, true, 10, true, ""},
-		{"counter width boundary", 61, true, true, 10, true, ""},
-		{"oversized previous marker", 70, true, true, 10, true, strings.Repeat("x", 1000)},
+		{"age only below cap", 100, true, true, 10, false, "", false},
+		{"exact cap", 24, true, true, 10, false, "", false},
+		{"recent retained above target", 14, true, true, 10, false, "", false},
+		{"fresh entries and metadata retained", 1, true, true, 10, false, "", false},
+		{"replacement marker boundary", 70, true, true, 10, true, "", false},
+		{"counter width boundary", 61, true, true, 10, true, "", false},
+		{"oversized previous marker", 70, true, true, 10, true, strings.Repeat("x", 1000), false},
+		{"managed oldest first", 64, false, true, 20, true, "", true},
+		{"managed metadata budget", 61, false, false, 30, true, "", true},
+		{"managed oversized previous marker", 70, false, true, 20, true, strings.Repeat("x", 1000), true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -371,7 +376,7 @@ func TestTrimSizeTarget(t *testing.T) {
 				}
 			}
 			var report Report
-			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report)
+			reclaimed, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, tt.managed)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -387,7 +392,7 @@ func TestTrimSizeTarget(t *testing.T) {
 			if tt.repeat {
 				previous := report.RetainedBytes
 				report = Report{}
-				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report); err != nil {
+				if _, err := trim(t.Context(), root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.cap}, now, &report, tt.managed); err != nil {
 					t.Fatal(err)
 				}
 				if report.RetainedBytes > previous || report.SizeEvictedBytes != 0 {
@@ -444,51 +449,88 @@ func TestTrimCandidateLayout(t *testing.T) {
 
 func TestTrimExplicitReportedGrowth(t *testing.T) {
 	for _, tt := range []struct {
-		name    string
-		size    int64
-		age     time.Duration
-		removed bool
+		name                        string
+		size                        int64
+		age                         time.Duration
+		managed, removed, directory bool
 	}{
-		{"reported recent growth", 47 << 10, 5 * time.Hour, false},
-		{"below budget", 19 << 10, 5 * time.Hour, false},
-		{"expired below budget", 1 << 10, 49 * time.Hour, true},
+		{"native recent growth", 47 << 10, 5 * time.Hour, false, false, false},
+		{"managed recent growth", 47 << 10, 5 * time.Hour, true, true, false},
+		{"managed recent directory", 47 << 10, 5 * time.Hour, true, true, true},
+		{"below budget", 1 << 10, 5 * time.Hour, true, false, false},
+		{"expired below budget", 1 << 10, 49 * time.Hour, true, true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
+			cache, err := NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Mkdir(filepath.Join(root, "00"), 0700); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(root, "00", strings.Repeat("0", 64)+"-d")
-			f, err := os.Create(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			truncateErr := f.Truncate(tt.size)
-			closeErr := f.Close()
-			if truncateErr != nil {
-				t.Fatal(truncateErr)
-			}
-			if closeErr != nil {
-				t.Fatal(closeErr)
-			}
-			now := time.Now()
-			at := now.Add(-tt.age)
-			if err := os.Chtimes(path, at, at); err != nil {
-				t.Fatal(err)
-			}
-			reclaimed, err := Trim(t.Context(), root, Policy{MaxBytes: 20 << 10}, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = os.Stat(path)
-			if os.IsNotExist(err) != tt.removed {
-				t.Fatalf("stat = %v; removed = %t", err, tt.removed)
-			}
-			if tt.removed && reclaimed != tt.size {
-				t.Fatalf("reclaimed = %d", reclaimed)
+			for cycle := range 3 {
+				_, release, err := cache.Use(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(root, "00", fmt.Sprintf("%064x-d", cycle))
+				dataPath := path
+				if tt.directory {
+					if err := os.Mkdir(path, 0700); err != nil {
+						t.Fatal(err)
+					}
+					dataPath = filepath.Join(path, "output")
+				}
+				writeErr := os.WriteFile(dataPath, make([]byte, tt.size), 0600)
+				releaseErr := release()
+				if err := errors.Join(writeErr, releaseErr); err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now()
+				at := now.Add(-tt.age)
+				if err := os.Chtimes(path, at, at); err != nil {
+					t.Fatal(err)
+				}
+				policy := Policy{MaxBytes: 20 << 10}
+				var report Report
+				if tt.managed {
+					report, err = cache.Maintain(t.Context(), policy, now)
+				} else {
+					report, err = TrimWithReport(t.Context(), root, policy, now)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = os.Stat(path)
+				if os.IsNotExist(err) != tt.removed {
+					t.Fatalf("cycle %d: stat = %v; removed = %t", cycle, err, tt.removed)
+				}
+				if tt.removed && report.AgeExpiredBytes+report.SizeEvictedBytes != tt.size {
+					t.Fatalf("cycle %d: report = %+v", cycle, report)
+				}
+				if tt.managed && report.RetainedBytes > policy.MaxBytes {
+					t.Fatalf("cycle %d: over budget: %+v", cycle, report)
+				}
+				if tt.managed && tt.removed && tt.age < 25*time.Hour && report.SizeEvictedBytes != tt.size {
+					t.Fatalf("recent entries not size evicted: %+v", report)
+				}
+				retained, err := Size(root)
+				if err != nil || report.RetainedBytes != retained {
+					t.Fatalf("retained bytes=%d report=%+v err=%v", retained, report, err)
+				}
+				stored := ReadTrimReport(root)
+				if stored.Error != "" || stored.RetainedBytes != retained || stored.SizeEvictedBytes != report.SizeEvictedBytes || stored.AgeExpiredBytes != report.AgeExpiredBytes {
+					t.Fatalf("persisted report=%+v, sweep=%+v", stored, report)
+				}
+				owner, err := os.ReadFile(filepath.Join(root, ".detent-owner"))
+				if err != nil || strings.TrimSpace(string(owner)) != filepath.Join(root, "runtime.db") {
+					t.Fatalf("cache ownership changed: %q, %v", owner, err)
+				}
+				t.Logf("cycle=%d retained_bytes=%d size_evicted_bytes=%d age_expired_bytes=%d", cycle, report.RetainedBytes, report.SizeEvictedBytes, report.AgeExpiredBytes)
 			}
 		})
 	}

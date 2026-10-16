@@ -3,12 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -54,6 +56,15 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
+	other, err := toolcache.NewManaged(t.Context(), root, filepath.Join(root, "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondRelease, err := other.Use(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondRelease()
 	if err := os.WriteFile(filepath.Join(root, "README"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,15 +86,58 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 	}
 	defer gate.Release(first)
 	managed := &runnerBuildCache{cache: cache, root: root}
-	if err := managed.trim(t.Context(), toolcache.Policy{MaxBytes: 1000}, time.Now()); err != nil {
+	storageConstraint := func() string {
+		return runnerStorageConstraintForPaths(globalconfig.Config{WorkspaceRoot: root}, toolcache.Paths{Build: root}, func(string) (uint64, uint64, error) {
+			if _, err := os.Stat(output); err == nil {
+				return 35 << 30, 1 << 40, nil
+			}
+			return 73 << 30, 1 << 40, nil
+		})
+	}
+	if got := storageConstraint(); !strings.Contains(got, "reserve") {
+		t.Fatalf("low free disk did not constrain capacity: %q", got)
+	}
+	for _, active := range []int{2, 1, 0} {
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		err := managed.trim(ctx, toolcache.Policy{MaxBytes: 1000}, time.Now())
+		cancel()
+		if active > 0 {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("maintenance with %d active consumers: %v", active, err)
+			}
+			if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
+				t.Fatalf("active cache changed: bytes=%d err=%v", len(data), err)
+			}
+			if got := storageConstraint(); !strings.Contains(got, "reserve") {
+				t.Fatalf("active cache pressure lost its reserve constraint: %q", got)
+			}
+			if active == 2 {
+				if err := release(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := secondRelease(); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report := managed.observe(); report == nil || report.SizeEvictedBytes != 2000 || report.RetainedBytes > 1000 {
+			t.Fatalf("maintenance result: %+v", report)
+		}
+		if _, err := os.Stat(output); !os.IsNotExist(err) {
+			t.Fatalf("recent over-budget cache retained: %v", err)
+		}
+	}
+	if got := storageConstraint(); got != "" {
+		t.Fatalf("capacity did not recover after reclamation: %q", got)
+	}
+	_, nextRelease, err := cache.Use(t.Context())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if report := managed.observe(); report == nil || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2000 {
-		t.Fatalf("maintenance result: %+v", report)
-	}
-	if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
-		t.Fatalf("recent cache changed: bytes=%d err=%v", len(data), err)
-	}
+	defer nextRelease()
 	slot, acquired, err := gate.TryAcquire(t.Context(), candidate, scheduler.SlotRequest{State: "Todo"}, time.Now())
 	if err != nil || !acquired {
 		t.Fatalf("second dispatch: %t %v", acquired, err)

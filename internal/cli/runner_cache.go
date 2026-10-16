@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -72,7 +73,15 @@ func (c *runnerBuildCache) trim(ctx context.Context, policy toolcache.Policy, no
 		return nil
 	}
 	defer c.mu.Unlock()
-	report, err := toolcache.TrimWithReport(ctx, c.root, policy, now)
+	freeBefore, freeBeforeErr := toolcache.FreeBytes(c.root)
+	report, err := c.cache.Maintain(ctx, policy, now)
 	c.report.Store(&report)
+	if err == nil {
+		freeAfter, freeAfterErr := toolcache.FreeBytes(c.root)
+		slog.Info("managed Go build cache maintenance", "path", c.root,
+			"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
+			"size_evicted_bytes", report.SizeEvictedBytes, "free_bytes_before", freeBefore,
+			"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
+	}
 	return err
 }
