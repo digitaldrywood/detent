@@ -16,6 +16,12 @@ import (
 func TestReleaseStabilization(t *testing.T) {
 	t.Parallel()
 	const diagnostic = "--- FAIL: TestOne (0s)\nFAIL\towner/repo/pkg\t0s"
+	historicalKeys := map[string]string{
+		"1/1": "5bc4a83dd3a44323ccffc900c1d66513e9a64025d830bf015c37660a49a15393",
+		"1/2": "189173fde1dd012645b3c2f0d3e35876c9cf9187022535c52d057c73804412c8",
+		"2/1": "6999012c15b7f25fce70caa2a294a86b85f38543c2f2e913672574b6a1871078",
+		"2/2": "d6ee4eed6884bbec652a3c7cf8a438fd3ea65031a500c3ad9662e01eeaf63fe8",
+	}
 	for _, test := range []struct {
 		name, legacy, hold, lost string
 		terminal                 bool
@@ -34,13 +40,7 @@ func TestReleaseStabilization(t *testing.T) {
 			f := &fakeCloud{lost: test.lost}
 			if test.legacy != "" {
 				body := issueorigin.Stamp(diagnostic+"\n<!-- detent:no-dispatch -->", issueorigin.Origin{Kind: "worker", Instance: "runner", Source: "implementation", Fingerprint: issueorigin.Fingerprint("go-test:owner/repo/pkg:TestOne")})
-				getenv := func(key string) string {
-					if key == "GITHUB_RUN_ID" {
-						return "1"
-					}
-					return scheduledEnv(key)
-				}
-				body += "\n" + occurrenceMarker(occurrenceKey(getenv, job{ID: 1, Name: "Coverage"}, legacyJobFingerprint("scheduled-ci:digitaldrywood/detent:Coverage")))
+				body += "\n<!-- detent-scheduled-occurrence:5bc4a83dd3a44323ccffc900c1d66513e9a64025d830bf015c37660a49a15393 -->"
 				item := cloudItem("wi_repair", 10, body)
 				item.State, item.Priority = test.legacy, new(0)
 				f.items = append(f.items, item)
@@ -142,19 +142,15 @@ func TestReleaseStabilization(t *testing.T) {
 			if len(evidence) != wantOccurrences {
 				t.Fatalf("job/run evidence = %d; want %d", len(evidence), wantOccurrences)
 			}
+			seen := map[string]bool{}
 			for _, occurrence := range evidence {
-				j := jobs[0]
-				if occurrence.JobID == "2" {
-					j = jobs[1]
-				}
-				getenv := func(key string) string {
-					if key == "GITHUB_RUN_ID" {
-						return occurrence.RunID
-					}
-					return scheduledEnv(key)
-				}
-				if occurrence.OccurrenceKey != occurrenceKey(getenv, j, legacyJobFingerprint("scheduled-ci:digitaldrywood/detent:"+j.Name)) || occurrence.HeadSHA != check.HeadSHA || occurrence.RunAttempt != "1" {
+				expected := historicalKeys[occurrence.RunID+"/"+occurrence.JobID]
+				if expected == "" || occurrence.OccurrenceKey != expected || seen[expected] || occurrence.HeadSHA != check.HeadSHA || occurrence.RunAttempt != "1" {
 					t.Fatalf("changed replay identity or provenance: %+v", occurrence)
+				}
+				seen[expected] = true
+				if !strings.Contains(bodies, "<!-- detent-scheduled-occurrence:"+expected+" -->") {
+					t.Fatalf("lost historical replay marker %s", expected)
 				}
 				if occurrence.JobID == "1" && !reflect.DeepEqual(occurrence.Checks, []gate.CheckObservation{check}) {
 					t.Fatal("lost exact-source command observations")
