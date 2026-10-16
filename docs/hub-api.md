@@ -491,8 +491,11 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    `identity_file`, `organization_id`, `display_name`, `capacity`),
    `service_name: detent.runner`, and `workspace_root` (default `~/detent-runner`).
    Existing configuration files are left untouched. Cloud owns the project list;
-   local `projects`, workflow paths, weights, priorities, scheduling and
-   fair-share settings are ignored with compatibility warnings for one release.
+   enrolled runners reject unknown keys at startup, naming the key paths.
+   Remove local `projects`, weights, priorities, scheduling, fair-share settings,
+   `global.agents.model_selection`, `client.native_projects` and other local
+   project policy defaults before upgrading. Nested unknown machine keys also
+   fail validation; the warning-and-ignore transition has ended.
 4. With `--service`, installs and starts the `detent.runner` background service
    (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
    separate from a local board's `detent` service on the same host. At startup,
