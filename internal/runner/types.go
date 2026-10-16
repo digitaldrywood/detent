@@ -760,6 +760,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
 	Evidence             []tracker.NativeEvidence
 	Commands             []gate.CommandResult
