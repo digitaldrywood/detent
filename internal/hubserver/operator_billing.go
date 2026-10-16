@@ -163,7 +163,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	}
 	defer func() {
 		if err == nil && len(result.Content) > 0 && e.service.config.Hosted != nil {
-			result, err = e.service.canonicalToolResult(ctx, result)
+			result, err = e.service.canonicalToolResult(ctx, result, call.Name)
 		}
 	}()
 	if call.Name == operatortool.BoardState || call.Name == operatortool.Dashboard {
