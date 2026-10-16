@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"bytes"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +12,59 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
+	for _, packed := range []bool{false, true} {
+		name := "loose"
+		if packed {
+			name = "packed"
+		}
+		t.Run(name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			runGit(t, source, "config", "gc.auto", "0")
+			data := make([]byte, 5<<20)
+			if _, err := rand.Read(data); err != nil {
+				t.Fatal(err)
+			}
+			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			for i := range 5 {
+				data[i] ^= 1
+				if err := os.WriteFile(filepath.Join(source, "blob.bin"), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "blob.bin")
+				runGit(t, source, "commit", "-m", "blob revision")
+			}
+			if packed {
+				runGit(t, source, "repack", "-ad")
+			}
+			head := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			capture, err := CaptureChangeSource(t.Context(), source, base, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(capture.Bundle) >= 2*len(data) {
+				t.Fatalf("repeated blob revisions were not compressed: bundle bytes=%d", len(capture.Bundle))
+			}
+			restored := t.TempDir()
+			runGit(t, restored, "init")
+			runGit(t, restored, "fetch", source, base)
+			bundle := filepath.Join(t.TempDir(), "source.bundle")
+			if err := os.WriteFile(bundle, capture.Bundle, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, restored, "fetch", bundle, "HEAD")
+			runGit(t, restored, "checkout", "--detach", head)
+			got, err := os.ReadFile(filepath.Join(restored, "blob.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatal("restored bundle changed the reviewed blob")
+			}
+		})
+	}
+}
 
 func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 	if testing.Short() {

@@ -849,22 +849,28 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 		return false
 	}
 	evidence := o.evaluateRecordedBlockerSignal(ctx, state, issue, signal, nil, event.CompletedAt)
-	running.Issue = issue
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
 	}
-	o.recordCompletionUsage(ctx, state, event, issue)
+	running.Issue = issue
+	running.DispatchSourceState = issue.State
+	if _, native := o.connector.(connector.WorkflowStateReader); !native {
+		running.CompletionLane = issue.State
+	}
 	detail := workpad.Reason(signal)
+	if err := o.retryInstanceFailure(ctx, state, running, event.CompletedAt, detail); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
+	o.recordCompletionUsage(ctx, state, event, issue)
 	metadata := map[string]any{"blocker_evidence": evidence.Evidence}
 	if len(reports) > 0 && event.Result.NativeChange != nil {
 		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
 	}
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata)
 	delete(state.mergeReservations, issue.ID)
-	running.CompletionLane = issue.State
-	o.retryInstanceFailure(ctx, state, running, event.CompletedAt, detail)
 	return true
 }
