@@ -168,6 +168,11 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if cfg.Isolated == nil {
+		if err := validateHubStartup(ctx, cfg.Global, runtimeDeps{}); err != nil {
+			return err
+		}
+	}
 
 	switch cfg.Mode {
 	case BootModeOnboarding:
