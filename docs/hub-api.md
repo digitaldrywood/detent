@@ -151,6 +151,26 @@ The response includes current settings, every active member and the most recent
 20 deleted members, with lifecycle state, ordinary runner ID and last safe
 bootstrap progress log. The runner settings page exposes these reads.
 
+Native projects also expose `GET` and `PUT`
+`/api/v2/organizations/{organization}/projects/{project}/sprite-pool/allocation`.
+An owner/admin opts a project into managed members by writing `desired_count`,
+`expected_revision` (a decimal string, initially `"0"`) and `idempotency_key`.
+The organization pool must already be configured. Desired count is independent
+of runner job capacity and may exceed available capacity. Reads return
+`managed`, `desired_count`, `allocated_count`, `shortfall` and `revision`.
+Allocated count includes reserved and retiring members until deletion finishes.
+Replays return the original command response; reads return current allocation.
+
+The existing organization controller reserves members under the shared
+organization ceiling and reported provider limits. It retains existing members
+and assigns available slots to the oldest unsatisfied project request, breaking
+ties by project ID, before satisfying new organization demand. Each member has
+one allocation owner. Managed projects accept work only on their own members;
+desired zero holds new claims, including workspace claims. Organization and
+manual runners remain available to projects that have not opted in. Manual
+adoption is not supported. Downsizing uses the existing idle, budget-retention
+and active-lease checks; it never retires another allocation's members.
+
 Legacy per-project pools convert in place at schema upgrade: their floors and
 ceilings are summed, and their existing members retain Sprite names, runner IDs
 and project-token overrides. A forward migration restores totals captured before
