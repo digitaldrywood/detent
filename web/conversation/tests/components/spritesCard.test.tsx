@@ -144,6 +144,12 @@ describe("Sprite pool settings", () => {
     await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("3"));
     expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Save pool" })).toBeNull();
+    pool = { ...pool, max_runners: 4, revision: 8 };
+    fireEvent.click(screen.getByRole("button", { name: "Reload pool" }));
+    await waitFor(() => expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("4"));
+    expect(screen.getByRole("alert").textContent).toContain("Owner or admin access");
+    expect((screen.getByLabelText("Maximum runners") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Save pool" })).toBeNull();
     expect(document.body.textContent).not.toContain(TOKEN);
     expect(writes.length).toBe(afterSave ? 1 : 0);
   });
