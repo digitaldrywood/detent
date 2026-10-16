@@ -14,6 +14,13 @@ import { waitingLabel } from "../lib/dependencies.ts";
 import { DependencyPopover } from "./DependencyDetails.tsx";
 export { Pill, PILL_TONE, type PillTone } from "./Pill.tsx";
 
+const EXECUTION_STAGE_LABELS = new Map([
+  ["implementation", "Implementing"], ["implementing", "Implementing"], ["code", "Implementing"],
+  ["rework", "Reworking"], ["reworking", "Reworking"], ["planning", "Planning"], ["plan", "Planning"],
+  ["validation", "Validating"], ["validating", "Validating"], ["review", "Validating"], ["security_audit", "Validating"],
+  ["merging", "Merging"], ["merge", "Merging"], ["finalizing", "Finalizing"],
+]);
+
 /** Urgent and High read as pressure; Normal and Low do not. */
 export function priorityTone(priority: string | null, terminal = false): PillTone {
   if (terminal) return "mute";
@@ -35,9 +42,7 @@ export function statusPill(item: WorkItemView, terminal = item.terminal): { tone
       tone: "err",
       label: waitingLabel(item),
     };
-  const stage = ({ implementation: "Implementing", implementing: "Implementing", code: "Implementing", rework: "Reworking", reworking: "Reworking",
-    planning: "Planning", plan: "Planning", validation: "Validating", validating: "Validating", review: "Validating", security_audit: "Validating",
-    merging: "Merging", merge: "Merging", finalizing: "Finalizing" } as Record<string, string>)[item.attempt?.stage ?? ""];
+  const stage = EXECUTION_STAGE_LABELS.get(item.attempt?.stage ?? "");
   if (stage) return { tone: isLive(item, terminal) ? "ok" : "mute", label: stage };
   if (isLive(item, terminal)) return { tone: "ok", label: "Running" };
   if (item.attempt !== null && item.attempt.status === "failed")

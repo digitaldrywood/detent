@@ -1895,6 +1895,10 @@ describe("current board execution", () => {
     { stage: "finalizing", running: false, label: "Finalizing" },
     { stage: "", running: false, label: null },
     { stage: "unreported-stage", running: true, label: "Running" },
+    { stage: "__proto__", running: true, label: "Running" },
+    { stage: "constructor", running: true, label: "Running" },
+    { stage: "toString", running: true, label: "Running" },
+    { stage: "__proto__", running: false, label: null },
   ])("shows $stage without attributing historical attempt identity", ({ stage, running, label }) => {
     const view = toBoardCardView({
       issue: { ...itemFixture, terminal: false, blockers: [] } as unknown as NativeIssue,
@@ -1905,6 +1909,8 @@ describe("current board execution", () => {
     }, "example-project");
     expect(view.attempt).toMatchObject({ id: "runner_current/42/3", running, model: null, stage, attemptNumber: 2 });
     expect(statusPill(view)?.label ?? null).toBe(label);
+    render(<IssueCard item={view} showProject moves={[]} onOpen={vi.fn()} onMove={vi.fn()} now={NOW} />);
+    if (label !== null) expect(screen.getByText(label)).toBeTruthy();
     expect(isLive(view)).toBe(running);
   });
 });
