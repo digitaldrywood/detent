@@ -1,3 +1,5 @@
+import { BookmarkIcon, StarIcon } from "lucide-react";
+import { useSavedViews, savedViewPath } from "../work/lib/savedViews.tsx";
 import {
   ActivityIcon,
   CircleAlertIcon,
@@ -167,6 +169,7 @@ function SectionHeader({
 
 export function SidebarDestinations(): React.ReactElement | null {
   const data = useSidebarData();
+  const saved = useSavedViews();
   const { isMobile, setOpenMobile } = useSidebar();
   const [browseExpanded, setBrowseExpanded] = React.useState(true);
   const navigation = data?.navigation;
@@ -193,7 +196,7 @@ export function SidebarDestinations(): React.ReactElement | null {
           testId="nav-work"
           icon={<KanbanIcon />}
           label="Work"
-          active={navigation.activePath.startsWith("/work")}
+          active={navigation.activePath.startsWith("/work") && !navigation.activePath.startsWith("/work/views")}
           onClick={() =>
             navigate(activeProjectId === null ? "/work" : `/work/p/${activeProjectId}`)
           }
@@ -207,6 +210,14 @@ export function SidebarDestinations(): React.ReactElement | null {
           onClick={() => navigate("/chat")}
         />
       </SidebarMenu>
+
+      {saved ? <section aria-label="Favorites" className="flex flex-col pb-1">
+        <p className="px-2 py-1.5 text-xs font-medium text-sidebar-muted-foreground">Favorites</p>
+        <SidebarMenu className="gap-px">
+          {saved.views.filter((view) => view.favorite).map((view) => <NavRow key={view.id} testId={`favorite-${view.id}`} icon={<StarIcon />} label={view.name} active={navigation.activePath === savedViewPath(view)} onClick={() => navigate(savedViewPath(view))} />)}
+          <NavRow testId="nav-views" icon={<BookmarkIcon />} label="Views" active={navigation.activePath === "/work/views"} onClick={() => navigate("/work/views")} />
+        </SidebarMenu>
+      </section> : null}
 
       {findings.length > 0 ? (
         <section aria-label="Needs you" data-testid="sidebar-needs-you" className="flex flex-col pb-1">

@@ -139,6 +139,15 @@ const workRoute = createRoute({
   component: AllProjectsWorkBoard,
 });
 
+const workViewsRoute = createRoute({
+  getParentRoute: () => rootRoute, path: "/work/views",
+  component: lazyRouteComponent(() => import("./work/SavedViews.tsx"), "ViewsPage"),
+});
+const workSavedViewRoute = createRoute({
+  getParentRoute: () => rootRoute, path: "/work/views/$viewId",
+  component: lazyRouteComponent(() => import("./work/SavedViews.tsx"), "SavedViewPage"),
+});
+
 const workChangesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/work/changes",
@@ -198,6 +207,8 @@ const routeTree = rootRoute.addChildren([
   issueRoute,
   projectRoute,
   workRoute,
+  workViewsRoute,
+  workSavedViewRoute,
   workChangesRoute,
   workProjectRoute,
   workItemRoute,

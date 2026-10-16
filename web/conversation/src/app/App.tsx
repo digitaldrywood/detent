@@ -1,3 +1,4 @@
+import { SavedViewsProvider } from "./work/lib/savedViews.tsx";
 import { conversationBus } from "../runtime/state/conversationList.ts";
 // Application shell.
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -312,7 +313,7 @@ function ShellBody(): React.ReactElement {
   publishSidebarData(sidebarProps);
 
   return (
-    <ShellContext.Provider value={shell}>
+    <SavedViewsProvider key={JSON.stringify([client.http.origin, client.http.apiBase, client.bootstrap.organization.id, client.bootstrap.actor?.principal_id])}><ShellContext.Provider value={shell}>
 
       <SidebarDataProvider value={sidebarProps}>
         <SidebarSearchProvider work={activePath === "/work" || activePath.startsWith("/work/")}>
@@ -332,7 +333,7 @@ function ShellBody(): React.ReactElement {
         </NewProjectProvider>
         </SidebarSearchProvider>
       </SidebarDataProvider>
-    </ShellContext.Provider>
+    </ShellContext.Provider></SavedViewsProvider>
   );
 }
 

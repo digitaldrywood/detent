@@ -46,6 +46,8 @@ export interface ToolbarFacets {
 
 export interface WorkToolbarProps {
   readonly view: WorkViewState;
+  readonly savedControls?: React.ReactNode;
+  readonly savedViewActive?: boolean;
   readonly onChange: (next: WorkViewState) => void;
   readonly lanes: readonly Lane[];
   readonly facets: ToolbarFacets;
@@ -58,6 +60,8 @@ export function WorkToolbar({
   lanes,
   facets,
   totals,
+  savedControls,
+  savedViewActive = false,
 }: WorkToolbarProps): React.ReactElement {
   const filters = activeFilterCount(view.view === "list" ? { ...view, state: [] } : { ...view, type: [] });
   const boardLanes = React.useMemo(() => lanes.filter((lane) => !lane.terminal), [lanes]);
@@ -66,7 +70,7 @@ export function WorkToolbar({
   const values = (key: FilterKey): readonly string[] => [...new Set([...(key === "type" ? ["bug", "change_request"] : facets[key]), ...view[key]])].toSorted();
 
   return (
-    <div data-testid="work-toolbar" className="flex shrink-0 items-center gap-2 overflow-x-auto px-3 pt-1.5 pb-3 sm:px-5">
+    <div data-testid="work-toolbar" className={cn("flex shrink-0 items-center gap-2 px-3 pt-1.5 pb-3 sm:px-5", savedViewActive ? "flex-wrap" : "overflow-x-auto")}>
       <Button size="xs" variant="outline" aria-pressed={view.archived === true}
         data-testid="work-archived" onClick={() => onChange({ ...view, archived: view.archived !== true })}>
         {view.archived === true ? "Archived issues" : "Archived"}
@@ -151,6 +155,8 @@ export function WorkToolbar({
           </MenuRadioGroup>
         </MenuPopup>
       </Menu>
+
+      {savedControls}
 
       <span className="flex-1" />
 
