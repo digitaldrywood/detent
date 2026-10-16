@@ -70,11 +70,12 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		}
 	}
 	if value := strings.TrimSpace(params.Get("q")); value != "" {
-		where.WriteString(` AND (instr(lower(json_extract(b.record_json,'$.issue.title')),lower(?))>0
- OR instr(lower((SELECT name FROM projects WHERE id=b.project_id)||'#'||json_extract(b.record_json,'$.issue.number')),lower(?))>0
- OR instr(lower(b.identifier),lower(?))>0
- OR EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.labels') WHERE instr(lower(value),lower(?))>0))`)
-		args = append(args, value, value, value, value)
+		selection, searchArgs, err := nativeIssueSelection(scope, url.Values{"q": {value}, "archived": {"all"}}, false)
+		if err != nil {
+			return "", nil, err
+		}
+		where.WriteString(" AND b.work_item_id IN (" + selection + ")")
+		args = append(args, searchArgs...)
 	}
 	return where.String(), args, nil
 }
@@ -219,7 +220,20 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	if params.Get("sort") == "closed" {
 		order = "b.closed_at DESC,b.identifier"
 	}
+	from, searchColumns := "native_board_items b", ",0,''"
+	if search := strings.TrimSpace(params.Get("q")); search != "" {
+		selection, searchArgs, err := nativeIssueSelection(scope, params, false)
+		if err != nil {
+			return page, err
+		}
+		selection = strings.Replace(selection, "SELECT i.native_id", "SELECT i.native_id"+nativeSearchProjection, 1)
+		from += " JOIN (" + selection + ") matched ON matched.native_id=b.work_item_id"
+		args = append(append([]any{search}, searchArgs...), args...)
+		searchColumns = ",matched.search_score,matched.search_snippet"
+		order = "matched.search_score," + order
+	}
 	if p := cursor.Issues; p != nil {
+		whereStart, argsStart := len(where), len(args)
 		if params.Get("sort") == "closed" {
 			where += " AND (b.closed_at<? OR (b.closed_at=? AND b.identifier>?))"
 			args = append(args, p.Activity, p.Activity, p.Identifier)
@@ -234,9 +248,13 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 			args = append(args, prefix...)
 			args = append(args, p.Activity, p.Activity, p.Identifier)
 		}
+		if strings.TrimSpace(params.Get("q")) != "" {
+			where = where[:whereStart] + " AND (matched.search_score>? OR (matched.search_score=?" + where[whereStart:] + "))"
+			args = append(append(append([]any{}, args[:argsStart]...), p.Score, p.Score), args[argsStart:]...)
+		}
 	}
 	args = append(args, limit+1)
-	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName("json_extract(b.record_json, '$.issue.actor.principal_id')", "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at FROM native_board_items b WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
+	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName("json_extract(b.record_json, '$.issue.actor.principal_id')", "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at" + searchColumns + " FROM " + from + " WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
 	rows, err := tx.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return page, err
@@ -251,9 +269,9 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 			}
 			break
 		}
-		var raw, closed, displayName string
+		var raw, closed, displayName, snippet string
 		position := &nativeIssuePageCursor{}
-		if err := rows.Scan(&raw, &displayName, &position.Lane, &position.State, &position.Priority, &position.ActivityMissing, &position.Activity, &position.Identifier, &closed); err != nil {
+		if err := rows.Scan(&raw, &displayName, &position.Lane, &position.State, &position.Priority, &position.ActivityMissing, &position.Activity, &position.Identifier, &closed, &position.Score, &snippet); err != nil {
 			return page, err
 		}
 		if params.Get("sort") == "closed" {
@@ -282,6 +300,8 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 			card.Change.Status = detail.Summary.Status
 		}
 		card.Issue.Actor.DisplayName = displayName
+		card.Issue.Snippet = snippet
+		card.Issue.SearchScore = position.Score
 		redactNativeBoardCard(&card, grants)
 		card.Issue = s.nativeIssueResponse(card.Issue)
 		page.Cards = append(page.Cards, card)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -100,7 +101,8 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
  (SELECT json_object('branch', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.base_ref'), '') ELSE '' END,
- 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END)
+ 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END,
+ 'landing_pending', json(CASE WHEN (`+nativePendingLandingClause+`) THEN 'true' ELSE 'false' END))
  FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
  LEFT JOIN change_versions v ON v.id = json_extract(c.record_json, '$.current_version_id') AND v.change_id = c.id
  WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
@@ -251,7 +253,17 @@ ORDER BY i.native_id`, args...)
 		issue.Dependencies = append(issue.Dependencies, dependency.ID)
 		issue.Blockers = append(issue.Blockers, dependency)
 	}
-	return issue, internalID, rows.Err()
+	if err := rows.Err(); err != nil {
+		return issue, internalID, err
+	}
+	if err := rows.Close(); err != nil {
+		return issue, internalID, err
+	}
+	delivery, associated, err := readReleaseDelivery(ctx, query, scope, string(issue.WorkItemID))
+	if associated {
+		issue.ReleaseDelivery = &delivery
+	}
+	return issue, internalID, err
 }
 
 func (s *Service) getNativeIssue(c echo.Context) error {
@@ -448,15 +460,15 @@ func createNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 	}
 	if scope.credential.HostedRole == "reporter" {
 		request.State = "Triage"
-		return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+		return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake, false)
 	}
 	if request.State == "Triage" {
 		return tracker.NativeIssue{}, nativeInvalid("Triage is reserved for linked GitHub issue intake")
 	}
-	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake)
+	return createNativeIssueDraft(ctx, tx, scope, request, now, machineIntake, false)
 }
 
-func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake bool) (tracker.NativeIssue, error) {
+func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machineIntake, linkedIntake bool) (tracker.NativeIssue, error) {
 	project, err := validateNativeIssueDraft(ctx, tx, scope, request)
 	if err != nil {
 		return tracker.NativeIssue{}, err
@@ -471,7 +483,10 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		err := tx.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE organization_id = ? AND project_id = ? AND native_source_key = ?", scope.organization, scope.project, sourceKey).Scan(&existing)
 		if err == nil {
 			issue, _, err := readNativeIssue(ctx, tx, scope, existing)
-			return issue, err
+			if err != nil {
+				return issue, err
+			}
+			return issue, requireNativeIssueContractAtFiling(ctx, tx, scope, issue)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return tracker.NativeIssue{}, err
@@ -537,16 +552,16 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		author = issue.Provenance.AuthorID
 	}
 	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
-	if machineIntake && issue.Provenance == nil {
+	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
 		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
 	}
 	_, machineOrigin := issueorigin.Parse(issue.Body)
 	if scope.credential.HostedRole != "reporter" && issue.Actor.Kind == "human" && !machineOrigin && !machineIntake && issue.Provenance == nil {
 		issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
-		if !issue.IssueContract.Exempt {
-			if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
-				return tracker.NativeIssue{}, err
-			}
+	}
+	if !linkedIntake {
+		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+			return tracker.NativeIssue{}, err
 		}
 	}
 	contractJSON, err := marshalNative(issue.IssueContract)
@@ -637,6 +652,11 @@ func requireNativeEdit(issue tracker.NativeIssue, expected tracker.Revision) err
 }
 
 func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, eventType string, data tracker.CollaborationData, now time.Time) (tracker.NativeIssue, error) {
+	if eventType == "workflow.transitioned" && data.FromState != issue.State || slices.Contains(data.Fields, "body") || eventType == "github.imported" {
+		if err := requireNativeIssueContractAtFiling(ctx, tx, scope, issue); err != nil {
+			return issue, err
+		}
+	}
 	if err := tx.QueryRowContext(ctx, "SELECT terminal FROM workflow_states WHERE project_id = ? AND detent_state = ?", scope.project, issue.State).Scan(&issue.Terminal); err != nil {
 		return issue, err
 	}
@@ -811,7 +831,7 @@ func (s *Service) transitionNativeIssueCommand(ctx context.Context, scope native
 				return nil, err
 			}
 		}
-		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready"}, request.Reason) {
+		if !slices.Contains([]string{"user_requested", "worker_progress", "dependency_ready", string(gate.ReasonValidatorRework)}, request.Reason) {
 			return nil, nativeInvalid("Transition reason is invalid")
 		}
 		if len(request.ReasonDetail) > workpad.MaxFinalSummaryBytes || !utf8.ValidString(request.ReasonDetail) {

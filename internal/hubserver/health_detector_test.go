@@ -163,7 +163,8 @@ func TestHealthFindingsReads(t *testing.T) {
 		{"resolved empty", f.base + "/health/findings?state=resolved", http.StatusOK, 0},
 		{"since future", f.base + "/health/findings?since=" + url.QueryEscape(formatHubTime(now.Add(time.Second))), http.StatusOK, 0},
 		{"since exact", f.base + "/health/findings?since=" + url.QueryEscape(formatHubTime(now)), http.StatusOK, 2},
-		{"invalid state", f.base + "/health/findings?state=all", http.StatusUnprocessableEntity, 0},
+		{"all open", f.base + "/health/findings?state=all", http.StatusOK, 2},
+		{"invalid state", f.base + "/health/findings?state=unknown", http.StatusUnprocessableEntity, 0},
 		{"invalid since", f.base + "/health/findings?since=yesterday", http.StatusUnprocessableEntity, 0},
 		{"invalid limit", f.base + "/health/findings?limit=101", http.StatusUnprocessableEntity, 0},
 		{"invalid cursor", f.base + "/health/findings?cursor=bad", http.StatusUnprocessableEntity, 0},
@@ -223,6 +224,36 @@ func TestHealthFindingsReads(t *testing.T) {
 	if len(resolved.Items) != 2 {
 		t.Fatalf("resolved=%+v", resolved)
 	}
+	opened := newHealthFinding("test", "instance", "project", "new-open", "New finding.", "Check project.", []string{string(f.project.ID)}, healthEvidence{})
+	applyTestHealth(t, f, now.Add(2*time.Minute), []healthFinding{opened})
+	for _, test := range []struct {
+		name  string
+		since time.Time
+		count int
+	}{
+		{"includes resolutions", now.Add(time.Minute), 3},
+		{"excludes earlier resolutions", now.Add(time.Minute + time.Second), 1},
+		{"keeps open findings before since", now.Add(3 * time.Minute), 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/health/findings?state=all&since="+url.QueryEscape(formatHubTime(test.since)), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page healthFindingsPage
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != test.count {
+				t.Fatalf("findings=%+v", page.Items)
+			}
+			foundOpen := false
+			for _, finding := range page.Items {
+				if finding.Subject.ID == "new-open" && finding.ResolvedAt == nil {
+					foundOpen = true
+				}
+			}
+			if !foundOpen {
+				t.Fatal("combined read lost the open finding")
+			}
+		})
+	}
 }
 
 func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
@@ -231,6 +262,7 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	f.create(t, "candidate")
+	clearNativeFixturePolicy(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_created_at=? WHERE project_id=?", formatHubTime(now.Add(-time.Hour)), f.project.ID); err != nil {
 		t.Fatal(err)
@@ -577,7 +609,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 			}
 			var resolved sql.NullString
 			var tick string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT resolved_at FROM health_findings").Scan(&resolved); err != nil {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT resolved_at FROM health_findings WHERE fingerprint=?", finding.Fingerprint).Scan(&resolved); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT last_tick_at FROM health_detector_ticks").Scan(&tick); err != nil {
@@ -690,6 +722,7 @@ func TestHealthDetectorTicksAndStops(t *testing.T) {
 func TestHealthSnapshotReadsWithoutTheWriter(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "health-writer")
 	f.create(t, "candidate")
+	clearNativeFixturePolicy(t, f)
 	writer, err := f.service.database.db.Conn(t.Context())
 	if err != nil {
 		t.Fatal(err)

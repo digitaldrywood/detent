@@ -60,7 +60,7 @@ func TestIssueParticipantEmails(t *testing.T) {
 			}
 			create := func(key string) tracker.NativeIssue {
 				var issue tracker.NativeIssue
-				r := request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Notification example " + key, Body: "private-issue-body-sentinel"})
+				r := request(member, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: key}, Title: "Notification example " + key, Body: "private-issue-body-sentinel" + issueContractTestSections})
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &issue)
 				return issue
@@ -143,10 +143,10 @@ func TestIssueParticipantEmails(t *testing.T) {
 				t.Fatalf("got %d emails, want %d: %+v", len(messages), test.want, messages)
 			}
 			for _, message := range messages {
-				if !strings.Contains(message.Body, "/organizations/org_security/work/i/") || !strings.HasPrefix(message.Subject, "[Detent] ") || !strings.Contains(message.Subject, " #") || !strings.Contains(message.Body, "Unsubscribe from this issue:") {
+				if !strings.Contains(message.Body, "https://hub.example.test/local-organization/private-project-sentinel/issues/") || !strings.HasPrefix(message.Subject, "[Detent] ") || !strings.Contains(message.Subject, " #") || !strings.Contains(message.Body, "Unsubscribe from this issue:") {
 					t.Fatalf("incomplete message: %+v", message)
 				}
-				if strings.Contains(message.Body, "private-") {
+				if strings.Contains(message.Body, "private-issue-body-sentinel") || strings.Contains(message.Body, "private-comment-text-sentinel") {
 					t.Fatal("email contains issue or comment text")
 				}
 				if test.kind == "comment.created" && (!strings.Contains(message.Body, member.identity.Email) || !strings.Contains(message.Body, "#issue-comment-cmt_notice")) {
@@ -193,10 +193,11 @@ func TestIssueEmailBatchingAndOptOut(t *testing.T) {
 			decodeHubResponse(t, r, &project)
 			f.project = project.ID
 			f.base = "/api/v2/organizations/org_security/projects/" + string(project.ID)
+			seedNativeFixturePolicy(t, f.service, "org_security/"+string(project.ID))
 			f.grant(t, reporter, true, false)
 			f.grant(t, member, true, false)
 			var issue tracker.NativeIssue
-			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "bug", Title: "Reporter notification example", Body: reporterBugSections + "\nprivate-issue-body-sentinel"})
+			r = request(reporter, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "file"}, Type: "bug", Title: "Reporter notification example", Body: reporterBugSections + "\nprivate-issue-body-sentinel" + issueContractTestSections})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &issue)
 			if issue.State != "Triage" {
@@ -276,7 +277,7 @@ func TestIssueEmailBatchingAndOptOut(t *testing.T) {
 			}
 			if want == 1 {
 				message := messages[0]
-				if strings.Count(message.Body, " commented: ") != 9 || !strings.Contains(message.Body, "Triage to Todo") || strings.Contains(message.Body, "private-") {
+				if strings.Count(message.Body, " commented: ") != 9 || !strings.Contains(message.Body, "Triage to Todo") || strings.Contains(message.Body, "private-issue-body-sentinel") || strings.Contains(message.Body, "private-comment-text-sentinel") {
 					t.Fatalf("incorrect batch: %s", message.Body)
 				}
 				if message.To != reporter.identity.Email {

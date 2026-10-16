@@ -50,7 +50,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	}
 	binding, err := s.ensureHostedCustomer(ctx, credential.Hosted.Subject)
 	if err != nil {
-		return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Billing is temporarily unavailable")
+		return billingDestination{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "Billing is temporarily unavailable"), fmt.Errorf("ensure credit billing customer: %w", err))
 	}
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
@@ -89,7 +89,7 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 		}
 		session, err = provider.CreditCheckout(ctx, billing.CreditRequest{CheckoutRequest: billing.CheckoutRequest{Binding: binding, PriceID: price, IdempotencyKey: key, ReturnURL: s.hostedBillingReturn(true), ExpiresAt: time.UnixMicro(at).Truncate(time.Second).Add(time.Hour)}, USDCents: cents})
 		if err != nil {
-			return billingDestination{}, billingFailure(http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase")
+			return billingDestination{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "Credit checkout is temporarily unavailable; retry the same purchase"), fmt.Errorf("create credit checkout: %w", err))
 		}
 		encoded, err := json.Marshal(session)
 		if err != nil {
@@ -158,7 +158,7 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 		}
 		current, err := provider.SavedCreditPaymentMethod(ctx, binding)
 		if err != nil && !errors.Is(err, billing.ErrPaymentFailed) {
-			return creditFundingInput{}, billingFailure(http.StatusServiceUnavailable, "The saved payment method is temporarily unavailable")
+			return creditFundingInput{}, errors.Join(billingFailure(http.StatusServiceUnavailable, "The saved payment method is temporarily unavailable"), fmt.Errorf("read saved payment method: %w", err))
 		}
 		if current != "" {
 			method = current

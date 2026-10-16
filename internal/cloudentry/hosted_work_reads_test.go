@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,9 +33,11 @@ func newHostedHubReadFixture(t *testing.T) hostedHubReadFixture {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("organization status = %d: %s", response.StatusCode, body)
 	}
+	project := attachmentProject(t, owner, "org_alpha")
+	approveEntryFixturePolicy(t, owner, "org_alpha", project)
 	return hostedHubReadFixture{
 		browser: owner,
-		base:    "/api/v2/organizations/org_alpha/projects/" + attachmentProject(t, owner, "org_alpha"),
+		base:    "/api/v2/organizations/org_alpha/projects/" + project,
 		csrf:    csrfFrom(t, body),
 	}
 }
@@ -164,5 +167,27 @@ func TestHostedHubWorkReads(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body)
 			}
 		})
+	}
+}
+
+func approveEntryFixturePolicy(t *testing.T, owner *browser, organization, project string) {
+	t.Helper()
+	selected := newBrowser(t, owner.entry)
+	selected.login("/organizations/"+organization+"/organization", "user_alice:p"+organization)
+	response, page := selected.get("/organizations/" + organization + "/organization")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("organization=%d %s", response.StatusCode, page)
+	}
+	fixture := hostedHubReadFixture{browser: selected, base: "/api/v2/organizations/" + organization + "/projects/" + project, csrf: csrfFrom(t, page)}
+	current := fixture.request(t, http.MethodGet, fixture.base+"/policy", nil)
+	var approval policy.Approval
+	if current.Code == http.StatusOK {
+		if err := json.Unmarshal(current.Body.Bytes(), &approval); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applied := fixture.request(t, http.MethodPut, fixture.base+"/policy", policy.Change{ExpectedID: approval.Policy.ID, Policy: pilotPolicy()})
+	if applied.Code != http.StatusOK {
+		t.Fatalf("approve fixture policy=%d %s", applied.Code, applied.Body)
 	}
 }

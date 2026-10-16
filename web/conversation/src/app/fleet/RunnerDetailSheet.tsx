@@ -1,9 +1,12 @@
+import { billingLabel, ProviderUsage } from "./ProviderUsage.tsx";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
 import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
 import { Sheet, SheetClose, SheetDescription, SheetFooter, SheetHeader, SheetPopup, SheetTitle } from "../../components/ui/sheet.tsx";
-import type { FleetRunner, RunnerRouting } from "../../contracts/account.ts";
+import type { FleetRunner, RunnerRouting, SuggestedLimit } from "../../contracts/account.ts";
+import { HostLoad, type LoadHostHistory } from "./HostLoad.tsx";
+import { SuggestedLimitBox } from "./SuggestedLimit.tsx";
 import { cn } from "../../lib/utils.ts";
 import { NativeSelect } from "../account/controls.tsx";
 import { PathValue } from "../account/controls.tsx";
@@ -37,7 +40,7 @@ function runnerRouting(runner: FleetRunner): RunnerRouting {
   };
 }
 
-export function RunnerDetailSheet({ runner, projects, editable, now, onClose, onSave, onReload }: {
+export function RunnerDetailSheet({ runner, projects, editable, now, onClose, onSave, onReload, suggestion, loadHostHistory }: {
   readonly runner: FleetRunner;
   readonly projects: readonly RunnerProject[];
   readonly editable: boolean;
@@ -45,6 +48,8 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   readonly onClose: () => void;
   readonly onSave?: (runner: FleetRunner, routing: RunnerRouting) => Promise<void>;
   readonly onReload?: () => Promise<void>;
+  readonly suggestion?: SuggestedLimit;
+  readonly loadHostHistory?: LoadHostHistory;
 }): React.ReactElement {
   const [draft, setDraft] = React.useState(() => runnerRouting(runner));
   const [hours, setHours] = React.useState<readonly RunnerHours[]>(() => draft.availability.windows.map(parseRunnerWindow));
@@ -152,7 +157,9 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
                   </div>
                 ) : <p>Jobs at once: {draft.capacity_limit}</p>}
                 <p className="text-xs text-muted-foreground">The runner reports room for {runner.reported_capacity}. The lower of the two wins, and runners on the same machine share its slots. 0 stops new work.</p>
+                {suggestion ? <SuggestedLimitBox suggestion={suggestion} draftLimit={draft.capacity_limit} {...(canEdit ? { onUse: (limit: number) => update({ capacity_limit: limit }) } : {})} /> : null}
               </Section>
+              {loadHostHistory ? <HostLoad runnerId={runner.id} load={loadHostHistory} timezone={(runner.routing ?? runner).availability?.timezone || "UTC"} /> : null}
               <Section title="Allowed projects">
                 {canEdit ? <NativeSelect aria-label="Runner scope" disabled={runner.can_edit_projects !== true && !(runner.can_convert_scope === true && savedRouting.scope !== "organization")} value={draft.scope ?? "projects"} onValueChange={(value) => update({ scope: value as "organization" | "projects", project_ids: value === "organization" ? [] : draft.project_ids })} options={[{ value: "organization", label: "All projects" }, { value: "projects", label: "Selected projects" }]} /> : null}
                 {draft.scope === "organization" ? <div className="space-y-2">
@@ -227,7 +234,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
               </Section>
             </fieldset>
             <Section title="Running work"><ul className="space-y-2">{runner.leases.map((lease) => <li key={lease.lease_id} className="break-words"><span className="font-medium">#{lease.work_item_id}</span> {lease.title}</li>)}</ul>{runner.leases.length === 0 ? <p className="text-muted-foreground">No running work</p> : null}</Section>
-            <Section title="Provider accounts"><ul className="space-y-2 text-xs text-muted-foreground">{runner.provider_capacity.map((capacity) => <li key={`${capacity.provider}-${capacity.account_alias}`} className="break-words">{capacity.provider} · {capacity.account_alias} · {capacity.availability} · {capacity.state} · {capacity.used} of {capacity.max_concurrent}</li>)}</ul></Section>
+            <Section title="Provider accounts"><ul className="space-y-2 text-xs text-muted-foreground">{runner.provider_capacity.map((capacity) => <li key={capacity.backend} className="break-words">{capacity.provider} · {capacity.backend} · {billingLabel(capacity)} · {capacity.account_alias} · {capacity.availability} · {capacity.state} · {capacity.used} of {capacity.max_concurrent}<ProviderUsage capacity={capacity} now={now} /></li>)}</ul></Section>
           </div>
           {canEdit ? (
             <SheetFooter className="block space-y-3">

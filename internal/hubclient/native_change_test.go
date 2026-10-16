@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
@@ -280,7 +282,7 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 // orchestrator's dispatch leaves a native item it runs.
 func (h *nativeChangeHub) createInProgress(t *testing.T, title string) connector.Issue {
 	t.Helper()
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Change the README."})
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Change the README." + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,6 +462,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	head := strings.Repeat("c", 40)
 	for _, test := range []struct {
 		name                    string
+		transitionReason        string
 		role                    string
 		outcome                 string
 		worktree                string
@@ -557,6 +560,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "existing same lease renewal preserves deferred completion", restart: true, restoreRefusal: "renewed", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "reviewed source lands with its coding lease in the four lane workflow", land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "prepared completion restart allows inline landing runtime", landingRestart: true, land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "validator rework reason survives history and explanation", transitionReason: "validator_rework", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}, role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Acceptance criterion is unverified.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "complete", FinalSummary: "Acceptance criterion is unverified."}},
 		{name: "blocked reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "merge_conflict", FinalSummary: "Source conflicts remain unresolved."}},
 		{name: "human action reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "The operator must approve the migration.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: permission_wait\nblockers: []\nhuman_action: Approve the migration\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait", HumanAction: true, FinalSummary: "The operator must approve the migration."}},
 		{name: "instance limitation reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: instance_limitation\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation", FinalSummary: "Sandbox forbids TCP listeners; upstream fetch returned HTTP 403."}},
@@ -1688,7 +1692,15 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 			}
 			if test.disposition != nil && test.disposition.FinalSummary != "" {
-				transitionContext := connector.WithLaneTransitionReason(guarded, "The completed turn requires review")
+				transitionReason := test.transitionReason
+				if transitionReason == "" {
+					transitionReason = "worker_progress"
+				}
+				transitionDetail := "The completed turn requires review"
+				if test.transitionReason != "" {
+					transitionDetail = test.disposition.FinalSummary
+				}
+				transitionContext := connector.WithLaneTransitionReason(guarded, transitionReason, transitionDetail)
 				if err := h.connector.UpdateIssueState(transitionContext, issue.ID, "In Review"); err != nil {
 					t.Fatal(err)
 				}
@@ -1699,11 +1711,21 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				found := false
 				for _, event := range history.Items {
 					if event.Type == "workflow.transitioned" && event.Data.ToState == "In Review" {
-						found = event.Data.Reason == "worker_progress" && event.Data.ReasonDetail == "The completed turn requires review"
+						found = event.Data.Reason == transitionReason && event.Data.ReasonDetail == transitionDetail
 					}
 				}
 				if !found {
 					t.Fatalf("history lost the transition reason: %#v", history.Items)
+				}
+				if test.transitionReason != "" {
+					evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					explanation := explain.FromNativeEvidence(evidence)
+					if explanation.LatestTransition == nil || explanation.LatestTransition.Reason != transitionReason || explanation.LatestTransition.ReasonDetail != transitionDetail {
+						t.Fatalf("explanation lost the validator transition: %+v", explanation.LatestTransition)
+					}
 				}
 			}
 		})
@@ -2636,7 +2658,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			if test.dependencyOnly {
 				validationCommand = `PATH="$PWD/.test-bin:$PATH" make check-fast`
-				candidate.Description = "Remove the unused direct @radix-ui/themes dependency. Required validation: frontend pnpm build, frontend pnpm check, root make check-fast."
+				candidate.Description = "Remove the unused direct @radix-ui/themes dependency. Required validation: frontend pnpm build, frontend pnpm check, root make check-fast." + issueContractTestSections
 			}
 			gateMarker := filepath.Join(t.TempDir(), "gate-invoked")
 			if test.finalMessage != "" {
@@ -4177,7 +4199,15 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 		if a.lowScore {
 			score = .5
 		}
-		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"verdict":%q,"score":%f,"summary":"Checked acceptance","findings":[]}`, a.validator, score)}); err != nil {
+		var evidence []gate.CriterionEvidence
+		if match := regexp.MustCompile(`(?m)^receipt_id="([^"]+)" command="(?:\\.|[^"\\])*" head=(\S+) tree=(\S+) exit=0\b`).FindStringSubmatch(request.Prompt); len(match) == 4 {
+			evidence = append(evidence, gate.CriterionEvidence{Criterion: "Complete the requested work.", Kind: "receipt", Reference: "Host validation", ReceiptIDs: []string{match[1]}, HeadSHA: match[2], TreeSHA: match[3], Behavior: "The configured fixture validation command succeeds on the published source."})
+		}
+		encoded, err := json.Marshal(evidence)
+		if err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"verdict":%q,"score":%f,"summary":"Checked acceptance","findings":[],"criteria_evidence":%s}`, a.validator, score, encoded)}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 		return runner.AgentTurnResult{ThreadID: "thread-validator", TurnID: "validator-turn"}, nil

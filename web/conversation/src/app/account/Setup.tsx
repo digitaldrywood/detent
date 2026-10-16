@@ -785,8 +785,10 @@ export function SetupRoute({
   const saveAndContinue = () => {
     void saveProgress
       .call({ repository, doctor: false, provider: false, artifacts })
-      .then(() => {
+      .then((saved) => {
+        if (saved === null) return;
         if (activeIndex < steps.length - 1) next();
+        else onNavigate?.("/work");
       });
   };
 

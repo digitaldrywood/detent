@@ -114,6 +114,7 @@ func (f AgentBackendFactoryFunc) NewAgentBackend(cfg config.AgentBackend) (Agent
 type durationLimitContextFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
 type Dependencies struct {
+	ProviderUsage          *ProviderUsage
 	BuildCache             *toolcache.Managed
 	ProjectID              string
 	Workflow               config.Workflow
@@ -145,6 +146,7 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	providerUsage             *ProviderUsage
 	buildCache                *toolcache.Managed
 	sleepInhibitor            func(context.Context, func()) (func(), error)
 	sleepFailures             int
@@ -253,6 +255,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 
 	return &Runner{
 		buildCache:                deps.BuildCache,
+		providerUsage:             deps.ProviderUsage,
 		projectID:                 projectID,
 		workflow:                  deps.Workflow,
 		workspace:                 deps.Workspace,
@@ -1227,6 +1230,7 @@ func (r *Runner) runAgentTurn(
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)
@@ -1630,6 +1634,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
 			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
+				var refusal *workspace.LandRefusal
+				if errors.As(err, &refusal) {
+					target, targetErr := landing.LandingTarget(ctx)
+					if errors.Is(targetErr, ErrLandingNotReviewed) {
+						return r.refusedLanding(req, target, workspace.LandRefusalNothing, targetErr.Error()), nil
+					}
+					if targetErr != nil {
+						return RunResult{}, targetErr
+					}
+					result := r.refusedLanding(req, target, refusal.Kind, refusal.Reason)
+					result.NativeLanding.Waiting = refusal.Kind == ""
+					return result, nil
+				}
 				return RunResult{}, err
 			}
 		}
@@ -1646,7 +1663,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if landingTarget.External != nil && !landingTarget.GitHubPullRequest {
 			return r.refusedLanding(req, landingTarget, workspace.LandRefusalProtected, "the approved policy does not enable GitHub pull request landing"), nil
 		}
-		workspaceIssue.Landing = &workspace.LandOptions{HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
+		workspaceIssue.Landing = &workspace.LandOptions{TargetBranch: landingTarget.BaseRef, HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
 		if landingTarget.GitHubPullRequest {
 			started := time.Now()
 			scope := &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
@@ -3685,6 +3702,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		reserveScratch:      r.reserveSessionWorkerScratch(sessionID, info.Path, ""),
 	}, validationTools, validationHandler, func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
+		r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.normalize(update.Tokens)

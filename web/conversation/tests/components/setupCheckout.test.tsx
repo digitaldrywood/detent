@@ -207,17 +207,22 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
 });
 
 it.each([
-  { ready: false, unrouted: false },
-  { ready: true, unrouted: false },
-  { ready: true, unrouted: true },
-])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted)", async ({ ready, unrouted }) => {
+  { ready: false, unrouted: false, capacityFull: false },
+  { ready: true, unrouted: false, capacityFull: false },
+  { ready: true, unrouted: true, capacityFull: false },
+  { ready: true, unrouted: false, capacityFull: true },
+])("uses the runner step's readiness for its primary action (ready: $ready, unrouted: $unrouted, capacity full: $capacityFull)", async ({ ready, unrouted, capacityFull }) => {
   const onNavigate = vi.fn();
   const mount = await mountSetup(onNavigate);
   const intervals = vi.spyOn(window, "setInterval");
+  const clearInterval = vi.spyOn(window, "clearInterval");
   let onboardingReads = 0;
   let scopedRunnerReads = 0;
   let routedProjects: readonly string[] | undefined;
   const fetch = globalThis.fetch;
+  const approval = capacityFull
+    ? await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_alpha/policy`).then((response) => response.json())
+    : undefined;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     if (unrouted && String(input).endsWith("/runners") && (!init?.method || init.method === "GET")) {
       return Response.json({ code: "not_found", message: "Organization-wide runner access is unavailable" }, { status: 404 });
@@ -237,6 +242,16 @@ it.each([
       const onboarding = await response.json();
       onboardingReads += 1;
       onboarding.runners = ready ? onboarding.runners : [];
+      if (capacityFull) {
+        onboarding.policy = approval;
+        onboarding.runners = [{
+          ...onboarding.runners[0],
+          exclusions: [
+            { code: "host_capacity", message: "Shared host capacity is full or paused" },
+            { code: "runner_capacity", message: "Runner capacity is full or paused" },
+          ],
+        }];
+      }
       if (unrouted) {
         onboarding.runners = [{
           runner: { ...onboarding.runners[0].runner, scope: "organization", project_ids: [], display_name: "Shared build runner" },
@@ -276,6 +291,14 @@ it.each([
     await user.click(screen.getByRole("button", { name: "Route here" }));
     await waitFor(() => expect(routedProjects).toEqual(["proj_alpha", "proj_beta"]));
     expect(scopedRunnerReads).toBe(1);
+  }
+  if (capacityFull) {
+    expect(screen.getByText("Shared host capacity is full or paused · Runner capacity is full or paused")).toBeTruthy();
+    for (const [index, [, timeout]] of intervals.mock.calls.entries()) {
+      if (timeout === 5_000) {
+        expect(clearInterval).toHaveBeenCalledWith(intervals.mock.results[index]?.value);
+      }
+    }
   }
 
   await user.click(enroll);
@@ -317,6 +340,63 @@ it.each([
   }
 });
 
+
+it.each([false, true])("leaves the last setup step only after saving with skipped steps (save fails: %s)", async (saveFails) => {
+  const onNavigate = vi.fn();
+  const mount = await mountSetup(onNavigate);
+  const fetch = globalThis.fetch;
+  const endpoint = `${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`;
+  const initial = await fetch(endpoint).then((response) => response.json());
+  const seeded = await fetch(endpoint, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idempotency_key: "setup-last-step", progress: { ...initial.progress, artifacts: "local" } }),
+  });
+  expect(seeded.ok).toBe(true);
+  const saves: Record<string, unknown>[] = [];
+  let finishSave: (() => void) | undefined;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input) === endpoint && init?.method === "PUT") {
+      saves.push(JSON.parse(String(init.body)));
+      await new Promise<void>((resolve) => { finishSave = resolve; });
+      if (saveFails) return Response.json({ code: "invalid_request", message: "Could not save setup." }, { status: 422 });
+    }
+    const response = await fetch(input, init);
+    if (String(input) === endpoint && (!init?.method || init.method === "GET")) {
+      const onboarding = await response.json();
+      return Response.json({
+        ...onboarding,
+        runners: [],
+        steps: onboarding.steps.map((step: { name: string; state: string }) => ({ ...step, state: step.name === "Artifact history" ? step.state : "action_required" })),
+        ready: false,
+      });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Artifact history ready/ }));
+  expect(screen.queryByRole("button", { name: "Finish" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  await waitFor(() => expect(finishSave).toBeDefined());
+  expect(saves).toEqual([expect.objectContaining({ progress: expect.objectContaining({ artifacts: "local", repository: "", doctor: false, provider: false }) })]);
+  expect(onNavigate).not.toHaveBeenCalled();
+  await act(async () => finishSave!());
+  if (saveFails) {
+    expect(await screen.findByText("Could not save setup.")).toBeTruthy();
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { level: 1, name: "Artifact history" })).toBeTruthy();
+  } else {
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith("/work"));
+    const saved = await fetch(endpoint).then((response) => response.json());
+    expect(saved.progress).toMatchObject({ artifacts: "local", revision: "3", repository: "", doctor: false, provider: false });
+    expect(saved.ready).toBe(false);
+  }
+  for (const step of ["Execution runner", "Local validation", "Repository configuration"]) {
+    await user.click(screen.getByRole("button", { name: new RegExp(`${step} action required`) }));
+    expect(screen.getByRole("heading", { level: 1, name: step })).toBeTruthy();
+  }
+});
 
 it.each([
   ["online", "online", "Example runner · Online"],

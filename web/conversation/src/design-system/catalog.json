@@ -489,6 +489,33 @@
       "related": ["toast", "badge", "empty"]
     },
     {
+      "id": "avatar",
+      "name": "Avatar",
+      "kind": "primitive",
+      "group": "Feedback",
+      "status": "available",
+      "source": "src/components/ui/avatar.tsx",
+      "exports": [
+        "Avatar"
+      ],
+      "variants": {
+        "size": [
+          "sm",
+          "md"
+        ]
+      },
+      "states": [
+        "image",
+        "initials"
+      ],
+      "keyboard": "Static identity; the surrounding row or link owns focus.",
+      "use": "A person’s image or initials beside their visible identity; sm for compact references and md for member rows.",
+      "avoid": "Project marks (use Project favicon) and stand-alone identity without a visible name.",
+      "related": [
+        "badge"
+      ]
+    },
+    {
       "id": "badge",
       "name": "Badge",
       "kind": "primitive",
@@ -781,7 +808,7 @@
       "variants": {},
       "states": ["hover", "focus-visible", "empty"],
       "keyboard": "The plot is one focus stop; Left and Right move the readout between categories and Escape clears it.",
-      "use": "Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`.",
+      "use": "Report charts over shared categories: grouped or stacked bars, a dashed comparison line and a p50–p90 band, with a hover or keyboard readout of every series. `ChartPanel` is the titled card that holds a chart and the rows below it, `ProportionBar` one bar split into shares and `BarMeter` a horizontal bar for a ranked list. Callers pass colours from the semantic, lane or ink-mix mappings, and every series appears in a `ChartLegend`. When some categories carry an empty `shortLabel`, the axis labels only the categories with a non-empty one, such as the first hour of each day. An optional `marker` shades flagged categories without changing the scale and names them in the readout.",
       "avoid": "Per-provider usage (use Usage provider chart), new chart palettes and tables of numbers that read better as a Table.",
       "related": ["metric-tile", "usage-provider-chart", "table"]
     },
@@ -1766,11 +1793,12 @@
       "group": "Settings",
       "status": "available",
       "source": "src/app/settings/Settings.tsx",
-      "exports": ["SettingsRoute", "GeneralSettings", "ProjectsSettings", "IntegrationsSettings", "PlanSettings", "BillingSettings", "KeybindingsSettings", "AboutSettings"],
+      "files": ["src/app/settings/WhatsNewSettings.tsx"],
+      "exports": ["SettingsRoute", "GeneralSettings", "ProjectsSettings", "IntegrationsSettings", "PlanSettings", "BillingSettings", "KeybindingsSettings", "WhatsNewSettings", "AboutSettings"],
       "variants": {},
       "states": ["loading", "error", "empty"],
-      "keyboard": "As the settings layout.",
-      "use": "Detent's settings sections (general, projects, integrations, plan, billing, keybindings, about), each composed from the settings layout.",
+      "keyboard": "As the settings layout. What's new uses Tab and arrow keys for its category filter; release and pull request links are focusable. Mark-seen retries retain focus while pending and on failure, announce their result, and return focus to the selected filter on success.",
+      "use": "Detent's settings sections (general, projects, integrations, plan, billing, keybindings, what's new, about), each composed from the settings layout.",
       "avoid": "New hosted settings screens outside this route.",
       "related": ["settings-layout"]
     },

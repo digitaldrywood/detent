@@ -18,10 +18,12 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/releasenotes"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,6 +33,7 @@ const (
 )
 
 type Service struct {
+	releaseNotes            []releasenotes.Build
 	activityDurations       activityDurationCache
 	issuePages              nativeIssuePageCache
 	writerStatsAt           atomic.Int64
@@ -98,6 +101,10 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err := cfg.Hosted.validate(); err != nil {
 		return nil, err
 	}
+	notes, err := releasenotes.Read(detent.StaticFS())
+	if err != nil {
+		return nil, err
+	}
 	hostedAuthLogger := cfg.Logger
 	if cfg.Hosted != nil {
 		cfg.Logger = slog.New(hostedLogHandler{output: cfg.Logger.Handler()})
@@ -129,6 +136,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	workerContext, workerCancel := context.WithCancel(context.Background())
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
+		releaseNotes:     notes,
 		echo:             e,
 		notifications:    newNotificationBroker(),
 		hostedAuthLogger: hostedAuthLogger,
@@ -487,7 +495,7 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 
 func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 	now := s.config.now().UTC()
-	if err := s.database.processPendingWebhooks(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+	if err := s.processPendingWebhooks(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.Error("process pending GitHub webhooks", "error", err)
 	}
 	if _, err := s.database.purgeWebhookPayloads(ctx, now, s.config.WebhookPayloadRetention); err != nil && !errors.Is(err, context.Canceled) {

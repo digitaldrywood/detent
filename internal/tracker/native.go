@@ -22,6 +22,8 @@ const NativeProtocolMajor = 2
 
 const NativeDispatchPriorityCapability = "dispatch_priority"
 
+const NativeLandingCapacityCapability = "project_landing_capacity"
+
 const NativeDispatchWaitCapability = "native_dispatch_wait"
 const NativeHostMetricsCapability = "runner_host_metrics"
 
@@ -72,6 +74,9 @@ type Actor struct {
 	PrincipalID string `json:"principal_id"`
 	ViaKey      string `json:"via_key,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
+	// Agent names the assistant that acted on the principal's behalf, such
+	// as "Luna (gpt-6.1-sol)"; empty when the principal acted directly.
+	Agent string `json:"agent,omitempty"`
 }
 
 type Provenance struct {
@@ -85,6 +90,7 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
+	ReleaseDelivery    *ReleaseDelivery     `json:"release_delivery,omitempty"`
 	IssueContract      *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
 	OmittedFields      []string             `json:"omitted_fields,omitempty"`
 	LinkedSource       *LinkedIssueSource   `json:"linked_source,omitempty"`
@@ -98,6 +104,7 @@ type NativeIssue struct {
 	Title              string              `json:"title"`
 	Body               string              `json:"body"`
 	Snippet            string              `json:"snippet,omitempty"`
+	SearchScore        float64             `json:"search_score,omitempty"`
 	State              string              `json:"state"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
@@ -122,8 +129,9 @@ type NativeIssue struct {
 }
 
 type NativeListChange struct {
-	Branch  string `json:"branch"`
-	HeadSHA string `json:"head_sha"`
+	LandingPending bool   `json:"landing_pending,omitempty"`
+	Branch         string `json:"branch"`
+	HeadSHA        string `json:"head_sha"`
 }
 
 type NativePullRequest struct {
@@ -481,6 +489,7 @@ type NativeProject struct {
 }
 
 type NativeClaim struct {
+	LandingCapacity         int                       `json:"landing_capacity,omitempty"`
 	DispatchPriorityByState []string                  `json:"dispatch_priority_by_state,omitempty"`
 	DispatchPriorityByLabel []string                  `json:"dispatch_priority_by_label,omitempty"`
 	PrioritizeUnblockers    bool                      `json:"prioritize_unblockers,omitempty"`
@@ -532,9 +541,10 @@ type NativeCapacityPage struct {
 }
 
 type NativeLeaseMutation struct {
-	FencingToken FencingToken `json:"fencing_token,string"`
-	TTLSeconds   int64        `json:"ttl_seconds,omitempty"`
-	Reason       string       `json:"reason,omitempty"`
+	LandingCapacity int          `json:"landing_capacity,omitempty"`
+	FencingToken    FencingToken `json:"fencing_token,string"`
+	TTLSeconds      int64        `json:"ttl_seconds,omitempty"`
+	Reason          string       `json:"reason,omitempty"`
 }
 
 type NativeDisposition struct {

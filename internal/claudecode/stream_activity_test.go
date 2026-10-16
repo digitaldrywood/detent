@@ -192,3 +192,35 @@ func TestTurnStateResultCost(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeUsageWindows(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, kind, utilization string
+		want                    *float64
+	}{
+		{"five hour", "five_hour", `,"utilization":0.85`, floatPointer(85)},
+		{"model window", "seven_day_sonnet", `,"utilization":0.4`, floatPointer(40)},
+		{"zero", "five_hour", `,"utilization":0`, floatPointer(0)},
+		{"unknown", "weekly", "", nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var event claudeEvent
+			raw := `{"type":"rate_limit_event","rate_limit_info":{"rateLimitType":"` + test.kind + `"` + test.utilization + `}}`
+			if err := json.Unmarshal([]byte(raw), &event); err != nil {
+				t.Fatal(err)
+			}
+			usage := &runner.ProviderUsage{}
+			err := (&turnState{}).apply(event, false, func(update runner.AgentUpdate) error { usage.Observe("claude", update.RateLimits); return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			windows := usage.Windows("claude")
+			if len(windows) != 1 || windows[0].Kind != test.kind || windows[0].ObservedAt.IsZero() || !reflect.DeepEqual(windows[0].PercentUsed, test.want) {
+				t.Fatalf("windows = %+v", windows)
+			}
+		})
+	}
+}
+
+func floatPointer(value float64) *float64 { return &value }

@@ -467,7 +467,7 @@ func TestHostedMutationQuotaRollbackAndRetry(t *testing.T) {
 			f := newHostedSecurityFixture(t)
 			hostedTestPlans(t, f.service, test.limits)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-			request := map[string]any{"idempotency_key": "create", "title": "private-title", "body": "private-body", "state": "Todo"}
+			request := map[string]any{"idempotency_key": "create", "title": "private-title", "body": "private-body" + issueContractTestSections, "state": "Todo"}
 			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", request)
 			requireNativeStatus(t, response, test.want)
 			var events, commands int

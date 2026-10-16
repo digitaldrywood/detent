@@ -404,6 +404,12 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		if requestedOrgSlug != "" && requestedOrgSlug != orgSlug {
 			return "/" + orgSlug + path, true, nil
 		}
+		if requestedOrgSlug == "" && orgSlug != "" && s.hostedShared() {
+			if path == "/" {
+				path = "/work"
+			}
+			return "/" + orgSlug + path, true, nil
+		}
 		return "", false, nil
 	}
 	credential, _, err := s.hostedCredential(c.Request().Context(), c)

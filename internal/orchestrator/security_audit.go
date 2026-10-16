@@ -123,7 +123,7 @@ func (o *Orchestrator) startSecurityAuditStage(ctx context.Context, issue connec
 			return
 		}
 
-		snapshot, err := o.collectSecurityAuditSnapshot(ctx, reader, issue, identity.key, securityAuditMaxDiffBytes(cfg))
+		snapshot, err := o.collectSecurityAuditSnapshot(ctx, reader, issue, identity.key)
 		if err != nil {
 			o.recordSecurityAuditFailure(ctx, issue, securityAuditSnapshotFromIssue(o.workflowMetricsProjectID(), issue), o.nextSecurityAuditAttempt(ctx, identity.key), now, err)
 			return
@@ -190,13 +190,6 @@ func securityAuditSnapshotFromIssue(projectID string, issue connector.Issue) sec
 		snapshot.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
 	}
 	return snapshot
-}
-
-func securityAuditMaxDiffBytes(cfg gate.SecurityAuditConfig) int {
-	if cfg.MaxDiffBytes == nil {
-		return securityaudit.DefaultMaxDiffBytes
-	}
-	return *cfg.MaxDiffBytes
 }
 
 func (o *Orchestrator) nextSecurityAuditAttempt(ctx context.Context, key securityaudit.Key) int {
@@ -368,7 +361,7 @@ func securityAuditFindingsComment(issue connector.Issue, audit securityaudit.Eva
 	return body.String()
 }
 
-func (o *Orchestrator) collectSecurityAuditSnapshot(ctx context.Context, reader connector.ValidationDiffReader, issue connector.Issue, key securityaudit.Key, limit int) (securityaudit.Snapshot, error) {
+func (o *Orchestrator) collectSecurityAuditSnapshot(ctx context.Context, reader connector.ValidationDiffReader, issue connector.Issue, key securityaudit.Key) (securityaudit.Snapshot, error) {
 	diff, err := reader.PullRequestValidationDiff(ctx, issue)
 	if err != nil {
 		return securityaudit.Snapshot{}, err
@@ -376,7 +369,7 @@ func (o *Orchestrator) collectSecurityAuditSnapshot(ctx context.Context, reader 
 	if diff.BaseSHA != key.BaseSHA || diff.HeadSHA != key.HeadSHA {
 		return securityaudit.Snapshot{}, errors.New("security audit change moved during collection")
 	}
-	return connector.SecurityAuditSnapshot(key.ProjectID, issue, diff, limit)
+	return connector.SecurityAuditSnapshot(key.ProjectID, issue, diff)
 }
 
 func securityAuditFindingStatus(finding securityaudit.Finding) string {

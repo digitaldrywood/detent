@@ -312,7 +312,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 				_, err = f.service.executeNativeMutation(t.Context(), scope, nativeCommandOptions{OperationID: "dispatch-scale"}, tracker.Mutation{IdempotencyKey: "burst"}, admissions, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 					var items []tracker.NativeIssue
 					for index := range admissions {
-						item, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("ready-%d", index), Body: issueContractTestSections, State: "Todo"}, now)
+						item, err := createNativeFixtureIssueTx(ctx, tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("ready-%d", index), Body: issueContractTestSections, State: "Todo"}, now)
 						if err != nil {
 							return nil, err
 						}
@@ -378,7 +378,7 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 					request.Priority = new(1)
 					request.Labels = []string{"hotfix"}
 				}
-				tail, err = createNativeIssueTx(t.Context(), tx, scope, request, f.service.config.now())
+				tail, err = createNativeFixtureIssueTx(t.Context(), tx, scope, request, f.service.config.now())
 				if err != nil {
 					t.Fatal(err)
 				}

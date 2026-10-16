@@ -148,7 +148,7 @@ func safeBillingError(err error) error {
 	if errors.Is(err, operatortool.ErrResultTooLarge) {
 		return err
 	}
-	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, mutation.ErrConflict, mutation.ErrUncertain} {
+	for _, safe := range []error{operatortool.ErrAccessDenied, operatortool.ErrInvalidArguments, chat.ErrActionNotFound, mutation.ErrConflict, mutation.ErrUncertain} {
 		if errors.Is(err, safe) {
 			return safe
 		}
@@ -231,7 +231,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 		}
 		action, ok := s.operatorChat.Action(operatortool.CurrentConnection(ctx).ID, request.ActionID)
 		if !ok {
-			return result, errBillingUnavailable
+			return result, chat.ErrActionNotFound
 		}
 		if _, ok := operatortool.ChangeDefinition(string(action.Kind)); ok {
 			return (hubOperatorExecutor{service: s}).Execute(ctx, call)
@@ -578,6 +578,7 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	}
 	defer func() {
 		if err != nil {
+			e.service.logStripeFailure(ctx, err)
 			err = safeBillingError(err)
 		}
 	}()

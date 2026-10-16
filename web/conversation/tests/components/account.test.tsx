@@ -16,6 +16,9 @@ import { decodeAccountBootstrap, type AccountBootstrap, type Member, type Onboar
 import { SidebarWorkspacePicker, WorkspacePicker } from "../../src/components/sidebar/SidebarWorkspacePicker.tsx";
 import { ClientContext } from "../../src/app/client.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
+import membersFixture from "../../src/contracts/fixtures/account-members.json";
+import { OrganizationMembersProvider } from "../../src/app/account/OrganizationMembers.tsx";
+import { MemberAccessSheet, ProjectAccessMatrix } from "../../src/app/account/MemberAccess.tsx";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
 import {
@@ -27,6 +30,7 @@ import {
 import {
   InviteForm,
   MembersTable,
+  OrganizationMembersRoute,
   OrganizationSwitcher,
   refusalMessage,
   SupportBanner,
@@ -265,7 +269,7 @@ const PROJECTS = [{ id: "proj_example_project", name: "example-project", can_wri
 
 function renderMembers(overrides: Partial<React.ComponentProps<typeof MembersTable>> = {}) {
   const onRoleChange = vi.fn();
-  const onGrantChange = vi.fn();
+  const onEdit = vi.fn();
   const onRemove = vi.fn();
   render(
     <MembersTable
@@ -276,12 +280,13 @@ function renderMembers(overrides: Partial<React.ComponentProps<typeof MembersTab
       busyMember={null}
       errorFor={() => null}
       onRoleChange={onRoleChange}
-      onGrantChange={onGrantChange}
+      roles={membersFixture.roles}
+      onEdit={onEdit}
       onRemove={onRemove}
       {...overrides}
     />,
   );
-  return { onRoleChange, onGrantChange, onRemove };
+  return { onRoleChange, onEdit, onRemove };
 }
 
 describe("the login card", () => {
@@ -326,6 +331,12 @@ describe("the login card", () => {
 
 });
 
+async function chooseRole(name: string, value: string): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("combobox", { name }));
+  await user.click(await screen.findByRole("option", { name: value }));
+}
+
 describe("the members table", () => {
   it.each([
     { email: "unsigned@example.test", name: "Unsigned Member", identity: "unsigned@example.test" },
@@ -335,65 +346,153 @@ describe("the members table", () => {
     const member: Member = { ...MEMBERS[1]!, user_id: "user_unsigned", email, name, never_signed_in: true };
     renderMembers({ members: [member] });
     const row = screen.getByRole("row", { name: new RegExp(identity) });
-    expect(row.textContent).toContain("Hasn't signed in yet");
-    expect(screen.getByLabelText(`Role for ${identity}`)).toBeInstanceOf(HTMLSelectElement);
-    expect((within(row).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(row.textContent).toContain("Hasn't signed in");
+    expect(screen.getByRole("combobox", { name: `Role for ${identity}` })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `Actions for ${identity}` })).toBeTruthy();
   });
 
-  it("assigns Reporter from the member role picker and describes its access", () => {
+  it("renders new server roles and assigns them without changing the UI", async () => {
     const onRoleChange = vi.fn();
-    const reporter = { ...MEMBERS[1]!, role: "reporter", email: "reporter@example.test" };
-    render(<MembersTable members={[reporter]} projects={PROJECTS} canManage actorRole="owner" busyMember={null} errorFor={() => null} onRoleChange={onRoleChange} onGrantChange={vi.fn()} onRemove={vi.fn()} />);
-    const select = screen.getByRole("combobox", { name: "Role for reporter@example.test" });
-    expect(within(select).getByRole("option", { name: "Reporter" })).toBeTruthy();
-    expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
-    fireEvent.change(select, { target: { value: "reporter" } });
-    expect(onRoleChange).toHaveBeenCalledWith(reporter, "reporter");
+    const member = { ...MEMBERS[1]!, role: "reviewer" };
+    renderMembers({ members: [member], roles: [...membersFixture.roles, { slug: "reviewer", name: "Reviewer", description: "Reviews project work." }], onRoleChange });
+    await chooseRole("Role for sam@example.test", "Reviewer");
+    expect(onRoleChange).toHaveBeenCalledWith(member, "reviewer");
   });
 
-  it("offers a role control and a removal for a manager", () => {
-    renderMembers();
-    expect(
-      screen.getByLabelText("Role for owner@example.com"),
-    ).toBeInstanceOf(HTMLSelectElement);
-    expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(2);
+  it("protects the owner role and offers removal through the row menu", async () => {
+    const { onRemove } = renderMembers();
+    expect(screen.queryByRole("combobox", { name: "Role for owner@example.com" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Actions for sam@example.test" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Remove from organization" }));
+    expect(onRemove).toHaveBeenCalledWith(MEMBERS[1]);
   });
 
-  it("shows a viewer the roles and none of the controls (§10.11)", () => {
+  it("shows a viewer the roles and summaries with no controls", () => {
     renderMembers({ canManage: false });
-    expect(screen.queryByLabelText("Role for owner@example.com")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
-    expect(screen.getAllByText("owner")).not.toHaveLength(0);
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText("Owner")).toBeTruthy();
   });
 
-  it("offers only the role and project permissions the actor can grant", () => {
-    renderMembers({ actorRole: "admin", projects: [{ ...PROJECTS[0]!, can_write: false, can_manage_runners: false }] });
-    const select = screen.getByLabelText("Role for sam@example.test") as HTMLSelectElement;
-    const owner = within(select).getByRole("option", { name: "Owner" }) as HTMLOptionElement;
-    expect(owner.disabled).toBe(true);
-    const access = screen.getByLabelText("Access to example-project for sam@example.test") as HTMLSelectElement;
-    expect((within(access).getByRole("option", { name: "Write" }) as HTMLOptionElement).disabled).toBe(true);
-    expect(screen.getByLabelText("Runner management on example-project for sam@example.test").getAttribute("aria-disabled")).toBe("true");
+  it("does not let an admin assign owner", async () => {
+    renderMembers({ actorRole: "admin" });
+    fireEvent.click(screen.getByRole("combobox", { name: "Role for sam@example.test" }));
+    expect((await screen.findByRole("option", { name: "Owner" })).getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("distinguishes read-only access from no access", () => {
-    const { onGrantChange } = renderMembers();
-    fireEvent.change(screen.getByLabelText("Access to example-project for sam@example.test"), { target: { value: "read" } });
-    expect(onGrantChange).toHaveBeenCalledWith(MEMBERS[1], "proj_example_project", {
-      project_id: "proj_example_project",
-      write: false,
-      runner: false,
-    });
-    fireEvent.change(screen.getByLabelText("Access to example-project for sam@example.test"), { target: { value: "none" } });
-    expect(onGrantChange).toHaveBeenLastCalledWith(MEMBERS[1], "proj_example_project", null);
+  it("summarizes all, no and mixed project access and opens the sheet", () => {
+    const projects = [...PROJECTS, { ...PROJECTS[0]!, id: "proj_other", name: "other-project" }];
+    const member = { ...MEMBERS[1]!, grants: [{ project_id: PROJECTS[0]!.id, write: true, runner: false }, { project_id: "proj_other", write: false, runner: false }] };
+    const { onEdit } = renderMembers({ projects, members: [MEMBERS[0]!, member], actorId: MEMBERS[0]!.user_id });
+    expect(screen.getByText("You")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /sam@example.test: All 2 · Mixed access/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /sam@example.test: All 2/ }));
+    expect(onEdit).toHaveBeenCalledWith(member);
+    expect(screen.queryByLabelText("Access to example-project for sam@example.test")).toBeNull();
   });
 
   it("surfaces a per-member refusal next to that member", () => {
-    renderMembers({
-      errorFor: (member) =>
-        member.id === "mem_owner" ? "An organization keeps at least one owner." : null,
-    });
+    renderMembers({ errorFor: (member) => member.id === "mem_owner" ? "An organization keeps at least one owner." : null });
     expect(screen.getByRole("alert").textContent).toContain("keeps at least one owner");
+  });
+});
+
+describe("the members route", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("filters members, discards cancelled changes, saves access and refreshes after a conflict", async () => {
+    let data = { members: MEMBERS.map((member) => ({ ...member })), invitations: [], roles: membersFixture.roles };
+    const writes: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
+    let conflict = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit) => {
+      if (init.method === "GET") return new Response(JSON.stringify(data), { status: 200 });
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      writes.push({ method: init.method ?? "GET", path: input, body });
+      if (conflict) return new Response(JSON.stringify({ code: "revision_conflict", message: "Access changed. Reload and try again." }), { status: 409 });
+      const member = data.members.find((member) => member.id === "mem_viewer")!;
+      const next = input.endsWith("/role") ? { ...member, role: String(body.role) } : { ...member, grants: [{ project_id: String(body.project_id), write: body.write === true, runner: body.runner === true }] };
+      data = { ...data, members: data.members.map((member) => member.id === next.id ? next : member) };
+      return new Response(JSON.stringify(next), { status: 200 });
+    }));
+    const account = decodeAccountBootstrap({ ...accountFixture, projects: PROJECTS.map((project) => ({ ...accountFixture.projects[0], ...project })) });
+    const root = createRootRoute({ component: () => <OrganizationMembersProvider><OrganizationMembersRoute /></OrganizationMembersProvider> });
+    const router = createRouter({ routeTree: root, history: createMemoryHistory({ initialEntries: ["/"] }) });
+    render(<ClientContext.Provider value={{ http: { origin: "", apiBase: account.api_base, csrfToken: account.csrf_token }, account } as ConversationClient}><RouterProvider router={router as never} /></ClientContext.Provider>);
+    await screen.findByRole("row", { name: /sam@example.test/ });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search members" }), { target: { value: "sam" } });
+    expect(screen.queryByRole("row", { name: /owner@example.com/ })).toBeNull();
+    await chooseRole("Filter by role", "Owner");
+    expect(screen.getByText("No matching members.")).toBeTruthy();
+    await chooseRole("Filter by role", "All roles");
+    const openAccess = () => fireEvent.click(screen.getByRole("button", { name: /^Project access for sam@example.test/ }));
+    openAccess();
+    await chooseRole("Role for sam@example.test", "Reporter");
+    fireEvent.click(within(screen.getByRole("group", { name: "Access to example-project for sam@example.test" })).getByRole("button", { name: "Read" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(writes).toEqual([]);
+    openAccess();
+    const group = screen.getByRole("group", { name: "Access to example-project for sam@example.test" });
+    expect(within(group).getByRole("button", { name: "None" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(group).getByRole("button", { name: "Read" }));
+    await chooseRole("Role for sam@example.test", "Reporter");
+    fireEvent.click(screen.getByRole("button", { name: "Save access" }));
+    await screen.findByRole("button", { name: /sam@example.test: All 1 · Read/ });
+    expect(writes.map((write) => write.path.split("/").pop())).toEqual(["role", "grants"]);
+    expect(writes[0]!.body.role).toBe("reporter");
+    expect(writes[1]!.body).toMatchObject({ project_id: PROJECTS[0]!.id, write: false, runner: false, revoke: false });
+    conflict = true;
+    openAccess();
+    fireEvent.click(within(screen.getByRole("group", { name: "Access to example-project for sam@example.test" })).getByRole("button", { name: "Write" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save access" }));
+    const dialog = await screen.findByRole("dialog", { name: "Project access" });
+    await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("Access changed"));
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "Access to example-project for sam@example.test" })).getByRole("button", { name: "Read" }).getAttribute("aria-pressed")).toBe("true"));
+  });
+});
+
+describe("the project access sheet", () => {
+  it("keeps role and grant edits local until Save", async () => {
+    const onSave = vi.fn().mockResolvedValue(true);
+    const onClose = vi.fn();
+    const member = MEMBERS[1]!;
+    render(<MemberAccessSheet member={member} projects={PROJECTS} roles={membersFixture.roles} actorRole="owner" pending={false} error={null} onSave={onSave} onRemove={vi.fn()} onClose={onClose} />);
+    await chooseRole("Role for sam@example.test", "Reporter");
+    const access = screen.getByRole("group", { name: "Access to example-project for sam@example.test" });
+    fireEvent.click(within(access).getByRole("button", { name: "Read" }));
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save access" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(member, "reporter", [{ project_id: PROJECTS[0]!.id, write: false, runner: false }]));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("updates every project with the all-projects row and revokes runner grants with None", () => {
+    const projects = [...PROJECTS, { ...PROJECTS[0]!, id: "proj_other", name: "other-project" }];
+    function Matrix() {
+      const [grants, setGrants] = React.useState([{ project_id: PROJECTS[0]!.id, write: true, runner: true }]);
+      return <ProjectAccessMatrix projects={projects} grants={grants} identity="member" onChange={setGrants} />;
+    }
+    render(<Matrix />);
+    const all = screen.getByRole("group", { name: "Access to All projects for member" });
+    fireEvent.click(within(all).getByRole("button", { name: "Read" }));
+    for (const name of ["example-project", "other-project"]) expect(within(screen.getByRole("group", { name: `Access to ${name} for member` })).getByRole("button", { name: "Read" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("switch", { name: /^Runner management on All projects for member/ }));
+    for (const name of ["example-project", "other-project"]) expect(screen.getByRole("switch", { name: new RegExp(`^Runner management on ${name} for member`) }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(within(all).getByRole("button", { name: "None" }));
+    for (const name of ["All projects", "example-project", "other-project"]) {
+      const runners = screen.getByRole("switch", { name: new RegExp(`^Runner management on ${name} for member`) });
+      expect(runners.getAttribute("aria-disabled")).toBe("true");
+      expect(runners.getAttribute("aria-checked")).toBe("false");
+    }
+  });
+
+  it("disables individual and bulk grants the actor cannot give", () => {
+    const projects = [...PROJECTS, { ...PROJECTS[0]!, id: "proj_other", name: "other-project", can_write: false, can_manage_runners: false }];
+    render(<ProjectAccessMatrix projects={projects} grants={projects.map((project) => ({ project_id: project.id, write: false, runner: false }))} identity="member" onChange={vi.fn()} />);
+    for (const name of ["All projects", "other-project"]) {
+      expect(within(screen.getByRole("group", { name: `Access to ${name} for member` })).getByRole("button", { name: "Write" }).getAttribute("aria-disabled")).toBe("true");
+      expect(screen.getByRole("switch", { name: new RegExp(`^Runner management on ${name} for member`) }).getAttribute("aria-disabled")).toBe("true");
+    }
   });
 });
 
@@ -401,7 +500,7 @@ describe("the organization's own rules", () => {
   it("labels an absent grant as no access", () => {
     renderMembers({ canManage: false });
     const viewer = screen.getByRole("row", { name: /sam@example.test/ });
-    expect(viewer.textContent).toContain("no access");
+    expect(viewer.textContent).toContain("No projects · Grant access");
     expect(viewer.textContent).not.toContain("read");
   });
 
@@ -458,25 +557,42 @@ describe("the organization's own rules", () => {
     expect(onExit).toHaveBeenCalled();
   });
 
-  it.each([true, false])("sends the chosen role and resets only on success (%s)", async (success) => {
-    const onInvite = vi.fn().mockResolvedValue(success);
-    render(<InviteForm onInvite={onInvite} projects={PROJECTS} />);
-    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "rae@example.test" } });
-    fireEvent.change(screen.getByLabelText("Role"), { target: { value: "reporter" } });
+  it.each([true, false])("sends several addresses with chosen permissions and keeps only failures (%s)", async (success) => {
+    const onInvite = vi.fn().mockImplementation(async ({ email }: { email: string }) => success || email !== "rae@example.test");
+    render(<InviteForm onInvite={onInvite} projects={PROJECTS} roles={membersFixture.roles} />);
+    fireEvent.change(screen.getByLabelText("Email addresses"), { target: { value: "rae@example.test, sam@example.test rae@example.test" } });
+    await chooseRole("Role", "Reporter");
     expect(screen.getByText("Reads issues and files new ones into Triage.")).toBeTruthy();
-    const access = screen.getByLabelText("Access to example-project for invitation");
-    expect((access as HTMLSelectElement).value).toBe("none");
-    fireEvent.change(access, { target: { value: "read" } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Send invitation" }));
-    });
-    expect(onInvite).toHaveBeenCalledWith({ email: "rae@example.test", role: "reporter", grants: [{ project_id: "proj_example_project", write: false, runner: false }] });
-    expect((access as HTMLSelectElement).value).toBe(success ? "none" : "read");
-    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe(success ? "" : "rae@example.test");
-    expect((screen.getByLabelText("Role") as HTMLSelectElement).value).toBe(success ? "member" : "reporter");
-    if (success) expect(screen.getByRole("status").textContent).toContain("Invitation sent to rae@example.test.");
-    else expect(screen.queryByRole("status")).toBeNull();
+    const access = screen.getByRole("group", { name: "Access to example-project for invitation" });
+    expect(within(access).getByRole("button", { name: "None" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(access).getByRole("button", { name: "Read" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send 2 invitations" })); });
+    expect(onInvite).toHaveBeenCalledTimes(2);
+    for (const email of ["rae@example.test", "sam@example.test"]) expect(onInvite).toHaveBeenCalledWith({ email, role: "reporter", grants: [{ project_id: PROJECTS[0]!.id, write: false, runner: false }] });
+    expect(screen.queryByRole("button", { name: "Remove sam@example.test" })).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(success ? "2 invitations sent." : "1 invitation sent. 1 could not be sent.");
+    if (!success) {
+      expect(screen.getByRole("button", { name: "Remove rae@example.test" })).toBeTruthy();
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send 1 invitation" })); });
+      expect(onInvite).toHaveBeenCalledTimes(3);
+      expect(onInvite.mock.calls[2]![0].email).toBe("rae@example.test");
+    }
   });
+
+  it("accepts pasted addresses as tags and refuses invalid addresses before sending", async () => {
+    const onInvite = vi.fn().mockResolvedValue(true);
+    render(<InviteForm onInvite={onInvite} projects={PROJECTS} roles={membersFixture.roles} />);
+    const input = screen.getByLabelText("Email addresses");
+    fireEvent.paste(input, { clipboardData: { getData: () => "one@example.test, two@example.test\ninvalid" } });
+    expect(screen.getByRole("button", { name: "Remove one@example.test" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send 3 invitations" }));
+    expect(onInvite).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("valid email address");
+    fireEvent.click(screen.getByRole("button", { name: "Remove invalid" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Send 2 invitations" })); });
+    expect(onInvite).toHaveBeenCalledTimes(2);
+  });
+
 });
 
 describe("the plan's allowances", () => {

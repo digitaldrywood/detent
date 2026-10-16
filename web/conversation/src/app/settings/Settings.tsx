@@ -59,9 +59,9 @@ import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsL
 import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
 import { SlackSettings } from "./SlackSettings.tsx";
-import { PersonalAPIKeysSettings } from "./PersonalAPIKeysSettings.tsx";
+import { WhatsNewSettings } from "./WhatsNewSettings.tsx";
 import { MCPSettings } from "./MCPSettings.tsx";
-import { signInPath } from "../../runtime/basePath.ts";
+import { basePath, signInPath } from "../../runtime/basePath.ts";
 
 /** The allowance label the plan report's keys become. */
 export function allowanceLabel(name: string): string {
@@ -828,12 +828,17 @@ export function SettingsRoute({
   );
   // A section the actor cannot read is not on the list, so asking for it by
   // path lands on the default rather than on an empty column.
-  const activeId = items.some((item) => item.id === section && item.disabled !== true)
-    ? section
+  const requestedSection = section === "api-keys" && basePath().startsWith("/organizations/") ? "mcp" : section;
+  React.useEffect(() => {
+    if (requestedSection !== section) onNavigate?.("/settings/mcp");
+  }, [onNavigate, requestedSection, section]);
+  const activeId = items.some((item) => item.id === requestedSection && item.disabled !== true)
+    ? requestedSection
     : DEFAULT_SECTION;
+  const activeLabel = items.find((item) => item.id === activeId)?.label ?? SETTINGS_SECTION_LABELS[activeId];
   const projectName = bootstrap?.projects.find((candidate) => candidate.id === project)?.name;
   usePageTitle(
-    activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : SETTINGS_SECTION_LABELS[activeId],
+    activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : activeLabel,
     projectName,
   );
 
@@ -852,7 +857,7 @@ export function SettingsRoute({
             </>
           ) : null}
           <WorkspaceBreadcrumbItem current className="min-w-10">
-            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : SETTINGS_SECTION_LABELS[activeId]}</span>
+            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : activeLabel}</span>
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
@@ -886,8 +891,6 @@ function SettingsBody({
       return <RunnersSettings />;
     case "integrations":
       return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
-    case "api-keys":
-      return <PersonalAPIKeysSettings />;
     case "mcp":
       return <MCPSettings />;
     case "plan":
@@ -896,6 +899,8 @@ function SettingsBody({
       return <BillingSettings />;
     case "keybindings":
       return <KeybindingsSettings />;
+    case "whats-new":
+      return <WhatsNewSettings />;
     case "about":
       return <AboutSettings />;
     case "general":
@@ -904,5 +909,5 @@ function SettingsBody({
   }
 }
 
-export { isSettingsSectionId, SETTINGS_SECTION_LABELS, settingsNavItems };
+export { isSettingsSectionId, SETTINGS_SECTION_LABELS, settingsNavItems, WhatsNewSettings };
 export type { SettingsSectionId };

@@ -96,6 +96,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		currentBase        bool
 		wantRecovered      bool
 		wantLandingWait    bool
+		codingLane         bool
 		priorOutage        string
 		baseMoves          int
 	}{
@@ -123,6 +124,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Human Review", wantComment: "was not landed", wantMoves: 1},
 		{name: "red barrier retains Merging without Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "waiting for rolling barrier repair"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "direct capacity wait retains source and automatic merge retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "Project landing capacity is full"}, hubState: "In Progress", states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, noHumanReview: true, wantLandingWait: true, codingLane: true},
 		{name: "pending configured CI retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Refusal: "waiting for Full CI", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending", Triggered: true}}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "target advance after a green gate stays in landing", baseMoves: 1, mergeStatus: http.StatusOK, currentBase: true, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
@@ -157,6 +159,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := completionTransitionIssue("Merging", "")
+			if test.codingLane {
+				issue.State = "In Progress"
+			}
 			if test.optout {
 				issue.Labels = append(issue.Labels, "requires-human-review")
 			}
@@ -306,7 +311,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
 			if test.wantLandingWait {
-				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 1 || retry.Issue.State != "Merging" || !retry.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
+				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 1 || retry.Issue.State != issue.State || !retry.DueAt.Equal(now.Add(cfg.ContinuationRetryDelay)) || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || len(state.InstantFailures) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
 					t.Fatalf("projection wait lost item-local continuation: retry %#v, state %#v", retry, state)
 				}
 				peer := completionTransitionIssue("Merging", "")
@@ -833,6 +838,6 @@ type nativeLandingReasonConnector struct {
 }
 
 func (c *nativeLandingReasonConnector) UpdateIssueState(ctx context.Context, id, state string) error {
-	c.reasonDetail = connector.LaneTransitionReason(ctx)
+	c.reasonDetail = connector.LaneTransitionReasonDetail(ctx)
 	return c.nativeWorkflowConnector.UpdateIssueState(ctx, id, state)
 }

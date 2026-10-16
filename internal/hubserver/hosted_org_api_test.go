@@ -555,6 +555,14 @@ func TestListHostedMembersIsOrdered(t *testing.T) {
 	for attempt := range 16 {
 		var members hostedMembersResponse
 		browserHostedDecode(t, f.api(t, "owner", http.MethodGet, browserHostedOrganizationBase+"/members", nil, http.StatusOK), &members)
+		if len(members.Roles) != 5 {
+			t.Fatalf("roles = %#v", members.Roles)
+		}
+		for _, role := range members.Roles {
+			if !auth.ValidOrganizationRole(role.Slug) || role.Name == "" || role.Description == "" {
+				t.Fatalf("invalid role catalog entry: %#v", role)
+			}
+		}
 		if len(members.Members) != 2 {
 			t.Fatalf("members = %#v", members.Members)
 		}
@@ -709,7 +717,7 @@ func TestHostedRunnerRoutingAuthority(t *testing.T) {
 				if test.runningGranted {
 					runningProject = f.project
 				}
-				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+runningProject+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-running"}, Title: "Running work", State: "Todo"}, http.StatusOK), &issue)
+				browserHostedDecode(t, f.api(t, "owner", http.MethodPost, browserHostedOrganizationBase+"/projects/"+runningProject+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "private-running"}, Title: "Running work", State: "Todo"}, http.StatusOK), &issue)
 				now := f.service.config.now()
 				stamp := formatHubTime(now)
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'routing-lease',id,?,'routing-session',?,?,?,?,? FROM issues WHERE native_id=?`, binding.MachineID, formatHubTime(now.Add(time.Hour)), stamp, stamp, stamp, stamp, issue.WorkItemID); err != nil {

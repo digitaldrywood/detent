@@ -15,16 +15,14 @@ const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
-test.describe.configure({ mode: "serial" });
-
 let hub;
 
-test.beforeAll(async () => {
+test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("account", { env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" } });
 });
 
-test.afterAll(async () => {
+test.afterEach(async () => {
   await hub?.stop();
   hub = undefined;
 });
@@ -145,20 +143,21 @@ test("the organization page lists the members and gates the controls by role", a
   await expectOneHeadingOne(page, "Settings");
   const table = page.getByRole("table");
   await expect(table).toBeVisible();
-  const identities = table.locator("tbody tr td:first-child > div:first-child");
+  const identities = table.getByRole("row").filter({ has: page.getByRole("button", { name: /^Actions for/ }) });
   await expect(identities).toHaveCount(3);
   for (const identity of await identities.all()) {
     await expect(identity).not.toHaveText(/^\s*$/);
   }
   const unsigned = table.getByRole("row").filter({ hasText: "unsigned@example.test" });
   await expect(unsigned).toContainText("Unsigned Member");
-  await expect(unsigned).toContainText("Hasn't signed in yet");
-  await expect(unsigned.getByRole("button", { name: "Remove" })).toBeEnabled();
+  await expect(unsigned).toContainText("Hasn't signed in");
+  await expect(unsigned.getByRole("button", { name: "Actions for unsigned@example.test" })).toBeEnabled();
   // An owner gets the mutating controls.
-  await expect(page.getByRole("button", { name: "Remove" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Actions for/ }).first()).toBeVisible();
   await expectNoSeriousAxeViolations(page, "/organization as owner");
   expect(errors, "console errors on /organization").toEqual([]);
-  await unsigned.getByRole("button", { name: "Remove" }).click();
+  await unsigned.getByRole("button", { name: "Actions for unsigned@example.test" }).click();
+  await page.getByRole("menuitem", { name: "Remove from organization" }).click();
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   await expect(unsigned).toHaveCount(0);
 
@@ -166,34 +165,34 @@ test("the organization page lists the members and gates the controls by role", a
   await openAs(page, "viewer", "/settings/organization/members");
   await expect(page.getByRole("table")).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Send invitation" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Invite member", exact: true })).toHaveCount(0);
   await expectNoSeriousAxeViolations(page, "/organization as viewer");
 });
 
 test("sending invitations resets the form and shows the newest invitation with its enforced expiry", async ({ page }) => {
   await openAs(page, "owner", "/settings/organization/members");
-  const invitations = page.locator("section").filter({ has: page.getByRole("heading", { name: "Invitations", exact: true }) });
+  const invitations = page.getByRole("region", { name: "Pending invitations" });
   for (const email of ["older-invite@example.test", "newest-invite@example.test"]) {
-    await page.getByLabel("Email", { exact: true }).fill(email);
-    await page.getByLabel("Role", { exact: true }).selectOption("viewer");
+    await page.getByRole("button", { name: "Invite member", exact: true }).first().click();
+    await page.getByLabel("Email addresses", { exact: true }).fill(email);
+    await page.getByRole("combobox", { name: "Role", exact: true }).click();
+    await page.getByRole("option", { name: "Viewer", exact: true }).click();
     const responsePromise = page.waitForResponse((response) =>
       response.request().method() === "POST" && response.url().endsWith("/members/invitations"),
     );
-    await page.getByRole("button", { name: "Send invitation", exact: true }).click();
+    await page.getByRole("button", { name: "Send 1 invitation", exact: true }).click();
     const response = await responsePromise;
     expect(response.status()).toBe(201);
     const created = await response.json();
     expect(created.email).toBe(email);
     expect(created.expires_at).toBeTruthy();
-    await expect(page.getByLabel("Email", { exact: true })).toHaveValue("");
-    await expect(page.getByLabel("Role", { exact: true })).toHaveValue("member");
-    await expect(page.getByRole("status").filter({ hasText: `Invitation sent to ${email}.` })).toBeVisible();
-    const row = invitations.locator('[data-slot="settings-row"]').first();
+    await expect(page.getByRole("dialog", { name: "Invite members", exact: true })).toHaveCount(0);
+    const row = invitations.getByRole("group", { name: /^Invitation to/ }).first();
     await expect(row).toBeVisible();
     await expect(row).toContainText(email);
-    await expect(row).toContainText(`Invited as viewer. Expires ${created.expires_at}.`);
+    await expect(row).toContainText(`Invited as Viewer. Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
     await page.reload();
-    await expect(invitations.locator('[data-slot="settings-row"]').first()).toContainText(`Expires ${created.expires_at}.`);
+    await expect(invitations.getByRole("group", { name: /^Invitation to/ }).first()).toContainText(`Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
   }
 });
 
@@ -209,14 +208,15 @@ test("removing the last owner is refused by the hub and said in the page", async
   // never coming.
   const ownerRow = page.getByRole("row").filter({ hasText: hub.fixture.owner_email });
   await expect(ownerRow).toHaveCount(1);
-  const remove = ownerRow.getByRole("button", { name: "Remove" }).first();
+  const remove = ownerRow.getByRole("button", { name: `Actions for ${hub.fixture.owner_email}` });
   await expect(remove).toBeVisible();
   await remove.click();
+  await page.getByRole("menuitem", { name: "Remove from organization" }).click();
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   // The alert is the hub's refusal said in the page, which arrives after a
   // round trip; under a loaded machine that has taken longer than the default
   // expectation window, so this one waits as long as a navigation.
-  await expect(page.getByRole("alert")).toContainText("owner", { timeout: 30_000 });
+  await expect(page.getByRole("alertdialog").getByRole("alert")).toContainText("owner", { timeout: 30_000 });
 });
 
 test("the settings navigation is the sidebar, not a second column", async ({ page }) => {
@@ -297,13 +297,11 @@ test("project settings show the integration and refuse to edit it for a viewer",
 test("pending invitations can be resent and revoked from their row", async ({ page }) => {
   const email = "withdraw@example.test";
   await openAs(page, "owner", "/settings/organization/members");
-  await page.getByLabel("Email", { exact: true }).fill(email);
-  await page.getByRole("button", { name: "Send invitation", exact: true }).click();
-  const row = page.locator('[data-slot="settings-row"]').filter({
-    // The confirmation dialog makes its background inert; the pending row
-    // must remain present through a failed revoke.
-    has: page.getByRole("heading", { name: email, exact: true, includeHidden: true }),
-  });
+  await page.getByRole("button", { name: "Invite member", exact: true }).first().click();
+  await page.getByLabel("Email addresses", { exact: true }).fill(email);
+  await page.getByLabel("Email addresses", { exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Send 1 invitation", exact: true }).click();
+  const row = page.getByRole("group", { name: `Invitation to ${email}`, includeHidden: true });
   await expect(row).toBeVisible();
   const providerInvitations = async () => {
     const response = await page.request.get(`${hub.fixture.url}/__preview/invitations`);
@@ -316,7 +314,7 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
   await expect(row.getByRole("status")).toHaveText("Invitation resent.");
   expect(await providerInvitations()).toHaveLength(1);
   await row.getByRole("button", { name: "Revoke", exact: true }).click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("alertdialog");
   await expect(dialog).toContainText(`Revoke invitation to ${email}?`);
   await dialog.getByRole("button", { name: "Keep invitation", exact: true }).click();
   await expect(row).toBeVisible();
@@ -444,6 +442,16 @@ for (const state of [
       await page.getByRole("switch", { name: "Pull requests", exact: true }).click();
       await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
       await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
+      if (state.width === 390) {
+        for (const name of ["Complexity levels", "Stages"]) {
+          const table = page.getByRole("table", { name, exact: true });
+          await table.focus();
+          await expect(table).toBeFocused();
+          const left = await table.evaluate((element) => element.parentElement.scrollLeft);
+          await page.keyboard.press("ArrowRight");
+          await expect.poll(() => table.evaluate((element) => element.parentElement.scrollLeft)).toBeGreaterThan(left);
+        }
+      }
     } else {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);
       await expect(install).toHaveCount(0);
@@ -556,6 +564,9 @@ test("Providers & runners enrolls a host through setup, a masked command, and li
   const runner = { ...fleet.runners[0], id: "rnr_enrolled", display_name: "Build host", hostname: "build-host.local" };
   await page.route("**/api/v2/organizations/*/fleet", (route) => route.fulfill({
     json: { ...fleet, runners: connected ? [runner] : [] },
+  }));
+  await page.route(`**/api/v2/organizations/*/runners/${runner.id}/capacity`, (route) => route.fulfill({
+    json: {},
   }));
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
@@ -772,3 +783,79 @@ test("the usage page draws the window, the tabs and the breakdown", async ({ pag
   await expectOneHeadingOne(page, "Usage");
   await expectNoSeriousAxeViolations(page, "/usage as viewer");
 });
+
+for (const theme of ["dark", "light"]) {
+  for (const width of [1280, 390]) {
+    test(`API keys & MCP page fits ${width}px in ${theme} mode`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 1000 });
+      await page.emulateMedia({ colorScheme: theme });
+      const organization = "org_browser_preview";
+      const mount = `/organizations/${organization}`;
+      const reach = { organization_id: organization, name: "Browser organization", role: "owner", status: "allowed", projects: [{ id: hub.fixture.project_id, name: "Browser collaboration", can_write: true }], last_used_at: "2026-10-01T12:00:00Z" };
+      const personal = { id: "key_personal", name: "My cross-org agent", kind: "personal", owner: "browser_owner", owner_email: "owner@example.test", permission: "write", access_context: "global", organizations: [], created_at: "2026-10-01T12:00:00Z", effective_reach: [reach], last_used_at: reach.last_used_at };
+      await page.route(`**${mount}/**`, async (route) => {
+        const upstream = new URL(route.request().url());
+        upstream.pathname = upstream.pathname.slice(mount.length);
+        if (upstream.pathname !== "/app/bootstrap" && !route.request().isNavigationRequest()) {
+          await route.continue({ url: upstream.toString() });
+          return;
+        }
+        const response = await route.fetch({ url: upstream.toString() });
+        if (upstream.pathname === "/app/bootstrap") {
+          const bootstrap = await response.json();
+          await route.fulfill({ response, json: { ...bootstrap, base_path: mount } });
+        } else if (route.request().isNavigationRequest()) {
+          const body = (await response.text()).replace('name="detent-base-path" content=""', `name="detent-base-path" content="${mount}"`);
+          await route.fulfill({ response, body });
+        } else {
+          await route.fulfill({ response });
+        }
+      });
+      await page.route("**/api/cloud/**", async (route) => {
+        const endpoint = new URL(route.request().url()).pathname;
+        const json = endpoint.endsWith("key-context") ? { organizations: [reach, { ...reach, organization_id: "org_other", name: "Other organization", projects: [{ id: "prj_other", name: "Other project", can_write: false }] }], mcp_endpoint: "https://cloud.example.test/mcp" }
+          : endpoint.endsWith("key-policy") ? { personal_keys: "approval" }
+          : endpoint.endsWith("service-keys") ? { keys: [{ ...personal, id: "key_service", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: organization, project_access: "all", project_ids: [] }], effective_reach: undefined }] }
+          : endpoint.endsWith("external-keys") ? { keys: [{ ...personal, effective_reach: [{ ...reach, status: "pending" }] }] }
+          : endpoint.endsWith("/organizations") ? { email: "owner@example.test", csrf: "fixture-csrf", organizations: [{ id: organization, name: "Browser organization", url: mount }], pending: [], can_create: true }
+          : { keys: [personal] };
+        await route.fulfill({ json });
+      });
+      await page.goto(hub.fixture.accounts.owner);
+      await page.goto(new URL(`${mount}/settings/api-keys`, hub.fixture.url).toString());
+      await expect(page.getByRole("heading", { name: "API keys & MCP", exact: true })).toBeVisible();
+      await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
+      await expect(page).toHaveURL(new RegExp(`${mount}/settings/mcp$`));
+      await expect(page.getByRole("heading", { name: "Your personal keys", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Create key", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Copy MCP setup prompt", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("textbox", { name: "MCP endpoint value" })).toHaveValue("https://cloud.example.test/mcp");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `api-keys-mcp-${theme}-${width}.png`) });
+      await page.getByRole("button", { name: "Create key", exact: true }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByRole("radio", { name: "You", exact: true })).toBeChecked();
+      await dialog.getByRole("radio", { name: "You", exact: true }).focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(dialog.getByRole("radio", { name: "The organization", exact: true })).toBeChecked();
+      await page.keyboard.press("Tab");
+      await expect(dialog.getByLabel("Name", { exact: true })).toBeFocused();
+      await dialog.getByLabel("Reach", { exact: true }).selectOption("project");
+      await expect(dialog.getByLabel("Project in Browser organization")).toBeVisible();
+      expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport();
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `create-key-${theme}-${width}.png`) });
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("button", { name: "Create key", exact: true })).toBeFocused();
+      await page.goto(new URL(`${mount}/settings/mcp`, hub.fixture.url).toString());
+      await expect(page.getByRole("heading", { name: "Organization service keys", exact: true })).toBeVisible();
+      await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
+      await expect(page.getByRole("heading", { name: "Member keys", exact: true })).toBeVisible();
+      await expect(page.getByLabel("Personal keys", { exact: true })).toHaveValue("approval");
+      await expect(page.getByRole("button", { name: "Approve My cross-org agent", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Block My cross-org agent for this org", exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `org-keys-${theme}-${width}.png`) });
+    });
+  }
+}

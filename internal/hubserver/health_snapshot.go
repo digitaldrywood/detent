@@ -59,6 +59,23 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 				return snapshot, err
 			}
 		}
+		for item := range p.CandidateIDs {
+			issue, _, err := readNativeIssue(ctx, q, scope, item)
+			if err != nil {
+				return snapshot, err
+			}
+			evaluation, err := evaluateNativeIssueContract(ctx, q, scope, issue)
+			if err != nil {
+				var failure *nativeError
+				if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
+					continue
+				}
+				return snapshot, err
+			}
+			if evaluation.ReasonCode == "issue_contract_unsatisfied" {
+				snapshot.Waits = append(snapshot.Waits, healthWait{Item: item, Project: p.ID, Since: issue.UpdatedAt, Active: true, Reason: evaluation.Reason})
+			}
+		}
 		fallbackReasons := []string{}
 		for _, r := range runners {
 			if !slices.Contains(r.Projects, p.ID) {

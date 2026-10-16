@@ -24,7 +24,14 @@ func (s *Service) clientBuilt() bool {
 	return err == nil
 }
 
-func (s *Service) organizationHome(id string) string {
+func (s *Service) organizationHome(organization Organization) string {
+	if organization.Slug != "" && s.clientBuilt() {
+		return "/" + organization.Slug + "/work"
+	}
+	return s.legacyOrganizationHome(organization.ID)
+}
+
+func (s *Service) legacyOrganizationHome(id string) string {
 	if s.clientBuilt() {
 		return "/organizations/" + id + "/work"
 	}

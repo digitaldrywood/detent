@@ -159,6 +159,7 @@ func newCoordinatorFixture(t *testing.T, name string) *coordinatorFixture {
 	if service.conversations == nil {
 		t.Fatal("conversation service is not enabled")
 	}
+	seedNativeFixturePolicy(t, service, string(organization)+"/"+string(project.ID))
 	return &coordinatorFixture{
 		nativeFixture: nativeFixture{service: service, project: project, base: "/api/v2/organizations/" + string(organization) + "/projects/" + string(project.ID), token: token.Token},
 		backend:       backend,
@@ -1738,7 +1739,7 @@ func TestConversationCoordinatorLinkSettlesTurn(t *testing.T) {
 			f.say(t, &record, "hand this off")
 			f.backend.waitStarted(t)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
-				"key": "link-1", "share_history": true, "issue": map[string]any{"title": "Handed off", "description": "From the chat"},
+				"key": "link-1", "share_history": true, "issue": map[string]any{"title": "Handed off", "description": "From the chat" + issueContractTestSections},
 			})
 			close(release)
 			requireNativeStatus(t, response, test.wantStatus)

@@ -6,7 +6,8 @@ import { RunnerProblems } from "../../src/app/fleet/RunnerProblems.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
 import { spriteBootstrapPin } from "../../src/app/fleet/EnrollRunner.tsx";
 import type { FleetResponse, RunnerRouting } from "../../src/contracts/account.ts";
-import { decodeFleet } from "../../src/contracts/account.ts";
+import { decodeFleet, type SuggestedLimit } from "../../src/contracts/account.ts";
+import { useRunnerSuggestions } from "../../src/app/fleet/runnerSuggestions.ts";
 import { AccountError, makeAccountApi } from "../../src/app/account/api.ts";
 import { ClientContext } from "../../src/app/client.ts";
 import { resetRunnerNamesForTests, runnerDisplay, useRunnerNames } from "../../src/app/work/lib/runnerNames.ts";
@@ -47,6 +48,54 @@ describe("Sprite bootstrap pin", () => {
 });
 
 describe("runner rows", () => {
+  it.each([
+    ["subscription", "Subscription"], ["api_key", "API key"], ["unknown", "Billing unknown"], [undefined, "Billing unknown"],
+  ] as const)("shows backend billing in row and details: %s", (billing, label) => {
+    const capacity = { ...RUNNER.provider_capacity[0]!, billing, usage_windows: [{ kind: "weekly", percent_used: 95, observed_at: new Date(NOW - 30_000).toISOString() }] };
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    expect(within(screen.getByTestId("host-card")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
+    if (billing === "api_key") expect(screen.queryByText(/95% used|At risk/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
+    expect(within(screen.getByRole("dialog")).getByText(new RegExp(`${capacity.backend}.*${label}`))).toBeTruthy();
+  });
+
+  it.each([
+    ["at risk", 85, 30_000, "At risk"],
+    ["threshold", 80, 30_000, "At risk"],
+    ["below threshold", 79.9, 30_000, null],
+    ["weekly", 40, 30_000, null],
+    ["zero", 0, 30_000, null],
+    ["stale", 85, 120_000, "Stale"],
+    ["future", 85, -1_000, "Stale"],
+    ["unknown", undefined, undefined, "Unknown"],
+  ])("shows subscription usage in the runner row and details: %s", (_name, percent, age, status) => {
+    const window = { kind: "weekly", percent_used: percent, reset_at: new Date(NOW + 3_600_000).toISOString(), observed_at: age === undefined ? undefined : new Date(NOW - age).toISOString() };
+    const capacity = { ...RUNNER.provider_capacity[0]!, billing: "subscription" as const, usage_windows: [window] };
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    const row = within(screen.getByRole("list", { name: `${capacity.backend} subscription usage` }));
+    expect(row.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();
+    expect(row.getByText(/Resets/)).toBeTruthy();
+    expect(row.getByText(age === undefined ? "Observation unknown" : /Observed/)).toBeTruthy();
+    if (status) expect(row.getByText(status)).toBeTruthy();
+    else expect(row.queryByText("At risk")).toBeNull();
+    expect(row.queryByText("Healthy")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: `Manage ${RUNNER.display_name}` }));
+    const detail = within(screen.getByRole("dialog"));
+    expect(detail.getByRole("list", { name: `${capacity.backend} subscription usage` })).toBeTruthy();
+    if (status) expect(detail.getByText(status)).toBeTruthy();
+  });
+
+  it("preserves decoded unknown usage and old-runner presentation", () => {
+    const capacity = { ...RUNNER.provider_capacity[0]!, usage_windows: [{ kind: "five_hour" }] };
+    const decoded = decodeFleet({ ...FLEET, runners: [{ ...RUNNER, provider_capacity: [capacity] }] });
+    expect(decoded.runners[0]!.provider_capacity[0]!.usage_windows).toEqual([{ kind: "five_hour" }]);
+    const { rerender } = render(<RunnersSectionView fleet={decoded} now={NOW} />);
+    expect(screen.getByText("Reset unknown")).toBeTruthy();
+    expect(screen.getByText("Observation unknown")).toBeTruthy();
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} />);
+    expect(screen.queryByText(/Usage unknown|Reset unknown|Observation unknown|At risk|Stale/)).toBeNull();
+  });
+
   it.each([false, true])("shows policy problems independently of update warnings (%s)", (updateWarning) => {
     const problem = {
       code: "policy_mismatch", project_id: "prj_known",
@@ -158,6 +207,51 @@ describe("runner rows", () => {
     await act(async () => {});
     expect(other.result.current.size).toBe(0);
     expect(runnerDisplay(other.result.current, id)).toBe(id);
+  });
+
+  it.each([
+    ["lower", 4, "Suggest 4 ↓"],
+    ["raise", 7, "Room for 7 ↑"],
+    ["insufficient_evidence", undefined, "Gathering data"],
+    ["hold", 6, null],
+    ["shrink", 5, null],
+  ] as const)("labels a %s suggestion on the runner row", (direction, limit, label) => {
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} suggestions={{ [RUNNER.id]: { ...(limit === undefined ? {} : { limit }), current: 6, direction: direction as SuggestedLimit["direction"], hours_covered: 48, saturated_hours: 0, reasons: [] } }} />);
+    const chip = within(screen.getByTestId("host-card")).queryByTestId("suggested-limit");
+    expect(chip?.textContent ?? null).toBe(label);
+  });
+
+  it("reads the suggestion and host history through the existing runner and fleet routes", async () => {
+    const fetch = vi.fn(async (_input: string, _init?: RequestInit) => new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } }));
+    const api = makeAccountApi({ origin: "https://hub.test", apiBase: "/api/v2/organizations/org_test", csrfToken: "test", fetch });
+    await api.runnerHostHistory("runner/a", "2026-09-03T13:00:00Z", "2026-09-10T13:00:00Z");
+    expect(fetch.mock.calls[0]![0]).toBe("https://hub.test/api/v2/organizations/org_test/fleet?include=host_metrics&runner_id=runner%2Fa&from=2026-09-03T13%3A00%3A00Z&to=2026-09-10T13%3A00%3A00Z");
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ recommendation: { suggested_limit: { limit: 4, current: 6, direction: "lower", hours_covered: 30, saturated_hours: 5, reasons: [] } } }), { status: 200, headers: { "content-type": "application/json" } }));
+    expect((await api.runnerCapacity("runner/a")).recommendation?.suggested_limit?.limit).toBe(4);
+    expect(fetch.mock.calls[1]![0]).toBe("https://hub.test/api/v2/organizations/org_test/runners/runner%2Fa/capacity");
+    fetch.mockResolvedValueOnce(new Response(JSON.stringify({ recommendation: { suggested_limit: { limit: 4, current: 6, direction: "shrink", hours_covered: 30, saturated_hours: 5, reasons: [] } } }), { status: 200, headers: { "content-type": "application/json" } }));
+    await expect(api.runnerCapacity("runner/a")).rejects.toThrow();
+  });
+
+  it("reads capacity only for runner managers and again only for a runner whose revision changed", async () => {
+    const read = vi.fn(async (id: string) => ({ recommendation: { suggested_limit: { limit: 1, current: 2, direction: "lower" as const, hours_covered: 30, saturated_hours: 5, reasons: [id] } } }));
+    const first = [{ id: "a", revision: 1 }, { id: "b", revision: 1 }];
+    const viewer = renderHook(() => useRunnerSuggestions(read, first, false));
+    await act(async () => undefined);
+    expect(read).not.toHaveBeenCalled();
+    expect(viewer.result.current).toEqual({});
+    viewer.unmount();
+    let release!: () => void;
+    const { result, rerender } = renderHook(({ runners }) => useRunnerSuggestions(read, runners, true), { initialProps: { runners: first } });
+    await waitFor(() => expect(Object.keys(result.current).toSorted()).toEqual(["a", "b"]));
+    expect(read.mock.calls.map(([id]) => id)).toEqual(["a", "b"]);
+    read.mockImplementationOnce((id: string) => new Promise((resolve) => { release = () => resolve({ recommendation: { suggested_limit: { limit: 1, current: 2, direction: "lower", hours_covered: 31, saturated_hours: 5, reasons: [id] } } }); }));
+    rerender({ runners: [{ id: "a", revision: 1 }, { id: "b", revision: 2 }] });
+    await waitFor(() => expect(result.current.b).toBeUndefined());
+    expect(result.current.a?.hours_covered).toBe(30);
+    expect(read.mock.calls.map(([id]) => id)).toEqual(["a", "b", "b"]);
+    await act(async () => release());
+    await waitFor(() => expect(result.current.b?.hours_covered).toBe(31));
   });
 
   it("removes through the existing DELETE API and accepts its empty response", async () => {
@@ -342,6 +436,78 @@ describe("providers", () => {
 });
 
 describe("runner details", () => {
+  const LOWER = { limit: 4, current: 6, direction: "lower" as const, hours_covered: 91, saturated_hours: 19, reasons: ["CPU stayed at 90% or more for 2+ hours running in 11 of 91 busy hours."] };
+  const HOUR = {
+    hour: "2026-09-10T10:00:00Z", logical_cores: 16, memory_total_bytes: 128 * 2 ** 30, memory_available_min_bytes: 24 * 2 ** 30, memory_sample_count: 120,
+    swap_used_max_bytes: 0, pressure_warn_count: 3, pressure_critical_count: 0, cpu_sample_count: 120, cpu_busy_average_percent: 95, load1_max: 32, load_sample_count: 120,
+    disk_free_min_bytes: 50e9, disk_total_min_bytes: 2000 * 2 ** 30, disk_sample_count: 120,
+  };
+
+  it("fills only the draft from the suggestion until Save runner", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} suggestions={{ [RUNNER.id]: LOWER }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const box = within(screen.getByTestId("suggested-limit-box"));
+    expect(box.getByText("Suggested: 4 jobs at once")).toBeTruthy();
+    expect(box.getByText(LOWER.reasons[0]!)).toBeTruthy();
+    fireEvent.click(box.getByRole("button", { name: "Use 4" }));
+    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("4");
+    expect(box.queryByRole("button")).toBeNull();
+    expect(box.queryByText(/fills Jobs at once/)).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Save runner" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(RUNNER, { ...ROUTING, capacity_limit: 4 }));
+  });
+
+  it.each([["already applied", { ...LOWER, limit: 6 }, "Suggested: 6 jobs at once"], ["unknown direction", { ...LOWER, direction: "shrink" as SuggestedLimit["direction"] }, null]] as const)("offers no apply when the suggestion is %s", (_case, suggestion, heading) => {
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={vi.fn()} suggestions={{ [RUNNER.id]: suggestion }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    expect(screen.queryByTestId("suggested-limit-box")?.querySelector("p")?.textContent ?? null).toBe(heading);
+    expect(screen.queryByRole("button", { name: /^Use / })).toBeNull();
+  });
+
+  it("shows thin evidence without a number or an apply button", () => {
+    render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={vi.fn()} suggestions={{ [RUNNER.id]: { current: 6, direction: "insufficient_evidence", hours_covered: 9, saturated_hours: 0, reasons: [] } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const box = within(screen.getByTestId("suggested-limit-box"));
+    expect(box.getByText("Not enough data yet")).toBeTruthy();
+    expect(box.queryByRole("button")).toBeNull();
+  });
+
+  it("charts host load for the selected range and notes low disk", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const load = vi.fn().mockResolvedValue([HOUR, { ...HOUR, hour: "2026-09-10T11:00:00Z", cpu_busy_average_percent: 40, load1_max: 8, pressure_warn_count: 0, disk_free_min_bytes: 120e9 }]);
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} loadHostHistory={load} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    const section = within(await screen.findByTestId("host-load"));
+    await waitFor(() => expect(section.getByText("Hours ≥ 90% CPU")).toBeTruthy());
+    expect(section.getByText("95%")).toBeTruthy();
+    expect(section.getByText("2")).toBeTruthy();
+    expect(section.getByText("24 GB")).toBeTruthy();
+    expect(section.getByText(/Free disk fell to 50\.0 GB on Sep 10\./)).toBeTruthy();
+    const memory = within(section.getByRole("region", { name: "Memory" }));
+    const ticks = [...memory.getByRole("img", { name: "Free memory and swap by hour" }).querySelectorAll("text")].map((text) => text.textContent);
+    expect(ticks).not.toContain("128 GB");
+    expect(Math.max(...ticks.filter((text) => text?.endsWith(" GB")).map((text) => Number.parseInt(text!, 10)))).toBeLessThan(64);
+    fireEvent.keyDown(memory.getByRole("img", { name: "Free memory and swap by hour" }), { key: "ArrowRight" });
+    const readout = memory.getByRole("status");
+    expect(readout.textContent).toContain("Pressure warning");
+    expect(readout.textContent).not.toContain("128 GB");
+    expect(load).toHaveBeenCalledWith(RUNNER.id, "2026-09-03T13:00:00.000Z", "2026-09-10T13:00:00.000Z");
+    fireEvent.click(section.getByRole("button", { name: "24h" }));
+    await waitFor(() => expect(load).toHaveBeenLastCalledWith(RUNNER.id, "2026-09-09T13:00:00.000Z", "2026-09-10T13:00:00.000Z"));
+  });
+
+  it.each([403, 404])("hides host load without an error when the read returns %s", async (status) => {
+    const load = vi.fn().mockRejectedValue(new AccountError({ status, code: "not_found", message: "Not found" }));
+    render(<RunnersSectionView fleet={{ ...FLEET, runners: [RUNNER] }} now={NOW} loadHostHistory={load} />);
+    fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
+    await waitFor(() => expect(load).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByTestId("host-load")).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("round-trips allowed project IDs, including unreadable projects", async () => {
     const save = vi.fn().mockResolvedValue(undefined);
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [RUNNER] }} projects={PROJECTS} onSaveRouting={save} />);

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -131,7 +132,11 @@ func TestNativeIssueContract(t *testing.T) {
 			if test.machine {
 				body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "worker", Fingerprint: "endpoint"})
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Fix endpoint", Body: body, State: "Todo"})
+			state := "Todo"
+			if test.machine && test.body == "" {
+				state = "Blocked"
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "Fix endpoint", Body: body, State: state})
 			if test.refused {
 				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 				return
@@ -140,6 +145,15 @@ func TestNativeIssueContract(t *testing.T) {
 			var issue tracker.NativeIssue
 			issue = tracker.NativeIssue{}
 			decodeHubResponse(t, response, &issue)
+			if state == "Blocked" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Todo') WHERE native_id=?", f.project.ID, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET state='Todo' WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				issue.State = "Todo"
+			}
 			worker := f.worker(t, "contract-worker")
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "contract-machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -394,6 +408,7 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "report"}, Title: "Scheduled CI repair", Body: body, State: "Todo"}
 			var original tracker.NativeIssue
 			if test.duplicate {
+				request.State = "Blocked"
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &original)
@@ -401,10 +416,8 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(original.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "human"}, ExpectedRevision: original.Revision, Body: &humanBody})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &original)
-				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(original.WorkItemID)+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, ExpectedRevision: original.Revision, State: "Blocked", Reason: "user_requested"})
-				requireNativeStatus(t, response, http.StatusOK)
-				decodeHubResponse(t, response, &original)
 				request.IdempotencyKey = "next-occurrence"
+				request.State = "Todo"
 			}
 			f.service.config.ImportBackend = scheduledContractImporter(func(ctx context.Context, got GitHubImportRequest) (GitHubImportPage, error) {
 				if got.Stage != "scheduled" || got.Repository != "digitaldrywood/detent" || got.Scheduled == nil {
@@ -426,6 +439,10 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 				return GitHubImportPage{Scheduled: &evidence}, nil
 			})
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			if !test.confirmed && !test.duplicate {
+				requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+				return
+			}
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
@@ -437,12 +454,6 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			}
 			if (len(issue.IssueContract.ConfirmedSections) == 5) != test.confirmed {
 				t.Fatalf("confirmation=%+v body=%s", issue.IssueContract, issue.Body)
-			}
-			if !test.confirmed {
-				if issue.Body != body {
-					t.Fatal("unverified report was changed or lost")
-				}
-				return
 			}
 			if !strings.HasPrefix(issue.Body, criteria+"\n\n## Verified CI occurrence") || issue.IssueContract.RecordedAt.IsZero() {
 				t.Fatalf("missing approved contract: %s", issue.Body)
@@ -470,6 +481,182 @@ func TestNativeScheduledRepairContract(t *testing.T) {
 			claimable, _, err := nativeIssueContractClaimable(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, id)
 			if err != nil || claimable == test.noDispatch {
 				t.Fatalf("claimable=%t err=%v", claimable, err)
+			}
+		})
+	}
+}
+
+func TestNativeIssueContractWriteBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		operation   string
+		state       string
+		machine     bool
+		mcp         bool
+		imported    bool
+		exempt      bool
+		held        bool
+		noPolicy    bool
+		configError bool
+		allowed     bool
+	}{
+		{name: "human Todo", operation: "create", state: "Todo"},
+		{name: "machine Todo", operation: "create", state: "Todo", machine: true},
+		{name: "reuse incomplete Todo", operation: "reuse", state: "Todo", machine: true, allowed: true},
+		{name: "reuse without policy", operation: "reuse", state: "Todo", machine: true, noPolicy: true, allowed: true},
+		{name: "reuse config error", operation: "reuse", state: "Todo", machine: true, configError: true, allowed: true},
+		{name: "MCP Todo", operation: "create", state: "Todo", mcp: true},
+		{name: "MCP Backlog", operation: "create", state: "Backlog", mcp: true, allowed: true},
+		{name: "imported Todo", operation: "create", state: "Todo", imported: true},
+		{name: "exempt Todo", operation: "create", state: "Todo", exempt: true, allowed: true},
+		{name: "held Todo", operation: "create", state: "Todo", held: true, allowed: true},
+		{name: "human Backlog", operation: "create", state: "Backlog", allowed: true},
+		{name: "machine Backlog", operation: "create", state: "Backlog", machine: true, allowed: true},
+
+		{name: "move to Todo", operation: "move", state: "Todo"},
+		{name: "edit Todo", operation: "edit", state: "Todo"},
+		{name: "create without policy", operation: "create", state: "Todo", noPolicy: true},
+		{name: "move without policy", operation: "move", state: "Todo", noPolicy: true},
+		{name: "edit without policy", operation: "edit", state: "Todo", noPolicy: true},
+		{name: "create config error", operation: "create", state: "Todo", configError: true},
+		{name: "move config error", operation: "move", state: "Todo", configError: true},
+		{name: "edit config error", operation: "edit", state: "Todo", configError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			descriptor := hubTestPolicy()
+			states := nativeFixtureStates()
+			states = append(states, tracker.NativeState{Name: "Backlog", Transitions: []string{"Todo"}}, tracker.NativeState{Name: "Triage", Transitions: []string{"Todo"}})
+			descriptor.Workflow = &policy.Workflow{Source: "detent.yaml", States: states}
+			descriptor = descriptor.WithID()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			var original tracker.NativeIssue
+			if test.operation != "create" {
+				state := "Backlog"
+				body := "## Roadmap Summary\nRepair the failed build."
+				if test.operation == "edit" || test.operation == "reuse" {
+					state, body = "Todo", nativeContractTestBody
+				}
+				if test.operation == "reuse" {
+					body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "worker", Fingerprint: "missing-contract"})
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "original"}, Title: "Repair build", Body: body, State: state})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &original)
+			}
+			if test.noPolicy {
+				clearNativeFixturePolicy(t, f)
+			}
+			if test.configError {
+				descriptor.Configuration = &policy.Configuration{Behavior: json.RawMessage(`{"Unknown":true}`)}
+				descriptor = descriptor.WithID()
+				raw, err := json.Marshal(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE policy_revisions SET metadata_json=? WHERE scope=?", string(raw), string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			body := "## Roadmap Summary\nRepair the failed build."
+			if test.machine {
+				body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "worker", Fingerprint: "missing-contract"})
+			}
+			if test.held {
+				body += "\n<!-- detent:no-dispatch -->"
+			}
+			if test.operation == "reuse" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, original.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				original.Body = body
+			}
+			if test.mcp {
+				args := map[string]any{"project_id": f.project.ID, "request_id": "incomplete", "title": "Repair build", "description": body, "state": test.state}
+				call := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operatortool.FileIssue, "arguments": args, "_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}}}
+				response := performHubWorkCall(t, f.service, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/mcp", f.token, operatortool.FileIssue, call)
+				requireNativeStatus(t, response, http.StatusOK)
+				var reply struct {
+					Result struct {
+						IsError bool `json:"isError"`
+					} `json:"result"`
+				}
+				decodeHubResponse(t, response, &reply)
+				if test.allowed {
+					if reply.Result.IsError || !strings.Contains(response.Body.String(), "Backlog") {
+						t.Fatalf("Backlog filing=%s", response.Body)
+					}
+				} else {
+					if !reply.Result.IsError {
+						t.Fatalf("MCP accepted incomplete contract: %s", response.Body)
+					}
+					for _, section := range []string{"Acceptance criteria", "Must not break", "How we know it worked", "Backlog/Triage"} {
+						if !strings.Contains(response.Body.String(), section) {
+							t.Errorf("MCP refusal missing %q: %s", section, response.Body)
+						}
+					}
+				}
+				return
+			}
+			method, path := http.MethodPost, f.base+"/work-items"
+			create := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "incomplete"}, Title: "Repair build", Body: body, State: test.state}
+			if test.imported {
+				now := f.service.config.now()
+				create.Provenance = &tracker.Provenance{Provider: "github", ExternalID: "import-example", AuthorID: "example-author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
+			}
+			var request any = create
+			if test.operation == "move" {
+				path += "/" + string(original.WorkItemID) + "/workflow"
+				request = tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move"}, ExpectedRevision: original.Revision, State: test.state, Reason: "user_requested"}
+			}
+			if test.operation == "edit" {
+				method, path = http.MethodPatch, path+"/"+string(original.WorkItemID)
+				request = tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit"}, ExpectedRevision: original.Revision, Body: &body}
+			}
+			var response *httptest.ResponseRecorder
+			if test.exempt {
+				req := newHubAPIRequest(t, method, path, f.token, request)
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, req.WithContext(allowWorkspaceLabel(req.Context())))
+			} else {
+				response = performHubAPIRequest(t, f.service, method, path, f.token, request)
+			}
+			if test.allowed {
+				requireNativeStatus(t, response, http.StatusOK)
+				if test.operation == "reuse" {
+					var reused tracker.NativeIssue
+					decodeHubResponse(t, response, &reused)
+					if reused.WorkItemID != original.WorkItemID || reused.State != original.State || reused.Body != original.Body || !reused.PublicationReused {
+						t.Fatalf("occurrence changed legacy owner: %+v", reused)
+					}
+					var occurrence string
+					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT body FROM native_comments WHERE work_item_id=?", original.WorkItemID).Scan(&occurrence); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(occurrence, "Repair the failed build.") {
+						t.Fatalf("occurrence lost report evidence: %q", occurrence)
+					}
+				}
+				return
+			}
+			expected := http.StatusUnprocessableEntity
+			if test.configError {
+				expected = http.StatusConflict
+			}
+			requireNativeStatus(t, response, expected)
+			if !test.configError {
+				for _, text := range []string{"Acceptance criteria", "Must not break", "How we know it worked", "Backlog"} {
+					if !strings.Contains(response.Body.String(), text) {
+						t.Errorf("refusal missing %q: %s", text, response.Body)
+					}
+				}
+			}
+			if original.WorkItemID != "" {
+				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(original.WorkItemID))
+				if err != nil || issue.State != original.State || issue.Body != original.Body || issue.Revision != original.Revision {
+					t.Fatalf("refused mutation persisted: %+v, %v", issue, err)
+				}
 			}
 		})
 	}

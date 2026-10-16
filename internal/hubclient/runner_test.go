@@ -800,7 +800,7 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 			}
 			result := make(chan error, 1)
 			go func() {
-				_, err := scheduler.renewNativeClaim(ctx, tc.name, stale)
+				_, err := scheduler.renewNativeClaim(ctx, tc.name, stale, 0)
 				result <- err
 			}()
 			select {

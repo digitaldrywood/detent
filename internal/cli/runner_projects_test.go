@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -23,11 +24,14 @@ import (
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	schedulerpkg "github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	workspacepkg "github.com/digitaldrywood/detent/internal/workspace"
@@ -155,7 +159,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 				delete(hub.cloneURLs, "prj_later")
 				for range 2 {
 					p.lastRefresh = time.Time{}
-					if err := p.refresh(t.Context(), scheduler); err != nil {
+					if err := refreshRunnerProjects(t, p, scheduler); err != nil {
 						t.Fatal(err)
 					}
 					if cloneCalls != 0 || slices.ContainsFunc(applied.Projects, func(selected globalconfig.Project) bool { return selected.ID == "prj_later" }) {
@@ -166,7 +170,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 				hub.cloneURLs["prj_later"] = "https://github.com/acme/later.git"
 				p.lastRefresh = time.Time{}
 			}
-			if err := p.refresh(t.Context(), scheduler); err != nil {
+			if err := refreshRunnerProjects(t, p, scheduler); err != nil {
 				t.Fatal(err)
 			}
 			if p.checks["orders"].Setup != "passed" {
@@ -192,7 +196,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			}
 			for range 2 {
 				p.lastRefresh = time.Time{}
-				if err := p.refresh(t.Context(), scheduler); err != nil {
+				if err := refreshRunnerProjects(t, p, scheduler); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -427,7 +431,9 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 		kept                bool
 		revoked             bool
 		identityUnavailable bool
+		blockedCheckout     bool
 	}{
+		{name: "blocked checkout keeps the running project live", kept: true, blockedCheckout: true},
 		{name: "hub unavailable keeps the running project", status: http.StatusServiceUnavailable, kept: true},
 		{name: "identity unavailable keeps the runtime unapplied", kept: true, identityUnavailable: true},
 		{name: "project unauthorized drops the project", status: http.StatusUnauthorized},
@@ -440,6 +446,10 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				var identity runnerauth.Identity
 				var identityReads, projectReads, legacyReads atomic.Int32
 				var reloading atomic.Bool
+				var heartbeats atomic.Int32
+				var removeLater atomic.Bool
+				var checkoutReport atomic.Value
+				var checkoutProblems atomic.Value
 				descriptor := policy.Descriptor{
 					SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
 					Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
@@ -449,19 +459,24 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 					switch {
 					case strings.HasSuffix(r.URL.Path, "/capabilities"):
-						_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy"}})
+						_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProjectCheckoutCapability, tracker.NativeLocalChecksCapability}})
 					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
-						if reloading.Load() && (identityReads.Add(1) > 1 || test.identityUnavailable) {
+						if reloading.Load() && !test.blockedCheckout && (identityReads.Add(1) > 1 || test.identityUnavailable) {
 							w.WriteHeader(http.StatusServiceUnavailable)
 							return
 						}
 						response := identity
+						if test.blockedCheckout && reloading.Load() && !removeLater.Load() {
+							response.ProjectIDs = append(slices.Clone(identity.ProjectIDs), "prj_later")
+						}
 						if test.revoked && reloading.Load() {
 							response.ProjectIDs = nil
 						}
 						_ = json.NewEncoder(w).Encode(response)
+					case strings.HasSuffix(r.URL.Path, "/projects/prj_later"):
+						_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: "prj_later", OrganizationID: "org_example", Profile: "native", Repository: "example-org/later", CloneURL: "https://github.com/example-org/later.git"})
 					case strings.HasSuffix(r.URL.Path, "/projects/prj_orders"):
-						if !reloading.Load() {
+						if !reloading.Load() || test.blockedCheckout {
 							_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: "prj_orders", OrganizationID: "org_example", Profile: "native", Repository: "example-org/orders", States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}})
 							return
 						}
@@ -470,7 +485,30 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": http.StatusText(test.status)})
 					case strings.HasSuffix(r.URL.Path, "/projects/prj_orders/policy"):
 						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor})
-					case strings.HasSuffix(r.URL.Path, "/policy/observed"), strings.HasSuffix(r.URL.Path, "/machines/register"):
+					case test.blockedCheckout && strings.HasSuffix(r.URL.Path, "/heartbeat"):
+						var request struct {
+							LocalChecks runnerauth.LocalChecks `json:"local_checks"`
+							Problems    []runnerauth.Problem   `json:"problems"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+							t.Error(err)
+						}
+						if err := request.LocalChecks.Validate(); err != nil {
+							http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+							return
+						}
+						if err := runnerauth.ValidateReportedProblems(request.Problems); err != nil {
+							http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+							return
+						}
+						if strings.Contains(r.URL.Path, "/projects/prj_later/") {
+							checkoutReport.Store(request.LocalChecks)
+							checkoutProblems.Store(request.Problems)
+						}
+						heartbeats.Add(1)
+						_ = json.NewEncoder(w).Encode(runnerauth.RoutingSnapshot{RunnerID: identity.RunnerID, Revision: 1, Routing: runnerauth.Routing{DisplayName: "Example runner", State: "active", CapacityLimit: 2, ProjectIDs: identity.ProjectIDs, IsolationTier: "sandbox"}})
+					case strings.HasSuffix(r.URL.Path, "/policy/observed"), strings.HasSuffix(r.URL.Path, "/machines/register"), strings.HasSuffix(r.URL.Path, "/machines/"+string(identity.MachineID)+"/heartbeat"):
+						heartbeats.Add(1)
 						w.WriteHeader(http.StatusNoContent)
 					case strings.HasSuffix(r.URL.Path, "/claims"), strings.HasSuffix(r.URL.Path, "/leases/lease_example/renew"):
 						_ = json.NewEncoder(w).Encode(lease)
@@ -521,6 +559,10 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					t.Fatal("disk config is not machine-only")
 				}
 				files := createBootProjectFiles(t)
+				if test.blockedCheckout {
+					checkout(t, files.workdirPath)
+					runDoctorWorkflowSourceGit(t, files.workdirPath, "remote", "set-url", "origin", "https://github.com/example-org/orders.git")
+				}
 				running := globalconfig.Project{ID: "orders", Workflow: files.workflowPath, Workdir: files.workdirPath, Weight: 1}
 				current.Projects = []globalconfig.Project{running}
 				current.Client.NativeProjects = map[string]string{"orders": "prj_orders"}
@@ -544,6 +586,152 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					t.Fatal(err)
 				}
 				reloading.Store(true)
+				if test.blockedCheckout {
+					logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+					client, err = hubclient.New(hubclient.Config{URL: server.URL, IdentityFile: identityPath})
+					if err != nil {
+						t.Fatal(err)
+					}
+					p := &runnerProjects{client: client, cfg: current, setup: project.NewRunnerSetup("runner", nil, logger), logger: logger, checks: map[string]runnerauth.LocalChecks{"orders": {Checkout: "passed", Setup: "passed", Doctor: "passed", Provider: "passed"}}}
+					started := make(chan struct{})
+					cloneCtx, cancelClone := context.WithCancel(t.Context())
+					defer cancelClone()
+					p.checkout = func(ctx context.Context, _ globalconfig.Project, _ string) error {
+						close(started)
+						select {
+						case <-cloneCtx.Done():
+						case <-ctx.Done():
+						}
+						return newRunnerCheckoutError("https://github.com/example-org/later.git", errors.New("git transfer stopped"), context.DeadlineExceeded, "transfer stalled\n"+strings.Repeat("remote: transfer stalled\n", 100))
+					}
+					refreshDone := make(chan error, 1)
+					go func() { refreshDone <- p.refresh(t.Context(), scheduler) }()
+					select {
+					case <-started:
+					case <-time.After(5 * time.Second):
+						select {
+						case err := <-refreshDone:
+							t.Fatalf("checkout did not start: %v", err)
+						default:
+							t.Fatal("checkout did not start")
+						}
+					}
+					ticks := make(chan struct{}, 2)
+					orch, err := orchestrator.New(orchestrator.Config{
+						Project: schedulerpkg.ProjectCandidate{ID: "orders"}, PollInterval: 10 * time.Millisecond,
+					}, orchestrator.Dependencies{Connector: memory.New(memory.Config{}), Logger: logger,
+						Scheduling: runnerProjectTickScheduling{SchedulingSource: scheduler, projects: p, ticks: ticks},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					tickCtx, cancelTicks := context.WithCancel(t.Context())
+					tickDone := make(chan error, 1)
+					go func() { tickDone <- orch.Run(tickCtx) }()
+					defer func() { cancelClone(); cancelTicks(); <-tickDone }()
+					for range 2 {
+						select {
+						case <-ticks:
+						case <-time.After(2 * time.Second):
+							t.Fatal("blocked checkout stopped healthy project ticks")
+						}
+						if _, err := scheduler.RenewClaim(t.Context(), "wi_example", time.Now()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					select {
+					case err := <-refreshDone:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-time.After(2 * time.Second):
+						t.Fatal("blocked checkout stopped assignment refresh")
+					}
+					heartbeatScheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{
+						OrganizationID: "org_example", NativeProjects: map[string]tracker.ProjectID{"orders": "prj_orders"},
+						Machine:           hubclient.Machine{ID: identity.MachineID, Hostname: "host", Capacity: 2, Version: "test"},
+						HeartbeatInterval: time.Nanosecond, LeaseTTL: time.Hour, RefreshProjects: p.refresh,
+						Problems: p.reportedProblems,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for range 2 {
+						before := heartbeats.Load()
+						p.lastRefresh = time.Time{}
+						if err := heartbeatScheduler.Heartbeat(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+						if heartbeats.Load() <= before {
+							t.Fatal("machine heartbeat did not reach Hub during checkout")
+						}
+						if _, err := scheduler.RenewClaim(t.Context(), "wi_example", time.Now()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					manager := &globalReloadManager{}
+					reloader := &globalConfigReloader{current: current, manager: manager}
+					if periodic {
+						syncLatestGlobalConfig(t.Context(), path, reloader)
+					} else {
+						reloader.handle(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Path: path, Value: machine})
+					}
+					if len(manager.config.Projects) != 1 || manager.config.Projects[0].ID != "orders" {
+						t.Fatalf("reload admitted unprepared project or lost healthy project: %+v", manager.config.Projects)
+					}
+					p.mu.Lock()
+					run := p.preparing["prj_later"]
+					p.mu.Unlock()
+					if periodic {
+						removeLater.Store(true)
+						p.lastRefresh = time.Time{}
+						if err := heartbeatScheduler.Heartbeat(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						cancelClone()
+					}
+					select {
+					case <-run.done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("checkout did not stop after timeout or revocation")
+					}
+					if !periodic {
+						if !errors.Is(run.err, context.DeadlineExceeded) {
+							t.Fatalf("checkout lost timeout cause: %v", run.err)
+						}
+						p.lastRefresh = time.Time{}
+						if err := heartbeatScheduler.Heartbeat(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+						checks, ok := checkoutReport.Load().(runnerauth.LocalChecks)
+						if !ok || checks.Checkout != "failed" || !strings.Contains(checks.CheckoutMessage, "context deadline exceeded") || strings.Contains(checks.CheckoutFix, "gh auth") {
+							t.Fatalf("checkout report lost cause: %+v", checks)
+						}
+						problems, _ := checkoutProblems.Load().([]runnerauth.Problem)
+						if !slices.ContainsFunc(problems, func(problem runnerauth.Problem) bool {
+							return problem.ProjectID == "prj_later" && problem.Subject == "checkout" && strings.Contains(problem.ErrorOutput, "context deadline exceeded") && strings.Contains(problem.ErrorOutput, "transfer stalled\n")
+						}) {
+							t.Fatalf("checkout problem lost detailed cause: %+v", problems)
+						}
+						removeLater.Store(true)
+						p.lastRefresh = time.Time{}
+						if err := heartbeatScheduler.Heartbeat(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if _, ok := heartbeatScheduler.ConnectorForProject("prj_later"); ok {
+						t.Fatal("revoked failing project remained assigned")
+					}
+					if len(p.reportedProblems()) != 0 {
+						t.Fatal("revoked project retained checkout problems")
+					}
+					if _, err := scheduler.RenewClaim(t.Context(), "wi_example", time.Now()); err != nil {
+						t.Fatal(err)
+					}
+
+					return
+				}
 				manager := &globalReloadManager{}
 				reloader := &globalConfigReloader{current: current, manager: manager, applyRuntime: func(next globalconfig.Config) error {
 					if test.kept && (len(next.Projects) == 0 || next.Client.NativeProjects["orders"] != "prj_orders") {
@@ -663,4 +851,45 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			}
 		})
 	}
+}
+
+func refreshRunnerProjects(t *testing.T, p *runnerProjects, scheduler *hubclient.Scheduler) error {
+	t.Helper()
+	if err := p.refresh(t.Context(), scheduler); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	var pending []<-chan struct{}
+	for _, run := range p.preparing {
+		pending = append(pending, run.done)
+	}
+	p.mu.Unlock()
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-t.Context().Done():
+			return t.Context().Err()
+		}
+	}
+	p.mu.Lock()
+	p.lastRefresh = time.Time{}
+	p.mu.Unlock()
+	return p.refresh(t.Context(), scheduler)
+}
+
+type runnerProjectTickScheduling struct {
+	orchestrator.SchedulingSource
+	projects *runnerProjects
+	ticks    chan<- struct{}
+}
+
+func (s runnerProjectTickScheduling) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	if err := s.projects.prepare(ctx, request.ProjectID); err != nil {
+		return nil, err
+	}
+	select {
+	case s.ticks <- struct{}{}:
+	default:
+	}
+	return nil, nil
 }

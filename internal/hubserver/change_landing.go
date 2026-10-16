@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -226,6 +227,13 @@ func (s *Service) landChange(c echo.Context) error {
 		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
 			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
 		}
+		delivery, associated, err := readReleaseDelivery(ctx, tx, scope, string(change.WorkItemID))
+		if err != nil {
+			return nil, err
+		}
+		if associated && (delivery.ChangeID != change.ID || delivery.VersionID != version.ID || delivery.HeadSHA != version.HeadSHA || delivery.BaseRef != request.BaseRef) {
+			return nil, nativeInvalid("Landing must cover the associated release version and branch")
+		}
 		if landed := change.CurrentLanding(); landed != nil {
 			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
 				return change, nil
@@ -314,7 +322,7 @@ func (s *Service) landChange(c echo.Context) error {
 	})
 }
 
-func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, now time.Time) error {
+func routeStaleNativeLandingChanges(ctx context.Context, tx *sql.Tx, policyScope, actor, preservedPolicyID string, revoking bool, now time.Time) error {
 	organization, projectID, native := strings.Cut(policyScope, "/")
 	if !native || strings.HasPrefix(policyScope, "repository:") {
 		return nil
@@ -337,6 +345,9 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 	currentPolicy, err := readChangeSummaryPolicy(ctx, tx, scope)
 	if err != nil {
 		return err
+	}
+	if revoking {
+		currentPolicy.approval = policy.Approval{}
 	}
 	states := make([]connector.WorkflowState, len(project.States))
 	for i, lane := range project.States {
@@ -378,50 +389,59 @@ AND lower(trim(ws.detent_state)) = 'merging' ORDER BY i.id`, scope.organization,
 	return nil
 }
 
-func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, now time.Time) (ready, evaluated bool, err error) {
+func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nativeScope, id tracker.WorkItemID, machine tracker.MachineID, capacity int, now time.Time) (ready, evaluated bool, landingCapacity int, err error) {
 	if scope == nil {
-		return true, false, nil
+		return true, false, 0, nil
 	}
 	var item, state string
 	if err := query.QueryRowContext(ctx, "SELECT i.native_id, ws.detent_state FROM issues i JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.id = ?", id).Scan(&item, &state); err != nil {
-		return false, false, err
+		return false, false, 0, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
-		return true, false, nil
+		var pending bool
+		if err := query.QueryRowContext(ctx, `SELECT (`+nativePendingLandingClause+`) FROM issues i `+nativeLandingCapacityJoins+` WHERE i.id=?`, id).Scan(&pending); err != nil {
+			return false, false, 0, err
+		}
+		if !pending {
+			return true, false, 0, nil
+		}
 	}
 	change, found, err := readLatestNativeChangeRequest(ctx, query, *scope, item)
 	if err != nil || !found {
-		return false, true, err
+		return false, true, 0, err
 	}
 	if change.CurrentLanding() != nil || change.CurrentVersion == "" {
-		return false, true, nil
+		return false, true, 0, nil
 	}
 	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
 	if err != nil {
-		return false, true, err
+		return false, true, 0, err
 	}
-	if !nativeChangeLandingReady(state, &detail) {
-		return false, true, nil
+	if !nativeChangeLandingReady("Merging", &detail) {
+		return false, true, 0, nil
 	}
 	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
 	if err != nil {
-		return false, true, err
+		return false, true, 0, err
 	}
-	if version.External != nil || version.AttemptID == "" {
-		return true, true, nil
+	if version.External == nil && version.AttemptID != "" {
+		attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
+		if err != nil {
+			return false, true, 0, err
+		}
+		checkpoint := attempt.Checkpoint
+		if checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "unpushed" && checkpoint.HeadSHA == version.HeadSHA {
+			stored, err := nativeChangeSourceStored(ctx, query, version)
+			if err != nil {
+				return false, true, 0, err
+			}
+			if !stored && (attempt.MachineID != machine || attempt.RunnerID != "" && attempt.RunnerID != scope.credential.Runner.RunnerID) {
+				return false, true, 0, nil
+			}
+		}
 	}
-	attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
-	if err != nil {
-		return false, true, err
-	}
-	checkpoint := attempt.Checkpoint
-	if checkpoint == nil || checkpoint.Storage != "local_only" || checkpoint.WorktreeState != "unpushed" || checkpoint.HeadSHA != version.HeadSHA {
-		return true, true, nil
-	}
-	if stored, err := nativeChangeSourceStored(ctx, query, version); err != nil || stored {
-		return stored, true, err
-	}
-	return attempt.MachineID == machine && (attempt.RunnerID == "" || attempt.RunnerID == scope.credential.Runner.RunnerID), true, nil
+	ready, landingCapacity, err = nativeLandingClaimCapacity(ctx, query, id, capacity, now)
+	return ready, true, landingCapacity, err
 }
 
 func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {

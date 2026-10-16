@@ -50,6 +50,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
       enrollmentRequests(JSON.parse(String(init?.body)));
       return new Response(JSON.stringify({ id: "enrollment_build", token: "det_enroll_secret", expires_at: "2026-10-02T20:00:00Z" }), { status: 201 });
     }
+    if (String(input).endsWith("/capacity")) return new Response(JSON.stringify({ error: { code: "not_found", message: "Not found" } }), { status: 404 });
     fleetReads();
     if (fleetReads.mock.calls.length === 1 && initialFleetRead !== undefined) return initialFleetRead;
     return new Response(JSON.stringify({ current: version, runners, usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 });

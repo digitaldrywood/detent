@@ -67,6 +67,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			f := newHostedSecurityFixture(t, func(cfg *Config) {
 				cfg.Conversation = &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}
 			})
+			operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", "org_security/"+string(f.project))
 			operatorSQL(t, f, `UPDATE projects SET states_json=json_insert(states_json,'$[#]',json('{"name":"Human Review","terminal":false,"dispatchable":false,"transitions":["Todo","Done"]}')) WHERE id=?`, f.project)
 			now := formatHubTime(f.service.config.now())
 			operatorSQL(t, f, "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES (?,'Human Review','Human Review',?,?)", f.project, now, now)
@@ -116,6 +117,9 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			}
 			operatorSQL(t, f, "UPDATE projects SET checkout_repository=? WHERE id=?", repository, f.project)
 			scope := "org_security/" + string(f.project)
+			if test.name == "first approval" {
+				operatorSQL(t, f, "DELETE FROM project_policies WHERE scope=?", scope)
+			}
 			if test.name != "first approval" {
 				if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
 					t.Fatal(err)
@@ -148,7 +152,7 @@ func TestCoordinatorWorkflowTools(t *testing.T) {
 			if test.name == "repository workflow refusal" {
 				operatorSQL(t, f, "UPDATE projects SET workflow_source='detent.yaml',workflow_source_revision=? WHERE id=?", current.SourceRevision, f.project)
 			}
-			holdResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "held-issue", "title": "Keep this issue in review", "body": nativeContractTestBody, "state": "Human Review"})
+			holdResponse := f.request(t, owner, http.MethodPost, f.base+"/work-items", map[string]any{"idempotency_key": "held-issue", "title": "Keep this issue in review", "body": nativeContractTestBody + "\n<!-- detent:no-dispatch -->", "state": "Human Review"})
 			requireNativeStatus(t, holdResponse, http.StatusOK)
 			var held tracker.NativeIssue
 			decodeHubResponse(t, holdResponse, &held)
@@ -534,7 +538,7 @@ func (f *browserHostedFixture) seedCoordinatorWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := "org_browser_preview/" + f.project
-	if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{Policy: current}); err != nil {
+	if _, err := f.service.database.approvePolicy(t.Context(), scope, "fixture", policy.Change{ExpectedID: hubTestPolicy().ID, Policy: current}); err != nil {
 		t.Fatal(err)
 	}
 	view := runnerauth.ProjectConfiguration{ProjectID: f.project, Authority: "local_global_configuration", Registered: true, RuntimeRegistered: true, Source: "configured_committed_workflow", ConfigRevision: strings.Repeat("c", 64), SelectedPolicy: &selected, EffectivePolicy: &current, ObservedAt: f.service.config.now()}

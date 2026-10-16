@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -770,6 +771,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		receiptMismatch         string
 		audit                   string
 		advanced                bool
+		patchBytes              int
 	}{
 		{name: "legacy rolling batch preserves validated heads", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
 		{name: "legacy rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
@@ -784,12 +786,15 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		{name: "audit refreshed after approval base advances", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", advanced: true},
 		{name: "audit each batch member exact base and landed head", count: 2, conflict: -1, invalid: -1, skip: -1, audit: "pass"},
 		{name: "audit refreshed after rejected push", count: 2, conflict: -1, invalid: -1, skip: -1, audit: "pass", moved: true},
+		{name: "audit captures above prompt limit", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", patchBytes: 300 << 10},
+		{name: "audit captures above tracker limit", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", patchBytes: 21 << 20},
 		{name: "stale audit refuses push", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "stale"},
 		{name: "blocking audit refuses push", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "rework"},
 		{name: "backend failure refuses push without finding", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "failure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
+			fixtureBase := f.remoteMain(t)
 			requests := make([]LandRequest, test.count)
 			audits := make([][]securityaudit.Run, test.count)
 			for i := range requests {
@@ -802,10 +807,16 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(info.Path, file), []byte("feature\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				runGit(t, info.Path, "add", file)
+				if test.patchBytes > 0 {
+					writeFileDiffFile(t, info.Path, file, strings.Repeat("feature line\n", test.patchBytes/13+1))
+					writeFileDiffFile(t, info.Path, "zz-late.txt", "late security change\n")
+				}
+				runGit(t, info.Path, "add", ".")
 				runGit(t, info.Path, "commit", "-m", file)
 				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
 				tree := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^{tree}"))
+				originalPatch := runGit(t, info.Path, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", fixtureBase, head, "--")
+				originalHash := sha256.Sum256([]byte(originalPatch))
 				options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
 				if test.rolling {
 					options.LandingMode = gate.LandingRollingBarrier
@@ -823,13 +834,19 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				if test.audit != "" {
 					options.Repository = RepositoryURL(t.Context(), info.Path)
 					options.SecurityAuditRequired = true
-					options.SecurityAuditMaxDiffBytes = securityaudit.DefaultMaxDiffBytes
 					options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
 						if test.audit == "failure" {
 							return nil, errors.New("backend unavailable")
 						}
-						if diff.Truncated || len(diff.Files) != 1 || diff.Files[0].Path != file || !strings.Contains(diff.Files[0].Patch, "+feature") {
-							t.Errorf("audit did not collect this member's integrated diff: %+v", diff)
+						var captured strings.Builder
+						for _, changed := range diff.Files {
+							captured.WriteString(changed.Patch)
+						}
+						if diff.Truncated || sha256.Sum256([]byte(captured.String())) != originalHash {
+							t.Errorf("audit captured %d of %d bytes; truncated=%v", captured.Len(), len(originalPatch), diff.Truncated)
+						}
+						if test.patchBytes > 0 && (len(originalPatch) <= test.patchBytes || !strings.Contains(captured.String(), "+late security change")) {
+							t.Error("large audit lost the late-file change")
 						}
 						now := time.Now()
 						run := securityaudit.Run{ID: 1, InvocationID: fmt.Sprintf("audit-%d-%d", i, len(audits[i])), ProjectID: "project", Repository: options.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputDigest: securityaudit.OutputDigest("pass"), OutputBytes: 4, Verdict: "pass", Summary: "No findings", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now}
@@ -1011,7 +1028,7 @@ func TestLocalGitRebasedNativeLanding(t *testing.T) {
 			t.Setenv("PATH", lint+string(os.PathListSeparator)+os.Getenv("PATH"))
 			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
 			baseBefore := f.remoteMain(t)
-			options := LandOptions{LandingMode: mode, Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: "rebased", ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}, Repository: RepositoryURL(t.Context(), f.info.Path), SecurityAuditRequired: true, SecurityAuditMaxDiffBytes: securityaudit.DefaultMaxDiffBytes}
+			options := LandOptions{LandingMode: mode, Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: "rebased", ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}, Repository: RepositoryURL(t.Context(), f.info.Path), SecurityAuditRequired: true}
 			options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
 				if diff.HeadSHA == head || diff.BaseSHA != baseBefore || diff.Truncated {
 					t.Errorf("rebase reused published source identity: %+v", diff)

@@ -67,6 +67,8 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 	var supportsChecks, supportsCheckout, wrongIdentity atomic.Bool
 	var supportsSetup, supportsDeclaration atomic.Bool
 	var supportsRanking, supportsMetrics atomic.Bool
+	var supportsLanding atomic.Bool
+	var expectedLanding atomic.Int64
 	var claimCalls, previewCalls atomic.Int64
 	var mu sync.Mutex
 	var reports []struct {
@@ -99,6 +101,9 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			if supportsRanking.Load() {
 				features = append(features, tracker.NativeDispatchPriorityCapability)
 			}
+			if supportsLanding.Load() {
+				features = append(features, tracker.NativeLandingCapacityCapability)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": features})
 		case r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test":
 			_ = json.NewEncoder(w).Encode(tracker.NativeProject{Profile: "native"})
@@ -110,11 +115,14 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 			decoder := json.NewDecoder(r.Body)
 			decoder.DisallowUnknownFields()
 			var err error
-			if supportsRanking.Load() {
+			if supportsRanking.Load() || supportsLanding.Load() {
 				var claim tracker.NativeClaim
 				err = decoder.Decode(&claim)
-				if !reflect.DeepEqual(claim.DispatchPriorityByState, []string{"Merging"}) || !reflect.DeepEqual(claim.DispatchPriorityByLabel, []string{"hotfix"}) || !claim.PrioritizeUnblockers {
+				if supportsRanking.Load() && (!reflect.DeepEqual(claim.DispatchPriorityByState, []string{"Merging"}) || !reflect.DeepEqual(claim.DispatchPriorityByLabel, []string{"hotfix"}) || !claim.PrioritizeUnblockers) {
 					t.Errorf("claim or preview lost ranking: %+v", claim)
+				}
+				if claim.LandingCapacity != int(expectedLanding.Load()) {
+					t.Errorf("claim or preview landing capacity = %d, want %d", claim.LandingCapacity, expectedLanding.Load())
 				}
 			} else {
 				err = decoder.Decode(new(originalClaim))
@@ -341,13 +349,15 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		wrongIdentity.Store(false)
 	}
 	for _, step := range []struct {
-		name      string
-		supported bool
-		preview   bool
-		states    []string
-		labels    []string
-		unblocker bool
-		wantWait  bool
+		name             string
+		supported        bool
+		preview          bool
+		states           []string
+		labels           []string
+		unblocker        bool
+		wantWait         bool
+		landingCapacity  int
+		landingSupported bool
 	}{
 		{name: "old Hub state ranking", states: []string{"Merging"}, wantWait: true},
 		{name: "old Hub label ranking", labels: []string{"hotfix"}, wantWait: true},
@@ -355,12 +365,17 @@ func TestNativeOptionalReportsNegotiateHubSupport(t *testing.T) {
 		{name: "old Hub without ranking"},
 		{name: "compatible Hub claim", supported: true, states: []string{"Merging"}, labels: []string{"hotfix"}, unblocker: true},
 		{name: "compatible Hub preview", supported: true, preview: true, states: []string{"Merging"}, labels: []string{"hotfix"}, unblocker: true},
+		{name: "old Hub landing capacity", landingCapacity: 1, wantWait: true},
+		{name: "compatible Hub landing claim", landingCapacity: 1, landingSupported: true},
+		{name: "compatible Hub landing preview", landingCapacity: 1, landingSupported: true, preview: true},
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			supportsRanking.Store(step.supported)
+			supportsLanding.Store(step.landingSupported)
+			expectedLanding.Store(int64(step.landingCapacity))
 			expireCapabilities(client)
 			beforeClaims, beforePreviews := claimCalls.Load(), previewCalls.Load()
-			request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: clientTestPolicy(), WorkflowStates: []string{"Todo"}, DispatchPriorityByState: step.states, DispatchPriorityByLabel: step.labels, PrioritizeUnblockers: step.unblocker}
+			request := orchestrator.SchedulingRequest{LandingCapacity: step.landingCapacity, ProjectID: "native", Policy: clientTestPolicy(), WorkflowStates: []string{"Todo"}, DispatchPriorityByState: step.states, DispatchPriorityByLabel: step.labels, PrioritizeUnblockers: step.unblocker}
 			if step.preview {
 				request.CandidateReady = func(context.Context, connector.Issue) bool { return true }
 			}

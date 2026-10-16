@@ -256,7 +256,7 @@ func TestHostedContextMCP(t *testing.T) {
 								Revision   string `json:"revision"`
 							} `json:"data"`
 						}
-						if err := json.Unmarshal(call(operatortool.FileIssue, map[string]any{"project_id": project, "request_id": "create", "title": "Revision contract", "state": "Backlog"}, false), &created); err != nil || created.Data.WorkItemID == "" || created.Data.Revision != "1" {
+						if err := json.Unmarshal(call(operatortool.FileIssue, map[string]any{"project_id": project, "request_id": "create", "title": "Revision contract", "description": nativeContractTestBody, "state": "Backlog"}, false), &created); err != nil || created.Data.WorkItemID == "" || created.Data.Revision != "1" {
 							t.Fatalf("created=%+v err=%v", created, err)
 						}
 						arguments := map[string]any{"project_id": project, "request_id": "move", "identifier": created.Data.WorkItemID, "target_state": "Todo", "expected_revision": created.Data.Revision}
@@ -414,7 +414,7 @@ func TestHostedContextMCP(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.createNativeIssueCommand(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: credential}, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "event-change"}, Title: "event change", State: "Todo"}); err != nil {
+					if _, err := f.service.createNativeIssueCommand(t.Context(), nativeScope{organization: "org_security", project: f.project, credential: credential}, tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "event-change"}, Title: "event change", State: "Todo"}); err != nil {
 						t.Fatal(err)
 					}
 					var changed hostedEventResult

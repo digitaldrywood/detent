@@ -206,7 +206,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-operations-issue"}, Title: "Attachment operations", State: "Todo"})
+	issue, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "attachment-operations-issue"}, Title: "Attachment operations", State: "Backlog"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,12 +229,12 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	}
 	_, page := browser.get("/organizations/org_alpha/organization")
 	csrf := csrfFrom(t, page)
-	foreignIssue := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects/"+otherProject+"/work-items", strings.NewReader(`{"idempotency_key":"foreign-binding-target","title":"Foreign target","state":"Todo"}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
+	foreignIssue := attachmentRequest(t, browser, http.MethodPost, "/api/v2/organizations/org_alpha/projects/"+otherProject+"/work-items", strings.NewReader(`{"idempotency_key":"foreign-binding-target","title":"Foreign target","state":"Backlog"}`), map[string]string{"Content-Type": "application/json", "X-CSRF-Token": csrf})
 	var foreignItem tracker.NativeIssue
 	if foreignIssue.Code != http.StatusOK || json.Unmarshal(foreignIssue.Body.Bytes(), &foreignItem) != nil {
 		t.Fatalf("foreign item=%s", foreignIssue.Body.String())
 	}
-	otherItem, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-comment-owner"}, Title: "Other comment owner", State: "Todo"})
+	otherItem, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "other-comment-owner"}, Title: "Other comment owner", State: "Backlog"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +345,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 	owner := newBrowser(t, f.service.Handler())
 	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
 	project := attachmentProject(t, owner, "org_alpha")
+	approveEntryFixturePolicy(t, owner, "org_alpha", project)
 	anonymous := newBrowser(t, f.service.Handler())
 	var pixels bytes.Buffer
 	if err := png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
@@ -459,7 +460,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 					}
 				}
 				call := entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
-				draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference}
+				draft := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-issue", "title": "Attachment evidence", "description": uploaded.Reference + "\n\n" + issueContractTestSections}
 				raw, failed := call(operatortool.FileIssue, draft)
 				var challenge struct {
 					Data nativeDuplicateFixture `json:"data"`
@@ -478,7 +479,7 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 				var issue struct {
 					Data tracker.NativeIssue `json:"data"`
 				}
-				if failed || json.Unmarshal(raw, &issue) != nil || issue.Data.WorkItemID == "" || issue.Data.Body != uploaded.Reference {
+				if failed || json.Unmarshal(raw, &issue) != nil || issue.Data.WorkItemID == "" || issue.Data.Body != uploaded.Reference+"\n\n"+issueContractTestSections {
 					t.Fatalf("file_issue=%s failed=%v", raw, failed)
 				}
 				raw, failed = call(operatortool.AddComment, map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": requestID + "-comment", "identifier": string(issue.Data.WorkItemID), "body": uploaded.Reference})

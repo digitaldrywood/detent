@@ -78,7 +78,6 @@
     "tests/visual/workflow-revisions.spec.js"
   ],
   "serial": [
-    "tests/visual/account.spec.js",
     "tests/visual/admission-proposals.spec.js",
     "tests/visual/ai-credits.spec.js",
     "tests/visual/ai-debug-privacy.spec.js",
@@ -109,7 +108,6 @@
   ],
   "waitForTimeout": [],
   "beforeAll": [
-    "tests/visual/account.spec.js",
     "tests/visual/active-hours.spec.js",
     "tests/visual/admission-proposals.spec.js",
     "tests/visual/ai-credits.spec.js",
@@ -134,7 +132,6 @@
     "tests/visual/health-copy.spec.js",
     "tests/visual/hub-login.spec.js",
     "tests/visual/hub-titles.spec.js",
-    "tests/visual/invitation-grants.spec.js",
     "tests/visual/invitations.spec.js",
     "tests/visual/issue-attachments.spec.js",
     "tests/visual/issue-diagnostics.spec.js",

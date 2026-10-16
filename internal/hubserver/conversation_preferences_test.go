@@ -188,7 +188,7 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
 		"key": "link-luna-choices", "share_history": true,
-		"issue": map[string]any{"title": "Linked runner work", "description": "Keep runner choices"},
+		"issue": map[string]any{"title": "Linked runner work", "description": "Keep runner choices" + issueContractTestSections},
 	})
 	requireNativeStatus(t, response, http.StatusOK)
 	response = performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/conversations/"+record.ID, f.token, map[string]any{"preferences": map[string]any{"model": genkitbackend.Model}})
@@ -212,7 +212,7 @@ func TestConversationPreferencesReachTheIssue(t *testing.T) {
 
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
 		"key": "link-preferences", "share_history": true,
-		"issue": map[string]any{"title": "Fix the renewal", "description": "From the chat"},
+		"issue": map[string]any{"title": "Fix the renewal", "description": "From the chat" + issueContractTestSections},
 	})
 	requireNativeStatus(t, response, http.StatusOK)
 	var linked conversationLinkResult
@@ -407,7 +407,7 @@ func TestConversationHandoffNextStep(t *testing.T) {
 		record := f.create(t, f.token, map[string]any{"title": title}).Conversation
 		body := map[string]any{
 			"key": "link-" + title, "share_history": true,
-			"issue": map[string]any{"title": title, "description": "From the chat"},
+			"issue": map[string]any{"title": title, "description": "From the chat" + issueContractTestSections},
 		}
 		if next != nil {
 			body["next"] = next
@@ -453,7 +453,7 @@ func TestConversationHandoffNextStep(t *testing.T) {
 		record := f.create(t, f.token, map[string]any{"title": "Bad state"}).Conversation
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
 			"key": "link-bad-state", "share_history": true,
-			"issue": map[string]any{"title": "Bad state", "description": "From the chat"},
+			"issue": map[string]any{"title": "Bad state", "description": "From the chat" + issueContractTestSections},
 			"next":  map[string]any{"state": "Nowhere"},
 		})
 		requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
@@ -462,7 +462,7 @@ func TestConversationHandoffNextStep(t *testing.T) {
 		record := f.create(t, f.token, map[string]any{"title": "Bad dispatch"}).Conversation
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/conversations/"+record.ID+"/link", f.token, map[string]any{
 			"key": "link-bad-dispatch", "share_history": true,
-			"issue": map[string]any{"title": "Bad dispatch", "description": "From the chat"},
+			"issue": map[string]any{"title": "Bad dispatch", "description": "From the chat" + issueContractTestSections},
 			"next":  map[string]any{"dispatch": "eventually"},
 		})
 		requireNativeError(t, response, http.StatusUnprocessableEntity, "invalid_request")
@@ -527,7 +527,7 @@ func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 
 	response = performHubAPIRequest(t, service, http.MethodPost, base+"/conversations/"+created.Conversation.ID+"/link", token.Token, map[string]any{
 		"key": "link-later", "share_history": true,
-		"issue": map[string]any{"title": "Later", "description": "From the chat"},
+		"issue": map[string]any{"title": "Later", "description": "From the chat" + issueContractTestSections},
 		"next":  map[string]any{"dispatch": "later"},
 	})
 	requireNativeStatus(t, response, http.StatusOK)

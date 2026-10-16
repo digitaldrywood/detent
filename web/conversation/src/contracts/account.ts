@@ -25,7 +25,7 @@ import { ApiError } from "./conversation.ts";
  * `admin` manage the organization; `member` writes where a grant says so;
  * `viewer` reads only (decisions.md §10.11).
  */
-export const OrganizationRole = Schema.Literals(["owner", "admin", "member", "reporter", "viewer"]);
+export const OrganizationRole = Schema.String;
 export type OrganizationRole = typeof OrganizationRole.Type;
 
 /** True for the two roles §12 gates the management endpoints behind. */
@@ -199,6 +199,7 @@ export const AccountBootstrap = Schema.Struct({
   sign_in_path: Schema.optional(Schema.String),
   /** The build the hub is serving, where it publishes one. The About row. */
   version: Schema.optional(Schema.String),
+  has_unread: Schema.optional(Schema.Boolean),
 });
 export type AccountBootstrap = typeof AccountBootstrap.Type;
 
@@ -217,6 +218,13 @@ export const Member = Schema.Struct({
 });
 export type Member = typeof Member.Type;
 
+export const MemberRole = Schema.Struct({
+  slug: Schema.String,
+  name: Schema.String,
+  description: Schema.String,
+});
+export type MemberRole = typeof MemberRole.Type;
+
 export const Invitation = Schema.Struct({
   id: Schema.String,
   email: Schema.String,
@@ -229,6 +237,7 @@ export type Invitation = typeof Invitation.Type;
 
 /** `GET /members`. A plain member sees only themselves and no invitations. */
 export const MembersResponse = Schema.Struct({
+  roles: Schema.optional(Schema.Array(MemberRole)),
   member_count: Schema.optional(Schema.Number),
   members: Schema.Array(Member),
   invitations: Schema.Array(Invitation),
@@ -546,6 +555,13 @@ export type ProjectsResponse = typeof ProjectsResponse.Type;
 
 /** One provider account's capacity on a runner (`providercapacity.View`). */
 export const ProviderCapacity = Schema.Struct({
+  billing: Schema.optional(Schema.Literals(["subscription", "api_key", "unknown"])),
+  usage_windows: Schema.optional(Schema.Array(Schema.Struct({
+    kind: Schema.String,
+    percent_used: Schema.optional(Schema.Number),
+    reset_at: Schema.optional(Schema.String),
+    observed_at: Schema.optional(Schema.String),
+  }))),
   provider: Schema.String,
   backend: Schema.String,
   account_alias: Schema.String,
@@ -646,6 +662,41 @@ export const FleetRunner = Schema.Struct({
   revision: Schema.optional(Schema.Number),
 });
 export type FleetRunner = typeof FleetRunner.Type;
+
+export const SuggestedLimit = Schema.Struct({
+  limit: Schema.optional(Schema.Number),
+  current: Schema.Number,
+  direction: Schema.Literals(["lower", "raise", "hold", "insufficient_evidence"]),
+  hours_covered: Schema.Number,
+  saturated_hours: Schema.Number,
+  reasons: Schema.Array(Schema.String),
+});
+export type SuggestedLimit = typeof SuggestedLimit.Type;
+
+export const RunnerCapacityRead = Schema.Struct({
+  provider_capacity: Schema.optional(Schema.Array(ProviderCapacity)),
+  recommendation: Schema.optional(Schema.Struct({ suggested_limit: Schema.optional(SuggestedLimit) })),
+});
+export type RunnerCapacityRead = typeof RunnerCapacityRead.Type;
+
+export const RunnerHostHour = Schema.Struct({
+  hour: Schema.String,
+  logical_cores: Schema.Number,
+  memory_total_bytes: Schema.Number,
+  memory_available_min_bytes: Schema.Number,
+  memory_sample_count: Schema.Number,
+  swap_used_max_bytes: Schema.Number,
+  pressure_warn_count: Schema.Number,
+  pressure_critical_count: Schema.Number,
+  cpu_sample_count: Schema.Number,
+  cpu_busy_average_percent: Schema.optional(Schema.Number),
+  load1_max: Schema.Number,
+  load_sample_count: Schema.Number,
+  disk_free_min_bytes: Schema.Number,
+  disk_total_min_bytes: Schema.Number,
+  disk_sample_count: Schema.Number,
+});
+export type RunnerHostHour = typeof RunnerHostHour.Type;
 
 /** One allowance: what the window consumed, and what the plan allows. */
 export const Allowance = Schema.Struct({
@@ -971,3 +1022,24 @@ export const SlackIntegrationStatus = Schema.Struct({
   last_status_code: Schema.Number,
 });
 export type SlackIntegrationStatus = typeof SlackIntegrationStatus.Type;
+
+export const ReleaseNotesBuild = Schema.Struct({
+  version: Schema.String,
+  build_time: Schema.String,
+  running: Schema.Boolean,
+  patch: Schema.Boolean,
+  unread: Schema.Boolean,
+  entries: Schema.Array(Schema.Struct({
+    category: Schema.Literals(["New", "Improved", "Fixed", "Removed"]),
+    text: Schema.String,
+    pr_number: Schema.Number,
+    pr_url: Schema.String,
+  })),
+  internal_count: Schema.Number,
+});
+export const ReleaseNotesPage = Schema.Struct({
+  builds: Schema.Array(ReleaseNotesBuild),
+  has_unread: Schema.Boolean,
+  next_cursor: Schema.optional(Schema.String),
+});
+export type ReleaseNotesPage = typeof ReleaseNotesPage.Type;

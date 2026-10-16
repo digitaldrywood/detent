@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -512,7 +514,11 @@ func (c *NativeConnector) UpdateIssueState(ctx context.Context, id, state string
 	if issue.State == state {
 		return nil
 	}
-	request := tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: "worker_progress", ReasonDetail: connector.LaneTransitionReason(ctx)}
+	transitionReason := "worker_progress"
+	if reason := connector.LaneTransitionReason(ctx); reason == string(gate.ReasonValidatorRework) {
+		transitionReason = reason
+	}
+	request := tracker.Transition{Mutation: nativeMutationKeyForContext(ctx), ExpectedRevision: expected, State: state, Reason: transitionReason, ReasonDetail: connector.LaneTransitionReasonDetail(ctx)}
 	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
 	if reason == "recorded_blocker_recovery" || reason == "dependency_auto_unblock" {
 		attempts, history, readErr := c.recordedBlockerContext(ctx, issue.WorkItemID)
@@ -696,7 +702,15 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	issue.Identifier = nativeIssueIdentifier(native)
 	issue.Number = native.Number
 	issue.Title, issue.Description, issue.State = native.Title, native.Body, native.State
+	if native.ListChange != nil && native.ListChange.LandingPending {
+		issue.NativeLandingHeadSHA = native.ListChange.HeadSHA
+	}
 	issue.DependencySource = connector.BlockedRefSourceNative
+	if d := native.ReleaseDelivery; d != nil && !native.Terminal {
+		issue.BranchName = d.HeadRef
+		issue.PRRepository = d.Repository
+		issue.PullRequest = &connector.PullRequest{Number: d.PRNumber, URL: fmt.Sprintf("%s/pull/%d", d.Repository, d.PRNumber), State: "OPEN", BranchName: d.HeadRef, HeadSHA: d.HeadSHA, BaseRef: d.BaseRef, BaseSHA: d.BaseSHA}
+	}
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees

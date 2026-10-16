@@ -85,6 +85,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	}()
 
 	o.recoverLocalAdmissions(ctx, state)
+	o.refreshBackendCapacity(ctx, state, now)
 	o.expireOrphanedWorkAttempts(ctx, state, now)
 	o.syncGitHubRESTCapacityOutage(state, now)
 	if o.scheduling == nil && o.githubLookupBackoffGate(ctx, state, now) {
@@ -686,6 +687,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	if o.scheduling != nil {
 		request := SchedulingRequest{
+			LandingCapacity:         o.cfg.NativeLandingCapacity,
 			DispatchPriorityByState: append([]string(nil), o.cfg.DispatchPriorityByState...),
 			DispatchPriorityByLabel: append([]string(nil), o.cfg.DispatchPriorityByLabel...),
 			PrioritizeUnblockers:    o.cfg.PrioritizeUnblockers,

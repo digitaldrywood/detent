@@ -2,6 +2,7 @@ package providercapacity
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,7 @@ func TestReportValidation(t *testing.T) {
 		{"missing models", func(r *Report) { r.Models = nil }},
 		{"too many models", func(r *Report) { r.Models = make([]string, 129) }},
 		{"invalid model", func(r *Report) { r.Models = []string{"raw prompt"} }},
+		{"billing", func(r *Report) { r.Billing = "private-value" }},
 		{"availability", func(r *Report) { r.Availability = "unlimited" }},
 		{"missing observation", func(r *Report) { r.ObservedAt = time.Time{} }},
 		{"reset before observation", func(r *Report) { r.ResetAt = r.ObservedAt.Add(-time.Second) }},
@@ -248,5 +250,60 @@ func TestProviderCompatibility(t *testing.T) {
 	}
 	if got := (View{Report: r, State: "unknown", Reason: "stale"}).Summary(); !strings.Contains(got, "stale") || !strings.Contains(got, "0 / 2") {
 		t.Fatal(got)
+	}
+}
+
+func TestUsageWindowValidation(t *testing.T) {
+	t.Parallel()
+	now := testReport().ObservedAt
+	percent := func(value float64) *float64 { return &value }
+	for _, test := range []struct {
+		name    string
+		windows []UsageWindow
+		valid   bool
+	}{
+		{"old runner", nil, true},
+		{"unknown", []UsageWindow{{Kind: "five_hour"}}, true},
+		{"zero", []UsageWindow{{Kind: "weekly", PercentUsed: percent(0), ObservedAt: now}}, true},
+		{"full", []UsageWindow{{Kind: "five_hour", PercentUsed: percent(100), ObservedAt: now, ResetAt: now.Add(time.Hour)}}, true},
+		{"stale", []UsageWindow{{Kind: "weekly", PercentUsed: percent(40), ObservedAt: now.Add(-time.Hour)}}, true},
+		{"too many", make([]UsageWindow, MaxUsageWindows+1), false},
+		{"unknown kind", []UsageWindow{{Kind: "account@example.com"}}, false},
+		{"duplicate", []UsageWindow{{Kind: "weekly"}, {Kind: "weekly"}}, false},
+		{"negative", []UsageWindow{{Kind: "weekly", PercentUsed: percent(-1), ObservedAt: now}}, false},
+		{"over full", []UsageWindow{{Kind: "weekly", PercentUsed: percent(101), ObservedAt: now}}, false},
+		{"NaN", []UsageWindow{{Kind: "weekly", PercentUsed: percent(math.NaN()), ObservedAt: now}}, false},
+		{"infinity", []UsageWindow{{Kind: "weekly", PercentUsed: percent(math.Inf(1)), ObservedAt: now}}, false},
+		{"unobserved percent", []UsageWindow{{Kind: "weekly", PercentUsed: percent(0)}}, false},
+		{"unobserved reset", []UsageWindow{{Kind: "weekly", ResetAt: now}}, false},
+		{"reset before observation", []UsageWindow{{Kind: "weekly", ObservedAt: now, ResetAt: now.Add(-time.Second)}}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := testReport()
+			report.UsageWindows = test.windows
+			if err := Validate([]Report{report}); (err == nil) != test.valid {
+				t.Fatalf("Validate() = %v, valid = %v", err, test.valid)
+			}
+		})
+	}
+}
+
+func TestReportBilling(t *testing.T) {
+	t.Parallel()
+	for _, billing := range []string{"", "unknown", "subscription", "api_key"} {
+		t.Run(billing, func(t *testing.T) {
+			report := testReport()
+			report.Billing = billing
+			if err := Validate([]Report{report}); err != nil {
+				t.Fatal(err)
+			}
+			want := billing
+			if want == "" {
+				want = "unknown"
+			}
+			if got := report.BillingBasis(); got != want {
+				t.Fatalf("billing = %q, want %q", got, want)
+			}
+		})
 	}
 }

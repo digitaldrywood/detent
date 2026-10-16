@@ -55,6 +55,9 @@ async function evidence(page, name) {
 
 const BOOTSTRAP = "**/app/bootstrap";
 const CONVERSATIONS = /\/api\/v2\/organizations\/[^/]+\/conversations(\?|$)/;
+function issueBody(description) {
+  return `## Acceptance criteria\n${description}\n## Must not break\nExisting behavior.\n## How we know it worked\nFocused checks pass.`;
+}
 
 /**
  * Serves the bootstrap with no projects and the conversation list empty, as a
@@ -157,18 +160,36 @@ test("creating the first project lands on its board and the checklist advances",
   await evidence(page, "new-project-dialog-desktop");
 
   await restoreOrganization(page);
+  const onboardingResponse = page.waitForResponse((response) =>
+    /\/projects\/[^/]+\/onboarding$/.test(new URL(response.url()).pathname) && response.request().method() === "GET",
+  );
   await dialog.getByRole("button", { name: "Create project" }).click();
+  const projectId = new URL((await onboardingResponse).url()).pathname.split("/").at(-2);
 
   await expect(page).toHaveURL(/\/local-organization\/example-studio$/);
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Example Studio");
   await expect(page.getByTestId("first-run-step-project")).toHaveAttribute("data-done", "true");
   await expect(page.getByTestId("first-run-progress")).toContainText("of 4 done");
   await expect(page.getByTestId("work-board")).toHaveCount(0);
-  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "true");
+  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "false");
+  await expect(page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" })).toBeVisible();
+
+  const policyStatus = await page.evaluate(async ({ source, target }) => {
+    const bootstrap = await (await fetch("/app/bootstrap")).json();
+    const base = bootstrap.api_base;
+    const approval = await (await fetch(`${base}/projects/${source}/policy`)).json();
+    return (await fetch(`${base}/projects/${target}/policy`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
+      body: JSON.stringify({ policy: approval.policy }),
+    })).status;
+  }, { source: hub.fixture.project_id, target: projectId });
+  expect(policyStatus).toBe(200);
 
   await page.getByTestId("first-run-step-issue").getByRole("button", { name: "New issue" }).click();
   const issue = page.getByRole("dialog", { name: "New issue" });
   await issue.getByLabel("Title").fill("Write the welcome page");
+  await issue.getByLabel("What needs doing").fill(issueBody("Welcome visitors with an introduction explaining the studio mission, available services, contact details, opening hours, location, accessibility arrangements, and booking process."));
   await issue.getByRole("button", { name: "Create issue" }).click();
   await expect(issue).toHaveCount(0);
 
@@ -196,13 +217,13 @@ test("an enrolled runner does not complete an unvalidated project's setup", asyn
   const fleetResponse = await page.request.get(new URL("/api/v2/organizations/org_browser_preview/fleet", hub.fixture.url).toString());
   expect(fleetResponse.ok()).toBe(true);
   expect((await fleetResponse.json()).runners.length).toBeGreaterThan(0);
-  expect(onboarding.steps.find((step) => step.name === "Execution runner").state).toBe("ready");
+  expect(onboarding.steps.find((step) => step.name === "Execution runner").state).toBe("action_required");
   expect(onboarding.steps.find((step) => step.name === "Local validation").state).toBe("action_required");
   const remaining = onboarding.steps.filter((step) => step.state !== "ready").length;
-  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "true");
-  await expect(page.getByTestId("first-run-step-runner").getByText("Done", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("first-run-progress")).toHaveText("2 of 4 done");
-  await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
+  await expect(page.getByTestId("first-run-step-runner")).toHaveAttribute("data-done", "false");
+  await expect(page.getByTestId("first-run-step-runner").getByRole("button", { name: "Configure runner" })).toBeVisible();
+  await expect(page.getByTestId("first-run-progress")).toHaveText("1 of 4 done");
+  await expect(page.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "1");
   await expect(page.getByTestId("first-run-step-setup")).toContainText(`${remaining} setup steps left`);
   await evidence(page, "unserved-project-desktop");
   await page.getByTestId("first-run-step-setup").getByRole("button", { name: "Finish setup" }).click();
@@ -221,11 +242,12 @@ test.describe("a board that already has issues", () => {
     await expect(page.getByTestId("first-run")).toHaveCount(0);
   }
 
-  async function createFrom(page, title) {
+  async function createFrom(page, title, description) {
     const dialog = page.getByRole("dialog", { name: "New issue" });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("Title")).toBeFocused();
     await dialog.getByLabel("Title").fill(title);
+    await dialog.getByLabel("What needs doing").fill(issueBody(description));
     await dialog.getByRole("button", { name: "Create issue" }).click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByTestId("work-board").getByText(title)).toBeVisible();
@@ -241,7 +263,7 @@ test.describe("a board that already has issues", () => {
       path: path.join(EVIDENCE, "new-issue-from-header-desktop.png"),
       animations: "disabled",
     });
-    await createFrom(page, "Created from the header");
+    await createFrom(page, "Created from the header", "Document keyboard navigation across menus, dialogs, search boxes, tabs, buttons, and links, including focus restoration, escape handling, shortcuts, and screen reader announcements.");
     expect(errors).toEqual([]);
   });
 
@@ -256,7 +278,7 @@ test.describe("a board that already has issues", () => {
     const dialog = page.getByRole("dialog", { name: "New issue" });
     await expect(dialog.getByLabel("Lane")).toHaveValue(laneName);
     await expect(dialog.getByLabel("Lane").getByRole("option", { name: "Triage", exact: true })).toHaveCount(0);
-    await createFrom(page, "Created from a lane");
+    await createFrom(page, "Created from a lane", "Export invoices containing supplier names, billing addresses, purchase references, currency codes, tax calculations, payment dates, totals, line items, discounts, and delivery charges.");
     await expect(
       lane.getByText("Created from a lane"),
     ).toBeVisible();
@@ -272,7 +294,7 @@ test.describe("a board that already has issues", () => {
     await page.keyboard.type("issue");
     await palette.getByText("New issue", { exact: true }).click();
     await expect(palette).toHaveCount(0);
-    await createFrom(page, "Created from the palette");
+    await createFrom(page, "Created from the palette", "Generate inventory summaries covering warehouse stock, product categories, reorder thresholds, shipment quantities, damaged goods, reserved units, storage bins, and replenishment schedules.");
     expect(errors).toEqual([]);
   });
 
@@ -287,7 +309,7 @@ test.describe("a board that already has issues", () => {
     await search.fill("");
     await search.blur();
     await page.keyboard.press("c");
-    await createFrom(page, "Created with the shortcut");
+    await createFrom(page, "Publish weather outlook", "Display weather forecasts with rainfall measurements, wind direction, humidity readings, temperature ranges, sunrise times, sunset predictions, cloud conditions, and regional storm warnings.");
     expect(errors).toEqual([]);
   });
 });

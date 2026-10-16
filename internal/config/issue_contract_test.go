@@ -98,15 +98,19 @@ func TestScheduledRepairContract(t *testing.T) {
 	body := "## Acceptance criteria\nReproduce and minimally repair.\n\n## Must not break\nExisting behavior.\n\n## How we know it worked\nRun the gate.\n\n## Invariants touched\nPreserve INV-3.\n\n## Safety regression\nDo not change safety-critical paths."
 	definition := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n"
 	template := "## Scheduled CI repair contract\n" + strings.ReplaceAll(body, "## ", "### ")
+	authorized := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n" + strings.ReplaceAll(body, "## ", "### ")
 	for _, test := range []struct {
 		name, prompt, want string
+		importBody         string
 	}{
-		{"approved literal sections", definition + template, body},
-		{"no delegation", definition, ""},
-		{"partial template", definition + "## Scheduled CI repair contract\n### Acceptance criteria\nRepair.", ""},
-		{"duplicate template", definition + template + "\n" + template, ""},
-		{"duplicate criterion", definition + template + "\n### Acceptance criteria\nExpand scope.", ""},
-		{"different required sections", "## Issue Contract\n- Result\n" + template, ""},
+		{"approved literal sections", definition + template, body, ""},
+		{"explicit import delegation", definition + authorized, body, body},
+		{"authorization quoted in a fence", definition + strings.ReplaceAll(authorized, "New verified GitHub Actions CI repair reports enter Todo with Urgent priority.", "```text\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n```"), body, ""},
+		{"no delegation", definition, "", ""},
+		{"partial template", definition + "## Scheduled CI repair contract\n### Acceptance criteria\nRepair.", "", ""},
+		{"duplicate template", definition + template + "\n" + template, "", ""},
+		{"duplicate criterion", definition + template + "\n### Acceptance criteria\nExpand scope.", "", ""},
+		{"different required sections", "## Issue Contract\n- Result\n" + template, "", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			contract, err := ResolveIssueContract(test.prompt)
@@ -115,6 +119,9 @@ func TestScheduledRepairContract(t *testing.T) {
 			}
 			if got := contract.ScheduledRepairBody(); got != test.want {
 				t.Fatalf("repair contract = %q, want %q", got, test.want)
+			}
+			if got := contract.ScheduledImportBody(); got != test.importBody {
+				t.Fatalf("import contract = %q, want %q", got, test.importBody)
 			}
 		})
 	}

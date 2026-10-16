@@ -712,7 +712,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 	)
 
-	install := runInstallWithInactivityTimeout(t, root, env, 2*time.Minute)
+	install := runInstall(t, root, env)
 	if install.err != nil {
 		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", install.err, install.stdout, install.stderr)
 	}
@@ -858,17 +858,17 @@ type installRun struct {
 	err    error
 }
 
-func runInstall(t *testing.T, root string, env []string) installRun {
-	t.Helper()
-
-	return runInstallWithInactivityTimeout(t, root, env, testenv.SubprocessWaitTimeout)
+type installerTesting interface {
+	Helper()
+	Context() context.Context
+	Deadline() (time.Time, bool)
 }
 
-func runInstallWithInactivityTimeout(t *testing.T, root string, env []string, inactivityTimeout time.Duration) installRun {
+func runInstall(t installerTesting, root string, env []string) installRun {
 	t.Helper()
 
-	ctx, activity, stop := installerActivityContext(t.Context(), inactivityTimeout, newInstallerActivityTimer)
-	defer stop()
+	ctx, cancel := installerCommandContext(t)
+	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "install.sh")
 	cmd.Dir = root
@@ -876,8 +876,8 @@ func runInstallWithInactivityTimeout(t *testing.T, root string, env []string, in
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
-	cmd.Stderr = installerActivityWriter{output: &stderr, activity: activity}
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	err := runInstallerCommand(ctx, cmd)
 	return installRun{
@@ -887,221 +887,120 @@ func runInstallWithInactivityTimeout(t *testing.T, root string, env []string, in
 	}
 }
 
-type installerActivityTimer interface {
-	C() <-chan time.Time
-	Reset(time.Duration) bool
-	Stop() bool
-}
+func installerCommandContext(t installerTesting) (context.Context, context.CancelFunc) {
+	t.Helper()
 
-type systemInstallerActivityTimer struct {
-	*time.Timer
-}
-
-func (t systemInstallerActivityTimer) C() <-chan time.Time {
-	return t.Timer.C
-}
-
-func newInstallerActivityTimer(timeout time.Duration) installerActivityTimer {
-	return systemInstallerActivityTimer{Timer: time.NewTimer(timeout)}
-}
-
-func installerActivityContext(
-	parent context.Context,
-	inactivityTimeout time.Duration,
-	newTimer func(time.Duration) installerActivityTimer,
-) (context.Context, func(), func()) {
-	ctx, cancel := context.WithCancelCause(parent)
-	timer := newTimer(inactivityTimeout)
-	activity := make(chan chan struct{})
-	finished := make(chan struct{})
-	go func() {
-		defer close(finished)
-		for {
-			select {
-			case acknowledged := <-activity:
-				if !timer.Stop() {
-					select {
-					case <-timer.C():
-					default:
-					}
-				}
-				timer.Reset(inactivityTimeout)
-				close(acknowledged)
-			case <-timer.C():
-				cancel(context.DeadlineExceeded)
-				return
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			}
-		}
-	}()
-	recordActivity := func() {
-		acknowledged := make(chan struct{})
-		select {
-		case activity <- acknowledged:
-			select {
-			case <-acknowledged:
-			case <-ctx.Done():
-			}
-		case <-ctx.Done():
-		}
+	deadline, ok := t.Deadline()
+	if !ok {
+		return context.WithCancel(t.Context())
 	}
-	stop := func() {
-		cancel(nil)
-		<-finished
-	}
-	return ctx, recordActivity, stop
+	return context.WithDeadline(t.Context(), deadline.Add(-2*installerProcessEvidenceGuard))
 }
 
-type installerActivityWriter struct {
-	output   io.Writer
-	activity func()
+type installerDeadlineTest struct {
+	*testing.T
+	deadline time.Time
 }
 
-func (w installerActivityWriter) Write(data []byte) (int, error) {
-	written, err := w.output.Write(data)
-	if written > 0 {
-		w.activity()
-	}
-	return written, err
+func (t installerDeadlineTest) Deadline() (time.Time, bool) {
+	return t.deadline, true
 }
 
-type controlledInstallerActivityTimer struct {
-	expired chan time.Time
-	resets  chan time.Duration
-}
-
-func newControlledInstallerActivityTimer() *controlledInstallerActivityTimer {
-	return &controlledInstallerActivityTimer{
-		expired: make(chan time.Time, 1),
-		resets:  make(chan time.Duration, 1),
-	}
-}
-
-func (t *controlledInstallerActivityTimer) C() <-chan time.Time {
-	return t.expired
-}
-
-func (t *controlledInstallerActivityTimer) Reset(timeout time.Duration) bool {
-	t.resets <- timeout
-	return true
-}
-
-func (*controlledInstallerActivityTimer) Stop() bool {
-	return true
-}
-
-func TestInstallerActivityContextCancellation(t *testing.T) {
-	t.Parallel()
-
-	wantParentCause := errors.New("parent canceled")
-	tests := []struct {
-		name            string
-		cancelParent    bool
-		wantCancelCause error
-	}{
-		{name: "inactivity expires", wantCancelCause: context.DeadlineExceeded},
-		{name: "parent cancellation wins", cancelParent: true, wantCancelCause: wantParentCause},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			parent, cancelParent := context.WithCancelCause(t.Context())
-			defer cancelParent(nil)
-			timer := newControlledInstallerActivityTimer()
-			ctx, activity, stop := installerActivityContext(parent, 10*time.Second, func(timeout time.Duration) installerActivityTimer {
-				if timeout != 10*time.Second {
-					t.Fatalf("inactivity timeout = %s, want 10s", timeout)
-				}
-				return timer
-			})
-			defer stop()
-
-			if tt.cancelParent {
-				cancelParent(wantParentCause)
-			} else {
-				activity()
-				select {
-				case timeout := <-timer.resets:
-					if timeout != 10*time.Second {
-						t.Fatalf("renewed inactivity timeout = %s, want 10s", timeout)
-					}
-				case <-time.After(testenv.SubprocessWaitTimeout):
-					t.Fatal("activity context did not acknowledge renewal")
-				}
-				timer.expired <- time.Time{}
-			}
-			select {
-			case <-ctx.Done():
-				if !errors.Is(context.Cause(ctx), tt.wantCancelCause) {
-					t.Fatalf("cancellation cause = %v, want %v", context.Cause(ctx), tt.wantCancelCause)
-				}
-			case <-time.After(testenv.SubprocessWaitTimeout):
-				t.Fatal("activity context did not stop")
-			}
-		})
-	}
-}
-
-func TestInstallerCommandActivityRenewsDuringDelayedCompletion(t *testing.T) {
+func TestInstallCommandDeadlines(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")
 	}
 
 	t.Parallel()
 
-	timer := newControlledInstallerActivityTimer()
-	ctx, activity, stop := installerActivityContext(t.Context(), 10*time.Second, func(timeout time.Duration) installerActivityTimer {
-		if timeout != 10*time.Second {
-			t.Fatalf("inactivity timeout = %s, want 10s", timeout)
-		}
-		return timer
-	})
-	defer stop()
+	tests := []struct {
+		name    string
+		cli     bool
+		expired bool
+		silence time.Duration
+	}{
+		{name: "installer quiet build", silence: 2*time.Minute + 2*installerProcessEvidenceGuard},
+		{name: "installed CLI quiet work", cli: true, silence: testenv.SubprocessWaitTimeout + 2*installerProcessEvidenceGuard},
+		{name: "installer expired deadline", expired: true},
+		{name: "installed CLI expired deadline", cli: true, expired: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	input, release, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer input.Close()
-	defer release.Close()
-	cmd := exec.CommandContext(ctx, "sh", "-c", "printf ready; read -r release <&3")
-	cmd.ExtraFiles = []*os.File{input}
-	var stdout strings.Builder
-	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
-	done := make(chan error, 1)
-	go func() { done <- runInstallerCommand(ctx, cmd) }()
+			ready := make(chan struct{})
+			release := make(chan struct{})
+			finish := sync.OnceFunc(func() { close(release) })
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				close(ready)
+				select {
+				case <-release:
+					fmt.Fprintln(w, "complete")
+				case <-r.Context().Done():
+				}
+			}))
+			defer server.Close()
+			defer finish()
 
-	select {
-	case timeout := <-timer.resets:
-		if timeout != 10*time.Second {
-			t.Fatalf("renewed inactivity timeout = %s, want 10s", timeout)
-		}
-	case err := <-done:
-		t.Fatalf("installer command returned before delayed completion was released: %v", err)
-	case <-time.After(testenv.SubprocessWaitTimeout):
-		t.Fatal("installer command did not publish activity")
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("installer command returned before delayed completion was released: %v", err)
-	default:
-	}
-	if _, err := release.WriteString("release\n"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("installer command error = %v", err)
-		}
-	case <-time.After(testenv.SubprocessWaitTimeout):
-		t.Fatal("installer command did not finish after release")
-	}
-	if stdout.String() != "ready" {
-		t.Fatalf("installer stdout = %q, want ready", stdout.String())
+			root := t.TempDir()
+			script := "#!/bin/sh\nset -eu\ncurl --noproxy '*' -fsS \"$DETENT_INSTALL_TEST_WAIT_URL\"\n"
+			if err := os.WriteFile(filepath.Join(root, "install.sh"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			env := append(os.Environ(), "DETENT_INSTALL_TEST_WAIT_URL="+server.URL)
+			done := make(chan installRun, 1)
+			var commandTest installerTesting = t
+			if tt.expired {
+				commandTest = installerDeadlineTest{T: t}
+			}
+			go func() {
+				if tt.cli {
+					stdout, stderr, err := runDetentCommandOutput(commandTest, "sh", root, env, "install.sh")
+					done <- installRun{stdout: stdout, stderr: stderr, err: err}
+					return
+				}
+				done <- runInstall(commandTest, root, env)
+			}()
+			if tt.expired {
+				select {
+				case result := <-done:
+					if !errors.Is(result.err, context.DeadlineExceeded) {
+						t.Fatalf("command error = %v, want expired test deadline", result.err)
+					}
+				case <-ready:
+					finish()
+					<-done
+					t.Fatal("command started after its test deadline")
+				case <-time.After(testenv.SubprocessWaitTimeout):
+					t.Fatal("command did not stop at its test deadline")
+				}
+				return
+			}
+			select {
+			case <-ready:
+			case result := <-done:
+				t.Fatalf("command finished before readiness: %v\nstdout: %q\nstderr: %q", result.err, result.stdout, result.stderr)
+			case <-time.After(testenv.SubprocessWaitTimeout):
+				t.Fatal("command did not become ready")
+			}
+
+			silence := time.NewTimer(tt.silence)
+			defer silence.Stop()
+			select {
+			case result := <-done:
+				t.Fatalf("command finished during the quiet work interval: %v\nstdout: %q\nstderr: %q", result.err, result.stdout, result.stderr)
+			case <-silence.C:
+			}
+			finish()
+			select {
+			case result := <-done:
+				if result.err != nil || result.stdout != "complete\n" || result.stderr != "" {
+					t.Fatalf("command error = %v, stdout = %q, stderr = %q; want successful silent work and complete output", result.err, result.stdout, result.stderr)
+				}
+			case <-time.After(testenv.SubprocessWaitTimeout):
+				t.Fatal("command did not finish after release")
+			}
+		})
 	}
 }
 
@@ -1729,11 +1628,11 @@ func runDetentCommand(t *testing.T, binary string, workdir string, env []string,
 	}
 }
 
-func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []string, args ...string) (string, string, error) {
+func runDetentCommandOutput(t installerTesting, binary string, workdir string, env []string, args ...string) (string, string, error) {
 	t.Helper()
 
-	ctx, activity, stop := installerActivityContext(t.Context(), testenv.SubprocessWaitTimeout, newInstallerActivityTimer)
-	defer stop()
+	ctx, cancel := installerCommandContext(t)
+	defer cancel()
 
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = workdir
@@ -1741,8 +1640,8 @@ func runDetentCommandOutput(t *testing.T, binary string, workdir string, env []s
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	cmd.Stdout = installerActivityWriter{output: &stdout, activity: activity}
-	cmd.Stderr = installerActivityWriter{output: &stderr, activity: activity}
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	err := runInstallerCommand(ctx, cmd)
 	return stdout.String(), stderr.String(), err

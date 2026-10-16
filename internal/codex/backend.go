@@ -366,6 +366,12 @@ func rateLimitsFromCodex(snapshot *RateLimitSnapshot) *telemetry.RateLimits {
 		Secondary:   rateLimitBucketFromCodex(snapshot.Secondary),
 		Credits:     creditsBucketFromCodex(snapshot.Credits),
 	}
+	if limits.Primary != nil && limits.Primary.WindowKind == "" {
+		limits.Primary.WindowKind = "primary"
+	}
+	if limits.Secondary != nil && limits.Secondary.WindowKind == "" {
+		limits.Secondary.WindowKind = "secondary"
+	}
 	observedAt := time.Now().UTC()
 	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
 		if bucket != nil {
@@ -396,6 +402,18 @@ func rateLimitBucketFromCodex(window *RateLimitWindow) *telemetry.RateLimitBucke
 		Used:      used,
 		Remaining: 100 - used,
 	}
+	if !window.missingUsedPercent {
+		percent := min(max(window.UsedPercent, 0), 100)
+		bucket.PercentUsed = &percent
+	}
+	if window.WindowDurationMins != nil {
+		switch *window.WindowDurationMins {
+		case 300:
+			bucket.WindowKind = "five_hour"
+		case 10080:
+			bucket.WindowKind = "weekly"
+		}
+	}
 	if window.ResetsAt != nil {
 		resetAt := time.Unix(*window.ResetsAt, 0).UTC()
 		bucket.ResetAt = &resetAt
@@ -412,4 +430,12 @@ func creditsBucketFromCodex(credits *CreditsSnapshot) *telemetry.RateLimitBucket
 		Unlimited:  credits.Unlimited,
 		Balance:    credits.Balance,
 	}
+}
+
+func (b *AgentBackend) BillingBasis(ctx context.Context, process runner.AgentProcessRequest) (string, error) {
+	account, err := b.client.Account(withAgentProcess(ctx, process))
+	if err != nil {
+		return "unknown", err
+	}
+	return account.BillingBasis(), nil
 }

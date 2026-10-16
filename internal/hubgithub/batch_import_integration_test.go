@@ -34,6 +34,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 	const repository = "example-org/example-project"
 	const total = 385
 	const sourceBody = "Complete source issue body. "
+	const sourceContract = "\n## Acceptance criteria\nPreserve the imported source.\n## Must not break\nExisting project work.\n## How we know it worked\nVerify imported data."
 	const adminToken = "isolated-batch-import-administrator-token"
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -104,7 +105,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 				}
 				nodes = append(nodes, map[string]any{
 					"id": fmt.Sprintf("I_%d", number), "number": number, "url": fmt.Sprintf("https://github.com/%s/issues/%d", repository, number),
-					"title": fmt.Sprintf("Source issue %d", number), "body": strings.Repeat(sourceBody, 100), "closed": false,
+					"title": fmt.Sprintf("Source issue %d", number), "body": (strings.Repeat(sourceBody, 100) + sourceContract), "closed": false,
 					"createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2021-01-01T00:00:00Z", "author": map[string]string{"login": "source-user"},
 					"labels":   map[string]any{"nodes": []any{map[string]string{"name": "bug"}, map[string]string{"name": "phase:one"}, map[string]string{"name": lane}}},
 					"comments": map[string]any{"totalCount": 1, "nodes": []any{map[string]any{"id": fmt.Sprintf("C_%d", number), "body": "Complete source comment", "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "2021-01-01T00:00:00Z", "author": map[string]string{"login": "comment-user"}}}, "pageInfo": map[string]bool{"hasNextPage": false}},
@@ -235,7 +236,7 @@ func TestGitHubAppBatchImport385IssuesEndToEnd(t *testing.T) {
 		} else {
 			backlog++
 		}
-		if issue.State != want || !slices.Equal(issue.Labels, []string{"bug", "phase:one"}) || issue.Body != strings.Repeat(sourceBody, 100) || issue.LinkedSource == nil || issue.LinkedSource.Status != "complete" || issue.Provenance == nil || issue.Provenance.ExternalID != fmt.Sprintf("I_%d", item.Number) {
+		if issue.State != want || !slices.Equal(issue.Labels, []string{"bug", "phase:one"}) || issue.Body != (strings.Repeat(sourceBody, 100)+sourceContract) || issue.LinkedSource == nil || issue.LinkedSource.Status != "complete" || issue.Provenance == nil || issue.Provenance.ExternalID != fmt.Sprintf("I_%d", item.Number) {
 			t.Fatalf("imported item=%+v issue=%+v", item, issue)
 		}
 	}

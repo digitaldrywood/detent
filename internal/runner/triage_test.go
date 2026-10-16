@@ -28,11 +28,17 @@ func TestRunnerTriageIsReadOnly(t *testing.T) {
 		{"tool refused", []AgentUpdate{{Type: AgentUpdateToolStarted}}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			backend := &fakeCodexClient{updates: tt.updates}
+			observedAt := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+			resetAt := observedAt.Add(time.Hour)
+			percent := 85.0
+			providerUsage := &ProviderUsage{}
+			update := AgentUpdate{Type: AgentUpdateRateLimits, RateLimits: &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{WindowKind: "five_hour", PercentUsed: &percent, ObservedAt: &observedAt, ResetAt: &resetAt}}}
+			backend := &fakeCodexClient{updates: append([]AgentUpdate{update}, tt.updates...)}
 			workspace := &fakeWorkspaceBackend{}
 			runner, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{Config: config.Config{}}, Workspace: workspace,
-				AgentBackend: backend, Store: &fakeSessionStore{sessionID: 2595}, SecurityAuditRoot: t.TempDir(),
+				ProviderUsage: providerUsage,
+				AgentBackend:  backend, Store: &fakeSessionStore{sessionID: 2595}, SecurityAuditRoot: t.TempDir(),
 				Now: time.Now,
 			})
 			if err != nil {
@@ -54,6 +60,11 @@ func TestRunnerTriageIsReadOnly(t *testing.T) {
 			} else if err != nil || result.Output != "triage note" {
 				t.Fatalf("result = %#v, error = %v", result, err)
 			}
+			windows := providerUsage.Windows("codex")
+			if len(windows) != 1 || windows[0].Kind != "five_hour" || windows[0].PercentUsed == nil || *windows[0].PercentUsed != 85 || !windows[0].ObservedAt.Equal(observedAt) || !windows[0].ResetAt.Equal(resetAt) {
+				t.Fatalf("triage provider usage = %+v", windows)
+			}
+
 			request := backend.request
 			if !request.ReadOnly || request.SupplementalTools || len(request.ExtraWritableRoots) != 0 || request.Resume != (AgentResume{}) {
 				t.Fatalf("triage restrictions = %#v", request)

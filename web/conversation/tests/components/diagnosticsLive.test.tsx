@@ -1,18 +1,24 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { HealthFindingsProvider } from "../../src/app/diagnostics/healthFindings.tsx";
+import { useSidebarFindings } from "../../src/app/adapters/sidebarFindings.ts";
+import { makeAccountApi } from "../../src/app/account/api.ts";
+import { makeWorkHttp } from "../../src/app/work/lib/workHttp.ts";
 import { DiagnosticsRoute, DiagnosticsView } from "../../src/app/diagnostics/DiagnosticsPage.tsx";
+import { CapacityPanel } from "../../src/app/fleet/CapacityPanel.tsx";
 import { RunnersSectionView } from "../../src/app/fleet/RunnersSection.tsx";
-import { decodeFleet, type AccountProject } from "../../src/contracts/account.ts";
+import { decodeFleet, type AccountProject, type UpdatesReport } from "../../src/contracts/account.ts";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import { decodeDiagnostics, decodeHealthFindings } from "../../src/contracts/diagnostics.ts";
+import updatesFixture from "../../src/contracts/fixtures/account-updates.json";
 import report from "../../src/contracts/fixtures/diagnostics.json";
 import health from "../../src/contracts/fixtures/health-findings.json";
 
 const mocks = vi.hoisted(() => ({
-  api: { diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
+  api: { appUpdates: vi.fn(), diagnostics: vi.fn(), fleet: vi.fn(), healthFindings: vi.fn() },
   bootstrap: { actor: { can_manage: false }, organization: { name: "Test organization" }, projects: [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }] },
-  http: { eventsUrl: () => "/events" },
+  http: { eventsUrl: () => "/events", listHealthFindings: vi.fn() },
 }));
 vi.mock("../../src/app/account/context.ts", () => ({ useAccountApi: () => mocks.api, useAccountBootstrap: () => mocks.bootstrap }));
 vi.mock("../../src/app/work/lib/useWork.ts", () => ({ useWorkHttp: () => mocks.http }));
@@ -34,9 +40,11 @@ const healthFinding = decodeHealthFindings(health).items[0]!;
 const original = { ...healthFinding, subject: { ...healthFinding.subject, project_id: "prj_fixture" } };
 const next = { ...original, id: "new_finding", summary: "New finding" };
 const tick = "2026-10-07T10:00:00Z";
+let detectorTick = health.last_tick_at;
 let open = [original];
 let resolved: typeof open = [];
 function emit(at = tick) {
+  detectorTick = at;
   FindingEvents.current.dispatchEvent(new MessageEvent("health.findings", { data: at }));
 }
 function openCount() {
@@ -48,13 +56,15 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FindingEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   open = [original];
-  mocks.bootstrap.projects[0]!.can_write = true;
+  detectorTick = health.last_tick_at;
+  mocks.bootstrap.projects = [{ id: "prj_fixture", name: "Example project", profile: "native", can_write: true }];
   resolved = [];
+  mocks.api.appUpdates.mockRejectedValue({ status: 404 });
   mocks.api.diagnostics.mockResolvedValue(decodeDiagnostics(report));
   mocks.api.fleet.mockResolvedValue({ runners: [] });
-  mocks.api.healthFindings.mockImplementation(async (_projects, options) => ({ items: options?.state === "resolved" ? resolved : open, last_tick_at: options ? tick : health.last_tick_at }));
+  mocks.http.listHealthFindings.mockImplementation(async (_project, _cursor, _signal, options) => ({ items: options?.state === "all" ? [...open, ...resolved] : open, last_tick_at: detectorTick }));
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const projects: readonly AccountProject[] = [
   { id: "prj_main", name: "Example project", profile: "native", can_write: true, can_manage_runners: true, states: [] },
@@ -87,13 +97,74 @@ it("puts shared host totals and every runner before grouped typed findings witho
   expect(within(attention).getByRole("link", { name: "Review policy" }).getAttribute("href")).toBe("/settings/integrations?project=prj_main");
   expect(within(attention).getByText("Example project", { exact: false })).toBeTruthy();
   for (const text of ["policy_digest", "git error_output", "Instrumentation coverage", "Configuration that shapes these numbers", "Check local workflow"]) expect(view.container.textContent).not.toContain(text);
-  const totals = live.textContent;
+  const totals = within(live).getAllByTestId("runner-capacity").map((row) => row.textContent);
   const slots = [...live.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
   view.unmount();
   render(<RunnersSectionView fleet={{ ...decodeFleet(fleetFixture), runners }} />);
   const settingsLive = screen.getByRole("region", { name: "Capacity right now", hidden: true });
-  expect(settingsLive.textContent).toBe(totals);
+  expect(within(settingsLive).getAllByTestId("runner-capacity").map((row) => row.textContent)).toEqual(totals);
   expect([...settingsLive.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
+});
+
+const appUpdates: UpdatesReport = {
+  ...updatesFixture,
+  current: "v1.2.4-op.r.328.g123456789abc",
+  runners: [
+    { runner_id: runners[1]!.id, display_name: "Example laptop", version: "v1.2.3", behind: true, online: true },
+    { runner_id: runners[0]!.id, display_name: "Example desktop", version: "v1.2.4-op.r.328.g123456789abc", behind: false, online: true },
+    { runner_id: runners[2]!.id, display_name: "Example build host", version: "", behind: false, online: true },
+  ],
+};
+
+it("joins reported versions by runner ID and keeps capacity and slot tones intact", () => {
+  const capacityRunners = runners.map((runner, index) => ({ ...runner, version: "unused fleet version", update: index === 1 ? { status: "requested", desired: { version: appUpdates.current } } : undefined }));
+  const view = render(<CapacityPanel runners={capacityRunners} appUpdates={appUpdates} />);
+  expect(screen.getByText("Runner")).toBeTruthy();
+  expect(screen.getByText("Version")).toBeTruthy();
+  expect(screen.getByText("Slots")).toBeTruthy();
+  const rows = screen.getAllByTestId("runner-capacity");
+  expect(within(rows[0]!).getByText(appUpdates.current)).toBeTruthy();
+  expect(within(rows[0]!).getByText("Same as the Hub")).toBeTruthy();
+  expect(within(rows[1]!).getByText("v1.2.3")).toBeTruthy();
+  expect(within(rows[1]!).getByText("Behind the Hub · Update requested").classList.contains("text-warning-foreground")).toBe(true);
+  expect(within(rows[2]!).getByText("Not reported")).toBeTruthy();
+  expect(screen.getByText("1 runner behind the Hub")).toBeTruthy();
+  expect(screen.queryByText("unused fleet version")).toBeNull();
+  const slots = [...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
+  view.rerender(<CapacityPanel runners={capacityRunners} appUpdates={null} />);
+  expect(screen.queryByText("Version")).toBeNull();
+  expect(screen.queryByText(/behind the Hub/)).toBeNull();
+  expect(screen.queryByText("Not reported")).toBeNull();
+  expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
+  expect([...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
+});
+
+it("keeps missing runner records unreported and pluralizes the Hub warning", () => {
+  render(<CapacityPanel runners={runners} appUpdates={{ ...appUpdates, runners: [], behind_count: 2 }} />);
+  expect(screen.getAllByText("Not reported")).toHaveLength(3);
+  expect(screen.getByText("2 runners behind the Hub")).toBeTruthy();
+  expect(screen.queryByText("Same as the Hub")).toBeNull();
+});
+
+it.each([true, false])("shows the Hub build and Version column only when updates are available (%s)", async (available) => {
+  mocks.api.fleet.mockResolvedValue({ runners });
+  if (available) mocks.api.appUpdates.mockResolvedValue(appUpdates);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
+  await screen.findByText(original.summary);
+  expect(mocks.api.appUpdates).toHaveBeenCalled();
+  const hub = screen.queryByText("Hub");
+  if (available) {
+    expect(hub?.parentElement?.textContent).toBe(`Hub${appUpdates.current}`);
+    expect(screen.getByText("Version")).toBeTruthy();
+    expect(screen.getByText(/^Behind the Hub/)).toBeTruthy();
+    mocks.api.appUpdates.mockResolvedValue({ ...appUpdates, current: "v1.2.5" });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh diagnostics" }));
+    await waitFor(() => expect(screen.getByText("Hub").parentElement?.textContent).toBe("Hubv1.2.5"));
+  } else {
+    expect(hub).toBeNull();
+    expect(screen.queryByText("Version")).toBeNull();
+    expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
+  }
 });
 
 it("keeps read-only policy review with its administrator and does not group unrelated checks", () => {
@@ -116,7 +187,7 @@ it.each([null, []])("keeps unavailable capacity distinct from no enrolled runner
 it.each([20, 19])("shows active utilization without attention when %i of 20 slots are working", (used) => {
   render(<DiagnosticsView {...viewProps} runners={runners.map((runner, index) => ({ ...runner, state: "active", update: undefined, problems: [], host_used: runner.host_capacity - (index === 2 ? 20 - used : 0), leases: Array.from({ length: runner.host_capacity - (index === 2 ? 20 - used : 0) }, (_, lease) => ({ ...base.leases[0]!, lease_id: `${runner.id}-${lease}` })) }))} />);
   expect(screen.getByText(`${used} of 20 slots running work`)).toBeTruthy();
-  expect(screen.getByText("No open findings.")).toBeTruthy();
+  expect(screen.getByText(/No open findings\./)).toBeTruthy();
   expect(screen.queryByText("Needs attention", { selector: "[data-slot=badge]" })).toBeNull();
 });
 
@@ -133,7 +204,7 @@ it.each([
 });
 
 it("updates findings in place, retains resolutions until reload, and restores reopened findings", async () => {
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByText(original.summary);
   expect(openCount()).toBe("1");
   const row = screen.getByText(original.summary).closest("article")!;
@@ -173,18 +244,18 @@ it("updates findings in place, retains resolutions until reload, and restores re
 });
 
 it("catches up on visibility and ignores failed or superseded live reads after unmount", async () => {
-  const view = render(<DiagnosticsRoute />);
+  const view = render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByText(original.summary);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
-  mocks.api.healthFindings.mockClear();
+  mocks.http.listHealthFindings.mockClear();
   act(() => emit());
-  expect(mocks.api.healthFindings).not.toHaveBeenCalled();
+  expect(mocks.http.listHealthFindings).not.toHaveBeenCalled();
   visibility.mockReturnValue("visible");
   open = [original, next];
   act(() => document.dispatchEvent(new Event("visibilitychange")));
   await screen.findByText(next.summary);
   let release!: (value: unknown) => void;
-  mocks.api.healthFindings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  mocks.http.listHealthFindings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
   act(() => emit("older"));
   open = [next];
   resolved = [{ ...original, resolved_at: tick }];
@@ -193,21 +264,21 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   await act(async () => release({ items: [original], last_tick_at: tick }));
   expect(openCount()).toBe("1");
   expect(screen.getByText("Resolved")).toBeTruthy();
-  mocks.api.healthFindings.mockRejectedValueOnce(new Error("offline"));
+  mocks.http.listHealthFindings.mockRejectedValueOnce(new Error("offline"));
   act(() => emit("failed"));
   await screen.findByText(/Unable to refresh findings/);
   expect(screen.getByText("Resolved")).toBeTruthy();
   const source = FindingEvents.current;
   view.unmount();
   expect(source.close).toHaveBeenCalledOnce();
-  mocks.api.healthFindings.mockClear();
+  mocks.http.listHealthFindings.mockClear();
   act(() => { emit("unmounted"); document.dispatchEvent(new Event("visibilitychange")); });
-  expect(mocks.api.healthFindings).not.toHaveBeenCalled();
+  expect(mocks.http.listHealthFindings).not.toHaveBeenCalled();
 });
 
 it("opens the selected finding in its project chat from every Needs attention row", async () => {
   open = [original, next];
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   await screen.findByRole("button", { name: `Ask about ${original.summary}` });
   for (const finding of open) {
     fireEvent.click(screen.getByRole("button", { name: `Ask about ${finding.summary}` }));
@@ -217,9 +288,130 @@ it("opens the selected finding in its project chat from every Needs attention ro
 
 it("keeps Ask visible but unavailable when the viewer cannot write project chat", async () => {
   mocks.bootstrap.projects[0]!.can_write = false;
-  render(<DiagnosticsRoute />);
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
   const ask = await screen.findByRole("button", { name: `Ask about ${original.summary}` });
   expect(ask.hasAttribute("disabled")).toBe(true);
   fireEvent.click(ask);
   expect(screen.queryByRole("region", { name: "Ask about this finding" })).toBeNull();
+});
+
+
+it("shares one findings read per project and detector tick between Diagnostics and the sidebar", async () => {
+  vi.useFakeTimers();
+  const projects = ["prj_first", "prj_second", "prj_third", "prj_fourth"].map((id) => ({ id, name: `Project ${id}`, profile: "native", can_write: true }));
+  mocks.bootstrap.projects = projects;
+  const finding = { ...original, id: "shared_finding", severity: "attention", summary: "Shared project finding", subject: { kind: "project", id: "prj_first" }, resolved_at: null as string | null };
+  let items = [finding];
+  let at = health.last_tick_at;
+  let unavailable = false;
+  const request = vi.fn(async (url: string) => {
+    if (unavailable && url.includes("prj_second/")) return Response.json({ error: "temporarily unavailable" }, { status: 503 });
+    const since = new URL(url, "https://example.test").searchParams.get("since");
+    const visible = items.filter((item) => item.resolved_at === null || (since !== null && item.resolved_at >= since));
+    return Response.json({ items: url.includes("prj_first/") ? visible : [], last_tick_at: at });
+  });
+  const options = { origin: "", apiBase: "/api/v2/organizations/org_fixture", csrfToken: "", fetch: request };
+  const http = makeWorkHttp(options);
+  mocks.api.healthFindings.mockImplementation(makeAccountApi(options).healthFindings);
+  mocks.http.listHealthFindings.mockImplementation(http.listHealthFindings);
+  function SidebarProbe() {
+    const findings = useSidebarFindings(projects.map((project) => ({ ...project })));
+    return <nav aria-label="Sidebar findings">{findings.map((item) => <a key={item.id} href={item.to}>{item.summary}</a>)}</nav>;
+  }
+  const view = render(<HealthFindingsProvider projects={projects}><SidebarProbe /></HealthFindingsProvider>);
+  await act(async () => {});
+  view.rerender(<HealthFindingsProvider projects={projects}><SidebarProbe /><DiagnosticsRoute /></HealthFindingsProvider>);
+  await act(async () => {});
+  const expectReads = (perProject: number) => {
+    for (const project of projects) expect(request.mock.calls.filter(([url]) => url.includes(`/projects/${project.id}/health/findings`))).toHaveLength(perProject);
+  };
+  const sidebar = screen.getByRole("navigation", { name: "Sidebar findings" });
+  expect(within(sidebar).getByRole("link", { name: finding.summary }).getAttribute("href")).toBe("/diagnostics");
+  expect(openCount()).toBe("1");
+  expectReads(1);
+  for (let second = 0; second < 60; second++) {
+    view.rerender(<HealthFindingsProvider projects={projects.map((project) => ({ ...project }))}><SidebarProbe /><DiagnosticsRoute /></HealthFindingsProvider>);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      FindingEvents.current.dispatchEvent(new Event("open"));
+      FindingEvents.current.dispatchEvent(new MessageEvent("activity", { data: String(second) }));
+      document.dispatchEvent(new Event("visibilitychange"));
+      emit(at);
+    });
+    expectReads(1);
+  }
+  at = "2026-10-07T10:01:00Z";
+  items = [{ ...finding, resolved_at: at }];
+  await act(async () => emit(at));
+  expectReads(2);
+  expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
+  expect(screen.getByText("Resolved")).toBeTruthy();
+  expect(screen.getByText(finding.summary).closest("article")!.querySelector("time")!.dateTime).toBe(at);
+  expect(openCount()).toBe("0");
+  at = "2026-10-07T10:02:00Z";
+  items = [finding, { ...finding, id: "another_finding", summary: "Another finding" }];
+  await act(async () => emit(at));
+  expectReads(3);
+  expect(screen.queryByText("Resolved")).toBeNull();
+  expect(openCount()).toBe("2");
+  expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
+  expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(8);
+  unavailable = true;
+  at = "2026-10-07T10:03:00Z";
+  items = items.map((item) => item.id === finding.id ? { ...item, resolved_at: at } : item);
+  await act(async () => emit(at));
+  expectReads(4);
+  expect(screen.getByText(/Unable to refresh findings/)).toBeTruthy();
+  at = "2026-10-07T10:04:00Z";
+  await act(async () => emit(at));
+  expectReads(5);
+  expect(screen.getByText(/Unable to refresh findings/)).toBeTruthy();
+  unavailable = false;
+  at = "2026-10-07T10:05:00Z";
+  await act(async () => emit(at));
+  expectReads(6);
+  expect(screen.queryByText(/Unable to refresh findings/)).toBeNull();
+  expect(screen.getByText("Resolved")).toBeTruthy();
+  expect(screen.getByText(finding.summary).closest("article")!.querySelector("time")!.dateTime).toBe("2026-10-07T10:03:00Z");
+  expect(openCount()).toBe("1");
+  expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
+  expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
+  expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(20);
+});
+
+it.each([
+  ["subscription", 85, 30_000, "At risk"],
+  ["subscription", 80, 30_000, "At risk"],
+  ["subscription", 40, 30_000, null],
+  ["subscription", 85, 120_000, "Stale"],
+  ["subscription", 85, -1_000, "Stale"],
+  ["subscription", undefined, undefined, "Unknown"],
+  ["api_key", 95, 30_000, null],
+  ["unknown", 95, 30_000, null],
+  [undefined, 95, 30_000, null],
+] as const)("shows capacity billing and quota risk: %s %s %s", (billing, percent, age, status) => {
+  const now = Date.parse("2026-10-15T12:00:00Z");
+  const capacity = { ...base.provider_capacity[0]!, billing, usage_windows: [{ kind: "weekly", percent_used: percent, observed_at: age === undefined ? undefined : new Date(now - age).toISOString(), reset_at: new Date(now + 3_600_000).toISOString() }] };
+  render(<CapacityPanel runners={[{ ...base, provider_capacity: [capacity] }]} now={now} />);
+  const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
+  expect(panel.getByText(new RegExp(`${capacity.backend}.*${billing === "subscription" ? "Subscription" : billing === "api_key" ? "API key" : "Billing unknown"}`))).toBeTruthy();
+  if (billing === "api_key") {
+    expect(panel.getByRole("link", { name: "View runner-reported API spend in Usage" }).getAttribute("href")).toBe("/usage");
+    expect(panel.queryByText(/95% used|At risk|Resets|Observed/)).toBeNull();
+  } else {
+    expect(panel.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();
+    expect(panel.getByText(/Resets/)).toBeTruthy();
+    expect(panel.getByText(age === undefined ? "Observation unknown" : /Observed/)).toBeTruthy();
+    if (status) expect(panel.getByText(status)).toBeTruthy();
+    else expect(panel.queryByText("At risk")).toBeNull();
+  }
+  expect(panel.queryByText("Healthy")).toBeNull();
+});
+
+it("clears subscription risk at reset", () => {
+  const now = Date.parse("2026-10-15T12:00:00Z");
+  render(<CapacityPanel runners={[{ ...base, provider_capacity: [{ ...base.provider_capacity[0]!, billing: "subscription", usage_windows: [{ kind: "five_hour", percent_used: 85, observed_at: new Date(now - 30_000).toISOString(), reset_at: new Date(now).toISOString() }] }] }]} now={now} />);
+  const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
+  expect(panel.getByText("Stale")).toBeTruthy();
+  expect(panel.queryByText("At risk")).toBeNull();
 });

@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account string, now func() time.Time, models func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error)) func() ([]providercapacity.Report, error) {
+func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account string, now func() time.Time, models func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error), billing func(context.Context, workflowconfig.AgentBackend) (string, error), usage ...*runner.ProviderUsage) func() ([]providercapacity.Report, error) {
 	account = strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-' {
 			return r
@@ -30,7 +30,13 @@ func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account
 	workflow := workflowconfig.Default().WithAgentDefaults(cfg.Global.Agents, cfg.Global.Budget)
 	return func() ([]providercapacity.Report, error) {
 		if cfg.Client.ProviderCapacityFile != "" {
-			return providercapacity.Load(cfg.Client.ProviderCapacityFile)
+			reports, err := providercapacity.Load(cfg.Client.ProviderCapacityFile)
+			if err != nil {
+				return nil, err
+			}
+			reports = withProviderBilling(ctx, reports, workflow.AgentBackendConfigs(), billing, usage)
+			reports = withProviderUsage(reports, usage)
+			return reports, providercapacity.Validate(reports)
 		}
 		var reports []providercapacity.Report
 		for _, backend := range workflow.AgentBackendConfigs() {
@@ -71,6 +77,8 @@ func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account
 			report.ObservedAt = now().UTC()
 			reports = append(reports, report)
 		}
+		reports = withProviderBilling(ctx, reports, workflow.AgentBackendConfigs(), billing, usage)
+		reports = withProviderUsage(reports, usage)
 		return reports, providercapacity.Validate(reports)
 	}
 }
@@ -84,4 +92,54 @@ func runnerProviderModels(ctx context.Context, cfg workflowconfig.AgentBackend) 
 		return provider.ListModels(ctx, runner.AgentProcessRequest{})
 	}
 	return nil, nil
+}
+
+func withProviderUsage(reports []providercapacity.Report, usage []*runner.ProviderUsage) []providercapacity.Report {
+	for i := range reports {
+		if len(usage) > 0 && usage[0] != nil {
+			reports[i].Billing = usage[0].Billing(reports[i].Backend)
+			if windows := usage[0].Windows(reports[i].Backend); len(windows) > 0 {
+				reports[i].UsageWindows = windows
+			}
+		}
+		reports[i].Billing = reports[i].BillingBasis()
+		if reports[i].Billing == "api_key" {
+			reports[i].UsageWindows = nil
+		}
+	}
+	return reports
+}
+
+func runnerProviderBilling(ctx context.Context, cfg workflowconfig.AgentBackend) (string, error) {
+	backend, err := buildAgentBackend(cfg)
+	if err != nil {
+		return "unknown", err
+	}
+	if provider, ok := backend.(runner.AgentBillingProvider); ok {
+		return provider.BillingBasis(ctx, runner.AgentProcessRequest{})
+	}
+	return "unknown", nil
+}
+
+func withProviderBilling(ctx context.Context, reports []providercapacity.Report, backends []workflowconfig.AgentBackend, billing func(context.Context, workflowconfig.AgentBackend) (string, error), usage []*runner.ProviderUsage) []providercapacity.Report {
+	if billing == nil {
+		return reports
+	}
+	for i := range reports {
+		reports[i].Billing = "unknown"
+		for _, backend := range backends {
+			if backend.ID != reports[i].Backend || backend.Disabled {
+				continue
+			}
+			observed, err := billing(ctx, backend)
+			if err == nil && providercapacity.ValidBilling(observed) && observed != "" {
+				reports[i].Billing = observed
+			}
+			break
+		}
+		if len(usage) > 0 {
+			usage[0].ObserveBilling(reports[i].Backend, reports[i].Billing)
+		}
+	}
+	return reports
 }

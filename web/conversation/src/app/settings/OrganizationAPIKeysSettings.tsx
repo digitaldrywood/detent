@@ -15,61 +15,16 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog.tsx";
-import {
-  useAccountApi,
-  useAccountBootstrap,
-  useCanManage,
-} from "../account/context.ts";
+import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { ControlError, NativeSelect } from "../account/controls.tsx";
+import { KeyScope, lastKeyUse } from "./APIKeysMCPSettings.tsx";
 import {
-  AccessKeyManager,
-  KeyScope,
-  lastKeyUse,
-} from "./PersonalAPIKeysSettings.tsx";
-import {
-  SettingsPageContainer,
   SettingsRow,
   SettingsSection,
   useRelativeTimeTick,
 } from "./settingsLayout.tsx";
 
-export function OrganizationAPIKeysSettings() {
-  const canManage = useCanManage();
-  return (
-    <SettingsPageContainer>
-      <SettingsSection title="Org settings · API & MCP" variant="plain">
-        <SettingsRow
-          title="Organization access"
-          description="A key never grants more than its owner has. Manage your personal keys in Account settings → API keys."
-        />
-      </SettingsSection>
-      {canManage ? (
-        <>
-          <AccessKeyManager service />
-          <OrganizationKeyControls />
-        </>
-      ) : (
-        <SettingsSection title="Personal API keys">
-          <SettingsRow
-            title="Manage your keys in account settings"
-            description="Organization key controls are available to owners and admins."
-            control={
-              <Button
-                size="sm"
-                variant="outline"
-                render={<a href="api-keys" />}
-              >
-                Open my API keys
-              </Button>
-            }
-          />
-        </SettingsSection>
-      )}
-    </SettingsPageContainer>
-  );
-}
-
-function OrganizationKeyControls() {
+export function OrganizationKeyControls() {
   const api = useAccountApi();
   const account = useAccountBootstrap();
   useRelativeTimeTick(60_000);
@@ -137,7 +92,9 @@ function OrganizationKeyControls() {
       if (currentApi.current !== api) return;
       setKeys((current) => [
         ...current,
-        ...listed.keys.filter((key) => !current.some((item) => item.id === key.id)),
+        ...listed.keys.filter(
+          (key) => !current.some((item) => item.id === key.id),
+        ),
       ]);
       setNextCursor(listed.next_cursor ?? "");
     } catch {
@@ -152,7 +109,7 @@ function OrganizationKeyControls() {
   );
   return (
     <>
-      <SettingsSection title="Personal key policy">
+      <SettingsSection title="Member keys">
         {error && (
           <div className="p-3">
             <ControlError message={error} />
@@ -196,10 +153,9 @@ function OrganizationKeyControls() {
             }
           />
         )}
-      </SettingsSection>
-      {loaded && (
-        <>
-          <SettingsSection title="Approval queue">
+        {loaded && (
+          <>
+            <SettingsRow title="Approval queue" />
             {pending.length === 0 && (
               <SettingsRow title="No keys awaiting approval" />
             )}
@@ -223,8 +179,7 @@ function OrganizationKeyControls() {
                 }
               />
             ))}
-          </SettingsSection>
-          <SettingsSection title="Member keys">
+            <SettingsRow title="Personal keys reaching this organization" />
             {keys.length === 0 && (
               <SettingsRow
                 title="No member keys reach this org"
@@ -253,13 +208,13 @@ function OrganizationKeyControls() {
                       size="xs"
                       variant="destructive-outline"
                       disabled={busy}
-                      aria-label={`Revoke ${key.name} for this org`}
+                      aria-label={`Block ${key.name} for this org`}
                       onClick={() => {
                         setError(null);
                         setRevoke(key);
                       }}
                     >
-                      Revoke for this org
+                      Block for this org
                     </Button>
                   )
                 }
@@ -280,9 +235,9 @@ function OrganizationKeyControls() {
                 }
               />
             )}
-          </SettingsSection>
-        </>
-      )}
+          </>
+        )}
+      </SettingsSection>
       <AlertDialog
         open={revoke !== null}
         onOpenChange={(value) => {
@@ -292,7 +247,7 @@ function OrganizationKeyControls() {
         <AlertDialogPopup>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Revoke {revoke?.name} for {account?.organization.name}?
+              Block {revoke?.name} for {account?.organization.name}?
             </AlertDialogTitle>
             <AlertDialogDescription>
               Access to this organization stops immediately. The key keeps its
@@ -317,7 +272,7 @@ function OrganizationKeyControls() {
                 if (revoke) void mutate(() => api.blockMemberKey(revoke.id));
               }}
             >
-              Revoke for this org
+              Block for this org
             </Button>
           </AlertDialogFooter>
         </AlertDialogPopup>

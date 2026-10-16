@@ -268,7 +268,7 @@ func TestHostedSchemaFixtureTenantIsolation(t *testing.T) {
 			}
 			// The same user and issue must be fresh in each seeded copy.
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
-			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "isolation"}, Title: "isolated", State: "Todo"})
+			response := f.request(t, owner, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "isolation"}, Title: "isolated", State: "Todo"})
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
@@ -303,6 +303,7 @@ func newHostedSecurityFixture(t *testing.T, configure ...func(*Config)) hostedSe
 	seedHostedSecurityDatabaseTemplate(t, cfg)
 	service := openTestService(t, cfg)
 	project := tracker.ProjectID("prj_security")
+	seedNativeFixturePolicy(t, service, "org_security/"+string(project))
 	return hostedSecurityFixture{service: service, provider: provider, project: project, base: "/api/v2/organizations/org_security/projects/" + string(project)}
 }
 
@@ -436,7 +437,7 @@ func TestHostedSecurityRoleProjectMatrix(t *testing.T) {
 				if grant == "write" && role != "viewer" {
 					writeStatus = http.StatusOK
 				}
-				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel", State: "Todo"}
+				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "create"}, Title: "new issue", Body: "private-body-sentinel" + issueContractTestSections, State: "Todo"}
 				requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items", command), writeStatus)
 				policyStatus, revokeStatus := http.StatusNotFound, http.StatusNotFound
 				if grant == "write" && (role == "owner" || role == "admin") {
@@ -629,7 +630,7 @@ func TestHostedSecuritySupportSessionConstraints(t *testing.T) {
 			}
 			requireNativeStatus(t, f.request(t, user, http.MethodGet, path, nil), test.want)
 			if test.want == http.StatusOK {
-				command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "support-write"}, Title: "private-body-sentinel", State: "Todo"}
+				command := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "support-write"}, Title: "private-body-sentinel", State: "Todo"}
 				wantWrite := http.StatusNotFound
 				if test.role != "viewer" && test.grant == "write" {
 					wantWrite = http.StatusOK
@@ -662,7 +663,7 @@ func TestHostedSecurityReplayAndCursorRevocation(t *testing.T) {
 	reader := f.user(t, "reader", "viewer", "reader@example.test", "read", "")
 	f.seedIssue(t, 1)
 	f.seedIssue(t, 2)
-	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "Receipt reconnect", State: "Todo"}
+	command := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "cached-command"}, Title: "Receipt reconnect", State: "Todo"}
 	created := f.request(t, writer, http.MethodPost, f.base+"/work-items", command)
 	requireNativeStatus(t, created, http.StatusOK)
 	// Simulate a pre-upgrade receipt: its session suffix must not let a
@@ -1004,7 +1005,7 @@ func TestHostedSecurityRoleRevocationAppliesImmediately(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "member", "member", "member@example.test", "write", "")
-	command := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "before-role-change"}, Title: "private-mutation-sentinel", State: "Todo"}
+	command := tracker.CreateIssue{Body: nativeContractTestBody, Mutation: tracker.Mutation{IdempotencyKey: "before-role-change"}, Title: "private-mutation-sentinel", State: "Todo"}
 	response := f.request(t, user, http.MethodPost, f.base+"/work-items", command)
 	requireNativeStatus(t, response, http.StatusOK)
 	replay := f.request(t, user, http.MethodPost, f.base+"/work-items", command)

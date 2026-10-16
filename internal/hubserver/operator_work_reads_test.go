@@ -139,10 +139,10 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 			if i%2 != 0 {
 				unit = "<\"\\"
 			}
-			body = strings.Repeat(unit, ((256<<10)-len(needle))/len(unit))
-			body += strings.Repeat("x", (256<<10)-len(body)-len(needle)) + needle
+			body = strings.Repeat(unit, ((256<<10)-len(needle)-len(issueContractTestSections))/len(unit))
+			body += strings.Repeat("x", (256<<10)-len(body)-len(needle)-len(issueContractTestSections)) + needle
 		}
-		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-%d", i)}, Title: strings.Repeat("<", 492) + fmt.Sprintf("%08d", i), Body: body, State: "Todo", Labels: []string{"bounded"}}
+		request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-%d", i)}, Title: strings.Repeat("<", 492) + fmt.Sprintf("%08d", i), Body: body + issueContractTestSections, State: "Todo", Labels: []string{"bounded"}}
 		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
@@ -241,7 +241,7 @@ func TestOperatorNativeWorkListBytePages(t *testing.T) {
 			for _, tool := range []string{operatortool.WorkItem, operatortool.WorkExport} {
 				data := hostedContextData(t, call("tools/call", tool, itemArgs), false)
 				var result operatortool.WorkReadResult[tracker.NativeIssue]
-				if err := json.Unmarshal(data, &result); err != nil || result.Data.Body != needle || len(result.Data.OmittedFields) != 0 {
+				if err := json.Unmarshal(data, &result); err != nil || result.Data.Body != needle+issueContractTestSections || len(result.Data.OmittedFields) != 0 {
 					t.Fatalf("%s lost full detail", tool)
 				}
 			}

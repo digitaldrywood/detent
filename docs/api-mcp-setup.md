@@ -323,6 +323,20 @@ Native `verify_fix` answers a Done issue whose `verification.state` is `pending`
 
 Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
 
+`edit_item` replaces the body with the complete reviewed text; it never truncates
+or merges partial content. Its body limit is 64 KiB of UTF-8, and the complete
+serialized JSON arguments, including escaping and other fields, must fit 64 KiB.
+An existing body above 32 KiB can be corrected when the full replacement fits
+that request bound. For larger native replacements, use the supported
+`PATCH /api/v2/organizations/{organization_id}/projects/{project_id}/work-items/{work_item_id}`
+with `idempotency_key`, `expected_revision` and the complete `body`, under the
+same write authority and project grants. That application command accepts a
+body up to 256 KiB and a request up to 1 MiB. Personal keys confirm the supplied
+body's issue-contract sections; service and worker keys preserve existing
+confirmations without confirming changed sections. Comment and filing MCP
+limits remain 32 KiB. See [native collaboration](hub-api.md#native-collaboration-protocol)
+for the application request contract.
+
 Native `file_issue` also accepts an optional `report_context` object with `url` (at most 2048 bytes) and `app_build`, `browser`, `os`, `viewport` and `captured_at` (at most 256 bytes each), all single-line strings. Unknown keys, oversized or non-string values are refused with `invalid_request`, and the refusal never repeats the submitted values. `work_item` returns the stored context; list and board reads omit it. A Reporter bug whose `report_context` carries `browser` and `app_build` satisfies the template's Environment section. Upload network HAR exports (`.har`) with `detent attach` or the REST attachment upload API, because `upload_attachment` accepts only about 44 KB; use `upload_attachment` for small console log exports (`.log`). Read either back with `read_attachment`.
 
 Reporter filings enter Triage and require nonempty sections. Bugs use `Steps to reproduce`, `Expected`, `Actual`, `Where` (screen or URL), and `Environment` (browser/OS and app build; use available context). Change requests use `Current behavior`, `Desired behavior`, and `Why`. Missing or empty sections return `invalid_request` with the missing headings and create no issue. `work_config` returns `reporter_templates`, a map from each type to its effective required headings. The New issue form pre-fills these headings when a type is selected.
@@ -579,6 +593,19 @@ revisions expose later edits. Reads use stored data and never refresh GitHub.
 This tool requires the same read scope and current project grants as `work_item`.
 Existing tools retain their limits and response shapes.
 
+## Associate an existing release-pick PR
+
+The project-scoped `associate_release_pick` MCP tool uses the supported
+[native release-pick delivery contract](hub-api.md#existing-release-pick-delivery).
+Supply the dependent `work_item_id`, its `expected_revision`, a stable
+`request_id`, and the exact source/PR/release identities in `release_pick`.
+The source dependency must already be terminal and its fix merged on develop.
+The owner verifies the repository and commit provenance, opens an independent
+native Change, and preserves all holds. The existing runner captures the exact
+source, reviews, gates, and lands on the recorded frozen release branch.
+The tool does not merge or deploy. Worker completion contracts do not grant
+permission to call this operator mutation.
+
 ## Native validation evidence
 
 `get_change` defaults to the current immutable version and current review,
@@ -640,7 +667,7 @@ no merge requirement and does not change any project's check policy.
 ## Hosted application context reads
 
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,
-`app_updates`, and `hosted_events` through the same adapter on HTTP and stdio.
+`app_updates`, `release_notes`, and `hosted_events` through the same adapter on HTTP and stdio.
 `app_bootstrap_payload` takes `{}` and returns the current organization/directory,
 actor, readable projects and workspace capabilities, support context, features,
 coordinator availability, model/effort/access preferences, plan summary and hub
@@ -652,6 +679,13 @@ versions, online/behind/refusal context and the behind count. It requires a
 non-viewer member with runner management on every organization project and an API
 key, when used, that can read every project. Removing a role or grant takes effect
 on the next call and discovery; an old catalog grants no access.
+
+`release_notes` takes optional `limit` (default 20, maximum 100) and `cursor`.
+It returns the embedded builds newest first, entries, internal counts, running
+and operator-patch flags, per-user unread state, `has_unread`, and an optional
+`next_cursor`. Viewers can read it. It shares the hosted release-notes API owner
+and performs no external requests; marking seen uses the authenticated browser
+API. Bootstrap also includes `has_unread`.
 
 `hosted_events` takes `project_id`, optional `workspace_id`, and optional `cursor`.
 It returns one current collaboration invalidation sequence, an optional safe

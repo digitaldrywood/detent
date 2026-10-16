@@ -301,6 +301,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 				Type: AgentUpdateRateLimits,
 				RateLimits: &telemetry.RateLimits{
 					LimitID:   "codex-primary",
+					Primary:   &telemetry.RateLimitBucket{WindowKind: "five_hour", ObservedAt: &startedAt},
 					LimitName: "Codex primary",
 					Credits: &telemetry.RateLimitBucket{
 						HasCredits: true,
@@ -312,6 +313,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 42}
+	providerUsage := &ProviderUsage{}
 	now := newFakeClock(
 		startedAt,
 		startedAt,
@@ -324,7 +326,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	prNumber := 133
 
 	runner, err := NewRunner(Dependencies{
-		ProjectID: "detent",
+		ProviderUsage: providerUsage,
+		ProjectID:     "detent",
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Workspace:   config.Workspace{},
@@ -383,6 +386,11 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+
+	windows := providerUsage.Windows(result.RuntimeIdentity.BackendID)
+	if len(windows) != 1 || windows[0].Kind != "five_hour" || !windows[0].ObservedAt.Equal(startedAt) {
+		t.Fatalf("runner usage not observed: %+v", windows)
 	}
 
 	if result.FinalMessage != "hello\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow." {
@@ -6285,8 +6293,12 @@ func TestRunnerAuditUsesConfiguredBackendInReadOnlyWorkspace(t *testing.T) {
 			workspaceBackend := &fakeWorkspaceBackend{}
 			startedAt := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 			processStartedAt := startedAt.Add(time.Second)
+			providerUsage := &ProviderUsage{}
+			percent := 85.0
+			resetAt := startedAt.Add(time.Hour)
 			auditBackend := &fakeCodexClient{
 				updates: []AgentUpdate{
+					{Type: AgentUpdateRateLimits, RateLimits: &telemetry.RateLimits{Primary: &telemetry.RateLimitBucket{WindowKind: "five_hour", PercentUsed: &percent, ObservedAt: &startedAt, ResetAt: &resetAt}}},
 					{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: processStartedAt}},
 					{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No actionable security findings.","findings":[]}`},
 				},
@@ -6299,6 +6311,7 @@ func TestRunnerAuditUsesConfiguredBackendInReadOnlyWorkspace(t *testing.T) {
 			}
 			runner, err := NewRunner(Dependencies{
 				ProjectID:         "prj_example",
+				ProviderUsage:     providerUsage,
 				SecurityAuditRoot: auditRoot,
 				ServiceConnection: serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"},
 				Workflow: config.Workflow{Config: config.Config{
@@ -6341,6 +6354,11 @@ func TestRunnerAuditUsesConfiguredBackendInReadOnlyWorkspace(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Audit() error = %v", err)
 			}
+			windows := providerUsage.Windows("codex")
+			if len(windows) != 1 || windows[0].Kind != "five_hour" || windows[0].PercentUsed == nil || *windows[0].PercentUsed != 85 || !windows[0].ObservedAt.Equal(startedAt) || !windows[0].ResetAt.Equal(resetAt) {
+				t.Fatalf("audit provider usage = %+v", windows)
+			}
+
 			if execution.Result.Verdict != securityaudit.VerdictPass || execution.AuthenticationMode != test.authentication {
 				t.Fatalf("Audit() execution = %#v, want subscription-authenticated pass", execution)
 			}

@@ -91,6 +91,16 @@ export function actorLabel(
   runnerNames?: RunnerNames,
 ): string {
   if (actor === undefined) return "Someone";
+  const principal = principalLabel(actor, viewerPrincipalId, runnerName, runnerNames);
+  return actor.agent === undefined || actor.agent === "" ? principal : `${principal} via ${actor.agent}`;
+}
+
+function principalLabel(
+  actor: NativeActor,
+  viewerPrincipalId: string | null,
+  runnerName: string | null,
+  runnerNames?: RunnerNames,
+): string {
   if (actor.kind === "integration" && actor.principal_id === "auto_archive") return "Detent";
   if (viewerPrincipalId !== null && actor.principal_id === viewerPrincipalId) return "You";
   if (actor.kind === "runner") {

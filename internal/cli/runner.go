@@ -122,7 +122,12 @@ func withRunnerFactoryWithProjectTokens(
 	serviceTokenSource func(string) string,
 	isolationPolicy func() (isolation.Policy, error),
 	tokenSource func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error),
+	usage ...*runnerpkg.ProviderUsage,
 ) project.Factory {
+	var providerUsage *runnerpkg.ProviderUsage
+	if len(usage) > 0 {
+		providerUsage = usage[0]
+	}
 	var hostCache atomic.Pointer[toolcache.Report]
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		if preparation, ok := deps.Scheduling.(interface {
@@ -159,7 +164,7 @@ func withRunnerFactoryWithProjectTokens(
 			}); ok {
 				identity = reporter.CommitIdentity()
 			}
-			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, isolationPolicy)
+			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, isolationPolicy)
 			if err == nil {
 				if reporter, ok := deps.Scheduling.(interface {
 					ReportCommitPolicy(string, workspace.CommitReport)
@@ -232,7 +237,7 @@ func buildRunner(
 	serviceConnection serviceapi.Connection,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
-	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, nil, isolationPolicies...)
+	return buildRunnerWithIdentity(context.Background(), workflow, projectID, projectWorkdir, memory, goBudget, sessionStore, logger, serviceConnection, workspace.CommitIdentity{}, nil, nil, isolationPolicies...)
 }
 
 func buildRunnerWithIdentity(
@@ -247,6 +252,7 @@ func buildRunnerWithIdentity(
 	serviceConnection serviceapi.Connection,
 	commitIdentity workspace.CommitIdentity,
 	buildCache *toolcache.Managed,
+	providerUsage *runnerpkg.ProviderUsage,
 	isolationPolicies ...func() (isolation.Policy, error),
 ) (orchestrator.Runner, error) {
 	deps, err := buildRunnerDependenciesWithIdentity(ctx, workflow, projectID, projectWorkdir, memory, sessionStore, logger, serviceConnection, commitIdentity, isolationPolicies...)
@@ -255,6 +261,7 @@ func buildRunnerWithIdentity(
 	}
 	deps.GoBudget = goBudget
 	deps.BuildCache = buildCache
+	deps.ProviderUsage = providerUsage
 	run, err := runnerpkg.NewRunner(deps)
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
@@ -536,7 +543,7 @@ func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions, pol
 
 	opts := []codex.AppServerOption{codex.WithThreadPreparation(func(ctx context.Context, threadID string) error {
 		return prepareLegacyCodexRollout(ctx, serviceCommand.Environment["CODEX_HOME"], threadID)
-	})}
+	}), codex.WithCapacityAccount(serviceCommand.Environment["CODEX_HOME"])}
 	if timeout := durationFromMillis(cfg.ReadTimeoutMS); timeout > 0 {
 		opts = append(opts, codex.WithReadTimeout(timeout))
 	}
