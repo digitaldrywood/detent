@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -860,6 +861,51 @@ func TestRunnerClaimRevalidatesStaleAuthentication(t *testing.T) {
 			}
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='scheduler.decision'").Scan(&count); err != nil || count != 0 {
 				t.Fatalf("stale authority mutated scheduling history: count=%d error=%v", count, err)
+			}
+		})
+	}
+}
+
+func TestSpriteRunnerAccessRouting(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, initial string
+		tier          *string
+		sprite        bool
+		status        int
+	}{
+		{"machine sandbox", "native-trusted", new("sandbox"), false, http.StatusOK},
+		{"sprite sandbox refused", "native-trusted", new("sandbox"), true, http.StatusUnprocessableEntity},
+		{"legacy sprite preserved", "sandbox", nil, true, http.StatusOK},
+		{"legacy sprite full access", "sandbox", new("native-trusted"), true, http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.redemption.IsolationTier = test.initial
+			if test.sprite {
+				r.redemption.SpriteName = r.redemption.Hostname
+			}
+			r.enroll(t)
+			var before runnerauth.Runner
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &before)
+			request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IsolationTier: test.tier}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, request)
+			requireNativeStatus(t, response, test.status)
+			if test.status != http.StatusOK && !strings.Contains(response.Body.String(), "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.") {
+				t.Fatalf("sandbox refusal=%s", response.Body.String())
+			}
+			var after runnerauth.Runner
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &after)
+			want, revision := test.initial, before.Revision
+			if test.status == http.StatusOK {
+				revision++
+				if test.tier != nil {
+					want = *test.tier
+				}
+			}
+			if after.IsolationTier != want || after.Revision != revision {
+				t.Fatalf("routing tier=%s revision=%d, want %s revision=%d", after.IsolationTier, after.Revision, want, revision)
 			}
 		})
 	}
