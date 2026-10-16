@@ -68,6 +68,7 @@ type PromptOptions struct {
 }
 
 type ValidatorPromptOptions struct {
+	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
 	Evidence             []tracker.NativeEvidence
 	implementationReview bool
@@ -411,6 +412,12 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString("If the pinned source is unavailable, mismatched, or cannot be read, report the instance/evidence limitation truthfully under the existing verdict and unverified-criterion policy. Missing source is not approval or an actionable source defect; do not demand an unrelated source edit.\n")
 	}
 	if opts.VersionID != "" {
+		if audit := opts.SecurityAudit; audit != nil {
+			b.WriteString("\nAccepted configured security-audit evidence from the Hub, bound to this immutable source:\n")
+			fmt.Fprintf(&b, "review_id=%q project_id=%q work_item_id=%q change_id=%q version_id=%q\n", audit.ReviewID, audit.ProjectID, audit.WorkItemID, audit.ChangeID, audit.VersionID)
+			fmt.Fprintf(&b, "repository=%q base=%s head=%s diff_digest=%s verdict=%q session_id=%d reviewer_version=%q reviewer_digest=%s\n", audit.Repository, audit.BaseSHA, audit.HeadSHA, audit.DiffDigest, audit.Verdict, audit.SessionID, audit.ReviewerVersion, audit.ReviewerDigest)
+			b.WriteString("This evidence establishes the recorded security-audit result for these source identities only. Independently assess every acceptance criterion and the command evidence; it does not approve this validator's decision or waive any requirement. For a criterion combining a command gate and security review, cite the genuine command receipt in receipt_ids and explain the audit's review_id and source binding in behavior. An audit review_id is not a command receipt_id.\n")
+		}
 		b.WriteString("\nHost-observed validation command receipts (bound to this immutable head and tree):\n")
 		for _, command := range opts.Commands {
 			fmt.Fprintf(&b, "receipt_id=%q command=%q head=%s tree=%s exit=%d output_truncated=%t\noutput=%q\n", command.ReceiptID, command.Command, command.HeadSHA, command.TreeSHA, command.ExitCode, command.OutputTruncated, command.Output)
