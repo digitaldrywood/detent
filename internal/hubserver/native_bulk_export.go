@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 
@@ -67,27 +68,27 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	for _, item := range items {
 		issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item.ID)
 		if err != nil {
-			return page, err
+			return page, bulkExportItemFailure(item.ID, "read issue", err)
 		}
 		exported := operatortool.WorkBulkExportItem{NativeIssue: s.nativeIssueResponse(issue), Comments: []tracker.NativeComment{}}
 		ids, err := nativePageIDs(ctx, s.database.reader, "SELECT id FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY sequence", scope.organization, scope.project, item.ID)
 		if err != nil {
-			return page, err
+			return page, bulkExportItemFailure(item.ID, "list comments", err)
 		}
 		for _, id := range ids {
 			comment, err := readNativeComment(ctx, s.database.reader, scope, item.ID, id)
 			if err != nil {
-				return page, err
+				return page, bulkExportItemFailure(item.ID, "read comment "+id, err)
 			}
 			exported.Comments = append(exported.Comments, comment)
 		}
 		raw, err := json.Marshal(exported)
 		if err != nil {
-			return page, err
+			return page, bulkExportItemFailure(item.ID, "encode item", err)
 		}
 		if size+len(raw)+1 > operatortool.WorkBulkExportMaxBytes {
 			if len(page.Items) == 0 {
-				return page, &operatortool.ResultTooLargeError{SizeBytes: size + len(raw), LimitBytes: operatortool.WorkBulkExportMaxBytes}
+				return page, bulkExportItemFailure(item.ID, "encode item", &operatortool.ResultTooLargeError{SizeBytes: size + len(raw), LimitBytes: operatortool.WorkBulkExportMaxBytes})
 			}
 			page.Truncated = true
 			break
@@ -106,4 +107,8 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 		}
 	}
 	return page, nil
+}
+
+func bulkExportItemFailure(id, step string, err error) error {
+	return &operatortool.WorkBulkExportItemError{Code: "bulk_export_item_failed", Message: "Work item could not be exported: " + step, WorkItemID: id, Err: fmt.Errorf("%s: %w", step, err)}
 }
