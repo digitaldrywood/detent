@@ -27,6 +27,7 @@ type keyOrganization struct {
 }
 
 type accessKey struct {
+	OAuth               bool              `json:"-"`
 	ID                  string            `json:"id"`
 	Name                string            `json:"name"`
 	Kind                string            `json:"kind"`
