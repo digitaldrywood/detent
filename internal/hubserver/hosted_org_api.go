@@ -58,6 +58,12 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 		e.PUT(path, s.workViewPreference, session)
 		e.DELETE(path, s.workViewPreference, session)
 	}
+	e.GET(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
+	e.POST(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
+	e.GET(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.PUT(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.DELETE(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)
+	e.PUT(hostedOrganizationBase+"/work-views/:view/favorite", s.savedWorkViews, session)
 	e.GET(hostedOrganizationBase+"/integrations/slack", s.getSlackIntegration, session)
 	e.PUT(hostedOrganizationBase+"/integrations/slack", s.setSlackIntegration, administration)
 	e.POST(hostedOrganizationBase+"/integrations/slack/test", s.testSlackIntegration, administration)
