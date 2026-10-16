@@ -494,9 +494,21 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 		b.WriteString("        - onboarding\n")
 		b.WriteString("      assigned_to_worker: true\n")
 	}
-	writeList(&b, "  ", "active_states", []string{"Todo", "In Progress", "Rework", "Merging"})
-	writeList(&b, "  ", "observed_states", []string{"Backlog", "Human Review", "Blocked"})
-	writeList(&b, "  ", "terminal_states", []string{"Done", "Cancelled"})
+	b.WriteString("  lanes:\n")
+	for _, lane := range []config.Lane{
+		{Name: "Backlog", Role: config.LaneHolding},
+		{Name: "Todo", Role: config.LaneActive},
+		{Name: "In Progress", Role: config.LaneActive},
+		{Name: "Rework", Role: config.LaneActive},
+		{Name: "Merging", Role: config.LaneActive},
+		{Name: "Human Review", Role: config.LaneHolding},
+		{Name: "Blocked", Role: config.LaneHolding},
+		{Name: "Done", Role: config.LaneTerminal},
+		{Name: "Cancelled", Role: config.LaneTerminal},
+	} {
+		writeScalar(&b, "    - ", "name", lane.Name)
+		writeScalar(&b, "      ", "role", lane.Role)
+	}
 	b.WriteString("  state_map:\n")
 	b.WriteString("    Cancelled: Done\n")
 	b.WriteString("  priority_map:\n")

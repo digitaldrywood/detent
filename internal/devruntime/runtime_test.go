@@ -231,8 +231,8 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 		if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
 			t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
 		}
-		if got := workflow.Config.Tracker.ActiveStates; !slices.Equal(got, []string{"Cancelled"}) {
-			t.Fatalf("ActiveStates = %#v, want terminal-only demo state", got)
+		if got := workflow.Config.Tracker.ActiveStates; len(got) != 0 {
+			t.Fatalf("ActiveStates = %#v, want no dispatchable demo lanes", got)
 		}
 		if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
 			t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want explicit demo transition")
@@ -332,8 +332,8 @@ func TestBuildScreenshotsDemoCreatesScenarioRuntime(t *testing.T) {
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		t.Fatal("AutoPromote.Enabled = true, want stable screenshots demo")
 	}
-	if got := workflow.Config.Tracker.ActiveStates; !slices.Equal(got, []string{"Cancelled"}) {
-		t.Fatalf("ActiveStates = %#v, want terminal-only screenshots demo", got)
+	if got := workflow.Config.Tracker.ActiveStates; len(got) != 0 {
+		t.Fatalf("ActiveStates = %#v, want no dispatchable screenshots demo lanes", got)
 	}
 	if len(workflow.Config.Tracker.Issues) <= len(kanbanDemoIssues()) {
 		t.Fatalf("screenshot issues = %d, want more than kanban fixture", len(workflow.Config.Tracker.Issues))
