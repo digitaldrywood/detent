@@ -855,42 +855,22 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
 	}
-	if len(reports) > 0 && normalizeState(issue.State) == normalizeState(running.Issue.State) {
-		reader, ok := o.connector.(connector.WorkflowStateReader)
-		if !ok {
-			return false
-		}
-		states, err := reader.WorkflowStates(ctx)
-		if err == nil && !dispatchableState(states, issue.State) {
-			preferred := terminalAttemptTodoState(o.cfg.ActiveStates)
-			if running.DiffStats.RecoveryStateAvailable {
-				preferred = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
-			}
-			target, allowed := nativeRetryLane(states, issue.State, preferred)
-			if !allowed {
-				err = fmt.Errorf("native workflow allows no instance retry from %s to %s", issue.State, preferred)
-			} else {
-				err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, event.CompletedAt, terminalAttemptWithoutWorkProductReason, workflowLaneMetadata{})
-				if err == nil {
-					issue.State = target
-				}
-			}
-		}
-		if err != nil {
-			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-			return true
-		}
-	}
 	running.Issue = issue
-	o.recordCompletionUsage(ctx, state, event, issue)
+	running.DispatchSourceState = issue.State
+	if _, native := o.connector.(connector.WorkflowStateReader); !native {
+		running.CompletionLane = issue.State
+	}
 	detail := workpad.Reason(signal)
+	if err := o.retryInstanceFailure(ctx, state, running, event.CompletedAt, detail); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
+	o.recordCompletionUsage(ctx, state, event, issue)
 	metadata := map[string]any{"blocker_evidence": evidence.Evidence}
 	if len(reports) > 0 && event.Result.NativeChange != nil {
 		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
 	}
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata)
 	delete(state.mergeReservations, issue.ID)
-	running.CompletionLane = issue.State
-	o.retryInstanceFailure(ctx, state, running, event.CompletedAt, detail)
 	return true
 }
