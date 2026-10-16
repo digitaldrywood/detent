@@ -266,7 +266,7 @@ func (d *ProjectDiagnostics) Redact() {
 		r := &d.Records[i]
 		if r.LatestError != "" {
 			r.LatestError = DiagnosticError(r.LatestError)
-			if r.LatestErrorCode == "invalid_request" || r.OperationPending {
+			if (r.LatestErrorCode == "invalid_request" || r.OperationPending) && slices.Contains([]string{"append.run.started", "append.run.observed", "append.run.checkpointed", "append.run.finished", "native.publishVersion"}, r.HostOperation) {
 				if _, ok := ParsePublicationRejection(r.LatestError); ok {
 					delete(r.Unavailable, "publication_rejection")
 				} else {
