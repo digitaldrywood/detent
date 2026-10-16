@@ -153,7 +153,11 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 			cfg.Projects = []globalconfig.Project{write("code", "codex-code", "codex", "sol"), write("design", "claude-design", "claude_code", "opus")}
 			projects := &runnerProjects{cfg: cfg, runtime: func() globalconfig.Config { return cfg }}
 			now := time.Now().UTC()
+			failedBackend := ""
 			source := runnerProviderReports(t.Context(), projects.providerConfiguration, "runner", func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
+				if backend.ID == failedBackend {
+					return nil, errors.New("catalog unavailable")
+				}
 				if !catalog {
 					return nil, nil
 				}
@@ -194,6 +198,23 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 					}
 				}
 			}
+			check("opus")
+			for _, failed := range []string{"codex-code", "claude-design"} {
+				failedBackend = failed
+				reports, err := source()
+				healthy := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex-code", Model: "sol"}
+				provider := "openai"
+				if failed == "codex-code" {
+					healthy.Backend, healthy.Model, provider = "claude-design", "opus", "anthropic"
+				}
+				if err != nil || len(reports) != 1 || !reports[0].Supports(healthy) || reports[0].Provider != provider || reports[0].AccountAlias != "runner" || reports[0].Availability != "unknown" {
+					t.Fatalf("healthy report lost after %s catalog failure: reports=%+v err=%v", failed, reports, err)
+				}
+				if reports[0].Backend == failed {
+					t.Fatalf("failed backend remained claimable: %+v", reports)
+				}
+			}
+			failedBackend = ""
 			check("opus")
 			raw, err := os.ReadFile(cfg.Projects[1].Workflow)
 			if err != nil {

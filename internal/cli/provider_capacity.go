@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -43,6 +44,7 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 			return reports, providercapacity.Validate(reports)
 		}
 		var reports []providercapacity.Report
+		var catalogErrors []error
 		for _, backend := range backends {
 			if slices.ContainsFunc(backends, func(other workflowconfig.AgentBackend) bool {
 				return other.ID == backend.ID && !runnerProviderCompatible(backend, other)
@@ -57,7 +59,8 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 			}
 			catalog, err := models(ctx, backend)
 			if err != nil {
-				return nil, fmt.Errorf("provider models for backend %s: %w", backend.ID, err)
+				catalogErrors = append(catalogErrors, fmt.Errorf("provider models for backend %s: %w", backend.ID, err))
+				continue
 			}
 			for _, model := range catalog {
 				for _, id := range []string{model.ID, model.Model} {
@@ -80,6 +83,9 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 			} else {
 				reports = append(reports, report)
 			}
+		}
+		if len(reports) == 0 && len(catalogErrors) > 0 {
+			return nil, errors.Join(catalogErrors...)
 		}
 		reports = withProviderBilling(ctx, reports, backends, billing, usage)
 		reports = withProviderUsage(reports, usage)
