@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
@@ -27,6 +28,7 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		exit               int
 		truncated          bool
 		reservationFailure bool
+		wantDiagnostics    []string
 	}{
 		{name: "reservation failure prevents command", command: "touch should-not-run", reservationFailure: true},
 		{name: "short unicode", output: "verified ✓\n", command: "cat output.txt"},
@@ -36,6 +38,24 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		{name: "invalid bytes within budget", output: "before\xff\xffafter\n", command: "cat output.txt"},
 		{name: "replacement crosses byte budget", output: strings.Repeat("a", limit-1) + "\xff", command: "cat output.txt", truncated: true},
 		{name: "failed command preserves unicode tail", output: strings.Repeat("✓", 32*1024) + "end\n", command: "cat output.txt; exit 7", exit: 7, truncated: true},
+		{
+			name: "early Go timeout survives public receipt",
+			output: strings.Repeat("ok example.org/build\n", 100) +
+				"panic: test timed out after 1m0s\nrunning tests:\n\tTestWorker/世界 (1m0s)\n" +
+				"TOKEN=private-assignment\n/home/private/project/worker_test.go:42\n" +
+				strings.Repeat("goroutine 99 [select]: diagnostic 世界\n", 4000) + "FAIL example.org/worker 61s\nend\n",
+			command: "cat output.txt; exit 7", exit: 7, truncated: true,
+			wantDiagnostics: []string{"panic: test timed out after 1m0s", "TestWorker/世界", "FAIL example.org/worker 61s"},
+		},
+		{
+			name: "early colored frontend failure survives public receipt",
+			output: "\x1b[31m FAIL \x1b[0m packages/ui/selection.test.tsx > selects a range\n" +
+				"AssertionError: expected range but received null\n\x1b[31mTOK\x1b[0mEN=private-assignment\n" +
+				"/home/private/project/selection.test.tsx:42\n" +
+				strings.Repeat(" PASS later suite 世界\n", 4000) + "Tests 1 failed | 4000 passed\nend\n",
+			command: "cat output.txt; exit 7", exit: 7, truncated: true,
+			wantDiagnostics: []string{"packages/ui/selection.test.tsx > selects a range", "AssertionError: expected range but received null", "Tests 1 failed | 4000 passed"},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := initSourceRepo(t)
@@ -131,8 +151,25 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 			if decoded.OutputTruncated != test.truncated {
 				t.Errorf("truncated = %v, want %v", decoded.OutputTruncated, test.truncated)
 			}
-			if test.truncated && !strings.HasPrefix(decoded.Output, "[earlier output truncated]\n") {
+			if test.truncated && test.wantDiagnostics == nil && !strings.HasPrefix(decoded.Output, "[earlier output truncated]\n") {
 				t.Errorf("truncation marker missing")
+			}
+			if test.wantDiagnostics != nil {
+				if !strings.Contains(decoded.Output, "output truncated]") {
+					t.Errorf("diagnostic truncation marker missing")
+				}
+				public := tracker.PublicGateResult(decoded)
+				for _, want := range test.wantDiagnostics {
+					if !strings.Contains(decoded.Output, want) || !strings.Contains(public.Output, want) {
+						t.Errorf("original diagnostic missing from command or public receipt: %q", want)
+					}
+				}
+				if strings.Contains(public.Output, "private") || strings.Contains(public.Output, "\x1b") || !strings.Contains(public.Output, "[redacted]") {
+					t.Errorf("public receipt did not redact normalized diagnostic")
+				}
+				if len(public.Output) > tracker.NativeFinalizationTextLimit || !utf8.ValidString(public.Output) || !public.OutputTruncated || public.ExitCode != decoded.ExitCode || public.HeadSHA != decoded.HeadSHA || public.TreeSHA != decoded.TreeSHA {
+					t.Errorf("public receipt lost byte bounds, truncation or command identity")
+				}
 			}
 			if strings.HasSuffix(test.output, "end\n") && !strings.HasSuffix(decoded.Output, "end\n") {
 				t.Errorf("useful command tail was discarded")
