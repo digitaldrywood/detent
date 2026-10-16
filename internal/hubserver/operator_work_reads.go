@@ -16,6 +16,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type nativeWorkIssueContract struct {
+	RequiredSections []string `json:"required_sections"`
+}
+
 // The scope is reconstructed by operatorCurrentAuthority on every invocation.
 // These are the same reads used by the native HTTP application, not a proxy.
 type operatorWorkReads struct {
@@ -71,7 +75,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
-		templates, err := nativeReporterContracts(ctx, s.database.reader, scope)
+		contract, err := nativeIssueContract(ctx, s.database.reader, scope)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		templates, err := config.ResolveReporterContracts(contract.Context)
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
@@ -81,7 +89,8 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			Priorities        []int                    `json:"priorities"`
 			Labels            []nativeLabel            `json:"labels"`
 			ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
-		}{project, []int{0, 1, 2, 3}, labels, templates}, err)
+			IssueContract     nativeWorkIssueContract  `json:"issue_contract"`
+		}{project, []int{0, 1, 2, 3}, labels, templates, nativeWorkIssueContract{contract.Sections}}, err)
 	}
 	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.reader, scope, request.Reference)
 	if err != nil {

@@ -659,12 +659,17 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 	for _, test := range []struct {
 		name, prompt, body string
 		want               config.ReporterContracts
+		required           []string
 	}{
-		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}},
-		{"override", "## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}},
-		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}},
+		{"default", "", reporterBugSections, config.ReporterContracts{"bug": {"Steps to reproduce", "Expected", "Actual", "Where", "Environment"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil},
+		{"override", "## Issue Contract\n- Finish\n- Preserve\n- Prove\n\n## Reporter Contract\n### bug\n- Reproduction\n- Outcome\n### change_request\n- Motivation", "## Reproduction\nOpen settings.\n## Outcome\nSaving fails.", config.ReporterContracts{"bug": {"Reproduction", "Outcome"}, "change_request": {"Motivation"}}, []string{"Finish", "Preserve", "Prove"}},
+		{"engineering overlap", "## Reporter Contract\n### bug\n- Acceptance criteria\n- Must not break\n- How we know it worked", issueContractTestSections, config.ReporterContracts{"bug": {"Acceptance criteria", "Must not break", "How we know it worked"}, "change_request": {"Current behavior", "Desired behavior", "Why"}}, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			required := test.required
+			if required == nil {
+				required = []string{"Acceptance criteria", "Must not break", "How we know it worked"}
+			}
 			f, ctx := newHostedKeyMCPFixture(t, "dedicated", "reporter")
 			definition, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
 				Workflow:  []byte(test.prompt),
@@ -693,11 +698,17 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 			}
 			var read struct {
 				Data struct {
-					Templates config.ReporterContracts `json:"reporter_templates"`
+					Templates     config.ReporterContracts `json:"reporter_templates"`
+					IssueContract struct {
+						RequiredSections []string `json:"required_sections"`
+					} `json:"issue_contract"`
 				} `json:"data"`
 			}
 			if err := json.Unmarshal(result.Content, &read); err != nil || !reflect.DeepEqual(read.Data.Templates, test.want) {
 				t.Fatalf("work_config=%s error=%v", result.Content, err)
+			}
+			if !reflect.DeepEqual(read.Data.IssueContract.RequiredSections, required) {
+				t.Fatalf("work_config required sections=%v, want %v", read.Data.IssueContract.RequiredSections, required)
 			}
 			response := f.request(t, f.user, http.MethodGet, f.base, nil)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -737,8 +748,13 @@ func TestReporterWorkflowTemplates(t *testing.T) {
 				decodeHubResponse(t, response, &issue)
 			}
 			claimable, reason, err = nativeIssueContractClaimable(t.Context(), f.service.database.db, scope, id)
-			wantReason := "Acceptance criteria"
-			engineeredBody := test.body + issueContractTestSections
+			wantReason := required[0]
+			var bodyBuilder strings.Builder
+			bodyBuilder.WriteString(test.body)
+			for _, heading := range required {
+				bodyBuilder.WriteString("\n## " + heading + "\nVerified project requirement.\n")
+			}
+			engineeredBody := bodyBuilder.String()
 			if test.name == "engineering overlap" {
 				wantReason = "A human must confirm"
 				engineeredBody = test.body
