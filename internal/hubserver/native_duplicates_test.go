@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -523,6 +526,78 @@ func TestHostedDuplicateConfirmation(t *testing.T) {
 				t.Fatalf("relationship count=%d err=%v", related, err)
 			}
 
+			t.Run("same principal across credentials", func(t *testing.T) {
+				resolve := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+				issuer, err := resolve(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issuer.project = f.project
+				expires := f.service.config.now().Add(time.Hour)
+				key, err := f.service.createAPITokenFor(ctx, tokenRequest{Name: "confirmation-client", Scope: apiScopeOperator, Issuer: &issuer.credential, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected})
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				confirmer := nativeScope{organization: issuer.organization, project: f.project, credential: credential}
+				if issuer.credential.ID == credential.ID || issuer.actor().PrincipalID != confirmer.actor().PrincipalID {
+					t.Fatal("fixture requires distinct credentials for the same principal")
+				}
+				keyCtx := changeOperatorContext(t, f.service, key.Token, string(issuer.organization))
+				authority, err := f.service.operatorCurrentAuthority(keyCtx, credential, string(issuer.organization))
+				if err != nil {
+					t.Fatal(err)
+				}
+				keyCtx = f.service.withOperatorCatalog(authority.BindContext(keyCtx), credential, string(issuer.organization))
+				invoke := func(current context.Context, input map[string]any) json.RawMessage {
+					t.Helper()
+					arguments, err := json.Marshal(input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := executor.Execute(current, operatortool.Call{Name: operatortool.FileIssue, Arguments: arguments})
+					if err != nil {
+						t.Fatalf("filing: %v", err)
+					}
+					var envelope struct {
+						Data json.RawMessage `json:"data"`
+					}
+					if err := json.Unmarshal(result.Content, &envelope); err != nil {
+						t.Fatal(err)
+					}
+					return envelope.Data
+				}
+				draft := map[string]any{"project_id": f.project, "request_id": "cross-credential", "title": "Runner checkout deadlocks", "description": "Separate observation" + issueContractTestSections, "state": "Todo", "priority": 2}
+				raw := invoke(ctx, draft)
+				var challenge duplicateChallenge
+				if err := json.Unmarshal(raw, &challenge); err != nil || challenge.ChallengeToken == "" {
+					t.Fatalf("challenge=%s err=%v", raw, err)
+				}
+				confirmed := maps.Clone(draft)
+				confirmed["challenge_token"] = challenge.ChallengeToken
+				raw = invoke(keyCtx, confirmed)
+				var created tracker.NativeIssue
+				if err := json.Unmarshal(raw, &created); err != nil || created.WorkItemID == "" {
+					t.Fatalf("created=%s err=%v", raw, err)
+				}
+				for i, input := range []map[string]any{draft, confirmed} {
+					current := ctx
+					if i == 1 {
+						current = keyCtx
+					}
+					raw := invoke(current, input)
+					var issue tracker.NativeIssue
+					if json.Unmarshal(raw, &issue) != nil || issue.WorkItemID != created.WorkItemID {
+						t.Fatalf("completed replay=%s", raw)
+					}
+				}
+				if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id=?", f.project).Scan(&count); err != nil || count != 4 {
+					t.Fatalf("issue count=%d err=%v", count, err)
+				}
+			})
 		})
 	}
 }
