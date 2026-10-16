@@ -26,8 +26,9 @@ const (
 var migrationFiles embed.FS
 
 type store struct {
-	db   *sql.DB
-	lock *instancelock.Lock
+	db     *sql.DB
+	reader *sql.DB
+	lock   *instancelock.Lock
 }
 
 func openStore(ctx context.Context, path string, applicationID int64, directory string) (*store, error) {
@@ -56,6 +57,14 @@ func openStore(ctx context.Context, path string, applicationID int64, directory 
 	db.SetMaxOpenConns(1)
 	result := &store{db: db, lock: lock}
 	if err := result.prepare(ctx, applicationID, directory); err != nil {
+		return nil, errors.Join(err, result.Close())
+	}
+	result.reader, err = sql.Open("sqlite", storeDSN(path)+"&_pragma=query_only(1)")
+	if err != nil {
+		return nil, errors.Join(err, result.Close())
+	}
+	result.reader.SetMaxOpenConns(4)
+	if err := result.reader.PingContext(ctx); err != nil {
 		return nil, errors.Join(err, result.Close())
 	}
 	return result, nil
@@ -101,8 +110,11 @@ func (s *store) Close() error {
 		return nil
 	}
 	var err error
+	if s.reader != nil {
+		err = s.reader.Close()
+	}
 	if s.db != nil {
-		err = s.db.Close()
+		err = errors.Join(err, s.db.Close())
 	}
 	return errors.Join(err, s.lock.Close())
 }

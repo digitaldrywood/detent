@@ -29,7 +29,7 @@ func HostedPage(data HostedPageData) templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		if data.Mode == "denied" || data.Mode == "unavailable" {
+		if data.Mode == "denied" || data.Mode == "unavailable" || data.Mode == "oauth" {
 			templ_7745c5c3_Err = hostedEntryPage(data).Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
