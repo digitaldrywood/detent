@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -122,12 +123,12 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				}
 			}
 		}
-		return runner.NativeValidation{SecurityAudit: nativeValidatorSecurityAudit(detail, version, diff.Digest), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
+		return runner.NativeValidation{SecurityAudit: nativeValidatorSecurityAudit(detail, version), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
 }
 
-func nativeValidatorSecurityAudit(detail tracker.ChangeDetail, version tracker.ChangeVersion, diffDigest string) *runner.NativeSecurityAuditEvidence {
+func nativeValidatorSecurityAudit(detail tracker.ChangeDetail, version tracker.ChangeVersion) *runner.NativeSecurityAuditEvidence {
 	var evidence *runner.NativeSecurityAuditEvidence
 	for _, review := range detail.Reviews {
 		audit := review.SecurityAudit
@@ -141,7 +142,10 @@ func nativeValidatorSecurityAudit(detail tracker.ChangeDetail, version tracker.C
 		if review.ID == "" || review.Actor.Kind != "runner" || review.Decision != "approved" || audit.Verdict != "pass" || audit.Landing {
 			continue
 		}
-		if audit.DiffDigest != diffDigest || run.IssueID != string(detail.Change.WorkItemID) || audit.SessionID <= 0 || run.ID != audit.SessionID {
+		// The accepted review binds the immutable version below. A restored
+		// attempt diff may have normalized or omitted patches, so its display
+		// digest is not the identity of the source that this audit reviewed.
+		if !changerequest.ValidHash(audit.DiffDigest, 64) || run.IssueID != string(detail.Change.WorkItemID) || audit.SessionID <= 0 || run.ID != audit.SessionID {
 			continue
 		}
 		// The Hub already applied the version's severity policy when accepting

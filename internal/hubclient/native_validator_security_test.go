@@ -22,8 +22,12 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 		want          bool
 		blockedBefore bool
 		blockedAfter  bool
+		restoredDiff  bool
+		stripPatches  bool
 	}{
 		{name: "accepted exact source", want: true},
+		{name: "accepted audit survives normalized recovery diff", restoredDiff: true, want: true},
+		{name: "accepted audit survives stripped recovery diff", restoredDiff: true, stripPatches: true, want: true},
 		{name: "other version", mutate: func(r *tracker.ChangeReview) { r.VersionID = "version_other" }},
 		{name: "other base", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.Run.BaseSHA = strings.Repeat("c", 40) }},
 		{name: "other head", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.Run.HeadSHA = strings.Repeat("c", 40) }},
@@ -31,7 +35,7 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 		{name: "other project", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.Run.ProjectID = "prj_other" }},
 		{name: "other issue", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.Run.IssueID = "wi_other" }},
 		{name: "other session", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.SessionID++ }},
-		{name: "other diff", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.DiffDigest = "other-diff" }},
+		{name: "invalid audit digest", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.DiffDigest = "invalid-diff" }},
 		{name: "failed execution", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed }},
 		{name: "requested changes", mutate: func(r *tracker.ChangeReview) { r.Decision = "changes_requested" }},
 		{name: "failed audit", mutate: func(r *tracker.ChangeReview) { r.SecurityAudit.Verdict = "rework" }},
@@ -50,6 +54,9 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			version := tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example-org/example-project", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), PolicyID: "policy_example"}, Policy: policy.Descriptor{Gates: policy.Gates{SecurityAudit: true, Validator: true}}}
 			diff := tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+			if test.restoredDiff {
+				diff.Files = []tracker.AttemptDiffFile{{Path: "large.go", Status: tracker.DiffStatusModified, Patch: strings.Repeat("+line\n", tracker.MaxDiffPatchBytes/6+1)}}
+			}
 			raw, err := json.Marshal(diff.Files)
 			if err != nil {
 				t.Fatal(err)
@@ -77,9 +84,24 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 				detail.Reviews = append(detail.Reviews, blocked)
 			}
 			runtime := tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example"}}, Attempt: &tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: "attempt_example", PolicyID: version.PolicyID}}}
+			var storedDiff tracker.AttemptDiffRequest
+			posts := 0
 			client, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var value any
 				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attempts/attempt_example/diff"):
+					if err := json.NewDecoder(r.Body).Decode(&storedDiff); err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					posts++
+					if test.stripPatches && posts == 1 {
+						w.WriteHeader(http.StatusRequestEntityTooLarge)
+						_, _ = w.Write([]byte(`{"code":"diff_too_large","message":"stored diff exceeds limit"}`))
+						return
+					}
+					value = tracker.AttemptDiffReceipt{Accepted: true}
 				case strings.HasSuffix(r.URL.Path, "/capabilities"):
 					value = nativeCapabilities{Features: []string{tracker.NativeRuntimeEvidenceCapability}}
 				case strings.HasSuffix(r.URL.Path, "/runtime"):
@@ -106,6 +128,17 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if test.restoredDiff {
+				if _, err := native.PostAttemptDiff(t.Context(), "attempt_example", diff); err != nil {
+					t.Fatal(err)
+				}
+				if len(storedDiff.Files) != 1 || !storedDiff.Files[0].Truncated || len(storedDiff.Files[0].Patch) > tracker.MaxDiffPatchBytes || test.stripPatches && storedDiff.Files[0].Patch != "" {
+					t.Fatal("stored diff did not exercise normalized recovery")
+				}
+				// Completion recovery restores this persisted HTTP representation,
+				// while the accepted audit retains the original source digest.
+				diff = storedDiff
+			}
 			execution := &nativeExecution{claim: nativeClaim{source: &NativeConnector{client: native}, lease: tracker.NativeLease{WorkItemID: "wi_example"}}, change: &runner.NativeChange{ChangeID: detail.Change.ID, VersionID: version.ID}, data: tracker.NativeRunData{AttemptID: "attempt_example", PolicyID: version.PolicyID}, lastDiff: &diff}
 			input, err := execution.ValidatorVersion(t.Context())
 			if err != nil || input.Version == nil {
@@ -117,6 +150,9 @@ func TestNativeValidatorReceivesAcceptedSecurityAudit(t *testing.T) {
 			}
 			if got := strings.Contains(string(payload), review.ID); got != test.want {
 				t.Fatalf("accepted security review in validator transport = %v, want %v", got, test.want)
+			}
+			if test.restoredDiff && (input.SecurityAudit.DiffDigest != review.SecurityAudit.DiffDigest || input.Diff.Digest == input.SecurityAudit.DiffDigest) {
+				t.Fatal("recovered validator must preserve the accepted audit digest independently of the bounded diff presentation")
 			}
 		})
 	}
