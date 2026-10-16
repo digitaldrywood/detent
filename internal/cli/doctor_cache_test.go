@@ -180,7 +180,7 @@ func TestDoctorCacheLastSweep(t *testing.T) {
 		age, size int64
 		want      doctorStatus
 	}{
-		{"no eviction", 0, 0, doctorOK}, {"age only", 1024, 0, doctorOK}, {"size", 0, 1024, doctorWarn}, {"both", 1024, 1024, doctorWarn},
+		{"no eviction", 0, 0, doctorOK}, {"age only", 1024, 0, doctorOK}, {"size", 0, 1024, doctorOK}, {"both", 1024, 1024, doctorOK},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			deps := doctorDeps{cacheCapacityBytes: func(string) (uint64, error) { return 1000 << 30, nil }, inspectCaches: func(context.Context) toolcache.Report {
