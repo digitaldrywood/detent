@@ -230,9 +230,9 @@ describe("the Enroll dialog", () => {
     expect(screen.queryByLabelText("Install it as a background service")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Create command" }));
     const instructions = await screen.findByRole("list", { name: "Sprite setup instructions" });
-    expect(within(instructions).getAllByRole("listitem")).toHaveLength(8);
-    expect(instructions.textContent).toContain("sprite create build-host");
-    expect(instructions.textContent).toContain("sprite console -s build-host");
+    const organization = present ? "preview" : '"${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}"';
+    expect(instructions.textContent).toContain(`sprite list -o ${organization} && sprite create -o ${organization} build-host`);
+    expect(instructions.textContent).toContain(`sprite console -o ${organization} -s build-host`);
     expect(instructions.textContent).toContain(`/${ref}/scripts/sprite-runner-bootstrap.sh`);
     if (version === "v1.2.3") {
       expect(instructions.textContent).toContain("bash sprite-runner-bootstrap.sh --version v1.2.3");
@@ -244,7 +244,10 @@ describe("the Enroll dialog", () => {
     }
     expect(instructions.textContent).toContain("claude auth login");
     expect(instructions.textContent).toContain("codex login --device-auth");
-    expect(instructions.textContent).toContain("Approve the repository policy");
+    expect(instructions.textContent).toContain("approve policy only if offered");
+    expect(instructions.textContent).toContain("gh auth login --hostname github.com --git-protocol https --web");
+    expect(instructions.textContent).toContain("hooks.runner_setup");
+    expect(instructions.textContent).toContain("installation checkpoint does not prove readiness");
     expect(document.body.innerHTML).not.toContain("det_enroll_secret");
     expect(screen.queryByRole("button", { name: "Show token" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Copy the register command" }));
