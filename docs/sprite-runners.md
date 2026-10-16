@@ -56,8 +56,8 @@ considering onboarding complete.
   through Pi. Provider subscriptions and API usage are separate from Fly costs.
 - A terminal on your own machine for the Sprite CLI and a browser for sign-in.
 
-All customer-specific values below are placeholders. Replace `ORG_SLUG`,
-`SPRITE_NAME`, `PROJECT_NAME`, `REPOSITORY_URL`, and `vX.Y.Z` before running
+All customer-specific values below are placeholders. Replace `SPRITE_ORG`,
+`SPRITE_NAME`, `PROJECT_ID`, `REPOSITORY_URL`, and `vX.Y.Z` before running
 commands. Use the same release tag for the bootstrap download and its
 `--version` argument; the enrollment dialog supplies the Hub's published tag.
 
@@ -70,7 +70,15 @@ curl -fsSL https://sprites.dev/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 sprite --help
 sprite login
+SPRITE_ORG='example-org'
+SPRITE_NAME='example-runner'
+sprite list -o "$SPRITE_ORG"
 ```
+
+Keep these two variables in your own machine’s shell for every later Sprite
+command. Always pass the organization explicitly; a successful login does not
+prove the CLI selected the intended default organization. If the scoped list
+fails, resolve membership or organization authentication before creating a Sprite.
 
 Complete the browser login with the Fly account that belongs to your chosen
 organization. Fly's [CLI installation](https://docs.fly.io/sprites/cli/installation)
@@ -81,7 +89,7 @@ page also covers Windows and manual installation.
 Authenticate the intended Fly organization on your own machine:
 
 ```sh
-sprite org auth -o ORG_SLUG
+sprite org auth -o "$SPRITE_ORG"
 ```
 
 `sprite org auth -o <org>` only works when the Fly login is a member of that
@@ -197,8 +205,8 @@ for hash, workflow-ref, timeout, and path semantics.
 On your own machine, use the Fly organization whose token you saved in the Hub:
 
 ```sh
-sprite create -o ORG_SLUG SPRITE_NAME
-sprite console -o ORG_SLUG -s SPRITE_NAME
+sprite create -o "$SPRITE_ORG" "$SPRITE_NAME"
+sprite console -o "$SPRITE_ORG" -s "$SPRITE_NAME"
 ```
 
 If creation already opens a console, continue there. The following commands
@@ -206,15 +214,23 @@ run **inside the Sprite**, from its home directory. Substitute the published
 release tag shown in the enrollment dialog:
 
 ```sh
-cd "$HOME"
-curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/vX.Y.Z/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh
+cd "$HOME" &&
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/vX.Y.Z/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh &&
 bash sprite-runner-bootstrap.sh --version vX.Y.Z
 ```
 
 At the hidden prompt, paste the Hub's complete enrollment command and press
 Enter. Input does not echo. Paste it at that prompt rather than running it as
 a shell command. The bootstrap parses it without shell expansion and passes
-its token through the environment to Detent.
+its token through the environment to Detent. Empty input is only for a runner
+already registered on this same Sprite. If installation fails before enrollment,
+rerun the printed resume command and paste a fresh Hub command if the original
+token expired. Do not run the register command separately, delete the identity,
+or copy an identity from another Sprite.
+
+On failure the bootstrap prints the last completed step and a quoted resume
+command without the enrollment token. A tool install, successful login, service
+creation, or installation checkpoint alone does not mean the runner is ready.
 
 The script installs the standard runner toolset below and checksum-verified Detent. It
 registers the runner and starts a Sprite Service named `detent-runner`.
@@ -253,7 +269,11 @@ Go, Detent, GitHub CLI and ripgrep downloads are checked against published
 SHA-256 manifests. fd archives are checked against the release's published
 SHA-256 digests pinned in the script. npm verifies package integrity, and APT
 verifies the signed Ubuntu package indexes and package checksums.
-Docker selects the candidate from those same configured repositories only
+Before downloading Go, agent CLIs or Chromium, the bootstrap refreshes APT
+indexes and checks compatible PostgreSQL and, when supported, Docker candidates.
+A missing package fails here rather than after expensive downloads. It uses the
+image’s signed repositories, never an Ubuntu release suffix copied from another
+image. Docker selects the candidate from those same configured repositories only
 when the Sprite supports its namespace and cgroup requirements. It installs
 that exact revision and reports a repository compatibility error when no
 candidate is available.
@@ -357,8 +377,9 @@ Inside the Sprite, for GitHub-hosted repositories you can configure Git access
 with the installed GitHub CLI:
 
 ```sh
-gh auth login
-gh auth setup-git
+gh auth login --hostname github.com --git-protocol https --web &&
+gh auth setup-git &&
+gh auth status --hostname github.com
 ```
 
 Alternatively, use the project's existing SSH or HTTPS Git credentials. The
@@ -372,8 +393,58 @@ git config --global user.email 'YOUR_EMAIL'
 git ls-remote REPOSITORY_URL HEAD
 ```
 
-The runner clones allowed repositories under its configured `workspace_root`
-and reuses existing matching checkouts there. It reads `detent.yaml` and
+Use the runner-managed checkout; do not make a second clone for dependency
+installation. On a fresh Sprite the runner clones each allowed repository into
+`workspace_root/PROJECT_ID`. The bootstrap prints the absolute root and exact
+paths for the project IDs stored in its enrollment. For organization-wide
+runners, use the project’s exact `prj_` ID from the Hub after it is granted.
+The runner can retain an existing matching checkout under that root; if one is
+reported, confirm that selected path through the runner’s existing project
+local-check report before using it. A clone elsewhere is not evidence of the
+configured checkout.
+
+Inside the Sprite, for a fresh default installation, replace the project ID
+below. For a custom root, use the absolute root printed by the bootstrap instead.
+Wait until the runner has cloned the checkout after Git authentication:
+
+```sh
+PROJECT_ID='prj_example'
+CHECKOUT="$HOME/detent-runner/$PROJECT_ID"
+printf 'Managed checkout: %s\n' "$CHECKOUT" &&
+test -d "$CHECKOUT/.git" &&
+git -C "$CHECKOUT" rev-parse --show-toplevel &&
+git -C "$CHECKOUT" remote get-url origin
+```
+
+Check the printed origin against your selected project. If the checkout is
+missing or the origin is wrong, inspect runner setup logs and Hub project grants;
+do not run dependencies from your home directory or create a replacement clone.
+Repository-declared `hooks.runner_setup` is the preferred dependency owner.
+For a pnpm repository, first select the repository’s Node version and ensure
+its declared Corepack is available. This guarded example refuses a repository
+without a pnpm `packageManager` pin:
+
+```sh
+cd "$CHECKOUT" &&
+test -d .git &&
+node -e 'if (!require("./package.json").packageManager?.startsWith("pnpm@")) process.exit(1)' &&
+corepack pnpm --version &&
+corepack pnpm install --frozen-lockfile &&
+printf 'pnpm dependencies completed (exit 0)\n'
+```
+
+Do not install an unpinned global pnpm. For a Go module at the checkout root:
+
+```sh
+cd "$CHECKOUT" && test -f go.mod && go mod download &&
+printf 'Go downloads completed (exit 0)\n'
+```
+
+For a nested module, use its path declared in the repository instead of guessing
+an application directory. Go downloads may be silent; the chained success message
+confirms exit status 0. A failed directory change stops the entire chain.
+
+The runner reads `detent.yaml` and
 `WORKFLOW.md` from the repository's current default branch. Declare build and
 test dependencies in `hooks.runner_setup`
 and configure the agent routes it uses; see
@@ -383,7 +454,8 @@ Repeat for every enrolled project.
 When the runner reports a pending repository policy, open Hub **Settings >
 Projects**, select the project, and open its **Settings**. Review the reported
 policy and use **Approve updated policy** if offered. An owner/admin with the
-project's write access must approve it before dispatch.
+project's write access handles approval when offered. Configuration reports retain
+policy provenance; they are not a recurring approval gate on claims or publication.
 
 ## 8. Restart and take a checkpoint
 
@@ -391,17 +463,17 @@ After sign-in, checkout, and configuration changes, rerun the same pinned
 bootstrap **inside the Sprite** with empty input:
 
 ```sh
-cd "$HOME"
-bash sprite-runner-bootstrap.sh --version vX.Y.Z < /dev/null
+cd "$HOME" &&
+bash sprite-runner-bootstrap.sh --version vX.Y.Z < /dev/null &&
 sprite-env services get detent-runner
-sprite-env checkpoints create --comment 'runner ready: agents and checkouts configured'
 ```
 
 Empty input reuses the registered identity and restarts the existing Service;
 it does not redeem another enrollment token. The bootstrap preserves existing
 configuration values, fills missing pressure floors, and takes a checkpoint.
-Save the ready checkpoint ID so your baseline includes runner sign-ins and
-successful repository setup. Restoring with
+Verify the Service reports a running process, not just that a definition exists;
+inspect the runner log if it exits. The bootstrap checkpoint is an installation
+checkpoint. Save the ready checkpoint only after the real task below completes. Restoring with
 `sprite-env checkpoints restore CHECKPOINT_ID` rewinds the same Sprite's files,
 including credentials; it does not renew credentials that have since expired.
 
@@ -413,7 +485,7 @@ Resolve any remaining policy or authentication requirements before testing wake.
 1. Exit the Sprite console with `exit`. Close any remaining exec, console,
    or port-forwarding sessions. Leave the Sprite idle until it is **cold**;
    it may first become **warm**. Check status in the Sprites dashboard or,
-   from your own machine, with `sprite list -o ORG_SLUG`.
+   from your own machine, with `sprite list -o "$SPRITE_ORG"`.
 2. In your Detent Cloud project, file a small, focused **Todo** issue, such as
    a requested documentation correction. The lane must be dispatchable in
    that project's approved workflow.
@@ -421,7 +493,12 @@ Resolve any remaining policy or authentication requirements before testing wake.
    claims the issue, and publishes a Change Request. Complete any review or
    check steps required by your project, then confirm the change lands and
    the issue reaches **Done**.
-4. With no further work or open sessions, confirm the Sprite pauses again
+4. Reopen the same Sprite console from your own machine with
+   `sprite console -o "$SPRITE_ORG" -s "$SPRITE_NAME"`. Inside the Sprite, run
+   `sprite-env checkpoints create --comment 'runner verified: task published'`
+   and retain the returned checkpoint ID. This is the final ready checkpoint;
+   a failed checkpoint remains incomplete even when the task succeeded. Exit again.
+5. With no further work or open sessions, confirm the Sprite pauses again
    (warm, then eventually cold).
 
 The Hub uses the project's token override, or its inherited organization token, to start the cold runner's
@@ -439,11 +516,11 @@ Inside the Sprite, take a checkpoint before updating. Download the bootstrap
 from the chosen new release tag and run it with the same tag and empty input:
 
 ```sh
-cd "$HOME"
-sprite-env checkpoints create --comment 'before runner update'
-curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/vX.Y.Z/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh
-bash sprite-runner-bootstrap.sh --version vX.Y.Z < /dev/null
-detent --version
+cd "$HOME" &&
+sprite-env checkpoints create --comment 'before runner update' &&
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/vX.Y.Z/scripts/sprite-runner-bootstrap.sh -o sprite-runner-bootstrap.sh &&
+bash sprite-runner-bootstrap.sh --version vX.Y.Z < /dev/null &&
+detent --version &&
 sprite-env services get detent-runner
 ```
 
@@ -471,6 +548,34 @@ and your actual usage before choosing a plan. Keep a spend alert on the Fly
 organization.
 
 ### Troubleshooting
+
+For interrupted dependency installs, re-enter the verified managed checkout and
+rerun its pinned install command; preserve lockfiles, authentication and runner
+identity. For EROFS/EIO, check the actual filesystem before retrying, inside the
+Sprite:
+
+```sh
+cd "$CHECKOUT" && df -h . && df -i . &&
+probe=$(mktemp .detent-write-probe.XXXXXX) && rm -- "$probe"
+```
+
+If storage is full, reclaim only data you own. If writes still fail or the
+console disconnects, stop dependency installation and use Fly’s infrastructure
+support; do not attribute the failure to an issue. Ample space does not prove
+that an earlier EROFS/EIO cause is resolved. After a successful write check,
+a pnpm install retry with lower parallelism was observed to succeed:
+
+```sh
+cd "$CHECKOUT" && test -d .git &&
+node -e 'if (!require("./package.json").packageManager?.startsWith("pnpm@")) process.exit(1)' &&
+corepack pnpm install --frozen-lockfile --network-concurrency=4 --child-concurrency=2 &&
+printf 'pnpm retry completed (exit 0)\n'
+```
+
+This is a recovery option, not a required setting or a diagnosis of the underlying
+storage failure. Verify project setup, Git and provider access, Hub connection,
+policy provenance, Service running state, the authorized task’s publication and
+the final checkpoint separately. Preserve incomplete steps when reporting status.
 
 | Symptom | What to check |
 | --- | --- |

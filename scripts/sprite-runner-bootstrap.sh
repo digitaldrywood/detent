@@ -20,7 +20,7 @@ At a terminal the script prompts without echoing it. The command is parsed
 without a shell, and the token reaches Detent through its environment, never
 an argument list, file or log. The host --service flag is replaced by a
 Sprite Service. When this Sprite is already registered, send empty input to
-reuse its identity. Provider login and project checkouts stay manual.
+reuse its identity. Provider login stays manual; the runner manages checkouts.
 EOF
 }
 
@@ -85,6 +85,25 @@ split_command() {
     if [[ $started == true ]]; then words+=("$word"); fi
 }
 
+last_completed='none'
+scratch=
+bootstrap_exit() {
+    local status=$?
+    if [[ $status -ne 0 ]]; then
+        printf '\nBootstrap stopped. Last completed step: %s.\n' "$last_completed" >&2
+        printf 'Resume inside this same Sprite: ' >&2
+        printf '%q ' bash "${BASH_SOURCE[0]}" --version "$version" >&2
+        [[ -z $config_path ]] || printf '%q ' --config "$config_path" >&2
+        [[ -z ${requested_workspace_root:-} ]] || printf '%q ' --workspace-root "$requested_workspace_root" >&2
+        [[ -z $go_mod ]] || printf '%q ' --go-mod "$go_mod" >&2
+        [[ -z $source_root ]] || printf '%q ' --from-source "$source_root" >&2
+        printf '\nPaste the complete Hub command at the hidden prompt; paste is invisible.\n' >&2
+        printf 'Empty input is only for an already registered runner. If enrollment expired, create a fresh Hub command. Keep this Sprite identity and provider sign-ins.\n' >&2
+    fi
+    [[ -z $scratch ]] || rm -rf -- "$scratch"
+}
+trap bootstrap_exit EXIT
+
 enrollment=
 if [[ -t 0 ]]; then
     printf 'Paste the Hub enrollment command (input hidden; empty to reuse this registration): ' >&2
@@ -129,6 +148,7 @@ if [[ ${#words[@]} -gt 0 ]]; then
 fi
 unset words
 config_path=${config_path:-$HOME/.config/detent-runner/global.yaml}
+requested_workspace_root=$workspace_root
 workspace_root=${workspace_root:-$HOME/detent-runner}
 [[ $config_path == /* && $workspace_root == /* ]] || die "--config and --workspace-root must be absolute paths"
 identity_path="$(dirname -- "$config_path")/identity.json"
@@ -143,7 +163,7 @@ case $(uname -m) in
     *) die "unsupported CPU architecture" ;;
 esac
 command -v sprite-env >/dev/null || die "sprite-env is missing; run inside a Fly Sprite"
-for tool in curl tar sha256sum npm node; do
+for tool in curl tar sha256sum npm node apt-get apt-cache dpkg-query; do
     command -v "$tool" >/dev/null || die "$tool is required (preinstalled in fresh Sprites)"
 done
 
@@ -155,7 +175,7 @@ export PATH="$bin_dir:$PATH"
 scratch_root=${TMPDIR:-${TMP:-${TEMP:-"$HOME/.cache/detent-bootstrap"}}}
 mkdir -p "$scratch_root"
 scratch=$(mktemp -d "$scratch_root/sprite-bootstrap.XXXXXX")
-trap 'rm -rf -- "$scratch"' EXIT
+last_completed='enrollment input and Sprite prerequisites checked'
 
 download() { curl --fail --silent --show-error --location "$1" --output "$2"; }
 verify() {
@@ -180,6 +200,28 @@ apt_install() {
     apt_update
     as_root apt-get install -y --no-install-recommends --allow-downgrades "$@"
 }
+
+apt_update
+psql_package_version=
+for psql_major in 18 17; do
+    psql_package="postgresql-client-$psql_major"
+    psql_package_version=$(LC_ALL=C apt-cache policy "$psql_package" | awk '$1 == "Candidate:" && !found++ {print $2}')
+    [[ -z $psql_package_version || $psql_package_version == '(none)' ]] || break
+done
+[[ $psql_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
+    die "configured APT repositories provide no supported PostgreSQL client (18 or 17); configure repositories matching this distribution"
+
+docker_package_version=
+docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
+if command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
+    as_root test -w /sys/fs/cgroup; then
+    docker_package_version=$(LC_ALL=C apt-cache policy docker.io | awk '$1 == "Candidate:" && !found++ {print $2}')
+    [[ $docker_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
+        die "configured APT repositories provide no Docker package; configure repositories matching this distribution"
+fi
+last_completed='distribution package candidates checked'
+printf 'Package compatibility checked: %s=%s; Docker: %s\n' \
+    "$psql_package" "$psql_package_version" "${docker_package_version:-$docker_status}"
 
 if [[ -n $source_root ]]; then
     source_root=$(cd -- "$source_root" && pwd)
@@ -218,6 +260,7 @@ fi
 export PATH="$go_dir/bin:$PATH"
 ln -sfn "$go_dir/bin/go" "$bin_dir/go"
 ln -sfn "$go_dir/bin/gofmt" "$bin_dir/gofmt"
+last_completed='Go toolchain installed'
 gh_version=2.101.0
 if [[ $(gh --version 2>/dev/null | sed -n '1p' || true) != "gh version $gh_version "* ]]; then
     printf 'Installing GitHub CLI %s\n' "$gh_version"
@@ -261,16 +304,9 @@ if [[ $(fd --version 2>/dev/null || true) != "fd $fd_version" ]]; then
     install -m 755 "$scratch/fd-v${fd_version}-${rust_target}/fd" "$bin_dir/fd"
 fi
 
+last_completed='GitHub CLI, ripgrep and fd installed'
+
 if [[ -L $bin_dir/psql && ! -e $bin_dir/psql ]]; then rm -- "$bin_dir/psql"; fi
-apt_update
-psql_package_version=
-for psql_major in 18 17; do
-    psql_package="postgresql-client-$psql_major"
-    psql_package_version=$(LC_ALL=C apt-cache policy "$psql_package" | awk '$1 == "Candidate:" && !found++ {print $2}')
-    [[ -z $psql_package_version || $psql_package_version == '(none)' ]] || break
-done
-[[ $psql_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
-    die "configured APT repositories provide no supported PostgreSQL client (18 or 17); configure repositories matching this distribution"
 psql_path=$(dpkg-query -L "$psql_package" 2>/dev/null | awk '/\/bin\/psql$/ && !found++ {print}' || true)
 if [[ $(dpkg-query -W -f='${Status} ${Version}' "$psql_package" 2>/dev/null || true) != "install ok installed $psql_package_version" || ! -x $psql_path ]]; then
     printf 'Installing PostgreSQL client %s\n' "$psql_package_version"
@@ -280,6 +316,7 @@ psql_path=$(dpkg-query -L "$psql_package" | awk '/\/bin\/psql$/ && !found++ {pri
 [[ $psql_path == /* && -x $psql_path ]] || die "$psql_package did not install an executable psql"
 [[ $("$psql_path" --version) == "psql (PostgreSQL) $psql_major."* ]] || die "$psql_package installed an incompatible psql"
 ln -sfn -- "$psql_path" "$bin_dir/psql"
+last_completed='PostgreSQL client installed and executable verified'
 
 npm_prefix="$HOME/.local/share/detent-runner/npm"
 codex_version=0.160.0
@@ -306,6 +343,7 @@ ln -sfn "$npm_prefix/bin/codex" "$bin_dir/codex"
 ln -sfn "$npm_prefix/bin/claude" "$bin_dir/claude"
 ln -sfn "$npm_prefix/bin/playwright" "$bin_dir/playwright"
 hash -r
+last_completed='agent CLIs and Playwright installed'
 
 chromium_screenshot() {
     node - "$npm_prefix/lib/node_modules/playwright" "$scratch/chromium.png" <<'NODE'
@@ -329,13 +367,9 @@ if ! chromium_screenshot > "$scratch/chromium-status.txt" 2> "$scratch/chromium-
     chromium_screenshot > "$scratch/chromium-status.txt"
 fi
 
-docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
-if command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
-    as_root test -w /sys/fs/cgroup; then
-    apt_update
-    docker_package_version=$(LC_ALL=C apt-cache policy docker.io | awk '$1 == "Candidate:" && !found++ {print $2}')
-    [[ $docker_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
-        die "configured APT repositories provide no Docker package; configure repositories matching this distribution"
+last_completed='Chromium headless screenshot verified'
+
+if [[ -n $docker_package_version ]]; then
     if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_package_version" ]]; then
         printf 'Installing Docker %s\n' "$docker_package_version"
         apt_install "docker.io=$docker_package_version"
@@ -355,6 +389,8 @@ else
     printf 'Docker %s\n' "$docker_status"
 fi
 
+last_completed='Docker installation checked (see capability result)'
+
 if [[ -n $source_root ]]; then
     printf 'Building Detent from %s\n' "$source_root"
     (cd "$source_root" && GOBIN="$bin_dir" go install ./cmd/detent)
@@ -371,6 +407,7 @@ elif [[ $(detent --version 2>/dev/null || true) != "$version" ]]; then
     install -m 755 "$scratch/detent" "$bin_dir/detent"
 fi
 detent --version
+last_completed='Detent installed'
 
 if [[ -n $token ]]; then
     # A valid stored credential reuses the same runner; the token is only redeemed when it is not.
@@ -379,6 +416,8 @@ if [[ -n $token ]]; then
 else
     printf 'Reusing the registered runner in %s\n' "$config_path"
 fi
+
+last_completed='runner registration command completed or stored identity reused; verify Hub connection'
 
 pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" <<'NODE'
 const fs = require('node:fs');
@@ -420,6 +459,28 @@ console.log(`Sprite pressure capacity: io=${config.getIn(['global', 'io', 'degra
 NODE
 )
 
+workspace_root=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$workspace_root" "$requested_workspace_root" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+try {
+    const config = require(process.argv[2]).parse(fs.readFileSync(process.argv[3], 'utf8'));
+    const root = config.workspace_root ?? process.argv[5];
+    if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error();
+    if (process.argv[6] && path.resolve(root) !== path.resolve(process.argv[6])) throw new Error();
+    const { identity } = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+    if (!identity || (identity.project_ids != null && !Array.isArray(identity.project_ids))) throw new Error();
+    for (const id of identity.project_ids ?? []) {
+        if (typeof id !== 'string' || !/^prj_[a-zA-Z0-9_-]+$/.test(id)) throw new Error();
+        console.error(`New managed checkout for ${id}: ${path.join(root, id)}`);
+    }
+    console.log(root);
+} catch {
+    console.error('Cannot resolve managed checkout paths from this runner configuration and identity; preserve both files and correct the configuration before resuming.');
+    process.exit(1);
+}
+NODE
+)
+
 mkdir -p "$workspace_root/.tmp"
 launcher="$lib_dir/start"
 {
@@ -438,6 +499,7 @@ if [[ $existing_service == true ]]; then
     sprite-env curl -X POST 'http://sprite/v1/services/detent-runner/restart?duration=1s'
 fi
 
+last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
@@ -447,16 +509,19 @@ if ! codex login status >/dev/null 2>&1; then
     printf '  Codex: run codex login (codex login --device-auth on a headless host), or configure a supported OpenAI connector.\n'
 fi
 if ! gh auth status >/dev/null 2>&1; then
-    printf '  GitHub: run gh auth login and gh auth setup-git for private clones and pushes.\n'
+    printf '  GitHub: run gh auth login --hostname github.com --git-protocol https --web, then gh auth setup-git.\n'
 fi
-printf '  The runner clones Cloud-allowed repositories into workspace_root and reads their detent.yaml and WORKFLOW.md.\n'
-printf '  Prepare dependencies; approve the observed repository policy in the Hub.\n'
+printf '  Managed checkout root: %s\n' "$workspace_root"
+printf '  Each new native project checkout: %s/PROJECT_ID (use the exact prj_ ID from the Hub).\n' "$workspace_root"
+printf '  The runner clones Cloud-allowed repositories and runs hooks.runner_setup; do not prepare a separate clone.\n'
+printf '  Verify Git repository access, checkout setup and reported policy provenance in the Hub; approve policy only if offered.\n'
 printf '  Re-run this script with empty input to restart the service, then route a Todo issue.\n'
 printf '  After auth and checkout changes, take a new baseline with sprite-env checkpoints create.\n'
-printf '\nCreating the enrolled, clean checkpoint (save the returned id for restore).\n'
+printf '\nCreating an installation checkpoint; authentication, checkout readiness and a completed task still need verification (save the id).\n'
 chromium_status=$(cat "$scratch/chromium-status.txt")
 rm -rf -- "$scratch"
 sprite-env checkpoints create --comment "detent runner bootstrap $version"
+last_completed='installation checkpoint created'
 printf '\nInspect service: sprite-env services get detent-runner\n'
 printf 'Restore this same Sprite: sprite-env checkpoints restore CHECKPOINT_ID\n'
 printf '\nInstalled runner toolset:\n'
@@ -470,3 +535,4 @@ claude --version
 playwright --version
 printf '%s\n' "$chromium_status"
 printf 'Docker: %s\n' "$docker_status"
+printf '\nLast completed step: %s. This is not a ready checkpoint; verify provider/Git access, Hub registration, project setup, policy status, Service health and a real task before saving the ready checkpoint.\n' "$last_completed"
