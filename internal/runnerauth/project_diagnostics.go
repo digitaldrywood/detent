@@ -83,6 +83,9 @@ func DiagnosticError(value string) string {
 	if value == "" {
 		return ""
 	}
+	if rejection, ok := ParsePublicationRejection(value); ok {
+		return rejection.DiagnosticError()
+	}
 	for _, public := range []string{"context deadline exceeded", "context canceled", "connection refused", "connection reset by peer", "unexpected EOF", "no such host", "execution authority unavailable", "tracker unavailable"} {
 		if strings.Contains(value, public) {
 			return public + " [private error text omitted]"
@@ -263,6 +266,16 @@ func (d *ProjectDiagnostics) Redact() {
 		r := &d.Records[i]
 		if r.LatestError != "" {
 			r.LatestError = DiagnosticError(r.LatestError)
+			if r.LatestErrorCode == "invalid_request" || r.OperationPending {
+				if _, ok := ParsePublicationRejection(r.LatestError); ok {
+					delete(r.Unavailable, "publication_rejection")
+				} else {
+					if r.Unavailable == nil {
+						r.Unavailable = map[string]string{}
+					}
+					r.Unavailable["publication_rejection"] = "unavailable"
+				}
+			}
 		}
 	}
 }

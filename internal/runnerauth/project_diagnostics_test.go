@@ -31,6 +31,34 @@ func TestRunnerDiagnosticPages(t *testing.T) {
 			}
 		})
 	}
+	for _, test := range []struct{ name, value, want string }{
+		{"known", "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]", "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]"},
+		{"unknown category", "publication rejected: category=sentinel-secret field=data.runtime.activity [private error text omitted]", "[private error text omitted]"},
+		{"forged field", "publication rejected: category=runtime_validation field=sentinel-secret [private error text omitted]", "[private error text omitted]"},
+		{"prefix", "sentinel-secret publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]", "[private error text omitted]"},
+		{"suffix", "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted] sentinel-secret", "[private error text omitted]"},
+		{"unclassified", "sentinel-secret", "[private error text omitted]"},
+		{"unavailable publication", "sentinel-secret", "[private error text omitted]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := &ProjectDiagnostics{Records: []DiagnosticAttempt{{LatestErrorCode: "invalid_request", LatestError: test.value}}}
+			if test.name == "unavailable publication" {
+				snapshot.Records[0].LatestErrorCode = "unavailable"
+				snapshot.Records[0].OperationPending = true
+				snapshot.Records[0].HostOperation = "native.publishVersion"
+			}
+			snapshot.Redact()
+			snapshot.Redact()
+			r := snapshot.Records[0]
+			if r.LatestError != test.want {
+				t.Fatalf("error = %q", r.LatestError)
+			}
+			if test.name != "known" && r.Unavailable["publication_rejection"] != "unavailable" {
+				t.Fatal("unknown rejection not marked unavailable")
+			}
+		})
+	}
+
 	seen := map[string]bool{}
 	cursor := ""
 	for {

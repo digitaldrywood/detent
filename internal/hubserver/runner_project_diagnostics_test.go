@@ -1,26 +1,85 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestRunnerProjectDiagnosticOwner(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+	var logs bytes.Buffer
+	f := newDefaultNativeFixture(t, Config{Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 	r.enroll(t)
 	now := f.service.config.now()
-	view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Records: []runnerauth.DiagnosticAttempt{{Key: "local:5", IssueID: "wi_unmatched", LocalAttemptID: 5, Membership: []string{"durable_active"}, LatestError: "token=secret customer prompt", Unavailable: map[string]string{"native_attempt_id": "unrecorded"}}}, Admissions: []runnerauth.DiagnosticAdmission{{IssueID: "wi_ready", ObservedAt: now, Result: "skipped", Predicate: "project_capacity_full", Unavailable: map[string]string{}}}, Counts: map[string]int{"durable_active": 1}, Unavailable: map[string]string{"running_build": "unavailable"}}}
+	issue := f.create(t, "rejected observation")
+	event := nativeStartedEvent(tracker.NativeLease{ID: "lease_unknown", FencingToken: 1, PolicyID: hubTestPolicy().ID})
+	event.Type = "run.observed"
+	event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", LocalAttemptID: 5, Generation: 9, Activity: &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 99}}
+	event.Data.CompletionBody = "sentinel-secret-customer"
+	server := httptest.NewServer(f.service.echo)
+	defer server.Close()
+	client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return r.redemption.Credential }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native(f.project.OrganizationID, f.project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = native.AppendEvent(t.Context(), issue.WorkItemID, event)
+	if err == nil {
+		t.Fatal("invalid observation was accepted")
+	}
+	var rejection *hubclient.APIError
+	if !errors.As(err, &rejection) || rejection.Status != http.StatusUnprocessableEntity || rejection.Rejection == nil || rejection.Rejection.Category != "runtime_validation" || rejection.Rejection.Field != "data.runtime.activity" {
+		t.Fatalf("rejection=%+v error=%v", rejection, err)
+	}
+	if strings.Contains(err.Error(), "sentinel") {
+		t.Fatal("public error disclosed private request")
+	}
+	for _, test := range []struct {
+		name, field string
+		body        map[string]any
+	}{
+		{"unknown field", "", map[string]any{"sentinel-secret-customer": "private body"}},
+		{"wrong type", "schema_version", map[string]any{"schema_version": "sentinel-secret-customer"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, test.body)
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			if strings.Contains(response.Body.String(), "sentinel-secret-customer") {
+				t.Fatal("decoder leaked rejected body")
+			}
+			var failure hubclient.APIError
+			decodeHubResponse(t, response, &failure)
+			if failure.Rejection == nil || failure.Rejection.Category != "body_decode" || failure.Rejection.Field != test.field {
+				t.Fatalf("decoder attribution=%+v", failure.Rejection)
+			}
+		})
+	}
+
+	var accepted int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type LIKE 'run.%'").Scan(&accepted); err != nil || accepted != 0 {
+		t.Fatalf("rejected event fabricated history: %d %v", accepted, err)
+	}
+
+	view := runnerauth.ProjectConfiguration{ProjectID: string(f.project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: now, Diagnostics: &runnerauth.ProjectDiagnostics{ObservedAt: now, Source: "runner_runtime_and_durable_attempt_owners", Records: []runnerauth.DiagnosticAttempt{{Key: "local:5", IssueID: "wi_unmatched", LocalAttemptID: 5, Membership: []string{"durable_active"}, NativeAttemptID: event.Data.AttemptID, HostOperation: "append.run.observed", OperationPending: true, OperationObservedAt: now, LatestErrorCode: "invalid_request", LatestError: rejection.Rejection.DiagnosticError(), Unavailable: map[string]string{"native_attempt_id": "unrecorded"}}}, Admissions: []runnerauth.DiagnosticAdmission{{IssueID: "wi_ready", ObservedAt: now, Result: "skipped", Predicate: "project_capacity_full", Unavailable: map[string]string{}}}, Counts: map[string]int{"durable_active": 1}, Unavailable: map[string]string{"running_build": "unavailable"}}}
 	post := func() {
 		t.Helper()
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
@@ -37,7 +96,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var workerPage runnerauth.DiagnosticPage
 	decodeHubResponse(t, response, &workerPage)
-	if len(workerPage.Records) != 1 || workerPage.Records[0].LocalAttemptID != 5 {
+	if len(workerPage.Records) != 1 || workerPage.Records[0].LocalAttemptID != 5 || workerPage.Records[0].LatestError != "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]" || workerPage.Records[0].NativeAttemptID != event.Data.AttemptID || !workerPage.Records[0].OperationObservedAt.Equal(now) {
 		t.Fatalf("worker diagnostic=%+v", workerPage)
 	}
 	contexts := make(chan context.Context, 1)
@@ -88,7 +147,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		next := args
 		next.Cursor = page.NextCursor
 		page, err = call(ctx, next)
-		if err != nil || len(page.Records) != 1 || page.Records[0].LocalAttemptID != 5 {
+		if err != nil || len(page.Records) != 1 || page.Records[0].LocalAttemptID != 5 || page.Records[0].LatestError != workerPage.Records[0].LatestError || page.Records[0].NativeAttemptID != event.Data.AttemptID {
 			t.Fatalf("next=%+v err=%v", page, err)
 		}
 	}
@@ -110,6 +169,12 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	other.ProjectID = "prj_unauthorized"
 	if _, err := call(ctx, other); err == nil {
 		t.Fatal("unauthorized project read succeeded")
+	}
+	view.Diagnostics.Records[0].LatestError = "sentinel-secret-customer"
+	post()
+	unknown, err := call(ctx, operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID, AttemptID: event.Data.AttemptID})
+	if err != nil || len(unknown.Records) != 1 || unknown.Records[0].LatestError != "[private error text omitted]" || unknown.Records[0].Unavailable["publication_rejection"] != "unavailable" {
+		t.Fatalf("unclassified rejection=%+v %v", unknown, err)
 	}
 	view.Diagnostics.ObservedAt = now.Add(-runnerauth.HeartbeatTimeout - time.Second)
 	post()
@@ -137,4 +202,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil), http.StatusUnauthorized)
+	if strings.Contains(logs.String(), "sentinel-secret-customer") {
+		t.Fatal("request secret leaked into logs")
+	}
 }
