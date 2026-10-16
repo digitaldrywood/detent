@@ -13,6 +13,9 @@ func TestFileIssueArguments(t *testing.T) {
 		name, fields string
 		valid        bool
 	}{
+		{"create anyway", `"title":"Title","challenge_token":"dup_example"`, true},
+		{"optional related", `"title":"Title","challenge_token":"dup_example","not_duplicate_of":[1]`, true},
+		{"unconfirmed related", `"title":"Title","not_duplicate_of":[1]`, false},
 		{"ordinary", `"title":"Title","description":"Body"`, true},
 		{"bug type", `"title":"Title","type":"bug"`, true},
 		{"change request type", `"title":"Title","type":"change_request"`, true},

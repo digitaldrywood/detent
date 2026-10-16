@@ -638,3 +638,19 @@ describe("support and the organization switch", () => {
     expect((failure as AccountError).status).toBe(404);
   });
 });
+
+it("preserves duplicate suggestions and sends explicit confirmation with the same request key", async () => {
+  const challenge = { code: "possible_duplicates", message: "Possible duplicate issues found", challenge_token: "dup_example", possible_duplicates: [{ work_item_id: "wi_existing", number: 12, title: "Existing report", web_url: "https://hub.example.test/issues/12", why: "Matching terms: report" }] };
+  const bodies: Record<string, unknown>[] = [];
+  const client = makeAccountApi({ origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: "csrf", fetch: async (_url, init) => {
+    bodies.push(JSON.parse(init!.body as string));
+    return bodies.length === 1 ? Response.json(challenge, { status: 409 }) : Response.json({ work_item_id: "wi_created" });
+  } });
+  const input = { projectId: "prj_example", title: "Independent report", body: "Details", state: "Backlog", key: "same-request" };
+  const failure = await client.createFirstIssue(input).catch((error: AccountError) => error);
+  expect(failure).toBeInstanceOf(AccountError);
+  expect((failure as AccountError).duplicateChallenge).toEqual(challenge);
+  await client.createFirstIssue({ ...input, challengeToken: (failure as AccountError).duplicateChallenge!.challenge_token });
+  expect(bodies[1]).toEqual({ ...bodies[0], challenge_token: "dup_example" });
+  expect(bodies[1]).not.toHaveProperty("not_duplicate_of");
+});

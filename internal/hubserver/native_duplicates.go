@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -198,7 +199,7 @@ WHERE token = ? AND organization_id = ? AND project_id = ? AND principal_id = ? 
 AND julianday(created_at) > julianday(?)
 RETURNING matches_json`, request.ChallengeToken, scope.organization, scope.project, scope.actor().PrincipalID, request.IdempotencyKey, hash, formatHubTime(now.Add(-duplicateChallengeLifetime))).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nativeInvalid("Duplicate challenge is invalid, expired or already used")
+		return nil, &nativeError{Code: "invalid_request", Message: "Duplicate confirmation is invalid, expired or already used. Review fresh suggestions before creating this issue.", status: http.StatusUnprocessableEntity, publicMessage: true}
 	}
 	if err != nil {
 		return nil, err

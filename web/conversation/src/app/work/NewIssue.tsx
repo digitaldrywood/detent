@@ -7,6 +7,8 @@
 // board that is on screen learns about the new issue through `created`.
 import React from "react";
 
+import { AccountError, type DuplicateChallenge } from "../account/api.ts";
+import { Alert, AlertTitle, AlertDescription } from "../../components/ui/alert.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import {
   Dialog,
@@ -137,17 +139,41 @@ export function NewIssueDialog({
   const [uploading, setUploading] = React.useState(false);
   const [state, setState] = React.useState(() => newIssueState(project, requestedState, role));
   const key = React.useRef(newKey());
+  const draft = JSON.stringify([target, githubIssueUrl.trim(), issueType, title.trim(), body.trim(), state]);
+  const attemptedDraft = React.useRef<string | null>(null);
+  const [challenge, setChallenge] = React.useState<{ draft: string; value: DuplicateChallenge } | null>(null);
+  const activeChallenge = challenge?.draft === draft ? challenge.value : null;
   const create = useMutation(async () => {
     if (uploading || reporter && project?.profile === "native" && issueType === "") return;
-    const created = await api.createFirstIssue({
-      projectId: target,
-	  githubIssueUrl: githubIssueUrl.trim() || undefined,
-      type: project?.profile === "native" && issueType !== "" ? issueType : undefined,
-      title: title.trim(),
-      body: body.trim(),
-      state,
-      key: key.current,
-    });
+    if (attemptedDraft.current !== null && attemptedDraft.current !== draft) {
+      key.current = newKey();
+    }
+    attemptedDraft.current = draft;
+    let created;
+    try {
+      created = await api.createFirstIssue({
+        projectId: target,
+        challengeToken: activeChallenge?.challenge_token,
+        githubIssueUrl: githubIssueUrl.trim() || undefined,
+        type: project?.profile === "native" && issueType !== "" ? issueType : undefined,
+        title: title.trim(),
+        body: body.trim(),
+        state,
+        key: key.current,
+      });
+    } catch (cause) {
+      if (cause instanceof AccountError && cause.duplicateChallenge !== null) {
+        setChallenge({ draft, value: cause.duplicateChallenge });
+        return;
+      }
+      if (activeChallenge !== null && cause instanceof AccountError && cause.status === 422) {
+        setChallenge(null);
+        key.current = newKey();
+      }
+      throw cause;
+    }
+    setChallenge(null);
+    attemptedDraft.current = null;
     key.current = newKey();
     const createdTitle = title.trim() || githubIssueUrl.trim();
     setTitle("");
@@ -172,11 +198,13 @@ export function NewIssueDialog({
           <form
             id="new-issue-form"
             className="flex flex-col gap-4"
+            aria-busy={create.pending}
             onSubmit={(event) => {
               event.preventDefault();
               if ((title.trim().length > 0 || githubIssueUrl.trim().length > 0) && project !== undefined) void create.call();
             }}
           >
+            <fieldset disabled={create.pending} className="contents">
             {/* The picker also shows when the issue cannot go where it was
                 started, so it never lands in another project unannounced. */}
             {projects.length > 1 || (projectId !== null && projectId !== target) ? (
@@ -255,7 +283,24 @@ export function NewIssueDialog({
                 />
               </div>
             ) : null}
-            <ControlError message={create.error?.message ?? null} />
+            </fieldset>
+            {activeChallenge !== null ? (
+              <Alert variant="warning">
+                <AlertTitle>Possible duplicate issues</AlertTitle>
+                <AlertDescription>
+                  <p>Review these suggestions. You can create this issue anyway without linking it to another issue.</p>
+                  <ul className="list-disc pl-4">
+                    {activeChallenge.possible_duplicates.map((match) => (
+                      <li key={match.work_item_id}>
+                        {match.web_url ? <a className="underline" href={match.web_url} target="_blank" rel="noreferrer">#{match.number} {match.title}</a> : <span>#{match.number} {match.title}</span>}
+                        <p>{match.why}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <ControlError message={create.error === null ? null : `${create.error.message} Your report is retained. ${activeChallenge === null ? "Try Create issue again." : "Retry Create anyway with the same report."}`} />
           </form>
         </DialogPanel>
         <DialogFooter>
@@ -265,7 +310,7 @@ export function NewIssueDialog({
             form="new-issue-form"
             disabled={uploading || create.pending || (reporter && project?.profile === "native" && issueType === "") || (title.trim().length === 0 && githubIssueUrl.trim().length === 0) || project === undefined}
           >
-            {create.pending ? "Creating…" : "Create issue"}
+            {create.pending ? "Creating…" : activeChallenge === null ? "Create issue" : "Create anyway"}
           </Button>
         </DialogFooter>
       </DialogPopup>

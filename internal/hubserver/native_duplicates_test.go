@@ -1,7 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -9,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -93,6 +97,7 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			if replay.Body.String() != response.Body.String() {
 				t.Fatal("challenge replay changed")
 			}
+			original := request
 			request.ChallengeToken = challenge.ChallengeToken
 			request.NotDuplicateOf = []int{first.Number}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
@@ -106,6 +111,11 @@ func TestNativeDuplicateFiling(t *testing.T) {
 			requireNativeStatus(t, replay, http.StatusOK)
 			if replay.Body.String() != response.Body.String() {
 				t.Fatal("confirmation replay changed")
+			}
+			initialReplay := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, original)
+			requireNativeStatus(t, initialReplay, http.StatusOK)
+			if initialReplay.Body.String() != response.Body.String() {
+				t.Fatal("original request did not return completed issue")
 			}
 			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
@@ -139,6 +149,8 @@ func TestNativeDuplicateConfirmationRefusals(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "token-binding")
 	first := f.create(t, "Runner checkout deadlocks")
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
+	otherIssue := other.create(t, "Independent project report")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, other.base+"/work-items/"+string(otherIssue.WorkItemID), other.token, nil), http.StatusOK)
 	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -230,10 +242,32 @@ func TestNativeDuplicateChallengeLifetime(t *testing.T) {
 			if challenge.ChallengeToken == "" {
 				t.Fatalf("no challenge: %s", response.Body.String())
 			}
-			request.ChallengeToken, request.NotDuplicateOf = challenge.ChallengeToken, []int{first.Number}
+			request.ChallengeToken = challenge.ChallengeToken
 			now = now.Add(test.age)
 			response = performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items", f.token, request)
 			requireNativeStatus(t, response, test.want)
+			if test.want == http.StatusUnprocessableEntity {
+				ctx := changeOperatorContext(t, service, f.token, string(f.project.OrganizationID))
+				credential, _, err := service.authenticateAPIToken(t.Context(), f.token, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				authority, err := service.operatorCurrentAuthority(ctx, credential, string(f.project.OrganizationID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx = service.withOperatorCatalog(authority.BindContext(ctx), credential, string(f.project.OrganizationID))
+				raw, err := json.Marshal(map[string]any{"project_id": f.project.ID, "request_id": request.IdempotencyKey, "title": request.Title, "description": request.Body, "state": request.State, "challenge_token": request.ChallengeToken})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = (hostedOperatorExecutor{service}).Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
+				var refusal *operatortool.RequestError
+				if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "Review fresh suggestions") {
+					t.Fatalf("expiry was not actionable: %v", err)
+				}
+			}
+
 			var count int
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
 				t.Fatal(err)
@@ -387,6 +421,183 @@ func TestNativeDuplicateMCP(t *testing.T) {
 			if err := json.Unmarshal(raw, &links); err != nil || len(links.Related) != 1 || links.Related[0].ID != created.WorkItemID {
 				t.Fatalf("manual relationship=%s: %v", raw, err)
 			}
+		})
+	}
+}
+
+func TestHostedDuplicateConfirmation(t *testing.T) {
+	for _, deployment := range []string{"shared", "dedicated"} {
+		t.Run(deployment, func(t *testing.T) {
+			f, ctx := newHostedKeyMCPFixture(t, deployment, "member")
+			executor := hostedOperatorExecutor{f.service}
+			call := func(args map[string]any) tracker.NativeIssue {
+				t.Helper()
+				raw, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var envelope struct {
+					Data json.RawMessage `json:"data"`
+				}
+				if err := json.Unmarshal(result.Content, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				var challenge duplicateChallenge
+				if err := json.Unmarshal(envelope.Data, &challenge); err != nil {
+					t.Fatal(err)
+				}
+				if challenge.ChallengeToken != "" {
+					args["challenge_token"] = challenge.ChallengeToken
+					if args["request_id"] != "filing-1" {
+						numbers := []int{}
+						for _, match := range challenge.PossibleDuplicates {
+							numbers = append(numbers, match.Number)
+						}
+						args["not_duplicate_of"] = numbers
+					}
+					raw, err = json.Marshal(args)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if args["request_id"] == "filing-1" {
+						if _, err := f.service.database.db.ExecContext(ctx, `CREATE TRIGGER fail_confirm BEFORE INSERT ON issues BEGIN SELECT RAISE(ABORT, 'injected issue write failure'); END`); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw}); err == nil {
+							t.Fatal("injected write failure succeeded")
+						}
+						if _, err := f.service.database.db.ExecContext(ctx, "DROP TRIGGER fail_confirm"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					result, err = executor.Execute(ctx, operatortool.Call{Name: operatortool.FileIssue, Arguments: raw})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(result.Content, &envelope); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var issue tracker.NativeIssue
+				if err := json.Unmarshal(envelope.Data, &issue); err != nil || issue.WorkItemID == "" {
+					t.Fatalf("issue=%s, err=%v", result.Content, err)
+				}
+				return issue
+			}
+			for i := range 3 {
+				args := map[string]any{"project_id": f.project, "request_id": "filing-" + strconv.Itoa(i), "title": "Runner checkout deadlocks", "description": "Independent observation" + issueContractTestSections, "priority": 2}
+				original := make(map[string]any, len(args))
+				for key, value := range args {
+					original[key] = value
+				}
+				issue := call(args)
+				replay := call(args)
+				initialReplay := call(original)
+				if initialReplay.WorkItemID != issue.WorkItemID {
+					t.Fatal("original replay changed the created issue")
+				}
+				raw, err := json.Marshal(map[string]any{"project_id": f.project, "reference": issue.WorkItemID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.WorkItem, Arguments: raw})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var readback struct {
+					Data tracker.NativeIssue `json:"data"`
+				}
+				if err := json.Unmarshal(result.Content, &readback); err != nil || readback.Data.WorkItemID != issue.WorkItemID || readback.Data.Priority == nil || *readback.Data.Priority != 1 {
+					t.Fatalf("readback=%s err=%v", result.Content, err)
+				}
+				if replay.WorkItemID != issue.WorkItemID || issue.Priority == nil || *issue.Priority != 1 {
+					t.Fatalf("issue=%#v, replay=%#v", issue, replay)
+				}
+			}
+			var count, related int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project).Scan(&count); err != nil || count != 3 {
+				t.Fatalf("issue count=%d err=%v", count, err)
+			}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_relationships").Scan(&related); err != nil || related != 2 {
+				t.Fatalf("relationship count=%d err=%v", related, err)
+			}
+
+			t.Run("same principal across credentials", func(t *testing.T) {
+				resolve := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+				issuer, err := resolve(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issuer.project = f.project
+				expires := f.service.config.now().Add(time.Hour)
+				key, err := f.service.createAPITokenFor(ctx, tokenRequest{Name: "confirmation-client", Scope: apiScopeOperator, Issuer: &issuer.credential, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected})
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				confirmer := nativeScope{organization: issuer.organization, project: f.project, credential: credential}
+				if issuer.credential.ID == credential.ID || issuer.actor().PrincipalID != confirmer.actor().PrincipalID {
+					t.Fatal("fixture requires distinct credentials for the same principal")
+				}
+				keyCtx := changeOperatorContext(t, f.service, key.Token, string(issuer.organization))
+				authority, err := f.service.operatorCurrentAuthority(keyCtx, credential, string(issuer.organization))
+				if err != nil {
+					t.Fatal(err)
+				}
+				keyCtx = f.service.withOperatorCatalog(authority.BindContext(keyCtx), credential, string(issuer.organization))
+				invoke := func(current context.Context, input map[string]any) json.RawMessage {
+					t.Helper()
+					arguments, err := json.Marshal(input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := executor.Execute(current, operatortool.Call{Name: operatortool.FileIssue, Arguments: arguments})
+					if err != nil {
+						t.Fatalf("filing: %v", err)
+					}
+					var envelope struct {
+						Data json.RawMessage `json:"data"`
+					}
+					if err := json.Unmarshal(result.Content, &envelope); err != nil {
+						t.Fatal(err)
+					}
+					return envelope.Data
+				}
+				draft := map[string]any{"project_id": f.project, "request_id": "cross-credential", "title": "Runner checkout deadlocks", "description": "Separate observation" + issueContractTestSections, "state": "Todo", "priority": 2}
+				raw := invoke(ctx, draft)
+				var challenge duplicateChallenge
+				if err := json.Unmarshal(raw, &challenge); err != nil || challenge.ChallengeToken == "" {
+					t.Fatalf("challenge=%s err=%v", raw, err)
+				}
+				confirmed := maps.Clone(draft)
+				confirmed["challenge_token"] = challenge.ChallengeToken
+				raw = invoke(keyCtx, confirmed)
+				var created tracker.NativeIssue
+				if err := json.Unmarshal(raw, &created); err != nil || created.WorkItemID == "" {
+					t.Fatalf("created=%s err=%v", raw, err)
+				}
+				for i, input := range []map[string]any{draft, confirmed} {
+					current := ctx
+					if i == 1 {
+						current = keyCtx
+					}
+					raw := invoke(current, input)
+					var issue tracker.NativeIssue
+					if json.Unmarshal(raw, &issue) != nil || issue.WorkItemID != created.WorkItemID {
+						t.Fatalf("completed replay=%s", raw)
+					}
+				}
+				if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id=?", f.project).Scan(&count); err != nil || count != 4 {
+					t.Fatalf("issue count=%d err=%v", count, err)
+				}
+			})
 		})
 	}
 }

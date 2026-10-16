@@ -35,8 +35,8 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 	}
 	scope.action = operatortool.FileIssue
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items", Feature: "collaboration"}
-	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || (request.ChallengeToken == "") != (len(request.NotDuplicateOf) == 0) {
-		return nil, nativeInvalid("Supply a duplicate challenge token and one to five issue numbers together")
+	if len(request.ChallengeToken) > 128 || len(request.NotDuplicateOf) > 5 || request.ChallengeToken == "" && len(request.NotDuplicateOf) != 0 {
+		return nil, nativeInvalid("Related issue numbers require a duplicate challenge token")
 	}
 	if request.ChallengeToken != "" {
 		if request.GitHubIssueURL != "" || request.Provenance != nil {
@@ -134,6 +134,20 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 		}
 		for _, match := range related {
 			issue, err = changeNativeDependencyTx(ctx, tx, scope, string(issue.WorkItemID), tracker.DependencyMutation{ExpectedRevision: issue.Revision, RelatedWorkItemID: match.WorkItemID, RelationshipType: "related", Operation: "add"}, now)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if request.ChallengeToken != "" {
+			response, err := marshalNative(issue)
+			if err != nil {
+				return nil, err
+			}
+			hash, err := duplicateContentHash(request)
+			if err != nil {
+				return nil, err
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND operation = ? AND command_key = ? AND request_hash = ? AND json_extract(response_json, '$.challenge_token') = ?`, response, scope.organization, strings.TrimSuffix(options.OperationID, "/duplicate-confirmation"), request.IdempotencyKey, hash, request.ChallengeToken)
 			if err != nil {
 				return nil, err
 			}
