@@ -597,8 +597,10 @@ func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, reco
 			return err
 		}
 	case tracker.NativeComment:
-		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, value.ID, value.Body); err != nil {
-			return err
+		if !value.Deleted {
+			if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, value.ID, value.Body); err != nil {
+				return err
+			}
 		}
 	}
 	recordID := workItemID

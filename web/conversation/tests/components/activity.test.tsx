@@ -2,6 +2,7 @@
 //
 // The issue page's activity feed: the merge, the fold and what the rows draw.
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import attemptsFixture from "../../src/contracts/fixtures/work-attempt-list.json";
@@ -221,6 +222,68 @@ describe("the fold", () => {
 });
 
 describe("the feed", () => {
+  function commentRows() {
+    return mergeActivity({ history: [], attempts: [], conversation: null, viewerPrincipalId: "viewer", comments: [
+      { ...COMMENTS[0]!, comment_id: "own", actor: { kind: "human", principal_id: "viewer" }, edited_by: undefined, body: "Original comment", revision: "1" },
+      { ...COMMENTS[0]!, comment_id: "reply", actor: { kind: "human", principal_id: "other" }, edited_by: undefined, body: "Another user's reply", revision: "1" },
+    ] });
+  }
+
+  it("edits only owned comments, cancels drafts, and keeps a failed edit for saving", async () => {
+    const user = userEvent.setup();
+    const rows = commentRows();
+    const onChange = vi.fn().mockRejectedValueOnce(new Error("Save unavailable")).mockResolvedValueOnce(undefined);
+    const view = render(<ActivityFeed rows={rows} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
+    expect(screen.getAllByRole("button", { name: "Comment actions" })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Original comment");
+    await user.type(screen.getByRole("textbox", { name: "Edit comment" }), " cancelled");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Original comment")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    await user.clear(screen.getByRole("textbox", { name: "Edit comment" }));
+    await user.type(screen.getByRole("textbox", { name: "Edit comment" }), "Corrected comment");
+    view.rerender(<ActivityFeed rows={rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, revision: "2" } } : entry)} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Save unavailable");
+    expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Corrected comment");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onChange).toHaveBeenLastCalledWith(rows[0]!.comment, "Corrected comment", false);
+    const edited = rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "Corrected comment", edited: true } } : entry);
+    view.rerender(<ActivityFeed rows={edited} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
+    expect(await screen.findByText("Corrected comment")).toBeTruthy();
+    expect(screen.getByText(/· edited/)).toBeTruthy();
+    expect(screen.getByText("Another user's reply")).toBeTruthy();
+  });
+
+  it("confirms deletion, preserves the comment on cancellation or failure, and keeps later replies", async () => {
+    const user = userEvent.setup();
+    const rows = commentRows();
+    const onChange = vi.fn().mockRejectedValueOnce(new Error("Delete unavailable")).mockResolvedValueOnce(undefined);
+    const props = { rows, live: null, liveAt: Infinity, onReply: null, posting: false, onChangeComment: onChange };
+    const view = render(<ActivityFeed {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Original comment")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Delete unavailable");
+    expect(screen.getByText("Original comment")).toBeTruthy();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    expect(onChange).toHaveBeenLastCalledWith(rows[0]!.comment, "", true);
+    view.rerender(<ActivityFeed {...props} rows={rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "", deleted: true } } : entry)} />);
+    expect(await screen.findByText("This comment was deleted")).toBeTruthy();
+    expect(screen.queryByText("Original comment")).toBeNull();
+    expect(screen.getByText("Another user's reply")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Comment actions" })).toBeNull();
+  });
+
   it("draws one line per event and a card with a reply for a comment", () => {
     const onReply = vi.fn();
     render(

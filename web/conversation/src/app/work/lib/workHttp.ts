@@ -266,6 +266,15 @@ export interface WorkHttp {
     key: string;
     body: string;
   }) => Promise<NativeComment>;
+  readonly updateComment: (input: {
+    projectId: string;
+    itemId: string;
+    commentId: string;
+    key: string;
+    expectedRevision: string;
+    body: string;
+    deleted?: boolean;
+  }) => Promise<NativeComment>;
   readonly listChanges: (projectId: string, itemId: string, signal?: AbortSignal) => Promise<ChangeRequestList>;
   readonly getChange: (
     projectId: string,
@@ -680,6 +689,13 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(NativeComment, "POST", url(`${itemBase(input.projectId, input.itemId)}/comments`), {
         idempotency_key: input.key,
         body: input.body,
+      }),
+    updateComment: (input) =>
+      send(NativeComment, "PATCH", url(`${itemBase(input.projectId, input.itemId)}/comments/${encodeURIComponent(input.commentId)}`), {
+        idempotency_key: input.key,
+        expected_revision: input.expectedRevision,
+        body: input.body,
+        deleted: input.deleted ?? false,
       }),
     // The one native list with no envelope: a bare array, no cursor.
     listChanges: (projectId, itemId, signal) =>

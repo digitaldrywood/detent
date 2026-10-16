@@ -205,11 +205,64 @@ func TestReporterNativeCommands(t *testing.T) {
 			decodeHubResponse(t, r, &comment)
 			r = request(u, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-own"}, ExpectedRevision: comment.Revision, Body: "Updated observation"})
 			requireNativeStatus(t, r, http.StatusOK)
+			original := comment
+			decodeHubResponse(t, r, &comment)
+			if comment.Body != "Updated observation" || comment.Actor != original.Actor || !comment.CreatedAt.Equal(original.CreatedAt) || comment.EditedBy == nil || comment.Revision != 2 {
+				t.Fatalf("edited comment=%#v", comment)
+			}
+			for _, actor := range []hostedSecurityUser{member, owner} {
+				for _, deleted := range []bool{false, true} {
+					r = request(actor, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("deny-%s-%t", actor.identity.Subject, deleted)}, ExpectedRevision: comment.Revision, Body: "Replacement", Deleted: deleted})
+					requireNativeStatus(t, r, http.StatusForbidden)
+				}
+			}
+			parent := comment
+			parent.Body = "Updated observation\n![Screenshot](attachment:" + record.ID + ")"
+			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "attach-comment"}, ExpectedRevision: parent.Revision, Body: parent.Body})
+			requireNativeStatus(t, r, http.StatusOK)
+			decodeHubResponse(t, r, &parent)
 			r = request(member, http.MethodPost, commentPath, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "member-comment"}, Body: "Operator observation"})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &comment)
 			r = request(u, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-other"}, ExpectedRevision: comment.Revision, Body: "Replacement"})
 			requireNativeStatus(t, r, http.StatusForbidden)
+			r = request(u, http.MethodPatch, commentPath+"/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "delete-other"}, ExpectedRevision: comment.Revision, Deleted: true})
+			requireNativeStatus(t, r, http.StatusForbidden)
+			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "stale-delete"}, ExpectedRevision: 1, Deleted: true})
+			requireNativeStatus(t, r, http.StatusConflict)
+			deletion := tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "delete-own"}, ExpectedRevision: parent.Revision, Deleted: true}
+			for range 2 {
+				r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, deletion)
+				requireNativeStatus(t, r, http.StatusOK)
+				var deleted tracker.NativeComment
+				decodeHubResponse(t, r, &deleted)
+				if !deleted.Deleted || deleted.Body != "" || deleted.Actor != parent.Actor || !deleted.CreatedAt.Equal(parent.CreatedAt) || deleted.Revision != parent.Revision+1 {
+					t.Fatalf("deleted comment=%#v", deleted)
+				}
+			}
+			for _, actor := range []hostedSecurityUser{u, member} {
+				r = request(actor, http.MethodGet, commentPath, nil)
+				requireNativeStatus(t, r, http.StatusOK)
+				var comments tracker.Page[tracker.NativeComment]
+				decodeHubResponse(t, r, &comments)
+				if len(comments.Items) != 2 || !comments.Items[0].Deleted || comments.Items[0].Body != "" || comments.Items[1].Body != "Operator observation" {
+					t.Fatalf("discussion=%#v", comments.Items)
+				}
+			}
+			r = request(u, http.MethodPatch, commentPath+"/"+parent.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-deleted"}, ExpectedRevision: parent.Revision + 1, Body: "Restored"})
+			requireNativeStatus(t, r, http.StatusUnprocessableEntity)
+			var snapshot tracker.NativeComment
+			var encoded string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM collaboration_versions WHERE record_id=? AND revision=?", parent.ID, parent.Revision).Scan(&encoded); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(encoded), &snapshot); err != nil || snapshot.Body != parent.Body || snapshot.Deleted {
+				t.Fatalf("revision=%#v, error=%v", snapshot, err)
+			}
+			var references int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=? AND comment_id=?", record.ID, parent.ID).Scan(&references); err != nil || references != 1 {
+				t.Fatalf("attachment references=%d, error=%v", references, err)
+			}
 			for _, suffix := range []string{"", "/comments", "/history"} {
 				r := request(u, http.MethodGet, f.base+"/work-items/"+string(other.WorkItemID)+suffix, nil)
 				requireNativeStatus(t, r, http.StatusNotFound)
