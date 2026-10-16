@@ -75,6 +75,10 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := nativeWebServerWithClient(t, native, &nativeWebFixture{})
+	const contractSections = "\n## Acceptance criteria\nCreate and edit native work through forms.\n## Must not break\nComment and Change operations.\n## How we know it worked\nThe native form integration test passes."
+	const createdBody = "Full native body" + contractSections
+	const editedBody = "Edited body" + contractSections
+	const dependencyBody = "## Acceptance criteria\nResolve the prerequisite storage migration before dispatching dependent tasks.\n## Must not break\nPreserve database records, schema compatibility and tenant isolation.\n## How we know it worked\nVerify successful upgrades against populated SQLite fixtures."
 	submit := func(path string, form url.Values, want int) string {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
@@ -87,13 +91,13 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 		}
 		return res.Header().Get("Location")
 	}
-	location := submit("/projects/native/issues/new", url.Values{"action": {"create"}, "key": {"create-issue"}, "title": {"Native authoring"}, "body": {"Full native body"}, "state": {"Todo"}}, 303)
+	location := submit("/projects/native/issues/new", url.Values{"action": {"create"}, "key": {"create-issue"}, "title": {"Native authoring"}, "body": {createdBody}, "state": {"Todo"}}, 303)
 	id := tracker.NativeWorkItemID(strings.TrimPrefix(location, "/projects/native/issues/"))
 	issue, err := native.Issue(t.Context(), id)
-	if err != nil || issue.Title != "Native authoring" || len(issue.ExternalReferences) != 0 {
+	if err != nil || issue.Title != "Native authoring" || issue.Body != createdBody || len(issue.ExternalReferences) != 0 {
 		t.Fatalf("created issue: %#v, %v", issue, err)
 	}
-	blocker, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, Title: "Dependency", State: "Todo"})
+	blocker, err := native.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "blocker"}, Title: "Dependency", Body: dependencyBody, State: "Todo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +105,7 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 		action string
 		fields url.Values
 	}{
-		{"edit", url.Values{"title": {"Edited native title"}, "body": {"Edited body"}, "priority": {"0"}}},
+		{"edit", url.Values{"title": {"Edited native title"}, "body": {editedBody}, "priority": {"0"}}},
 		{"dependency", url.Values{"related": {string(blocker.WorkItemID)}, "operation": {"add"}}},
 		{"dependency", url.Values{"related": {string(blocker.WorkItemID)}, "operation": {"remove"}}},
 		{"transition", url.Values{"state": {"In Progress"}}},
@@ -125,7 +129,7 @@ func TestNativeWorkFormsPersistWithoutGitHub(t *testing.T) {
 		})
 	}
 	current, err := native.Issue(t.Context(), id)
-	if err != nil || current.Title != "Edited native title" || current.State != "In Progress" || current.Priority == nil || *current.Priority != 0 || len(current.Dependencies) != 0 {
+	if err != nil || current.Title != "Edited native title" || current.Body != editedBody || current.State != "In Progress" || current.Priority == nil || *current.Priority != 0 || len(current.Dependencies) != 0 {
 		t.Fatalf("persisted issue: %#v, %v", current, err)
 	}
 	comments, err := native.Comments(t.Context(), id, "")
