@@ -3,17 +3,20 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account string, now func() time.Time, models func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error), billing func(context.Context, workflowconfig.AgentBackend) (string, error), usage ...*runner.ProviderUsage) func() ([]providercapacity.Report, error) {
+func runnerProviderReports(ctx context.Context, configuration func() globalconfig.Config, account string, now func() time.Time, models func(context.Context, workflowconfig.AgentBackend) ([]runner.AgentModel, error), billing func(context.Context, workflowconfig.AgentBackend) (string, error), usage ...*runner.ProviderUsage) func() ([]providercapacity.Report, error) {
 	account = strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-' {
 			return r
@@ -27,34 +30,31 @@ func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account
 	if account == "" {
 		account = "runner"
 	}
-	workflow := workflowconfig.Default().WithAgentDefaults(cfg.Global.Agents, cfg.Global.Budget)
 	return func() ([]providercapacity.Report, error) {
+		cfg := configuration()
+		backends, routes := runnerProviderConfigs(ctx, cfg)
 		if cfg.Client.ProviderCapacityFile != "" {
 			reports, err := providercapacity.Load(cfg.Client.ProviderCapacityFile)
 			if err != nil {
 				return nil, err
 			}
-			reports = withProviderBilling(ctx, reports, workflow.AgentBackendConfigs(), billing, usage)
+			reports = withProviderBilling(ctx, reports, backends, billing, usage)
 			reports = withProviderUsage(reports, usage)
 			return reports, providercapacity.Validate(reports)
 		}
 		var reports []providercapacity.Report
-		for _, backend := range workflow.AgentBackendConfigs() {
-			if backend.Disabled {
+		for _, backend := range backends {
+			if slices.ContainsFunc(backends, func(other workflowconfig.AgentBackend) bool {
+				return other.ID == backend.ID && !runnerProviderCompatible(backend, other)
+			}) {
+				slog.Warn("Runner provider backend identity conflicts across projects", "backend", backend.ID)
 				continue
 			}
-			provider := backend.Provider
-			if provider == "" {
-				switch backend.Kind {
-				case workflowconfig.AgentBackendCodex:
-					provider = "openai"
-				case workflowconfig.AgentBackendClaudeCode:
-					provider = "anthropic"
-				default:
-					provider = backend.Kind
-				}
+			report := providercapacity.Report{Provider: runnerProviderName(backend), Backend: backend.ID, AccountAlias: account, Availability: "unknown"}
+			index := slices.IndexFunc(reports, func(existing providercapacity.Report) bool { return existing.Backend == backend.ID })
+			if index >= 0 {
+				report = reports[index]
 			}
-			report := providercapacity.Report{Provider: provider, Backend: backend.ID, AccountAlias: account, Availability: "unknown"}
 			catalog, err := models(ctx, backend)
 			if err != nil {
 				return nil, fmt.Errorf("provider models for backend %s: %w", backend.ID, err)
@@ -66,21 +66,87 @@ func runnerProviderReports(ctx context.Context, cfg globalconfig.Config, account
 					}
 				}
 			}
-			if len(catalog) == 0 {
-				for _, route := range workflow.AgentRouteConfigs() {
-					if route.Backend == backend.ID && route.Model != "" && !slices.Contains(report.Models, route.Model) {
-						report.Models = append(report.Models, route.Model)
-					}
+			for _, route := range routes {
+				if !route.Disabled && route.Backend == backend.ID && route.Model != "" && !slices.Contains(report.Models, route.Model) {
+					report.Models = append(report.Models, route.Model)
 				}
 			}
-			report.Models = append(report.Models, "provider_default")
+			if !slices.Contains(report.Models, "provider_default") {
+				report.Models = append(report.Models, "provider_default")
+			}
 			report.ObservedAt = now().UTC()
-			reports = append(reports, report)
+			if index >= 0 {
+				reports[index] = report
+			} else {
+				reports = append(reports, report)
+			}
 		}
-		reports = withProviderBilling(ctx, reports, workflow.AgentBackendConfigs(), billing, usage)
+		reports = withProviderBilling(ctx, reports, backends, billing, usage)
 		reports = withProviderUsage(reports, usage)
 		return reports, providercapacity.Validate(reports)
 	}
+}
+
+func runnerProviderName(backend workflowconfig.AgentBackend) string {
+	if backend.Provider != "" {
+		return backend.Provider
+	}
+	switch backend.Kind {
+	case workflowconfig.AgentBackendCodex:
+		if provider := backend.CodexOptions().ModelProvider; provider != "" {
+			return provider
+		}
+		return "openai"
+	case workflowconfig.AgentBackendClaudeCode:
+		return "anthropic"
+	default:
+		return backend.Kind
+	}
+}
+
+func runnerProviderCompatible(a, b workflowconfig.AgentBackend) bool {
+	if a.Kind != b.Kind || a.Protocol != b.Protocol || a.Command != b.Command || runnerProviderName(a) != runnerProviderName(b) {
+		return false
+	}
+	switch a.Kind {
+	case workflowconfig.AgentBackendCodex:
+		x, y := a.CodexOptions(), b.CodexOptions()
+		return x.Shell == y.Shell && x.ModelProvider == y.ModelProvider
+	case workflowconfig.AgentBackendClaudeCode:
+		x, y := a.ClaudeCodeOptions(), b.ClaudeCodeOptions()
+		return x.Shell == y.Shell && slices.Equal(x.ExtraArgs, y.ExtraArgs)
+	default:
+		return reflect.DeepEqual(a, b)
+	}
+}
+
+func runnerProviderConfigs(ctx context.Context, cfg globalconfig.Config) ([]workflowconfig.AgentBackend, []workflowconfig.AgentRoute) {
+	var workflows []workflowconfig.Config
+	if len(cfg.Projects) == 0 {
+		workflows = append(workflows, workflowconfig.Default().WithAgentDefaults(cfg.Global.Agents, cfg.Global.Budget))
+	}
+	for _, selected := range project.ManagerConfigFromGlobal(cfg).Projects {
+		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if err != nil {
+			slog.Warn("Runner provider project definition unavailable", "project", selected.ID, "error", err)
+			continue
+		}
+		workflows = append(workflows, workflow.Config)
+	}
+	var backends []workflowconfig.AgentBackend
+	var routes []workflowconfig.AgentRoute
+	for _, workflow := range workflows {
+		for _, backend := range workflow.AgentBackendConfigs() {
+			if backend.Disabled {
+				continue
+			}
+			if !slices.ContainsFunc(backends, func(existing workflowconfig.AgentBackend) bool { return reflect.DeepEqual(existing, backend) }) {
+				backends = append(backends, backend)
+			}
+		}
+		routes = append(routes, workflow.AgentRouteConfigs()...)
+	}
+	return backends, routes
 }
 
 func runnerProviderModels(ctx context.Context, cfg workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
