@@ -231,7 +231,7 @@ limits still apply. The printed summary shows the configured floors. See
 
 ### Standard runner toolset
 
-Every runner receives the same pinned tools during bootstrap, so agents can
+Every runner receives the standard tools during bootstrap, so agents can
 use them without installing dependencies during a turn. Installed tools and
 browser binaries stay on the Sprite's disk across pauses and runner updates.
 The bootstrap prints their versions and verifies a Chromium headless launch
@@ -246,13 +246,20 @@ and screenshot of a local page before enrolling or starting the runner.
 | Playwright | 1.63.0, with its matching Chromium | Verify web behavior headlessly and take screenshots. |
 | ripgrep (`rg`) | 15.2.0 | Search source text quickly. |
 | fd | 10.3.0 | Find source files quickly. |
-| PostgreSQL client (`psql`) | Ubuntu `postgresql-client-17=17.10-0ubuntu0.25.10.1` | Query PostgreSQL databases for development and diagnostics. |
+| PostgreSQL client (`psql`) | APT candidate for major 18, or 17 when 18 is unavailable | Query PostgreSQL databases for development and diagnostics. |
 | Docker | Ubuntu `docker.io=29.1.3-0ubuntu3~25.10.1`, when supported | Run container-based project dependencies. |
 
 Go, Detent, GitHub CLI and ripgrep downloads are checked against published
 SHA-256 manifests. fd archives are checked against the release's published
 SHA-256 digests pinned in the script. npm verifies package integrity, and APT
 verifies the signed Ubuntu package indexes and package checksums.
+PostgreSQL uses the configured distribution repositories: Resolute supplies
+major 18, while images supplying only major 17 keep that major. The selected
+candidate revision is passed explicitly to APT. No external repository or
+server package is installed. Missing compatible candidates fail with a
+repository compatibility error. The bootstrap locates and verifies the
+package's executable before updating its local `psql` link, and reinstalls
+the client when a partial installation left its executable missing.
 The pinned `yaml` Node package (2.8.3) merges the pressure defaults while
 preserving existing values and YAML comments.
 

@@ -66,11 +66,28 @@ elif name == "dpkg-query":
     installed = root / (args[-1] + ".version")
     if not installed.exists():
         sys.exit(1)
-    print("install ok installed " + installed.read_text())
+    if args[0] == "-L":
+        print(root / args[-1] / "bin/psql")
+        print("/usr/share/doc/postgresql-client/copyright\n" * 4096)
+    else:
+        print("install ok installed " + installed.read_text())
+elif name == "apt-cache":
+    candidates = json.loads(os.environ.get("PSQL_CANDIDATES", '{"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}'))
+    print("  Candidate: " + candidates.get(args[-1], "(none)"))
+    print("        500 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages\n" * 4096)
 elif name == "apt-get":
     for arg in args:
-        if arg.startswith(("postgresql-client-17=", "docker.io=")):
+        if arg.startswith(("postgresql-client-", "docker.io=")):
             package, version = arg.split("=", 1)
+            if package.startswith("postgresql-client-"):
+                candidates = json.loads(os.environ.get("PSQL_CANDIDATES", '{"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}'))
+                if candidates.get(package) != version or os.environ.get("PSQL_INSTALL_FAIL"):
+                    sys.exit(100)
+                binary = root / package / "bin/psql"
+                if not os.environ.get("PSQL_BINARY_MISSING"):
+                    binary.parent.mkdir(parents=True, exist_ok=True)
+                    binary.write_text('#!/bin/sh\nprintf "psql (PostgreSQL) ' + package.rsplit("-", 1)[1] + '.10\\n"\n')
+                    binary.chmod(0o755)
             (root / (package + ".version")).write_text(version)
 elif name == "node":
     script = sys.stdin.read()
@@ -89,8 +106,6 @@ elif name == "docker":
     if args == ["info"]:
         sys.exit(0 if (root / "service-detent-docker.json").exists() else 1)
     print("Docker version 29.1.3, build fixture")
-elif name == "psql":
-    print("psql (PostgreSQL) 17.10")
 elif name == "rg":
     print("ripgrep 0.0.0" if pathlib.Path(__file__).parent == root / "bin" else "ripgrep 15.2.0")
 elif name == "fd":
@@ -150,7 +165,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.home.mkdir()
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
-        for name in ("uname", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-get", "node", "psql", "docker", "dockerd"):
+        for name in ("uname", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
             path = self.fake_bin / name
             path.write_text(STUB)
             path.chmod(0o755)
@@ -329,7 +344,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         restarts = [args for command, args in self.calls() if command == "sprite-env" and args[:1] == ["curl"]]
         self.assertEqual(len(restarts), 1)
         rerun_calls = self.calls()[before:]
-        self.assertFalse(any(command in ("curl", "npm", "apt-get") for command, _ in rerun_calls))
+        self.assertFalse(any(command in ("curl", "npm") or command == "apt-get" and args[:1] == ["install"] for command, args in rerun_calls))
         self.assertFalse(any(command == "playwright" and args[:1] == ["install"] for command, args in rerun_calls))
         self.assertIn("headless screenshot verified", rerun.stdout)
         self.assertIn("Docker: skipped:", rerun.stdout)
@@ -406,7 +421,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertEqual(update.returncode, 0, update.stderr)
         self.assertTrue(any("linux_arm64.tar.gz" in " ".join(args) for command, args in self.calls() if command == "curl"))
         self.assertTrue(any("aarch64-unknown-linux-musl" in " ".join(args) for command, args in self.calls() if command == "curl"))
-        self.assertIn(["apt-get", ["install", "-y", "--no-install-recommends", "--allow-downgrades", "postgresql-client-17=17.10-0ubuntu0.25.10.1"]], self.calls())
+        self.assertIn(["apt-get", ["install", "-y", "--no-install-recommends", "--allow-downgrades", "--reinstall", "postgresql-client-17=17.10-0ubuntu0.25.10.1"]], self.calls())
         self.assertIn(["playwright", ["install", "--with-deps", "chromium"]], self.calls())
         self.assertIn("headless screenshot verified", update.stdout)
 
@@ -423,8 +438,56 @@ class SpriteBootstrapTests(unittest.TestCase):
         before = len(self.calls())
         rerun = self.run_bootstrap(enrollment="")
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
-        self.assertFalse(any(command == "apt-get" for command, _ in self.calls()[before:]))
+        self.assertFalse(any(command == "apt-get" and args[:1] == ["install"] for command, args in self.calls()[before:]))
         self.assertFalse(any(command == "sprite-env" and args[:3] == ["services", "create", "detent-docker"] for command, args in self.calls()[before:]))
+
+    def test_postgresql_repository_candidates_and_partial_installation(self):
+        cases = (
+            ("older image", {"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}, "17", None),
+            ("updated revision", {"postgresql-client-17": "17.11-0ubuntu0.25.10.2"}, "17", None),
+            ("resolute", {"postgresql-client-18": "18.6-0ubuntu0.26.04.1"}, "18", None),
+            ("prefer newer client", {"postgresql-client-17": "17.10", "postgresql-client-18": "18.6"}, "18", None),
+            ("no compatible package", {}, None, "configured APT repositories"),
+            ("install fails", {"postgresql-client-18": "18.6"}, None, "PSQL_INSTALL_FAIL"),
+            ("package lacks executable", {"postgresql-client-18": "18.6"}, None, "PSQL_BINARY_MISSING"),
+        )
+        link = self.home / ".local/bin/psql"
+        for name, candidates, major, failure in cases:
+            with self.subTest(name=name):
+                for package in ("postgresql-client-17", "postgresql-client-18"):
+                    (self.root / (package + ".version")).unlink(missing_ok=True)
+                    shutil.rmtree(self.root / package, ignore_errors=True)
+                link.unlink(missing_ok=True)
+                link.symlink_to(self.root / "absent/psql")
+                self.env["PSQL_CANDIDATES"] = json.dumps(candidates)
+                for flag in ("PSQL_INSTALL_FAIL", "PSQL_BINARY_MISSING"):
+                    self.env.pop(flag, None)
+                if failure and failure.startswith("PSQL_"):
+                    self.env[failure] = "1"
+                before = len(self.registrations())
+                result = self.run_bootstrap()
+                self.assertNotIn(TOKEN, result.stdout + result.stderr)
+                if failure:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(link.is_symlink())
+                    self.assertEqual(len(self.registrations()), before)
+                    if failure == "configured APT repositories":
+                        self.assertIn(failure, result.stderr)
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                package = "postgresql-client-" + major
+                binary = self.root / package / "bin/psql"
+                self.assertEqual(link.resolve(), binary)
+                self.assertEqual((self.root / (package + ".version")).read_text(), candidates[package])
+                before = len(self.calls())
+                rerun = self.run_bootstrap(enrollment="")
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                self.assertFalse(any(command == "apt-get" and args[:1] == ["install"] for command, args in self.calls()[before:]))
+                binary.unlink()
+                repair = self.run_bootstrap(enrollment="")
+                self.assertEqual(repair.returncode, 0, repair.stderr)
+                self.assertTrue(link.is_file())
+                self.assertEqual(link.resolve(), binary)
 
 
 if __name__ == "__main__":
