@@ -2,6 +2,7 @@ package cloudentry
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -34,10 +35,21 @@ func (s *Service) accessKeyAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		hash, err := keyBearer(c)
 		if err != nil {
+			if c.Path() == "/mcp" {
+				return s.oauthChallenge(c)
+			}
 			return keyError(c, err)
 		}
-		key, err := s.activeAccessKey(c.Request().Context(), hash)
+		var key accessKey
+		if c.Path() == "/mcp" {
+			key, err = s.activeMCPKey(c.Request().Context(), hash)
+		} else {
+			key, err = s.activeAccessKey(c.Request().Context(), hash)
+		}
 		if err != nil {
+			if c.Path() == "/mcp" && (errors.Is(err, sql.ErrNoRows) || errors.Is(err, errNoSession)) {
+				return s.oauthChallenge(c)
+			}
 			return keyError(c, err)
 		}
 		identity := operatortool.Identity{PrincipalID: key.Owner, OrganizationID: "account:" + key.Owner, CredentialID: key.ID}
@@ -56,7 +68,7 @@ func (e accessKeyExecutor) current(ctx context.Context) (accessKey, error) {
 	if !ok {
 		return accessKey{}, operatortool.ErrAccessDenied
 	}
-	return e.service.activeAccessKey(ctx, connection.hash)
+	return e.service.activeMCPKey(ctx, connection.hash)
 }
 
 func (s *Service) keyOrganizations(ctx context.Context, key accessKey) ([]Organization, error) {
@@ -107,7 +119,7 @@ func (s *Service) keyTenantCall(ctx context.Context, key accessKey, org Organiza
 	if err != nil {
 		return nil, err
 	}
-	if err := s.recordKeyUse(ctx, key.ID, org.ID); err != nil {
+	if err := s.recordCredentialUse(ctx, key, org.ID); err != nil {
 		return nil, err
 	}
 	status, raw, err := s.signedCall(ctx, org, claims, body, "")
@@ -156,6 +168,13 @@ func (e accessKeyExecutor) ListTools(ctx context.Context) ([]operatortool.Defini
 			byName[definition.Name] = definition
 		}
 	}
+	if key.Kind == "personal" {
+		for _, definition := range operatortool.OAuthGrantCatalog() {
+			if definition.Name != operatortool.OAuthGrantRevoke || apikey.HasScope([]string{string(key.Permission)}, apikey.ScopeWrite) {
+				byName[definition.Name] = definition
+			}
+		}
+	}
 	for _, name := range []string{operatortool.OrganizationList, operatortool.ConnectionInfo} {
 		definition, _ := operatortool.Lookup(name)
 		byName[name] = definition
@@ -172,6 +191,9 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 	key, err := e.current(ctx)
 	if err != nil {
 		return operatortool.Result{}, err
+	}
+	if call.Name == operatortool.OAuthGrantList || call.Name == operatortool.OAuthGrantRevoke {
+		return e.executeOAuthGrant(ctx, key, call)
 	}
 	if call.Name == operatortool.OrganizationList {
 		var input operatoradmin.Input

@@ -7,6 +7,9 @@ import (
 )
 
 type HostedPageData struct {
+	OAuthClient          string
+	OAuthRequest         string
+	OAuthRedirect        string
 	FreeSlotUsed         bool
 	CreationKey          string
 	Provisioning         HostedProvisioning

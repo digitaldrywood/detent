@@ -112,11 +112,11 @@ ${endpoint}
 Organization: ${organization}
 ${keySetupPrompt(endpoint, access)}
 
-Use Streamable HTTP with application/json JSON POSTs, Accept: application/json, text/event-stream and Authorization: Bearer from the private DETENT_API_KEY environment variable. No browser cookies, session or CSRF token is needed. GET/SSE and MCP OAuth are unsupported. For example, in Codex client configuration:
+Use Streamable HTTP with application/json JSON POSTs, Accept: application/json, text/event-stream and Authorization: Bearer from the private DETENT_API_KEY environment variable. No browser cookies, session or CSRF token is needed. GET/SSE is unsupported for this self-hosted endpoint. Detent Cloud supports OAuth at https://cloud.detent.build/mcp. For example, in Codex client configuration:
 [mcp_servers.detent]
 url = "${endpoint}"
 bearer_token_env_var = "DETENT_API_KEY"
-For another client, use its documented private header/secret configuration. If it cannot send bearer headers with MCP JSON POSTs or requires SSE/OAuth, explicitly report that client as unsupported and stop.
+For another client, use its documented private header/secret configuration. If it cannot send bearer headers with MCP JSON POSTs or requires SSE, explicitly report that client as unsupported and stop.
 
 Initialize MCP, retain the returned Mcp-Session-Id and negotiated protocol version, send notifications/initialized, then discover every tools/list page. Call the discovered work_list tool with {"project_id":"${project}","limit":20}, using a granted project selected on the same page. Verify the result belongs to this organization/project and report success without the key. Authorized calls execute directly. Configure sensitive-operation confirmation in your client; connecting never expands authority.`;
 }
@@ -256,7 +256,7 @@ function LegacyMCPSettings(): React.ReactElement {
             <p>Use existing API key management on that daemon: <code>detent key add --name mcp-client --scope read --expires-in 30d</code>. Start with read scope. For intended writes, select write scope and appropriate project restrictions with <code>--project</code>; reserve admin scope for administration. Store the returned token privately. Replace the placeholders only in private client configuration, never in a committed file or shared screenshot.</p>
             <CopyExample label="Local stdio configuration" value={STDIO_CONFIG} />
             <p>Replace <code>YOUR_DAEMON_PORT</code> with the running daemon's port. To revoke access, use <code>detent key list</code> and <code>detent key revoke KEY_ID</code> against that daemon's configuration. Removing a client entry does not revoke its token.</p>
-            <p>For remote self-hosted access, use your daemon's trusted HTTPS URL and a bearer token. Choose Streamable HTTP with JSON POSTs. SSE, WebSockets and MCP OAuth are not supported. Local HTTP is appropriate only for isolated loopback access.</p>
+            <p>For remote self-hosted access, use your daemon's trusted HTTPS URL and a bearer token. Choose Streamable HTTP with JSON POSTs. SSE and WebSockets are not supported. Detent Cloud also supports OAuth for ChatGPT and Claude custom connectors at https://cloud.detent.build/mcp. Local HTTP is appropriate only for isolated loopback access.</p>
             <CopyExample label="Cursor self-hosted HTTP configuration" value={CURSOR_CONFIG} />
             <p>Put the entry in Cursor's MCP configuration. For Claude Code, use the command below and check the connection with <code>/mcp</code>. Replace the daemon URL and token placeholders.</p>
             <CopyExample label="Claude Code self-hosted HTTP command" value={'claude mcp add --transport http detent https://YOUR_DETENT_DAEMON/mcp --header "Authorization: Bearer YOUR_DETENT_API_TOKEN"'} />
