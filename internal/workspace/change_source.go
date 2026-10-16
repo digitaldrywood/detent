@@ -76,19 +76,28 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 		return capture, err
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
-	path := filepath.Join(scratch, "source.bundle")
-	if _, err := git(ctx, "-c", "pack.window=0", "bundle", "create", path, "HEAD", "^"+base); err != nil {
-		return capture, err
-	}
-	info, err := os.Stat(path)
+	prefix := filepath.Join(scratch, "source")
+	packHash, err := runGitAtWithInput(ctx, directory, nil, false, head+"\n^"+base+"\n",
+		"pack-objects", "--revs", "--delta-base-offset", "--max-pack-size=0", prefix)
 	if err != nil {
 		return capture, err
 	}
-	if info.Size() > tracker.MaxChangeSourceBytes {
+	packPath := prefix + "-" + strings.TrimSpace(packHash) + ".pack"
+	header := fmt.Sprintf("# v2 git bundle\n-%s base\n%s HEAD\n\n", base, head)
+	info, err := os.Stat(packPath)
+	if err != nil {
+		return capture, err
+	}
+	if info.Size()+int64(len(header)) > tracker.MaxChangeSourceBytes {
 		return capture, errors.New("change source bundle exceeds the native publication limit")
 	}
-	capture.Bundle, err = os.ReadFile(path)
+	pack, err := os.ReadFile(packPath)
 	if err != nil {
+		return capture, err
+	}
+	capture.Bundle = append([]byte(header), pack...)
+	path := filepath.Join(scratch, "source.bundle")
+	if err := os.WriteFile(path, capture.Bundle, 0o600); err != nil {
 		return capture, err
 	}
 	patch, truncated, err := gitDiffArgsWithinLimit(ctx, directory, nil, tracker.MaxChangeDiffBytes,
