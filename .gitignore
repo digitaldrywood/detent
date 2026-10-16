@@ -1,6 +1,7 @@
 tmp/
 /detent
 node_modules/
+/scripts/__pycache__/
 /WORKFLOW.local.md
 /detent.local.yaml
 /.detent/workspaces/
