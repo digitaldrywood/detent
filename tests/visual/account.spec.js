@@ -299,6 +299,7 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
   await openAs(page, "owner", "/settings/organization/members");
   await page.getByRole("button", { name: "Invite member", exact: true }).first().click();
   await page.getByLabel("Email addresses", { exact: true }).fill(email);
+  await page.getByLabel("Email addresses", { exact: true }).press("Enter");
   await page.getByRole("button", { name: "Send 1 invitation", exact: true }).click();
   const row = page.getByRole("group", { name: `Invitation to ${email}`, includeHidden: true });
   await expect(row).toBeVisible();

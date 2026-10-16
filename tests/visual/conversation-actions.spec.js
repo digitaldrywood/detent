@@ -155,7 +155,7 @@ test("an issue split renders Markdown and grouped dependencies, cancels without 
   await expect(page.getByText("All 6 children will be created in Todo, as requested; work starts as soon as a runner is free.").first()).toBeVisible();
   const proposal = cancelled.getByTestId("issue-split-proposal");
   await expect(proposal.getByTestId("issue-split-lane-summary")).toHaveText("Children will be created in Todo · work starts as soon as a runner is free");
-  await expect(proposal.getByRole("heading", { level: 3 })).toHaveCount(6);
+  await expect(proposal.getByRole("heading", { level: 3, name: /^\d+\. Split / })).toHaveCount(6);
   await expect(proposal.locator("strong")).toHaveText("storage layer");
   await expect(proposal.getByRole("listitem")).toHaveText(["Preserve existing records.", "Add the migration."]);
   await expect(proposal.locator("pre code")).toContainText("schema: 1\neffort: high");
