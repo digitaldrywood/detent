@@ -671,6 +671,18 @@ func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, 
 		}
 	}
 	if !record.session.ExpiresAt.After(now) {
+		for _, scope := range scopes {
+			if scope.credential.Runner.RunnerID == "" {
+				continue
+			}
+			joining, err := nativeLandingCapacityKey(ctx, tx, record.session.Machine.ID, record.session.SessionID, record.issueID)
+			if err != nil {
+				return err
+			}
+			if err := validateRunnerDispatch(ctx, tx, scope, now, joining); err != nil {
+				return err
+			}
+		}
 		if err := requireLandingRenewalCapacity(ctx, tx, record.session.ID, landingCapacity, now); err != nil {
 			return err
 		}
