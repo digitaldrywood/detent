@@ -134,7 +134,7 @@ function CommentCard({
   const canChange = comment?.own === true && !comment.deleted && onChangeComment != null;
   const finishEditing = () => setEditing(false);
   const change = async (deleted: boolean) => {
-    if (changeTarget === null || onChangeComment == null || busy || editUploading) return;
+    if (changeTarget === null || onChangeComment == null || busy || (!deleted && editUploading)) return;
     setBusy(true);
     setChangeError(null);
     try {
