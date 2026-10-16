@@ -947,7 +947,7 @@ func (f *browserHostedFixture) seedCoordinatorActions(t *testing.T) {
 	seedCoordinatorRepository(t, f.service, tracker.ProjectID(f.project))
 	var issue tracker.NativeIssue
 	base := browserHostedOrganizationBase + "/projects/" + f.project
-	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry.", "state": "Blocked"}, http.StatusOK), &issue)
+	browserHostedDecode(t, f.api(t, "owner", http.MethodPost, base+"/work-items", map[string]any{"idempotency_key": "luna-blocked", "title": "Landing blocked by branch rules", "body": "Enable GitHub pull-request mode and retry." + issueContractTestSections, "state": "Blocked"}, http.StatusOK), &issue)
 	f.workItem = string(issue.WorkItemID)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project), credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 	archiveIssues := seedArchiveIssues(t, f.service, scope, 5, "Todo")
@@ -1022,6 +1022,9 @@ func (f *browserHostedFixture) proposeBrowserIssueSplit(ctx context.Context, han
 	}
 	if cyclic {
 		edges = append(edges, chat.IssueSplitEdge{Dependent: 1, Blocker: 2})
+	}
+	for i := range children {
+		children[i].Description += issueContractTestSections
 	}
 	raw, err := json.Marshal(chat.IssueSplit{ParentID: f.workItem, Children: children, Edges: edges})
 	if err != nil {
