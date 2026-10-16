@@ -98,7 +98,9 @@ func (s *Service) listNativeLabels(c echo.Context) error {
 }
 
 func readNativeLabels(ctx context.Context, query nativeQueryer, scope nativeScope) ([]nativeLabel, error) {
-	rows, err := query.QueryContext(ctx, `SELECT labels_json FROM issues WHERE organization_id = ? AND project_id = ?`, scope.organization, scope.project)
+	visibility, args := scope.issueVisibilitySQL("i")
+	args = append([]any{scope.organization, scope.project}, args...)
+	rows, err := query.QueryContext(ctx, `SELECT labels_json FROM issues i WHERE organization_id = ? AND project_id = ? AND (`+visibility+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read project labels: %w", err)
 	}

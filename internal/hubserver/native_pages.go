@@ -75,6 +75,9 @@ func (s *Service) readNativePageLimit(ctx context.Context, scope nativeScope, pa
 	params.Del("limit")
 
 	fingerprint := scope.credential.ID + " " + path + "?" + params.Encode()
+	if scope.credential.HostedRole != "" {
+		fingerprint += " " + scope.credential.HostedRole + " " + scope.actor().PrincipalID
+	}
 	if scope.credential.Hosted != nil {
 		fingerprint += " " + scope.credential.Hosted.SessionID
 	}
@@ -620,6 +623,9 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	query += dateClauses.String()
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	query += " AND (" + visibility + ")"
+	args = append(args, visibilityArgs...)
 	createdBy, err := nativeCreatedBy(scope, params)
 	if err != nil {
 		return "", nil, err

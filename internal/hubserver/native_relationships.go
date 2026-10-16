@@ -36,6 +36,9 @@ func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nati
 		issue.Related = []tracker.NativeDependency{}
 	}
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	condition = "(" + condition + ") AND (" + visibility + ")"
+	grantArgs = append(grantArgs, visibilityArgs...)
 	args := append([]any{selection, scope.organization, scope.project, scope.organization}, grantArgs...)
 	rows, err := query.QueryContext(ctx, `SELECT source.native_id, i.native_id, i.project_id, i.project_id || '#' || i.number, ws.detent_state, ws.terminal, i.number, i.title, o.slug, p.slug
 FROM issue_relationships r JOIN issues source ON source.id IN (r.first_issue_id, r.second_issue_id)
