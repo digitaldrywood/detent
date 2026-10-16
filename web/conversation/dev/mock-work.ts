@@ -372,6 +372,7 @@ export function createWorkMock(options: {
 }): WorkMock {
   const now = new Date("2026-09-09T12:00:00Z").getTime();
   let issues: MockIssue[] = [];
+  const savedViews = new Map<string, Record<string, unknown>>();
   const terminalEntries = new Map<string, string>();
   let pagination = false;
   let revoked = false;
@@ -1073,6 +1074,22 @@ export function createWorkMock(options: {
     },
     async handle({ response, url, method, readBody }) {
       const path = url.pathname;
+      const viewsBase = `${options.apiBase}/work-views`;
+      if (path === viewsBase || path.startsWith(`${viewsBase}/`)) {
+        const [id, action] = path.slice(viewsBase.length + 1).split("/");
+        const current = id ? savedViews.get(id) : undefined;
+        if (id && !current) { json(response, 404, { code: "not_found", message: "View not found" }); return true; }
+        if (method === "GET") json(response, 200, id ? current : { views: [...savedViews.values()] });
+        else if (method === "DELETE") { savedViews.delete(id!); response.writeHead(204).end(); }
+        else {
+          const body = await readBody();
+          const viewId = id || `view_${savedViews.size + 1}`;
+          const view = action === "favorite" ? { ...current, favorite: body.favorite } : { ...body, id: viewId, owner_id: "usr_mock", can_edit: true };
+          savedViews.set(viewId, view);
+          json(response, 200, view);
+        }
+        return true;
+      }
       const preferenceScope = path === `${options.apiBase}/work-view-preference` ? "" :
         path.startsWith(`${base}/`) && path.endsWith("/work-view-preference") ? path.slice(base.length + 1, -"/work-view-preference".length) : null;
       if (preferenceScope !== null) {
