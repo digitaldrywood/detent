@@ -21,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestValidatorReadsPublishedImages(t *testing.T) {
+func TestValidatorReadsPublishedAttachments(t *testing.T) {
 	t.Parallel()
 	const encoded = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4c8AAAAASUVORK5CYII="
 	image, err := base64.StdEncoding.DecodeString(encoded)
@@ -35,16 +35,43 @@ func TestValidatorReadsPublishedImages(t *testing.T) {
 		corrupt     bool
 		denied      bool
 		unsupported bool
+		text        bool
+		offset      int64
+		invalidUTF8 bool
+		oversized   bool
+		wrongReview bool
 	}{
 		{name: "published image read across pages"},
 		{name: "digest mismatch", corrupt: true},
 		{name: "later read denied", denied: true},
 		{name: "backend cannot display images", unsupported: true},
+		{name: "bootstrap installation partial recovery and full rerun text log", text: true, unsupported: true},
+		{name: "text digest mismatch", text: true, corrupt: true},
+		{name: "partial text read denied", text: true, denied: true},
+		{name: "unread text prefix", text: true, offset: 16},
+		{name: "invalid text encoding", text: true, invalidUTF8: true},
+		{name: "text read exceeds requested byte bound", text: true, oversized: true},
+		{name: "text receipt from another review", text: true, wrongReview: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			content := image
+			metadata := metadata
+			if test.text {
+				content = []byte("bootstrap source_sha256=example-source-digest\npsql installed\npartial installation recovered\nfull bootstrap succeeded\nfull rerun succeeded\n")
+				if test.invalidUTF8 {
+					content[0] = 0xff
+				}
+				digest := sha256.Sum256(content)
+				metadata.Name, metadata.ContentType = "bootstrap.log", "text/plain"
+				metadata.Size, metadata.SHA256 = int64(len(content)), hex.EncodeToString(digest[:])
+				metadata.Width, metadata.Height = 0, 0
+			}
 			calls := 0
 			reader := &validatorAttachments{head: "review-head", tree: "review-tree", images: !test.unsupported}
+			if test.wrongReview {
+				reader.head = "other-review-head"
+			}
 			reader.handle = func(_ context.Context, call AgentToolCall) (AgentToolResult, error) {
 				calls++
 				input, err := operatortool.DecodeAttachmentOperation(call.Name, call.Arguments)
@@ -54,48 +81,70 @@ func TestValidatorReadsPublishedImages(t *testing.T) {
 				if test.denied && calls > 1 {
 					return AgentToolResult{}, errors.New("attachment access denied")
 				}
-				end := min(int(input.Offset)+input.Length, len(image))
-				chunk := slices.Clone(image[input.Offset:end])
+				end := min(int(input.Offset)+input.Length, len(content))
+				if test.oversized {
+					end = min(end+1, len(content))
+				}
+				chunk := slices.Clone(content[input.Offset:end])
 				if test.corrupt && calls > 1 {
 					chunk[0] ^= 1
 				}
-				data, err := json.Marshal(operatortool.AttachmentContentResult{Metadata: metadata, ContentBase64: base64.StdEncoding.EncodeToString(chunk), Offset: input.Offset, ReturnedBytes: len(chunk), EOF: end == len(image), MaxContentBytes: operatortool.AttachmentContentBytes})
+				data, err := json.Marshal(operatortool.AttachmentContentResult{Metadata: metadata, ContentBase64: base64.StdEncoding.EncodeToString(chunk), Offset: input.Offset, ReturnedBytes: len(chunk), EOF: end == len(content), MaxContentBytes: operatortool.AttachmentContentBytes})
 				if err != nil {
 					t.Fatal(err)
 				}
 				return AgentToolResult{Success: true, Content: string(data)}, nil
 			}
-			args, err := json.Marshal(operatortool.AttachmentOperationArguments{ProjectID: metadata.ProjectID, AttachmentID: metadata.ID, Length: 16})
+			args, err := json.Marshal(operatortool.AttachmentOperationArguments{ProjectID: metadata.ProjectID, AttachmentID: metadata.ID, Offset: test.offset, Length: 16})
 			if err != nil {
 				t.Fatal(err)
 			}
 			result, err := reader.call(t.Context(), AgentToolCall{Name: operatortool.ReadAttachment, Arguments: args})
-			if test.denied || test.corrupt {
+			if test.denied || test.corrupt || test.invalidUTF8 || test.oversized {
 				if err == nil || result.ImageURL != "" || len(reader.evidence()) != 0 {
-					t.Fatalf("unreadable image supplied evidence: err=%v reads=%v", err, reader.evidence())
+					t.Fatalf("unreadable attachment supplied evidence: err=%v reads=%v", err, reader.evidence())
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.unsupported {
+			if test.offset != 0 || test.unsupported && !test.text {
 				if calls != 1 || result.ImageURL != "" || len(reader.evidence()) != 0 {
 					t.Fatal("text-only backend claimed visual evidence")
 				}
 				return
 			}
 			reads := reader.evidence()
-			if calls != 2 || result.ImageURL != "data:image/png;base64,"+encoded || len(reads) != 1 || reads[0].SHA256 != metadata.SHA256 || reads[0].CommentID != metadata.CommentID || !strings.Contains(result.Content, reads[0].ReceiptID) {
-				t.Fatalf("published image not supplied with source-bound read receipt: calls=%d reads=%v", calls, reads)
+			if calls != 2 || len(reads) != 1 || reads[0].SHA256 != metadata.SHA256 || reads[0].CommentID != metadata.CommentID || !strings.Contains(result.Content, reads[0].ReceiptID) {
+				t.Fatalf("published attachment not supplied with source-bound read receipt: calls=%d reads=%v", calls, reads)
+			}
+			if test.text {
+				var observed struct {
+					Content string `json:"content"`
+				}
+				if json.Unmarshal([]byte(result.Content), &observed) != nil || observed.Content != string(content) || result.ImageURL != "" {
+					t.Fatal("text log was not displayed without an image")
+				}
+			} else if result.ImageURL != "data:image/png;base64,"+encoded {
+				t.Fatal("image was not displayed")
 			}
 			if strings.Contains(result.Content, "content_base64") || strings.Contains(result.Content, encoded[:16]) {
 				t.Fatal("image payload duplicated into text context")
 			}
-			validation := gate.ValidatorResult{HeadSHA: "review-head", AttachmentReads: reads, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Page is visible", Kind: gate.EvidenceAttachment, Reference: "page.png", ReceiptIDs: []string{reads[0].ReceiptID}, HeadSHA: "review-head", TreeSHA: "review-tree", Behavior: "The independently viewed capture shows the required page"}}}
-			gate.NormalizeCriterionEvidence(&validation, []string{"Page is visible"}, "review-tree")
-			if len(validation.NotVerified) != 0 {
-				t.Fatalf("observed image rejected: %+v", validation)
+			criterion, behavior := "Page is visible", "The independently viewed capture shows the required page"
+			if test.text {
+				criterion = "Exercise bootstrap including reruns after partial installation"
+				behavior = "The inspected log records installation, partial recovery and a full rerun. Its source digest matches the reviewed script; this is retained execution evidence, not independent execution."
+			}
+			validation := gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, HeadSHA: "review-head", AttachmentReads: reads, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: criterion, Kind: gate.EvidenceAttachment, Reference: metadata.Name + " sha256=" + metadata.SHA256, ReceiptIDs: []string{reads[0].ReceiptID}, HeadSHA: "review-head", TreeSHA: "review-tree", Behavior: behavior}}}
+			gate.NormalizeCriterionEvidence(&validation, []string{criterion}, "review-tree")
+			if (len(validation.NotVerified) != 0) != test.wrongReview {
+				t.Fatalf("attachment source applicability not preserved: %+v", validation)
+			}
+			decision, applied := gate.EvaluateValidator(gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}, validation)
+			if applied != test.wrongReview || (decision.Action == gate.ActionRework) != test.wrongReview {
+				t.Fatalf("attachment gate decision: %+v, applied=%v", decision, applied)
 			}
 		})
 	}
