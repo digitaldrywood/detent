@@ -73,7 +73,7 @@ func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope native
 }
 
 func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
-	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),''), COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'') FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),''), COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'') FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +98,15 @@ func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScop
 		r, err := readRunner(ctx, q, scope.organization, id.id, now)
 		if err != nil {
 			return nil, err
+		}
+		if scope.project != "" {
+			allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, r.MachineID)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				continue
+			}
 		}
 		current := placementRunner{Runner: r, Enrollment: id.enrollment, Sprite: id.name == r.Hostname && validSpritesSlug(id.name)}
 		current.Paused = current.Sprite && now.Sub(r.LastHeartbeatAt) >= spriteRunnerIdle
@@ -350,7 +359,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 		}
 	}
 	bootstrapPending := 0
-	rows, err := q.QueryContext(ctx, `SELECT enrollment_id,state FROM organization_sprite_members WHERE organization_id=? AND state IN ('bootstrapping','enrolled')`, scope.organization)
+	rows, err := q.QueryContext(ctx, `SELECT enrollment_id,state FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id=CASE WHEN EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?) THEN ? ELSE '' END AND state IN ('bootstrapping','enrolled')`, scope.organization, scope.organization, scope.project, scope.project)
 	if err != nil {
 		return result, err
 	}
@@ -461,6 +470,13 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
 		return allowed, reason, err
 	}
+	allowed, err := spriteAllocationRunnerAllowed(ctx, q, scope, machine)
+	if err != nil {
+		return false, "", err
+	}
+	if !allowed {
+		return false, "Project Sprite allocation excludes this runner", nil
+	}
 	placement, _, err := readPlacementPolicy(ctx, q, scope)
 	if err != nil {
 		return false, "", err
@@ -521,7 +537,7 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 		}
 		ready = !strings.EqualFold(issue.State, "Todo") && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.OverflowSlots
 	}
-	allowed := ready && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.SpriteLimit()
+	allowed = ready && snapshot.ReadyTodo >= placement.TodoThreshold && snapshot.SpriteUsed < placement.SpriteLimit()
 	reason := snapshot.Reason
 	if allowed {
 		reason = "Local-first overflow is eligible for this candidate"
@@ -561,12 +577,18 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 		if err != nil {
 			return result, err
 		}
-		result.ReadyTodo += snapshot.ReadyTodo
-		result.SpriteTarget += snapshot.SpriteTarget
-		result.SpriteFree += snapshot.SpriteFree
-		result.Pending += snapshot.Pending
-		result.Provisionable += snapshot.Provisionable
-		result.LocalFree += snapshot.LocalFree
+		allocation, err := readProjectSpriteAllocation(ctx, q, projectScope)
+		if err != nil {
+			return result, err
+		}
+		if !allocation.Managed {
+			result.ReadyTodo += snapshot.ReadyTodo
+			result.SpriteTarget += snapshot.SpriteTarget
+			result.SpriteFree += snapshot.SpriteFree
+			result.Pending += snapshot.Pending
+			result.Provisionable += snapshot.Provisionable
+			result.LocalFree += snapshot.LocalFree
+		}
 		if snapshot.ProviderFree != nil {
 			if result.ProviderFree == nil {
 				result.ProviderFree = new(*snapshot.ProviderFree)
