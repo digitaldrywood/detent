@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
@@ -25,13 +26,37 @@ func dependencyBasis(ids []string) string {
 }
 
 func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nativeScope, issue *tracker.NativeIssue) error {
-	issue.Dependencies = []tracker.NativeWorkItemID{}
-	issue.Blockers = []tracker.NativeDependency{}
-	issue.Dependents = []tracker.NativeDependency{}
-	issue.DependencyReady = true
+	return readNativeDependencyDetailsBatch(ctx, q, scope, []*tracker.NativeIssue{issue})
+}
+
+func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scope nativeScope, issues []*tracker.NativeIssue) error {
+	if len(issues) == 0 {
+		return nil
+	}
+	type dependencyEdges struct {
+		blocked, unblocks               []string
+		privateBlocked, privateUnblocks bool
+	}
+	items := make(map[tracker.NativeWorkItemID]*tracker.NativeIssue, len(issues))
+	edges := make(map[tracker.NativeWorkItemID]*dependencyEdges, len(issues))
+	ids := make([]tracker.NativeWorkItemID, 0, len(issues))
+	for _, issue := range issues {
+		issue.Dependencies = []tracker.NativeWorkItemID{}
+		issue.Blockers = []tracker.NativeDependency{}
+		issue.Dependents = []tracker.NativeDependency{}
+		issue.DependencyReady = true
+		items[issue.WorkItemID] = issue
+		edges[issue.WorkItemID] = &dependencyEdges{}
+		ids = append(ids, issue.WorkItemID)
+	}
+	rawIDs, err := json.Marshal(ids)
+	if err != nil {
+		return err
+	}
+	selection := string(rawIDs)
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-	args := append(grantArgs, issue.WorkItemID, scope.organization, scope.project)
-	rows, err := q.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
+	args := append(grantArgs, selection, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT source.native_id, i.native_id, i.project_id, i.number, i.title, COALESCE(ws.detent_state,''), COALESCE(ws.terminal,0), o.slug, p.slug,
  d.dependent_issue_id = source.id, (`+condition+`), COALESCE(ws.dispatchable,0), CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
  (SELECT a.started_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id
  WHERE a.work_item_id=i.native_id AND a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.status='running' AND l.released_at IS NULL AND l.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') ORDER BY a.fencing_token DESC LIMIT 1)
@@ -39,20 +64,23 @@ func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nat
  JOIN issues i ON i.id=CASE WHEN d.dependent_issue_id=source.id THEN d.blocker_issue_id ELSE d.dependent_issue_id END
  JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id
  LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
- WHERE source.native_id=? AND source.organization_id=? AND source.project_id=? ORDER BY i.native_id`, args...)
+ WHERE source.native_id IN (SELECT value FROM json_each(?)) AND source.organization_id=? AND source.project_id=? ORDER BY source.native_id,i.native_id`, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	var blocked, unblocks []string
-	privateBlocked, privateUnblocks := false, false
 	for rows.Next() {
+		var id tracker.NativeWorkItemID
 		var link tracker.NativeDependency
 		var organizationSlug, projectSlug string
 		var isBlocker, visible bool
 		var started, closed sql.NullString
-		if err := rows.Scan(&link.ID, &link.ProjectID, &link.Number, &link.Title, &link.State, &link.Terminal, &organizationSlug, &projectSlug, &isBlocker, &visible, &link.Dispatchable, &closed, &started); err != nil {
+		if err := rows.Scan(&id, &link.ID, &link.ProjectID, &link.Number, &link.Title, &link.State, &link.Terminal, &organizationSlug, &projectSlug, &isBlocker, &visible, &link.Dispatchable, &closed, &started); err != nil {
 			return err
+		}
+		issue, edge := items[id], edges[id]
+		if issue == nil || edge == nil {
+			return sql.ErrNoRows
 		}
 		link.Identifier = string(link.ProjectID) + "#" + strconv.Itoa(link.Number)
 		link.WebURL = issueBrowserPath(organizationSlug, projectSlug, link.Number)
@@ -70,20 +98,18 @@ func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nat
 			}
 			link.StartedAt = &at
 		}
-		if isBlocker && !link.Terminal {
-			issue.DependencyReady = false
-		}
 		if isBlocker {
-			blocked = append(blocked, string(link.ID))
-			privateBlocked = privateBlocked || link.ProjectID != issue.ProjectID
+			edge.blocked = append(edge.blocked, string(link.ID))
+			edge.privateBlocked = edge.privateBlocked || link.ProjectID != issue.ProjectID
 		} else {
-			unblocks = append(unblocks, string(link.ID))
-			privateUnblocks = privateUnblocks || link.ProjectID != issue.ProjectID
+			edge.unblocks = append(edge.unblocks, string(link.ID))
+			edge.privateUnblocks = edge.privateUnblocks || link.ProjectID != issue.ProjectID
 		}
 		if !visible {
 			continue
 		}
 		if isBlocker {
+			issue.DependencyReady = issue.DependencyReady && link.Terminal
 			issue.Dependencies = append(issue.Dependencies, link.ID)
 			issue.Blockers = append(issue.Blockers, link)
 		} else {
@@ -96,25 +122,49 @@ func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nat
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if err := q.QueryRowContext(ctx, `SELECT blocked_reason,blocked_reason_basis,blocked_reason_revision,unblocks_reason,unblocks_reason_basis,unblocks_reason_revision FROM issues WHERE native_id=? AND organization_id=? AND project_id=?`, issue.WorkItemID, scope.organization, scope.project).Scan(&issue.BlockedReason.Text, &issue.BlockedReason.Basis, &issue.BlockedReason.Revision, &issue.UnblocksReason.Text, &issue.UnblocksReason.Basis, &issue.UnblocksReason.Revision); err != nil {
+	reasons, err := q.QueryContext(ctx, `SELECT native_id,blocked_reason,blocked_reason_basis,blocked_reason_revision,unblocks_reason,unblocks_reason_basis,unblocks_reason_revision FROM issues WHERE native_id IN (SELECT value FROM json_each(?)) AND organization_id=? AND project_id=?`, selection, scope.organization, scope.project)
+	if err != nil {
 		return err
 	}
-	issue.BlockedReason.CurrentBasis = dependencyBasis(blocked)
-	issue.UnblocksReason.CurrentBasis = dependencyBasis(unblocks)
-	if issue.BlockedReason.Basis != issue.BlockedReason.CurrentBasis || privateBlocked {
-		issue.BlockedReason.Text = ""
+	defer reasons.Close()
+	loaded := 0
+	for reasons.Next() {
+		var id tracker.NativeWorkItemID
+		var blocked, unblocks tracker.DependencyReason
+		if err := reasons.Scan(&id, &blocked.Text, &blocked.Basis, &blocked.Revision, &unblocks.Text, &unblocks.Basis, &unblocks.Revision); err != nil {
+			return err
+		}
+		issue, edge := items[id], edges[id]
+		if issue == nil || edge == nil {
+			return sql.ErrNoRows
+		}
+		blocked.CurrentBasis = dependencyBasis(edge.blocked)
+		unblocks.CurrentBasis = dependencyBasis(edge.unblocks)
+		if blocked.Basis != blocked.CurrentBasis || edge.privateBlocked {
+			blocked.Text = ""
+		}
+		if unblocks.Basis != unblocks.CurrentBasis || edge.privateUnblocks {
+			unblocks.Text = ""
+		}
+		if edge.privateBlocked {
+			blocked.CurrentBasis = ""
+		}
+		if edge.privateUnblocks {
+			unblocks.CurrentBasis = ""
+		}
+		issue.BlockedReason, issue.UnblocksReason = blocked, unblocks
+		loaded++
 	}
-	if issue.UnblocksReason.Basis != issue.UnblocksReason.CurrentBasis || privateUnblocks {
-		issue.UnblocksReason.Text = ""
+	if err := reasons.Err(); err != nil {
+		return err
 	}
-	if privateBlocked {
-		issue.BlockedReason.CurrentBasis = ""
+	if err := reasons.Close(); err != nil {
+		return err
 	}
-	if privateUnblocks {
-		issue.UnblocksReason.CurrentBasis = ""
+	if loaded != len(items) {
+		return sql.ErrNoRows
 	}
-	issue.Related, err = readNativeRelated(ctx, q, scope, issue.WorkItemID)
-	return err
+	return readNativeRelatedBatch(ctx, q, scope, items, selection)
 }
 
 func validDependencyReason(text string) bool {

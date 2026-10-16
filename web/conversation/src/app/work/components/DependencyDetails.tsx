@@ -53,7 +53,7 @@ export function DependencyPanels({ item, queued }: { item: WorkItemView; queued:
       <div className="flex flex-wrap items-center gap-2"><Pill tone="err">Blocked</Pill>{item.blockedReason ? <p className="text-sm">{item.blockedReason}</p> : null}</div>
       <DependencyChips links={open} />
     </section> : queued && item.dependencyReady !== false && landed.length > 0 ? <section aria-label="Queued" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-3 text-sm">
-      <Pill tone="warn">Queued</Pill><p>Unblocked when <a className="text-primary hover:underline" href={latest!.web_url}>{dependencyLabel(latest!)}</a> landed; starts when a runner frees up.</p>
+      <Pill tone="warn">Queued</Pill><p>Unblocked when <a className="text-primary hover:underline" href={latest!.web_url}>{dependencyLabel(latest!)}</a> landed; waiting to start.</p>
     </section> : null}
     {dependents.length > 0 ? <section aria-label="Unblocks" className="space-y-2 rounded-lg border border-border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2"><Pill tone="info"><UnlockIcon aria-hidden />Unblocks {dependents.length}</Pill>{item.unblocksReason ? <p className="text-sm">{item.unblocksReason}</p> : null}</div>
