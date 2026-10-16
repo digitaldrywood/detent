@@ -1,17 +1,118 @@
 package runner
 
 import (
+	"context"
 	"slices"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type ProviderUsage struct {
-	mu      sync.Mutex
-	windows map[string][]providercapacity.UsageWindow
-	billing map[string]string
+	mu               sync.Mutex
+	windows          map[string][]providercapacity.UsageWindow
+	billing          map[string]string
+	capacityMu       sync.Mutex
+	capacity         map[capacityReadKey]*capacityRead
+	capacityAccounts map[capacityReadKey]capacityReadKey
+}
+
+type capacityReadKey struct {
+	backendKind string
+	provider    string
+	account     string
+}
+
+type capacityRead struct {
+	done        chan struct{}
+	at          time.Time
+	observation CapacityObservation
+	err         error
+}
+
+func (u *ProviderUsage) RefreshCapacity(ctx context.Context, cfg config.AgentBackend, backend AgentBackend, now time.Time) (CapacityObservation, error) {
+	reader, ok := backend.(AgentCapacityReader)
+	if cfg.Disabled {
+		return CapacityObservation{}, nil
+	}
+	if !ok {
+		return CapacityObservation{}, ErrCapacityReadUnsupported
+	}
+	provider := configuredCapacityScope(RouteSelection{BackendID: cfg.ID}, cfg, agentidentity.Identity{}).Provider
+	if cfg.Kind == config.AgentBackendCodex && provider != "" && provider != "openai" {
+		return CapacityObservation{}, ErrCapacityReadUnsupported
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	account := strings.TrimSpace(reader.CapacityAccount())
+	if u == nil || account == "" {
+		observation, err := reader.ReadCapacity(ctx)
+		if err == nil {
+			u.Observe(cfg.ID, observation.RateLimits)
+		}
+		return observation, err
+	}
+	if provider == "" && cfg.Kind == config.AgentBackendCodex {
+		provider = "openai"
+	}
+	owner := capacityReadKey{backendKind: cfg.Kind, provider: provider, account: "profile:" + account}
+	key := owner
+	u.capacityMu.Lock()
+	if err := ctx.Err(); err != nil {
+		u.capacityMu.Unlock()
+		return CapacityObservation{}, err
+	}
+	if resolved, ok := u.capacityAccounts[owner]; ok {
+		key = resolved
+	}
+	read := u.capacity[key]
+	if read != nil {
+		select {
+		case <-read.done:
+			if !now.Before(read.at.Add(time.Minute)) {
+				read = nil
+			}
+		default:
+		}
+	}
+	if read != nil {
+		u.capacityMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return CapacityObservation{}, ctx.Err()
+		case <-read.done:
+		}
+	} else {
+		read = &capacityRead{done: make(chan struct{}), at: now}
+		if u.capacity == nil {
+			u.capacity = make(map[capacityReadKey]*capacityRead)
+		}
+		u.capacity[key] = read
+		u.capacityMu.Unlock()
+		observation, err := reader.ReadCapacity(ctx)
+		u.capacityMu.Lock()
+		read.observation, read.err = observation, err
+		if read.err == nil && read.observation.AccountID != "" {
+			delete(u.capacity, key)
+			key.account = "account:" + read.observation.AccountID
+			if u.capacityAccounts == nil {
+				u.capacityAccounts = make(map[capacityReadKey]capacityReadKey)
+			}
+			u.capacityAccounts[owner] = key
+		}
+		u.capacity[key] = read
+		close(read.done)
+		u.capacityMu.Unlock()
+	}
+	if read.err == nil {
+		u.Observe(cfg.ID, read.observation.RateLimits)
+	}
+	return read.observation, read.err
 }
 
 func (u *ProviderUsage) Observe(backend string, limits *telemetry.RateLimits) {

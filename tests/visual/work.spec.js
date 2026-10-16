@@ -440,7 +440,10 @@ test.describe("the issue page", () => {
       const response = await fetch(`${bootstrap.api_base}/projects/${projectId}/work-items`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
-        body: JSON.stringify({ idempotency_key: "breadcrumb-other-project", title, state: "Todo" }),
+        body: JSON.stringify({
+          idempotency_key: "breadcrumb-other-project", title, state: "Todo",
+          body: "## Acceptance criteria\nVerify project navigation.\n## Must not break\nOther projects remain isolated.\n## How we know it worked\nThe breadcrumb returns to the issue's project board.",
+        }),
       });
       return response.status;
     }, { projectId: otherProjectId, title: otherTitle });

@@ -81,6 +81,13 @@ func (f *browserHostedFixture) seedWorkflowRevisions(t *testing.T, project strin
 	redemption := runnerauth.Redemption{BackendIsolation: isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}, Binding: binding, Credential: credential, Hostname: "test-host", DisplayName: "Workflow runner", Capacity: 2, Version: "test", OS: "linux", Architecture: "arm64"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, browserHostedOrganizationBase+"/runner-enrollments/redeem", enrollment.Token, redemption), http.StatusCreated)
 	original := resolvedWorkflowPolicy(t, append(nativeFixtureStates(), policy.State{Name: "Archive", Terminal: true}), strings.Repeat("a", 40), false)
+	clearNativeFixturePolicy(t, nativeFixture{
+		service: f.service,
+		project: tracker.NativeProject{
+			OrganizationID: tracker.OrganizationID(strings.TrimPrefix(browserHostedOrganizationBase, "/api/v2/organizations/")),
+			ID:             tracker.ProjectID(project),
+		},
+	})
 	f.api(t, "owner", http.MethodPut, base+"/onboarding/policy", policy.Change{Policy: original}, http.StatusOK)
 	applied := resolvedWorkflowPolicy(t, []policy.State{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Review"}},

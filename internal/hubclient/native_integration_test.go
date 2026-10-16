@@ -131,7 +131,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 			}
 		})
 	}
-	blocker, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: "blocking"})
+	blocker, err := conn.CreateIssue(t.Context(), connector.IssueDraft{Title: "Blocker", Body: "blocking" + issueContractTestSections})
 	if err != nil {
 		t.Fatal(err)
 	}

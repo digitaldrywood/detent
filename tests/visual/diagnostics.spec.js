@@ -43,7 +43,7 @@ async function open(page, report = fixture, longErrors = false) {
   await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
     route.fulfill({ json: report }),
   );
-  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) => {
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings*", (route) => {
     if (report.findings === null) return route.fulfill({
       status: 404,
       json: { code: "not_found", message: "Not available" },
@@ -117,7 +117,7 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
     .click();
   await request;
   await page.goto(new URL("/usage", hub.fixture.url).toString());
-  await page.getByRole("button", { name: "Diagnostics", exact: true }).click();
+  await page.getByRole("button", { name: /^Diagnostics(?: \d+)?$/ }).click();
   await expect(page).toHaveURL(/\/diagnostics$/);
 });
 
@@ -142,8 +142,8 @@ test("an unavailable findings read differs from an empty detector result", async
   await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
     route.fulfill({ json: { ...fixture, findings: [] } }),
   );
-  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings?*");
-  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) =>
+  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings*");
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings*", (route) =>
     route.fulfill({ json: { ...healthFixture, items: [] } }),
   );
   await page.getByRole("button", { name: "Refresh diagnostics" }).click();
@@ -155,8 +155,8 @@ test("an unavailable findings read differs from an empty detector result", async
       json: { code: "unavailable", message: "Unavailable" },
     }),
   );
-  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings?*");
-  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) =>
+  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings*");
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings*", (route) =>
     route.fulfill({
       status: 503,
       json: { code: "unavailable", message: "Unavailable" },
@@ -185,8 +185,8 @@ test("an unavailable findings read differs from an empty detector result", async
   await page.route("**/api/v2/organizations/*/diagnostics?*", (route) =>
     route.fulfill({ json: { ...fixture, findings: [] } }),
   );
-  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings?*");
-  await page.route("**/api/v2/organizations/*/projects/*/health/findings?*", (route) =>
+  await page.unroute("**/api/v2/organizations/*/projects/*/health/findings*");
+  await page.route("**/api/v2/organizations/*/projects/*/health/findings*", (route) =>
     route.fulfill({ json: { ...healthFixture, items: [] } }),
   );
   await page.getByRole("button", { name: "Refresh diagnostics" }).click();

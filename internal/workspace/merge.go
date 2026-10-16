@@ -492,6 +492,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
+	l.applyValidationGoBudget(ctx, cmd)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	if cache := toolcache.ManagedBuildFromContext(ctx); cache != "" {
 		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cache}})

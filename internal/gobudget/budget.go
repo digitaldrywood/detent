@@ -1,6 +1,7 @@
 package gobudget
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -82,10 +83,7 @@ func linkWrapper(path string, executable string) error {
 	if current, err := os.Readlink(path); err == nil && current == executable {
 		return nil
 	}
-	staged := fmt.Sprintf("%s.%d", path, os.Getpid())
-	if err := os.Remove(staged); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove staged go build budget wrapper: %w", err)
-	}
+	staged := path + "." + rand.Text()
 	if err := os.Symlink(executable, staged); err != nil {
 		return fmt.Errorf("link go build budget wrapper: %w", err)
 	}
