@@ -111,7 +111,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY
 	if len(changes) == 0 {
 		return tracker.ChangeRequest{}, false, nil
 	}
-	return changes[0], true, nil
+	return reporterChange(ctx, query, scope, changes[0])
 }
 
 // readNativeChangeVersion reads a change request's current version, which is

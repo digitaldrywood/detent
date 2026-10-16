@@ -238,6 +238,7 @@ func (s *Service) hostedReportOptions(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	ctx = reporterReadContext(ctx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
 	facets, err := s.readReportsFacets(ctx, projects, w)
 	if err != nil {
 		s.config.Logger.Warn("read report options", "error", err)
@@ -249,7 +250,8 @@ func (s *Service) hostedReportOptions(c echo.Context) error {
 // readProjectReport reads one project's report, narrowed by the filter. A
 // project the credential cannot read returns false.
 func (s *Service) readProjectReport(ctx context.Context, credential apiCredential, project string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, bool, error) {
-	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project)}
+	scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
+	ctx = reporterReadContext(ctx, scope)
 	ctx, err := withReportsScope(ctx, scope, filter, w.From.Add(-w.To.Sub(w.From)), w.To)
 	if err != nil {
 		return hostedReportsReport{}, false, err

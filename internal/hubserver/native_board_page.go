@@ -18,6 +18,12 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 	var where strings.Builder
 	where.WriteString("b.organization_id=? AND b.project_id=?")
 	args := []any{scope.organization, scope.project}
+	if scope.credential.HostedRole == "reporter" {
+		where.WriteString(" AND b.work_item_id IN (SELECT i.native_id FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND ")
+		visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+		where.WriteString(visibility + ")")
+		args = append(args, visibilityArgs...)
+	}
 	createdBy, err := nativeCreatedBy(scope, params)
 	if err != nil {
 		return "", nil, err
@@ -86,7 +92,7 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 		return nil, err
 	}
 	summary := &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: now}
-	filtered := strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["verification"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
+	filtered := scope.credential.HostedRole == "reporter" || strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["verification"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
 	statement := "SELECT b.state,count(*),sum(b.running) FROM native_board_items b WHERE " + where + " GROUP BY b.state"
 	if !filtered {
 		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"
@@ -290,14 +296,17 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 				currentPolicy = &loaded
 			}
 			change, err := readChange(ctx, tx, scope, string(card.Issue.WorkItemID), card.Change.ID)
-			if err != nil {
+			if isNativeNotFound(err) && scope.credential.HostedRole == "reporter" {
+				card.Change = nil
+			} else if err != nil {
 				return page, err
+			} else {
+				detail, err := readCurrentChangeDetailWithPolicy(ctx, tx, scope, change, s.config.now(), currentPolicy)
+				if err != nil {
+					return page, err
+				}
+				card.Change.Status = detail.Summary.Status
 			}
-			detail, err := readCurrentChangeDetailWithPolicy(ctx, tx, scope, change, s.config.now(), currentPolicy)
-			if err != nil {
-				return page, err
-			}
-			card.Change.Status = detail.Summary.Status
 		}
 		card.Issue.Actor.DisplayName = displayName
 		card.Issue.Snippet = snippet
@@ -321,7 +330,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	for index := range page.Cards {
 		card := &page.Cards[index]
 		redactNativeBoardCard(card, grants)
-		card.Issue = s.nativeIssueResponse(card.Issue)
+		card.Issue = s.nativeIssueResponse(scope.reporterIssue(card.Issue))
 		page.Items = append(page.Items, card.Issue)
 	}
 	return page, tx.Commit()

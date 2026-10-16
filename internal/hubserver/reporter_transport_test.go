@@ -175,7 +175,11 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 						} else if response.Code != http.StatusForbidden {
 							t.Fatalf("unexpected refusal=%d %s", response.Code, response.Body.String())
 						}
-						if !strings.Contains(response.Body.String(), operatortool.ErrAccessDenied.Error()) {
+						wantMessage := operatortool.ErrAccessDenied.Error()
+						if test.name == operatortool.EditItem {
+							wantMessage = "work item not found in this project"
+						}
+						if !strings.Contains(response.Body.String(), wantMessage) {
 							t.Fatalf("missing permission refusal: %s", response.Body.String())
 						}
 
@@ -219,6 +223,9 @@ func TestReporterWriteRefusalsThroughEntryPoints(t *testing.T) {
 						response := send(t, transport, test.method, test.path, raw, nil)
 
 						wantStatus := http.StatusForbidden
+						if test.name == operatortool.EditItem || test.name == operatortool.MoveItem {
+							wantStatus = http.StatusNotFound
+						}
 						if strings.HasPrefix(test.path, "/api/v1/") || deployment == "shared" && test.name == operatortool.CredentialGrant {
 							wantStatus = http.StatusNotFound
 						}

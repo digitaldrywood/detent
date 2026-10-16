@@ -82,6 +82,9 @@ func (e nativeOperatorExecutor) attachmentOperation(ctx context.Context, call op
 		}
 	}
 	record, err := e.service.readCloudAttachment(ctx, scope, r.AttachmentID)
+	if err != nil && scope.credential.HostedRole == "reporter" {
+		return operatortool.Result{}, safeWorkReadError(err)
+	}
 	if err != nil || record.Validate() != nil {
 		return operatortool.Result{}, operatortool.ErrAccessDenied
 	}
