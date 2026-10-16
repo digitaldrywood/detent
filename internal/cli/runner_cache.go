@@ -73,6 +73,9 @@ func (c *runnerBuildCache) trim(ctx context.Context, policy toolcache.Policy, no
 		return nil
 	}
 	defer c.mu.Unlock()
+	ctx = toolcache.WithWaitObserver(ctx, func(lock string, waiting bool) {
+		slog.Info("managed Go build cache maintenance wait", "path", c.root, "cache_lock", lock, "waiting", waiting)
+	})
 	freeBefore, freeBeforeErr := toolcache.FreeBytes(c.root)
 	report, err := c.cache.Maintain(ctx, policy, now)
 	c.report.Store(&report)

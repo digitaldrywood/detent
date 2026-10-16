@@ -3,12 +3,14 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -229,16 +231,38 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, release, err := cache.Use(t.Context())
-			if err != nil {
+			if err := os.WriteFile(filepath.Join(cacheRoot, "README"), nil, 0600); err != nil {
 				t.Fatal(err)
 			}
-			defer release()
+			entry := filepath.Join(cacheRoot, "00", fmt.Sprintf("%064x-d", 1))
+			if err := os.Mkdir(filepath.Dir(entry), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx := cache.WithContext(t.Context())
 			reserved, registered, finished := false, false, false
 			ctx = WithValidationProcessOwner(ctx, func(context.Context, Info, Issue, string) (ValidationProcess, error) {
 				reserved = true
 				return validationProcessFixture{
-					started:  func(procgroup.Identity) error { registered = true; return nil },
+					started: func(procgroup.Identity) error {
+						registered = true
+						maintenanceCtx, cancel := context.WithCancel(t.Context())
+						defer cancel()
+						maintenanceCtx = toolcache.WithWaitObserver(maintenanceCtx, func(lock string, waiting bool) {
+							if lock == "consumers" && waiting {
+								cancel()
+							}
+						})
+						if _, err := cache.Maintain(maintenanceCtx, toolcache.Policy{MaxBytes: 1024}, time.Now()); !errors.Is(err, context.Canceled) {
+							t.Errorf("maintenance did not exclude the running hook: %v", err)
+						}
+						if _, err := os.Stat(entry); err != nil {
+							t.Errorf("running hook's cache entry evicted: %v", err)
+						}
+						return nil
+					},
 					finished: func(gate.CommandResult, error) error { finished = true; return nil },
 				}, nil
 			})
@@ -270,6 +294,11 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			}
 			if reserved != !dirty || registered != !dirty || finished != !dirty {
 				t.Fatalf("cleanup hook ownership: reserved=%t registered=%t finished=%t dirty=%t", reserved, registered, finished, dirty)
+			}
+			maintenanceCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			if report, err := cache.Maintain(maintenanceCtx, toolcache.Policy{MaxBytes: 1024}, time.Now()); err != nil || report.SizeEvictedBytes < 2048 {
+				t.Fatalf("hook retained cache protection after cleanup: %#v, %v", report, err)
 			}
 			want := "hook work"
 			if dirty {

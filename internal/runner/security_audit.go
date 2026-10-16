@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -101,6 +102,11 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(resolvedSelection.Effort, agentidentity.ProvenanceConfigured)
 	}
 	runReq := RunRequest{Issue: req.Issue, StartedAt: startedAt, SelectorContext: req.SelectorContext}
+	cacheCtx, release, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return execution, err
+	}
+	defer func() { err = errors.Join(err, release()) }()
 	sessionID, sessionStarted, err := r.startSession(ctx, runReq, startedAt, runtimeIdentity, store.AgentResumeState{}, "", "")
 	if err != nil {
 		return execution, err
@@ -113,7 +119,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 		effort = resolvedSelection.Effort
 	}
 	removeAuditWorkspace = false
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, AgentTurnRequest{
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(cacheCtx, backend, AgentTurnRequest{
 		Workspace:        auditWorkspace,
 		Prompt:           prompt,
 		ToolInstructions: securityaudit.ToolInstructions(),
@@ -160,7 +166,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (execution
 	}, r.turnLimit)
 	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
 	removeAuditWorkspace = reapErr == nil
-	turnErr = errors.Join(turnErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
+	turnErr = errors.Join(turnErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr), release())
 	if reapErr != nil {
 		turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
 	}
