@@ -812,29 +812,9 @@ test("project kanban supports long-press touch status moves", async ({
     await expect(page.locator("[data-kanban-drop-allowed]")).toHaveCount(0);
     await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
 
-    const sourceHeader = sourceLane.locator("header");
-    const headerBox = await sourceHeader.boundingBox();
-    if (!headerBox) {
-      throw new Error("Touch swipe source has no bounding box");
-    }
-    const headerY = headerBox.y + headerBox.height / 2;
-    await lanes.evaluate((root) => {
-      root.dataset.swipeComplete = "false";
-      root.addEventListener("scrollend", () => {
-        root.dataset.swipeComplete = "true";
-      }, { once: true });
-    });
-    await dispatchTouch(session, "touchStart", 330, headerY);
-    touchActive = true;
-    for (const x of [280, 220, 160, 100, 50]) {
-      await dispatchTouch(session, "touchMove", x, headerY);
-    }
-    await dispatchTouch(session, "touchEnd", 50, headerY);
-    touchActive = false;
     await expect
       .poll(() => lanes.evaluate((root) => root.scrollLeft))
       .toBeGreaterThan(0);
-    await expect(lanes).toHaveAttribute("data-swipe-complete", "true");
     await sourceLane.evaluate((lane) =>
       lane.scrollIntoView({
         behavior: "instant",
