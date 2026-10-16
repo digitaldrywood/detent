@@ -551,6 +551,152 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 	if err != nil || !strings.Contains(string(result.Content), `"items":[]`) {
 		t.Fatalf("empty=%s err=%v", result.Content, err)
 	}
+	t.Run("comment byte pages", func(t *testing.T) {
+		paged := f.create(t, "bounded comment history")
+		path := f.base + "/work-items/" + string(paged.WorkItemID) + "/comments"
+		var expected []tracker.NativeComment
+		for index := range 208 {
+			body := fmt.Sprintf("comment %d", index)
+			if index >= 100 {
+				body += strings.Repeat("large comment ", 200)
+				if index%2 == 0 {
+					body += strings.Repeat("<\"\\\n🙂", 100)
+				}
+			}
+			if index == 207 {
+				body = strings.Repeat("x", 64<<10)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("bounded-comment-%d", index)}, Body: body})
+			requireNativeStatus(t, response, http.StatusOK)
+			var comment tracker.NativeComment
+			decodeHubResponse(t, response, &comment)
+			expected = append(expected, comment)
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodPatch, path+"/"+expected[104].ID, f.token, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "bounded-comment-edit"}, ExpectedRevision: expected[104].Revision, Body: expected[104].Body + " edited"})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &expected[104])
+		var firstCursor string
+		protocolCtx := operatortool.BindConnection(ctx, operatortool.ConnectionIdentity(ctx).PrincipalID, "test-client")
+		for _, transport := range []string{"stdio", "http"} {
+			t.Run(transport, func(t *testing.T) {
+				protocol := hostedContextProtocol(t, f.service, protocolCtx, transport)
+				for _, mixed := range []bool{false, true} {
+					t.Run(fmt.Sprintf("mixed=%t", mixed), func(t *testing.T) {
+						arguments := map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "limit": 100}
+						seen, pages := 0, 0
+						for {
+							reply := protocol("tools/call", operatortool.WorkComments, arguments)
+							raw := hostedContextData(t, reply, false)
+							if len(raw) > operatortool.MaxResultBytes || len(reply.Result) > mcp.MaxHTTPResponseBytes {
+								t.Fatalf("unbounded comment result: data=%d protocol=%d", len(raw), len(reply.Result))
+							}
+							var result operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+							if err := json.Unmarshal(raw, &result); err != nil {
+								t.Fatal(err)
+							}
+							page := result.Data
+							if len(page.Items) == 0 || len(page.Items) > arguments["limit"].(int) || seen+len(page.Items) > len(expected) {
+								t.Fatalf("invalid page: seen=%d items=%d", seen, len(page.Items))
+							}
+							if !reflect.DeepEqual(page.Items, expected[seen:seen+len(page.Items)]) {
+								t.Fatalf("comments changed, duplicated or skipped after %d items", seen)
+							}
+							if pages == 0 {
+								if len(page.Items) != 100 || page.NextCursor == "" {
+									t.Fatal("small first page did not reach the count limit")
+								}
+								firstCursor = page.NextCursor
+							} else if pages == 1 && !mixed {
+								if len(page.Items) >= 100 || page.NextCursor == "" {
+									t.Fatal("large continuation did not respect the byte limit")
+								}
+								t.Logf("bounded continuation: items=%d bytes=%d", len(page.Items), len(raw))
+							}
+							seen += len(page.Items)
+							pages++
+							if page.NextCursor == "" {
+								break
+							}
+							arguments["cursor"] = page.NextCursor
+							if mixed && pages%2 == 1 {
+								arguments["limit"] = 20
+							} else {
+								arguments["limit"] = 100
+							}
+						}
+						if seen != len(expected) {
+							t.Fatalf("traversal returned %d of %d comments", seen, len(expected))
+						}
+					})
+				}
+			})
+		}
+		for _, test := range []struct {
+			name, reference, cursor string
+			offset                  int
+			message                 string
+		}{
+			{name: "cursor scope", reference: string(first.WorkItemID), cursor: firstCursor, message: "Cursor scope changed or expired"},
+			{name: "offset", reference: string(paged.WorkItemID), offset: 100, message: "returned next_cursor"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, err := call(operatortool.WorkComments, map[string]any{"project_id": string(f.project.ID), "reference": test.reference, "cursor": test.cursor, "offset": test.offset, "limit": 100})
+				var refusal *operatortool.RequestError
+				if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, test.message) {
+					t.Fatalf("comment paging refusal=%v", err)
+				}
+			})
+		}
+		oversizedBody := strings.Repeat("\x00", 64<<10)
+		t.Run("expired cursor", func(t *testing.T) {
+			now := f.service.config.now
+			expired := now().Add(2 * time.Hour)
+			f.service.config.now = func() time.Time { return expired }
+			defer func() { f.service.config.now = now }()
+			_, err := call(operatortool.WorkComments, map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "cursor": firstCursor, "limit": 100})
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || !strings.Contains(refusal.Message, "expired") {
+				t.Fatalf("expired comment cursor=%v", err)
+			}
+		})
+		response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "oversized-comment"}, Body: oversizedBody})
+		requireNativeStatus(t, response, http.StatusOK)
+		for _, transport := range []string{"stdio", "http"} {
+			protocol := hostedContextProtocol(t, f.service, protocolCtx, transport)
+			for _, limit := range []int{20, 100} {
+				arguments := map[string]any{"project_id": string(f.project.ID), "reference": string(paged.WorkItemID), "limit": limit}
+				seen := 0
+				for {
+					reply := protocol("tools/call", operatortool.WorkComments, arguments)
+					var result struct {
+						IsError bool `json:"isError"`
+					}
+					if err := json.Unmarshal(reply.Result, &result); err != nil {
+						t.Fatal(err)
+					}
+					if result.IsError {
+						var refusal operatortool.RequestError
+						if err := json.Unmarshal(hostedContextData(t, reply, true), &refusal); err != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "single comment") || !strings.Contains(refusal.Message, "work_bulk_export") {
+							t.Fatalf("oversized comment refusal=%s", reply.Result)
+						}
+						if seen != len(expected) {
+							t.Fatalf("oversized comment refused after %d of %d readable comments", seen, len(expected))
+						}
+						break
+					}
+					var page operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+					if err := json.Unmarshal(hostedContextData(t, reply, false), &page); err != nil || len(page.Data.Items) == 0 || page.Data.NextCursor == "" {
+						t.Fatal("oversized comment was omitted or stalled pagination")
+					}
+					seen += len(page.Data.Items)
+					if seen > len(expected) {
+						t.Fatal("oversized comment was returned unbounded or pagination repeated comments")
+					}
+					arguments["cursor"] = page.Data.NextCursor
+				}
+			}
+		}
+	})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	registered := prepareRunner(t, f, runnerauth.Read, runnerauth.Collaborate, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	registered.enroll(t)

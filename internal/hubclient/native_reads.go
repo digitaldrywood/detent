@@ -228,7 +228,7 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 			return operatortool.Result{}, operatortool.ErrInvalidArguments
 		}
 		if request.Offset != 0 {
-			return operatortool.Result{}, operatortool.ErrInvalidArguments
+			return operatortool.Result{}, &operatortool.RequestError{Code: "invalid_request", Message: "offset is not supported here; page with the returned next_cursor"}
 		}
 		switch call.Name {
 		case operatortool.WorkItem:
