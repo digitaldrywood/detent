@@ -170,11 +170,14 @@ as_root() {
 }
 
 apt_updated=false
-apt_install() {
+apt_update() {
     if [[ $apt_updated == false ]]; then
         as_root apt-get update
         apt_updated=true
     fi
+}
+apt_install() {
+    apt_update
     as_root apt-get install -y --no-install-recommends --allow-downgrades "$@"
 }
 
@@ -258,12 +261,25 @@ if [[ $(fd --version 2>/dev/null || true) != "fd $fd_version" ]]; then
     install -m 755 "$scratch/fd-v${fd_version}-${rust_target}/fd" "$bin_dir/fd"
 fi
 
-psql_package_version=17.10-0ubuntu0.25.10.1
-if [[ $(dpkg-query -W -f='${Status} ${Version}' postgresql-client-17 2>/dev/null || true) != "install ok installed $psql_package_version" ]]; then
+if [[ -L $bin_dir/psql && ! -e $bin_dir/psql ]]; then rm -- "$bin_dir/psql"; fi
+apt_update
+psql_package_version=
+for psql_major in 18 17; do
+    psql_package="postgresql-client-$psql_major"
+    psql_package_version=$(LC_ALL=C apt-cache policy "$psql_package" | awk '$1 == "Candidate:" && !found++ {print $2}')
+    [[ -z $psql_package_version || $psql_package_version == '(none)' ]] || break
+done
+[[ $psql_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
+    die "configured APT repositories provide no supported PostgreSQL client (18 or 17); configure repositories matching this distribution"
+psql_path=$(dpkg-query -L "$psql_package" 2>/dev/null | awk '/\/bin\/psql$/ && !found++ {print}' || true)
+if [[ $(dpkg-query -W -f='${Status} ${Version}' "$psql_package" 2>/dev/null || true) != "install ok installed $psql_package_version" || ! -x $psql_path ]]; then
     printf 'Installing PostgreSQL client %s\n' "$psql_package_version"
-    apt_install "postgresql-client-17=$psql_package_version"
+    apt_install --reinstall "$psql_package=$psql_package_version"
 fi
-ln -sfn /usr/lib/postgresql/17/bin/psql "$bin_dir/psql"
+psql_path=$(dpkg-query -L "$psql_package" | awk '/\/bin\/psql$/ && !found++ {print}')
+[[ $psql_path == /* && -x $psql_path ]] || die "$psql_package did not install an executable psql"
+[[ $("$psql_path" --version) == "psql (PostgreSQL) $psql_major."* ]] || die "$psql_package installed an incompatible psql"
+ln -sfn -- "$psql_path" "$bin_dir/psql"
 
 npm_prefix="$HOME/.local/share/detent-runner/npm"
 codex_version=0.160.0
@@ -313,10 +329,13 @@ if ! chromium_screenshot > "$scratch/chromium-status.txt" 2> "$scratch/chromium-
     chromium_screenshot > "$scratch/chromium-status.txt"
 fi
 
-docker_package_version=29.1.3-0ubuntu3~25.10.1
 docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
 if command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
     as_root test -w /sys/fs/cgroup; then
+    apt_update
+    docker_package_version=$(LC_ALL=C apt-cache policy docker.io | awk '$1 == "Candidate:" && !found++ {print $2}')
+    [[ $docker_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
+        die "configured APT repositories provide no Docker package; configure repositories matching this distribution"
     if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_package_version" ]]; then
         printf 'Installing Docker %s\n' "$docker_package_version"
         apt_install "docker.io=$docker_package_version"
