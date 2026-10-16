@@ -1071,10 +1071,20 @@ mutations, including both endpoints, without changing lanes or eligibility.
 With project `duplicate_challenge` enabled (the default), native filing may
 return HTTP 409 with `code: possible_duplicates`, up to five
 `possible_duplicates`, and a `challenge_token`, creating no issue. MCP
-`file_issue` returns those challenge fields as a structured result. To confirm
-new work, repeat the unchanged content and request identity with the token and
-`not_duplicate_of` issue numbers; the new issue links those matches as related.
-For an existing problem, comment on the returned `work_item_id` instead.
+`file_issue` returns those challenge fields as a structured result. The agent
+reviews the returned candidates, using supported reads such as `work_item` and
+`work_comments` when needed, and explicitly decides whether they concern the
+same problem. When filing is already authorized and the evidence clearly
+establishes a distinct problem, proceed without another human question: repeat
+`file_issue` with the same `request_id` and unchanged content, the
+`challenge_token`, and `not_duplicate_of` containing the challenged issue
+numbers. The new issue links those matches as related. For an existing problem,
+use the existing issue and comment on its returned `work_item_id` within the
+caller's authorization instead of creating a duplicate. Ask the human only
+when overlap is genuinely ambiguous, a product decision is needed, or the
+proposed action exceeds authorization; never automatically dismiss candidates.
+This decision does not grant filing permission or confirm native issue-contract
+sections on behalf of a human.
 Tokens expire after one hour; expired filings need a new request identity.
 Confirmation deletes the token, while request replay retains its original
 result. Machine reports and linked GitHub intake are never challenged.
