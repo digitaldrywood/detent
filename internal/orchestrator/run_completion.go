@@ -140,6 +140,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if errors.As(event.Err, &running.Cancellation) {
 		state.Running[event.IssueID] = running
 	}
+	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
 	if running.Generation > 0 {
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
@@ -152,8 +153,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 				return
 			}
+			dispatchTarget := nativeCompletion && normalizeState(refreshed.State) == normalizeState(running.DispatchTargetState)
 			if normalizeState(running.Issue.State) != normalizeState(refreshed.State) ||
-				!stateIn(refreshed.State, o.cfg.ActiveStates) {
+				!stateIn(refreshed.State, o.cfg.ActiveStates) && !dispatchTarget {
 				running.CompletionLane = refreshed.State
 				running.CompletionAcceptedAt = event.CompletedAt.UTC()
 			}
@@ -312,7 +314,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.finishForgeAvailabilityProbe(state, event, running)
-	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
 	if event.Err != nil && !nativeCompletion {
 		o.releaseTerminalAttemptClaim(ctx, state, running.Issue, event.CompletedAt)
 	}

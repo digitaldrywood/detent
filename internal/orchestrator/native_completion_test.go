@@ -100,8 +100,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	blockedLanding := append([]connector.WorkflowState(nil), landing...)
 	blockedLanding[1].Transitions = append([]string{"Blocked"}, blockedLanding[1].Transitions...)
 	blockedLanding = append(blockedLanding, connector.WorkflowState{Name: "Blocked", Transitions: []string{"In Progress"}})
+	blockedExecution := append([]connector.WorkflowState(nil), blockedLanding...)
+	blockedExecution[1].Dispatchable = false
 	unfinishedWorkflow := append(append([]connector.WorkflowState(nil), blockedLanding...), connector.WorkflowState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Review", "Merging", "Blocked"}})
 	unfinishedWorkflow[1].Transitions = append([]string{"Rework"}, unfinishedWorkflow[1].Transitions...)
+	blockedRecovery := append([]connector.WorkflowState(nil), unfinishedWorkflow...)
+	blockedRecovery[1].Dispatchable = false
 	noDispatchRework := append([]connector.WorkflowState(nil), unfinishedWorkflow...)
 	noDispatchRework[len(noDispatchRework)-1].Dispatchable = false
 	operatorRework := append([]connector.WorkflowState(nil), unfinishedWorkflow...)
@@ -166,6 +170,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		validationErr error
 		wantRecovery  bool
 		blockerState  string
+		handoffState  string
 		interrupted   bool
 		turnStarted   bool
 		mode          string
@@ -190,6 +195,11 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "unfinished completion without Change returns checkpoint to Rework", states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, diffStats: checkpoint, wantSettled: true, wantState: "Rework"},
 		{name: "typed instance blockers retry with instance reason code", states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "status: blocked", "status: blocked\nreason_code: instance_limitation", 1), wantInstance: true},
 		{name: "instance blocked completion without Change retries", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, wantInstance: true},
+		{name: "released instance blocked completion leaves nondispatchable execution lane", states: blockedExecution, humanReview: &no, finalMessage: instanceReport, wantInstance: true, wantState: "Todo", roundTrip: true},
+		{name: "released instance blocked checkpoint recovers through Rework", states: blockedRecovery, humanReview: &no, finalMessage: instanceReport, diffStats: checkpoint, wantInstance: true, wantState: "Rework", roundTrip: true},
+		{name: "instance blocked settlement failure retains completion owner", states: blockedExecution, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true, wantState: "Todo"},
+		{name: "instance infrastructure restoration retains completion on workflow outage", states: blockedExecution, humanReview: &no, runErr: runpkg.ErrValidatorInfrastructure, statesErr: errors.New("workflow unavailable"), wantDeferred: true},
+		{name: "instance blocked completion preserves active landing handoff", states: blockedExecution, humanReview: &no, finalMessage: instanceReport, handoffState: "Merging", wantInstance: true},
 		{name: "blocked unchanged Rework preserves instance checkpoint without Change", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: instanceReport, diffStats: checkpoint, wantInstance: true, roundTrip: true},
 		{name: "blocked unchanged Rework preserves unmet prerequisite without Change", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, finalMessage: prerequisiteReport, blockerState: "Backlog", diffStats: checkpoint, wantState: "Blocked", wantComment: "detent-status blocked", roundTrip: true},
 		{name: "instance blocker lane refusal still retries", states: blockedLanding, humanReview: &no, finalMessage: instanceReport, updateErr: connector.ErrStateUpdateBlocked, wantInstance: true},
@@ -381,6 +391,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				issue.Labels = append(issue.Labels, "requires-human-review")
 			}
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}, updateErr: test.updateErr}
+			if test.handoffState != "" {
+				tick.stateIssues[0].State = test.handoffState
+			}
 			if test.blockerState != "" {
 				tick.resolvedIssues = []connector.Issue{{ID: "prerequisite", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#411", State: test.blockerState, Closed: test.blockerState == "Done"}}
 			}
@@ -389,6 +402,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				tracker = tick
 			}
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}})
+			if (test.wantInstance || test.wantDeferred) && len(test.states) > 0 && !dispatchableState(test.states, "In Progress") {
+				cfg.ActiveStates = []string{"Todo", "Rework"}
+			}
+			if test.handoffState != "" {
+				cfg.ActiveStates = append(cfg.ActiveStates, test.handoffState)
+			}
 			cfg.AutoPromote.SourceState = "In Review"
 			cfg.AutoPromote.HumanReview = test.humanReview
 			if test.reworkState != "" {
@@ -442,7 +461,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.preProvider {
 				runningTokens = TokenTotals{}
 			}
-			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: runningTokens, Mode: mode, DispatchSourceState: issue.State, StartedAt: now.Add(-time.Minute)}
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 42, Generation: 7, SessionID: "native-session", Tokens: runningTokens, Mode: mode, DispatchSourceState: issue.State, DispatchTargetState: issue.State, StartedAt: now.Add(-time.Minute)}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-time.Minute)}
 			if test.interrupted {
 				previous := cloneIssue(issue)
@@ -815,6 +834,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				return
 			}
+			if test.handoffState != "" {
+				if tick.stateIssues[0].State != test.handoffState || len(tick.updates) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 || len(state.Retry) != 0 || len(state.deferredCompletions) != 0 || scheduling.releases != 1 || len(attempts.completions) != 1 {
+					t.Fatalf("finished attempt replaced active handoff: lane=%s updates=%v releases=%d", tick.stateIssues[0].State, tick.updates, scheduling.releases)
+				}
+				return
+			}
 			if test.wantInstance {
 				lane := issue.State
 				for _, update := range tick.updates {
@@ -853,6 +878,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if err := json.Unmarshal([]byte(attempts.completions[0].MetricsJSON), &metrics); err != nil || metrics.Tokens != 42 || metrics.Turns != 1 || state.TokenTotals.TotalTokens != 42 || state.DiffStats[issue.ID].HeadSHA != head {
 					t.Fatalf("instance report lost genuine usage: %#v, %v", metrics, err)
+				}
+				for range 3 {
+					orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				}
+				if len(attempts.completions) != 1 || scheduling.releases != 1 || len(state.deferredCompletions) != 0 {
+					t.Fatal("instance completion replayed after settlement")
 				}
 				return
 			}
