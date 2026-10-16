@@ -106,11 +106,7 @@ tracker:
   repository: digitaldrywood/detent
   local_sqlite:
     path: .detent/work-items.db
-  active_states:
-    - Todo
-    - In Progress
-  terminal_states:
-    - Done
+  lanes: [{name: Backlog, role: holding}, {name: Human Review, role: holding}, {name: Blocked, role: holding}, {name: Todo, role: active}, {name: In Progress, role: active}, {name: Done, role: terminal}]
 workspace:
   root: .detent/workspaces
   source_root: .

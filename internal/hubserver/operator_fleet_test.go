@@ -285,8 +285,7 @@ func TestHubMCPFleetBoundary(t *testing.T) {
 tracker:
   kind: hub_native
   api_key: fixture
-  active_states: [Todo, In Progress]
-  terminal_states: [Done]
+  lanes: [{name: Backlog, role: holding}, {name: Human Review, role: holding}, {name: Blocked, role: holding}, {name: Todo, role: active}, {name: In Progress, role: active}, {name: Done, role: terminal}]
 gate:
   run: true
 runners:
