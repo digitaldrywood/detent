@@ -451,7 +451,7 @@ func nativeChangeSourceFixture(ctx context.Context, t *testing.T, base, head str
 	if len(repositories) > 0 {
 		directory = repositories[0]
 	}
-	for _, label := range []string{"a", "b", "c", "d"} {
+	for _, label := range []string{"a", "b", "c", "d", "e", "f", "g", "h"} {
 		if head == nativeChangeFixtureHead(label) {
 			directory = ""
 			break
@@ -468,6 +468,10 @@ func nativeChangeSourceFixture(ctx context.Context, t *testing.T, base, head str
 			{"commit", nativeChangeFixtureCommit("b")},
 			{"commit", nativeChangeFixtureCommit("c")},
 			{"commit", nativeChangeFixtureCommit("d")},
+			{"commit", nativeChangeFixtureCommit("e")},
+			{"commit", nativeChangeFixtureCommit("f")},
+			{"commit", nativeChangeFixtureCommit("g")},
+			{"commit", nativeChangeFixtureCommit("h")},
 		} {
 			command := exec.CommandContext(ctx, "git", "-C", directory, "hash-object", "-w", "-t", object.kind, "--stdin")
 			command.Stdin = strings.NewReader(object.content)

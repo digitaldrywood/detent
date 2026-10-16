@@ -781,8 +781,22 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 		for _, test := range []struct{ self, other pilotOrganization }{{alpha, beta}, {beta, alpha}} {
 			list := fay.get(test.self.projectAPI() + "/work-items")
 			pilotStatus(t, "issue list", list, http.StatusOK)
-			if strings.Count(list.body, test.self.projectName+" tab issue") != 8 || strings.Contains(list.body, test.other.projectName) {
-				t.Fatalf("%s issues crossed organizations: %.600s", test.self.id, list.body)
+			var result struct {
+				Items []tracker.NativeIssue `json:"items"`
+			}
+			if err := json.Unmarshal([]byte(list.body), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Items) != 8 {
+				t.Fatalf("%s issue count=%d want=8", test.self.id, len(result.Items))
+			}
+			for _, item := range result.Items {
+				if string(item.OrganizationID) != test.self.id || string(item.ProjectID) != test.self.project || !strings.HasPrefix(item.Title, test.self.projectName+" tab issue ") {
+					t.Fatalf("%s issues crossed organizations: %#v", test.self.id, item)
+				}
+			}
+			if strings.Contains(list.body, test.other.projectName) {
+				t.Fatalf("%s response leaked other organization: %.600s", test.self.id, list.body)
 			}
 		}
 		second := p.browser(t)
