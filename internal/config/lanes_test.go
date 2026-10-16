@@ -20,17 +20,21 @@ func TestTrackerLanes(t *testing.T) {
 		{name: "ordered", tracker: "lanes: [{name: Backlog, role: holding}, {name: Todo, role: active}, {name: Blocked, role: holding}, {name: Done, role: terminal}]", want: []string{"Backlog", "Todo", "Blocked", "Done"}},
 		{name: "legacy", tracker: "observed_states: [Backlog, Blocked]\n  active_states: [Todo]\n  terminal_states: [Done]", want: []string{"Backlog", "Blocked", "Todo", "Done"}, legacy: true},
 		{name: "empty", tracker: "lanes: []", want: []string{}},
-		{name: "mixed empty", tracker: "lanes: []\n  active_states: []", wantError: "cannot be combined"},
-		{name: "mixed merged", tracker: "<<: {active_states: [Todo]}\n  lanes: []", wantError: "cannot be combined"},
-		{name: "mixed null", tracker: "lanes: []\n  observed_states: null", wantError: "cannot be combined"},
-		{name: "mixed terminal", tracker: "lanes: []\n  terminal_states: [Done]", wantError: "cannot be combined"},
+		{name: "mixed empty", tracker: "lanes: []\n  active_states: []", wantError: "is no longer supported"},
+		{name: "mixed merged", tracker: "<<: {active_states: [Todo]}\n  lanes: []", wantError: "is no longer supported"},
+		{name: "mixed null", tracker: "lanes: []\n  observed_states: null", wantError: "is no longer supported"},
+		{name: "mixed terminal", tracker: "lanes: []\n  terminal_states: [Done]", wantError: "is no longer supported"},
 		{name: "null lanes", tracker: "lanes: null", wantError: "must be a list"},
 		{name: "unknown role", tracker: "lanes: [{name: Todo, role: working}]", wantError: ".role must be"},
 		{name: "blank name", tracker: "lanes: [{name: ' ', role: active}]", wantError: ".name must not be blank"},
 		{name: "duplicate name", tracker: "lanes: [{name: Todo, role: active}, {name: ' todo ', role: holding}]", wantError: "must be unique"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  " + test.tracker + "\n---\nWork.\n"))
+			raw := []byte("---\ntracker:\n  kind: hub_native\n  " + test.tracker + "\n---\nWork.\n")
+			workflow, err := ParseWorkflow(raw)
+			if test.legacy {
+				workflow, err = ParseHistoricalProjectDefinition(ProjectDefinitionSources{Workflow: raw})
+			}
 			if test.wantError != "" {
 				if err == nil {
 					err = workflow.Config.Validate()
@@ -45,9 +49,6 @@ func TestTrackerLanes(t *testing.T) {
 			}
 			if got := workflow.Config.KanbanStateNames(); !slices.Equal(got, test.want) {
 				t.Fatalf("order = %v, want %v", got, test.want)
-			}
-			if slices.Contains(workflow.Config.ValidationWarnings(), LegacyLaneWarning) != test.legacy {
-				t.Fatalf("warnings = %v", workflow.Config.ValidationWarnings())
 			}
 			for index, state := range workflow.Config.NativeWorkflowStates() {
 				if state.Name != test.want[index] || state.Dispatchable != (state.Name == "Todo") || state.Terminal != (state.Name == "Done") {
@@ -125,7 +126,7 @@ func TestMigrateTrackerLanes(t *testing.T) {
 				if before.hasFrontmatter && !bytes.Equal(before.prompt, after.prompt) {
 					t.Fatal("prompt changed")
 				}
-				parse := func(raw []byte) Config {
+				parse := func(raw []byte, historical bool) Config {
 					t.Helper()
 					doc, err := splitProjectWorkflow(raw)
 					if err != nil {
@@ -135,17 +136,17 @@ func TestMigrateTrackerLanes(t *testing.T) {
 						raw = append(append([]byte("---\n"), raw...), []byte("---\n")...)
 					}
 					workflow, err := ParseWorkflow(raw)
+					if historical {
+						workflow, err = ParseHistoricalProjectDefinition(ProjectDefinitionSources{Workflow: raw})
+					}
 					if err != nil {
 						t.Fatal(err)
 					}
 					return workflow.Config
 				}
-				left, right := parse([]byte(test.raw)), parse(out)
+				left, right := parse([]byte(test.raw), true), parse(out, false)
 				if !reflect.DeepEqual(left.NativeWorkflowStates(), right.NativeWorkflowStates()) {
 					t.Fatal("migration changed workflow semantics")
-				}
-				if slices.Contains(right.ValidationWarnings(), LegacyLaneWarning) {
-					t.Fatal("migration still warns")
 				}
 			}
 			second, again, err := MigrateTrackerLanes(out)
@@ -190,6 +191,43 @@ func TestMigrateTrackerLaneSamples(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+func TestRejectLegacyTrackerStates(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"observed_states", "active_states", "terminal_states"} {
+		for _, value := range []string{"[Todo]", "[]", "null"} {
+			for _, form := range []string{"direct", "alias", "merge", "root merge", "mixed"} {
+				definition := "tracker:\n  kind: memory\n  " + key + ": " + value + "\n"
+				switch form {
+				case "alias":
+					definition = "base: &base {" + key + ": " + value + "}\ntracker: *base\n"
+				case "merge":
+					definition = "tracker:\n  <<: {" + key + ": " + value + "}\n"
+				case "root merge":
+					definition = "<<: {tracker: {" + key + ": " + value + "}}\n"
+				case "mixed":
+					definition += "  lanes: []\n"
+				}
+				for _, source := range []string{"frontmatter", "split", "overlay"} {
+					t.Run(key+"/"+value+"/"+form+"/"+source, func(t *testing.T) {
+						var err error
+						switch source {
+						case "frontmatter":
+							_, err = ParseWorkflow([]byte("---\n" + definition + "---\nWork.\n"))
+						case "split":
+							_, err = ParseProjectDefinition(ProjectDefinitionSources{Workflow: []byte("Work.\n"), Config: []byte("schema: 1\n" + definition), HasConfig: true})
+						case "overlay":
+							_, err = ParseWorkflowOverlay([]byte("---\ntracker:\n  kind: memory\n---\nWork.\n"), []byte("---\n"+definition+"---\n"), "WORKFLOW.local.md")
+						}
+						if err == nil || !strings.Contains(err.Error(), "tracker."+key+" is no longer supported") {
+							t.Fatalf("error = %v, want rejection of tracker.%s", err, key)
+						}
+					})
+				}
+			}
 		}
 	}
 }

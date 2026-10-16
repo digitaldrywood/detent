@@ -60,7 +60,25 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 					if err := os.WriteFile(cfg.Workflow, []byte(`---
 tracker:
   kind: memory
-  observed_states: [Blocked, Paused]
+  lanes:
+    - name: Blocked
+      role: holding
+    - name: Paused
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
 agent:
   stop_run:
     target_state: Paused

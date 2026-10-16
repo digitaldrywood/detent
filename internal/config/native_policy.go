@@ -259,7 +259,7 @@ func resolveAuthoredNativePolicy(descriptor policy.Descriptor) (Workflow, policy
 		return Workflow{}, policy.Descriptor{}, errors.New("policy_mismatch: authored inputs do not match their digests")
 	}
 	authored.Files = authoredSourceFiles(sources)
-	shared, err := ParseProjectDefinition(sources)
+	shared, err := ParseHistoricalProjectDefinition(sources)
 	if err != nil {
 		return Workflow{}, policy.Descriptor{}, err
 	}

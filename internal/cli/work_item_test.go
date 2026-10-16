@@ -198,14 +198,17 @@ tracker:
   local_sqlite:
     path: .detent/work-items.db
     project_id: video
-  active_states:
-    - Todo
-    - In Progress
-  observed_states:
-    - Backlog
-    - Blocked
-  terminal_states:
-    - Done
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Done
+      role: terminal
 workspace:
   root: .detent/workspaces
   source_root: .
@@ -218,14 +221,17 @@ func memoryWorkItemWorkflow() string {
 	return `---
 tracker:
   kind: memory
-  active_states:
-    - Todo
-    - In Progress
-  observed_states:
-    - Backlog
-    - Blocked
-  terminal_states:
-    - Done
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Done
+      role: terminal
 workspace:
   root: .detent/workspaces
   source_root: .
