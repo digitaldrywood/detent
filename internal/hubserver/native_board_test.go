@@ -485,20 +485,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		}
 	}
 	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
-	readFrame := func(scanner *bufio.Reader) tracker.NativeBoardFrame {
-		t.Helper()
-		for {
-			kind, data := readHostedEvent(t, scanner)
-			if kind != "activity" {
-				continue
-			}
-			var frame tracker.NativeBoardFrame
-			if err := json.Unmarshal([]byte(data), &frame); err != nil {
-				t.Fatal(err)
-			}
-			return frame
-		}
-	}
+	readFrame := func(scanner *bufio.Reader) tracker.NativeBoardFrame { return readHostedBoardFrame(t, scanner) }
 	initial := readFrame(stream)
 	if initial.Gap || len(initial.Deltas) != 0 || initial.Work == nil || initial.GrantVersion == "" || initial.GrantVersion != page.GrantVersion {
 		t.Fatalf("initial=%#v", initial)
@@ -661,5 +648,74 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
 			}
 		}
+	}
+}
+
+func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	user := f.user(t, "dependency-viewer", "member", "viewer@example.test", "write", "")
+	created := f.request(t, user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "dependent"}, Title: "Dependent", Body: issueContractTestSections, State: "Todo"})
+	requireNativeStatus(t, created, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, created, &issue)
+	dependent, blocker := issue.WorkItemID, f.seedIssue(t, 2)
+	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var page tracker.NativeIssuePage
+	decodeHubResponse(t, response, &page)
+	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
+	readHostedBoardFrame(t, stream)
+	for _, test := range []struct {
+		name, path string
+		body       any
+		state      string
+		links      int
+	}{
+		{name: "add", path: "/dependencies", body: tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "add"}, ExpectedRevision: 1, RelatedWorkItemID: blocker, Operation: "add"}, state: "Todo", links: 1},
+		{name: "complete", path: "/workflow", body: map[string]any{"idempotency_key": "complete", "expected_revision": "2", "state": "Done", "reason": "user_requested"}, state: "Done", links: 1},
+		{name: "reopen", path: "/workflow", body: map[string]any{"idempotency_key": "reopen", "expected_revision": "3", "state": "Todo", "reason": "user_requested"}, state: "Todo", links: 1},
+		{name: "remove", path: "/dependencies", body: tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "remove"}, ExpectedRevision: 4, RelatedWorkItemID: blocker, Operation: "remove"}, links: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(dependent)+test.path, test.body), http.StatusOK)
+			for {
+				frame := readHostedBoardFrame(t, stream)
+				if frame.Gap {
+					t.Fatal("dependency change invalidated replay")
+				}
+				for _, delta := range frame.Deltas {
+					if delta.Current == nil || delta.Current.Issue.WorkItemID != blocker {
+						continue
+					}
+					links := delta.Current.Issue.Dependents
+					if len(links) != test.links {
+						t.Fatalf("blocker retained stale dependent chips: %+v", links)
+					}
+					if len(links) > 0 && (links[0].ID != dependent || links[0].State != test.state || links[0].Terminal != (test.state == "Done")) {
+						t.Fatalf("blocker retained stale dependent state: %+v", links)
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
+func readHostedBoardFrame(t *testing.T, scanner *bufio.Reader) tracker.NativeBoardFrame {
+	t.Helper()
+	for {
+		kind, data := readHostedEvent(t, scanner)
+		if kind != "activity" {
+			continue
+		}
+		var frame tracker.NativeBoardFrame
+		if err := json.Unmarshal([]byte(data), &frame); err != nil {
+			t.Fatal(err)
+		}
+		return frame
 	}
 }

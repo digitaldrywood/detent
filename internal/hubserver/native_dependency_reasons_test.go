@@ -3,6 +3,7 @@ package hubserver
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,9 @@ import (
 func TestNativeDependencyReasonCAS(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	dependent, blocker := f.create(t, "Dependent"), f.create(t, "Blocker")
 	edge := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "edge"}, ExpectedRevision: dependent.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(dependent.WorkItemID)+"/dependencies", f.token, edge), http.StatusOK)
@@ -22,6 +26,10 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 		t.Fatalf("dependency summaries: %+v %+v", current.Blockers, neighbor.Dependents)
 	}
 	path := f.base + "/work-items/" + string(dependent.WorkItemID) + "/dependency-reasons"
+	var beforeSequence int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&beforeSequence); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, basis string
 		revision    int64
@@ -41,6 +49,10 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 	if current.BlockedReason.Text != "Waits for the shared foundation." || current.Revision != 2 || current.State != dependent.State {
 		t.Fatalf("reason changed issue state or revision: %+v", current)
 	}
+	dirty, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
+	if err != nil || !slices.Equal(dirty, []string{string(dependent.WorkItemID)}) {
+		t.Fatalf("reason invalidated other items: %v err=%v", dirty, err)
+	}
 	var wg sync.WaitGroup
 	statuses := make(chan int, 2)
 	for i := range 2 {
@@ -57,6 +69,20 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 	}
 	if counts[http.StatusOK] != 1 || counts[http.StatusConflict] != 1 {
 		t.Fatalf("concurrent writers: %v", counts)
+	}
+	var afterSequence int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&afterSequence); err != nil || afterSequence != beforeSequence {
+		t.Fatalf("reason write synchronously projected cards: before=%d after=%d err=%v", beforeSequence, afterSequence, err)
+	}
+	for remaining := 1; remaining >= 0; remaining-- {
+		more, err := f.service.database.drainNativeBoardDirty(t.Context(), f.service.config.now())
+		if err != nil || !more {
+			t.Fatalf("background card refresh: more=%v err=%v", more, err)
+		}
+		dirty, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM native_board_dirty")
+		if err != nil || len(dirty) != remaining {
+			t.Fatalf("background transaction refreshed more than one item: dirty=%v err=%v", dirty, err)
+		}
 	}
 	edge.IdempotencyKey = "remove"
 	edge.ExpectedRevision = current.Revision
