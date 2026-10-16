@@ -693,6 +693,36 @@ no merge requirement and does not change any project's check policy.
 
 ## Hosted application context reads
 
+Organization productivity is available through the hosted organization
+`GET /reports?project=all&range=30d` read and the existing `reports` MCP tool
+with `{"scope":"organization","range":"30d"}`. Presets are `24h`, `7d`,
+`30d` and `90d`; REST custom windows use inclusive UTC `from`/`to` dates,
+and MCP accepts explicit timestamps aligned to complete UTC hours. Presets use the same
+calendar window resolution as project Reports. Both return an equal-length
+previous window. Buckets are hourly for short windows and daily for the 7d, 30d and 90d
+presets, and custom windows at least six days long.
+
+The organization result contains `current` and `previous` productivity metrics,
+`projects` with the same metrics per project, `series` and `previous_series`
+with filed/completed counts and project splits, and `filed_by`/`completed_by`
+counts for both periods. Completion cost includes lifetime usage before each
+window's end for issues currently Done whose close falls inside that window.
+Rework uses the project Reports unique-worked-issue denominator and excludes
+infrastructure returns from its numerator. Missing cost or rework denominators
+and unobserved cycle times return null rates or durations.
+
+The `labels`, `priorities`, `types`, `filed_by`, `runners` and `projects`
+filters accept arrays in MCP and repeated query parameters in REST. Dimensions
+combine with AND; values within a dimension combine with OR. Project filters
+intersect current readable grants and cannot expand access. A single MCP
+`project_id` further narrows organization scope. Project-scoped Reports retains
+its existing response. Organization reads use typed background-maintained
+summaries through the reader pool; they may lag writes and never parse attempt
+payloads or replay event history on the request path. Filer kinds are `people`,
+`agents`, `automation` and `unknown`; completion attribution uses the final
+attempt's enrolled runner or the human who recorded the Done transition, with
+`unknown` retained when identity is missing.
+
 Hosted dedicated and shared connections expose `app_bootstrap_payload`,
 `app_updates`, `release_notes`, and `hosted_events` through the same adapter on HTTP and stdio.
 `app_bootstrap_payload` takes `{}` and returns the current organization/directory,

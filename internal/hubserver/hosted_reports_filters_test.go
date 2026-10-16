@@ -150,10 +150,11 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 	})
 	t.Run("all projects", func(t *testing.T) {
-		organization := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}, "labels": {"rpt-cloud"}})
+		var organization organizationProductivity
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project=all&range=24h&labels=rpt-cloud", http.StatusOK), &organization)
 		project := read(t, url.Values{"project": {f.project}, "range": {"24h"}, "labels": {"rpt-cloud"}})
-		if organization.Analytics.ProjectID != reportsAllProjects || organization.Completion.Done != project.Completion.Done || organization.Cost != project.Cost || organization.Completion.Cancelled != project.Completion.Cancelled {
-			t.Fatalf("organization=%+v project=%+v", organization.Completion, project.Completion)
+		if organization.Current.Completed != project.Completion.Done || organization.Current.CompletionCost != project.Completion.Cost || organization.Current.Cancelled != project.Completion.Cancelled {
+			t.Fatalf("organization=%+v project=%+v", organization.Current, project.Completion)
 		}
 		f.usage(t, "staff", browserHostedOrganizationBase+"/reports?project=all&range=24h", http.StatusForbidden)
 	})
@@ -231,9 +232,10 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
 		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
-		organization := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}})
-		if organization.Completion.Done != unfiltered.Completion.Done {
-			t.Fatalf("all projects counted an unreadable project: %d, want %d", organization.Completion.Done, unfiltered.Completion.Done)
+		var organization organizationProductivity
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project=all&range=24h", http.StatusOK), &organization)
+		if organization.Current.Completed != unfiltered.Completion.Done {
+			t.Fatalf("all projects counted an unreadable project: %d, want %d", organization.Current.Completed, unfiltered.Completion.Done)
 		}
 	})
 }
