@@ -52,18 +52,32 @@ import { ActivityReport, type ActivityFilters } from "../../contracts/activity.t
 import { ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
 
+export const DuplicateChallenge = Schema.Struct({
+  challenge_token: Schema.String,
+  possible_duplicates: Schema.Array(Schema.Struct({
+    work_item_id: Schema.String,
+    number: Schema.Number,
+    title: Schema.String,
+    web_url: Schema.String,
+    why: Schema.String,
+  })),
+});
+export type DuplicateChallenge = typeof DuplicateChallenge.Type;
+
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
   readonly status: number;
   readonly code: string;
   readonly details: unknown;
+  readonly duplicateChallenge: DuplicateChallenge | null;
 
-  constructor(input: { status: number; code: string; message: string; details?: unknown }) {
+  constructor(input: { status: number; code: string; message: string; details?: unknown; duplicateChallenge?: DuplicateChallenge }) {
     super(input.message);
     this.name = "AccountError";
     this.status = input.status;
     this.code = input.code;
     this.details = input.details ?? null;
+    this.duplicateChallenge = input.duplicateChallenge ?? null;
   }
 
   /** True for the two statuses every screen turns into a friendly state. */
@@ -106,6 +120,7 @@ function failure(status: number, body: unknown): AccountError {
       code: error.code,
       message: error.message.length > 0 ? error.message : messageForStatus(status),
       details: error.details ?? null,
+      duplicateChallenge: error.code === "possible_duplicates" && Schema.is(DuplicateChallenge)(body) ? body : undefined,
     });
   }
   return new AccountError({
@@ -431,6 +446,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(Schema.Struct({ reporter_templates: ReporterTemplates }), "GET", project(projectId)),
     createFirstIssue: (input: {
       projectId: string;
+      challengeToken?: string;
       type?: "bug" | "change_request";
 	  githubIssueUrl?: string;
       title: string;
@@ -440,6 +456,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     }) =>
       send(Schema.Unknown, "POST", `${project(input.projectId)}/work-items`, {
 	    github_issue_url: input.githubIssueUrl,
+        challenge_token: input.challengeToken,
         type: input.type,
         title: input.title,
         body: input.body,

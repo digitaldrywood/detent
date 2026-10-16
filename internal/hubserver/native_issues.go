@@ -377,7 +377,7 @@ func (s *Service) createNativeIssue(c echo.Context) error {
 		return c.JSON(http.StatusConflict, struct {
 			apiErrorResponse
 			duplicateChallenge
-		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found; use file_issue to confirm whether this is new"}, duplicateChallenge: challenge})
+		}{apiErrorResponse: apiErrorResponse{Code: "possible_duplicates", Message: "Possible duplicate issues found. Review the suggestions or create anyway."}, duplicateChallenge: challenge})
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
