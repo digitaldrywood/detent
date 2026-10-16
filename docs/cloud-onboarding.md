@@ -55,8 +55,8 @@ carries the answer into the enrollment `isolation_tier` field and the
 `detent hub runner register --isolation-tier` command. Obtain enrollment tokens
 through the secure enrollment dialog, never through chat.
 
-Fly Sprites are dedicated VMs. Luna defaults to full access inside each VM and
-lets you select sandbox when configuring the pool. See [Sprite runners](sprite-runners.md).
+Fly Sprites are dedicated VMs and use Full access (`native-trusted`). Sandbox
+is not yet available: the Sprite VM does not support the agent sandbox. See [Sprite runners](sprite-runners.md).
 
 For an existing runner, Luna reads its selected tier, backend support and
 current problems. `tier_unavailable` means its agent backends do not support
