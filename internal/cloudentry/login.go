@@ -31,7 +31,7 @@ func validReturnPath(path, organization string) bool {
 		return false
 	}
 	if organization == "" {
-		return path == "/organizations" || path == platformPath
+		return path == "/organizations" || path == platformPath || strings.HasPrefix(path, "/oauth/consent/") && safeID(strings.TrimPrefix(path, "/oauth/consent/"))
 	}
 	prefix := "/organizations/" + organization
 	return (path == prefix || strings.HasPrefix(path, prefix+"/")) && !strings.HasSuffix(path, "/logout")
