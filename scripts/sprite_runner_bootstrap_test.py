@@ -129,8 +129,17 @@ elif name == "detent":
         config.parent.mkdir(parents=True, exist_ok=True)
         if not config.exists():
             config.write_text("client:\n  hub_url: https://hub.example\nglobal:\n  max_concurrent_agents: 2\n")
-            (config.parent / "identity.json").write_text(json.dumps({"schema": 1, "identity": {"runner_id": "runner_fixture", "project_ids": ["prj_example", "prj_second"]}, "credential": "stored_fixture_credential"}))
+            runner_key = hashlib.sha256(str(config).encode()).hexdigest()
+            identity = {"schema": 1, "identity": {"runner_id": "runner_" + runner_key, "project_ids": ["prj_example", "prj_second"]}, "credential": "fixture_credential_" + runner_key}
+            (config.parent / "identity.json").write_text(json.dumps(identity))
+            (root / (identity["identity"]["runner_id"] + ".json")).write_text(json.dumps(identity))
     else:
+        if "--headless" in args:
+            config = pathlib.Path(args[args.index("--config") + 1])
+            identity = json.loads(config.with_name("identity.json").read_text())
+            registered = json.loads((root / (identity["identity"]["runner_id"] + ".json")).read_text())
+            if identity != registered:
+                sys.exit("runner credential does not match enrollment")
         (root / "detent-cwd").write_text(os.getcwd())
         print("v0.117.41")
 elif name == "sprite-env":
@@ -144,7 +153,8 @@ elif name == "sprite-env":
         print('{"id":"v1"}')
 elif name in ("codex", "claude", "gh"):
     if args[-1:] == ["status"]:
-        sys.exit(1)
+        auth_path = {"codex": ".codex/auth.json", "claude": ".claude/.credentials.json", "gh": ".config/gh/hosts.yml"}[name]
+        sys.exit(0 if (pathlib.Path.home() / auth_path).is_file() else 1)
     if name == "gh" and pathlib.Path(__file__).parent == root / "bin":
         print("gh version 2.0.0 (fixture)")
     else:
@@ -418,16 +428,52 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertIn("Resume inside this same Sprite:", result.stderr)
                 self.assertNotIn(TOKEN, result.stdout + result.stderr)
                 if mode == "CHECKPOINT_FAIL":
-                    config = self.home / ".config/detent-runner/global.yaml"
-                    identity = config.with_name("identity.json").read_bytes()
-                    original = config.read_bytes()
-                    (self.root / "calls.jsonl").unlink()
-                    resumed = self.run_bootstrap(enrollment="")
-                    self.assertEqual(resumed.returncode, 0, resumed.stderr)
-                    self.assertFalse(self.registrations())
-                    self.assertEqual(config.read_bytes(), original)
-                    self.assertEqual(config.with_name("identity.json").read_bytes(), identity)
-                    self.assertIn("Last completed step: installation checkpoint created", resumed.stdout)
+                    original_home = self.env["HOME"]
+                    identities = []
+                    try:
+                        for home in (self.home, self.root / "second sprite home"):
+                            with self.subTest(home=home.name):
+                                self.env["HOME"] = str(home)
+                                auth_files = {}
+                                for relative in (".codex/auth.json", ".claude/.credentials.json", ".config/gh/hosts.yml"):
+                                    path = home / relative
+                                    path.parent.mkdir(parents=True, exist_ok=True)
+                                    auth_files[path] = (home.name + ": " + relative).encode()
+                                    path.write_bytes(auth_files[path])
+                                    path.chmod(0o600)
+                                self.env[mode] = value
+                                failed = self.run_bootstrap(enrollment="" if home == self.home else ENROLLMENT)
+                                del self.env[mode]
+                                self.assertNotEqual(failed.returncode, 0)
+                                self.assertIn("runner Service configured; verify running state", failed.stderr)
+                                config = home / ".config/detent-runner/global.yaml"
+                                identity = config.with_name("identity.json").read_bytes()
+                                original = config.read_bytes()
+                                identities.append(json.loads(identity))
+                                (self.root / "calls.jsonl").unlink()
+                                resumed = self.run_bootstrap(enrollment="")
+                                self.assertEqual(resumed.returncode, 0, resumed.stderr)
+                                self.assertFalse(self.registrations())
+                                self.assertEqual(config.read_bytes(), original)
+                                self.assertEqual(config.with_name("identity.json").read_bytes(), identity)
+                                for path, contents in auth_files.items():
+                                    self.assertEqual(path.read_bytes(), contents)
+                                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                                for command in ("codex login", "claude auth login", "gh auth login"):
+                                    self.assertNotIn(command, resumed.stdout)
+                                self.assertIn("Last completed step: installation checkpoint created", resumed.stdout)
+                                launcher = home / ".local/lib/detent-sprite-runner/start"
+                                service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+                                self.assertEqual(service.returncode, 0, service.stderr)
+                        self.assertNotEqual(identities[0]["identity"]["runner_id"], identities[1]["identity"]["runner_id"])
+                        self.assertNotEqual(identities[0]["credential"], identities[1]["credential"])
+                        for home in (self.home, self.root / "second sprite home"):
+                            self.env["HOME"] = str(home)
+                            service = subprocess.run(["bash", str(home / ".local/lib/detent-sprite-runner/start")], env=self.env, text=True, capture_output=True, timeout=20)
+                            self.assertEqual(service.returncode, 0, service.stderr)
+                    finally:
+                        self.env["HOME"] = original_home
+                        self.env.pop(mode, None)
 
     def test_updates_outdated_tools_and_repairs_browser(self):
         self.env["FIXTURE_ARCH"] = "aarch64"
