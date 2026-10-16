@@ -509,7 +509,11 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) != nil {
 				metadata.Source = ""
 			}
-			if updated, changed := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source, WorkProductPushed: workAttemptHasPushedProduct(attempt)}, now); changed {
+			if updated, changed, err := o.restorePreTurnIssue(ctx, state, Running{Issue: issue, DispatchSourceState: metadata.Source, WorkProductPushed: workAttemptHasPushedProduct(attempt)}, now); err != nil {
+				if o.logger != nil {
+					o.logger.Warn("instance failure lane restoration failed", "issue_id", issue.ID, "error", err)
+				}
+			} else if changed {
 				transitions = append(transitions, updated)
 			}
 			continue

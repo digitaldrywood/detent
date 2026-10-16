@@ -35,6 +35,7 @@ const nativeCandidateRecordedDependenciesSatisfied = `NOT EXISTS (
 
 type nativeCandidateSnapshot struct {
 	AnsweredExclusion      *tracker.NativeAnsweredExclusion
+	StateExclusion         string
 	IDs                    []tracker.WorkItemID
 	UnresolvedDependencies []tracker.NativeDependency
 	Unavailable            []string
@@ -47,17 +48,23 @@ func readNativeCandidateSnapshot(ctx context.Context, q nativeQueryer, query cla
 		return snapshot, err
 	}
 	var dependenciesSatisfied bool
+	var dispatchable, terminal bool
 	var kind, attemptID, updatedAt string
 	err = q.QueryRowContext(ctx, `SELECT `+nativeCandidateDependenciesSatisfied+`,
  CASE WHEN answered.id IS NULL THEN '' ELSE `+nativeAnsweredClassification+` END,
- COALESCE(answered.id, ''), COALESCE(answered.updated_at, '')
+ COALESCE(answered.id, ''), COALESCE(answered.updated_at, ''), ws.dispatchable, ws.terminal
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN native_attempts answered ON answered.id = (SELECT answered.id `+nativeAnsweredAttemptFrom+`
  AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging')
-WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &updatedAt)
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &updatedAt, &dispatchable, &terminal)
 	if err != nil {
 		return snapshot, err
+	}
+	if terminal {
+		snapshot.StateExclusion = fmt.Sprintf("Native workflow state %s is terminal", issue.State)
+	} else if !dispatchable {
+		snapshot.StateExclusion = fmt.Sprintf("Native workflow state %s is not dispatchable", issue.State)
 	}
 	if kind != "" {
 		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
