@@ -329,10 +329,13 @@ if ! chromium_screenshot > "$scratch/chromium-status.txt" 2> "$scratch/chromium-
     chromium_screenshot > "$scratch/chromium-status.txt"
 fi
 
-docker_package_version=29.1.3-0ubuntu3~25.10.1
 docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
 if command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
     as_root test -w /sys/fs/cgroup; then
+    apt_update
+    docker_package_version=$(LC_ALL=C apt-cache policy docker.io | awk '$1 == "Candidate:" && !found++ {print $2}')
+    [[ $docker_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
+        die "configured APT repositories provide no Docker package; configure repositories matching this distribution"
     if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_package_version" ]]; then
         printf 'Installing Docker %s\n' "$docker_package_version"
         apt_install "docker.io=$docker_package_version"

@@ -73,12 +73,15 @@ elif name == "dpkg-query":
         print("install ok installed " + installed.read_text())
 elif name == "apt-cache":
     candidates = json.loads(os.environ.get("PSQL_CANDIDATES", '{"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}'))
+    candidates["docker.io"] = os.environ.get("DOCKER_CANDIDATE", "29.1.3-0ubuntu3~25.10.1")
     print("  Candidate: " + candidates.get(args[-1], "(none)"))
     print("        500 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages\n" * 4096)
 elif name == "apt-get":
     for arg in args:
         if arg.startswith(("postgresql-client-", "docker.io=")):
             package, version = arg.split("=", 1)
+            if package == "docker.io" and version != os.environ.get("DOCKER_CANDIDATE", "29.1.3-0ubuntu3~25.10.1"):
+                sys.exit(100)
             if package.startswith("postgresql-client-"):
                 candidates = json.loads(os.environ.get("PSQL_CANDIDATES", '{"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}'))
                 if candidates.get(package) != version or os.environ.get("PSQL_INSTALL_FAIL"):
@@ -426,20 +429,38 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertIn("headless screenshot verified", update.stdout)
 
     def test_docker_install_requires_sprite_capabilities(self):
+        self.env["DOCKER_CANDIDATE"] = "(none)"
         skipped = self.run_bootstrap()
         self.assertEqual(skipped.returncode, 0, skipped.stderr)
         self.assertFalse((self.root / "docker.io.version").exists())
+        self.assertFalse(any(command == "apt-cache" and args[-1] == "docker.io" for command, args in self.calls()))
         self.env["DOCKER_SUPPORTED"] = "1"
-        available = self.run_bootstrap(enrollment="")
-        self.assertEqual(available.returncode, 0, available.stderr)
-        self.assertEqual((self.root / "docker.io.version").read_text(), "29.1.3-0ubuntu3~25.10.1")
-        self.assertTrue((self.root / "service-detent-docker.json").exists())
-        self.assertIn("Docker version 29.1.3", available.stdout)
+        for candidate in ("29.1.3-0ubuntu3~25.10.1", "29.1.3-0ubuntu4.1"):
+            with self.subTest(candidate=candidate):
+                self.env["DOCKER_CANDIDATE"] = candidate
+                available = self.run_bootstrap(enrollment="")
+                self.assertEqual(available.returncode, 0, available.stderr)
+                self.assertEqual((self.root / "docker.io.version").read_text(), candidate)
+                self.assertTrue((self.root / "service-detent-docker.json").exists())
+                self.assertIn("Docker version 29.1.3", available.stdout)
+                self.assertIn(["apt-get", ["install", "-y", "--no-install-recommends", "--allow-downgrades", "docker.io=" + candidate]], self.calls())
+                before = len(self.calls())
+                rerun = self.run_bootstrap(enrollment="")
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                self.assertFalse(any(command == "apt-get" and args[:1] == ["install"] for command, args in self.calls()[before:]))
+                self.assertFalse(any(command == "sprite-env" and args[:3] == ["services", "create", "detent-docker"] for command, args in self.calls()[before:]))
+        self.env["DOCKER_CANDIDATE"] = "(none)"
+        (self.root / "docker.io.version").unlink()
+        (self.root / "service-detent-docker.json").unlink()
         before = len(self.calls())
-        rerun = self.run_bootstrap(enrollment="")
-        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        registrations = len(self.registrations())
+        unavailable = self.run_bootstrap()
+        self.assertNotEqual(unavailable.returncode, 0)
+        self.assertIn("configured APT repositories provide no Docker package", unavailable.stderr)
+        self.assertFalse((self.root / "service-detent-docker.json").exists())
+        self.assertEqual(len(self.registrations()), registrations)
+        self.assertNotIn(TOKEN, unavailable.stdout + unavailable.stderr)
         self.assertFalse(any(command == "apt-get" and args[:1] == ["install"] for command, args in self.calls()[before:]))
-        self.assertFalse(any(command == "sprite-env" and args[:3] == ["services", "create", "detent-docker"] for command, args in self.calls()[before:]))
 
     def test_postgresql_repository_candidates_and_partial_installation(self):
         cases = (

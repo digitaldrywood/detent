@@ -247,12 +247,16 @@ and screenshot of a local page before enrolling or starting the runner.
 | ripgrep (`rg`) | 15.2.0 | Search source text quickly. |
 | fd | 10.3.0 | Find source files quickly. |
 | PostgreSQL client (`psql`) | APT candidate for major 18, or 17 when 18 is unavailable | Query PostgreSQL databases for development and diagnostics. |
-| Docker | Ubuntu `docker.io=29.1.3-0ubuntu3~25.10.1`, when supported | Run container-based project dependencies. |
+| Docker | APT candidate for `docker.io`, when supported | Run container-based project dependencies. |
 
 Go, Detent, GitHub CLI and ripgrep downloads are checked against published
 SHA-256 manifests. fd archives are checked against the release's published
 SHA-256 digests pinned in the script. npm verifies package integrity, and APT
 verifies the signed Ubuntu package indexes and package checksums.
+Docker selects the candidate from those same configured repositories only
+when the Sprite supports its namespace and cgroup requirements. It installs
+that exact revision and reports a repository compatibility error when no
+candidate is available.
 PostgreSQL uses the configured distribution repositories: Resolute supplies
 major 18, while images supplying only major 17 keep that major. The selected
 candidate revision is passed explicitly to APT. No external repository or
