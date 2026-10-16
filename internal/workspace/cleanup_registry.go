@@ -324,7 +324,15 @@ func (l *LocalGit) unrecordedWorkspaces(ctx context.Context, recorded map[string
 		if path == "" {
 			continue
 		}
-		path, err := validateWorkspacePath(l.root, path)
+		// The source repository also lists manually managed worktrees. Scope
+		// discovery before validating candidates, so an unrelated worktree
+		// cannot prevent cleanup under our root. Resolve only the parent here:
+		// validateWorkspacePath must still reject a symlink at the candidate.
+		parent, err := canonicalExistingPath(filepath.Dir(path))
+		if err != nil || parent != l.root {
+			continue
+		}
+		path, err = validateWorkspacePath(l.root, path)
 		if err != nil {
 			return nil, err
 		}
