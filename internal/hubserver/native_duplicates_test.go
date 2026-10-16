@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -523,6 +525,59 @@ func TestHostedDuplicateConfirmation(t *testing.T) {
 				t.Fatalf("relationship count=%d err=%v", related, err)
 			}
 
+			t.Run("same principal across credentials", func(t *testing.T) {
+				resolve := ctx.Value(nativeOperatorScopeKey{}).(func(context.Context) (nativeScope, error))
+				issuer, err := resolve(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issuer.project = f.project
+				expires := f.service.config.now().Add(time.Hour)
+				key, err := f.service.createAPITokenFor(ctx, tokenRequest{Name: "confirmation-client", Scope: apiScopeOperator, Issuer: &issuer.credential, KeyScope: apikey.ScopeWrite, ExpiresAt: &expires, ProjectIDs: []string{string(f.project)}, ProjectAccess: hostedProjectsSelected})
+				if err != nil {
+					t.Fatal(err)
+				}
+				credential, _, err := f.service.authenticateAPIToken(ctx, key.Token, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				confirmer := nativeScope{organization: issuer.organization, project: f.project, credential: credential}
+				if issuer.credential.ID == credential.ID || issuer.actor().PrincipalID != confirmer.actor().PrincipalID {
+					t.Fatal("fixture requires distinct credentials for the same principal")
+				}
+				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "cross-credential"}, Title: "Runner checkout deadlocks", Body: "Separate observation", State: "Backlog", Priority: new(1)}
+				raw, err := f.service.createNativeIssueCommand(ctx, issuer, draft)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var challenge duplicateChallenge
+				if err := json.Unmarshal(raw, &challenge); err != nil || challenge.ChallengeToken == "" {
+					t.Fatalf("challenge=%s err=%v", raw, err)
+				}
+				confirmed := draft
+				confirmed.ChallengeToken = challenge.ChallengeToken
+				raw, err = f.service.createNativeIssueCommand(ctx, confirmer, confirmed)
+				if err != nil {
+					t.Fatalf("confirmation: %#v", err)
+				}
+				var created tracker.NativeIssue
+				if err := json.Unmarshal(raw, &created); err != nil || created.WorkItemID == "" {
+					t.Fatalf("created=%s err=%v", raw, err)
+				}
+				for _, replay := range []struct {
+					scope nativeScope
+					input tracker.CreateIssue
+				}{{issuer, draft}, {confirmer, confirmed}} {
+					raw, err := f.service.createNativeIssueCommand(ctx, replay.scope, replay.input)
+					var issue tracker.NativeIssue
+					if err != nil || json.Unmarshal(raw, &issue) != nil || issue.WorkItemID != created.WorkItemID {
+						t.Fatalf("completed replay=%s err=%v", raw, err)
+					}
+				}
+				if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id=?", f.project).Scan(&count); err != nil || count != 4 {
+					t.Fatalf("issue count=%d err=%v", count, err)
+				}
+			})
 		})
 	}
 }
