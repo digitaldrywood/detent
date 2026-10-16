@@ -12,6 +12,9 @@ import type { CollaborationEvent, NativeAttempt } from "../../contracts/work.ts"
 import type { ProjectScript, ThreadId } from "../../contracts/ui.ts";
 import { cn } from "../../lib/utils.ts";
 import { routerBasePath, withoutBasePath } from "../../runtime/basePath.ts";
+import { useClient } from "../client.ts";
+import { conversationHandoff, conversationWebURL } from "../lib/conversationHandoff.ts";
+import { writeTextToClipboard } from "../../hooks/useCopyToClipboard.ts";
 import { detentKeybindings } from "../adapters/keybindings.ts";
 import {
   HeaderActionsProvider,
@@ -102,6 +105,7 @@ export interface ChatWorkspaceProps {
 }
 
 export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
+  const client = useClient();
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const chatRoute = withoutBasePath(pathname, routerBasePath()).startsWith("/chat");
@@ -202,14 +206,24 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     void navigate({ to: "/work/i/$workItemId", params: { workItemId: props.workItemId } });
   }, [navigate, props.workItemId]);
 
-  const copyLink = React.useCallback(() => {
-    const href = globalThis.location?.href;
-    if (href === undefined) return;
-    void globalThis.navigator?.clipboard
-      ?.writeText(href)
-      .then(() => toastManager.add({ type: "success", title: "Link copied" }))
-      .catch(() => toastManager.add({ type: "error", title: "Could not copy the link" }));
+  const handoff = React.useMemo(() => {
+    if (props.conversationId === null || projectId === null) return null;
+    return {
+      organization_id: client.bootstrap.organization.id,
+      project_id: projectId,
+      conversation_id: props.conversationId,
+      web_url: conversationWebURL(props.conversationId, projectId),
+    };
+  }, [client.bootstrap.organization.id, projectId, props.conversationId]);
+
+  const copyText = React.useCallback((text: string, title: string) => {
+    void writeTextToClipboard(text, "conversation handoff")
+      .then(() => toastManager.add({ type: "success", title }))
+      .catch(() => toastManager.add({ type: "error", title: "Could not copy to clipboard" }));
   }, []);
+  const copyLink = React.useCallback(() => {
+    copyText(handoff?.web_url ?? new URL(globalThis.location.pathname, globalThis.location.origin).href, "Link copied");
+  }, [copyText, handoff]);
 
   const actions = useProjectActions(projectId);
   const conversation = React.useMemo(
@@ -217,8 +231,9 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
       conversationActions({
         canCreateIssue: props.onCreateIssue !== null,
         issueIdentifier: props.issueIdentifier,
+        canCopyConversation: handoff !== null,
       }),
-    [props.onCreateIssue, props.issueIdentifier],
+    [handoff, props.onCreateIssue, props.issueIdentifier],
   );
 
   const onCreateIssueProp = props.onCreateIssue;
@@ -233,9 +248,15 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
           return;
         case "copy-link":
           copyLink();
+          return;
+        case "copy-id":
+          if (handoff !== null) copyText(handoff.conversation_id, "Conversation ID copied");
+          return;
+        case "copy-handoff":
+          if (handoff !== null) copyText(conversationHandoff(handoff), "Local AI handoff copied");
       }
     },
-    [copyLink, onCreateIssueProp, openIssue],
+    [copyLink, copyText, handoff, onCreateIssueProp, openIssue],
   );
 
   const runProjectAction = workspace.runProjectAction;

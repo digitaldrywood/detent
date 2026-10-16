@@ -255,6 +255,12 @@ func TestMCPToolCatalogReadableIssueLinks(t *testing.T) {
 			if _, must := required[tool.Name]; must {
 				required[tool.Name] = true
 			}
+			if tool.Name == "get_conversation" || tool.Name == "list_project_conversations" {
+				want := `"web_url":"http://127.0.0.1:7777/local-organization/chat/c/` + created.Conversation.ID + `?project_id=` + string(f.project) + `"`
+				if !strings.Contains(string(result.Content), want) {
+					t.Fatalf("missing canonical conversation URL: %s", result.Content)
+				}
+			}
 			var content any
 			if err := json.Unmarshal(result.Content, &content); err != nil {
 				t.Fatal(err)

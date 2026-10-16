@@ -2,9 +2,9 @@ import { useCallback } from "react";
 
 import { readLocalApi } from "../localApi.ts";
 import type { ScopedThreadRef } from "../environment/scoped.ts";
-import { toastManager } from "../components/ui/toast.tsx";
+import { useConversationActionsValue, type ProjectActionId } from "../app/adapters/conversationActions.tsx";
 
-type ThreadActionMenuId = "rename" | "copy-link";
+type ThreadActionMenuId = "rename" | ProjectActionId;
 
 export function useThreadActionMenu({
   threadRef,
@@ -14,6 +14,7 @@ export function useThreadActionMenu({
   projectCwd?: string | null;
   onStartRename: () => void;
 }): { openMenu: (at: { x: number; y: number }) => void; closeMenu: () => void } {
+  const { actions, run } = useConversationActionsValue();
   const openMenu = useCallback(
     (at: { x: number; y: number }) => {
       if (threadRef === null) return;
@@ -23,7 +24,9 @@ export function useThreadActionMenu({
         .show<ThreadActionMenuId>(
           [
             { id: "rename", label: "Rename", icon: "pencil" },
-            { id: "copy-link", label: "Copy link", icon: "copy" },
+            ...actions.filter((action) => action.id.startsWith("copy-")).map((action) => ({
+              id: action.id, label: action.name, icon: "copy" as const,
+            })),
           ],
           at,
         )
@@ -32,19 +35,11 @@ export function useThreadActionMenu({
             onStartRename();
             return;
           }
-          if (action === "copy-link") {
-            const href = globalThis.location?.href;
-            if (href === undefined) return;
-            void globalThis.navigator?.clipboard
-              ?.writeText(href)
-              .then(() => toastManager.add({ type: "success", title: "Link copied" }))
-              .catch(() =>
-                toastManager.add({ type: "error", title: "Could not copy the link" }),
-              );
-          }
+          const selected = actions.find((candidate) => candidate.id === action);
+          if (selected !== undefined) run(selected);
         });
     },
-    [onStartRename, threadRef],
+    [actions, onStartRename, run, threadRef],
   );
 
   const closeMenu = useCallback(() => {
