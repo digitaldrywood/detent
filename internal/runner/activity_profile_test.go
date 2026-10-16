@@ -383,22 +383,33 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, test := range []struct {
-			name   string
-			update AgentUpdate
-			writes int
+			name      string
+			update    AgentUpdate
+			writes    int
+			cacheWait string
 		}{
-			{"tool started", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "tool", Tool: "Bash", Command: "go test ./foo"}, 2},
-			{"whole gate receipt", AgentUpdate{Type: AgentUpdateToolOutput, ItemID: "tool", Delta: gate.CheckEvidencePrefix + string(check) + "\n"}, 3},
-			{"unchanged turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 3},
-			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 4},
-			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 5},
-			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 6},
+			{"tool started", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: "tool", Tool: "Bash", Command: "go test ./foo"}, 2, "admission"},
+			{"whole gate receipt", AgentUpdate{Type: AgentUpdateToolOutput, ItemID: "tool", Delta: gate.CheckEvidencePrefix + string(check) + "\n"}, 3, "admission"},
+			{"unchanged turn", AgentUpdate{Type: AgentUpdateTurnStarted}, 3, "admission"},
+			{"tool completed", AgentUpdate{Type: AgentUpdateToolCompleted, ItemID: "tool", Status: "completed"}, 4, ""},
+			{"dropped input", AgentUpdate{Type: AgentUpdateToolStarted, ItemID: strings.Repeat("x", 513)}, 5, ""},
+			{"terminal turn", AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"}, 6, ""},
 		} {
+			recorder.runtimeMu.Lock()
+			recorder.cacheWait = test.cacheWait
+			recorder.runtimeMu.Unlock()
 			recorder.observe(test.update, time.Now(), "", time.Time{})
 			time.Sleep(5 * time.Second)
 			synctest.Wait()
 			if len(probe.profiles) != test.writes || len(execution.observations) != test.writes {
 				t.Fatalf("%s writes: local=%d native=%d, want %d", test.name, len(probe.profiles), len(execution.observations), test.writes)
+			}
+			phase := "implementation"
+			if test.cacheWait != "" {
+				phase = "waiting_cache_" + test.cacheWait
+			}
+			if got := execution.observations[len(execution.observations)-1].Phase; got != phase {
+				t.Fatalf("%s checkpoint phase = %q, want %q", test.name, got, phase)
 			}
 		}
 		recorder.finish()
