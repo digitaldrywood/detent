@@ -208,7 +208,7 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserv
 	if err := i.client.REST(ctx, http.MethodGet, path, nil, &run); err != nil {
 		return hubserver.GitHubImportPage{}, err
 	}
-	if strconv.FormatInt(run.ID, 10) != evidence.RunID || strconv.FormatInt(run.Attempt, 10) != evidence.RunAttempt || !matchesScheduledCIWorkflow(request.Repository, run.Path, run.HeadBranch) || run.HeadSHA != evidence.HeadSHA || !strings.EqualFold(run.Repository.Name, request.Repository) || !strings.EqualFold(run.HeadRepository.Name, request.Repository) || (run.Event != "schedule" && run.Event != "push" && run.Event != "workflow_dispatch") {
+	if strconv.FormatInt(run.ID, 10) != evidence.RunID || strconv.FormatInt(run.Attempt, 10) != evidence.RunAttempt || !matchesScheduledCIWorkflow(request, run.Path, run.HeadBranch) || run.HeadSHA != evidence.HeadSHA || !strings.EqualFold(run.Repository.Name, request.Repository) || !strings.EqualFold(run.HeadRepository.Name, request.Repository) || (run.Event != "schedule" && run.Event != "push" && run.Event != "workflow_dispatch") {
 		return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match the repository CI run attempt")
 	}
 	var jobs struct {
@@ -237,11 +237,18 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request hubserv
 	return hubserver.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
 }
 
-func matchesScheduledCIWorkflow(repository, workflow, branch string) bool {
-	if strings.EqualFold(repository, "getparable/parable") {
-		return workflow == ".github/workflows/ci.yaml" && branch == "dev"
+func matchesScheduledCIWorkflow(request hubserver.GitHubImportRequest, workflow, branch string) bool {
+	expectedWorkflow := request.ScheduledWorkflow
+	if expectedWorkflow == "" {
+		expectedWorkflow = ".github/workflows/ci.yml"
 	}
-	return workflow == ".github/workflows/ci.yml" && (branch == "develop" || strings.HasPrefix(branch, "release/v"))
+	if workflow != expectedWorkflow {
+		return false
+	}
+	if request.ScheduledBranch != "" {
+		return branch == request.ScheduledBranch
+	}
+	return expectedWorkflow == ".github/workflows/ci.yml" && (branch == "develop" || strings.HasPrefix(branch, "release/v"))
 }
 
 func (i *Importer) fetchBatch(ctx context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
