@@ -97,7 +97,8 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 					return err
 				}
 			}
-			if err := prepareRunnerIdentity(paths.identity, base, org); err != nil {
+			base, err = prepareRunnerIdentity(paths.identity, base, org)
+			if err != nil {
 				return err
 			}
 			configuration := globalconfig.Config{}
@@ -233,22 +234,29 @@ func runnerGitHubAuthNextSteps(ctx context.Context, cfg globalconfig.Config, ghA
 // prepareRunnerIdentity creates the host identity, or checks that an existing
 // one belongs to this Hub and organization so a retry never sends the new
 // token to another Hub.
-func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) error {
+func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) (string, error) {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		_, err = runnerauth.Initialize(path, base)
-		return err
+		return base, err
 	}
 	file, err := runnerauth.Load(path)
 	if err != nil {
-		return err
-	}
-	if strings.TrimRight(file.HubURL, "/") != base {
-		return fmt.Errorf("%s belongs to the runner for %s; pass --config with another directory to register a separate runner", path, file.HubURL)
+		return "", err
 	}
 	if file.Identity.OrganizationID != "" && file.Identity.OrganizationID != org {
-		return fmt.Errorf("%s belongs to a runner in %s; pass --config with another directory to register a separate runner", path, file.Identity.OrganizationID)
+		return "", fmt.Errorf("%s belongs to a runner in %s; pass --config with another directory to register a separate runner", path, file.Identity.OrganizationID)
 	}
-	return nil
+	if !runnerHubMatches(file.HubURL, base, org) {
+		return "", fmt.Errorf("%s belongs to the runner for %s; pass --config with another directory to register a separate runner", path, file.HubURL)
+	}
+	return file.HubURL, nil
+}
+
+func runnerHubMatches(have, want string, org tracker.OrganizationID) bool {
+	haveBase, _, haveErr := runnerHubTarget(have, string(org))
+	wantBase, _, wantErr := runnerHubTarget(want, string(org))
+	suffix := "/organizations/" + string(org)
+	return haveErr == nil && wantErr == nil && strings.TrimSuffix(haveBase, suffix) == strings.TrimSuffix(wantBase, suffix)
 }
 
 func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) bool {
@@ -278,10 +286,10 @@ func existingRunnerConfigMatches(path string, want runnerConfigFile) error {
 		return fmt.Errorf("%s exists but its %s does not match this runner; move it aside and run register again, or pass --config with another path", path, what)
 	}
 	switch {
-	case strings.TrimRight(have.Client.HubURL, "/") != want.Client.HubURL:
-		return mismatch("client.hub_url")
 	case have.Client.OrganizationID != want.Client.OrganizationID:
 		return mismatch("client.organization_id")
+	case !runnerHubMatches(have.Client.HubURL, want.Client.HubURL, tracker.OrganizationID(want.Client.OrganizationID)):
+		return mismatch("client.hub_url")
 	case have.Client.IdentityFile != want.Client.IdentityFile:
 		return mismatch("client.identity_file")
 	}
