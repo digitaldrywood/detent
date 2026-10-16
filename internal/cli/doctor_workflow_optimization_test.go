@@ -2065,15 +2065,31 @@ tracker:
   kind: memory
   local_sqlite:
     project_id: detent-local
-  active_states:
-    - Todo
-    - In Progress
-    - Rework
-    - Merging
-  observed_states:
-    - Backlog
-    - Human Review
-    - Blocked
+  lanes:
+    - name: Backlog
+      role: holding
+    - name: Human Review
+      role: holding
+    - name: Blocked
+      role: holding
+    - name: Todo
+      role: active
+    - name: In Progress
+      role: active
+    - name: Rework
+      role: active
+    - name: Merging
+      role: active
+    - name: Closed
+      role: terminal
+    - name: Cancelled
+      role: terminal
+    - name: Canceled
+      role: terminal
+    - name: Duplicate
+      role: terminal
+    - name: Done
+      role: terminal
 polling:
   interval_ms: 60000
 budget:

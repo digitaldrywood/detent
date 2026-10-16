@@ -2206,9 +2206,7 @@ func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
 	content := `---
 tracker:
   kind: memory
-  observed_states: [Backlog, Blocked]
-  active_states: [Ready, Doing]
-  terminal_states: [Done]
+  lanes: [{name: Backlog, role: holding}, {name: Blocked, role: holding}, {name: Ready, role: active}, {name: Doing, role: active}, {name: Done, role: terminal}]
 server:
   kanban:
     mode: ` + mode + `
