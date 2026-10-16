@@ -40,7 +40,7 @@ export function SpritePoolCard({ projectId, canManage, compact = false, attentio
   }, [pool.value, readOnly]);
 
   async function reload(): Promise<void> {
-    setError(null);
+    setError((current) => current?.status === 403 ? current : null);
     await Promise.all([pool.refresh(), token.refresh()]);
   }
 
