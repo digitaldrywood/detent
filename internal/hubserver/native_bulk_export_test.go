@@ -92,10 +92,10 @@ func TestHostedNativeBulkExportLargeItem(t *testing.T) {
 
 func TestNativeBulkExportItemFailure(t *testing.T) {
 	for _, test := range []struct {
-		name, body, actor, cause string
+		name, body, actor, cause, step string
 	}{
-		{"malformed comment", "Private discussion", "[]", "cannot unmarshal array"},
-		{"oversized item", strings.Repeat("Private discussion ", operatortool.WorkBulkExportMaxBytes/19+1), "{}", "operator tool result exceeds"},
+		{"malformed comment", "Private discussion", "[]", "cannot unmarshal array", "read comment"},
+		{"oversized item", strings.Repeat("Private discussion ", operatortool.WorkBulkExportMaxBytes/19+1), "{}", "operator tool result exceeds", "encode item"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "export-item-failure")
@@ -132,6 +132,7 @@ func TestNativeBulkExportItemFailure(t *testing.T) {
 					}
 					var failure struct {
 						Code       string `json:"code"`
+						Message    string `json:"message"`
 						WorkItemID string `json:"work_item_id"`
 					}
 					if err := json.Unmarshal(raw, &failure); err != nil {
@@ -139,6 +140,9 @@ func TestNativeBulkExportItemFailure(t *testing.T) {
 					}
 					if failure.Code != "bulk_export_item_failed" || failure.WorkItemID != string(item.WorkItemID) || strings.Contains(string(raw), "Private discussion") {
 						t.Fatalf("export failure lost item identity: %s", raw)
+					}
+					if !strings.HasPrefix(failure.Message, "Work item could not be exported: "+test.step) || strings.Contains(failure.Message, test.cause) {
+						t.Fatalf("export failure lost safe step: %s", raw)
 					}
 					var entry struct {
 						Error string `json:"error"`

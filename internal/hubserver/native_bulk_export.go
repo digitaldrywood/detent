@@ -110,5 +110,5 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 }
 
 func bulkExportItemFailure(id, step string, err error) error {
-	return &operatortool.WorkBulkExportItemError{Code: "bulk_export_item_failed", Message: "Work item could not be exported", WorkItemID: id, Err: fmt.Errorf("%s: %w", step, err)}
+	return &operatortool.WorkBulkExportItemError{Code: "bulk_export_item_failed", Message: "Work item could not be exported: " + step, WorkItemID: id, Err: fmt.Errorf("%s: %w", step, err)}
 }
