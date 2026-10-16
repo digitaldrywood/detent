@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -108,11 +107,6 @@ type hostedReportsReport struct {
 // several projects combine exactly.
 type reportsRatio struct{ part, total int }
 
-const (
-	reportsProjectWorkers  = 4
-	reportsAllProjectsTime = 2 * hubReadTimeout
-)
-
 // reportsReadableProjects is the projects a report may read: the
 // credential's granted projects that also pass the read authorization, all
 // of them for `all` or the one requested.
@@ -158,15 +152,25 @@ func (s *Service) hostedReports(c echo.Context) error {
 	if compare != "" && compare != "prior" && compare != "off" {
 		return s.nativeAPIError(c, nativeInvalid("compare must be prior or off"))
 	}
-	var report hostedReportsReport
 	if project == reportsAllProjects {
-		report, err = s.readOrganizationReport(ctx, credential, selected, w, filter)
-	} else {
-		var readable bool
-		report, readable, err = s.readProjectReport(ctx, credential, project, w, filter)
-		if err == nil && !readable {
-			err = errors.New("project report not readable")
+		if !w.From.Equal(w.From.Truncate(time.Hour)) || !w.To.Equal(w.To.Truncate(time.Hour)) {
+			return s.nativeAPIError(c, nativeInvalid("Organization report windows use complete UTC hours"))
 		}
+		projectFilter := reportsQueryValues(params, "projects")
+		if len(projectFilter) > reportsMaxFilterValues || len(strings.Join(projectFilter, "\x00")) > 4096 {
+			return s.nativeAPIError(c, nativeInvalid("Report project filter accepts at most 32 values"))
+		}
+		selected = filterProductivityProjects(selected, projectFilter)
+		report, err := s.readOrganizationProductivity(ctx, selected, w, filter)
+		if err != nil {
+			s.config.Logger.Warn("read organization reports", "error", err)
+			return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
+		}
+		return c.JSON(http.StatusOK, report)
+	}
+	report, readable, err := s.readProjectReport(ctx, credential, project, w, filter)
+	if err == nil && !readable {
+		err = errors.New("project report not readable")
 	}
 	if err != nil {
 		s.config.Logger.Warn("read reports", "project", project, "error", err)
@@ -176,40 +180,6 @@ func (s *Service) hostedReports(c echo.Context) error {
 		report = withoutPriorPeriod(report)
 	}
 	return c.JSON(http.StatusOK, report)
-}
-
-// readOrganizationReport reads every project's report, a few at a time under
-// one deadline, and combines them into organization totals.
-func (s *Service) readOrganizationReport(ctx context.Context, credential apiCredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, reportsAllProjectsTime)
-	defer cancel()
-	reports := make([]hostedReportsReport, len(projects))
-	readable := make([]bool, len(projects))
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(reportsProjectWorkers)
-	for i, id := range projects {
-		group.Go(func() error {
-			report, ok, err := s.readProjectReport(groupCtx, credential, id, w, filter)
-			if err != nil {
-				return fmt.Errorf("read project %s: %w", id, err)
-			}
-			reports[i], readable[i] = report, ok
-			return nil
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return hostedReportsReport{}, err
-	}
-	read := make([]hostedReportsReport, 0, len(reports))
-	for i, report := range reports {
-		if readable[i] {
-			read = append(read, report)
-		}
-	}
-	if len(read) == 0 {
-		return hostedReportsReport{}, errors.New("no project report readable")
-	}
-	return mergeHostedReports(read, w), nil
 }
 
 // hostedReportOptions lists the values the filter chips offer, read only
