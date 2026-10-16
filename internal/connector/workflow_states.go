@@ -27,7 +27,13 @@ type WorkflowStateReader interface {
 // applied, since an approval or a check can arrive between the publish and
 // the completion moving the item.
 type ChangeReviewReader interface {
-	ChangeReviewed(ctx context.Context, issueID, changeID, versionID string) (bool, error)
+	ReadChangeReview(ctx context.Context, issueID, changeID, versionID, headSHA string) (ChangeReview, error)
+}
+
+type ChangeReview struct {
+	Current          bool
+	Reviewed         bool
+	ChangesRequested bool
 }
 
 // CompletionLane is the lane a successful run moves an item to, chosen only
