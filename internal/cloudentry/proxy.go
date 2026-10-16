@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -506,6 +507,14 @@ func (s *Service) signedCallCSRF(ctx context.Context, organization Organization,
 	limit := int64(tenantCallResponseLimit)
 	if claims.Path == "/internal/v1/keys/catalog" || claims.Path == "/internal/v1/keys/call" {
 		limit = mcp.MaxHTTPResponseBytes
+	}
+	if claims.Path == "/internal/v1/keys/call" {
+		var call struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(body, &call) == nil {
+			limit = max(limit, int64(operatortool.ResultByteLimit(call.Name)))
+		}
 	}
 	if claims.Path == "/internal/v1/diff-bodies/batch" {
 		limit = 6*tracker.MaxDiffPatchBytes + (1 << 20)
