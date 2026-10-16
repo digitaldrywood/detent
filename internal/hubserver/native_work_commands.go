@@ -430,16 +430,26 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		if comment.Actor.PrincipalID != scope.credential.ID && scope.credential.Scope == apiScopeWorker {
 			return nil, nativeNotFound()
 		}
+		if scope.credential.Hosted != nil && comment.Actor.PrincipalID != scope.actor().PrincipalID {
+			return nil, operatortool.ErrAccessDenied
+		}
 		if request.ExpectedRevision <= 0 {
 			return nil, nativeInvalid("Expected revision must be positive")
 		}
 		if comment.Revision != request.ExpectedRevision {
 			return nil, nativeConflict(comment.Revision)
 		}
-		if strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10 {
+		if comment.Deleted {
+			return nil, nativeInvalid("Deleted comments cannot be changed")
+		}
+		if !request.Deleted && (strings.TrimSpace(request.Body) == "" || len(request.Body) > 64<<10) {
 			return nil, nativeInvalid("Comment body must contain 1 byte to 64 KiB")
 		}
 		comment.Body = request.Body
+		comment.Deleted = request.Deleted
+		if comment.Deleted {
+			comment.Body = ""
+		}
 		comment.Revision++
 		comment.UpdatedAt = now
 		editor := scope.actor()
@@ -448,7 +458,7 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?, updated_at = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, formatHubTime(now), scope.organization, scope.project, comment.WorkItemID, comment.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?, updated_at = ?, deleted = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, formatHubTime(now), comment.Deleted, scope.organization, scope.project, comment.WorkItemID, comment.ID)
 		if err != nil {
 			return nil, err
 		}

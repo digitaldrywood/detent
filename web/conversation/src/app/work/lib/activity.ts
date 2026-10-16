@@ -48,6 +48,10 @@ export interface ActivityComment {
   readonly body: string;
   readonly actor: string;
   readonly at: string;
+  readonly revision?: string;
+  readonly own?: boolean;
+  readonly edited?: boolean;
+  readonly deleted?: boolean;
 }
 
 export interface ActivityRow {
@@ -320,6 +324,10 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
         body: comment.body,
         actor: actorLabel(comment.actor, input.viewerPrincipalId, runner, input.runnerNames),
         at: comment.created_at,
+        revision: comment.revision,
+        own: comment.actor.kind === "human" && comment.actor.principal_id === input.viewerPrincipalId,
+        edited: comment.edited_by !== undefined,
+        deleted: comment.deleted === true,
       },
     });
   }

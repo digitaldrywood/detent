@@ -16,9 +16,9 @@ func readNativeComment(ctx context.Context, query nativeQueryer, scope nativeSco
 	var comment tracker.NativeComment
 	var actor, created, updated string
 	var editor, provenance sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, edited_by_json, provenance_json, created_at, updated_at
+	err := query.QueryRowContext(ctx, `SELECT id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, edited_by_json, provenance_json, created_at, updated_at, deleted
 FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?`, scope.organization, scope.project, itemID, commentID).Scan(
-		&comment.ID, &comment.OrganizationID, &comment.ProjectID, &comment.WorkItemID, &comment.Revision, &comment.Sequence, &comment.Body, &actor, &editor, &provenance, &created, &updated)
+		&comment.ID, &comment.OrganizationID, &comment.ProjectID, &comment.WorkItemID, &comment.Revision, &comment.Sequence, &comment.Body, &actor, &editor, &provenance, &created, &updated, &comment.Deleted)
 	if err != nil {
 		return comment, err
 	}
