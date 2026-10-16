@@ -126,6 +126,10 @@ func (s *Service) nativeAPIError(c echo.Context, err error) error {
 	if errors.Is(err, tracker.ErrLeaseConflict) || errors.Is(err, tracker.ErrStaleFencingToken) || errors.Is(err, tracker.ErrLeaseNotFound) || errors.Is(err, tracker.ErrMachineNotFound) || errors.Is(err, tracker.ErrWorkItemNotFound) || errors.Is(err, ErrNoClaimableWork) {
 		return trackerAPIError(c, err)
 	}
+	var request *operatortool.RequestError
+	if errors.As(err, &request) {
+		return c.JSON(http.StatusUnprocessableEntity, request)
+	}
 	return s.internalAPIError(c, "native_operation_failed", "Native operation could not be completed", err)
 }
 
