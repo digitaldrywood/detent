@@ -87,6 +87,37 @@ func (m *Managed) Use(ctx context.Context) (context.Context, func() error, error
 	return context.WithValue(ctx, managedContextKey{}, m), usage.Close, nil
 }
 
+func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (report Report, err error) {
+	defer func() {
+		if err != nil {
+			report.Error = err.Error()
+		}
+	}()
+	report, err = TrimWithReport(ctx, m.root, policy, now)
+	if err != nil {
+		return report, err
+	}
+	capacity, capacityErr := CapacityBytes(m.root)
+	if capacityErr != nil {
+		capacity = 0
+	}
+	if report.RetainedBytes <= policy.NormalizedForCapacity(capacity).MaxBytes {
+		return report, nil
+	}
+	queue, err := m.lock(ctx, "admission", false)
+	if err != nil {
+		return report, err
+	}
+	defer func() { err = errors.Join(err, queue.Close()) }()
+	usage, err := m.lock(ctx, "consumers", false)
+	if err != nil {
+		return report, err
+	}
+	defer func() { err = errors.Join(err, usage.Close()) }()
+	_, err = trim(ctx, m.root, policy, now, &report, true)
+	return report, err
+}
+
 func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
