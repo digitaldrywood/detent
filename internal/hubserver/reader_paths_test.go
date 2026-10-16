@@ -374,6 +374,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"maintainNativeRetention":           "Deletes expired native records on the existing maintenance tick.",
 		"backfillAnalyticsRollups":          "Projects one bounded batch of a project's work items and their positions on the existing maintenance tick.",
 		"drainAnalyticsDirty":               "Projects one bounded batch of deferred analytics work items on the existing maintenance tick.",
+		"drainNativeBoardDirty":             "Projects one dirty board card and consumes its marker in one background write transaction.",
 		"retryFailedAnalyticsRollups":       "Reprojects one failed work item and clears its failure mark on the existing maintenance tick.",
 		"executeAttachmentDeletion":         "Records an attachment deletion mutation and replay receipt.",
 		"operatorChatStore.Save":            "Persists and prunes operator chat sessions in their independent store.",
