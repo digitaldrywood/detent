@@ -21,8 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const spriteBootstrapSource = "https://raw.githubusercontent.com/digitaldrywood/detent/a914d42bd00ad7d022673e342eb638ad255079c1/scripts/sprite-runner-bootstrap.sh"
-
 func spriteShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
@@ -198,6 +196,7 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	if !regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(version) {
 		return nativeInvalid("Sprite provisioning requires a Hub built from a pinned release")
 	}
+	bootstrapSource := "https://raw.githubusercontent.com/digitaldrywood/detent/" + version + "/scripts/sprite-runner-bootstrap.sh"
 	body, err := json.Marshal(struct {
 		Name string `json:"name"`
 	}{Name: member.Name})
@@ -236,7 +235,7 @@ trap 'rm -f -- "$bootstrap"' EXIT
 curl --fail --silent --show-error --location %s --output "$bootstrap" >/dev/null 2>&1
 printf '%%s\n' %s | bash "$bootstrap" --version %s >/dev/null 2>&1
 printf "Runner bootstrap completed\n"
-`, spriteShellQuote(string(scope.organization)), spriteShellQuote(s.config.Hosted.PublicURL), settings.Bootstrap, spriteShellQuote(spriteBootstrapSource), spriteShellQuote(command), spriteShellQuote(version))
+`, spriteShellQuote(string(scope.organization)), spriteShellQuote(s.config.Hosted.PublicURL), settings.Bootstrap, spriteShellQuote(bootstrapSource), spriteShellQuote(command), spriteShellQuote(version))
 	log, execErr := s.execPoolSprite(ctx, scope, member.Name, []byte(script))
 	if execErr != nil {
 		log += "Bootstrap did not complete\n"
