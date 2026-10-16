@@ -50,7 +50,7 @@ func TestHostedNativeBulkExportLargeItem(t *testing.T) {
 	}
 	expected := map[tracker.NativeWorkItemID]discussion{}
 	for index, shape := range shapes {
-		response := f.request(t, f.user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-export-%d", index)}, Title: fmt.Sprintf("Export item %d", index), State: "Todo"})
+		response := f.request(t, f.user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("large-export-%d", index)}, Title: fmt.Sprintf("Export item %d", index), Body: issueContractTestSections, State: "Todo"})
 		requireNativeStatus(t, response, http.StatusOK)
 		var issue tracker.NativeIssue
 		decodeHubResponse(t, response, &issue)
