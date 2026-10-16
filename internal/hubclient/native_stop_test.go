@@ -65,7 +65,7 @@ func TestNativeStopDuringHostFinalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	published := h.publish(t, current.WorkItemID, change.ID, strings.Repeat("e", 40))
+	published := h.publish(t, current.WorkItemID, change.ID, nativeChangeFixtureHead("b"))
 	source := nativeChangeSourceRepo(t)
 	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
