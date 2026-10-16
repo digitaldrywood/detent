@@ -29,33 +29,51 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 	const token = "isolated-scheduled-import-administrator-token"
 	const secret = "isolated-scheduled-import-webhook-secret"
 	const criteria = "## Acceptance criteria\nReproduce and minimally repair.\n\n## Must not break\nPreserve intended behavior.\n\n## How we know it worked\nRun make check-land.\n\n## Invariants touched\nPreserve INV-3 and INV-7.\n\n## Safety regression\nPreserve existing regressions."
-	for _, test := range []struct{ name, workflow, state, sourceRepository, repository, branch, headRepository string }{
-		{"authorized CI", ".github/workflows/ci.yml", "Todo", repository, repository, "develop", repository},
-		{"mixed case source URL", ".github/workflows/ci.yml", "Todo", "Example-Org/Example-Project", repository, "develop", repository},
-		{"authorized release CI", ".github/workflows/ci.yml", "Todo", repository, repository, "release/v1.0", repository},
-		{"other workflow", ".github/workflows/other.yml", "Triage", repository, repository, "develop", repository},
-		{"authorized alternate CI", ".github/workflows/ci.yaml", "Todo", "getparable/parable", "getparable/parable", "dev", "getparable/parable"},
-		{"alternate CI mixed case repository", ".github/workflows/ci.yaml", "Todo", "GetParable/Parable", "getparable/parable", "dev", "getparable/parable"},
-		{"alternate CI wrong workflow", ".github/workflows/ci.yml", "Triage", "getparable/parable", "getparable/parable", "dev", "getparable/parable"},
-		{"alternate CI arbitrary workflow", ".github/workflows/other.yaml", "Triage", "getparable/parable", "getparable/parable", "dev", "getparable/parable"},
-		{"alternate CI legacy workflow and branch", ".github/workflows/ci.yml", "Triage", "getparable/parable", "getparable/parable", "develop", "getparable/parable"},
-		{"alternate CI wrong branch", ".github/workflows/ci.yaml", "Triage", "getparable/parable", "getparable/parable", "develop", "getparable/parable"},
-		{"alternate CI release branch", ".github/workflows/ci.yaml", "Triage", "getparable/parable", "getparable/parable", "release/v1.0", "getparable/parable"},
-		{"alternate CI feature branch", ".github/workflows/ci.yaml", "Triage", "getparable/parable", "getparable/parable", "feature/repair", "getparable/parable"},
-		{"alternate CI fork", ".github/workflows/ci.yaml", "Triage", "getparable/parable", "getparable/parable", "dev", "example-org/example-fork"},
-		{"default CI wrong branch", ".github/workflows/ci.yml", "Triage", repository, repository, "dev", repository},
-		{"alternate CI wrong repository", ".github/workflows/ci.yaml", "Triage", repository, repository, "dev", repository},
+	const alternate = "New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority."
+	for _, test := range []struct {
+		name, workflow, branch, state, delegation, sourceRepository, headRepository, runRepository string
+		reportIdentity                                                                             bool
+	}{
+		{name: "authorized CI", workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo"},
+		{name: "mixed case source URL", workflow: ".github/workflows/ci.yml", branch: "develop", state: "Todo", sourceRepository: "Example-Org/Example-Project"},
+		{name: "authorized release CI", workflow: ".github/workflows/ci.yml", branch: "release/v1.0", state: "Todo"},
+		{name: "other workflow", workflow: ".github/workflows/other.yml", branch: "develop", state: "Triage"},
+		{name: "authorized alternate CI", workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Todo", delegation: alternate},
+		{name: "alternate CI mixed case repository", workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Todo", delegation: alternate, sourceRepository: "Example-Org/Example-Project"},
+		{name: "alternate CI without approved identity", workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Triage"},
+		{name: "report identity does not authorize", workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Triage", reportIdentity: true},
+		{name: "alternate CI wrong workflow", workflow: ".github/workflows/ci.yml", branch: "dev", state: "Triage", delegation: alternate},
+		{name: "alternate CI arbitrary workflow", workflow: ".github/workflows/other.yaml", branch: "dev", state: "Triage", delegation: alternate},
+		{name: "alternate CI legacy workflow and branch", workflow: ".github/workflows/ci.yml", branch: "develop", state: "Triage", delegation: alternate},
+		{name: "alternate CI wrong branch", workflow: ".github/workflows/ci.yaml", branch: "develop", state: "Triage", delegation: alternate},
+		{name: "alternate CI release branch", workflow: ".github/workflows/ci.yaml", branch: "release/v1.0", state: "Triage", delegation: alternate},
+		{name: "alternate CI feature branch", workflow: ".github/workflows/ci.yaml", branch: "feature/repair", state: "Triage", delegation: alternate},
+		{name: "alternate CI fork", workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Triage", delegation: alternate, headRepository: "example-org/example-fork"},
+		{name: "alternate CI wrong repository", workflow: ".github/workflows/ci.yaml", branch: "dev", state: "Triage", delegation: alternate, runRepository: "example-org/other-project"},
+		{name: "default CI wrong branch", workflow: ".github/workflows/ci.yml", branch: "dev", state: "Triage"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repository := test.repository
+			sourceRepository, headRepository, runRepository := repository, repository, repository
+			if test.sourceRepository != "" {
+				sourceRepository = test.sourceRepository
+			}
+			if test.headRepository != "" {
+				headRepository = test.headRepository
+			}
+			if test.runRepository != "" {
+				runRepository = test.runRepository
+			}
 			owner, name, _ := strings.Cut(repository, "/")
 			sha := strings.Repeat("a", 40)
 			evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: strings.Repeat("b", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Verify", RunURL: "https://github.com/" + repository + "/actions/runs/123/attempts/1", JobURL: "https://github.com/" + repository + "/actions/jobs/456", HeadSHA: sha, Conclusion: "failure"}
 			body := issueorigin.Stamp(criteria+"\n\n## Diagnostic evidence\nExpected a healthy worker; got cancellation.", issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: evidence.RunURL, Fingerprint: "scheduled-verify"}) + evidence.Stamp()
+			if test.reportIdentity {
+				body += "\n" + alternate
+			}
 			path := "/repos/" + repository + "/actions/runs/123/attempts/1"
 			client := &scriptedRESTClient{t: t, steps: []restStep{
 				{method: http.MethodGet, path: "/repos/" + repository, response: map[string]any{"id": 1, "node_id": "R_example", "name": name, "owner": map[string]string{"login": owner}, "updated_at": "2026-10-01T00:00:00Z"}},
-				{method: http.MethodGet, path: path, response: map[string]any{"id": 123, "run_attempt": 1, "path": test.workflow, "head_sha": sha, "head_branch": test.branch, "event": "schedule", "repository": map[string]string{"full_name": repository}, "head_repository": map[string]string{"full_name": test.headRepository}}},
+				{method: http.MethodGet, path: path, response: map[string]any{"id": 123, "run_attempt": 1, "path": test.workflow, "head_sha": sha, "head_branch": test.branch, "event": "schedule", "repository": map[string]string{"full_name": runRepository}, "head_repository": map[string]string{"full_name": headRepository}}},
 			}}
 			if test.state == "Todo" {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
@@ -101,7 +119,11 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			api(http.MethodPost, base, map[string]any{"idempotency_key": "project", "name": "Scheduled import fixture", "states": []tracker.NativeState{{Name: "Backlog"}, {Name: "Todo", Dispatchable: true}, {Name: "Done", Terminal: true}}}, &project)
 			base += "/" + string(project.ID)
 			api(http.MethodPost, base+"/integration/repository", map[string]string{"idempotency_key": "bind", "expected_revision": "1", "repository": repository}, nil)
-			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte("## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n\n## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n" + strings.ReplaceAll(criteria, "## ", "### ")), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Todo, role: active}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
+			delegation := test.delegation
+			if delegation == "" {
+				delegation = "New verified GitHub Actions CI repair reports enter Todo with Urgent priority."
+			}
+			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{Workflow: []byte("## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n\n## Scheduled CI repair contract\n" + delegation + "\n" + strings.ReplaceAll(criteria, "## ", "### ")), Config: []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: " + repository + "\n  lanes:\n    - {name: Backlog, role: holding}\n    - {name: Blocked, role: holding}\n    - {name: Todo, role: active}\n    - {name: Done, role: terminal}\n"), HasConfig: true, ConfigPath: "detent.yaml"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -111,7 +133,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				t.Fatal(err)
 			}
 			api(http.MethodPut, base+"/policy", policy.Change{Policy: descriptor}, nil)
-			payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": name, "full_name": repository, "owner": map[string]string{"login": owner}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + test.sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
+			payload, err := json.Marshal(map[string]any{"action": "opened", "repository": map[string]any{"node_id": "R_example", "name": name, "full_name": repository, "owner": map[string]string{"login": owner}}, "issue": map[string]any{"node_id": "I_report", "number": 12, "title": "Scheduled Verify failure", "body": body, "html_url": "https://github.com/" + sourceRepository + "/issues/12", "state": "open", "user": map[string]string{"login": "github-actions[bot]"}, "labels": []map[string]string{{"name": "hotfix"}, {"name": "detent:todo"}}, "assignees": []string{}, "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -114,15 +114,28 @@ func (c IssueContract) ScheduledRepairBody() string {
 }
 
 func (c IssueContract) ScheduledImportBody() string {
-	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
-	if err != nil {
-		return ""
-	}
-	preamble, _, _ := strings.Cut(template, "### ")
-	if strings.TrimSpace(preamble) != "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." {
+	if _, _, authorized := c.ScheduledImportWorkflow(); !authorized {
 		return ""
 	}
 	return c.ScheduledRepairBody()
+}
+
+var scheduledImportWorkflow = regexp.MustCompile("^New verified GitHub Actions CI repair reports from `(\\.github/workflows/[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.ya?ml)` on `([A-Za-z0-9_][A-Za-z0-9_./-]*)` enter Todo with Urgent priority\\.$")
+
+func (c IssueContract) ScheduledImportWorkflow() (string, string, bool) {
+	_, template, err := resolveAdmissionSection(c.Context, "Scheduled CI repair contract", "scheduled repair", BacklogAdmissionEffortFileWorkflow)
+	if err != nil {
+		return "", "", false
+	}
+	preamble, _, _ := strings.Cut(template, "### ")
+	preamble = strings.TrimSpace(preamble)
+	if preamble == "New verified GitHub Actions CI repair reports enter Todo with Urgent priority." {
+		return ".github/workflows/ci.yml", "", true
+	}
+	if match := scheduledImportWorkflow.FindStringSubmatch(preamble); len(match) > 0 {
+		return match[1], match[2], true
+	}
+	return "", "", false
 }
 
 func IssueContractSectionDigests(body string) map[string]string {
