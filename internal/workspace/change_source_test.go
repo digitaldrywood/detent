@@ -46,8 +46,21 @@ func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
 			if len(capture.Bundle) >= 2*len(data) {
 				t.Fatalf("repeated blob revisions were not compressed: bundle bytes=%d", len(capture.Bundle))
 			}
-			if err := VerifyChangeSource(t.Context(), capture.Source, capture.Bundle); err != nil {
-				t.Fatalf("captured pack cannot be verified without repository objects: %v", err)
+			restored := t.TempDir()
+			runGit(t, restored, "init")
+			runGit(t, restored, "fetch", source, base)
+			bundle := filepath.Join(t.TempDir(), "source.bundle")
+			if err := os.WriteFile(bundle, capture.Bundle, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, restored, "fetch", bundle, "HEAD")
+			runGit(t, restored, "checkout", "--detach", head)
+			got, err := os.ReadFile(filepath.Join(restored, "blob.bin"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatal("restored bundle changed the reviewed blob")
 			}
 		})
 	}
