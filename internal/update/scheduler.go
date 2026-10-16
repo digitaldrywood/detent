@@ -296,7 +296,7 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		persistErr := s.recordCheckFailure(checkedAt, err)
 		return checked, fmt.Errorf("check for Detent update: %w", errors.Join(err, persistErr))
 	}
-	if !checked.UpdateAvailable {
+	if !checked.UpdateAvailable && !checked.RepairAvailable {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "up_to_date"
 			status.LastCheckAt = &checkedAt
