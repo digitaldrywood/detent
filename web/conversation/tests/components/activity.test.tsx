@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 //
 // The issue page's activity feed: the merge, the fold and what the rows draw.
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import attemptsFixture from "../../src/contracts/fixtures/work-attempt-list.json";
 import commentsFixture from "../../src/contracts/fixtures/work-comment-list.json";
@@ -23,8 +23,13 @@ import {
 } from "../../src/app/work/lib/activity.ts";
 import { useActivityCitation } from "../../src/app/work/lib/useActivityCitation.ts";
 import { ActivityFeed, LiveRow } from "../../src/app/work/components/ActivityFeed.tsx";
+import { ClientContext } from "../../src/app/client.ts";
+import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 
-afterEach(cleanup);
+beforeEach(() => {
+  if (typeof globalThis.PointerEvent === "undefined") vi.stubGlobal("PointerEvent", globalThis.MouseEvent);
+});
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const HISTORY = (historyFixture as { items: unknown[] }).items as unknown as CollaborationEvent[];
 const ATTEMPTS = (attemptsFixture as { items: unknown[] }).items as unknown as NativeAttempt[];
@@ -222,6 +227,14 @@ describe("the fold", () => {
 });
 
 describe("the feed", () => {
+  async function openCommentAction(user: ReturnType<typeof userEvent.setup>, action: "Edit" | "Delete") {
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Comment actions" }));
+    await user.keyboard("{Enter}");
+    await user.keyboard(action === "Edit" ? "{Home}" : "{End}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: action }));
+    await user.keyboard("{Enter}");
+  }
+
   function commentRows() {
     return mergeActivity({ history: [], attempts: [], conversation: null, viewerPrincipalId: "viewer", comments: [
       { ...COMMENTS[0]!, comment_id: "own", actor: { kind: "human", principal_id: "viewer" }, edited_by: undefined, body: "Original comment", revision: "1" },
@@ -229,59 +242,104 @@ describe("the feed", () => {
     ] });
   }
 
-  it("edits only owned comments, cancels drafts, and keeps a failed edit for saving", async () => {
+  it("edits only owned comments by keyboard, cancels drafts, keeps failed edits, and returns focus", async () => {
     const user = userEvent.setup();
     const rows = commentRows();
     const onChange = vi.fn().mockRejectedValueOnce(new Error("Save unavailable")).mockResolvedValueOnce(undefined);
     const view = render(<ActivityFeed rows={rows} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
     expect(screen.getAllByRole("button", { name: "Comment actions" })).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+    await user.tab();
+    await openCommentAction(user, "Edit");
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Edit comment" }));
     expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Original comment");
-    await user.type(screen.getByRole("textbox", { name: "Edit comment" }), " cancelled");
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.keyboard(" cancelled");
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Attach files" }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save" }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    await user.keyboard("{Enter}");
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText("Original comment")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Edit" }));
-    await user.clear(screen.getByRole("textbox", { name: "Edit comment" }));
-    await user.type(screen.getByRole("textbox", { name: "Edit comment" }), "Corrected comment");
+    await openCommentAction(user, "Edit");
+    await user.keyboard("{Control>}a{/Control}Corrected comment");
     view.rerender(<ActivityFeed rows={rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, revision: "2" } } : entry)} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save" }));
+    await user.keyboard("{Enter}");
     expect((await screen.findByRole("alert")).textContent).toContain("Save unavailable");
     expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Corrected comment");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save" }));
+    await user.keyboard("{Enter}");
     expect(onChange).toHaveBeenLastCalledWith(rows[0]!.comment, "Corrected comment", false);
     const edited = rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "Corrected comment", edited: true } } : entry);
     view.rerender(<ActivityFeed rows={edited} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
     expect(await screen.findByText("Corrected comment")).toBeTruthy();
     expect(screen.getByText(/· edited/)).toBeTruthy();
     expect(screen.getByText("Another user's reply")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Comment actions" })));
   });
 
-  it("confirms deletion, preserves the comment on cancellation or failure, and keeps later replies", async () => {
+  it("confirms deletion by keyboard, preserves cancelled or failed deletes, keeps later replies, and returns focus", async () => {
     const user = userEvent.setup();
     const rows = commentRows();
     const onChange = vi.fn().mockRejectedValueOnce(new Error("Delete unavailable")).mockResolvedValueOnce(undefined);
     const props = { rows, live: null, liveAt: Infinity, onReply: null, posting: false, onChangeComment: onChange };
     const view = render(<ActivityFeed {...props} />);
-    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    await user.tab();
+    await openCommentAction(user, "Delete");
+    await waitFor(() => expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" })));
+    await user.tab();
+    expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+    await user.keyboard("{Enter}");
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText("Original comment")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Comment actions" })));
+    await openCommentAction(user, "Delete");
+    await waitFor(() => expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" })));
+    await user.tab();
+    await user.keyboard("{Enter}");
     expect((await screen.findByRole("alert")).textContent).toContain("Delete unavailable");
     expect(screen.getByText("Original comment")).toBeTruthy();
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+    await user.keyboard("{Enter}");
     expect(onChange).toHaveBeenLastCalledWith(rows[0]!.comment, "", true);
     view.rerender(<ActivityFeed {...props} rows={rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "", deleted: true } } : entry)} />);
     expect(await screen.findByText("This comment was deleted")).toBeTruthy();
     expect(screen.queryByText("Original comment")).toBeNull();
     expect(screen.getByText("Another user's reply")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Comment actions" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByText("This comment was deleted").closest("article")));
+  });
+
+  it("allows deletion after cancelling an edit with an attachment upload still pending", async () => {
+    const user = userEvent.setup();
+    let finishUpload: (response: Response) => void = () => {};
+    const upload = new Promise<Response>((resolve) => { finishUpload = resolve; });
+    const fetch = vi.spyOn(globalThis, "fetch").mockReturnValue(upload);
+    const onChange = vi.fn().mockResolvedValue(undefined);
+    const rows = commentRows();
+    const client = { http: { origin: "http://example.test", apiBase: "/api/v2/organizations/org_example", csrfToken: "example" } } as ConversationClient;
+    render(<ClientContext.Provider value={client}><ActivityFeed projectId="prj_example" rows={rows} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} /></ClientContext.Provider>);
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Edit" }));
+      await user.upload(screen.getByTestId("attachment-input"), new File(["sample"], "sample.txt", { type: "text/plain" }));
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.getByText("Original comment")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Comment actions" }));
+      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
+      await waitFor(() => expect(onChange).toHaveBeenCalledWith(rows[0]!.comment, "", true));
+    } finally {
+      await act(async () => finishUpload(Response.json({ id: "att_example", project_id: "prj_example", name: "sample.txt", content_type: "text/plain", size: 6, width: 0, height: 0 })));
+    }
   });
 
   it("draws one line per event and a card with a reply for a comment", () => {
