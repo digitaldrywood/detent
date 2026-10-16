@@ -271,7 +271,13 @@ members are set in Organization.
 
 Retry `register` with the same configuration directory: it reuses the identity
 it generated, never creates a second runner, and never rewrites an existing
-`global.yaml`. Do not copy an enrolled identity file to another machine. The
+`global.yaml`. Enrolled runners reject unknown configuration keys at startup and
+name their full paths, including nested machine settings. Before upgrading an
+existing runner, remove `projects`, `weight`, `priority`, `scheduling`,
+`fair_share`, `global.agents.model_selection`, `client.native_projects` and other
+local project policy defaults. The warning-and-ignore transition has ended;
+leaving these keys in place prevents startup. Cloud owns project membership and
+model policy. Do not copy an enrolled identity file to another machine. The
 older `detent hub runner init` and `enroll` commands, and the
 `--host-identity-file` protocol for several runners on one host, remain for
 scripted setups.

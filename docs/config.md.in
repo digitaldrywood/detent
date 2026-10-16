@@ -38,19 +38,23 @@ global:
   max_concurrent_agents: 4
 ```
 
-For one release, `projects`, `weight`, `priority`, `scheduling`, `fair_share`,
-`global.agents.model_selection`, `client.native_projects` and other local
-project policy defaults warn by key and are ignored, including malformed
-policy values. Remove them before the next release, which rejects unknown keys.
+Enrolled runners reject unknown keys at startup, including nested machine-setting
+keys. Errors name each unsupported key path. Removed keys include `projects`,
+`weight`, `priority`, `scheduling`, `fair_share`, `global.agents.model_selection`,
+`client.native_projects` and other local project policy defaults, even when their
+values are malformed. Remove these keys before upgrading; the one-release
+warning-and-ignore transition has ended. Before releasing this transition, the
+release owner must confirm the compatibility release shipped, verify that no live
+runner file still contains removed keys, and authorize the subsequent release.
+An unchanged legacy file will fail startup and may leave its service restarting.
 Cloud supplies project membership, rank and model selection; runners have no
 file-defined project or model-selection fallback. Local instances store these
 settings in SQLite.
 
-During the transition, legacy checkout locations are used only to discover
-existing Git origins matching Cloud-allowed repositories. They do not supply
-workflow paths or policy. Matching checkouts retain their project aliases and
-directories. With no repository workspace root, Git's registered Detent issue
-worktrees preserve a distinct retained worktree root, branch and dirty source.
+Existing checkouts under `workspace_root` are matched by Git origin to
+Cloud-allowed repositories. They do not supply workflow paths or policy.
+Matching checkouts retain their project aliases and directories. With no repository
+workspace root, Git's registered Detent issue worktrees preserve a distinct retained worktree root, branch and dirty source.
 Explicit repository workspace roots remain authoritative. Multiple matching
 checkouts or retained roots require the operator to select the retained source;
 existing files remain untouched.

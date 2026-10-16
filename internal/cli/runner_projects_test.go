@@ -237,9 +237,9 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 
 func TestRunnerCloudProjects(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		legacy bool
-	}{{name: "machine only"}, {name: "omitted root with external retained checkpoint", legacy: true}} {
+		name               string
+		externalWorkspaces bool
+	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "Orders", "prj_tools": "Tools", "prj_unconfigured": "Unconfigured"})
 			hub.repositories["prj_unconfigured"] = ""
@@ -251,7 +251,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 			for _, id := range []string{"prj_orders", "prj_tools"} {
 				checkout(t, filepath.Join(sources, id+".git"))
 				definition := "schema: 1\ntracker:\n  kind: memory\n  repository: acme/" + id + "\npolling:\n  interval_ms: 3210\nworkspace:\n  root: .detent/workspaces\n  source_root: .\n"
-				if test.legacy {
+				if test.externalWorkspaces {
 					definition = strings.Split(definition, "workspace:")[0]
 				}
 				if err := os.WriteFile(filepath.Join(sources, id+".git", "detent.yaml"), []byte(definition), 0o600); err != nil {
@@ -276,7 +276,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 			}
 			retainedIssue := workspacepkg.Issue{ProjectID: "orders", ID: "wi_retained", Identifier: "prj_orders#7"}
 			retainedRoot := filepath.Join(legacy, ".detent/workspaces")
-			if test.legacy {
+			if test.externalWorkspaces {
 				retainedRoot = filepath.Join(root, "external-workspaces", "orders")
 			}
 			retained, err := workspacepkg.NewBackend(workspacepkg.KindLocalGit, workspacepkg.LocalGitOptions{Root: retainedRoot, SourceRoot: legacy, AutoBranch: true})
@@ -292,15 +292,6 @@ func TestRunnerCloudProjects(t *testing.T) {
 			}
 			if _, err := runRegisterInTestWorkspace(t, nil, nil, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", path, "--workspace-root", workspace); err != nil {
 				t.Fatal(err)
-			}
-			if test.legacy {
-				raw := mustRead(t, path)
-				lines := strings.Split(raw, "\n")
-				lines = slices.DeleteFunc(lines, func(line string) bool { return strings.HasPrefix(line, "workspace_root:") })
-				raw = strings.Join(lines, "\n") + "\nprojects:\n  - id: orders\n    workdir: " + legacy + "\n    workflow: /ignored/private/WORKFLOW.md\n    weight: invalid\n    priority: invalid\n"
-				if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-					t.Fatal(err)
-				}
 			}
 			before := mustRead(t, path)
 			client, err := hubclient.New(hubclient.Config{URL: hub.server.URL + "/organizations/org_example", IdentityFile: filepath.Join(filepath.Dir(path), "identity.json")})
@@ -362,7 +353,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 						t.Fatalf("Cloud candidates for %s = %+v, %v", selected.ID, candidates, err)
 					}
 					expectedWorkdir := filepath.Join(workspace, selected.ID)
-					if test.legacy && selected.ID != "orders" {
+					if test.externalWorkspaces && selected.ID != "orders" {
 						expectedWorkdir = filepath.Join(cfg.WorkspaceRoot, selected.ID)
 					}
 					if selected.Workdir != expectedWorkdir || selected.WorkflowRef != "origin/HEAD" || selected.GlobalCache != cfg.Global.Cache.Normalized() {
