@@ -81,6 +81,11 @@ func isNativeConflict(err error) bool {
 }
 
 func (s *Service) nativeAPIError(c echo.Context, err error) error {
+	var export *operatortool.WorkBulkExportItemError
+	if errors.As(err, &export) {
+		s.config.Logger.Error(export.Message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
+		return c.JSON(http.StatusInternalServerError, export)
+	}
 	var refusal *apikey.Refusal
 	if errors.As(err, &refusal) {
 		return c.JSON(http.StatusForbidden, refusal)

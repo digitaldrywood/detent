@@ -190,7 +190,7 @@ func (s *Service) readableReference(ctx context.Context, query nativeQueryer, sc
 	return id, err
 }
 
-func (s *Service) canonicalToolResult(ctx context.Context, result operatortool.Result) (operatortool.Result, error) {
+func (s *Service) canonicalToolResult(ctx context.Context, result operatortool.Result, name string) (operatortool.Result, error) {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(result.Content))
 	decoder.UseNumber()
@@ -231,7 +231,15 @@ func (s *Service) canonicalToolResult(ctx context.Context, result operatortool.R
 	if err := visit(value); err != nil {
 		return operatortool.Result{}, err
 	}
-	return operatortool.EncodeResult(value)
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return operatortool.Result{}, err
+	}
+	limit := operatortool.ResultByteLimit(name)
+	if len(raw) > limit {
+		return operatortool.Result{}, &operatortool.ResultTooLargeError{SizeBytes: len(raw), LimitBytes: limit}
+	}
+	return operatortool.Result{Content: raw}, nil
 }
 
 func (s *Service) canonicalBrowserLink(ctx context.Context, link string) (string, error) {
