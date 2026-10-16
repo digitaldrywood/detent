@@ -46,7 +46,8 @@ func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time
 	if request.ExpectedBuildRevision != r.Update.Revision {
 		return runnerUpdateConflict(r.Revision, "The observed build revision has changed; read get_runner_update and use its current observation revision")
 	}
-	if request.Version != r.Update.AvailableVersion {
+	repair := request.Release && request.Version == r.Update.Running.Version && r.Update.Running.Source == "release" && !r.Update.Running.VerifiedRelease
+	if request.Version != r.Update.AvailableVersion && !repair {
 		return runnerUpdateConflict(r.Revision, "The selected version differs from the observed available version; read get_runner_update and select its available version")
 	}
 	if !request.Release && !r.Update.Pending {
@@ -172,6 +173,9 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 				}
 			}
 		}
+		if report.Receipt != nil && runner.Update != nil {
+			report.Receipt.RetainPreviousFailure(runner.Update.Receipt)
+		}
 		report.ReceivedAt = now
 	}
 	raw, err := json.Marshal(report)
@@ -188,7 +192,8 @@ func (s *Service) storeRunnerUpdateObservation(ctx context.Context, tx *sql.Tx, 
 func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope nativeScope, report runnerauth.UpdateObservation, now time.Time) error {
 	version := runnerUpdateTarget(s.config.Version)
 	comparison, err := update.CompareVersions(version, report.Running.Version)
-	if version == "" || err != nil || comparison <= 0 {
+	repair := comparison == 0 && report.Running.Source == "release" && !report.Running.VerifiedRelease
+	if version == "" || err != nil || comparison < 0 || comparison == 0 && !repair {
 		return nil
 	}
 	if _, published := s.runnerPublishedReleases.Load("v" + strings.TrimPrefix(version, "v") + "/" + report.Running.OS + "/" + report.Running.Architecture); !published {
@@ -203,7 +208,8 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		return err
 	}
 	if current := settings.UpdateRequest; current != nil {
-		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") {
+		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request == *current && report.Receipt.Status == "refused"
+		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
 			return nil
 		}
 		if !runnerUpdateSuperseded(*current, report.Receipt, version) {

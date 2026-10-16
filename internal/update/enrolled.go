@@ -25,7 +25,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 							checkedAt := s.cfg.Now().UTC()
 							status.LastCheckAt = &checkedAt
 							status.LastError = ""
-							if checked.UpdateAvailable {
+							if checked.UpdateAvailable || checked.RepairAvailable {
 								s.enrolledDiscovery = "available"
 								status.AvailableVersion = checked.LatestVersion
 							} else {
@@ -82,10 +82,11 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		return observed
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: enrolledTargetRefusal, ObservedAt: s.cfg.Now().UTC()}
-	targetMatches := retry || request.ExpectedBuildRevision == observed.Revision && request.Version == observed.AvailableVersion
+	repair := request.Release && request.Version == running.Version && running.Source == "release" && !observed.Running.VerifiedRelease
+	targetMatches := retry || request.ExpectedBuildRevision == observed.Revision && (request.Version == observed.AvailableVersion || repair)
 	if request.FollowHub {
 		comparison, err := CompareVersions(request.Version, running.Version)
-		targetMatches = err == nil && comparison > 0 && (retry || request.ExpectedBuildRevision == observed.Revision)
+		targetMatches = err == nil && (comparison > 0 || comparison == 0 && repair) && (retry || request.ExpectedBuildRevision == observed.Revision)
 	}
 	if request.Urgent {
 		comparison, err := CompareVersions(request.Version, running.Version)
@@ -93,6 +94,12 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		if applied := s.Status().LastAppliedVersion; applied != "" && (!retry || applied != request.Version) {
 			comparison, err = CompareVersions(request.Version, applied)
 			targetMatches = targetMatches && err == nil && comparison > 0
+		}
+	}
+	if repair {
+		if applied := s.Status().LastAppliedVersion; applied != "" {
+			comparison, err := CompareVersions(request.Version, applied)
+			targetMatches = targetMatches && err == nil && comparison >= 0
 		}
 	}
 	if !observed.Supported || request.Service != observed.Service || !targetMatches || !request.Release && !observed.Pending {
@@ -195,7 +202,9 @@ func (s *Scheduler) enrolledObservation(running runnerauth.BuildEvidence) *runne
 func (s *Scheduler) setEnrolledReceipt(receipt *runnerauth.UpdateReceipt) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.enrolledReceipt = cloneEnrolledReceipt(receipt)
+	copy := cloneEnrolledReceipt(receipt)
+	copy.RetainPreviousFailure(s.enrolledReceipt)
+	s.enrolledReceipt = copy
 }
 
 func cloneEnrolledReceipt(receipt *runnerauth.UpdateReceipt) *runnerauth.UpdateReceipt {
@@ -203,6 +212,10 @@ func cloneEnrolledReceipt(receipt *runnerauth.UpdateReceipt) *runnerauth.UpdateR
 		return nil
 	}
 	copy := *receipt
+	if receipt.PreviousFailure != nil {
+		previous := *receipt.PreviousFailure
+		copy.PreviousFailure = &previous
+	}
 	if receipt.Running != nil {
 		running := *receipt.Running
 		copy.Running = &running

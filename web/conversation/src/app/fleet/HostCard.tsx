@@ -44,7 +44,7 @@ export function HostCard({
         <RunnerStatusDot runner={runner} className="mt-1.5" />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
-          {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: reinstall the signed release with <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}
+          {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: run <code className="break-all">detent update --yes</code> on this runner to verify and reinstall the signed release. If it reports up to date without verification, this installed updater cannot repair it; upgrade the updater first.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}
           {updateStatus ? <p className="text-xs text-muted-foreground">{updateStatus} · {runner.update?.desired?.version}</p> : null}
         </div>
       </div>

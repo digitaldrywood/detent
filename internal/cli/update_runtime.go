@@ -297,6 +297,11 @@ func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvi
 	}
 	if patched {
 		build.Source = "private_patched_source"
+	} else if err == nil {
+		build.VerifiedRelease = detentupdate.InstalledReleaseVerified(detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS}, info.Commit, build.SHA256)
+		if build.VerifiedRelease {
+			build.Source = "release"
+		}
 	}
 	return build
 }

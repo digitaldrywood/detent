@@ -40,10 +40,12 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 		name   string
 		follow bool
 		active int
+		repair bool
 	}{
 		{name: "urgent finishes active leases", active: 2},
 		{name: "heartbeat target finishes active leases", follow: true, active: 2},
 		{name: "heartbeat target updates idle runner", follow: true},
+		{name: "same version repair finishes active leases", follow: true, repair: true, active: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			follow := test.follow
@@ -56,6 +58,10 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 			waiting := make(chan int)
 			drains, applies, restarts := 0, 0, 0
 			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: time.Now()}
+			if test.repair {
+				running.Version = "1.2.4"
+				running.Source = "release"
+			}
 			scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
 				Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
 				Updater: urgentRuntimeUpdater{apply: func(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
