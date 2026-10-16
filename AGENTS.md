@@ -280,9 +280,13 @@ Fix or delete flaky browser tests. Retries provide diagnosis, never a fix.
 
 ## Deployment and release failure reporting
 
-For `digitaldrywood/detent` and its selected native Cloud project, every
-failing scheduled full-suite job creates or updates one issue at least High
-priority through the existing selected native reporting owner. Source, test,
+For `digitaldrywood/detent` and its selected native Cloud project, failing
+`release/*` full suites create or update one open stabilization issue per
+release series through the existing native reporting owner, at least High
+priority. Each failed job retains its run, attempt, job URLs, pinned SHA,
+diagnostics, commands, infrastructure attribution and original replay identity
+as a bounded occurrence on that owner. Develop suites retain per-job reporting;
+other projects retain their configured reporting behavior. Source, test,
 unclassified and infrastructure failures all enter Todo; infrastructure and
 unclassified reports carry the infrastructure label and remain attributed to
 the CI instance. Reproducible source or test failures that prevent deployment
@@ -290,14 +294,24 @@ also require at least High priority. Validate that the selected workflow has
 dispatchable, nonterminal Todo and nondispatchable, nonterminal Backlog, neither
 operator-only. Other unknown instance diagnostics remain Backlog intake.
 
-Match open job fingerprints and imported occurrences first. Comment with the
-new run URL, failing test names or lint/vet findings, and pinned develop SHA
-instead of filing duplicates. Raise unset, Normal or Low priority through the
+Match the open release-series fingerprint for release suites and open job
+fingerprints and imported occurrences for develop. Reference matching existing
+repairs without restarting them or transferring their ownership. Subsequent
+release occurrences update the stabilization owner; group fixes by reproduced
+root cause and keep historical failures distinct from current reproduction.
+Comment with the new run URL, findings and pinned SHA instead of filing duplicates. Raise unset, Normal or Low priority through the
 existing expected-revision edit owner, preserving High and Urgent. Promote
 matching scheduled Backlog intake to Todo through the existing native workflow
 owner. Preserve human questions, migration/operator holds, active and review
 lanes, terminal history, origin stamps, imported provenance and stable replay
-identity. A new occurrence does not reopen terminal work or clear holds.
+identity. A new occurrence does not reopen terminal work or clear holds. A later failed
+release occurrence starts a new stabilization episode after its owner completes;
+replaying an occurrence from a terminal episode changes nothing. Green release
+evidence reconciles only that series' failure set and does not close issues.
+Explicit operator cancellation creates no repair issues, including when the
+finalizer would otherwise still be running before the run conclusion settles.
+Cancelled jobs without workflow cancellation, genuine timeouts and infrastructure
+failures remain reportable, and an incomplete suite never permits a release tag.
 
 Scheduled infrastructure reporting does not authorize source repair without a
 reproducible test or source diagnostic and does not consume issue failure

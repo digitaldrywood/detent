@@ -24,6 +24,7 @@ import (
 )
 
 type nativeExecution struct {
+	reasonGenerator   runner.DependencyReasonGenerator
 	diagnostic        runnerauth.DiagnosticAttempt
 	diagnosticMu      sync.Mutex
 	reconnecting      bool
@@ -307,7 +308,12 @@ func (e *nativeExecution) validationError(err error) error {
 	return nil
 }
 
-func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
+func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) (startErr error) {
+	defer func() {
+		if startErr == nil {
+			e.refreshReasons(ctx, false)
+		}
+	}()
 	e.mu.Lock()
 	if e.data.Identity != nil && e.data.Sequence > 0 {
 		if e.reconnecting {
@@ -405,7 +411,12 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	defer func() {
+		e.mu.Unlock()
+		if err == nil {
+			e.refreshReasons(ctx, false)
+		}
+	}()
 	done := e.diagnosticOperation("native.prepare_finish")
 	defer func() { done(err) }()
 	if failure != nil {
@@ -524,7 +535,13 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 
 func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	refresh := false
+	defer func() {
+		e.mu.Unlock()
+		if refresh {
+			e.refreshReasons(ctx, true)
+		}
+	}()
 	done := e.diagnosticOperation("native.finish")
 	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
@@ -554,7 +571,9 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	if finalization := e.preparedFinalization(); finalization != nil {
 		e.data.Finalization = finalization
 	}
-	return errors.Join(preparationErr, e.append(ctx, "run.finished", outcome, nil))
+	finishErr := e.append(ctx, "run.finished", outcome, nil)
+	refresh = finishErr == nil
+	return errors.Join(preparationErr, finishErr)
 }
 
 func (e *nativeExecution) finishPrepared(ctx context.Context) error {

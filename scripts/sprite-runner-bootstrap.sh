@@ -119,8 +119,8 @@ if [[ ${#words[@]} -gt 0 ]]; then
             --config=*) config_path=$(set_path "$config_path" --config "${1#*=}"); shift ;;
             --workspace-root) value "$@"; workspace_root=$(set_path "$workspace_root" --workspace-root "$2"); shift 2 ;;
             --workspace-root=*) workspace_root=$(set_path "$workspace_root" --workspace-root "${1#*=}"); shift ;;
-            --url|--name|--organization|--capacity) value "$@"; register_args+=("$1" "$2"); shift 2 ;;
-            --url=*|--name=*|--organization=*|--capacity=*) register_args+=("$1"); shift ;;
+            --url|--name|--organization|--capacity|--isolation-tier) value "$@"; register_args+=("$1" "$2"); shift 2 ;;
+            --url=*|--name=*|--organization=*|--capacity=*|--isolation-tier=*) register_args+=("$1"); shift ;;
             --*) die "unsupported enrollment argument: ${1%%=*}" ;;
             *) die "unexpected value in the enrollment command" ;;
         esac

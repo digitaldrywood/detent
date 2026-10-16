@@ -3,7 +3,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 
 import { chatSlashCommands } from "./adapters/chatPrompts.ts";
 
@@ -374,8 +374,9 @@ export function ConversationRoute(): React.ReactElement {
   const { conversationId } = useParams({ from: "/chat/c/$conversationId" });
   const shell = useShell();
   const navigate = useNavigate();
+  const search = useSearch({ strict: false }) as { readonly project_id?: unknown };
   const known = shell.conversations.find((candidate) => candidate.id === conversationId);
-  const projectId = known?.project_id ?? shell.projectId;
+  const projectId = known?.project_id ?? (typeof search.project_id === "string" ? search.project_id : shell.projectId);
   const client = useClient();
   const state = useAtomValue(
     client.conversations.stateAtom({

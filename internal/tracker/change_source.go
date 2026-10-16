@@ -1,9 +1,11 @@
 package tracker
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 )
 
 const (
@@ -40,6 +42,35 @@ func (s ChangeSource) Validate(base, head string, bundle []byte) error {
 	decoded, err := hex.DecodeString(s.DiffSHA256)
 	if err != nil || len(decoded) != sha256.Size {
 		return errors.New("retained source diff digest is invalid")
+	}
+	header, _, ok := bytes.Cut(bundle, []byte("\n\n"))
+	lines := strings.Split(string(header), "\n")
+	if !ok || (lines[0] != "# v2 git bundle" && lines[0] != "# v3 git bundle") {
+		return errors.New("retained source requires a Git bundle; recreate it with git bundle create <path> HEAD ^<base>")
+	}
+	advertised := 0
+	for _, line := range lines[1:] {
+		if strings.HasPrefix(line, "-") {
+			id, _, ok := strings.Cut(strings.TrimPrefix(line, "-"), " ")
+			if !ok || id != base {
+				return errors.New("source bundle prerequisites must be the authorized base; recreate it with git bundle create <path> HEAD ^<base>")
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "@") {
+			if lines[0] != "# v3 git bundle" || line != "@object-format=sha1" {
+				return errors.New("source bundle capability is unsupported; recreate it with git bundle create <path> HEAD ^<base>")
+			}
+			continue
+		}
+		id, ref, ok := strings.Cut(line, " ")
+		if !ok || id != head || ref == "" || strings.ContainsAny(ref, " \t\r\x00") {
+			return errors.New("source bundle must advertise only the reviewed head; recreate it with git bundle create <path> HEAD ^<base>")
+		}
+		advertised++
+	}
+	if advertised != 1 {
+		return errors.New("source bundle must advertise exactly one reviewed head ref; recreate it with git bundle create <path> HEAD ^<base>")
 	}
 	return nil
 }

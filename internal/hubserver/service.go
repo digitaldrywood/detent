@@ -52,6 +52,7 @@ type Service struct {
 	healthDetector          *healthDetector
 	issueMailer             *issueMailer
 	hostedMutationMu        sync.Mutex
+	sourceVerification      chan struct{}
 	runtimeMu               sync.Mutex
 	hostedAuthLogger        *slog.Logger
 	hostedSessions          *auth.Service
@@ -69,6 +70,7 @@ type Service struct {
 	spriteWakeWork          sync.WaitGroup
 	workerCancel            context.CancelFunc
 	workerDone              chan struct{}
+	boardRefresh            chan struct{}
 	workerStopOnce          sync.Once
 	reconcileCancel         context.CancelFunc
 	reconcileDone           chan struct{}
@@ -136,20 +138,22 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	workerContext, workerCancel := context.WithCancel(context.Background())
 	reconcileContext, reconcileCancel := context.WithCancel(context.Background())
 	service := &Service{
-		releaseNotes:     notes,
-		echo:             e,
-		notifications:    newNotificationBroker(),
-		hostedAuthLogger: hostedAuthLogger,
-		database:         database,
-		tracker:          workTracker,
-		config:           cfg,
-		spriteWakes:      make(map[spriteWakeKey]*spriteLifecyclePass),
-		workerCancel:     workerCancel,
-		workerDone:       make(chan struct{}),
-		reconcileCancel:  reconcileCancel,
-		reconcileDone:    make(chan struct{}),
-		clientBuild:      conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
-		pullRequests:     newPullRequestCache(),
+		releaseNotes:       notes,
+		echo:               e,
+		notifications:      newNotificationBroker(),
+		hostedAuthLogger:   hostedAuthLogger,
+		database:           database,
+		sourceVerification: make(chan struct{}, 1),
+		tracker:            workTracker,
+		config:             cfg,
+		spriteWakes:        make(map[spriteWakeKey]*spriteLifecyclePass),
+		workerCancel:       workerCancel,
+		workerDone:         make(chan struct{}),
+		boardRefresh:       make(chan struct{}, 1),
+		reconcileCancel:    reconcileCancel,
+		reconcileDone:      make(chan struct{}),
+		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
+		pullRequests:       newPullRequestCache(),
 	}
 	service.wakeSpriteRunnersAfter = func(scope nativeScope, result json.RawMessage) {
 		service.scheduleSpriteWake(workerContext, scope, result)
@@ -464,6 +468,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 
 func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 	defer close(s.workerDone)
+	s.maintainNativeBoard(ctx)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
 	defer ticker.Stop()
 	lastOptimize := s.config.now()
@@ -472,7 +477,10 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.boardRefresh:
+			s.maintainNativeBoard(ctx)
 		case <-ticker.C:
+			s.maintainNativeBoard(ctx)
 			now := s.config.now()
 			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour
 			s.maintainAnalyticsRollups(ctx, now, retryAnalytics)

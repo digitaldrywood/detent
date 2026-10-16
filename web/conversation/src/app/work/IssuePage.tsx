@@ -1,3 +1,5 @@
+import { dependencyLabel } from "./lib/dependencies.ts";
+import { DependencyPanels } from "./components/DependencyDetails.tsx";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -929,7 +931,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const related = React.useMemo(() => {
     const entries: RelatedEntry[] = [];
     const seen = new Set<string>();
-    const push = (id: string, label: string, detail: string, category: string) => {
+    const push = (id: string, label: string, detail: string, category: string, removable = true) => {
       if (seen.has(id)) return;
       seen.add(id);
       entries.push({
@@ -939,26 +941,19 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
         detail,
         category,
         onOpen: () => props.onOpenIssue(id),
-        onRemove: () => props.onRelation(id, "remove"),
+        onRemove: removable ? () => props.onRelation(id, "remove") : null,
       });
     };
     for (const blocker of data.issue.blockers) {
       push(
         blocker.work_item_id,
-        `${blocker.work_item_id} · ${blocker.state}`,
+        dependencyLabel(blocker),
         blocker.state,
-        blocker.terminal ? "completed" : "unstarted",
+        blocker.terminal ? "completed" : blocker.started_at || blocker.dispatchable === false ? "started" : "unstarted",
       );
     }
-    const operations = new Map<string, string>();
-    for (const event of data.history) {
-      const id = event.data.related_work_item_id;
-      if (id === undefined) continue;
-      operations.set(id, event.data.operation ?? "add");
-    }
-    for (const [id, operation] of operations) {
-      if (operation === "remove") continue;
-      push(id, id, "", "unstarted");
+    for (const link of [...(data.issue.dependents ?? []), ...(data.issue.related ?? [])]) {
+      push(link.work_item_id, dependencyLabel(link), link.state, link.terminal ? "completed" : link.started_at || link.dispatchable === false ? "started" : "unstarted", false);
     }
     if (conversation?.detail !== undefined) {
       entries.push({
@@ -970,7 +965,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       });
     }
     return entries;
-  }, [conversation?.detail, data.history, data.issue.blockers, props]);
+  }, [conversation?.detail, data.history, data.issue.blockers, data.issue.dependents, data.issue.related, props]);
 
   const states = React.useMemo(
     () =>
@@ -986,9 +981,6 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   // exactly when those pickers are reachable — with the right panel open the
   // column yields its width and its letters together.
 
-  const effort = [item.effort, data.attempts.at(-1)?.identity?.model]
-    .filter((part): part is string => part !== null && part !== undefined && part !== "")
-    .join(" · ");
   const lastAttempt = data.attempts.at(-1);
   const attempts =
     lastAttempt === undefined
@@ -1014,7 +1006,6 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       canWrite={props.canWrite}
       saving={props.saving}
       runner={runner}
-      effort={effort === "" ? "No effort set" : effort}
       attempts={attempts}
       related={related}
       relatedCandidates={props.relatedCandidates}
@@ -1081,6 +1072,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             </Collapsible>
           ) : null}
 
+          <DependencyPanels item={item} queued={data.project.states.some((state) => state.name === item.state && state.dispatchable && !state.terminal) && !item.attempt?.running} />
           <div
             className="rounded-[var(--radius)] border border-border bg-card px-4 py-3.5"
             data-testid="issue-body"

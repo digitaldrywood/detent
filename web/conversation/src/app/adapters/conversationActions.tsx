@@ -3,7 +3,7 @@ import { ExternalLinkIcon, LinkIcon, PlusIcon } from "lucide-react";
 
 import { MenuGroup, MenuGroupLabel, MenuItem, MenuSeparator } from "../../components/ui/menu.tsx";
 
-export type ProjectActionId = "create-issue" | "open-issue" | "copy-link";
+export type ProjectActionId = "create-issue" | "open-issue" | "copy-link" | "copy-id" | "copy-handoff";
 
 /** One row of the conversation group: not a command, a thing this page can do. */
 export interface ConversationAction {
@@ -16,6 +16,7 @@ export function conversationActions(input: {
   /** False for a read-only project or an already linked chat. */
   readonly canCreateIssue: boolean;
   readonly issueIdentifier: string | null;
+  readonly canCopyConversation?: boolean;
 }): readonly ConversationAction[] {
   const actions: ConversationAction[] = [];
   if (input.canCreateIssue) {
@@ -29,6 +30,10 @@ export function conversationActions(input: {
     });
   }
   actions.push({ id: "copy-link", name: "Copy link", icon: "external" });
+  if (input.canCopyConversation) {
+    actions.push({ id: "copy-id", name: "Copy conversation ID", icon: "external" });
+    actions.push({ id: "copy-handoff", name: "Copy for local AI", icon: "external" });
+  }
   return actions;
 }
 
@@ -72,6 +77,10 @@ export function ConversationActionsProvider({
  * is right for a project with nothing to list and wrong once Detent has three
  * things to list.
  */
+export function useConversationActionsValue(): ConversationActionsValue {
+  return React.useContext(ConversationActionsContext);
+}
+
 export function useConversationActions(): readonly ConversationAction[] {
   return React.useContext(ConversationActionsContext).actions;
 }

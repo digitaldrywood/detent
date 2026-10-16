@@ -5,13 +5,26 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
+
+const ReviewSourcePageBytes = 16 * 1024
+
+type ReviewOutputRange struct {
+	Offset int64
+	Length int
+}
+
+type reviewOutputRangeKey struct{}
+
+func WithReviewOutputRange(ctx context.Context, selection ReviewOutputRange) context.Context {
+	return context.WithValue(ctx, reviewOutputRangeKey{}, selection)
+}
 
 type ReviewCommandRunner interface {
 	RunReviewCommand(context.Context, Info, Issue, string) (gate.CommandResult, error)
@@ -84,16 +97,9 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 	result.TreeSHA = strings.TrimSpace(tree)
 	result.ReceiptID = result.PipelineTiming("").ReceiptID
 	const maxOutputBytes = 64 * 1024
-	const truncatedOutputMarker = "[earlier output truncated]\n"
-	result.Output = strings.ToValidUTF8(result.Output, "�")
-	if len(result.Output) > maxOutputBytes {
-		start := len(result.Output) - maxOutputBytes + len(truncatedOutputMarker)
-		for !utf8.RuneStart(result.Output[start]) {
-			start++
-		}
-		result.Output = truncatedOutputMarker + result.Output[start:]
-		result.OutputTruncated = true
-	}
+	output, truncated := runtimeoutput.Diagnostic(result.Output, maxOutputBytes)
+	result.Output = output
+	result.OutputTruncated = result.OutputTruncated || truncated
 	if err != nil {
 		return result, err
 	}

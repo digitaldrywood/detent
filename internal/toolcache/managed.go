@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,27 @@ type Managed struct {
 }
 
 type managedContextKey struct{}
+type consumerContextKey struct{}
+type waitObserverContextKey struct{}
+
+func (m *Managed) WithContext(ctx context.Context) context.Context {
+	if m == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, managedContextKey{}, m)
+}
+
+func WithWaitObserver(ctx context.Context, observe func(string, bool)) context.Context {
+	return context.WithValue(ctx, waitObserverContextKey{}, observe)
+}
+
+func UseFromContext(ctx context.Context) (context.Context, func() error, error) {
+	cache, ok := ctx.Value(managedContextKey{}).(*Managed)
+	if !ok {
+		return ctx, func() error { return nil }, nil
+	}
+	return cache.Use(ctx)
+}
 
 func NewManaged(ctx context.Context, root, owner string) (cache *Managed, err error) {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(owner) {
@@ -69,7 +91,7 @@ func ManagedBuildFromContext(ctx context.Context) string {
 }
 
 func (m *Managed) Use(ctx context.Context) (context.Context, func() error, error) {
-	if m == nil || ManagedBuildFromContext(ctx) == m.root {
+	if m == nil || ctx.Value(consumerContextKey{}) == m.root {
 		return ctx, func() error { return nil }, nil
 	}
 	queue, err := m.lock(ctx, "admission", false)
@@ -84,7 +106,7 @@ func (m *Managed) Use(ctx context.Context) (context.Context, func() error, error
 		}
 		return ctx, nil, err
 	}
-	return context.WithValue(ctx, managedContextKey{}, m), usage.Close, nil
+	return context.WithValue(m.WithContext(ctx), consumerContextKey{}, m.root), sync.OnceValue(usage.Close), nil
 }
 
 func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (report Report, err error) {
@@ -126,6 +148,13 @@ func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File,
 	if err != nil {
 		return nil, err
 	}
+	waiting := false
+	observe, observing := ctx.Value(waitObserverContextKey{}).(func(string, bool))
+	defer func() {
+		if waiting && observing && observe != nil {
+			observe(name, false)
+		}
+	}()
 	for {
 		err = tryCacheLock(file, shared)
 		if err == nil {
@@ -133,6 +162,10 @@ func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File,
 		}
 		if !errors.Is(err, errCacheInUse) {
 			return nil, errors.Join(err, file.Close())
+		}
+		if !waiting && observing && observe != nil {
+			waiting = true
+			observe(name, true)
 		}
 		timer := time.NewTimer(25 * time.Millisecond)
 		select {

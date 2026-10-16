@@ -2,7 +2,7 @@ package global
 
 import (
 	"fmt"
-	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -42,17 +42,67 @@ func removeRunnerPolicy(root map[string]any) []string {
 	return removed
 }
 
-func normalizeRunnerConfig(root map[string]any) []string {
-	client := runnerMapping(root["client"])
-	if projectStringValue(client, "identity_file") == "" {
+func runnerKeyErrors(root map[string]any) []string {
+	if projectStringValue(runnerMapping(root["client"]), "identity_file") == "" {
 		return nil
 	}
-	removed := removeRunnerPolicy(root)
+	var problems []string
+	for _, key := range removeRunnerPolicy(root) {
+		problems = append(problems, key+": unsupported runner configuration key; project and model policy belongs in Cloud")
+	}
+	problems = append(problems, unknownRunnerKeys(root, reflect.TypeFor[Config](), "")...)
+	slices.Sort(problems)
+	return problems
+}
+
+func unknownRunnerKeys(value any, schema reflect.Type, prefix string) []string {
+	for schema.Kind() == reflect.Pointer {
+		schema = schema.Elem()
+	}
+	attrs, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	fields := make(map[string]reflect.Type)
+	if schema.Kind() == reflect.Struct {
+		for field := range schema.Fields() {
+			key := strings.Split(field.Tag.Get("yaml"), ",")[0]
+			if field.IsExported() && key != "-" {
+				if key == "" {
+					key = strings.ToLower(field.Name)
+				}
+				fields[key] = field.Type
+			}
+		}
+	} else if prefix == "global.startup." {
+		for _, key := range []string{"jitter_seconds", "max_spawn_per_second", "max_concurrent_starts"} {
+			fields[key] = reflect.TypeFor[int]()
+		}
+	} else if schema.Kind() == reflect.Map {
+		return nil
+	}
+	var problems []string
+	for key, nested := range attrs {
+		typ, exists := fields[key]
+		if !exists {
+			problems = append(problems, prefix+key+": unknown runner configuration key")
+			continue
+		}
+		problems = append(problems, unknownRunnerKeys(nested, typ, prefix+key+".")...)
+	}
+	return problems
+}
+
+func normalizeRunnerConfig(root map[string]any) {
+	client := runnerMapping(root["client"])
+	if projectStringValue(client, "identity_file") == "" {
+		return
+	}
 	root["projects"] = []any{}
 	global, ok := root["global"].(map[string]any)
 	if !ok {
 		if _, exists := root["global"]; exists {
-			return removed
+			return
 		}
 		global = map[string]any{}
 		root["global"] = global
@@ -65,7 +115,6 @@ func normalizeRunnerConfig(root map[string]any) []string {
 		}
 		global["max_concurrent_agents"] = capacity
 	}
-	return removed
 }
 
 func (c Config) MarshalYAML() (any, error) {
@@ -83,32 +132,6 @@ func (c Config) MarshalYAML() (any, error) {
 	}
 	removeRunnerPolicy(root)
 	return root, nil
-}
-
-func runnerCheckoutLocations(root map[string]any, opts options) []Project {
-	client := runnerMapping(root["client"])
-	if projectStringValue(client, "identity_file") == "" {
-		return nil
-	}
-	projects, ok := root["projects"].([]any)
-	if !ok {
-		return nil
-	}
-	var retained []Project
-	for _, value := range projects {
-		attrs := runnerMapping(value)
-		name := projectStringValue(attrs, "id")
-		workdir := projectStringValue(attrs, "workdir")
-		if strings.TrimSpace(name) == "" || strings.TrimSpace(workdir) == "" {
-			continue
-		}
-		expanded, err := expandPath(workdir, opts)
-		if err != nil || !filepath.IsAbs(expanded) {
-			continue
-		}
-		retained = append(retained, Project{ID: name, Workdir: expanded})
-	}
-	return retained
 }
 
 func runnerMapping(value any) map[string]any {

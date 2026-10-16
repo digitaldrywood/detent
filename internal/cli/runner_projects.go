@@ -381,7 +381,7 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 			slog.Info("Waiting for a repository: bind one in project setup", "runner_id", identity.RunnerID, "project_id", id)
 			continue
 		}
-		locations := slices.Concat(cfg.RunnerCheckouts, previous)
+		locations := previous
 		workdir, retainedName, err := runnerProjectCheckout(ctx, cfg.WorkspaceRoot, name, repository, locations)
 		if err != nil {
 			slog.Error("runner project setup failed", "runner_id", identity.RunnerID, "project_id", id, "attribution", "instance", "error", err)

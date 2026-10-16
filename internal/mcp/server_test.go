@@ -253,7 +253,7 @@ func TestToolExecutionErrorIsDistinctFromEmptyResult(t *testing.T) {
 		{"read fault", &operatortool.ReadUnavailableError{Err: errors.New("database fault sentinel")}, "Operator tool is unavailable"},
 		{"oversized result", &operatortool.ResultTooLargeError{SizeBytes: 300000, LimitBytes: operatortool.MaxResultBytes}, `{"code":"result_too_large","size_bytes":300000,"limit_bytes":262144}`},
 		{"argument validation", nativeMoveArgumentError(), `{"code":"invalid_request","message":"expected_revision: is required"}`},
-		{"request", &operatortool.RequestError{Code: "invalid_request", Message: "Read get_project_integration"}, `{"code":"invalid_request","message":"Read get_project_integration"}`},
+		{"runner selection", &operatortool.RequestError{Code: "invalid_request", Message: "Multiple runners report this project; select runner_id"}, `{"code":"invalid_request","message":"Multiple runners report this project; select runner_id"}`},
 		{"oversized Change record", operatortool.ChangeRecordTooLarge(), `{"code":"change_record_too_large","message":"A Change record with its required evidence envelope exceeds the 262144-byte result budget. Inspect the exact version or artifact through its scoped read; the record requires an operator repair. No evidence was reported as passing."}`},
 		{"revision", &operatortool.ConflictError{Code: "revision_conflict", CurrentRevision: 4}, `{"code":"revision_conflict","current_revision":"4"}`},
 		{"policy mismatch", &operatortool.ConflictError{Code: "policy_mismatch", Message: "Approved policy changed; inspect the current policy and supply its expected_policy_id"}, `{"code":"policy_mismatch","message":"Approved policy changed; inspect the current policy and supply its expected_policy_id"}`},

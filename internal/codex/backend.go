@@ -86,6 +86,12 @@ func (b *AgentBackend) runTurn(
 	toolHandler DynamicToolHandler,
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
+	if req.TextOnly {
+		if len(tools) > 0 || req.Resume != (runner.AgentResume{}) || len(req.Attachments) > 0 || req.ConversationControl != nil {
+			return runner.AgentTurnResult{}, errors.New("text-only turns require a fresh prompt without tools or attachments")
+		}
+		req.ReadOnly = true
+	}
 	ctx = withWorkerTempDir(ctx, req.TempDir)
 	ctx = withAgentProcess(ctx, runner.AgentProcessRequest{Workspace: req.Workspace, Environment: req.Environment})
 	restricted := req.ReadOnly || (len(tools) > 0 && !req.SupplementalTools)
@@ -144,6 +150,12 @@ func (b *AgentBackend) runTurn(
 	if err != nil {
 		return runner.AgentTurnResult{}, err
 	}
+	if req.TextOnly {
+		options.PermissionProfile = "detent-text-only"
+		options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		settings = textOnlySettings(req.Workspace)
+		runtimeRoots = []string{req.Workspace}
+	}
 	instructionTools := tools
 	if req.SupplementalTools {
 		instructionTools = nil
@@ -156,6 +168,7 @@ func (b *AgentBackend) runTurn(
 	}
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		ConversationControl:     req.ConversationControl,
+		TextOnly:                req.TextOnly,
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
 		Attachments:             req.Attachments,

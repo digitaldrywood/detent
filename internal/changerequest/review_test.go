@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -260,5 +261,75 @@ func TestArtifactMetadataBoundary(t *testing.T) {
 	}
 	if err := ValidateArtifacts(make([]tracker.ChangeArtifact, 65)); err == nil {
 		t.Fatal("unbounded artifact set accepted")
+	}
+}
+
+func TestReviewState(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		edit    func(*tracker.ChangeDetail)
+		version string
+		head    string
+		want    connector.ChangeReview
+	}{
+		{name: "passing checks with missing review", edit: func(d *tracker.ChangeDetail) { d.Reviews = nil }, want: connector.ChangeReview{Current: true}},
+		{name: "failed checks require rework", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "failure" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "cancelled checks require a fresh version", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "cancelled" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "skipped checks require a fresh version", edit: func(d *tracker.ChangeDetail) { d.Checks[0].Conclusion = "skipped" }, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "missing checks wait for evidence", edit: func(d *tracker.ChangeDetail) { d.Checks = nil }, want: connector.ChangeReview{Current: true}},
+		{name: "stale successful checks wait for evidence", edit: func(d *tracker.ChangeDetail) { d.Checks[0].CompletedAt = d.Checks[0].CompletedAt.Add(-24 * time.Hour) }, want: connector.ChangeReview{Current: true}},
+		{name: "unrequested failure does not require rework", edit: func(d *tracker.ChangeDetail) {
+			other := d.Checks[0]
+			other.CheckRunID, other.Conclusion = "unrequested", "failure"
+			d.Checks = append(d.Checks, other)
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "failed check is actionable despite other missing evidence", edit: func(d *tracker.ChangeDetail) {
+			d.Checks[0].Conclusion = "failure"
+			d.Checks[0].Evidence[0].Availability = "missing"
+			d.Versions[0].Checks = append(d.Versions[0].Checks, d.Versions[0].Checks[0])
+			d.Versions[0].Checks[1].CheckRunID = "missing-run"
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "source review wait is evidence pending", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "commented", ImplementationReview: &gate.ValidatorResult{Verdict: "wait"}})
+			d.Versions[0].Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
+		}, want: connector.ChangeReview{Current: true}},
+		{name: "source findings need implementation", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}})
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "acceptance findings need implementation", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", Validator: &gate.ValidatorResult{Verdict: "rework"}})
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "security findings survive later pass on unchanged source", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "rework"}}, tracker.ChangeReview{VersionID: "v1", Decision: "approved", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass"}})
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "findings on older version do not restart implementation", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "old", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}})
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "fresh source pass supersedes source rework", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, tracker.ChangeReview{VersionID: "v1", Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}})
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "changed head", head: strings.Repeat("b", 40)},
+		{name: "changed version", version: "old"},
+		{name: "changed policy", edit: func(d *tracker.ChangeDetail) { d.Versions[0].PolicyID = "other" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			detail, now := reviewFixture()
+			policyID, reviewID := detail.Versions[0].PolicyID, detail.Versions[0].ReviewPolicy.ID
+			if test.edit != nil {
+				test.edit(&detail)
+			}
+			detail.Summary = Summarize(detail, policyID, reviewID, now)
+			version, head := test.version, test.head
+			if version == "" {
+				version = "v1"
+			}
+			if head == "" {
+				head = strings.Repeat("a", 40)
+			}
+			if got := ReviewState(detail, version, head); got != test.want {
+				t.Fatalf("review state=%+v want=%+v", got, test.want)
+			}
+		})
 	}
 }

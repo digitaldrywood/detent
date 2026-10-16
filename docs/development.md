@@ -66,12 +66,20 @@ suites do not publish a required local commit status. The
 scheduled suite validates pinned develop commits and release branch heads;
 only green release branch heads receive stable tags. See the
 [release branch policy](branching.md#release-branches). Separately,
-every failing Detent scheduled job enters native Todo at least High under the
+Detent release failures share one open native stabilization owner per release
+series, with bounded evidence for every failed job and preserved replay identity.
+Develop retains per-job reporting. Both enter Todo at least High under the
 human-approved reporting policy, including infrastructure and unclassified
-failures. Reused job issues preserve Urgent, human questions and operator holds;
+failures. Existing repair ownership remains intact; fixes are grouped by
+reproduced root cause, keeping historical failures separate from reproduction.
+Reused owners preserve Urgent, human questions and operator holds;
 matching Backlog intake moves to Todo through the native workflow owner, while
 active and review lanes remain intact. Other unknown instance diagnostics remain
-in nondispatchable Backlog. A red suite receives no release tag.
+in nondispatchable Backlog. A later release failure after completion starts a
+new episode; terminal replays change nothing. Green release evidence reconciles
+only its own series without closing issues. Explicit workflow cancellation
+creates no repair issues; timeouts and cancelled jobs without workflow
+cancellation remain visible. A red or incomplete suite receives no release tag.
 
 Several worktrees usually run gates on the same host at once. `TEST_PROCS`
 (default 4) supplies each invocation's process budget. `make check-landing`

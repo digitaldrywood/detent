@@ -53,6 +53,17 @@ environments; Cloud failure reporting never falls back to GitHub issue writes.
 
 ## Release branches
 
+Detent release full-suite failures share one open native stabilization owner per
+release series. Every failed job retains bounded run, attempt, pinned SHA, log,
+command and replay evidence on that owner. Reference existing repair work without
+restarting it or transferring ownership; group fixes by reproduced root cause
+and validate one integrated candidate using applicable exact-source receipts.
+Historical diagnostics do not prove a current failure. Later failed occurrences
+after completion start a new episode; terminal replay changes nothing. Green
+evidence reconciles only that series and never closes repairs. Explicit operator
+cancellation creates no repair issues; genuine timeouts and incomplete suites
+remain release-ineligible. Develop landing remains independent.
+
 ### Cut
 
 `.github/workflows/release-cut.yml` cuts a branch weekly by default (Monday at

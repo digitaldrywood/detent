@@ -115,6 +115,14 @@ elif name == "fd":
     print("fd 0.0.0" if pathlib.Path(__file__).parent == root / "bin" else "fd 10.3.0")
 elif name == "detent":
     if args[:3] == ["hub", "runner", "register"]:
+        tier = "sandbox"
+        for index, arg in enumerate(args):
+            if arg == "--isolation-tier":
+                tier = args[index + 1]
+            elif arg.startswith("--isolation-tier="):
+                tier = arg.split("=", 1)[1]
+        if tier not in ("sandbox", "native-trusted"):
+            sys.exit("--isolation-tier must be sandbox or native-trusted")
         with (root / "tokens.txt").open("a") as tokens:
             tokens.write(os.environ.get("DETENT_RUNNER_ENROLLMENT_TOKEN", "") + "\n")
         config = pathlib.Path(args[args.index("--config") + 1])
@@ -144,7 +152,7 @@ elif name in ("codex", "claude", "gh"):
 '''
 
 TOKEN = "det_enroll_fixture_secret"
-ENROLLMENT = f"detent hub runner register --url https://hub.example/organizations/org_example --token {TOKEN} --name 'Build host' --capacity 2 --service\n"
+ENROLLMENT = f"detent hub runner register --url https://hub.example/organizations/org_example --token {TOKEN} --name 'Build host' --capacity 2 --isolation-tier native-trusted --service\n"
 
 
 class SpriteBootstrapTests(unittest.TestCase):
@@ -191,7 +199,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         node = shutil.which("node")
         module = subprocess.run([node, "-p", "require.resolve('yaml/package.json')"],
                                 text=True, capture_output=True, timeout=10)
-        self.assertEqual(module.returncode, 0, "Install yaml@2.8.3 and expose it through NODE_PATH: " + module.stderr)
+        self.assertEqual(module.returncode, 0, "Run npm ci from the repository root to install the fixture dependencies: " + module.stderr)
         self.env = dict(os.environ, HOME=str(self.home), FIXTURE_ROOT=str(self.root),
                         FIXTURE_NODE=node, FIXTURE_YAML_MODULE=str(pathlib.Path(module.stdout.strip()).parent),
                         PATH=str(self.fake_bin) + os.pathsep + os.environ["PATH"],
@@ -228,13 +236,15 @@ class SpriteBootstrapTests(unittest.TestCase):
         identity = config.with_name("identity.json").read_bytes()
         human_config = "instance_name: human edits\nglobal:\n  io:\n    degraded_max_concurrent_agents: 0\n  cpu:\n    degraded_max_concurrent_agents: 3\n"
         config.write_text(human_config)
-        second = self.run_bootstrap(enrollment=enrollment)
+        second = self.run_bootstrap(enrollment=enrollment.replace("--isolation-tier native-trusted", "--isolation-tier=native-trusted"))
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(config.read_text(), human_config)
         self.assertEqual(config.with_name("identity.json").read_bytes(), identity)
         self.assertFalse(list(self.root.rglob("SHOULD_NOT_EXIST")))
         registrations = self.registrations()
         self.assertEqual(len(registrations), 2)
+        self.assertEqual(registrations[0][registrations[0].index("--isolation-tier") + 1], "native-trusted")
+        self.assertIn("--isolation-tier=native-trusted", registrations[1])
         for args in registrations:
             self.assertNotIn("--service", args)
             self.assertEqual(args[len(args) - 1 - args[::-1].index("--name") + 1], 'Sprite $(touch SHOULD_NOT_EXIST); "quoted"')
@@ -259,6 +269,16 @@ class SpriteBootstrapTests(unittest.TestCase):
         downloads = [args for command, args in self.calls() if command == "curl"]
         self.assertTrue(any("/v0.117.41/" in " ".join(args) for args in downloads))
         self.assertFalse(any(command == "go" and args[:1] == ["install"] for command, args in self.calls()))
+        for flag in ("--isolation-tier sandbox", "--isolation-tier=sandbox"):
+            with self.subTest(flag=flag):
+                result = self.run_bootstrap(enrollment=enrollment.replace("--isolation-tier native-trusted", flag))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                args = self.registrations()[-1]
+                if "=" in flag:
+                    self.assertIn(flag, args)
+                else:
+                    self.assertEqual(args[args.index("--isolation-tier") + 1], "sandbox")
+                self.assertNotIn(TOKEN, result.stdout + result.stderr + str(self.calls()))
 
     def test_pressure_floor_config_merge(self):
         cases = (
@@ -340,6 +360,9 @@ class SpriteBootstrapTests(unittest.TestCase):
             ENROLLMENT.rstrip("\n") + " --name \"`id`\"\n",
             ENROLLMENT.rstrip("\n") + " --name 'open\n",
             ENROLLMENT.replace("--token ", ""),
+            ENROLLMENT.rstrip("\n") + " --isolation-tier\n",
+            ENROLLMENT.rstrip("\n") + " --unknown=value\n",
+            ENROLLMENT.rstrip("\n") + " --unknown value\n",
             "detent start --yes\n",
             "detent hub runner register --url https://hub.example/organizations/org_example --service\n",
         ):
@@ -348,6 +371,18 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.calls(), [])
                 self.assertNotIn(TOKEN, result.stderr)
+        for flag in ("--isolation-tier 'root'", "--isolation-tier='$(touch SHOULD_NOT_EXIST)'", "--isolation-tier="):
+            with self.subTest(flag=flag):
+                result = self.run_bootstrap(enrollment=ENROLLMENT.replace("--isolation-tier native-trusted", flag))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--isolation-tier must be sandbox or native-trusted", result.stderr)
+                args = self.registrations()[-1]
+                if "=" in flag:
+                    self.assertIn(flag.replace("'", ""), args)
+                else:
+                    self.assertEqual(args[args.index("--isolation-tier") + 1], "root")
+                self.assertFalse(list(self.root.rglob("SHOULD_NOT_EXIST")))
+                self.assertNotIn(TOKEN, result.stdout + result.stderr + str(self.calls()))
 
     def test_source_install_requires_explicit_opt_in(self):
         # Catches building from a checkout during a release bootstrap, and

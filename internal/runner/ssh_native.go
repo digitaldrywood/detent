@@ -18,6 +18,7 @@ import (
 // SSHExecutionSources exposes only the checkout bound by the remote runner.
 // Upload credentials, journals, producer tuples and lease ownership stay central.
 type SSHExecutionSources struct {
+	reasonGenerator     DependencyReasonGenerator
 	landingAudit        func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
 	landingBatch        func(context.Context, []workspace.LandRequest) []sshLandingOutcome
 	mu                  sync.Mutex
@@ -41,8 +42,14 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
 	publication, publicationIdentity, publicationPeer := s.publication, s.publicationIdentity, s.publicationPeer
 	landingBatch, landingAudit := s.landingBatch, s.landingAudit
+	reasonGenerator := s.reasonGenerator
 	s.mu.Unlock()
 	switch method {
+	case "source.dependency_reason":
+		if reasonGenerator == nil {
+			return nil, errors.New("SSH dependency reason generator is unavailable")
+		}
+		return invokeSSHMethod(ctx, reasonGenerator, "", args)
 	case "source.publication":
 		return invokeSSHMethod(ctx, func(ctx context.Context, invocation uint64, version tracker.ChangeVersion, opts workspace.LandOptions, identity *workspace.GitHubPublication) (workspace.GitHubPublication, error) {
 			if identity == nil {
@@ -119,6 +126,13 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 	c.mu.Lock()
 	c.batchLander = &sshBatchLander{peer: peer, callbacks: c}
 	c.mu.Unlock()
+	if source, ok := c.execution.(DependencyReasonExecution); ok {
+		source.SetDependencyReasonGenerator(func(ctx context.Context, prompt string) (string, error) {
+			var result string
+			err := peer.Call(ctx, "source.dependency_reason", &result, prompt)
+			return result, err
+		})
+	}
 	if source, ok := c.execution.(ChangeSourceExecution); ok {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			var result tracker.ChangeSourceCapture
@@ -387,4 +401,10 @@ func (e *sshNativeExecution) SecurityAuditVersion(ctx context.Context) (NativeVa
 
 func (e *sshNativeExecution) RecordSecurityAudit(ctx context.Context, result tracker.SecurityAuditReview) error {
 	return e.peer.Call(ctx, "execution.RecordSecurityAudit", nil, result)
+}
+
+func (e *sshNativeExecution) SetDependencyReasonGenerator(generate DependencyReasonGenerator) {
+	e.sources.mu.Lock()
+	defer e.sources.mu.Unlock()
+	e.sources.reasonGenerator = generate
 }

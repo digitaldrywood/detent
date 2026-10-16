@@ -2,6 +2,7 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { conversationWebURL } from "../src/app/lib/conversationHandoff.ts";
 import { makeAccountApi } from "../src/app/account/api.ts";
 import { checkForUpdates, resetUpdateCheckState } from "../src/app/adapters/detentUpdates.ts";
 import { makeRouter } from "../src/app/router.tsx";
@@ -205,4 +206,13 @@ describe("router basepath", () => {
       `${base}/settings/general`,
     );
   });
+});
+
+it("copies conversation links under the readable organization router base without API paths or transient state", () => {
+  setShellMeta(SHARED, null);
+  const meta = document.createElement("meta");
+  meta.name = "detent-router-base";
+  meta.content = "/example-org";
+  document.head.append(meta);
+  expect(conversationWebURL("conv_example", "prj_example")).toBe(`${globalThis.location.origin}/example-org/chat/c/conv_example?project_id=prj_example`);
 });

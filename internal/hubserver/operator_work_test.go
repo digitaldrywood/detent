@@ -418,15 +418,16 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	}
 	input := changeTestInput()
 	sourceDir := t.TempDir()
-	git := func(args ...string) string {
+	gitAt := func(directory string, args ...string) string {
 		t.Helper()
-		command := exec.CommandContext(t.Context(), "git", append([]string{"-C", sourceDir, "-c", "user.name=Source Fixture", "-c", "user.email=source@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
+		command := exec.CommandContext(t.Context(), "git", append([]string{"-C", directory, "-c", "user.name=Source Fixture", "-c", "user.email=source@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}, args...)...)
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("source fixture git %v: %s: %v", args, output, err)
 		}
 		return strings.TrimSpace(string(output))
 	}
+	git := func(args ...string) string { return gitAt(sourceDir, args...) }
 	git("init", "-b", "main")
 	sourcePath := filepath.Join(sourceDir, "source.txt")
 	if err := os.WriteFile(sourcePath, []byte("base source\n"), 0o600); err != nil {
@@ -435,6 +436,8 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	git("add", "source.txt")
 	git("commit", "-m", "base")
 	input.BaseSHA = git("rev-parse", "HEAD")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	git("clone", "--bare", sourceDir, remote)
 	if err := os.WriteFile(sourcePath, []byte("operator source\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -445,6 +448,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bundlePath := filepath.Join(t.TempDir(), "operator.bundle")
+	git("bundle", "create", bundlePath, "main", "^"+input.BaseSHA)
+	capture.Bundle, err = os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture.Source.BundleSHA256 = tracker.ChangeSourceDigest(capture.Bundle)
+	capture.Source.Bytes = int64(len(capture.Bundle))
 	input.Code.Availability = "unverified"
 	fields := map[string]any{"work_item_id": id, "change_id": change.ChangeID, "expected_version_id": "", "base_sha": input.BaseSHA, "head_sha": input.HeadSHA, "merge_base_sha": input.MergeBaseSHA, "repository": input.Repository, "policy_id": input.PolicyID, "code": input.Code, "artifacts": input.Artifacts, "source_capture": capture.Source, "source_bundle": capture.Bundle}
 	sourceOther := newChangeFixture(t, f.service)
@@ -465,10 +476,35 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if !foreignResult.Result.IsError {
 		t.Fatal("foreign tenant source publication succeeded")
 	}
+	setSourceBundle := func(bundle []byte) func(map[string]any) {
+		return func(arguments map[string]any) {
+			metadata := capture.Source
+			metadata.BundleSHA256 = tracker.ChangeSourceDigest(bundle)
+			metadata.Bytes = int64(len(bundle))
+			arguments["source_capture"], arguments["source_bundle"] = metadata, bundle
+		}
+	}
 	for _, denied := range []struct {
 		name string
 		edit func(map[string]any)
 	}{
+		{"source additional refs", setSourceBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+input.HeadSHA+" HEAD\n\n"), 1))},
+		{"source wrong advertised head", setSourceBundle(bytes.Replace(capture.Bundle, []byte(input.HeadSHA+" refs/heads/main"), []byte(input.BaseSHA+" refs/heads/main"), 1))},
+		{"source missing advertised head", setSourceBundle(bytes.Replace(capture.Bundle, []byte(input.HeadSHA+" refs/heads/main\n"), nil, 1))},
+		{"source malformed bundle", setSourceBundle([]byte("retained source"))},
+		{"source invalid pack", setSourceBundle(append(bytes.Clone(bytes.SplitN(capture.Bundle, []byte("\n\n"), 2)[0]), []byte("\n\nretained source")...))},
+		{"source truncated pack", setSourceBundle(capture.Bundle[:len(capture.Bundle)-1])},
+		{"source bundle inflation budget", setSourceBundle(append(append(bytes.Clone(bytes.SplitN(capture.Bundle, []byte("\n\n"), 2)[0]), '\n', '\n'), changeTestPack(t, 1, tracker.MaxChangeDiffBytes+1, nil, 1)...))},
+		{"source pack missing reviewed commit", func(a map[string]any) {
+			fakeHead := strings.Repeat("f", 40)
+			changed := bytes.Replace(capture.Bundle, []byte(input.HeadSHA+" refs/heads/main"), []byte(fakeHead+" refs/heads/main"), 1)
+			setSourceBundle(changed)(a)
+			metadata := a["source_capture"].(tracker.ChangeSource)
+			metadata.HeadSHA = fakeHead
+			a["source_capture"], a["head_sha"] = metadata, fakeHead
+		}},
+		{"source unsupported prerequisite", setSourceBundle(bytes.Replace(capture.Bundle, []byte("\n-"+input.BaseSHA+" "), []byte("\n-"+strings.Repeat("f", 40)+" "), 1))},
+		{"source unsupported capability", setSourceBundle(bytes.Replace(capture.Bundle, []byte("# v2 git bundle\n"), []byte("# v3 git bundle\n@filter=blob:none\n"), 1))},
 		{"missing source metadata", func(a map[string]any) { delete(a, "source_capture") }},
 		{"missing source bytes", func(a map[string]any) { delete(a, "source_bundle") }},
 		{"source digest", func(a map[string]any) {
@@ -517,9 +553,14 @@ func TestHubMCPWorkCommands(t *testing.T) {
 				}
 				return
 			}
-			_, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
+			raw, failed := call(operatortool.PublishChangeVersion, denied.name, arguments)
 			if !failed {
 				t.Fatal("invalid source publication succeeded")
+			}
+			if strings.Contains(denied.name, "advertised") || denied.name == "source additional refs" || strings.Contains(denied.name, "bundle") || strings.Contains(denied.name, "pack") || strings.Contains(denied.name, "unsupported") {
+				if !bytes.Contains(raw, []byte("git bundle create")) || strings.Contains(denied.name, "budget") && !bytes.Contains(raw, []byte("verification budget")) {
+					t.Fatalf("source refusal lacks actionable bundle guidance: %s", raw)
+				}
 			}
 		})
 	}
@@ -543,6 +584,24 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	if !bytes.Equal(response.Body.Bytes(), capture.Bundle) {
 		t.Fatal("MCP publication did not retain the genuine Git bundle")
+	}
+	fresh := filepath.Join(t.TempDir(), "fresh")
+	git("clone", "--no-local", remote, fresh)
+	gitAt(fresh, "remote", "set-url", "origin", input.Repository)
+	gitAt(fresh, "config", "url."+remote+".insteadOf", input.Repository)
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: fresh, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := backend.Create(t.Context(), workspace.Issue{Identifier: "native#1", NativeRework: true, BaseRef: input.BaseSHA, Source: &workspace.ChangeSource{Version: *published.Version, Bundle: response.Body.Bytes()}})
+	if err != nil {
+		t.Fatalf("import accepted operator source: %v", err)
+	}
+	if got := gitAt(restored.Path, "rev-parse", "HEAD"); got != input.HeadSHA {
+		t.Fatalf("recovered head=%s want=%s", got, input.HeadSHA)
+	}
+	if content, err := os.ReadFile(filepath.Join(restored.Path, "source.txt")); err != nil || string(content) != "operator source\n" {
+		t.Fatalf("recovered source=%q: %v", content, err)
 	}
 	foreignSource := sourceOther.path + "/versions/" + published.Version.ID + "/source"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreignSource, sourceOther.token, nil), http.StatusNotFound)

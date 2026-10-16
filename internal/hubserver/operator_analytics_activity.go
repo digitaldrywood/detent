@@ -34,7 +34,7 @@ func projectNativeAnalyticsActivity(out *nativeAnalyticsProject, a *nativeAnalyt
 		a.ActivityUnavailable = "missing_receipt"
 	} else if json.Unmarshal([]byte(raw), &p) != nil || !validAnalyticsActivity(p) {
 		a.ActivityUnavailable = "malformed_receipt"
-	} else {
+	} else if !a.publicActivity {
 		p = workflowmetrics.PublicActivityProfile(p)
 		if !validAnalyticsActivity(p) {
 			a.ActivityUnavailable = "malformed_receipt"

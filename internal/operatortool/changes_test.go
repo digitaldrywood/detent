@@ -12,6 +12,11 @@ import (
 // Catches bypasses of wire bounds/required selectors and credential or producer
 // authority smuggled into direct calls, independent of client-side schemas.
 func TestChangeArgumentBoundary(t *testing.T) {
+	review := `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","version_id":"version_v","expected_revision":1,"decision":"approved","request_id":"r"}`
+	reviewBundle := `{"artifact_id":"artifact_` + strings.Repeat("a", 32) + `","revision":1,"sha256":"` + strings.Repeat("a", 64) + `","head_sha":"` + strings.Repeat("b", 40) + `"}`
+	withBundle := func(bundle string) string {
+		return strings.TrimSuffix(review, "}") + `,"bundle":` + bundle + `}`
+	}
 	publication := map[string]any{"project_id": "prj_p", "work_item_id": "wi_i", "change_id": "change_c", "request_id": "r", "expected_version_id": "", "base_sha": strings.Repeat("a", 40), "head_sha": strings.Repeat("b", 40), "merge_base_sha": strings.Repeat("a", 40), "repository": "https://github.com/example/repo", "policy_id": "policy_p", "code": tracker.ChangeArtifact{Kind: "code", URI: "s3://customer/code", SHA256: strings.Repeat("a", 64), Availability: "unverified"}}
 	publishRaw := func(key string, value any) string {
 		fields := make(map[string]any, len(publication)+1)
@@ -36,7 +41,7 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		if err := json.Unmarshal([]byte(publishRaw("", nil)), &fields); err != nil {
 			t.Fatal(err)
 		}
-		bundle := []byte("source")
+		bundle := []byte("# v2 git bundle\n" + strings.Repeat("b", 40) + " HEAD\n\nsource")
 		fields["source_capture"] = tracker.ChangeSource{Format: "git-bundle", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 		fields["source_bundle"] = bundle
 		if key != "" {
@@ -53,6 +58,15 @@ func TestChangeArgumentBoundary(t *testing.T) {
 		valid           bool
 	}{
 		{"read", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c"}`, true},
+		{"operator review without bundle", ReviewChange, review, true},
+		{"operator review with bundle", ReviewChange, withBundle(reviewBundle), true},
+		{"review missing version", ReviewChange, strings.ReplaceAll(review, `,"version_id":"version_v"`, ""), false},
+		{"review missing revision", ReviewChange, strings.ReplaceAll(review, `,"expected_revision":1`, ""), false},
+		{"review missing request", ReviewChange, strings.ReplaceAll(review, `,"request_id":"r"`, ""), false},
+		{"review incomplete bundle", ReviewChange, withBundle(`{}`), false},
+		{"review invalid bundle digest", ReviewChange, withBundle(strings.ReplaceAll(reviewBundle, strings.Repeat("a", 64), "invalid")), false},
+		{"review invalid bundle head", ReviewChange, withBundle(strings.ReplaceAll(reviewBundle, strings.Repeat("b", 40), "invalid")), false},
+		{"review forged bundle field", ReviewChange, withBundle(strings.TrimSuffix(reviewBundle, "}") + `,"token":"forged"}`), false},
 		{"current evidence page", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","section":"current","limit":2}`, true},
 		{"historical evidence", GetChange, `{"project_id":"prj_p","work_item_id":"wi_i","change_id":"change_c","version_id":"version_old","section":"reviews","cursor":"continuation"}`, true},
 		{"operator publication", PublishChangeVersion, publishRaw("", nil), true},

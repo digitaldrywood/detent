@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -538,19 +539,19 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 	}
 	for index := range page.Items {
 		event := &page.Items[index]
-		if event.Data.RelatedWorkItemID == "" || scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly {
+		if event.Data.RelatedWorkItemID == "" {
 			continue
 		}
-		var count int
-		condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-		args := append([]any{scope.organization, event.Data.RelatedWorkItemID}, grantArgs...)
-		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i WHERE i.organization_id=? AND i.native_id=? AND (`+condition+`)`, args...).Scan(&count)
+		link, err := readNativeDependencyReference(ctx, tx, scope, event.Data.RelatedWorkItemID)
+		if errors.Is(err, sql.ErrNoRows) {
+			event.Data.RelatedWorkItemID = ""
+			event.Data.RelatedIssue = nil
+			continue
+		}
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
-		if count == 0 {
-			event.Data.RelatedWorkItemID = ""
-		}
+		event.Data.RelatedIssue = link
 	}
 	hasMore := len(page.Items) > limit
 	items := page.Items[:min(len(page.Items), limit)]

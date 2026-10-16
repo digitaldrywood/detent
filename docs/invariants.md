@@ -219,19 +219,24 @@ are cherry-picked with `-x` through release-branch PRs. No develop prerelease or
 source-gate-only deployment path is permitted. Staging and production deploy
 the same validated version and binary; enrolled runners follow the Hub through
 the existing coordinated update owner.
-Every failing scheduled job is reported through the
-selected native owner at least High into Todo under a stable job fingerprint,
+Failing Detent release suites share one open stabilization owner per release
+series, with each failed job's evidence and replay identity retained in bounded
+occurrences. Develop retains per-job reporting under stable job fingerprints;
+other projects retain their configured reporting behavior. Reports enter native
+Todo at least High,
 following [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting);
 infrastructure reports carry the infrastructure label and CI-instance
 attribution, and failed Cloud publication never falls back to GitHub issue
-writes. Plain checkouts compile and test without ignored assets; build owners
+writes. Explicit workflow cancellation stops finalization and creates no repair
+issues, including before the run conclusion settles; timeouts and cancelled
+jobs without workflow cancellation remain reportable and never authorize a tag. Plain checkouts compile and test without ignored assets; build owners
 prepare conversation bundles and configuration references before deployment.
 
 **Enforcement:** `TestRepositoryWorkflow`,
 `TestRepositoryHasNoPullRequestActions`, and `TestWorkflowViolations` in
 `internal/invariants`; `TestMakeCheckFastOverlapsWorktrees` in
 `tools/checklock`; `TestParseProblems`, `TestReport`, `TestCloudReport`,
-`TestCloudDestinationAuthority`, and `TestScheduledFinalizer` in
+`TestCloudDestinationAuthority`, `TestReleaseStabilization`, and `TestScheduledFinalizer` in
 `tools/cifailure`. Review preserves project-specific policy and release authority.
 
 ## INV-6 — Isolated Codex home
@@ -260,7 +265,10 @@ imported provenance and matches open work before filing: a matching open issue
 receives an occurrence or comment, never a duplicate, and when every match is
 closed the newest one is already handled and nothing is created or changed.
 Occurrence evidence identifies runs, attempts, commits and jobs without
-changing problem identity.
+changing problem identity. Detent release stabilization uses a stable release-series
+fingerprint, retaining the original job occurrence identities. A later failure
+after a stabilization owner completes starts a new episode without reopening
+terminal work; replaying a terminal occurrence changes nothing.
 
 The worker's `file_machine_issue` tool accepts integer priority ranks 1–4
 (Urgent to Low); omission leaves priority unset and body prose never supplies
@@ -274,7 +282,7 @@ Other worker follow-ups remain Backlog. Reuse preserves existing lanes, holds
 and scheduled job origin stamps.
 
 **Enforcement:** `TestMachineIssueTool` in `internal/orchestrator`;
-`TestNativeMachineDefectOccurrences` in `internal/hubserver` and
+`TestNativeMachineDefectOccurrences` and `TestNativeReleaseStabilizationOccurrences` in `internal/hubserver` and
 `TestDefectFingerprint` in `internal/issueorigin`;
 `TestMachineIssueDuplicate`, `TestMachineIssueSeparateConnectors`,
 `TestMachineOriginSurvivesBodyUpdates`,

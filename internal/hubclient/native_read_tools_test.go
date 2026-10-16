@@ -118,12 +118,12 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	version := h.publish(t, item, change.ID, strings.Repeat("a", 40))
+	version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
 	if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: "Current version finding"}); err != nil {
 		t.Fatal(err)
 	}
-	for i := range 6 {
-		version = h.publish(t, item, change.ID, strings.Repeat(strconv.Itoa(i+1), 40), version.ID)
+	for _, label := range []string{"c", "d", "e", "f", "g", "h"} {
+		version = h.publish(t, item, change.ID, nativeChangeFixtureHead(label), version.ID)
 	}
 	for range 9 {
 		if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: version.ID, Body: strings.Repeat("é<\n", 5000)}); err != nil {

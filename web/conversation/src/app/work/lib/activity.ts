@@ -1,3 +1,4 @@
+import { dependencyLabel } from "./dependencies.ts";
 // The issue page's activity feed, merged client-side.
 //
 // Decisions §19.2: the feed is the work item's history, its attempts, the
@@ -173,8 +174,8 @@ export function historySentence(event: CollaborationEvent): HistorySentence {
         icon: "related",
         sentence:
           data.operation === "remove"
-            ? `removed the dependency on ${data.related_work_item_id ?? "another issue"}`
-            : `made this depend on ${data.related_work_item_id ?? "another issue"}`,
+            ? `removed the dependency on ${data.related_issue ? dependencyLabel(data.related_issue) : "another issue"}`
+            : `made this depend on ${data.related_issue ? dependencyLabel(data.related_issue) : "another issue"}`,
         lowValue: false,
       };
     case "comment.created":

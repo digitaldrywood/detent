@@ -54,7 +54,14 @@ WHERE i.organization_id = ? AND i.project_id = ?`+window+` ORDER BY ws.terminal,
 			if err := rows.Scan(&match.WorkItemID, &match.Number, &match.Title, &match.State, &body); err != nil {
 				return nil, errors.Join(err, rows.Close())
 			}
-			if issueorigin.SameDefect(body, request.Body) {
+			same := issueorigin.SameDefect(body, request.Body)
+			if string(scope.project) == issueorigin.DetentCloudProjectID {
+				previous, current := issueorigin.ReleaseStabilizationSeries(body), issueorigin.ReleaseStabilizationSeries(request.Body)
+				if previous != "" || current != "" {
+					same = previous != "" && previous == current
+				}
+			}
+			if same {
 				match.Identifier = string(scope.project) + "#" + strconv.Itoa(match.Number)
 				match.Why = "Matching machine fingerprint"
 				matches = append(matches, match)
