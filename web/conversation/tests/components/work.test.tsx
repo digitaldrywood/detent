@@ -276,6 +276,13 @@ describe("the board card", () => {
     expect(await screen.findByRole("link", { name: /#7 Foundation/ })).not.toBeNull();
     expect(screen.queryByText("Waits for the shared foundation.")).toBeNull();
     expect(screen.getByText("Unblocks 1")).not.toBeNull();
+    fireEvent.focus(screen.getByRole("button", { name: "Unblocks 1" }));
+    expect(await screen.findByRole("link", { name: "#7 Foundation" })).not.toBeNull();
+    const completed = toWorkItemView({ ...(itemFixture as unknown as NativeIssue), dependents: [{ ...blocker, state: "Done", terminal: true }] }, "example-project");
+    rendered.rerender(<IssueCard {...props} item={{ ...view, dependents: completed.dependents }} />);
+    expect(screen.queryByRole("button", { name: "Unblocks 1" })).toBeNull();
+    rendered.rerender(<IssueCard {...props} item={{ ...view, dependents: [] }} />);
+    expect(screen.queryByRole("button", { name: "Unblocks 1" })).toBeNull();
   });
 
   it("shows blocked and unblocks panels without requiring a sentence, then queues from live data", () => {

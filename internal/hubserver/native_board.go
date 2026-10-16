@@ -18,6 +18,42 @@ import (
 
 const nativeBoardReplayLimit = 2048
 
+func (s *Service) maintainNativeBoard(ctx context.Context) {
+	deadline := time.Now().Add(analyticsBackfillBudget)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		more, err := s.database.drainNativeBoardDirty(ctx, s.config.now())
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
+		}
+		if err != nil || !more {
+			return
+		}
+	}
+}
+
+func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bool, error) {
+	var id string
+	err := d.reader.QueryRowContext(ctx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1").Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := refreshNativeBoardCard(ctx, tx, id, now, map[string]changeSummaryPolicy{}); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_dirty WHERE work_item_id=?", id); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
 func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
 	readOnly, err := queryOnlyTx(ctx, tx)
 	if err != nil {

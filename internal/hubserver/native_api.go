@@ -402,6 +402,14 @@ type nativeCommandOptions struct {
 	OperationID, Item, Feature               string
 	CheckPrincipal, RequireLease, Completion bool
 	ArtifactRead                             bool
+	DeferBoardProjection                     bool
+}
+
+func (options nativeCommandOptions) commit(ctx context.Context, d *database, tx *sql.Tx) error {
+	if options.DeferBoardProjection {
+		return tx.Commit()
+	}
+	return d.commit(ctx, tx)
 }
 
 // executeNativeMutation owns the shared transaction, current native authority,
@@ -456,7 +464,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	if found {
-		if err := s.database.commit(ctx, tx); err != nil {
+		if err := options.commit(ctx, s.database, tx); err != nil {
 			return nil, err
 		}
 		return json.RawMessage(response), nil
@@ -524,8 +532,14 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 	}
-	if err := s.database.commit(ctx, tx); err != nil {
+	if err := options.commit(ctx, s.database, tx); err != nil {
 		return nil, err
+	}
+	if options.DeferBoardProjection {
+		select {
+		case s.boardRefresh <- struct{}{}:
+		default:
+		}
 	}
 	s.notifyNativeDispatch(ctx, scope, input)
 	return json.RawMessage(response), nil
