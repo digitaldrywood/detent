@@ -293,7 +293,10 @@ describe("the board card", () => {
     expect(screen.getByRole("region", { name: "Unblocks" }).textContent).toContain("Enables the dependent feature.");
     rendered.rerender(<DependencyPanels item={{ ...view, blockers: [{ ...link, terminal: true, state: "Done" }] }} queued />);
     expect(screen.queryByRole("region", { name: "Blocked" })).toBeNull();
-    expect(screen.getByRole("region", { name: "Queued" }).textContent).toContain("Unblocked when #7 Foundation landed; starts when a runner frees up.");
+    expect(screen.getByRole("region", { name: "Queued" }).textContent).toContain("Unblocked when #7 Foundation landed; waiting to start.");
+    rendered.rerender(<DependencyPanels item={{ ...view, attempt: toAttemptView([{ ...ATTEMPTS[0]!, status: "failed" }]), blockers: [{ ...link, terminal: true, state: "Done" }] }} queued />);
+    expect(screen.getByRole("region", { name: "Queued" }).textContent).toContain("landed; waiting to start.");
+    expect(screen.queryByText(/runner frees up/)).toBeNull();
     rendered.rerender(<DependencyPanels item={{ ...view, dependencyReady: false, blockers: [{ ...link, terminal: true, state: "Done" }] }} queued />);
     expect(screen.queryByRole("region", { name: "Queued" })).toBeNull();
   });

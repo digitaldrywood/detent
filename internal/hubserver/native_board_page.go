@@ -302,13 +302,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		card.Issue.Actor.DisplayName = displayName
 		card.Issue.Snippet = snippet
 		card.Issue.SearchScore = position.Score
-		if err := readNativeDependencyDetails(ctx, tx, scope, &card.Issue); err != nil {
-			return page, err
-		}
-		redactNativeBoardCard(&card, grants)
-		card.Issue = s.nativeIssueResponse(card.Issue)
 		page.Cards = append(page.Cards, card)
-		page.Items = append(page.Items, card.Issue)
 		cursor.Issues = position
 	}
 	if err := rows.Err(); err != nil {
@@ -316,6 +310,19 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	}
 	if err := rows.Close(); err != nil {
 		return page, err
+	}
+	issues := make([]*tracker.NativeIssue, len(page.Cards))
+	for index := range page.Cards {
+		issues[index] = &page.Cards[index].Issue
+	}
+	if err := readNativeDependencyDetailsBatch(ctx, tx, scope, issues); err != nil {
+		return page, err
+	}
+	for index := range page.Cards {
+		card := &page.Cards[index]
+		redactNativeBoardCard(card, grants)
+		card.Issue = s.nativeIssueResponse(card.Issue)
+		page.Items = append(page.Items, card.Issue)
 	}
 	return page, tx.Commit()
 }

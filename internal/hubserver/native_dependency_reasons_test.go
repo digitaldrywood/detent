@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -106,6 +108,57 @@ func TestDependencyReasonPlainText(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", test.text), func(t *testing.T) {
 			if got := validDependencyReason(test.text); got != test.want {
 				t.Fatalf("valid=%v want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNativeDependencyBatchReadCost(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	blocker := f.create(t, "Shared foundation")
+	dependent := f.create(t, "Dependent feature")
+	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE copies(n) AS (
+ SELECT 3 UNION ALL SELECT n+1 FROM copies WHERE n<2000)
+ INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
+ SELECT 'wi_batch_' || n,organization_id,project_id,n,workflow_state_id,'Dependent feature ' || n,'','open','1',source_updated_at,synchronized_at,created_at,updated_at
+ FROM issues,copies WHERE native_id=?`, dependent.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	now := formatHubTime(time.Now())
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_dependencies(blocker_issue_id,dependent_issue_id,provenance,created_at,updated_at)
+ SELECT b.id,d.id,'native',?,? FROM issues b JOIN issues d ON d.project_id=b.project_id AND d.id<>b.id WHERE b.native_id=?`, now, now, blocker.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_relationships(first_issue_id,second_issue_id,relationship_type,created_at)
+ SELECT b.id,d.id,'related',? FROM issues b JOIN issues d ON d.project_id=b.project_id AND d.id>b.id WHERE b.native_id=?`, now, blocker.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	for _, size := range []int{2, 2000} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			issues := make([]*tracker.NativeIssue, size)
+			issues[0] = &tracker.NativeIssue{NativeReference: blocker.NativeReference}
+			issues[1] = &tracker.NativeIssue{NativeReference: dependent.NativeReference}
+			for index := 2; index < size; index++ {
+				issues[index] = &tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_batch_%d", index+1)), ProjectID: f.project.ID}}
+			}
+			q := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+			start := time.Now()
+			if err := readNativeDependencyDetailsBatch(t.Context(), q, scope, issues); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("hydrated %d issues in %s with %d queries", size, time.Since(start), len(q.statements))
+			if len(q.statements) != 3 {
+				t.Fatalf("dependency query count scales with cards: %d", len(q.statements))
+			}
+			if len(issues[0].Dependents) != 1999 || !issues[0].DependencyReady || len(issues[0].Blockers) != 0 {
+				t.Fatalf("blocker hydration: dependents=%d ready=%v", len(issues[0].Dependents), issues[0].DependencyReady)
+			}
+			for _, issue := range issues[1:] {
+				if len(issue.Blockers) != 1 || issue.Blockers[0].ID != blocker.WorkItemID || issue.Blockers[0].Title != "Shared foundation" || issue.DependencyReady || len(issue.Related) != 1 || issue.Related[0].ID != blocker.WorkItemID {
+					t.Fatalf("dependent hydration: %+v", issue)
+				}
 			}
 		})
 	}
