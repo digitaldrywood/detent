@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -53,7 +54,9 @@ func (e nativeOperatorExecutor) workflowProposal(ctx context.Context, scope nati
 		return chat.Action{}, hubSafeChangeError(err)
 	}
 	if err := validateNativeWorkflowTransition(project.States, issue.State, request.TargetState, scope.credential.Scope); err != nil {
-		if issue.State == request.TargetState {
+		if issue.State == request.TargetState && slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
+			return state.Name == issue.State && state.Dispatchable && !state.Terminal
+		}) {
 			return chat.Action{}, &operatortool.RequestError{Code: "invalid_request", Message: "move_item cannot resume an item already in the requested state. Read explain_item and the linked issue conversation snapshot, then send its continue command at POST /api/v2/organizations/{organization}/projects/{project}/conversations/{conversation}/commands with the current expected.attempt_id. Resolve remaining blockers through their recorded owners; a comment does not resolve an external prerequisite. resume_local_project only resumes a paused project."}
 		}
 		return chat.Action{}, err
