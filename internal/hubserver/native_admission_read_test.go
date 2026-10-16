@@ -45,7 +45,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		unavailable        string
 		authority          string
 		status             int
+		nondispatchable    bool
+		terminal           bool
 	}{
+		{name: "workflow state exclusion is actionable", heartbeat: true, nondispatchable: true, outcome: "skipped", code: "inactive_state", reason: "Native workflow state Todo is not dispatchable"},
+		{name: "terminal workflow state exclusion is actionable", heartbeat: true, terminal: true, outcome: "skipped", code: "inactive_state", reason: "Native workflow state Todo is terminal"},
 		{name: "stored observation cannot survive revoked credential", heartbeat: true, authority: "revoked", status: http.StatusUnauthorized},
 		{name: "stored observation cannot survive removed grant", heartbeat: true, authority: "grant", status: http.StatusNotFound},
 		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
@@ -152,6 +156,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				descriptor = descriptor.WithID()
 			}
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			if test.nondispatchable || test.terminal {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET dispatchable=0, terminal=? WHERE id=(SELECT workflow_state_id FROM issues WHERE native_id=?)", test.terminal, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.provider != "" {
 				report := capacityReport(now)
 				report.Availability = test.provider
@@ -420,10 +429,14 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					status = http.StatusConflict
 				}
 				requireNativeStatus(t, response, status)
-				if status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"`+test.code+`"`) {
+				claimCode := test.code
+				if test.nondispatchable || test.terminal {
+					claimCode = "no_claimable_work"
+				}
+				if status == http.StatusConflict && !strings.Contains(response.Body.String(), `"code":"`+claimCode+`"`) {
 					t.Fatalf("explanation disagrees with claim refusal: %s", response.Body)
 				}
-				if test.reason != "" {
+				if test.reason != "" && !test.nondispatchable && !test.terminal {
 					response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					var recorded tracker.NativeRuntimeEvidence
