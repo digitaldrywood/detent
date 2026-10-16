@@ -100,6 +100,7 @@ async function mountApp(options: MountOptions | CoordinatorMode = {}) {
   const path =
     typeof settings.path === "function" ? settings.path() : (settings.path ?? "/chat");
   const router = makeRouter(createMemoryHistory({ initialEntries: [path] }));
+  await router.load();
   render(
     <RegistryProvider>
       <ClientContext.Provider value={client}>
@@ -147,8 +148,14 @@ describe("the conversation shell", () => {
     });
     const endpoint = `${hub.url}/api/v2/organizations/org_mock/projects/proj_alpha/conversations/${conversationId}`;
     const before = await (await fetch(endpoint)).json();
-    const copy = async (name: string) => {
+    const openThreadActions = async () => {
       fireEvent.click(await screen.findByRole("button", { name: "Thread actions for Private handoff" }, { timeout: 5000 }));
+      await act(async () => {
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      });
+    };
+    const copy = async (name: string) => {
+      await openThreadActions();
       fireEvent.click(await screen.findByRole("button", { name }));
       await waitFor(() => expect(writeText).toHaveBeenCalled());
     };
@@ -169,7 +176,7 @@ describe("the conversation shell", () => {
     expect(handoff).not.toContain(client.bootstrap.csrf_token);
     expect(await (await fetch(endpoint)).json()).toEqual(before);
     writeText.mockRejectedValueOnce(new Error("denied"));
-    fireEvent.click(screen.getByRole("button", { name: "Thread actions for Private handoff" }));
+    await openThreadActions();
     fireEvent.click(await screen.findByRole("button", { name: "Copy link" }));
     expect(await screen.findByText("Could not copy to clipboard")).toBeTruthy();
   });
