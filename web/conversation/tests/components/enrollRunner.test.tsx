@@ -256,11 +256,15 @@ describe("the Enroll dialog", () => {
     expect(writeText.mock.calls[0]![0]).not.toContain("--service");
     expect(document.body.innerHTML).not.toContain("det_enroll_secret");
   });
-  it("restores both machine access choices after choosing a Sprite", async () => {
+  it.each([null, "Sandbox", "Full access"])("restores the machine access choice %s after choosing a Sprite", async (choice) => {
     await mountDialog(undefined, false, [], undefined, true, "v1.2.3", false);
+    if (choice !== null) fireEvent.click(screen.getByRole("radio", { name: choice }));
     fireEvent.click(screen.getByRole("radio", { name: "A Fly Sprite" }));
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(screen.getByRole("radio", { name: "A machine I run" }));
+    for (const label of ["Sandbox", "Full access"]) {
+      expect(screen.getByRole("radio", { name: label }).getAttribute("aria-checked")).toBe(String(choice === label));
+    }
     const sandbox = screen.getByRole("radio", { name: "Sandbox" }) as HTMLInputElement;
     expect(sandbox.getAttribute("aria-disabled")).not.toBe("true");
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-disabled")).not.toBe("true");
