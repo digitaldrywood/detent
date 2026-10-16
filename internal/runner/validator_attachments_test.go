@@ -40,6 +40,9 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 		invalidUTF8 bool
 		oversized   bool
 		wrongReview bool
+		textBytes   int
+		truncated   bool
+		splitRune   bool
 	}{
 		{name: "published image read across pages"},
 		{name: "digest mismatch", corrupt: true},
@@ -52,6 +55,11 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 		{name: "invalid text encoding", text: true, invalidUTF8: true},
 		{name: "text read exceeds requested byte bound", text: true, oversized: true},
 		{name: "text receipt from another review", text: true, wrongReview: true},
+		{name: "text at display bound", text: true, textBytes: operatortool.AttachmentContentBytes},
+		{name: "text over display bound", text: true, textBytes: operatortool.AttachmentContentBytes + 1, truncated: true},
+		{name: "display bound does not split a UTF-8 rune", text: true, truncated: true, splitRune: true},
+		{name: "multi-megabyte text is bounded without observation receipt", text: true, textBytes: 2 << 20, truncated: true},
+		{name: "omitted text still participates in digest verification", text: true, textBytes: 2 << 20, truncated: true, corrupt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -59,6 +67,12 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 			metadata := metadata
 			if test.text {
 				content = []byte("bootstrap source_sha256=example-source-digest\npsql installed\npartial installation recovered\nfull bootstrap succeeded\nfull rerun succeeded\n")
+				if test.textBytes > 0 {
+					content = []byte(strings.Repeat("x", test.textBytes))
+				}
+				if test.splitRune {
+					content = []byte(strings.Repeat("x", operatortool.AttachmentContentBytes-1) + "é")
+				}
 				if test.invalidUTF8 {
 					content[0] = 0xff
 				}
@@ -86,7 +100,7 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 					end = min(end+1, len(content))
 				}
 				chunk := slices.Clone(content[input.Offset:end])
-				if test.corrupt && calls > 1 {
+				if test.corrupt && calls > 1 && (!test.truncated || end == len(content)) {
 					chunk[0] ^= 1
 				}
 				data, err := json.Marshal(operatortool.AttachmentContentResult{Metadata: metadata, ContentBase64: base64.StdEncoding.EncodeToString(chunk), Offset: input.Offset, ReturnedBytes: len(chunk), EOF: end == len(content), MaxContentBytes: operatortool.AttachmentContentBytes})
@@ -116,6 +130,30 @@ func TestValidatorReadsPublishedAttachments(t *testing.T) {
 				return
 			}
 			reads := reader.evidence()
+			if test.truncated {
+				var observed struct {
+					Metadata    attachment.Metadata  `json:"metadata"`
+					Content     string               `json:"content"`
+					Truncated   bool                 `json:"truncated"`
+					ReadReceipt *gate.AttachmentRead `json:"read_receipt"`
+				}
+				if err := json.Unmarshal([]byte(result.Content), &observed); err != nil {
+					t.Fatal(err)
+				}
+				wantBytes := operatortool.AttachmentContentBytes
+				if test.splitRune {
+					wantBytes--
+				}
+				if !observed.Truncated || len(observed.Content) != wantBytes || observed.Content != string(content[:wantBytes]) || len(result.Content) > operatortool.AttachmentContentBytes+4096 || observed.Metadata.SHA256 != metadata.SHA256 || observed.ReadReceipt != nil || len(reads) != 0 || result.ImageURL != "" {
+					t.Fatalf("truncated text was unbounded or supplied evidence: bytes=%d truncated=%v reads=%v", len(result.Content), observed.Truncated, reads)
+				}
+				validation := gate.ValidatorResult{HeadSHA: "review-head", AttachmentReads: reads, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Full log inspected", Kind: gate.EvidenceAttachment, Reference: metadata.Name, ReceiptIDs: []string{"attachment:" + metadata.ID + ":" + metadata.SHA256}, HeadSHA: "review-head", TreeSHA: "review-tree", Behavior: "Claimed complete log inspection"}}}
+				gate.NormalizeCriterionEvidence(&validation, []string{"Full log inspected"}, "review-tree")
+				if len(validation.NotVerified) != 1 {
+					t.Fatal("omitted text incorrectly accepted as fully inspected")
+				}
+				return
+			}
 			if calls != 2 || len(reads) != 1 || reads[0].SHA256 != metadata.SHA256 || reads[0].CommentID != metadata.CommentID || !strings.Contains(result.Content, reads[0].ReceiptID) {
 				t.Fatalf("published attachment not supplied with source-bound read receipt: calls=%d reads=%v", calls, reads)
 			}
