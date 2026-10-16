@@ -459,6 +459,11 @@ func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwn
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	result.Command = command
 	result.ExitCode = -1
+	ctx, release, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, release()) }()
 	selection, paged := ctx.Value(reviewOutputRangeKey{}).(ReviewOutputRange)
 	if paged && (selection.Offset < 0 || selection.Length < 1 || selection.Length > ReviewSourcePageBytes) {
 		return result, errors.New("invalid review output range")
