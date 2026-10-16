@@ -9,6 +9,7 @@ import fleet from "../../web/conversation/src/contracts/fixtures/account-fleet.j
 import spritePool from "./providers-runners-sprite-pool.json";
 
 const params = new URLSearchParams(location.search);
+const poolState = params.get("poolState");
 const projects = [
   { id: "proj_preview", name: "Preview project", can_write: true },
   ...(params.has("multipleProjects") ? [{ id: "proj_second", name: "Second project", can_write: true }, { id: "proj_viewer", name: "Read-only project", can_write: false }] : []),
@@ -20,7 +21,7 @@ const client = {
     version: params.get("version") ?? "v0.9.1",
     organization: { id: "org_preview", name: "Example Organization" },
     organizations: [{ current: true, public_url: "https://runners.detent.test" }],
-    actor: { can_manage: true, can_manage_runners: true },
+    actor: { can_manage: poolState !== "permissions", can_manage_runners: true },
     projects,
     base_path: "",
   },
@@ -40,7 +41,10 @@ if (location.protocol === "file:") {
     availability: { timezone: "America/Chicago", windows: ["Mon-Fri 09:00-17:00"], hard_deadline: "30m" },
   } })) };
   globalThis.fetch = async (input, init) => {
-    if (String(input).endsWith("/sprite-pool")) return new Response(JSON.stringify(spritePool));
+    if (String(input).endsWith("/sprite-pool")) {
+      if (poolState === "failure") return new Response(JSON.stringify({ code: "unavailable", message: "Pool request failed" }), { status: 503 });
+      return new Response(JSON.stringify(poolState === "not-set-up" ? { ...spritePool, min_runners: 0, max_runners: 0, idle_seconds: 300, bootstrap: "", revision: 0, members: [] } : spritePool));
+    }
     if (String(input).endsWith("/routing") && init?.method === "PUT") {
       const id = String(input).split("/").at(-2);
       const { expected_revision, ...routing } = JSON.parse(String(init.body));
@@ -49,7 +53,7 @@ if (location.protocol === "file:") {
         : runner) };
       return new Response("{}", { status: 200 });
     }
-    if (String(input).endsWith("/secrets/fly_sprites_token")) return new Response(JSON.stringify({ kind: "fly_sprites_token", present: false }));
+    if (String(input).endsWith("/secrets/fly_sprites_token")) return new Response(JSON.stringify({ kind: "fly_sprites_token", present: poolState !== "missing-token" && poolState !== null }));
     const enrollment = String(input).endsWith("/runner-enrollments");
     return new Response(JSON.stringify(enrollment
       ? { id: "preview_enrollment", token: "preview_token", expires_at: "2026-09-10T12:24:31Z" }
