@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -129,6 +130,65 @@ func TestRunnerProviderReports(t *testing.T) {
 				}
 				now = now.Add(30 * time.Second)
 			}
+		})
+	}
+}
+
+func TestRunnerProviderProjectReports(t *testing.T) {
+	t.Parallel()
+	for _, catalog := range []bool{false, true} {
+		t.Run(fmt.Sprintf("catalog=%t", catalog), func(t *testing.T) {
+			t.Parallel()
+			cfg := globalconfig.Config{Client: globalconfig.HubClient{IdentityFile: "enrolled"}}
+			write := func(name, backend, kind, model string) globalconfig.Project {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+				raw := fmt.Sprintf("---\nagents:\n  backends:\n    - id: %s\n      kind: %s\n  routes:\n    - name: default\n      default: true\n      backend: %s\n      model: %s\n---\nWork on the issue.\n", backend, kind, backend, model)
+				if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return globalconfig.Project{ID: name, Workflow: path}
+			}
+			cfg.Projects = []globalconfig.Project{write("code", "codex-code", "codex", "sol"), write("design", "claude-design", "claude_code", "opus")}
+			now := time.Now().UTC()
+			source := runnerProviderReports(t.Context(), cfg, "runner", func() time.Time { return now }, func(_ context.Context, backend workflowconfig.AgentBackend) ([]runner.AgentModel, error) {
+				if !catalog {
+					return nil, nil
+				}
+				if backend.ID == "codex-code" {
+					return []runner.AgentModel{{ID: "sol", Model: "code-model"}}, nil
+				}
+				return []runner.AgentModel{{ID: "opus", Model: "design-model"}}, nil
+			}, nil)
+			check := func(designModel string) {
+				t.Helper()
+				reports, err := source()
+				if err != nil || len(reports) != 2 {
+					t.Fatalf("project reports=%+v, err=%v", reports, err)
+				}
+				for i, expected := range []struct{ backend, provider, model string }{{"codex-code", "openai", "sol"}, {"claude-design", "anthropic", designModel}} {
+					report := reports[i]
+					want := []string{expected.model, "provider_default"}
+					if catalog {
+						want = []string{expected.model, []string{"code-model", "design-model"}[i], "provider_default"}
+						if i == 1 && designModel != "opus" {
+							want = []string{"opus", "design-model", designModel, "provider_default"}
+						}
+					}
+					if report.Backend != expected.backend || report.Provider != expected.provider || report.Availability != "unknown" || report.MaxConcurrent != 0 || !reflect.DeepEqual(report.Models, want) {
+						t.Fatalf("project report=%+v, want backend=%s models=%v", report, expected.backend, want)
+					}
+				}
+			}
+			check("opus")
+			raw, err := os.ReadFile(cfg.Projects[1].Workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg.Projects[1].Workflow, []byte(strings.ReplaceAll(string(raw), "model: opus", "model: sonnet")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			check("sonnet")
 		})
 	}
 }
