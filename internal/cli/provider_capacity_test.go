@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -157,15 +158,21 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 					return nil, nil
 				}
 				if backend.ID == "codex-code" {
+					if backend.CodexOptions().TurnTimeoutMS == 1000 {
+						return []runner.AgentModel{{ID: "astra", Model: "other-code-model"}}, nil
+					}
 					return []runner.AgentModel{{ID: "sol", Model: "code-model"}}, nil
 				}
 				return []runner.AgentModel{{ID: "opus", Model: "design-model"}}, nil
 			}, nil)
-			check := func(designModel string) {
+			check := func(designModel string, codeModels ...string) {
 				t.Helper()
 				reports, err := source()
 				if err != nil || len(reports) != 2 {
 					t.Fatalf("project reports=%+v, err=%v", reports, err)
+				}
+				if err := providercapacity.Validate(reports); err != nil {
+					t.Fatalf("invalid project reports: %v", err)
 				}
 				for i, expected := range []struct{ backend, provider, model string }{{"codex-code", "openai", "sol"}, {"claude-design", "anthropic", designModel}} {
 					report := reports[i]
@@ -176,7 +183,13 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 							want = []string{"opus", "design-model", designModel, "provider_default"}
 						}
 					}
-					if report.Backend != expected.backend || report.Provider != expected.provider || report.Availability != "unknown" || report.MaxConcurrent != 0 || !reflect.DeepEqual(report.Models, want) {
+					if i == 0 {
+						want = append(want, codeModels...)
+					}
+					slices.Sort(want)
+					got := slices.Clone(report.Models)
+					slices.Sort(got)
+					if report.Backend != expected.backend || report.Provider != expected.provider || report.Availability != "unknown" || report.MaxConcurrent != 0 || !slices.Equal(got, want) {
 						t.Fatalf("project report=%+v, want backend=%s models=%v", report, expected.backend, want)
 					}
 				}
@@ -195,6 +208,41 @@ func TestRunnerProviderProjectReports(t *testing.T) {
 			check("haiku")
 			projects.cfg.Projects = append(projects.cfg.Projects, write("other-code", "codex-code", "codex", "sol"))
 			check("haiku")
+			other := &projects.cfg.Projects[2]
+			raw, err = os.ReadFile(other.Workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw = []byte(strings.ReplaceAll(string(raw), "kind: codex", "kind: codex\n      options:\n        turn_timeout_ms: 1000"))
+			raw = []byte(strings.ReplaceAll(string(raw), "model: sol", "model: astra"))
+			if err := os.WriteFile(other.Workflow, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if catalog {
+				check("haiku", "astra", "other-code-model")
+			} else {
+				check("haiku", "astra")
+			}
+			for _, conflict := range []struct{ name, from, to string }{
+				{"provider", "kind: codex", "kind: codex\n      provider: other-provider"},
+				{"account command", "kind: codex", "kind: codex\n      command: env CODEX_HOME=/example/other codex app-server"},
+				{"model provider", "turn_timeout_ms: 1000", "turn_timeout_ms: 1000\n        model_provider: other-provider"},
+				{"shell", "turn_timeout_ms: 1000", "turn_timeout_ms: 1000\n        shell: other-shell"},
+				{"backend kind", "kind: codex\n      options:\n        turn_timeout_ms: 1000", "kind: claude_code"},
+			} {
+				t.Run(conflict.name, func(t *testing.T) {
+					if err := os.WriteFile(other.Workflow, []byte(strings.ReplaceAll(string(raw), conflict.from, conflict.to)), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					reports, err := source()
+					if err != nil || len(reports) != 1 || reports[0].Backend != "claude-design" || reports[0].Provider != "anthropic" || !slices.Contains(reports[0].Models, "haiku") || reports[0].Availability != "unknown" {
+						t.Fatalf("unrelated report after identity conflict=%+v, err=%v", reports, err)
+					}
+					if err := providercapacity.Validate(reports); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
 			cfg.Client.ProviderCapacityFile = writeProviderCapacityFixture(t, t.TempDir())
 			reports, err := source()
 			if err != nil || len(reports) != 1 || reports[0].Backend != "codex" || !reflect.DeepEqual(reports[0].Models, []string{"provider_default"}) {
