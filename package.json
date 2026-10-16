@@ -9,6 +9,7 @@
     "@axe-core/playwright": "^4.10.0",
     "@playwright/test": "^1.61.0",
     "@tailwindcss/cli": "4.3.0",
-    "tailwindcss": "4.3.0"
+    "tailwindcss": "4.3.0",
+    "yaml": "2.8.3"
   }
 }

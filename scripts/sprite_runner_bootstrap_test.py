@@ -181,7 +181,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         node = shutil.which("node")
         module = subprocess.run([node, "-p", "require.resolve('yaml/package.json')"],
                                 text=True, capture_output=True, timeout=10)
-        self.assertEqual(module.returncode, 0, "Install yaml@2.8.3 and expose it through NODE_PATH: " + module.stderr)
+        self.assertEqual(module.returncode, 0, "Run npm ci from the repository root to install the fixture dependencies: " + module.stderr)
         self.env = dict(os.environ, HOME=str(self.home), FIXTURE_ROOT=str(self.root),
                         FIXTURE_NODE=node, FIXTURE_YAML_MODULE=str(pathlib.Path(module.stdout.strip()).parent),
                         PATH=str(self.fake_bin) + os.pathsep + os.environ["PATH"],
