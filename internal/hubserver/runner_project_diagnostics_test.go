@@ -26,6 +26,13 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "rolling.current", "protocol_major": 2, "backend_isolation": r.redemption.BackendIsolation, "project_configuration": view}), http.StatusOK)
 	}
 	post()
+	second := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+	second.enroll(t)
+	ambiguous := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?issue_id=wi_unmatched&limit=20", r.redemption.Credential, nil)
+	failure := requireNativeCode(t, ambiguous, http.StatusUnprocessableEntity, "invalid_request")
+	if failure.Message != "Multiple runners report this project; select runner_id" {
+		t.Fatalf("ambiguous diagnostic=%+v", failure)
+	}
 	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID+"&issue_id=wi_unmatched", r.redemption.Credential, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var workerPage runnerauth.DiagnosticPage
@@ -58,6 +65,17 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		return page, err
 	}
 	args := operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID, Limit: 1}
+	ambiguousArgs := args
+	ambiguousArgs.RunnerID = ""
+	var refusal *operatortool.RequestError
+	if _, err := call(ctx, ambiguousArgs); !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != failure.Message {
+		t.Fatalf("ambiguous MCP diagnostic=%v", err)
+	}
+	secondArgs := args
+	secondArgs.RunnerID = second.binding.RunnerID
+	if page, err := call(ctx, secondArgs); err != nil || page.RunnerID != second.binding.RunnerID {
+		t.Fatalf("second runner diagnostic=%+v err=%v", page, err)
+	}
 	var before string
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT project_configuration_json || routing_settings_json || cast(revision AS TEXT) || last_heartbeat_at FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&before); err != nil {
 		t.Fatal(err)
@@ -112,4 +130,11 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	if err != nil || page.Status != "offline" || page.RunnerID != r.binding.RunnerID {
 		t.Fatalf("offline=%+v %v", page, err)
 	}
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-diagnostics")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/runner-diagnostics", foreign.token, nil), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign.base+"/runner-diagnostics", r.redemption.Credential, nil), http.StatusNotFound)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE api_tokens SET revoked_at = ? WHERE id = ?", formatHubTime(now), r.binding.RunnerID); err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil), http.StatusUnauthorized)
 }
