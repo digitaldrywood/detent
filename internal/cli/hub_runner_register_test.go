@@ -236,17 +236,18 @@ func TestRunnerGitHubAuthNextSteps(t *testing.T) {
 }
 
 type registerHub struct {
-	server         *httptest.Server
-	credential     atomic.Value
-	identity       atomic.Value
-	heartbeat      atomic.Value
-	tier           atomic.Value
-	redeemed       atomic.Int32
-	projects       map[tracker.ProjectID]string
-	cloneURLs      map[tracker.ProjectID]string
-	features       []string
-	repositories   map[tracker.ProjectID]string
-	minimumVersion string
+	server           *httptest.Server
+	credential       atomic.Value
+	identity         atomic.Value
+	heartbeat        atomic.Value
+	tier             atomic.Value
+	redeemed         atomic.Int32
+	projects         map[tracker.ProjectID]string
+	cloneURLs        map[tracker.ProjectID]string
+	features         []string
+	repositories     map[tracker.ProjectID]string
+	minimumVersion   string
+	failCapabilities atomic.Bool
 }
 
 func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *registerHub {
@@ -258,7 +259,7 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 	hub.credential.Store("")
 	hub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if !strings.HasPrefix(r.URL.Path, "/organizations/org_example/api/v2/organizations/org_example/") && !strings.HasSuffix(r.URL.Path, "/capabilities") {
+		if !strings.HasPrefix(r.URL.Path, "/organizations/org_example/api/v2/organizations/org_example/") && !strings.HasPrefix(r.URL.Path, "/api/v2/organizations/org_example/") && !strings.HasSuffix(r.URL.Path, "/capabilities") {
 			t.Errorf("request outside the organization: %s", r.URL.Path)
 		}
 		ids := make([]tracker.ProjectID, 0, len(projects))
@@ -266,11 +267,20 @@ func newRegisterHub(t *testing.T, projects map[tracker.ProjectID]string) *regist
 			ids = append(ids, id)
 		}
 		if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			if !strings.HasPrefix(r.URL.Path, "/organizations/org_example/") && r.Header.Get("X-Detent-Organization") != "org_example" {
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": "organization_required"})
+				return
+			}
+			if hub.failCapabilities.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": hub.features, "minimum_runner_version": hub.minimumVersion})
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/runner-enrollments/redeem") {
-			if r.Header.Get("Authorization") != "Bearer det_enroll_example" {
+			if r.Header.Get("Authorization") != "Bearer det_enroll_example" || hub.redeemed.Load() != 0 {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -601,6 +611,100 @@ func checkout(t *testing.T, dir string) {
 	runDoctorWorkflowSourceGit(t, dir, "remote", "add", "origin", "git@github.com:acme/orders.git")
 }
 
+func TestHubRunnerRegisterResumesEnrollment(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                        string
+		flagURL, retryFlagURL, fail bool
+	}{
+		{name: "organization URL", retryFlagURL: true},
+		{name: "organization flag", flagURL: true},
+		{name: "retry same flag command", flagURL: true, retryFlagURL: true, fail: true},
+		{name: "retry same organization URL", fail: true},
+		{name: "retry flag as organization URL", flagURL: true, fail: true},
+		{name: "retry organization URL as flag", retryFlagURL: true, fail: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			hub := newRegisterHub(t, nil)
+			hub.minimumVersion = "0.117.56"
+			hub.failCapabilities.Store(test.fail)
+			root := t.TempDir()
+			configPath := filepath.Join(root, "config", "global.yaml")
+			identityPath := filepath.Join(filepath.Dir(configPath), "identity.json")
+			started := 0
+			starter := func(_ *cobra.Command, path string) error {
+				if path != configPath {
+					t.Fatalf("service config = %q", path)
+				}
+				started++
+				return nil
+			}
+			run := func(flagURL bool, token string) (string, error) {
+				args := []string{"--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", filepath.Join(root, "work"), "--token", token, "--service"}
+				if flagURL {
+					args = append(args, "--url", hub.server.URL, "--organization", "org_example")
+				} else {
+					args = append(args, "--url", hub.server.URL+"/organizations/org_example")
+				}
+				return runRegisterInTestWorkspace(t, nil, starter, args...)
+			}
+			output, err := run(test.flagURL, "det_enroll_example")
+			if test.fail {
+				if err == nil || !strings.Contains(err.Error(), "read minimum runner version") || !strings.Contains(err.Error(), "503") || started != 0 {
+					t.Fatalf("injected failure: %v, service starts %d", err, started)
+				}
+				if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("config after failure: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("register: %v\n%s", err, output)
+			}
+			before, err := runnerauth.Load(identityPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hub.failCapabilities.Store(false)
+			retryToken := "det_enroll_fresh"
+			if test.flagURL == test.retryFlagURL {
+				retryToken = "det_enroll_example"
+			}
+			output, err = run(test.retryFlagURL, retryToken)
+			if err != nil {
+				t.Fatalf("resume: %v\n%s", err, output)
+			}
+			after, err := runnerauth.Load(identityPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Identity.Binding != before.Identity.Binding || after.Credential != before.Credential || hub.redeemed.Load() != 1 {
+				t.Fatalf("resume replaced identity or redeemed again (%d redemptions)", hub.redeemed.Load())
+			}
+			var result runnerRegistration
+			if err := json.Unmarshal([]byte(output), &result); err != nil {
+				t.Fatal(err)
+			}
+			wantStarts := 2
+			if test.fail {
+				wantStarts = 1
+			}
+			if result.RunnerID != before.Identity.RunnerID || !result.ServiceRun || started != wantStarts || result.Created != test.fail {
+				t.Fatalf("resume result = %+v, starts %d", result, started)
+			}
+			cfg, err := globalconfig.Read(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Client.URL != before.HubURL || cfg.Client.OrganizationID != "org_example" || cfg.Client.IdentityFile != identityPath {
+				t.Fatalf("resumed config = %+v", cfg.Client)
+			}
+			if strings.Contains(output, before.Credential) || strings.Contains(output, retryToken) {
+				t.Fatal("resume exposed a secret")
+			}
+		})
+	}
+}
+
 func TestHubRunnerRegisterVersionGuidance(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -688,17 +792,36 @@ func TestHubRunnerRegisterRefusesAnotherRunnersFiles(t *testing.T) {
 	url := hub.server.URL + "/organizations/org_example"
 	never := func(*cobra.Command, string) error { return nil }
 
-	t.Run("identity for another hub", func(t *testing.T) {
-		t.Parallel()
-		configPath := filepath.Join(t.TempDir(), "runner", "global.yaml")
-		if _, err := runnerauth.Initialize(filepath.Join(filepath.Dir(configPath), "identity.json"), "https://other-hub.example.test"); err != nil {
-			t.Fatal(err)
-		}
-		_, err := runRegisterInTestWorkspace(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
-		if err == nil || !strings.Contains(err.Error(), "other-hub.example.test") {
-			t.Fatalf("err = %v, want a refusal naming the other hub", err)
-		}
-	})
+	for _, test := range []struct {
+		name, hubURL, organization, wantError string
+	}{
+		{name: "identity for another hub", hubURL: "https://other-hub.example.test", wantError: "other-hub.example.test"},
+		{name: "identity for another organization", hubURL: hub.server.URL, organization: "org_other", wantError: "org_other"},
+		{name: "identity URL for another organization", hubURL: hub.server.URL + "/organizations/org_other", organization: "org_example", wantError: "org_other"},
+		{name: "identity for another base path", hubURL: hub.server.URL + "/other", organization: "org_example", wantError: "/other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			configPath := filepath.Join(t.TempDir(), "runner", "global.yaml")
+			identityPath := filepath.Join(filepath.Dir(configPath), "identity.json")
+			file, err := runnerauth.Initialize(identityPath, test.hubURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = tracker.OrganizationID(test.organization)
+			if err := runnerauth.Save(identityPath, file); err != nil {
+				t.Fatal(err)
+			}
+			before := mustRead(t, identityPath)
+			_, err = runRegisterInTestWorkspace(t, nil, never, "--url", url, "--token", "det_enroll_example", "--config", configPath, "--workspace-root", t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("err = %v, want refusal naming %q", err, test.wantError)
+			}
+			if mustRead(t, identityPath) != before || hub.redeemed.Load() != 0 {
+				t.Fatal("refusal changed identity or redeemed token")
+			}
+		})
+	}
 
 	t.Run("config for another organization", func(t *testing.T) {
 		t.Parallel()
