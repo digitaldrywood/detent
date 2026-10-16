@@ -441,6 +441,9 @@ detent --format json config path`),
 			boot.Output = cmd.OutOrStdout()
 			boot.Shutdown = opts.shutdown
 			boot.Restart = opts.restart
+			if !boot.Global.Client.Configured() {
+				slog.Warn(standaloneDeprecation, "hint", hubMigrationHint)
+			}
 			if !shouldLaunchTerminalDashboard(boot) {
 				slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
 				for _, warning := range boot.Runtime.Warnings {
