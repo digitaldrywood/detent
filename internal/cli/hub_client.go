@@ -98,10 +98,6 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	if len(options) > 0 {
 		usage = options[0].providerUsage
 	}
-	var providerReports func() ([]providercapacity.Report, error)
-	if clientConfig.ProviderCapacityFile != "" || clientConfig.IdentityFile != "" {
-		providerReports = runnerProviderReports(ctx, cfg, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels, runnerProviderBilling, usage)
-	}
 	var setupOptions hubSchedulingOptions
 	if len(options) > 0 {
 		setupOptions = options[0]
@@ -110,6 +106,10 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 	projects := &runnerProjects{client: client, cfg: cfg, setup: setup, logger: setupOptions.logger, checks: make(map[string]runnerauth.LocalChecks), apply: setupOptions.applyProjects, runtime: setupOptions.runtimeConfig}
 	if projects.logger == nil {
 		projects.logger = slog.Default()
+	}
+	var providerReports func() ([]providercapacity.Report, error)
+	if clientConfig.ProviderCapacityFile != "" || clientConfig.IdentityFile != "" {
+		providerReports = runnerProviderReports(ctx, projects.providerConfiguration, firstNonBlankString(cfg.InstanceName, cfg.Global.Identity.Name, machineID), time.Now, runnerProviderModels, runnerProviderBilling, usage)
 	}
 	prepareProject := projects.prepare
 	setupResults := make(map[string]string, len(checkouts))
