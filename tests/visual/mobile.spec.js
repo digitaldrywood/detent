@@ -796,6 +796,12 @@ test("project kanban supports long-press touch status moves", async ({
 
     session = await page.context().newCDPSession(page);
     const swipeY = cardBox.y + cardBox.height / 2;
+    await lanes.evaluate((root) => {
+      root.dataset.swipeComplete = "false";
+      root.addEventListener("scrollend", () => {
+        root.dataset.swipeComplete = "true";
+      }, { once: true });
+    });
     await dispatchTouch(
       session,
       "touchStart",
@@ -815,6 +821,7 @@ test("project kanban supports long-press touch status moves", async ({
     await expect
       .poll(() => lanes.evaluate((root) => root.scrollLeft))
       .toBeGreaterThan(0);
+    await expect(lanes).toHaveAttribute("data-swipe-complete", "true");
     await sourceLane.evaluate((lane) =>
       lane.scrollIntoView({
         behavior: "instant",
