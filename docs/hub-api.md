@@ -2435,7 +2435,12 @@ and Safety regression. The operator approves that exact workflow revision
 through the existing project policy owner. Merely editing a repository file or
 an issue does not grant this delegation. Projects without the approved sentence
 retain their existing confirmation rules; Detent's direct scheduled reporter
-keeps its existing project-specific delegation.
+keeps its existing project-specific delegation. Its release suites use one open
+stabilization owner per release series, with one bounded occurrence per failed
+job and the original replay identities. Native duplicate matching keeps that
+series owner separate from root-cause repair issues in the selected Detent
+project; existing repairs remain referenced with their ownership and holds
+intact. Develop and other projects retain their existing matching behavior.
 
 The producer opens an issue in the configured checkout repository using its
 GitHub Actions identity. Its body contains those same five section contents,

@@ -12,6 +12,63 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativeReleaseStabilizationOccurrences(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	credential, _, err := f.service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := tracker.ProjectID(issueorigin.DetentCloudProjectID)
+	for _, statement := range []string{
+		"INSERT INTO projects (id, organization_id, name, profile, states_json, require_dependencies, created_at, github_repository_enabled) SELECT ?, organization_id, 'release-reporting', profile, states_json, require_dependencies, created_at, github_repository_enabled FROM projects WHERE id = ?",
+		"INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) SELECT ?, source_name, detent_state, terminal, dispatchable, created_at, updated_at FROM workflow_states WHERE project_id = ?",
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement, selected, f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, project := range []tracker.ProjectID{selected, f.project.ID} {
+		scope := nativeScope{organization: f.project.OrganizationID, project: project, credential: credential}
+		seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(project))
+		file := func(series, key string) tracker.NativeIssue {
+			t.Helper()
+			body := "Problem: `go-test:example/pkg:TestOne`\n" + issueContractTestSections
+			origin := issueorigin.Origin{Kind: "worker", Instance: "runner", Source: key, Fingerprint: issueorigin.Fingerprint("go-test:example/pkg:TestOne")}
+			if series != "" {
+				body += "\nRelease stabilization: `" + series + "`\n"
+				origin = issueorigin.Origin{Kind: "doctor", Instance: "github-actions", Source: "https://github.com/digitaldrywood/detent/actions/runs/1/attempts/1", Fingerprint: issueorigin.ReleaseStabilizationFingerprint(series)}
+			}
+			request := tracker.CreateIssue{Title: "Scheduled repair", Body: issueorigin.Stamp(body, origin), State: "Todo", Priority: new(1)}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			issue, err := reportNativeMachineIssueTx(t.Context(), tx, scope, request, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			return issue
+		}
+		repair := file("", "repair")
+		first := file("release/v1.2", "first")
+		second := file("release/v1.3", "second")
+		replayed := file("release/v1.2", "later")
+		worker := file("", "another-worker")
+		if project == selected {
+			if repair.WorkItemID == first.WorkItemID || first.WorkItemID == second.WorkItemID || replayed.WorkItemID != first.WorkItemID || !replayed.PublicationReused || worker.WorkItemID != repair.WorkItemID {
+				t.Fatal("release series reused another repair or failed to reuse its own native owner")
+			}
+		} else if first.WorkItemID != repair.WorkItemID || second.WorkItemID != repair.WorkItemID || replayed.WorkItemID != repair.WorkItemID || worker.WorkItemID != repair.WorkItemID {
+			t.Fatal("release-specific identity changed another project's defect matching")
+		}
+	}
+}
+
 func TestNativeMachineDefectOccurrences(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

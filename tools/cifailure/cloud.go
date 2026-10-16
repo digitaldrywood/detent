@@ -121,7 +121,7 @@ func (c *cloudDestination) scan(ctx context.Context, selector map[string]any) er
 			if string(item.ProjectID) != c.project || string(item.OrganizationID) != c.organization || item.WorkItemID == "" {
 				return errors.New("scheduled work item belongs to another destination")
 			}
-			if item.Terminal || item.Archived || slices.ContainsFunc(c.issues, func(loaded *cloudIssue) bool { return loaded.item.WorkItemID == item.WorkItemID }) {
+			if ((item.Terminal || item.Archived) && selector["open"] != false) || slices.ContainsFunc(c.issues, func(loaded *cloudIssue) bool { return loaded.item.WorkItemID == item.WorkItemID }) {
 				continue
 			}
 			var detail operatortool.WorkReadResult[tracker.NativeIssue]
@@ -184,6 +184,11 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 	if err := c.scan(ctx, map[string]any{"fingerprint": fingerprint}); err != nil {
 		return err
 	}
+	if stabilizationScope(body) != "" {
+		if err := c.scan(ctx, map[string]any{"fingerprint": fingerprint, "open": false, "archived": "all"}); err != nil {
+			return err
+		}
+	}
 	marker := occurrenceMarker(key)
 	replay, match := c.match(body, marker)
 	if replay == nil && match == nil && !c.scannedAll {
@@ -194,6 +199,9 @@ func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body,
 		replay, match = c.match(body, marker)
 	}
 	if replay != nil {
+		if replay.item.Terminal || replay.item.Archived {
+			return nil
+		}
 		return c.updateFailure(ctx, replay, key, labels)
 	}
 	body += "\n\n" + marker
@@ -233,14 +241,31 @@ func (c *cloudDestination) match(body, marker string) (replay, match *cloudIssue
 	currentOrigin, _ := issueorigin.Parse(body)
 	currentJob := jobEvidence(body)
 	currentName := scheduledJob(body)
+	series := stabilizationScope(body)
 	runPrefix, _, _ := strings.Cut(currentOrigin.Source, "/actions/runs/")
 	for _, issue := range c.issues {
 		for _, previous := range issue.bodies {
+			previousSeries := stabilizationScope(previous)
+			if series != previousSeries {
+				continue
+			}
 			if strings.Contains(previous, marker) {
 				return issue, nil
 			}
+			if issue.item.Terminal || issue.item.Archived {
+				continue
+			}
 			origin, ok := issueorigin.Parse(previous)
 			if !ok {
+				continue
+			}
+			if series != "" {
+				if origin.Fingerprint != currentOrigin.Fingerprint {
+					continue
+				}
+				if match == nil || issue.item.Number < match.item.Number {
+					match = issue
+				}
 				continue
 			}
 			sameJob := currentName != "" && scheduledJob(previous) == currentName && origin.Kind == "doctor" && origin.Instance == "github-actions" && strings.HasPrefix(origin.Source, runPrefix+"/actions/runs/")
@@ -472,8 +497,14 @@ func (c *cloudDestination) success(ctx context.Context, getenv func(string) stri
 	runURL := fmt.Sprintf("%s/%s/actions/runs/%s/attempts/%s", getenv("GITHUB_SERVER_URL"), getenv("GITHUB_REPOSITORY"), getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"))
 	var failures []error
 	for _, issue := range c.issues {
+		if issue.item.Terminal || issue.item.Archived {
+			continue
+		}
 		scheduled := false
 		for _, body := range issue.bodies {
+			if stabilizationScope(body) != c.releaseSeries(getenv) {
+				continue
+			}
 			origin, ok := issueorigin.Parse(body)
 			if ok && origin.Kind == "doctor" && origin.Instance == "github-actions" && strings.HasPrefix(origin.Source, getenv("GITHUB_SERVER_URL")+"/"+getenv("GITHUB_REPOSITORY")+"/actions/runs/") {
 				scheduled = true
@@ -492,6 +523,9 @@ func (c *cloudDestination) success(ctx context.Context, getenv func(string) stri
 			continue
 		}
 		body := fmt.Sprintf("Scheduled full validation passed for development commit `%s`.\n\nRun: %s\n\nThis is scheduled validation evidence only. It does not establish that this issue was repaired, landed, reviewed, or completed. Existing admission and completion owners retain authority.\n\n%s", sha, runURL, marker)
+		if series := c.releaseSeries(getenv); series != "" {
+			body += "\n\n" + stabilizationMarker(series) + "\nThe full suite reconciles this release series' historical failure set as green at this pinned SHA. Earlier occurrences remain historical evidence; this does not close repairs or remove human holds."
+		}
 		if err := c.comment(ctx, issue, body, key); err != nil {
 			failures = append(failures, err)
 		}

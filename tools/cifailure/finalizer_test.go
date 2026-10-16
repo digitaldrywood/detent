@@ -24,6 +24,7 @@ func TestScheduledFinalizer(t *testing.T) {
 		unchanged           bool
 		cancelledRun        bool
 		cancelledJob        bool
+		timedOutJob         bool
 		workflowCancelled   bool
 		develop             bool
 		staleHead           bool
@@ -47,8 +48,10 @@ func TestScheduledFinalizer(t *testing.T) {
 		{name: "native publication unavailable", repository: "digitaldrywood/detent", unavailable: true},
 		{name: "GitHub green closure", repository: "owner/other"},
 		{name: "cancelled run with failed jobs", repository: "digitaldrywood/detent", failed: true, cancelledRun: true},
+		{name: "operator cancellation before any cancelled job is visible", repository: "digitaldrywood/detent", workflowCancelled: true},
 		{name: "operator-cancelled workflow with failed jobs", repository: "digitaldrywood/detent", failed: true, cancelledJob: true, workflowCancelled: true},
-		{name: "timed-out job reports failure", repository: "digitaldrywood/detent", cancelledJob: true},
+		{name: "cancelled job without workflow cancellation reports failure", repository: "digitaldrywood/detent", cancelledJob: true},
+		{name: "timed-out job reports failure", repository: "digitaldrywood/detent", timedOutJob: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -68,6 +71,9 @@ func TestScheduledFinalizer(t *testing.T) {
 			}
 			if tt.cancelledJob {
 				jobs[1].Conclusion = "cancelled"
+			}
+			if tt.timedOutJob {
+				jobs[1].Conclusion = "timed_out"
 			}
 			var fixture strings.Builder
 			for _, j := range jobs {
@@ -154,7 +160,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 			command.Env = append(command.Env, "FIXTURE_RELEASE_RUN="+map[bool]string{true: "true", false: "false"}[tt.releaseRun], "FIXTURE_NEWER_FAILURE="+map[bool]string{true: "true", false: "false"}[tt.newerFailure])
 			skipped := tt.cancelledRun || tt.workflowCancelled
 			output, err := command.CombinedOutput()
-			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob || tt.newerFailure) && !skipped) {
+			if (err != nil) != ((tt.failed || tt.unavailable || tt.cancelledJob || tt.timedOutJob || tt.newerFailure) && !skipped) {
 				t.Fatalf("finalizer = %v: %s", err, output)
 			}
 			calls, err := os.ReadFile(filepath.Join(dir, "calls"))
@@ -206,7 +212,7 @@ test "$FIXTURE_UNAVAILABLE" = false
 				if tt.develop && (!strings.Contains(text, "context=develop-full-ci") || strings.Contains(text, "context=scheduled-full-ci")) {
 					t.Fatalf("develop overwrote release evidence: %s", text)
 				}
-			} else if tt.failed || tt.cancelledJob {
+			} else if tt.failed || tt.cancelledJob || tt.timedOutJob {
 				if strings.Contains(text, "repository tag -a") || strings.Contains(text, "/statuses/") {
 					t.Fatal("failed suite published green evidence")
 				}

@@ -135,11 +135,7 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		return fmt.Errorf("decode scheduled CI jobs: %w", err)
 	}
 	if getenv("WORKFLOW_CANCELLED") == "true" {
-		for _, j := range jobs {
-			if j.Conclusion == "cancelled" {
-				return nil
-			}
-		}
+		return nil
 	}
 	repository := getenv("GITHUB_REPOSITORY")
 	owner, name, ok := strings.Cut(repository, "/")
@@ -161,6 +157,10 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		}
 	}
 	runURL := fmt.Sprintf("%s/%s/actions/runs/%s/attempts/%s", getenv("GITHUB_SERVER_URL"), repository, getenv("GITHUB_RUN_ID"), getenv("GITHUB_RUN_ATTEMPT"))
+	series := ""
+	if cloud, ok := destination.(*cloudDestination); ok {
+		series = cloud.releaseSeries(getenv)
+	}
 	for i, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
 			continue
@@ -200,14 +200,23 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 			if strings.HasPrefix(p.Key, "scheduled-ci:") {
 				fingerprint = legacyJobFingerprint(p.Key)
 			}
+			key := occurrenceKey(getenv, j, fingerprint)
+			summary := p.Summary
+			if series != "" {
+				fingerprint = issueorigin.ReleaseStabilizationFingerprint(series)
+				summary = series + " stabilization"
+			}
 			disposition := "Let the next scheduled full validation confirm the repair; a green run closes scheduled repair issues."
 			if _, native := destination.(*cloudDestination); native {
 				disposition = "Let the next scheduled full validation confirm the repair. Scheduled evidence does not authorize review approval or native completion."
-				disposition += " Under the human-approved Detent scheduled reporting policy, every failing job enters Todo at High priority, including unclassified and infrastructure failures. Reuse open work for the same job, promote matching Backlog intake through the native workflow owner, and preserve Urgent, human questions and operator holds. Reproduce this failure on the actual implementation-start base before edits, recording the original SHA, command and observed failure. Stop without speculative source changes if it cannot be reproduced. Preserve that diagnosis across unrelated rebases; reassess relevant intervening source or fixture changes and validate the integrated candidate under the selected workflow. Reuse applicable genuine exact-source command receipts; rerun for changed inputs, missing evidence or a concrete risk. Do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current candidate still fails."
+				disposition += " Under the human-approved Detent scheduled reporting policy, report failures at High priority, including unclassified and infrastructure failures. Reuse the open release-series stabilization owner for release suites and open job work for develop; promote matching Backlog intake through the native workflow owner, and preserve Urgent, human questions and operator holds. Reproduce this failure on the actual implementation-start base before edits, recording the original SHA, command and observed failure. Stop without speculative source changes if it cannot be reproduced. Preserve that diagnosis across unrelated rebases; reassess relevant intervening source or fixture changes and validate the integrated candidate under the selected workflow. Reuse applicable genuine exact-source command receipts; rerun for changed inputs, missing evidence or a concrete risk. Do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current candidate still fails."
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. %s\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence, disposition)
 			if !sourceFailure {
 				body += "\n\nThis issue is an intake for the CI instance owner. No source repair is authorized until a reproducible test or source diagnostic is identified."
+			}
+			if cloud, ok := destination.(*cloudDestination); ok && series != "" {
+				body += cloud.stabilizationContext(series, jobs, body)
 			}
 			if logErr != nil {
 				if _, native := destination.(*cloudDestination); native {
@@ -225,10 +234,10 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 						selected = append(selected, check)
 					}
 				}
-				evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: occurrenceKey(getenv, j, fingerprint), RunID: getenv("GITHUB_RUN_ID"), RunAttempt: getenv("GITHUB_RUN_ATTEMPT"), JobID: strconv.FormatInt(j.ID, 10), JobName: j.Name, RunURL: runURL, JobURL: j.URL, HeadSHA: getenv("CI_DEVELOP_SHA"), Conclusion: j.Conclusion, StartedAt: j.StartedAt, FinishedAt: j.CompletedAt, Checks: selected}
+				evidence := gate.ScheduledEvidence{Schema: 1, Repository: repository, OccurrenceKey: key, RunID: getenv("GITHUB_RUN_ID"), RunAttempt: getenv("GITHUB_RUN_ATTEMPT"), JobID: strconv.FormatInt(j.ID, 10), JobName: j.Name, RunURL: runURL, JobURL: j.URL, HeadSHA: getenv("CI_DEVELOP_SHA"), Conclusion: j.Conclusion, StartedAt: j.StartedAt, FinishedAt: j.CompletedAt, Checks: selected}
 				body += evidence.Stamp()
 			}
-			if err := destination.file(ctx, fingerprint, p.Summary, body, occurrenceKey(getenv, j, fingerprint), labels, sourceFailure); err != nil {
+			if err := destination.file(ctx, fingerprint, summary, body, key, labels, sourceFailure); err != nil {
 				err = fmt.Errorf("report %s (%s): %w", j.Name, p.Key, err)
 				if ctx.Err() != nil {
 					return errors.Join(err, errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
