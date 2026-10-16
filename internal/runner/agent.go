@@ -3853,7 +3853,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if err != nil {
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
-			fmt.Errorf("parse validator result: %w", err),
+			fmt.Errorf("parse validator result: %w", &validatorDecisionError{Err: err}),
 			r.finishSession(ctx, sessionID, sessionStarted, runReq.WorkAttemptID, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendConfig.Kind, 1, turnResult, 0),
 		)
 	}

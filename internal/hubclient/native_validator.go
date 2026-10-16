@@ -25,6 +25,34 @@ func (e *nativeExecution) ReviewVersion(ctx context.Context) (runner.NativeValid
 	return e.validationVersion(ctx, "review")
 }
 
+func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.NativeChangeReference) error {
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil || e.change.Landing != nil || e.change.ChangeID != expected.ChangeID || e.change.VersionID != expected.VersionID || e.change.HeadSHA != expected.HeadSHA || e.preparedDisposition == nil || e.preparedDisposition.Status != "complete" || e.preparedDisposition.Blockers || e.preparedDisposition.HumanAction || e.preparedDisposition.ReasonCode != "" {
+		return fmt.Errorf("%w: published review source or disposition changed", runner.ErrNativeRecoveryRequired)
+	}
+	detail, err := e.claim.source.client.runtimeChange(ctx, e.claim.lease.WorkItemID, expected.ChangeID)
+	if err != nil {
+		return &runner.NativeImplementationReviewError{Err: err}
+	}
+	if detail.Change.ID != expected.ChangeID || detail.Change.CurrentVersion != expected.VersionID || detail.Change.CurrentLanding() != nil || detail.Change.ProjectID != e.claim.source.client.project || detail.Change.WorkItemID != e.claim.lease.WorkItemID {
+		return fmt.Errorf("%w: published review version is no longer current", runner.ErrNativeRecoveryRequired)
+	}
+	for _, version := range detail.Versions {
+		if version.ID != expected.VersionID {
+			continue
+		}
+		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || version.AttemptID != e.data.AttemptID || version.RunID != e.data.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
+			return fmt.Errorf("%w: published review source differs from its owner", runner.ErrNativeRecoveryRequired)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: published review version is unavailable", runner.ErrNativeRecoveryRequired)
+}
+
 func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
