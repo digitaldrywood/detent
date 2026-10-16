@@ -70,6 +70,47 @@ type oauthClient struct {
 	ResponseTypes []string `json:"response_types"`
 }
 
+type oauthRegistration struct {
+	Name         string   `json:"n"`
+	RedirectURIs []string `json:"r"`
+	AuthMethod   string   `json:"a"`
+	SecretHash   string   `json:"s"`
+}
+
+func (s *Service) sealOAuth(purpose string, value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sealed, err := s.auth.sealToken(s.config.PublicURL+":"+purpose, string(raw))
+	if err != nil {
+		return "", err
+	}
+	return strings.NewReplacer("+", "-", "/", "_").Replace(sealed), nil
+}
+
+func (s *Service) openOAuth(purpose, value string, target any) error {
+	if value == "" || len(value) > 3800 {
+		return errNoSession
+	}
+	sealed := strings.NewReplacer("-", "+", "_", "/").Replace(value)
+	raw, err := s.auth.openToken(s.config.PublicURL+":"+purpose, sealed)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(raw), target)
+}
+
+func (s *Service) oauthRegistration(id string) (oauthRegistration, error) {
+	var registration oauthRegistration
+	sealed, ok := strings.CutPrefix(id, "oauth_client_")
+	if !ok || len(id) > 2048 {
+		return registration, errNoSession
+	}
+	err := s.openOAuth("oauth-client", sealed, &registration)
+	return registration, err
+}
+
 func validOAuthRedirect(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || len(raw) > 2048 || u.Host == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
@@ -113,11 +154,7 @@ func (s *Service) oauthRegister(c echo.Context) error {
 	if len(client.ResponseTypes) > 0 && (len(client.ResponseTypes) != 1 || client.ResponseTypes[0] != "code") {
 		return oauthError(c, http.StatusBadRequest, "invalid_client_metadata")
 	}
-	id, err := s.config.generateToken()
-	if err != nil {
-		return oauthError(c, 503, "server_error")
-	}
-	client.ID = "oauth_client_" + id
+	var err error
 	client.Secret = ""
 	if client.AuthMethod != "none" {
 		client.Secret, err = s.config.generateToken()
@@ -125,22 +162,13 @@ func (s *Service) oauthRegister(c echo.Context) error {
 			return oauthError(c, 503, "server_error")
 		}
 	}
-	tx, err := s.auth.store.db.BeginTx(c.Request().Context(), nil)
+	sealed, err := s.sealOAuth("oauth-client", oauthRegistration{Name: client.Name, RedirectURIs: client.RedirectURIs, AuthMethod: client.AuthMethod, SecretHash: apikey.HashToken(client.Secret)})
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(c.Request().Context(), "INSERT INTO oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES(?,?,?,?,?)", client.ID, client.Name, client.AuthMethod, apikey.HashToken(client.Secret), formatTime(s.config.now()))
-	if err != nil {
-		return oauthError(c, 503, "server_error")
-	}
-	for _, uri := range slices.Compact(slices.Sorted(slices.Values(client.RedirectURIs))) {
-		if _, err = tx.ExecContext(c.Request().Context(), "INSERT INTO oauth_redirect_uris(client_id,uri) VALUES(?,?)", client.ID, uri); err != nil {
-			return oauthError(c, 503, "server_error")
-		}
-	}
-	if err = tx.Commit(); err != nil {
-		return oauthError(c, 503, "server_error")
+	client.ID = "oauth_client_" + sealed
+	if len(client.ID) > 2048 {
+		return oauthError(c, 400, "invalid_client_metadata")
 	}
 	client.GrantTypes = []string{"authorization_code", "refresh_token"}
 	client.ResponseTypes = []string{"code"}
@@ -154,9 +182,8 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 			return oauthError(c, 400, "invalid_request")
 		}
 	}
-	var name string
-	err := s.auth.store.reader.QueryRowContext(c.Request().Context(), "SELECT c.name FROM oauth_clients c JOIN oauth_redirect_uris r ON r.client_id=c.id WHERE c.id=? AND r.uri=?", q.Get("client_id"), q.Get("redirect_uri")).Scan(&name)
-	if err != nil {
+	registration, err := s.oauthRegistration(q.Get("client_id"))
+	if err != nil || !slices.Contains(registration.RedirectURIs, q.Get("redirect_uri")) {
 		return oauthError(c, 400, "invalid_request")
 	}
 	if q.Get("response_type") != "code" || q.Get("resource") != s.config.PublicURL+"/mcp" || q.Get("code_challenge_method") != "S256" || len(q.Get("state")) > 2048 {
@@ -173,34 +200,49 @@ func (s *Service) oauthAuthorize(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	browser, err := s.config.generateToken()
+	expires := s.config.now().Add(10 * time.Minute)
+	request := oauthRequest{ID: id, Client: q.Get("client_id"), Redirect: q.Get("redirect_uri"), State: q.Get("state"), Challenge: q.Get("code_challenge"), Resource: q.Get("resource"), ExpiresAt: expires}
+	browser, err := s.sealOAuth("oauth-consent", request)
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	expires := s.config.now().Add(10 * time.Minute)
-	_, err = s.auth.store.db.ExecContext(c.Request().Context(), `INSERT INTO oauth_requests(id,client_id,redirect_uri,state,challenge,resource,browser_hash,expires_at) VALUES(?,?,?,?,?,?,?,?)`, id, q.Get("client_id"), q.Get("redirect_uri"), q.Get("state"), q.Get("code_challenge"), q.Get("resource"), apikey.HashToken(browser), formatTime(expires))
-	if err != nil {
-		return oauthError(c, 503, "server_error")
+	if len(browser) > 3800 {
+		return oauthError(c, 400, "invalid_request")
 	}
 	s.setCookie(c, "oauth", browser, expires)
 	return c.Redirect(http.StatusSeeOther, "/oauth/consent/"+id)
 }
 
-type oauthRequest struct{ ID, Client, Name, Redirect, State, Challenge, Resource, BrowserHash string }
+type oauthRequest struct {
+	ID           string            `json:"i"`
+	Client       string            `json:"c"`
+	Redirect     string            `json:"r"`
+	State        string            `json:"s"`
+	Challenge    string            `json:"p"`
+	Resource     string            `json:"u"`
+	ExpiresAt    time.Time         `json:"e"`
+	Registration oauthRegistration `json:"-"`
+}
 
 func (s *Service) oauthBrowserRequest(c echo.Context) (oauthRequest, error) {
 	var r oauthRequest
-	var expires string
-	err := s.auth.store.reader.QueryRowContext(c.Request().Context(), `SELECT r.id,r.client_id,c.name,r.redirect_uri,r.state,r.challenge,r.resource,r.browser_hash,r.expires_at FROM oauth_requests r JOIN oauth_clients c ON c.id=r.client_id WHERE r.id=? AND r.code_hash IS NULL AND r.consumed_at IS NULL`, c.Param("request")).Scan(&r.ID, &r.Client, &r.Name, &r.Redirect, &r.State, &r.Challenge, &r.Resource, &r.BrowserHash, &expires)
-	if err != nil {
-		return r, err
-	}
 	cookie, err := c.Cookie(s.cookieName("oauth"))
 	if err != nil {
 		return r, err
 	}
-	at, err := parseTime(expires)
-	if err != nil || !at.After(s.config.now()) || subtle.ConstantTimeCompare([]byte(apikey.HashToken(cookie.Value)), []byte(r.BrowserHash)) != 1 {
+	if err := s.openOAuth("oauth-consent", cookie.Value, &r); err != nil || r.ID != c.Param("request") || !r.ExpiresAt.After(s.config.now()) {
+		return r, errNoSession
+	}
+	r.Registration, err = s.oauthRegistration(r.Client)
+	if err != nil {
+		return r, err
+	}
+	var approved bool
+	err = s.auth.store.reader.QueryRowContext(c.Request().Context(), "SELECT EXISTS(SELECT 1 FROM oauth_requests WHERE id=?)", r.ID).Scan(&approved)
+	if err != nil {
+		return r, err
+	}
+	if approved {
 		return r, errNoSession
 	}
 	return r, nil
@@ -219,7 +261,7 @@ func (s *Service) oauthConsent(c echo.Context) error {
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	data := templates.HostedPageData{Mode: "oauth", Title: "Connect assistant", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), OAuthClient: r.Name, OAuthRequest: r.ID, OAuthRedirect: r.Redirect}
+	data := templates.HostedPageData{Mode: "oauth", Title: "Connect assistant", Email: session.Email, CSRF: cloudassert.CSRFToken(session.CSRFSecret, ""), OAuthClient: r.Registration.Name, OAuthRequest: r.ID, OAuthRedirect: r.Redirect}
 	for _, choice := range choices {
 		data.Organizations = append(data.Organizations, templates.HostedOrganizationChoice{ID: choice.ID, Name: choice.Name})
 	}
@@ -246,9 +288,6 @@ func (s *Service) oauthApprove(c echo.Context) error {
 	query.Set("state", r.State)
 	query.Set("iss", s.config.PublicURL)
 	if c.FormValue("decision") == "deny" {
-		if _, err := s.auth.store.db.ExecContext(c.Request().Context(), "UPDATE oauth_requests SET consumed_at=? WHERE id=? AND consumed_at IS NULL", formatTime(s.config.now()), r.ID); err != nil {
-			return oauthError(c, 503, "server_error")
-		}
 		s.setCookie(c, "oauth", "", time.Unix(1, 0))
 		query.Set("error", "access_denied")
 		redirect.RawQuery = query.Encode()
@@ -294,11 +333,15 @@ func (s *Service) oauthApprove(c echo.Context) error {
 		return oauthError(c, 503, "server_error")
 	}
 	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, "INSERT INTO oauth_clients(id,name,auth_method,secret_hash,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING", r.Client, r.Registration.Name, r.Registration.AuthMethod, r.Registration.SecretHash, formatTime(s.config.now()))
+	if err != nil {
+		return oauthError(c, 503, "server_error")
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO oauth_grants(id,client_id,owner_subject,owner_email,organization_id,permission,resource,created_at) VALUES(?,?,?,?,?,?,?,?)`, id, r.Client, session.Subject, session.Email, org.ID, permission, r.Resource, formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE oauth_requests SET code_hash=?,code_expires_at=?,grant_id=? WHERE id=? AND code_hash IS NULL AND consumed_at IS NULL AND julianday(expires_at)>julianday(?)`, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, r.ID, formatTime(s.config.now()))
+	result, err := tx.ExecContext(ctx, `INSERT INTO oauth_requests(id,client_id,redirect_uri,challenge,resource,code_hash,code_expires_at,grant_id) SELECT ?,?,?,?,?,?,?,? WHERE julianday(?)>julianday(?) ON CONFLICT(id) DO NOTHING`, r.ID, r.Client, r.Redirect, r.Challenge, r.Resource, apikey.HashToken(code), formatTime(s.config.now().Add(5*time.Minute)), id, formatTime(r.ExpiresAt), formatTime(s.config.now()))
 	if err != nil {
 		return oauthError(c, 503, "server_error")
 	}
@@ -357,11 +400,11 @@ func (s *Service) oauthClientAuthentication(c echo.Context, form url.Values) (st
 		}
 		id, secret, method = user, password, "client_secret_basic"
 	}
-	var storedMethod, hash string
-	if err := s.auth.store.reader.QueryRowContext(c.Request().Context(), "SELECT auth_method,secret_hash FROM oauth_clients WHERE id=?", id).Scan(&storedMethod, &hash); err != nil {
+	registration, err := s.oauthRegistration(id)
+	if err != nil {
 		return "", err
 	}
-	if storedMethod != method || method != "none" && subtle.ConstantTimeCompare([]byte(hash), []byte(apikey.HashToken(secret))) != 1 {
+	if registration.AuthMethod != method || method != "none" && subtle.ConstantTimeCompare([]byte(registration.SecretHash), []byte(apikey.HashToken(secret))) != 1 {
 		return "", errNoSession
 	}
 	return id, nil
