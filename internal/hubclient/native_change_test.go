@@ -1,7 +1,9 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,17 +48,18 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
-	reopen       func(func(string) error)
-	review       string
-	organization tracker.OrganizationID
-	project      tracker.ProjectID
-	descriptor   policy.Descriptor
-	admin        *NativeClient
-	native       *NativeClient
-	connector    *NativeConnector
-	scheduler    *Scheduler
-	failChanges  *changeFailingTransport
-	otherWorker  func(*testing.T) *NativeClient
+	reopen          func(func(string) error)
+	sourceDirectory string
+	review          string
+	organization    tracker.OrganizationID
+	project         tracker.ProjectID
+	descriptor      policy.Descriptor
+	admin           *NativeClient
+	native          *NativeClient
+	connector       *NativeConnector
+	scheduler       *Scheduler
+	failChanges     *changeFailingTransport
+	otherWorker     func(*testing.T) *NativeClient
 }
 
 // changeFailingTransport refuses Change Request creation when armed, which is
@@ -403,14 +406,14 @@ func (h *nativeChangeHub) publishCapturedExternal(t *testing.T, item tracker.Nat
 	if len(previous) > 0 {
 		expectedVersionID = previous[0]
 	}
-	base := strings.Repeat("a", 40)
+	base := nativeChangeFixtureHead("a")
 	if len(previous) > 1 {
 		base = previous[1]
 	}
 	var source *tracker.ChangeSource
 	var bundle []byte
 	if captured == nil && base != head {
-		capture := nativeChangeSourceFixture(base, head)
+		capture := nativeChangeSourceFixture(t.Context(), t, base, head, h.sourceDirectory)
 		captured = &capture
 	}
 	if captured != nil {
@@ -433,14 +436,59 @@ func (h *nativeChangeHub) publishCapturedExternal(t *testing.T, item tracker.Nat
 	return version
 }
 
-func nativeChangeSourceFixture(base, head string) tracker.ChangeSourceCapture {
-	bundle := []byte("# v2 git bundle\n" + head + " HEAD\n\nbounded retained source fixture")
+func nativeChangeFixtureCommit(label string) string {
+	return "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor Test User <test@example.com> 1 +0000\ncommitter Test User <test@example.com> 1 +0000\n\n" + label + "\n"
+}
+
+func nativeChangeFixtureHead(label string) string {
+	commit := nativeChangeFixtureCommit(label)
+	return fmt.Sprintf("%x", sha1.Sum([]byte(fmt.Sprintf("commit %d\x00%s", len(commit), commit))))
+}
+
+func nativeChangeSourceFixture(ctx context.Context, t *testing.T, base, head string, repositories ...string) tracker.ChangeSourceCapture {
+	t.Helper()
+	var directory string
+	if len(repositories) > 0 {
+		directory = repositories[0]
+	}
+	for _, label := range []string{"a", "b", "c", "d"} {
+		if head == nativeChangeFixtureHead(label) {
+			directory = ""
+			break
+		}
+	}
+	if directory == "" {
+		directory = nativeChangeTempDir(t)
+		if output, err := exec.CommandContext(ctx, "git", "-C", directory, "init", "--bare", "--object-format=sha1", "--template=").CombinedOutput(); err != nil {
+			t.Fatalf("initialize fixture repository: %v\n%s", err, output)
+		}
+		for _, object := range []struct{ kind, content string }{
+			{"tree", ""},
+			{"commit", nativeChangeFixtureCommit("a")},
+			{"commit", nativeChangeFixtureCommit("b")},
+			{"commit", nativeChangeFixtureCommit("c")},
+			{"commit", nativeChangeFixtureCommit("d")},
+		} {
+			command := exec.CommandContext(ctx, "git", "-C", directory, "hash-object", "-w", "-t", object.kind, "--stdin")
+			command.Stdin = strings.NewReader(object.content)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("write fixture object: %v\n%s", err, output)
+			}
+		}
+	}
+	command := exec.CommandContext(ctx, "git", "-C", directory, "pack-objects", "--stdout", "--revs")
+	command.Stdin = strings.NewReader(head + "\n")
+	pack, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := append([]byte("# v2 git bundle\n"+head+" HEAD\n\n"), pack...)
 	return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}
 }
 
 func nativeChangeDiff(head string, files ...string) runner.AttemptDiffSource {
 	return func(context.Context) (tracker.AttemptDiffRequest, bool) {
-		request := tracker.AttemptDiffRequest{BaseSHA: strings.Repeat("a", 40), HeadSHA: head, Files: []tracker.AttemptDiffFile{}}
+		request := tracker.AttemptDiffRequest{BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, Files: []tracker.AttemptDiffFile{}}
 		for _, file := range files {
 			request.Files = append(request.Files, tracker.AttemptDiffFile{Path: file, Status: tracker.DiffStatusModified, Additions: 1, Patch: "@@ -1 +1 @@"})
 		}
@@ -458,8 +506,8 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	}
 
 	t.Parallel()
-	base := strings.Repeat("a", 40)
-	head := strings.Repeat("c", 40)
+	base := nativeChangeFixtureHead("a")
+	head := nativeChangeFixtureHead("c")
 	for _, test := range []struct {
 		name                    string
 		transitionReason        string
@@ -575,7 +623,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "rework reuses the item's change", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
-		{name: "rework publishes a new head as the next version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40),
+		{name: "rework publishes a new head as the next version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: nativeChangeFixtureHead("b"),
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "rework keeps the version that already carries its head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
@@ -587,7 +635,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
 		{name: "removed clean worktree reuses its matching final checkpoint diff", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
-		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: strings.Repeat("b", 40),
+		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: nativeChangeFixtureHead("b"),
 			wantDiagnostic: "checkpoint head", wantChanges: 1, wantVersions: 1},
 		{name: "rework preserves the same head after configuration changes", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
@@ -608,14 +656,14 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantDiagnostic: "change creation unavailable"},
 		{name: "an inaccessible preserved version cannot succeed", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head), existing: true, published: head, failDetail: true,
 			wantDiagnostic: "change detail unavailable", wantChanges: 1, wantVersions: 1},
-		{name: "a refused new version cannot succeed", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), failVersion: true,
+		{name: "a refused new version cannot succeed", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), existing: true, published: nativeChangeFixtureHead("b"), failVersion: true,
 			wantDiagnostic: "version publication unavailable", wantChanges: 1, wantVersions: 1},
 		{name: "a lost lease decides nothing", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), loseLease: true},
 		{name: "a failed run decides nothing", role: runner.RoleCode, outcome: "failed", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "a plan run decides nothing", role: runner.RolePlan, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
 		{name: "no readable worktree cannot succeed", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", wantDiagnostic: "diff source is unavailable"},
-		{name: "version acknowledgment loss retains the current immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), dropVersion: true, wantDiagnostic: "version acknowledgment lost", wantChanges: 1, wantVersions: 2},
-		{name: "version allowance refusal retains the previous immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: strings.Repeat("b", 40), versionCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted", wantChanges: 1, wantVersions: 1},
+		{name: "version acknowledgment loss retains the current immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: nativeChangeFixtureHead("b"), dropVersion: true, wantDiagnostic: "version acknowledgment lost", wantChanges: 1, wantVersions: 2},
+		{name: "version allowance refusal retains the previous immutable version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: nativeChangeFixtureHead("b"), versionCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted", wantChanges: 1, wantVersions: 1},
 		{name: "diff allowance refusal is a publication diagnostic", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "allowance_exhausted", wantDiagnostic: "allowance_exhausted"},
 		{name: "fenced diff refusal retains lost authority", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), diffCode: "stale_fencing_token", wantDiagnostic: "stale_fencing_token"},
 		{name: "conversation completion remains conversation owned", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", conversation: true, finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"},
@@ -673,6 +721,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					return strings.TrimSpace(string(output))
 				}
 				base = readHead(info.Path)
+				h.sourceDirectory = info.Path
 				publicationCapture = func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 				}
@@ -840,7 +889,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						external = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
 						if test.publicationReference != "current" {
 							if test.publicationRefused {
-								older := h.publishCapturedExternal(t, item, earlier.ID, strings.Repeat("d", 40), nil, external, "", base)
+								older := h.publishCapturedExternal(t, item, earlier.ID, nativeChangeFixtureHead("d"), nil, external, "", base)
 								previous = older.ID
 							}
 							old := h.publishCapturedExternal(t, item, earlier.ID, publicationPrevious, nil, external, previous, base)
@@ -893,10 +942,11 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if test.source != nil {
 				execution.(runner.DiffExecution).SetDiffSource(test.source)
 			}
+			var retainedCapture tracker.ChangeSourceCapture
 			if test.retainSource {
+				retainedCapture = nativeChangeSourceFixture(t.Context(), t, base, head)
 				execution.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-					bundle := []byte("# v2 git bundle\n" + head + " HEAD\n\nimmutable source before publication outage")
-					return tracker.ChangeSourceCapture{Source: tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}, Bundle: bundle}, nil
+					return retainedCapture, nil
 				})
 			}
 			if !test.noRemote {
@@ -1279,7 +1329,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						t.Fatal(err)
 					}
 				case "head":
-					owner.SetDiffSource(nativeChangeDiff(strings.Repeat("d", 40), "README.md"))
+					owner.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("d"), "README.md"))
 				case "base":
 					owner.publication.BaseRef = "another-target"
 				case "branch":
@@ -1544,7 +1594,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					}
 					if test.retainSource {
 						bundle, err := h.admin.ChangeSource(t.Context(), item, stored[0].ID, republished.VersionID)
-						if err != nil || string(bundle) != "immutable source before publication outage" {
+						if err != nil || !bytes.Equal(bundle, retainedCapture.Bundle) {
 							t.Fatalf("deferred publication lost finalized source: %q, %v", bundle, err)
 						}
 					}
@@ -1774,7 +1824,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer stop()
-				execution.SetDiffSource(nativeChangeDiff(strings.Repeat("c", 40), "README.md"))
+				execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
 				execution.SetRepository(nativeChangeRepository)
 				if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 					t.Fatal(err)
@@ -2292,7 +2342,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				old := h.publish(t, item, change.ID, strings.Repeat("a", 40))
+				old := h.publish(t, item, change.ID, nativeChangeFixtureHead("a"))
 				if _, err := h.admin.DiscussChange(t.Context(), item, change.ID, tracker.DiscussChange{Mutation: nativeMutationKey(), VersionID: old.ID, Body: "Historical discussion"}); err != nil {
 					t.Fatal(err)
 				}
@@ -4352,13 +4402,13 @@ func TestNativeConnectorChangeReviewed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := h.publish(t, item, change.ID, strings.Repeat("b", 40))
-	head := strings.Repeat("c", 40)
+	first := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+	head := nativeChangeFixtureHead("c")
 	second, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
 		Mutation:          nativeMutationKey(),
 		ExpectedVersionID: first.ID,
 		ChangeVersionInput: tracker.ChangeVersionInput{
-			BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
+			BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, MergeBaseSHA: nativeChangeFixtureHead("a"), Repository: nativeChangeRepository,
 			Code:      tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"},
 			Artifacts: []tracker.ChangeArtifact{}, PolicyID: h.descriptor.ID,
 		},

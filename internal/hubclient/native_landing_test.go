@@ -164,7 +164,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		}
 	}
 	item := tracker.NativeWorkItemID(issue.ID)
-	head := strings.Repeat("c", 40)
+	head := nativeChangeFixtureHead("c")
 	h.claim(t, issue.ID)
 	work := h.scheduler.RunExecution(issue.ID)
 	if work == nil {
@@ -176,8 +176,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	work.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(head, "README.md"))
 	if otherMachine == "clean" || directWait {
-		work.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-			return nativeChangeSourceFixture(base, head), nil
+		work.(runner.ChangeSourceExecution).SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+			return nativeChangeSourceFixture(ctx, t, base, head), nil
 		})
 	}
 	work.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
@@ -809,12 +809,12 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head := strings.Repeat("c", 40)
+	head := nativeChangeFixtureHead("c")
 	external := &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: nativeChangeRepository + "/pull/7"}
-	capture := nativeChangeSourceFixture(strings.Repeat("a", 40), head)
+	capture := nativeChangeSourceFixture(t.Context(), t, nativeChangeFixtureHead("a"), head)
 	version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
 		Mutation: nativeMutationKey(), SourceBundle: capture.Bundle,
-		ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository,
+		ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, MergeBaseSHA: nativeChangeFixtureHead("a"), Repository: nativeChangeRepository,
 			Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID, External: external},
 	})
 	if err != nil {
@@ -861,10 +861,10 @@ func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 		t.Fatalf("remote landing target = %#v, error = %v", remoteTarget, err)
 	}
 	secondInput := version.ChangeVersionInput
-	secondInput.HeadSHA = strings.Repeat("d", 40)
+	secondInput.HeadSHA = nativeChangeFixtureHead("d")
 	secondInput.Code.URI = nativeChangeRepository + "/commit/" + secondInput.HeadSHA
 	secondInput.Code.SHA256 = policy.Digest([]byte(secondInput.HeadSHA))
-	secondCapture := nativeChangeSourceFixture(secondInput.BaseSHA, secondInput.HeadSHA)
+	secondCapture := nativeChangeSourceFixture(t.Context(), t, secondInput.BaseSHA, secondInput.HeadSHA)
 	secondInput.Source = &secondCapture.Source
 	second, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), ExpectedVersionID: version.ID, ChangeVersionInput: secondInput, SourceBundle: secondCapture.Bundle})
 	if err != nil {
@@ -913,9 +913,9 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		head := strings.Repeat("c", 40)
-		capture := nativeChangeSourceFixture(strings.Repeat("a", 40), head)
-		version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: strings.Repeat("a", 40), HeadSHA: head, MergeBaseSHA: strings.Repeat("a", 40), Repository: nativeChangeRepository, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID}})
+		head := nativeChangeFixtureHead("c")
+		capture := nativeChangeSourceFixture(t.Context(), t, nativeChangeFixtureHead("a"), head)
+		version, err := h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{Mutation: nativeMutationKey(), SourceBundle: capture.Bundle, ChangeVersionInput: tracker.ChangeVersionInput{Source: &capture.Source, BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head, MergeBaseSHA: nativeChangeFixtureHead("a"), Repository: nativeChangeRepository, Code: tracker.ChangeArtifact{Kind: "code", URI: nativeChangeRepository + "/commit/" + head, SHA256: policy.Digest([]byte(head)), Availability: "unverified"}, PolicyID: h.descriptor.ID}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -936,7 +936,7 @@ func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
 			t.Fatal(err)
 		}
 		target, err := h.scheduler.RunExecution(candidate.ID).(runner.LandingExecution).LandingTarget(t.Context())
-		if err != nil || target.HeadSHA != strings.Repeat("c", 40) {
+		if err != nil || target.HeadSHA != nativeChangeFixtureHead("c") {
 			t.Fatalf("target = %#v, %v", target, err)
 		}
 	}
