@@ -350,7 +350,7 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (tracker.NativeAnsweredExclusion, error) {
 	var scope nativeScope
 	var item, attempt, raw, checkpoint string
-	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, a.checkpoint_json
+	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, COALESCE(a.checkpoint_json, 'null')
  FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
  JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
