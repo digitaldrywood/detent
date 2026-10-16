@@ -1055,13 +1055,20 @@ events require worker scope. Instance administrators can perform these operation
 With project `duplicate_challenge` enabled (the default), native filing may
 return HTTP 409 with `code: possible_duplicates`, up to five
 `possible_duplicates`, and a `challenge_token`, creating no issue. MCP
-`file_issue` returns those challenge fields as a structured result. To confirm
-new work, repeat the unchanged content and request identity with the token and
-`not_duplicate_of` issue numbers; the new issue links those matches as related.
-For an existing problem, comment on the returned `work_item_id` instead.
+`file_issue` returns those challenge fields as a structured result. Suggestions
+are advisory: to create a separate issue or an intentional duplicate, repeat the
+unchanged content and request identity with the `challenge_token`. No
+`not_duplicate_of` field is required; optionally supply challenged issue numbers
+in that field to link them as related. The browser's New issue dialog offers
+Create anyway and retains the report after a failed submission. For an existing
+problem, the filer may instead comment on the returned `work_item_id`.
 Tokens expire after one hour; expired filings need a new request identity.
-Confirmation deletes the token, while request replay retains its original
-result. Machine reports and linked GitHub intake are never challenged.
+Confirmation deletes the token. Retrying the completed confirmation through its
+confirming credential, or the original filing through its issuing credential,
+returns the created issue, including when another currently authorized
+credential for the same principal confirmed the challenge. Before completion,
+retries of the original filing retain its challenge result.
+Machine reports and linked GitHub intake are never challenged.
 
 Scheduled reporter evidence requires operator or administrator authority and
 the project's selected checkout repository. This report-only variant returns
