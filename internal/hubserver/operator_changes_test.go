@@ -188,6 +188,45 @@ func TestOperatorChangePublication(t *testing.T) {
 				t.Fatal("historical replay lost original receipt or live current version")
 			}
 
+			if test.review {
+				reviewArgs := operatortool.ChangeArguments{ProjectID: args.ProjectID, ItemID: args.ItemID, ChangeID: args.ChangeID, VersionID: result.Detail.Change.CurrentVersion, ExpectedRevision: int64(result.Detail.Change.Revision), Decision: "approved", RequestID: "source-review"}
+				artifacts, err := executor.Execute(ctx, changeToolCall(operatortool.ArtifactReferences, operatortool.ChangeArguments{ProjectID: args.ProjectID, ItemID: args.ItemID}))
+				var references operatortool.ChangeResult
+				if err != nil || json.Unmarshal(artifacts.Content, &references) != nil || len(references.Artifacts) != 0 {
+					t.Fatalf("source-only artifact references: %s %v", artifacts.Content, err)
+				}
+				reviewCall := changeToolCall(operatortool.ReviewChange, reviewArgs)
+				if _, err := executor.Execute(worker, reviewCall); !errors.Is(err, operatortool.ErrAccessDenied) {
+					t.Fatalf("worker source-only review: %v", err)
+				}
+				reviewed, err := executor.Execute(ctx, reviewCall)
+				if err != nil {
+					t.Fatalf("bundle-free operator review: %v", err)
+				}
+				var reviewResult operatortool.ChangeResult
+				if json.Unmarshal(reviewed.Content, &reviewResult) != nil {
+					t.Fatalf("review result: %s", reviewed.Content)
+				}
+				replayedReview, err := executor.Execute(ctx, reviewCall)
+				var replayResult operatortool.ChangeResult
+				if err != nil || json.Unmarshal(replayedReview.Content, &replayResult) != nil || !bytes.Equal(reviewResult.Receipt, replayResult.Receipt) {
+					t.Fatalf("review replay: %s %v", replayedReview.Content, err)
+				}
+				read, err := executor.Execute(ctx, changeToolCall(operatortool.GetChange, operatortool.ChangeArguments{ProjectID: args.ProjectID, ItemID: args.ItemID, ChangeID: args.ChangeID, VersionID: reviewArgs.VersionID, Section: "reviews"}))
+				var readResult operatortool.ChangeResult
+				if err != nil || json.Unmarshal(read.Content, &readResult) != nil || readResult.Detail == nil || len(readResult.Detail.Reviews) != 1 {
+					t.Fatalf("exact-version review read: %s %v", read.Content, err)
+				}
+				review := readResult.Detail.Reviews[0]
+				if review.VersionID != reviewArgs.VersionID || review.Decision != "approved" || review.Actor != version.Actor || review.Validator != nil || review.ImplementationReview != nil || review.SecurityAudit != nil {
+					t.Fatalf("untruthful operator review evidence: %+v", review)
+				}
+				var receipt tracker.ChangeReview
+				if json.Unmarshal(reviewResult.Receipt, &receipt) != nil || receipt.ID == "" || receipt.ID != review.ID {
+					t.Fatalf("review receipt differs from stored evidence: %s", reviewResult.Receipt)
+				}
+			}
+
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=(SELECT id FROM api_tokens WHERE token_hash=?)", operatortool.ConnectionIdentity(ctx).CredentialID); err != nil {
 				t.Fatal(err)
 			}
@@ -648,9 +687,8 @@ func TestOperatorChangeCommands(t *testing.T) {
 			input := changeTestInput()
 			input.PolicyID = descriptor.ID
 			input.HeadSHA = strings.Repeat(strconv.Itoa(i+1), 40)
+			bundle := changeTestSource(t, &input)
 			input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Output: strings.Repeat("界", 21000), Evidence: &gate.CommandEvidence{}}
-			bundle := []byte("retained admission fixture")
-			input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "large-version-" + strconv.Itoa(i)}, ExpectedVersionID: current.ID, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &current)

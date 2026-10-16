@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -675,6 +677,135 @@ func TestWorkspaceOperatorConversation(t *testing.T) {
 			create["input"].(map[string]any)["subject_work_item_id"] = string(hidden.WorkItemID)
 			hostedContextData(t, call("tools/call", "create_conversation", create), true)
 		})
+	}
+}
+
+func TestWorkspaceOperatorConversationHandoff(t *testing.T) {
+	f := newConversationAPIFixture(t, nil)
+	subject := f.nativeFixture.create(t, "Handoff subject")
+	created := f.create(t, f.token, map[string]any{"title": "Private subject chat", "subject_work_item_id": subject.WorkItemID})
+	id := created.Conversation.ID
+	otherChat := f.create(t, f.other, map[string]any{"title": "Other private subject chat", "subject_work_item_id": subject.WorkItemID})
+	attachment := f.upload(t, f.token, id, "context.txt", "text/plain", []byte("attachment context"))
+	requireNativeStatus(t, f.command(t, f.token, id, conversation.Command{Key: "context", Kind: conversation.CommandMessage, Text: "private user context", Attachments: []string{attachment.ID}}), http.StatusOK)
+	if err := f.service.conversations.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
+		record, err := f.service.conversations.store.readConversationByID(t.Context(), tx, id)
+		if err != nil {
+			return err
+		}
+		message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "private assistant decision", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+		return f.service.conversations.appendMessage(t.Context(), tx, &record, &message, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-handoff-project")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other handoff tenant"})
+	requireNativeStatus(t, response, http.StatusCreated)
+	var organization nativeOrganization
+	decodeHubResponse(t, response, &organization)
+	otherTenant := newNativeFixture(t, f.service, organization.ID, "other-handoff-tenant")
+	before := f.snapshot(t, f.token, id)
+	var state string
+	var generation int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT workflow_state_id,dispatch_generation FROM issues WHERE native_id=?", subject.WorkItemID).Scan(&state, &generation); err != nil {
+		t.Fatal(err)
+	}
+	for _, transport := range []string{"stdio", "http"} {
+		t.Run(transport, func(t *testing.T) {
+			for _, owner := range []struct{ token, id string }{{f.token, id}, {f.other, otherChat.Conversation.ID}} {
+				ctx := workspaceOperatorContext(t, f.service, owner.token, string(f.project.OrganizationID), "handoff-"+owner.id+transport)
+				call := hostedContextProtocol(t, f.service, ctx, transport)
+				raw := hostedContextData(t, call("tools/call", "list_project_conversations", map[string]any{"project_id": f.project.ID, "subject_work_item_id": subject.WorkItemID}), false)
+				var listed struct {
+					Data conversationListPage `json:"data"`
+				}
+				if err := json.Unmarshal(raw, &listed); err != nil || len(listed.Data.Conversations) != 1 || listed.Data.Conversations[0].ID != owner.id || listed.Data.Conversations[0].WebURL != "/chat/c/"+owner.id+"?project_id="+string(f.project.ID) {
+					t.Fatalf("private discovery=%s err=%v", raw, err)
+				}
+				raw = hostedContextData(t, call("tools/call", "get_conversation", map[string]any{"project_id": f.project.ID, "conversation_id": owner.id}), false)
+				var snapshot struct {
+					Data conversationSnapshot `json:"data"`
+				}
+				if err := json.Unmarshal(raw, &snapshot); err != nil || snapshot.Data.Conversation.ID != owner.id || snapshot.Data.Conversation.OrganizationID != f.project.OrganizationID || snapshot.Data.Conversation.ProjectID != f.project.ID || snapshot.Data.Conversation.WebURL != "/chat/c/"+owner.id+"?project_id="+string(f.project.ID) {
+					t.Fatalf("handoff identity=%s err=%v", raw, err)
+				}
+				if owner.id != id {
+					continue
+				}
+				args := map[string]any{"project_id": f.project.ID, "conversation_id": id, "limit": 1}
+				for index, role := range []conversation.Role{conversation.RoleAssistant, conversation.RoleUser} {
+					raw = hostedContextData(t, call("tools/call", "list_conversation_messages", args), false)
+					var page struct {
+						Data conversationMessagesPage `json:"data"`
+					}
+					if err := json.Unmarshal(raw, &page); err != nil || len(page.Data.Messages) != 1 || page.Data.Messages[0].Role != role || page.Data.Messages[0].Seq != int64(2-index) {
+						t.Fatalf("message page=%s err=%v", raw, err)
+					}
+					if index == 0 {
+						if page.Data.NextCursor == nil || *page.Data.NextCursor != "2" {
+							t.Fatalf("missing continuation: %s", raw)
+						}
+						args["before"] = 2
+					} else if page.Data.NextCursor != nil || len(page.Data.Messages[0].Attachments) != 1 || page.Data.Messages[0].Attachments[0].ID != attachment.ID {
+						t.Fatalf("oldest page or attachment missing: %s", raw)
+					}
+				}
+				var content []byte
+				for offset := 0; offset < len("attachment context"); {
+					raw = hostedContextData(t, call("tools/call", "get_conversation_attachment", map[string]any{"project_id": f.project.ID, "conversation_id": id, "attachment_id": attachment.ID, "offset": offset, "length": 5}), false)
+					var chunk struct {
+						Data struct {
+							Content string `json:"content_base64"`
+							Next    int    `json:"next_offset"`
+							Total   int    `json:"total_bytes"`
+							More    bool   `json:"has_more"`
+						} `json:"data"`
+					}
+					if err := json.Unmarshal(raw, &chunk); err != nil {
+						t.Fatal(err)
+					}
+					bytes, err := base64.StdEncoding.DecodeString(chunk.Data.Content)
+					if err != nil || chunk.Data.Next <= offset || chunk.Data.Total != len("attachment context") || chunk.Data.More != (chunk.Data.Next < chunk.Data.Total) {
+						t.Fatalf("attachment chunk=%s err=%v", raw, err)
+					}
+					content = append(content, bytes...)
+					offset = chunk.Data.Next
+				}
+				if string(content) != "attachment context" {
+					t.Fatalf("attachment=%q", content)
+				}
+			}
+			for _, denied := range []struct{ name, token, organization, project string }{
+				{"other user", f.other, string(f.project.OrganizationID), string(f.project.ID)},
+				{"other project", otherProject.token, string(f.project.OrganizationID), string(otherProject.project.ID)},
+				{"other tenant", otherTenant.token, string(organization.ID), string(otherTenant.project.ID)},
+			} {
+				t.Run(denied.name, func(t *testing.T) {
+					ctx := workspaceOperatorContext(t, f.service, denied.token, denied.organization, "denied-handoff-"+denied.name+transport)
+					call := hostedContextProtocol(t, f.service, ctx, transport)
+					for _, name := range []string{"get_conversation", "list_conversation_messages", "get_conversation_attachment"} {
+						args := map[string]any{"project_id": denied.project, "conversation_id": id}
+						if name == "get_conversation_attachment" {
+							args["attachment_id"] = attachment.ID
+						}
+						reply := call("tools/call", name, args)
+						hostedContextData(t, reply, true)
+						if !strings.Contains(string(reply.Result), operatortool.ErrAccessDenied.Error()) || strings.Contains(string(reply.Result), "private user context") || strings.Contains(string(reply.Result), "private assistant decision") || strings.Contains(string(reply.Result), base64.StdEncoding.EncodeToString([]byte("attachment context"))) || strings.Contains(string(reply.Result), "/chat/c/") {
+							t.Fatalf("denial leaked context: %s", reply.Result)
+						}
+					}
+				})
+			}
+		})
+	}
+	after := f.snapshot(t, f.token, id)
+	var afterState string
+	var afterGeneration int64
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT workflow_state_id,dispatch_generation FROM issues WHERE native_id=?", subject.WorkItemID).Scan(&afterState, &afterGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if after.Conversation.Revision != before.Conversation.Revision || after.Cursor != before.Cursor || len(after.Messages) != len(before.Messages) || afterState != state || afterGeneration != generation {
+		t.Fatal("handoff reads mutated conversation or issue dispatch state")
 	}
 }
 

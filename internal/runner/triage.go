@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -86,15 +87,25 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		if executionIdentity.Model == "" {
 			executionIdentity.Model = "provider_default"
 		}
+		if runtime, ok := req.Execution.(RuntimeExecution); ok {
+			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: identity}); err != nil {
+				return result, err
+			}
+		}
 		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
 			return result, err
 		}
 	}
+	cacheCtx, releaseCache, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return result, fmt.Errorf("%w: acquire managed Go build cache: %w", ErrWorkspacePreparation, err)
+	}
+	defer func() { err = errors.Join(err, releaseCache()) }()
 	sessionID, sessionStarted, err := r.startSession(ctx, req, startedAt, identity, store.AgentResumeState{}, "", "")
 	if err != nil {
 		return result, err
 	}
-	sessionCtx, cancelSession := r.sessionLimit(ctx, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS), ErrSessionDurationExceeded)
+	sessionCtx, cancelSession := r.sessionLimit(cacheCtx, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS), ErrSessionDurationExceeded)
 	defer cancelSession()
 	result = RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: identity, budgetProjection: budgetProjection}
 	provider, tier, effort := agentTurnIdentityOptions(backendConfig)
@@ -144,7 +155,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	}
 	reapErr := r.reapSessionWorkerProcess(ctx, sessionID, req.Issue, workerProcessReapReason(ctx, turnErr))
 	removeWorkspace = reapErr == nil
-	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
+	turnErr = errors.Join(turnErr, reapErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr), releaseCache())
 	turnErr = classifyAgentCapacityError(backend, selection, backendConfig, result.RuntimeIdentity, turnErr, result.RateLimits, startedAt)
 	result.TurnCount = turnCount
 	result.Output = output.String()

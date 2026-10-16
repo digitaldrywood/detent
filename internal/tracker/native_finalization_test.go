@@ -29,6 +29,9 @@ func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
 		wantTruncated bool
 		wasTruncated  bool
 	}{
+		{name: "colored frontend failure before passing output", output: "\x1b[31m FAIL \x1b[0m packages/ui/selection.test.tsx > selects a range\nAssertionError: expected range but received null\n" + strings.Repeat(" PASS later suite\n", 1000), wantChecks: 1, wantTruncated: true, wantContains: []string{"selection.test.tsx", "AssertionError: expected range but received null"}},
+		{name: "colored secret assignments", output: "TOK\x1b[31mEN=private-assignment\x1b[0m\nAuthorization: \x1b[31mBearer private-bearer-token\x1b[0m\n", wantChecks: 1, wantOutput: "TOKEN=[redacted]\nAuthorization: [redacted]\n"},
+		{name: "assertion without failure header", output: "AssertionError: expected 世界 but received null\n" + strings.Repeat(" PASS later suite\n", 1000), wantChecks: 1, wantTruncated: true, wantContains: []string{"AssertionError: expected 世界 but received null"}},
 		{name: "Bearer output", output: "Bearer private-bearer-token", wantCommand: "go test internalexample", wantOutput: "Bearer [redacted]", wantChecks: 1},
 		{name: "ghp token in check command", command: "go test " + githubToken, wantOutput: "", wantChecks: 0},
 		{name: "ghp token in command", resultCommand: "go test " + githubToken, wantCommand: "go test [redacted]", wantOutput: "", wantChecks: 1},

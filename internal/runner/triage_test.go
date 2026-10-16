@@ -81,14 +81,27 @@ func TestRunnerTriageIsReadOnly(t *testing.T) {
 
 type triageExecution struct {
 	testExecution
-	identity tracker.NativeExecutionIdentity
-	startErr error
+	identity       tracker.NativeExecutionIdentity
+	startErr       error
+	reservation    *providercapacity.Reservation
+	observation    tracker.NativeRuntimeObservation
+	startupRuntime tracker.NativeRuntimeObservation
 }
 
 func (e *triageExecution) Start(_ context.Context, identity tracker.NativeExecutionIdentity) error {
 	e.started = true
 	e.identity = identity
+	e.startupRuntime = e.observation
 	return e.startErr
+}
+
+func (e *triageExecution) ProviderCapacity() *providercapacity.Reservation {
+	return e.reservation
+}
+
+func (e *triageExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
+	e.observation = observation
+	return nil
 }
 
 type triageCatalogBackend struct{ fakeCodexClient }
@@ -101,10 +114,12 @@ func TestRunnerTriageNativeAdmission(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name     string
+		effort   string
 		startErr error
 	}{
-		{name: "reserved model starts execution"},
-		{name: "lost reservation refuses backend", startErr: ErrExecutionAuthorityUnavailable},
+		{name: "reserved model starts execution", effort: "high"},
+		{name: "resolved effort starts execution", effort: "medium"},
+		{name: "lost reservation refuses backend", effort: "high", startErr: ErrExecutionAuthorityUnavailable},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.Default()
@@ -115,20 +130,25 @@ func TestRunnerTriageNativeAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := &triageExecution{startErr: tt.startErr}
-			req := RunRequest{Mode: RunModeTriage, Issue: connector.Issue{ID: "triage", State: "Rework", ModelOverride: "gpt-5.6-sol", Description: "```detent-agent\nschema: 1\nmodel: gpt-6-astra\n```"}}
+			req := RunRequest{Mode: RunModeTriage, WorkAttemptID: 42, Generation: 7, Issue: connector.Issue{ID: "triage", State: "Rework", ModelOverride: "gpt-5.6-sol", Description: "```detent-agent\nschema: 1\nmodel: gpt-6-astra\neffort: " + tt.effort + "\n```"}}
 			report := providercapacity.Report{Backend: "codex", Models: []string{"gpt-5.6-sol"}}
 			req.ProviderReports = []providercapacity.Report{report}
 			capacity, err := r.DispatchCapacity(t.Context(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			req.Execution = &capacityTestExecution{Execution: execution, reservation: &providercapacity.Reservation{Requirement: capacity, Report: report}}
+			execution.reservation = &providercapacity.Reservation{Requirement: capacity, Report: report}
+			req.Execution = execution
 			_, err = r.Run(t.Context(), req)
 			if !errors.Is(err, tt.startErr) {
 				t.Fatalf("Run error = %v, want %v", err, tt.startErr)
 			}
 			if !execution.started || execution.identity.Model != capacity.Model || execution.identity.Backend != capacity.Backend || execution.identity.Role != capacity.Role {
 				t.Fatalf("execution identity = %+v, reservation = %+v", execution.identity, capacity)
+			}
+			observed := execution.startupRuntime
+			if observed.Identity.RequestedModel.Value != capacity.Model || observed.Identity.ReasoningEffort.Value != tt.effort || observed.LocalAttemptID != 42 || observed.Generation != 7 || observed.Phase != "rework" || observed.HeartbeatAt.IsZero() {
+				t.Fatalf("runtime identity at start = %+v", observed)
 			}
 			wantCalls := 1
 			if tt.startErr != nil {
@@ -139,6 +159,9 @@ func TestRunnerTriageNativeAdmission(t *testing.T) {
 			}
 			if wantCalls > 0 && backend.request.Model != capacity.Model {
 				t.Fatalf("turn model = %s, reserved %s", backend.request.Model, capacity.Model)
+			}
+			if wantCalls > 0 && backend.request.ReasoningEffort != tt.effort {
+				t.Fatalf("turn effort = %s, want %s", backend.request.ReasoningEffort, tt.effort)
 			}
 		})
 	}

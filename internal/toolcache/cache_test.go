@@ -618,4 +618,59 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	if _, _, err := cache.Use(canceled); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled consumer: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "README"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(root, "00", fmt.Sprintf("%064x-d", 1))
+	if err := os.Mkdir(filepath.Dir(entry), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
+		t.Fatal(err)
+	}
+	waiting := make(chan struct{}, 1)
+	maintenanceCtx, cancelMaintenance := context.WithCancel(t.Context())
+	defer cancelMaintenance()
+	maintenanceCtx = WithWaitObserver(maintenanceCtx, func(lock string, active bool) {
+		if lock == "consumers" && active {
+			waiting <- struct{}{}
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := cache.Maintain(maintenanceCtx, Policy{MaxBytes: 1024}, time.Now())
+		done <- err
+	}()
+	select {
+	case <-waiting:
+	case <-t.Context().Done():
+		t.Fatal("maintenance did not wait for protected consumers")
+	}
+	cancelMaintenance()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled maintenance: %v", err)
+	}
+	if _, err := os.Stat(entry); err != nil {
+		t.Fatalf("canceled maintenance evicted protected entry: %v", err)
+	}
+	ctx, stop := context.WithTimeout(t.Context(), time.Second)
+	defer stop()
+	_, thirdRelease, err := other.Use(other.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("canceled maintenance retained admission: %v", err)
+	}
+	if err := errors.Join(thirdRelease(), secondRelease(), release()); err != nil {
+		t.Fatal(err)
+	}
+	report, err := cache.Maintain(ctx, Policy{MaxBytes: 1024}, time.Now())
+	if err != nil || report.RetainedBytes > 1024 || report.SizeEvictedBytes != 2048 {
+		t.Fatalf("maintenance after cancellation: %+v, %v", report, err)
+	}
+	_, finalRelease, err := UseFromContext(cache.WithContext(ctx))
+	if err != nil {
+		t.Fatalf("settled maintenance retained locks: %v", err)
+	}
+	if err := finalRelease(); err != nil {
+		t.Fatal(err)
+	}
 }

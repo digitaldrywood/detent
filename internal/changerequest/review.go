@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -225,4 +226,46 @@ func summarize(detail tracker.ChangeDetail, policyID, reviewPolicyID string, now
 		summary.Messages = append(summary.Messages, "Approved repository or review policy changed. Publish a new version with the current policy.")
 	}
 	return summary
+}
+
+func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connector.ChangeReview {
+	result := connector.ChangeReview{}
+	for _, version := range detail.Versions {
+		if version.ID == versionID && detail.Change.CurrentVersion == versionID && (headSHA != "" && version.HeadSHA == headSHA) && detail.Summary.Status != "stale_policy" {
+			result.Current = true
+		}
+	}
+	if !result.Current {
+		return result
+	}
+	result.ChangesRequested = detail.Summary.NativeReview == "changes_requested"
+	for _, version := range detail.Versions {
+		if version.ID != versionID {
+			continue
+		}
+		for _, expected := range version.Checks {
+			for _, check := range detail.Checks {
+				if check.VersionID == versionID && check.CheckRunID == expected.CheckRunID && check.Conclusion != "success" {
+					result.ChangesRequested = true
+				}
+			}
+		}
+	}
+	sourceRework, validatorRework, auditRework := false, false, false
+	for _, review := range detail.Reviews {
+		if review.VersionID != versionID {
+			continue
+		}
+		switch {
+		case review.ImplementationReview != nil:
+			sourceRework = review.ImplementationReview.Verdict == "rework"
+		case review.Validator != nil:
+			validatorRework = review.Validator.Verdict == "rework"
+		case review.SecurityAudit != nil:
+			auditRework = auditRework || review.Decision == "changes_requested"
+		}
+	}
+	result.ChangesRequested = result.ChangesRequested || sourceRework || validatorRework || auditRework
+	result.Reviewed = detail.Summary.Status == "reviewed" && !result.ChangesRequested
+	return result
 }

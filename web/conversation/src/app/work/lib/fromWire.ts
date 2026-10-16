@@ -100,9 +100,7 @@ export function toAttemptView(
     runner: runnerDisplay(runnerNames, attempt.runner_id ?? attempt.machine_id ?? null),
     backend: attempt.identity?.backend ?? null,
     model: attempt.identity?.model ?? null,
-    // The hub serves no effort or access on an attempt; the artifact's worker
-    // strip shows them, and inventing them here would be decoration.
-    effort: null,
+    effort: attempt.identity?.reasoning_effort || null,
     access: null,
     startedAt: attempt.started_at,
     // No token count and no progress exist anywhere on this resource, so the
@@ -216,6 +214,11 @@ export function toWorkItemView(
     // Only a blocker that has not reached a terminal state still blocks. The
     // hub filters out blockers the reader cannot see, so this list is what
     // this reader is allowed to know about.
+    dependencyReady: issue.dependency_ready,
+    blockers: issue.blockers,
+    dependents: (issue.dependents ?? []).filter((item) => !item.terminal),
+    blockedReason: issue.blocked_reason?.basis === issue.blocked_reason?.current_basis ? issue.blocked_reason?.text : undefined,
+    unblocksReason: issue.unblocks_reason?.basis === issue.unblocks_reason?.current_basis ? issue.unblocks_reason?.text : undefined,
     blockedBy: issue.blockers
       .filter((blocker) => !blocker.terminal)
       .map((blocker) => blocker.work_item_id),
@@ -236,7 +239,7 @@ export function toBoardCardView(card: NativeBoardCard, projectName: string): Wor
       id: attempt.attempt_id, status: attempt.status, running: attempt.status === "running",
       runner: runnerDisplay(undefined, attempt.runner_id ?? attempt.machine_id ?? null),
       backend: attempt.identity?.backend ?? null, model: attempt.identity?.model ?? null,
-      effort: null, access: null, startedAt: attempt.started_at, tokens: null, progress: null, attemptNumber: attempt.count ?? 1,
+      effort: attempt.identity?.reasoning_effort || null, access: null, startedAt: attempt.started_at, tokens: null, progress: null, attemptNumber: attempt.count ?? 1,
     },
     change: change === null ? null : { id: change.change_id,
       number: externalNumber !== null && Number.isFinite(externalNumber) ? externalNumber : null,

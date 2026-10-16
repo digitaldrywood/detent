@@ -455,6 +455,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		if err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
+		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
 		next := cursor
 		next.After = strconv.FormatInt(int64(attempt.FencingToken), 10)
@@ -487,6 +488,24 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		}
 	}
 	return page, nil
+}
+
+func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {
+	if attempt.Identity == nil {
+		return nil
+	}
+	identity := *attempt.Identity
+	identity.ReasoningEffort = ""
+	if attempt.Runtime != nil {
+		runtime := attempt.Runtime.Identity
+		identity.ReasoningEffort = runtime.ReasoningEffort.Value
+		if runtime.ResolvedModel.Value != "" {
+			identity.Model = runtime.ResolvedModel.Value
+		} else if runtime.RequestedModel.Value != "" {
+			identity.Model = runtime.RequestedModel.Value
+		}
+	}
+	return &identity
 }
 
 func scanNativeAttempt(rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
@@ -561,6 +580,7 @@ func (s *Service) getNativeAttempt(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	result.Identity = nativeAttemptDisplayIdentity(result)
 	return c.JSON(http.StatusOK, result)
 }
 

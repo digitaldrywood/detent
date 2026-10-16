@@ -491,8 +491,11 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    `identity_file`, `organization_id`, `display_name`, `capacity`),
    `service_name: detent.runner`, and `workspace_root` (default `~/detent-runner`).
    Existing configuration files are left untouched. Cloud owns the project list;
-   local `projects`, workflow paths, weights, priorities, scheduling and
-   fair-share settings are ignored with compatibility warnings for one release.
+   enrolled runners reject unknown keys at startup, naming the key paths.
+   Remove local `projects`, weights, priorities, scheduling, fair-share settings,
+   `global.agents.model_selection`, `client.native_projects` and other local
+   project policy defaults before upgrading. Nested unknown machine keys also
+   fail validation; the warning-and-ignore transition has ended.
 4. With `--service`, installs and starts the `detent.runner` background service
    (launchd `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`),
    separate from a local board's `detent` service on the same host. At startup,
@@ -1043,6 +1046,7 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /work-items/{id}/workflow` | `idempotency_key`, `expected_revision`, target `state`, typed `reason` |
 | `POST /work-items/{id}/verification` | `idempotency_key`, optional `expected_revision`, `result` (`verified` or `not_fixed`), and `comment`, required for `not_fixed` |
 | `POST /work-items/{id}/dependencies` | `idempotency_key`, `expected_revision`, `related_work_item_id`, `operation: add` or `remove` |
+| `POST /work-items/{id}/dependency-reasons` | Source issue lease/fencing and `idempotency_key`; target `work_item_id` in the same project, `kind: blocked` or `unblocks`, `text`, current edge-set `basis`, and `expected_revision` of that reason |
 | `POST /work-items/{id}/comments` | `idempotency_key`, explicit `body`, optional import `provenance` |
 | `GET /work-items/{id}/comments` | Paged discussion with authorship, provenance, revisions, editor and timestamps |
 | `PATCH /work-items/{id}/comments/{comment_id}` | `idempotency_key`, `expected_revision`, explicit `body` |
@@ -1054,6 +1058,15 @@ events require worker scope. Instance administrators can perform these operation
 | `POST /leases/{lease_id}/renew` | `fencing_token`, `ttl_seconds` |
 | `POST /leases/{lease_id}/release` | `fencing_token`, typed `reason` |
 | `POST /work-items/{id}/events` | Idempotent, versioned run fact with current lease and typed references |
+
+Dependency summaries include reader-scoped blocker and dependent numbers, titles,
+links, workflow state and live attempt start times. Reasons are display-only
+plain text, capped at 140 characters, with separate typed basis and revision
+fields. The basis hashes the sorted directional edge set. A reason write changes
+one issue and refuses an outdated basis or revision with `409 revision_conflict`.
+Reads omit stale text; cross-project edges suppress the corresponding sentence
+for all readers. Runners refresh stale reasons on outcome reporting and dependency
+mutations, including both endpoints, without changing lanes or eligibility.
 
 With project `duplicate_challenge` enabled (the default), native filing may
 return HTTP 409 with `code: possible_duplicates`, up to five
@@ -2438,7 +2451,12 @@ and Safety regression. The operator approves that exact workflow revision
 through the existing project policy owner. Merely editing a repository file or
 an issue does not grant this delegation. Projects without the approved sentence
 retain their existing confirmation rules; Detent's direct scheduled reporter
-keeps its existing project-specific delegation.
+keeps its existing project-specific delegation. Its release suites use one open
+stabilization owner per release series, with one bounded occurrence per failed
+job and the original replay identities. Native duplicate matching keeps that
+series owner separate from root-cause repair issues in the selected Detent
+project; existing repairs remain referenced with their ownership and holds
+intact. Develop and other projects retain their existing matching behavior.
 
 The producer opens an issue in the configured checkout repository using its
 GitHub Actions identity. Its body contains those same five section contents,

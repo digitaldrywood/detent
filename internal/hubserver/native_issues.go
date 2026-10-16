@@ -232,31 +232,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ?`, scope.org
 		value := int(priority.Int64)
 		issue.Priority = &value
 	}
-	issue.Dependencies = []tracker.NativeWorkItemID{}
-	issue.Blockers = []tracker.NativeDependency{}
-	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
-	args := append([]any{internalID, scope.organization}, grantArgs...)
-	rows, err := query.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.project_id || '#' || i.number, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0) FROM issue_dependencies d JOIN issues i ON i.id = d.blocker_issue_id
-LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
-WHERE d.dependent_issue_id = ? AND i.organization_id = ?
-AND (`+condition+`)
-ORDER BY i.native_id`, args...)
-	if err != nil {
-		return issue, 0, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var dependency tracker.NativeDependency
-		if err := rows.Scan(&dependency.ID, &dependency.ProjectID, &dependency.Identifier, &dependency.State, &dependency.Terminal); err != nil {
-			return issue, 0, err
-		}
-		issue.Dependencies = append(issue.Dependencies, dependency.ID)
-		issue.Blockers = append(issue.Blockers, dependency)
-	}
-	if err := rows.Err(); err != nil {
-		return issue, internalID, err
-	}
-	if err := rows.Close(); err != nil {
+	if err := readNativeDependencyDetails(ctx, query, scope, &issue); err != nil {
 		return issue, internalID, err
 	}
 	delivery, associated, err := readReleaseDelivery(ctx, query, scope, string(issue.WorkItemID))

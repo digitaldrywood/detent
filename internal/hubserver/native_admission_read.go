@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -125,7 +126,11 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			refuse("no_claimable_work", "The existing native claim candidate query does not select this item")
 			a.AnsweredExclusion = candidate.AnsweredExclusion
 			if a.AnsweredExclusion != nil {
-				a.Reason += "; current answered exclusion: " + a.AnsweredExclusion.Kind
+				if a.AnsweredExclusion.Kind == string(gate.ReasonAutomatedReviewMissing) {
+					a.Reason += "; waiting on review evidence for the published current Change version"
+				} else {
+					a.Reason += "; current answered exclusion: " + a.AnsweredExclusion.Kind
+				}
 			}
 			a.UnresolvedDependencies = candidate.UnresolvedDependencies
 			a.Unavailable = append(a.Unavailable, candidate.Unavailable...)

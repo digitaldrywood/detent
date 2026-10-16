@@ -78,7 +78,6 @@ type PathResolution struct {
 }
 
 type Config struct {
-	RunnerCheckouts       []Project        `yaml:"-"`
 	WorkspaceRoot         string           `yaml:"workspace_root,omitempty"`
 	Path                  string           `yaml:"-"`
 	APIVersion            string           `yaml:"apiVersion"`
@@ -741,11 +740,10 @@ func decodeConfigRoot(raw []byte, path string) (map[string]any, error) {
 }
 
 func parseConfigRoot(root map[string]any, path string, readOptions options, opts ...Option) (Config, error) {
-	retained := runnerCheckoutLocations(root, readOptions)
-	warnings := normalizeRunnerConfig(root)
-	for _, key := range warnings {
-		slog.Warn("runner configuration key is removed and ignored; remove it before the next release", "key", key)
+	if problems := runnerKeyErrors(root); len(problems) > 0 {
+		return Config{}, ValidationError{Path: path, Problems: problems}
 	}
+	normalizeRunnerConfig(root)
 	_, projectsConfigured := root["projects"]
 	if readOptions.machineOnlyProjects || !projectsConfigured {
 		root["projects"] = []any{}
@@ -767,7 +765,6 @@ func parseConfigRoot(root map[string]any, path string, readOptions options, opts
 		if workspaceRoot == "" {
 			workspaceRoot = filepath.Join(readOptions.home, "detent-runner")
 		}
-		cfg.RunnerCheckouts = retained
 		cfg.WorkspaceRoot, err = expandPath(workspaceRoot, readOptions)
 		if err != nil {
 			return Config{}, buildValidationError(path, err)

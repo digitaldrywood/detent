@@ -70,8 +70,7 @@ func (f changeFixture) publish(t *testing.T, key, expected string, retained ...b
 	}
 	var bundle []byte
 	if len(retained) > 0 && retained[0] {
-		bundle = []byte("retained admission fixture")
-		input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+		bundle = changeTestSource(t, &input)
 	}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: key}, ExpectedVersionID: expected, ChangeVersionInput: input, SourceBundle: bundle})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -433,6 +432,7 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 	}{
 		{"missing fence", func(r *tracker.PublishChangeVersion) { r.LeaseID = "" }, http.StatusConflict},
 		{"stale fence", func(r *tracker.PublishChangeVersion) { r.FencingToken++ }, http.StatusConflict},
+		{"stale fence before invalid source", func(r *tracker.PublishChangeVersion) { r.FencingToken++; r.SourceBundle = []byte("invalid pack") }, http.StatusConflict},
 		{"unrelated run", func(r *tracker.PublishChangeVersion) { r.RunID = newNativeID("run") }, http.StatusNotFound},
 		{"missing run", func(r *tracker.PublishChangeVersion) { r.RunID, r.AttemptID = "", "" }, http.StatusUnprocessableEntity},
 		{"changed source bytes", func(r *tracker.PublishChangeVersion) { r.SourceBundle = []byte("other source") }, http.StatusUnprocessableEntity},
@@ -444,8 +444,7 @@ func TestChangeWorkerRequiresCurrentAttempt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name, LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: changeTestInput()}
 			request.RunID, request.AttemptID = event.Data.RunID, event.Data.AttemptID
-			request.SourceBundle = []byte("retained source")
-			request.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: request.BaseSHA, HeadSHA: request.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(request.SourceBundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(request.SourceBundle))}
+			request.SourceBundle = changeTestSource(t, &request.ChangeVersionInput)
 			test.edit(&request)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request), test.want)
 		})
@@ -473,8 +472,8 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, start), http.StatusOK)
 	input := changeTestInput()
 	input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, start.Data.RunID, start.Data.AttemptID
-	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: []byte("retained source")}
-	request.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(request.SourceBundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(request.SourceBundle))}
+	bundle := changeTestSource(t, &input)
+	request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "push-source", LeaseID: lease.ID, FencingToken: lease.FencingToken}, ChangeVersionInput: input, SourceBundle: bundle}
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", worker, request)
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion
@@ -761,8 +760,7 @@ func (f landingCapacityFixture) ready(t *testing.T, name string) tracker.NativeI
 	decodeHubResponse(t, response, &change)
 	input := changeTestInput()
 	input.PolicyID = f.descriptor.ID
-	bundle := []byte("retained admission fixture")
-	input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
+	bundle := changeTestSource(t, &input)
 	path += "/" + change.ID
 	response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "publish-" + name}, ChangeVersionInput: input, SourceBundle: bundle})
 	requireNativeStatus(t, response, http.StatusOK)
@@ -954,11 +952,15 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id,json_extract(record_json,'$.current_version_id') FROM change_requests WHERE work_item_id=?", second.WorkItemID).Scan(&change, &version); err != nil {
 					t.Fatal(err)
 				}
+				published, err := readChangeVersion(t.Context(), f.service.database.reader, change, version)
+				if err != nil {
+					t.Fatal(err)
+				}
 				event := nativeStartedEvent(direct)
 				path := f.base + "/work-items/" + string(second.WorkItemID)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", waiter.redemption.Credential, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "landing-wait", 2
-				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Landing: &tracker.NativeLandingReceipt{ChangeID: change, VersionID: version, HeadSHA: changeTestInput().HeadSHA, Waiting: true}}
+				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Landing: &tracker.NativeLandingReceipt{ChangeID: change, VersionID: version, HeadSHA: published.HeadSHA, Waiting: true}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", waiter.redemption.Credential, event), http.StatusOK)
 				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish-wait", 3, "succeeded"
 				event.Data.Disposition = &tracker.NativeDisposition{Status: "in_progress"}
@@ -977,7 +979,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var projected tracker.NativeIssue
 				decodeHubResponse(t, response, &projected)
-				if projected.ListChange == nil || !projected.ListChange.LandingPending || projected.ListChange.HeadSHA != changeTestInput().HeadSHA {
+				if projected.ListChange == nil || !projected.ListChange.LandingPending || projected.ListChange.HeadSHA != published.HeadSHA {
 					t.Fatalf("waiting direct landing lost source intent: %#v", projected.ListChange)
 				}
 				requireNativeStatus(t, admit(test.contenderCapacity), http.StatusOK)

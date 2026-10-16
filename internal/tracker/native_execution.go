@@ -20,9 +20,10 @@ const NativeAdmissionEvidenceCapability = "native_admission_evidence"
 const NativeAdmissionObservationCapability = "native_admission_observation"
 
 type NativeExecutionIdentity struct {
-	Role    string `json:"role"`
-	Backend string `json:"backend"`
-	Model   string `json:"model"`
+	Role            string `json:"role"`
+	Backend         string `json:"backend"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type NativeCheckpoint struct {

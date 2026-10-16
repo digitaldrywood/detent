@@ -83,9 +83,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
+			input := changeTestInput()
+			bundle := changeTestSource(t, &input)
 			event.Data.Handoff = nativeTestCheckpoint()
 			event.Data.Handoff.WorktreeState = "unpushed"
-			event.Data.Handoff.HeadSHA = changeTestInput().HeadSHA
+			event.Data.Handoff.HeadSHA = input.HeadSHA
 			if test.cleanEffect {
 				event.Data.Handoff.WorktreeState, event.Data.Handoff.Resume = "clean", "fresh_checkout"
 			}
@@ -98,10 +100,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				event.Data.Handoff.WorktreeState = "dirty"
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
-			input := changeTestInput()
 			input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-			bundle := []byte("retained source fixture")
-			input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle})
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion

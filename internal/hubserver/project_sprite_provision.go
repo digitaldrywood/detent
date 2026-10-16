@@ -21,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const spriteBootstrapSource = "https://raw.githubusercontent.com/digitaldrywood/detent/a914d42bd00ad7d022673e342eb638ad255079c1/scripts/sprite-runner-bootstrap.sh"
+const spriteBootstrapSource = "https://raw.githubusercontent.com/digitaldrywood/detent/1a3f19c175cd3b77100115dedea8b1cbe4396286/scripts/sprite-runner-bootstrap.sh"
 
 func spriteShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"

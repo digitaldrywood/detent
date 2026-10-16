@@ -1191,12 +1191,17 @@ func (r *Runner) runAgentTurn(
 	budgetCostOffsetUSD float64,
 	sessionModel string,
 	backendKind string,
-) agentTurnExecution {
+) (execution agentTurnExecution) {
 	if runRequest.Execution != nil {
 		if err := runRequest.Execution.Validate(ctx); err != nil {
 			return agentTurnExecution{err: err}
 		}
 	}
+	ctx, release, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return agentTurnExecution{err: fmt.Errorf("%w: acquire managed Go build cache: %w", ErrWorkspacePreparation, err)}
+	}
+	defer func() { execution.err = errors.Join(execution.err, release()) }()
 	workflow, _, _, _ := r.runtimeSnapshot()
 	result := RunResult{
 		BillingMode:      strings.ToLower(strings.TrimSpace(workflow.Config.Budget.BillingMode)),
@@ -2208,6 +2213,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	profileRequest.StartedAt = startedAt
 	req.activityProfile = r.startActivityProfile(ctx, profileRequest, sessionID, info.Path, workflow, profileStage)
 	defer req.activityProfile.finish()
+	ctx = r.withCacheWaitObserver(ctx, req)
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
 		ctx,
@@ -3431,7 +3437,7 @@ func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *B
 	}
 }
 
-func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValue gate.ValidatorResult, returnErr error) {
 	role := RoleValidator
 	if req.implementationReview {
 		if req.NativeVersion == nil {
@@ -3528,7 +3534,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		if !ok {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires host command execution", ErrValidatorInfrastructure)
 		}
-		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue}
+		commands = &validatorCommands{run: commandRunner, info: info, issue: workspaceIssue, base: req.Diff.BaseSHA, shell: workflow.Config.Hooks.Shell}
 		if req.NativeVersion.Validation != nil {
 			receipts := append([]gate.CommandResult{*req.NativeVersion.Validation}, req.Commands...)
 			commands.reuse(req.NativeVersion.Validation.TreeSHA, receipts)
@@ -3538,7 +3544,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
 				return receipt.Command == configured.Run && commands.canReuse(ctx, receipt)
 			}) {
-				if _, err := commands.execute(ctx, configured.Run); err != nil {
+				if _, err := commands.execute(ctx, configured.Run, true); err != nil {
 					return gate.ValidatorResult{}, err
 				}
 			}
@@ -3625,6 +3631,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		OnUsageUpdate:    req.OnUsageUpdate,
 		OnActivityUpdate: req.OnActivityUpdate,
 	}
+	cacheCtx, releaseCache, err := toolcache.UseFromContext(ctx)
+	if err != nil {
+		return gate.ValidatorResult{}, fmt.Errorf("%w: acquire managed Go build cache: %w", ErrValidatorInfrastructure, err)
+	}
+	defer func() { returnErr = errors.Join(returnErr, releaseCache()) }()
 	sessionID, sessionStarted, err := r.startSession(ctx, runReq, startedAt, runtimeIdentity, store.AgentResumeState{}, "", "")
 	if err != nil {
 		return gate.ValidatorResult{}, err
@@ -3634,7 +3645,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	defer activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
-		ctx,
+		cacheCtx,
 		sessionDuration,
 		ErrSessionDurationExceeded,
 	)
@@ -3774,7 +3785,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	if brakeDiff := sessionBrake.resultDiffStats(); !diffStatsEmpty(brakeDiff) {
 		runResult.DiffStats = brakeDiff
 	}
-	turnErr = errors.Join(turnErr, scratchCleanupErr)
+	turnErr = errors.Join(turnErr, scratchCleanupErr, releaseCache())
 	turnErr = classifyAgentCapacityError(backend, selection, backendConfig, runResult.RuntimeIdentity, turnErr, runResult.RateLimits, runStartedAt)
 	checkFinishedAttrs := []any{
 		"workspace_path", info.Path,
@@ -3878,15 +3889,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	if commands != nil {
-		validation.Commands, err = commands.evidence()
-		if err != nil {
+		if err := commands.apply(&validation); err != nil {
 			return gate.ValidatorResult{}, err
-		}
-		for _, command := range validation.Commands {
-			if command.ExitCode != 0 && validation.Verdict == gate.ValidatorVerdictPass {
-				validation.Verdict = gate.ValidatorVerdictWait
-				validation.Summary += "\nHost validation command failed; passing test evidence is required."
-			}
 		}
 	}
 	if req.NativeVersion != nil {

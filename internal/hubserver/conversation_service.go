@@ -567,6 +567,7 @@ type conversationWorkItemResource struct {
 
 type conversationResource struct {
 	ID             string                  `json:"id"`
+	WebURL         string                  `json:"web_url,omitempty"`
 	OrganizationID tracker.OrganizationID  `json:"organization_id"`
 	ProjectID      tracker.ProjectID       `json:"project_id"`
 	Title          string                  `json:"title"`

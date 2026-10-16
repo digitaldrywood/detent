@@ -46,21 +46,8 @@ func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
 			if len(capture.Bundle) >= 2*len(data) {
 				t.Fatalf("repeated blob revisions were not compressed: bundle bytes=%d", len(capture.Bundle))
 			}
-			restored := t.TempDir()
-			runGit(t, restored, "init")
-			runGit(t, restored, "fetch", source, base)
-			bundle := filepath.Join(t.TempDir(), "source.bundle")
-			if err := os.WriteFile(bundle, capture.Bundle, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			runGit(t, restored, "fetch", bundle, "HEAD")
-			runGit(t, restored, "checkout", "--detach", head)
-			got, err := os.ReadFile(filepath.Join(restored, "blob.bin"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(got, data) {
-				t.Fatal("restored bundle changed the reviewed blob")
+			if err := VerifyChangeSource(t.Context(), capture.Source, capture.Bundle); err != nil {
+				t.Fatalf("captured pack cannot be verified without repository objects: %v", err)
 			}
 		})
 	}
@@ -87,6 +74,13 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	editBundle := func(bundle []byte) func(*ChangeSource) {
+		return func(source *ChangeSource) {
+			source.Bundle = bundle
+			source.Version.Source.BundleSHA256 = tracker.ChangeSourceDigest(bundle)
+			source.Version.Source.Bytes = int64(len(bundle))
+		}
+	}
 	for _, test := range []struct {
 		name        string
 		edit        func(*ChangeSource)
@@ -97,6 +91,8 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		absent      bool
 		corrupt     bool
 	}{
+		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
+		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
 		{name: "corrupt bundle", edit: func(s *ChangeSource) { s.Bundle = []byte("changed") }},
 		{name: "wrong diff", edit: func(s *ChangeSource) { s.Version.Source.DiffSHA256 = strings.Repeat("a", 64) }},
 		{name: "wrong repository", edit: func(s *ChangeSource) { s.Version.Repository = "https://github.com/other/source" }},

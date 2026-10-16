@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/intake"
@@ -486,12 +487,12 @@ func nativeIntakeIssue(issue connector.Issue) intake.Issue {
 // version and is reviewed: accepted by the project's review policy, with
 // every approval and check it asks for in place. Any other current version
 // is not this run's, so it never answers for it.
-func (c *NativeConnector) ChangeReviewed(ctx context.Context, issueID, changeID, versionID string) (bool, error) {
+func (c *NativeConnector) ReadChangeReview(ctx context.Context, issueID, changeID, versionID, headSHA string) (connector.ChangeReview, error) {
 	detail, err := c.client.runtimeChange(ctx, tracker.NativeWorkItemID(issueID), changeID)
 	if err != nil {
-		return false, err
+		return connector.ChangeReview{}, err
 	}
-	return versionID != "" && detail.Change.CurrentVersion == versionID && detail.Summary.Status == "reviewed", nil
+	return changerequest.ReviewState(detail, versionID, headSHA), nil
 }
 
 func (c *NativeConnector) CreateComment(ctx context.Context, id, body string) error {

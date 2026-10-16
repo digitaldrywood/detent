@@ -254,6 +254,7 @@ func (s *Service) readProjectReport(ctx context.Context, credential apiCredentia
 	if err != nil {
 		return hostedReportsReport{}, false, err
 	}
+	ctx = withReportsQualityInputs(ctx, w)
 	done := timeSpan(ctx, "reports_analytics")
 	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: project, Limit: maxAnalyticsPopulation}, w)
 	done()

@@ -576,6 +576,16 @@ func TestAgentBackendReadOnlyTurnOverridesWritableConfiguration(t *testing.T) {
 	}
 }
 
+func TestAgentBackendTextOnlyTurnDisablesTools(t *testing.T) {
+	t.Parallel()
+	backend := &AgentBackend{options: Options{PermissionMode: "bypassPermissions", AllowedTools: []string{"Read", "Bash"}, ExtraArgs: []string{"--tools", "Read"}}}
+	got := backend.argv(runner.AgentTurnRequest{TextOnly: true, ExtraWritableRoots: []string{"/private"}})
+	want := []string{"-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "plan", "--safe-mode", "--strict-mcp-config", "--disable-slash-commands", "--no-chrome", "--tools", "", "--mcp-config", `{"mcpServers":{}}`}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("text-only argv=%#v, want %#v", got, want)
+	}
+}
+
 func TestAgentBackendAddsResumeSessionArgument(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process lifecycle integration")

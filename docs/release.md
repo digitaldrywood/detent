@@ -79,14 +79,17 @@ tenants or fall back to migrating the release databases if copying fails.
 A failed scheduled job reports through the existing native scheduled reporter
 for `digitaldrywood/detent` and its selected Detent Cloud project, following
 [deployment and release failure reporting](../AGENTS.md#deployment-and-release-failure-reporting).
-Under the human-approved Detent scheduled reporting policy, every failing job
-enters Todo at least High, including source, test, unclassified and infrastructure
-failures. Infrastructure and unclassified reports carry the infrastructure label
+Under the human-approved Detent scheduled reporting policy, release suites
+share one open stabilization owner per release series, at least High in Todo.
+Each failed job remains a bounded occurrence with its original replay identity,
+including source, test, unclassified and infrastructure failures. Develop retains
+per-job reporting; other projects retain their configured behavior. Infrastructure and unclassified reports carry the infrastructure label
 and retain attribution to the CI instance. Other unknown instance diagnostics
 remain Backlog intake. The selected
 workflow must have dispatchable, nonterminal Todo and nondispatchable,
 nonterminal Backlog, neither operator-only.
-The reporter matches open fingerprints and imported occurrences before filing,
+The reporter matches the open release-series fingerprint for releases and job
+fingerprints and imported occurrences for develop before filing,
 appends occurrences to matching work, and raises unset, Normal or Low priority
 through the existing expected-revision priority owner, preserving High and
 Urgent. Origin stamps, stable problem fingerprints, pinned commit, run, attempt,
@@ -94,7 +97,16 @@ job and source evidence, occurrence replay identity, and imported history remain
 durable. Matching scheduled Backlog intake is promoted to Todo through the native
 workflow owner. Preserve human questions, migration/operator holds, active and
 review lanes, and terminal history; a new occurrence never reopens terminal work
-or clears a hold. Priority updates alone do not authorize admission.
+or clears a hold. Reference existing repairs without restarting them or
+transferring ownership; group fixes by reproduced root cause and distinguish
+historical failures from current reproduction. A later failed occurrence after
+a release stabilization owner completes starts a new episode; terminal replay
+changes nothing. Green evidence reconciles only the matching series and does
+not close repairs. Explicit operator cancellation creates no repair issues,
+even when the finalizer is active before the run conclusion settles. Genuine
+timeouts, infrastructure failures and cancelled jobs without workflow
+cancellation remain visible; incomplete suites never permit tagging.
+Priority updates alone do not authorize admission.
 
 Unknown setup, startup, download, network, backend, protocol and authentication
 failures remain instance-owned. Scheduled infrastructure reports authorize no

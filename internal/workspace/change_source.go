@@ -1,14 +1,18 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -109,19 +113,63 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 		return capture, err
 	}
 	capture.Source = tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(capture.Bundle), DiffSHA256: digest, Bytes: int64(len(capture.Bundle))}
-	if err := verifyChangeBundle(ctx, directory, path, head); err != nil {
+	if err := verifyChangeBundle(ctx, directory, path); err != nil {
 		return capture, err
 	}
 	return capture, capture.Source.Validate(base, head, capture.Bundle)
 }
 
-func verifyChangeBundle(ctx context.Context, directory, path, head string) error {
-	heads, err := runGitAt(ctx, directory, "bundle", "list-heads", path)
-	if err != nil || strings.TrimSpace(heads) != head+" HEAD" {
-		return errors.Join(errors.New("source bundle does not advertise only the reviewed head"), err)
-	}
-	_, err = runGitAt(ctx, directory, "bundle", "verify", path)
+func verifyChangeBundle(ctx context.Context, directory, path string) error {
+	_, err := runGitAt(ctx, directory, "bundle", "verify", path)
 	return err
+}
+
+func VerifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !validLandingHead(source.BaseSHA) || !validLandingHead(source.HeadSHA) {
+		return errors.New("change source verification requires immutable base and head")
+	}
+	if err := source.Validate(source.BaseSHA, source.HeadSHA, bundle); err != nil {
+		return err
+	}
+	_, pack, _ := bytes.Cut(bundle, []byte("\n\n"))
+	if err := changeSourcePackBudget(ctx, pack); err != nil {
+		return err
+	}
+	scratch, err := changeSourceScratch()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
+	git := func(input []byte, args ...string) error {
+		command := exec.CommandContext(ctx, "git")
+		command.Args = append([]string{"git"}, args...)
+		command.Dir = scratch
+		for _, value := range os.Environ() {
+			if !strings.HasPrefix(value, "GIT_") {
+				command.Env = append(command.Env, value)
+			}
+		}
+		command.Env = append(command.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_NO_REPLACE_OBJECTS=1")
+		command.Stdin = bytes.NewReader(input)
+		command.WaitDelay = workspaceCommandWaitDelay
+		procgroup.Configure(ctx, command)
+		return command.Run()
+	}
+	if err := git(nil, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
+		return err
+	}
+	if err := git(pack, "-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=16m", "index-pack", "--stdin", "--fsck-objects"); err != nil {
+		return errors.Join(ctx.Err(), errors.New("source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>"))
+	}
+	if err := git(nil, "cat-file", "-e", source.HeadSHA+"^{commit}"); err != nil {
+		return errors.Join(ctx.Err(), errors.New("source bundle pack lacks the reviewed commit; recreate it with git bundle create <path> HEAD ^<base>"))
+	}
+	return nil
 }
 
 func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource) (err error) {
@@ -152,7 +200,7 @@ func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource)
 	if err := os.WriteFile(path, source.Bundle, 0o600); err != nil {
 		return err
 	}
-	if err := verifyChangeBundle(ctx, l.sourceRoot, path, version.HeadSHA); err != nil {
+	if err := verifyChangeBundle(ctx, l.sourceRoot, path); err != nil {
 		return err
 	}
 	if _, err := l.runGit(ctx, "-c", "fetch.fsckObjects=true", "bundle", "unbundle", path); err != nil {

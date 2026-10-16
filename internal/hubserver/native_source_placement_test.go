@@ -44,8 +44,10 @@ func TestNativeSourcePlacement(t *testing.T) {
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "source-checkpoint", 2
+			input := changeTestInput()
+			bundle := changeTestSource(t, &input)
 			event.Data.Handoff = nativeTestCheckpoint()
-			event.Data.Handoff.HeadSHA = changeTestInput().HeadSHA
+			event.Data.Handoff.HeadSHA = input.HeadSHA
 			if test.wrongHead {
 				event.Data.Handoff.HeadSHA = strings.Repeat("c", 40)
 			}
@@ -66,10 +68,7 @@ func TestNativeSourcePlacement(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 			if test.source {
-				input := changeTestInput()
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-				bundle := []byte("bounded retained source fixture")
-				input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
 				if test.corrupt || test.missing {
 					statement := "DROP TRIGGER change_sources_no_update"
@@ -156,14 +155,13 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", owner.redemption.Credential, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
+			input := changeTestInput()
+			bundle := changeTestSource(t, &input)
 			event.Data.Handoff = nativeTestCheckpoint()
-			event.Data.Handoff.WorktreeState, event.Data.Handoff.HeadSHA = test.state, changeTestInput().HeadSHA
+			event.Data.Handoff.WorktreeState, event.Data.Handoff.HeadSHA = test.state, input.HeadSHA
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", owner.redemption.Credential, event), http.StatusOK)
 			if test.source {
-				input := changeTestInput()
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-				bundle := []byte("retained source fixture")
-				input.Source = &tracker.ChangeSource{Format: "git-bundle", BaseSHA: input.BaseSHA, HeadSHA: input.HeadSHA, BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("d", 64), Bytes: int64(len(bundle))}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
 			}
 			finish := event

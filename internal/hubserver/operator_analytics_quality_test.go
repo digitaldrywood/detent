@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,74 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestAnalyticsQualityEvidencePopulationOrder(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	now := f.service.config.now().UTC().Truncate(time.Hour)
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for index, name := range []string{"first", "second"} {
+		issue, err := createNativeIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: name, Body: nativeContractTestBody, State: "Todo"}, now.Add(-time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		change, version := "change-"+string(issue.WorkItemID), "version-"+string(issue.WorkItemID)
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,'{}')", change, scope.organization, scope.project, issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,'{}')", version, change); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
+INSERT INTO change_evidence(change_id,sequence,kind,version_id,record_json)
+SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision','changes_requested','created_at',strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||x||' seconds')) FROM n`, maxAnalyticsPopulation+2, change, 1-index, version, name+"-", version, formatHubTime(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now, Bucket: time.Hour}
+	for _, test := range []struct {
+		offset, count int
+		first, last   string
+		partial       bool
+	}{
+		{0, 1000, "first-1", "second-500", true},
+		{1000, 1000, "first-501", "second-1000", true},
+		{2000, 4, "first-1001", "second-1002", true},
+	} {
+		t.Run(fmt.Sprintf("offset-%d", test.offset), func(t *testing.T) {
+			ctx, paging, err := analyticsPagingContext(t.Context(), fmt.Sprintf("quality_evidence:%d:0", test.offset))
+			if err != nil {
+				t.Fatal(err)
+			}
+			inputs, err := loadAnalyticsQualityInputs(ctx, f.service.database.reader, scope, w)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, event := range inputs.events {
+				if event.Kind == "changes_requested" {
+					ids = append(ids, event.ID)
+				}
+			}
+			if len(ids) != test.count || inputs.partial != test.partial {
+				t.Fatalf("evidence count=%d partial=%v", len(ids), inputs.partial)
+			}
+			if ids[0] != test.first || ids[len(ids)-1] != test.last {
+				t.Fatalf("evidence page begins %s and ends %s", ids[0], ids[len(ids)-1])
+			}
+			if test.offset < 2000 && paging.next["quality_evidence"] != fmt.Sprintf("quality_evidence:%d:0", test.offset+maxAnalyticsPopulation) {
+				t.Fatalf("evidence continuation=%v", paging.next)
+			}
+		})
+	}
+}
 
 func TestQualityEscapeHistories(t *testing.T) {
 	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
@@ -46,6 +115,9 @@ func TestQualityEscapeHistories(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := summarizeAnalyticsQuality(tt.landings, tt.events, tt.discussions, w)
+			inputs := qualityInputsInWindow(analyticsQualityInputs{landings: tt.landings, events: tt.events, discussions: tt.discussions}, w)
+			shared := summarizeAnalyticsQuality(inputs.landings, inputs.events, inputs.discussions, w)
+			assertAnalyticsJSONEqual(t, got, shared)
 			if got.Escapes != tt.escapes || got.EscapedVersions != tt.affected || got.Pending != tt.pending || got.Infrastructure != tt.infra || (tt.cause != "" && got.Causes[tt.cause] != 1) {
 				t.Fatalf("quality = %+v", got)
 			}
