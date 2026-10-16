@@ -202,7 +202,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoin
 		return r, err
 	}
 	for _, report := range reports {
-		view, err := providerView(ctx, db, organization, id, report, now)
+		view, err := providerView(ctx, db, organization, id, report, now, group)
 		if err != nil {
 			return r, err
 		}

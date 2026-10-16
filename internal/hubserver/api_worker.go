@@ -610,7 +610,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 		if query.NativeScope != nil && !query.WorkspaceLane {
-			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates)
+			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates, query.LandingBatchGroup)
 			if err != nil {
 				return tracker.Lease{}, err
 			}
