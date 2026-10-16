@@ -464,9 +464,6 @@ export function InviteForm({
                   commitEmails(draft + pasted);
                 }
               }}
-              onBlur={() => {
-                if (draft.trim()) commitEmails(draft);
-              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && draft.trim()) {
                   event.preventDefault();

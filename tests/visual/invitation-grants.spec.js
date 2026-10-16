@@ -20,6 +20,7 @@ test("invited member receives only the selected read-only project", async ({ pag
   await expect(collaboration.getByRole("button", { name: "None", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect(privateProject.getByRole("button", { name: "None", exact: true })).toHaveAttribute("aria-pressed", "true");
   await collaboration.getByRole("button", { name: "Read", exact: true }).click();
+  await expect(collaboration.getByRole("button", { name: "Read", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Send 1 invitation", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Invite members", exact: true })).toHaveCount(0);
   const row = page.getByRole("group", { name: "Invitation to invitee@example.test" });
