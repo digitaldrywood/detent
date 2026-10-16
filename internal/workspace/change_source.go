@@ -77,7 +77,7 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
 	path := filepath.Join(scratch, "source.bundle")
-	if _, err := git(ctx, "bundle", "create", path, "HEAD", "^"+base); err != nil {
+	if _, err := git(ctx, "-c", "pack.window=0", "bundle", "create", path, "HEAD", "^"+base); err != nil {
 		return capture, err
 	}
 	info, err := os.Stat(path)
