@@ -228,7 +228,8 @@ export function EnrollRunnerDialog({
   const [location, setLocation] = React.useState<"machine" | "sprite">("machine");
   const [platform, setPlatform] = React.useState(runnerInstallPlatform);
   const [capacityText, setCapacityText] = React.useState("1");
-  const [isolationTier, setIsolationTier] = React.useState<RunnerAccessTier | null>(null);
+  const [machineIsolationTier, setMachineIsolationTier] = React.useState<RunnerAccessTier | null>(null);
+  const isolationTier = location === "sprite" ? "native-trusted" : machineIsolationTier;
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
   // the next opening's command.
@@ -274,7 +275,7 @@ export function EnrollRunnerDialog({
     generation.current += 1;
     setName(initialName);
     setCapacityText("1");
-    setIsolationTier(null);
+    setMachineIsolationTier(null);
     setService(true);
     setLocation("machine");
     setPlatform(runnerInstallPlatform());
@@ -423,7 +424,7 @@ export function EnrollRunnerDialog({
             <fieldset disabled={enrollment !== null} className="flex flex-col gap-4">
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend id="enroll-agent-access" className="pb-1 font-medium">Agent access</legend>
-                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setIsolationTier(value as RunnerAccessTier)}>
+                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setMachineIsolationTier(value as RunnerAccessTier)}>
                   {runnerAccessOptions.map(({ tier, label, hint }) => (
                     <label key={tier} className="flex cursor-pointer items-start gap-2">
                       <Radio value={tier} disabled={location === "sprite" && tier === "sandbox"} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
@@ -439,7 +440,6 @@ export function EnrollRunnerDialog({
                   <label key={value} className="flex items-center gap-2">
                     <input type="radio" name="runner-location" value={value} checked={location === value} onChange={() => {
                       setLocation(value);
-                      if (value === "sprite") setIsolationTier("native-trusted");
                       if (value === "sprite") setName(name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/g, "") || `detent-${globalThis.crypto.randomUUID().slice(0, 8)}`);
                     }} />
                     {label}
