@@ -55,7 +55,7 @@ func TestCloudWorkflowLanesMigration(t *testing.T) {
 				if test.stale {
 					approvedMarkdown = strings.Replace(approvedMarkdown, "Keep the Cloud prompt.", "Previously approved prompt.", 1)
 				}
-				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(approvedMarkdown)})
+				workflow, err := workflowconfig.ParseHistoricalProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: []byte(approvedMarkdown)})
 				if err != nil {
 					t.Fatal(err)
 				}

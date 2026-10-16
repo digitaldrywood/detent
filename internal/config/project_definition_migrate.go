@@ -262,7 +262,7 @@ func migrationEffectiveWorkflow(
 	layout ProjectDefinitionLayout,
 ) (Workflow, error) {
 	if layout == ProjectDefinitionLegacy {
-		return parseLegacyProjectDefinition(sources, shared, local)
+		return parseLegacyProjectDefinition(sources, shared, local, nil)
 	}
 	if layout != ProjectDefinitionMixed || !sources.HasConfig || !local.hasFrontmatter || sources.HasLocalConfig {
 		return Workflow{}, mixedProjectDefinitionError(sources, shared, local)

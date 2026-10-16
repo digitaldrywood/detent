@@ -8,10 +8,9 @@ import (
 )
 
 const (
-	LaneActive        = "active"
-	LaneHolding       = "holding"
-	LaneTerminal      = "terminal"
-	LegacyLaneWarning = "tracker.observed_states, tracker.active_states and tracker.terminal_states must be migrated to tracker.lanes with detent config migrate; the next release will reject the old keys"
+	LaneActive   = "active"
+	LaneHolding  = "holding"
+	LaneTerminal = "terminal"
 )
 
 type Lane struct {
@@ -138,4 +137,28 @@ func (t Tracker) roleField(role string) string {
 	default:
 		return "tracker.observed_states"
 	}
+}
+
+func rejectLegacyTrackerStates(root *yaml.Node) error {
+	if root == nil {
+		return nil
+	}
+	var fields map[string]yaml.Node
+	if err := root.Decode(&fields); err != nil {
+		return err
+	}
+	tracker, exists := fields["tracker"]
+	if !exists {
+		return nil
+	}
+	fields = nil
+	if err := tracker.Decode(&fields); err != nil {
+		return err
+	}
+	for _, key := range []string{"observed_states", "active_states", "terminal_states"} {
+		if _, exists := fields[key]; exists {
+			return fmt.Errorf("tracker.%s is no longer supported; use tracker.lanes (run detent config migrate for existing files)", key)
+		}
+	}
+	return nil
 }

@@ -2106,8 +2106,13 @@ an `AGENTS.md` saying to make the test pass and nothing else, and:
 schema: 1
 tracker:
     kind: hub_native
-    active_states: [Todo, In Progress]
-    terminal_states: [Done]
+    lanes:
+      - {name: Backlog, role: holding}
+      - {name: Todo, role: active}
+      - {name: In Progress, role: active}
+      - {name: Human Review, role: holding}
+      - {name: Blocked, role: holding}
+      - {name: Done, role: terminal}
 gate:
     kind: command
     run: go test ./...
