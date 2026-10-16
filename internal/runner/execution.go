@@ -34,11 +34,30 @@ type Execution interface {
 }
 
 type NativeValidation struct {
-	Discussion NativeReviewDiscussion
-	Evidence   []tracker.NativeEvidence
-	Commands   []gate.CommandResult
-	Version    *tracker.ChangeVersion
-	Diff       *connector.ValidationDiff
+	SecurityAudit *NativeSecurityAuditEvidence
+	Discussion    NativeReviewDiscussion
+	Evidence      []tracker.NativeEvidence
+	Commands      []gate.CommandResult
+	Version       *tracker.ChangeVersion
+	Diff          *connector.ValidationDiff
+}
+
+// NativeSecurityAuditEvidence identifies an accepted Hub review of this source.
+// It is evidence for the independent validator, not an acceptance verdict.
+type NativeSecurityAuditEvidence struct {
+	ReviewID        string
+	ProjectID       string
+	WorkItemID      string
+	ChangeID        string
+	VersionID       string
+	Repository      string
+	BaseSHA         string
+	HeadSHA         string
+	DiffDigest      string
+	ReviewerVersion string
+	ReviewerDigest  string
+	Verdict         string
+	SessionID       int64
 }
 
 type NativeReviewDiscussion struct {
@@ -948,7 +967,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
