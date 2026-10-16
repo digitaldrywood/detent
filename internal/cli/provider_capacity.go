@@ -44,18 +44,17 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 		}
 		var reports []providercapacity.Report
 		for _, backend := range backends {
-			provider := backend.Provider
-			if provider == "" {
-				switch backend.Kind {
-				case workflowconfig.AgentBackendCodex:
-					provider = "openai"
-				case workflowconfig.AgentBackendClaudeCode:
-					provider = "anthropic"
-				default:
-					provider = backend.Kind
-				}
+			if slices.ContainsFunc(backends, func(other workflowconfig.AgentBackend) bool {
+				return other.ID == backend.ID && !runnerProviderCompatible(backend, other)
+			}) {
+				slog.Warn("Runner provider backend identity conflicts across projects", "backend", backend.ID)
+				continue
 			}
-			report := providercapacity.Report{Provider: provider, Backend: backend.ID, AccountAlias: account, Availability: "unknown"}
+			report := providercapacity.Report{Provider: runnerProviderName(backend), Backend: backend.ID, AccountAlias: account, Availability: "unknown"}
+			index := slices.IndexFunc(reports, func(existing providercapacity.Report) bool { return existing.Backend == backend.ID })
+			if index >= 0 {
+				report = reports[index]
+			}
 			catalog, err := models(ctx, backend)
 			if err != nil {
 				return nil, fmt.Errorf("provider models for backend %s: %w", backend.ID, err)
@@ -72,13 +71,52 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 					report.Models = append(report.Models, route.Model)
 				}
 			}
-			report.Models = append(report.Models, "provider_default")
+			if !slices.Contains(report.Models, "provider_default") {
+				report.Models = append(report.Models, "provider_default")
+			}
 			report.ObservedAt = now().UTC()
-			reports = append(reports, report)
+			if index >= 0 {
+				reports[index] = report
+			} else {
+				reports = append(reports, report)
+			}
 		}
 		reports = withProviderBilling(ctx, reports, backends, billing, usage)
 		reports = withProviderUsage(reports, usage)
 		return reports, providercapacity.Validate(reports)
+	}
+}
+
+func runnerProviderName(backend workflowconfig.AgentBackend) string {
+	if backend.Provider != "" {
+		return backend.Provider
+	}
+	switch backend.Kind {
+	case workflowconfig.AgentBackendCodex:
+		if provider := backend.CodexOptions().ModelProvider; provider != "" {
+			return provider
+		}
+		return "openai"
+	case workflowconfig.AgentBackendClaudeCode:
+		return "anthropic"
+	default:
+		return backend.Kind
+	}
+}
+
+func runnerProviderCompatible(a, b workflowconfig.AgentBackend) bool {
+	if a.Kind != b.Kind || a.Protocol != b.Protocol || a.Command != b.Command || runnerProviderName(a) != runnerProviderName(b) {
+		return false
+	}
+	switch a.Kind {
+	case workflowconfig.AgentBackendCodex:
+		x, y := a.CodexOptions(), b.CodexOptions()
+		return x.Shell == y.Shell && x.ModelProvider == y.ModelProvider
+	case workflowconfig.AgentBackendClaudeCode:
+		x, y := a.ClaudeCodeOptions(), b.ClaudeCodeOptions()
+		return x.Shell == y.Shell && slices.Equal(x.ExtraArgs, y.ExtraArgs)
+	default:
+		return reflect.DeepEqual(a, b)
 	}
 }
 
