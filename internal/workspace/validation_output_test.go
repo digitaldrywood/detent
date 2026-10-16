@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,9 +29,13 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		exit               int
 		truncated          bool
 		reservationFailure bool
+		selection          *ReviewOutputRange
 		wantDiagnostics    []string
 	}{
 		{name: "reservation failure prevents command", command: "touch should-not-run", reservationFailure: true},
+		{name: "bounded source capture before host completion", output: strings.Repeat("a", 2*1024*1024), command: "cat output.txt", selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
+		{name: "paged failure retains diagnostics", output: strings.Repeat("a", 2*1024*1024), command: "cat output.txt; echo source-failure >&2; exit 7", exit: 7, selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
+		{name: "paged diagnostics are bounded", output: strings.Repeat("a", 2*1024*1024), command: "echo source-failure >&2; cat output.txt >&2; exit 7", exit: 7, selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
 		{name: "short unicode", output: "verified ✓\n", command: "cat output.txt"},
 		{name: "exact byte budget", output: strings.Repeat("a", limit-6) + "✓end", command: "cat output.txt"},
 		{name: "three byte rune at tail boundary", output: strings.Repeat("✓", 32*1024) + "end\n", command: "cat output.txt", truncated: true},
@@ -107,6 +112,9 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 						if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
 							t.Fatalf("scratch retained after successful cleanup: %v", err)
 						}
+						if test.selection != nil && len(result.Output) > 64*1024 {
+							t.Fatalf("host completion retained %d bytes for a %d-byte page", len(result.Output), test.selection.Length)
+						}
 						if result.ExitCode != test.exit {
 							t.Fatalf("host completion exit=%d want=%d", result.ExitCode, test.exit)
 						}
@@ -114,6 +122,9 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 					},
 				}, nil
 			})
+			if test.selection != nil {
+				ctx = WithReviewOutputRange(ctx, *test.selection)
+			}
 			command := `test -f "$TMPDIR/reserved" || exit 91; ` + test.command
 			receipt, err := backend.RunReviewCommand(ctx, info, issue, command)
 			if test.reservationFailure {
@@ -150,6 +161,17 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 			}
 			if decoded.OutputTruncated != test.truncated {
 				t.Errorf("truncated = %v, want %v", decoded.OutputTruncated, test.truncated)
+			}
+			if test.selection != nil {
+				if test.exit == 0 {
+					prefix := fmt.Sprintf("[source bytes 1048576:1048577 of %d; next_offset=1048577; eof=false]\n", len(test.output))
+					if decoded.Output != prefix+"a" {
+						t.Fatalf("wrong source page: %q", decoded.Output)
+					}
+				} else if !strings.Contains(decoded.Output, "source-failure") {
+					t.Fatalf("failure lost stderr: %q", decoded.Output)
+				}
+				return
 			}
 			if test.truncated && test.wantDiagnostics == nil && !strings.HasPrefix(decoded.Output, "[earlier output truncated]\n") {
 				t.Errorf("truncation marker missing")
@@ -191,4 +213,70 @@ func (p validationProcessFixture) Started(_ context.Context, identity procgroup.
 }
 func (p validationProcessFixture) Finished(_ context.Context, result gate.CommandResult, err error) error {
 	return p.finished(result, err)
+}
+
+func TestReviewOutputRangeRetainsBoundedMemory(t *testing.T) {
+	chunk := []byte(strings.Repeat("x", 32*1024))
+	measurement := testing.Benchmark(func(b *testing.B) {
+		for range b.N {
+			capture := reviewOutputCapture{selection: ReviewOutputRange{Offset: 32 * 1024 * 1024, Length: ReviewSourcePageBytes}}
+			for range 2048 {
+				if _, err := capture.Write(chunk); err != nil {
+					b.Fatal(err)
+				}
+			}
+			output, truncated := capture.result()
+			if capture.total != 64*1024*1024 || !truncated || !strings.HasSuffix(output, strings.Repeat("x", ReviewSourcePageBytes)) {
+				b.Fatal("streamed page lost source bytes or metadata")
+			}
+		}
+	})
+	if measurement.AllocedBytesPerOp() > 256*1024 {
+		t.Fatalf("64 MiB stream allocated %d bytes for a 16 KiB page", measurement.AllocedBytesPerOp())
+	}
+}
+
+func TestReviewOutputUTF8Pages(t *testing.T) {
+	for _, fixture := range []struct {
+		name, content string
+		offset        int64
+		length        int
+	}{
+		{"three byte page boundary", strings.Repeat("a", 16383) + "✓end", 0, 16384},
+		{"four byte page boundary", strings.Repeat("a", 16383) + "🙂end", 0, 16384},
+		{"one byte request", "✓🙂end", 0, 1},
+		{"offset within rune", "✓🙂end", 1, 1},
+	} {
+		for _, chunk := range []int{1, 2, 32768} {
+			t.Run(fmt.Sprintf("%s/chunk%d", fixture.name, chunk), func(t *testing.T) {
+				var observed strings.Builder
+				for offset := fixture.offset; ; {
+					capture := reviewOutputCapture{selection: ReviewOutputRange{Offset: offset, Length: fixture.length}}
+					for start := 0; start < len(fixture.content); start += chunk {
+						if _, err := capture.Write([]byte(fixture.content[start:min(start+chunk, len(fixture.content))])); err != nil {
+							t.Fatal(err)
+						}
+					}
+					output, _ := capture.result()
+					header, content, ok := strings.Cut(output, "\n")
+					var start, end, total, next int64
+					var eof bool
+					if _, err := fmt.Sscanf(header, "[source bytes %d:%d of %d; next_offset=%d; eof=%t]", &start, &end, &total, &next, &eof); err != nil {
+						t.Fatal(err)
+					}
+					if !ok || !utf8.ValidString(content) || end-start != int64(len(content)) || total != int64(len(fixture.content)) || next != end || end <= offset || len(content) > ReviewSourcePageBytes {
+						t.Fatalf("invalid UTF-8 page: %q", output)
+					}
+					observed.WriteString(content)
+					if eof {
+						break
+					}
+					offset = next
+				}
+				if observed.String() != fixture.content {
+					t.Fatalf("following next_offset lost source characters: got %q", observed.String())
+				}
+			})
+		}
+	}
 }

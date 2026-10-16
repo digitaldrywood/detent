@@ -459,6 +459,10 @@ func ValidationProcessOwnerFromContext(ctx context.Context) ValidationProcessOwn
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {
 	result.Command = command
 	result.ExitCode = -1
+	selection, paged := ctx.Value(reviewOutputRangeKey{}).(ReviewOutputRange)
+	if paged && (selection.Offset < 0 || selection.Length < 1 || selection.Length > ReviewSourcePageBytes) {
+		return result, errors.New("invalid review output range")
+	}
 	scratch, err := PrepareWorkerScratch(ctx, info.Path)
 	if err != nil {
 		return result, err
@@ -509,6 +513,11 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.Execution = "executed"
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
+	source := reviewOutputCapture{selection: selection}
+	diagnostics := reviewOutputCapture{selection: ReviewOutputRange{Length: 4 * 1024}}
+	if paged {
+		cmd.Stdout, cmd.Stderr = &source, &diagnostics
+	}
 	if err := cmd.Start(); err != nil {
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
@@ -526,6 +535,18 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
 	result.Output = output.String()
+	if paged {
+		if err == nil {
+			result.Output, result.OutputTruncated = source.result()
+			if diagnostics.total > 0 {
+				result.Output += "\n[git diagnostics]\n" + string(diagnostics.page)
+			}
+		} else {
+			result.Output = string(source.page) + string(diagnostics.page)
+			result.OutputTruncated = source.total > int64(len(source.page))
+		}
+		result.OutputTruncated = result.OutputTruncated || diagnostics.total > int64(len(diagnostics.page))
+	}
 	result.Evidence.Checks = gate.CheckObservations(result.Output)
 	if ctx.Err() != nil {
 		return result, ctx.Err()
@@ -536,7 +557,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			result.ExitCode = exited.ExitCode()
 			return result, nil
 		}
-		return result, fmt.Errorf("validation command failed: %w: %s", err, output.String())
+		return result, fmt.Errorf("validation command failed: %w: %s", err, result.Output)
 	}
 	result.ExitCode = 0
 	return result, nil
