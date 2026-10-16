@@ -72,6 +72,9 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return err
 	}
+	if candidate.StateExclusion != "" && nonExecutableReason == "" {
+		nonExecutableReason = candidate.StateExclusion
+	}
 	contract, err := readNativeIssueContractEvaluation(ctx, q, scope, id)
 	if err != nil {
 		var mismatch *nativeError
@@ -86,6 +89,10 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 	if !contract.Allowed && nonExecutableReason == "" {
 		evidence.Scheduling.Outcome = "skipped"
 		evidence.Scheduling.Reason = contract.Reason
+	}
+	if nonExecutableReason != "" && evidence.CurrentLease == nil {
+		evidence.Scheduling.Outcome = "skipped"
+		evidence.Scheduling.Reason = nonExecutableReason
 	}
 	landingReady, landingCapacity, err := nativeLandingClaimCapacity(ctx, q, id, nativeLandingCapacityUnknown, now)
 	if err != nil {
