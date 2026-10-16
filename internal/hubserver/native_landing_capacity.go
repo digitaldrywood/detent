@@ -55,6 +55,13 @@ func nativeLandingCapacityKey(ctx context.Context, query nativeQueryer, machine 
 	return landingCapacityKey(machine, project, session), nil
 }
 
+func landingLeaseCapacityKey(machine tracker.MachineID, project, session, runner, lease string) string {
+	if group := landingCapacityKey(machine, project, session); group != "" {
+		return group + "/" + runner
+	}
+	return lease
+}
+
 func machineClaimUsage(ctx context.Context, query nativeQueryer, machine tracker.MachineID, runnerID string, now time.Time, joining string) (int, int, error) {
 	rows, err := query.QueryContext(ctx, `SELECT l.expires_at, l.session_id, l.lease_id, COALESCE(lr.runner_id, ''), `+nativeLandingCapacityProject+`
  FROM leases l JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
@@ -76,12 +83,7 @@ func machineClaimUsage(ctx context.Context, query nativeQueryer, machine tracker
 		if !end.After(now) {
 			continue
 		}
-		key := landingCapacityKey(machine, project, session)
-		if key == "" {
-			key = lease
-		} else {
-			key += "/" + runner
-		}
+		key := landingLeaseCapacityKey(machine, project, session, runner, lease)
 		hostGroups[key] = true
 		if runner == runnerID {
 			runnerGroups[key] = true

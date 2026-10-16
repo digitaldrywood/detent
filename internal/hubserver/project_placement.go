@@ -66,10 +66,28 @@ func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope
 	return placement.Resolved(), ceiling, placement.Validate()
 }
 
-func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (int, error) {
-	var used int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname`, scope.organization, formatHubTime(now)).Scan(&used)
-	return used, err
+func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, joining ...string) (int, error) {
+	rows, err := q.QueryContext(ctx, `SELECT l.machine_id,l.session_id,l.lease_id,COALESCE(lr.runner_id,''),`+nativeLandingCapacityProject+`
+ FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id
+ LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
+ WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname`, scope.organization, formatHubTime(now))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	groups := map[string]bool{}
+	for rows.Next() {
+		var machine tracker.MachineID
+		var session, lease, runner, project string
+		if err := rows.Scan(&machine, &session, &lease, &runner, &project); err != nil {
+			return 0, err
+		}
+		groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
+	}
+	if len(joining) > 0 && joining[0] != "" {
+		delete(groups, joining[0]+"/"+scope.credential.Runner.RunnerID)
+	}
+	return len(groups), rows.Err()
 }
 
 func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
@@ -457,7 +475,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 	return result, nil
 }
 
-func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate) (bool, string, error) {
+func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
 	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
 		return allowed, reason, err
 	}
@@ -473,11 +491,11 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if !sprite {
 		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
 	}
+	used, err := readPlacementSpriteUsage(ctx, q, scope, now, joining...)
+	if err != nil {
+		return false, "", err
+	}
 	if limit := placement.SpriteLimit(); limit > 0 {
-		used, err := readPlacementSpriteUsage(ctx, q, scope, now)
-		if err != nil {
-			return false, "", err
-		}
 		if used >= limit {
 			return false, "Configured maximum Sprite concurrency is full", nil
 		}
@@ -489,6 +507,7 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return false, "", err
 	}
+	snapshot.SpriteUsed = used
 	if snapshot.Local[id] > 0 {
 		return false, "Local-first placement has compatible free local capacity", nil
 	}
