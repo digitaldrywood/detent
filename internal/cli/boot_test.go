@@ -116,7 +116,7 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
-			go func() { done <- startRunning(ctx, cfg) }()
+			go func() { done <- defaultBoot(ctx, cfg) }()
 			t.Cleanup(func() {
 				cancel()
 				select {
