@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type CapacityRequest struct {
@@ -58,16 +59,24 @@ type CapacityLimit struct {
 	ObservedAt   time.Time `json:"observed_at,omitzero"`
 }
 
+type ProjectCapacityView struct {
+	Desired   *int `json:"desired"`
+	Applied   *int `json:"applied"`
+	Effective *int `json:"effective"`
+	Used      int  `json:"used"`
+}
+
 type CapacityView struct {
-	Scope              string          `json:"scope"`
-	DispatchConstraint string          `json:"dispatch_constraint"`
-	RunnerID           string          `json:"runner_id"`
-	Revision           int64           `json:"revision"`
-	Desired            int             `json:"desired"`
-	Applied            *CapacityConfig `json:"applied"`
-	Effective          *int            `json:"effective"`
-	Status             string          `json:"status"`
-	Limits             []CapacityLimit `json:"limits"`
+	Projects           map[tracker.ProjectID]ProjectCapacityView `json:"projects,omitempty"`
+	Scope              string                                    `json:"scope"`
+	DispatchConstraint string                                    `json:"dispatch_constraint"`
+	RunnerID           string                                    `json:"runner_id"`
+	Revision           int64                                     `json:"revision"`
+	Desired            int                                       `json:"desired"`
+	Applied            *CapacityConfig                           `json:"applied"`
+	Effective          *int                                      `json:"effective"`
+	Status             string                                    `json:"status"`
+	Limits             []CapacityLimit                           `json:"limits"`
 }
 
 func (r Runner) CapacityRequiresApplication(capacity int) bool {

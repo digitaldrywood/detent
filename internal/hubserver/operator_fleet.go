@@ -595,6 +595,7 @@ func (e hubFleetExecutor) executeCommand(ctx context.Context, a chatpkg.Action) 
 		if operatortool.DecodeArguments(r.Change, &change) != nil {
 			return nil, operatortool.ErrInvalidArguments
 		}
+		change.IdempotencyKey = a.RequestID
 		return s.updateRunnerRoutingCommand(ctx, scope, r.RunnerID, change)
 	case operatortool.UpdateRunnerHost:
 		var change runnerauth.HostChange

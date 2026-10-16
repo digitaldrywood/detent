@@ -665,7 +665,32 @@ An enrolled runner requires a heartbeat newer than two minutes; timestamps in th
 future fail closed. All unreleased, unexpired leases on a machine count against its
 shared host ceiling, including leases held by other runners and projects. Each
 runner also has an administrator limit and a reported local capacity; the lower
-value applies. The first enrollment initializes the host ceiling from its capacity;
+value applies. Routing's optional `project_capacity_limits` maps authorized project
+IDs to independent ceilings from 0 to 10000 on that runner. These ceilings do not
+reserve capacity or grant access. Omission or null preserves overrides; an explicit
+map replaces them, including `{}` to unset all overrides. Removing project access
+requires explicitly removing its override in the same routing update; otherwise
+the update is rejected. A project absent from the
+map inherits the total capacity behavior. Changes to overrides require
+`idempotency_key` through the routing API; `update_runner_routing` uses its `request_id`. Both share runner
+revision conflicts and durable retry receipts. Lowering limits leaves active work
+and renewals intact, and refuses new slots until usage is below every applicable
+ceiling.
+
+A slot is an unreleased lease whose expiry is strictly after the Hub time. Verified
+native direct-landing members in the same machine/project/batch session group
+share one host slot and one slot per participating runner and project. Other
+leases count individually. Total, project and host limits are enforced together
+inside the existing claim transaction. Enrolled claims and expired renewals share
+the routing eligibility owner: project and total headroom form one runner capacity
+budget, and shared-host capacity is checked there without a second machine brake.
+Legacy claims retain the existing machine capacity owner. Capacity reads retain the existing total
+`desired`, `applied`, `effective` and status evidence; their `projects` map adds
+Hub-applied desired overrides (null means inherited), usage in slots, and effective
+project ceilings clamped by the effective total. Unknown total evidence remains
+unknown for positive project ceilings; an explicit zero is effective immediately.
+
+The first enrollment initializes the host ceiling from its capacity;
 subsequent shared enrollment and worker reports cannot raise it. Existing local
 pool, project and backend admission limits still apply in addition to Hub limits.
 

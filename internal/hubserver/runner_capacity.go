@@ -169,18 +169,38 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 
 func (s *Service) runnerCapacityView(ctx context.Context, query nativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 	view := r.CapacityView(backend, now)
-	if s.database.plans() == nil {
-		return view, nil
+	if s.database.plans() != nil {
+		entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+		if err != nil {
+			return view, err
+		}
+		if !slices.Contains(entitlement.Features, "native_execution") {
+			zero := 0
+			view.Limits = append(view.Limits, runnerauth.CapacityLimit{Owner: "plan", Limit: &zero, Constraint: "The current plan does not permit native execution.", ObservedAt: now})
+			view.Effective = &zero
+			view.Status = "partially_applied"
+		}
 	}
-	entitlement, err := s.database.hostedEntitlement(ctx, query, now)
-	if err != nil {
-		return view, err
-	}
-	if !slices.Contains(entitlement.Features, "native_execution") {
-		zero := 0
-		view.Limits = append(view.Limits, runnerauth.CapacityLimit{Owner: "plan", Limit: &zero, Constraint: "The current plan does not permit native execution.", ObservedAt: now})
-		view.Effective = &zero
-		view.Status = "partially_applied"
+	view.Projects = make(map[tracker.ProjectID]runnerauth.ProjectCapacityView)
+	for project := range r.ProjectRanks {
+		if !r.AllowsProject(project) {
+			continue
+		}
+		capacity := runnerauth.ProjectCapacityView{Used: r.ProjectUsed[project]}
+		if limit, configured := r.ProjectCapacityLimits[project]; configured {
+			capacity.Desired, capacity.Applied = &limit, &limit
+			if limit == 0 {
+				capacity.Effective = &limit
+			}
+		}
+		if view.Effective != nil {
+			effective := *view.Effective
+			if capacity.Applied != nil {
+				effective = min(effective, *capacity.Applied)
+			}
+			capacity.Effective = &effective
+		}
+		view.Projects[project] = capacity
 	}
 	return view, nil
 }
