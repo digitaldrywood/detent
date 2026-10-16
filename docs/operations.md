@@ -238,8 +238,11 @@ go tool pprof -diff_base /path/to/older/cpu.pprof /path/to/newer/cpu.pprof
 
 Workers use the host toolchain caches, including Go's native build and module
 caches; no per-project cache choice exists (INV-12). The existing reaper trim
-expires old Go build entries using `global.cache.max_age` while preserving
-recent outputs even above the `global.cache.max_bytes` reporting target. Native
+expires old Go build entries using `global.cache.max_age`. For the runner-owned
+cache, the same cleanup also enforces `global.cache.max_bytes`, waiting for
+active consumers under the existing admission lock before reclaiming recent
+eligible entries oldest first under the exclusive consumer lock. Native operator
+caches retain age-only expiry and are not reclaimed by managed cleanup. Native
 Cloud runner capacity stops new work when a cache or workspace volume lacks
 its disk reserve or storage cannot be observed, and resumes when those
 observations recover. Retained cache size does not stop claims while physical

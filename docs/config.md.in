@@ -84,23 +84,27 @@ global:
 
 When omitted, `max_bytes` is 10% of the total capacity of the volume holding
 `GOCACHE`, capped at 40 GiB (20 GiB fallback if capacity is unavailable). It is a
-reporting target, not a hard filesystem limit or a claim brake. Native Cloud
+retained-size budget for the managed runner cache, not a hard filesystem limit
+or a claim brake. Native Cloud
 runners admit new work while each cache and workspace volume has enough free
 space for its reserve: 10% of total volume capacity, capped at 40 GiB.
 Insufficient free space or an unavailable storage observation reports zero
 capacity for new work. Existing jobs keep their leases and recent cache files.
 Free space does not change the cache target.
-Doctor reports the fallback, historical size eviction, and a target above 10%
+Doctor reports the fallback, last size eviction, and a target above 10%
 of total volume capacity.
 
 The existing workspace reaper expires build-cache entries older than `max_age`.
 The effective age is at least 25 hours, preserving Go's last-day cache reuse and
-its one-hour access-time granularity. Recent outputs survive even when the cache
-exceeds `max_bytes`; Go retains ownership of their lifetime. Metadata (`trim.txt`
-and `README`) is never removed. The module cache is reported and shared but is
-not trimmed. Concurrent builds can grow the cache between sweeps and active
-jobs can exceed the reporting target. Unrelated host processes are not governed
-by runner capacity. No size-based deletion of recent outputs occurs.
+its one-hour access-time granularity for native operator caches. When the
+runner-owned cache exceeds `max_bytes`, that same cleanup waits under the
+existing admission lock for protected consumers to finish, then reclaims
+eligible entries oldest first under the exclusive consumer lock. New consumers
+resume after cleanup. Metadata (`trim.txt`, `README`, and ownership locks) is
+never removed. The module cache is reported and shared but is not trimmed.
+Concurrent builds can grow the managed cache between sweeps and exceed the
+budget while active. Unrelated host processes and native operator caches are
+not controlled by managed cache reclamation.
 
 ## GitHub completion CI policy
 
