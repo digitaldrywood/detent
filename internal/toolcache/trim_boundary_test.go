@@ -31,9 +31,11 @@ func TestTrimRootReplacement(t *testing.T) {
 		age      time.Duration
 		maxBytes int64
 		removed  bool
+		managed  bool
 	}{
-		{"age eviction", 72 * time.Hour, 1 << 20, true},
-		{"recent above target", 0, 1, false},
+		{"age eviction", 72 * time.Hour, 1 << 20, true, false},
+		{"recent above target", 0, 1, false, false},
+		{"managed recent eviction", 0, 1, true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -72,7 +74,7 @@ func TestTrimRootReplacement(t *testing.T) {
 					t.Fatal(err)
 				}
 			}}
-			if _, err := Trim(ctx, root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.maxBytes}, now); err != nil {
+			if _, err := trim(ctx, root, Policy{MaxAge: 48 * time.Hour, MaxBytes: tt.maxBytes}, now, nil, tt.managed); err != nil {
 				t.Fatal(err)
 			}
 			if ctx.swap != nil {
