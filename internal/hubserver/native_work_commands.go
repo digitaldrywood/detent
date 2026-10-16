@@ -147,7 +147,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			_, err = tx.ExecContext(ctx, `UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ? AND request_hash = ?`, response, scope.organization, scope.credential.ID, strings.TrimSuffix(options.OperationID, "/duplicate-confirmation"), request.IdempotencyKey, hash)
+			_, err = tx.ExecContext(ctx, `UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND operation = ? AND command_key = ? AND request_hash = ? AND json_extract(response_json, '$.challenge_token') = ?`, response, scope.organization, strings.TrimSuffix(options.OperationID, "/duplicate-confirmation"), request.IdempotencyKey, hash, request.ChallengeToken)
 			if err != nil {
 				return nil, err
 			}
