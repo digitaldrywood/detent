@@ -18,6 +18,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/mcp"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -32,12 +34,19 @@ func (t sizedTransport) RoundTrip(*http.Request) (*http.Response, error) {
 func TestMachineCallRefusesOversizedTenantAnswers(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		size    int
-		wantErr bool
+		name        string
+		path        string
+		requestBody string
+		size        int
+		wantErr     bool
 	}{
 		{name: "at the limit", size: tenantCallResponseLimit},
 		{name: "one byte over", size: tenantCallResponseLimit + 1, wantErr: true},
+		{name: "export above ordinary transport limit", path: "/internal/v1/keys/call", requestBody: `{"name":"work_bulk_export"}`, size: mcp.MaxHTTPResponseBytes + 1},
+		{name: "export at limit", path: "/internal/v1/keys/call", requestBody: `{"name":"work_bulk_export"}`, size: operatortool.WorkBulkExportMaxBytes},
+		{name: "export over limit", path: "/internal/v1/keys/call", requestBody: `{"name":"work_bulk_export"}`, size: operatortool.WorkBulkExportMaxBytes + 1, wantErr: true},
+		{name: "ordinary tool retains limit", path: "/internal/v1/keys/call", requestBody: `{"name":"work_list"}`, size: mcp.MaxHTTPResponseBytes + 1, wantErr: true},
+		{name: "catalog retains limit", path: "/internal/v1/keys/catalog", size: mcp.MaxHTTPResponseBytes + 1, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -50,7 +59,11 @@ func TestMachineCallRefusesOversizedTenantAnswers(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = service.Close() })
 			organization := Organization{ID: "org_limit", ProviderID: "porg_limit", Name: "Limit", Endpoint: testSocketEndpoint("org_limit.sock"), Generation: 1}
-			status, body, err := service.machineCall(t.Context(), organization, http.MethodGet, "/api/v2/organizations/org_limit/entitlements", nil, "token")
+			path := test.path
+			if path == "" {
+				path = "/api/v2/organizations/org_limit/entitlements"
+			}
+			status, body, err := service.machineCall(t.Context(), organization, http.MethodPost, path, []byte(test.requestBody), "token")
 			if test.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "exceeds") {
 					t.Fatalf("machineCall() = %d, %d bytes, %v; want a size error", status, len(body), err)
