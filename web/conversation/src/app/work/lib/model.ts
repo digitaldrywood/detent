@@ -1,3 +1,4 @@
+import type { NativeDependency } from "../../../contracts/work.ts";
 // The board's view model.
 //
 // The wire schemas in `src/contracts/work.ts` are the hub's shapes and are
@@ -90,6 +91,11 @@ export interface WorkItemView {
   readonly revision: string | null;
   /** Dependencies that are not yet terminal. A non-empty list is "Blocked". */
   readonly blockedBy: readonly string[];
+  readonly blockers?: readonly NativeDependency[];
+  readonly dependents?: readonly NativeDependency[];
+  readonly dependencyReady?: boolean;
+  readonly blockedReason?: string;
+  readonly unblocksReason?: string;
   readonly attempt: AttemptView | null;
   readonly change: ChangeView | null;
   readonly conversationId: string | null;

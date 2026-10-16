@@ -709,6 +709,9 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 	request := tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "cross-project"}, ExpectedRevision: 1, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", f.token, request), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/dependencies", testHubAdminToken, request), http.StatusOK)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET blocked_reason=?,blocked_reason_basis=? WHERE native_id=?", "Private dependency details.", dependencyBasis([]string{string(blocker.WorkItemID)}), issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, suffix string
 	}{
@@ -720,6 +723,23 @@ func TestNativeDependencyReadPermissions(t *testing.T) {
 			for _, token := range []string{f.token, testHubAdminToken} {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, path+test.suffix, token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
+				if test.suffix == "" {
+					var got tracker.NativeIssue
+					decodeHubResponse(t, response, &got)
+					if got.DependencyReady != (token != testHubAdminToken) {
+						t.Fatalf("public readiness includes hidden blocker: ready=%v administrator=%v", got.DependencyReady, token == testHubAdminToken)
+					}
+					board := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=board", token, nil)
+					requireNativeStatus(t, board, http.StatusOK)
+					var page tracker.NativeIssuePage
+					decodeHubResponse(t, board, &page)
+					if len(page.Cards) != 1 || page.Cards[0].Issue.DependencyReady != got.DependencyReady || len(page.Cards[0].Issue.Blockers) != len(got.Blockers) {
+						t.Fatalf("board readiness differs from visible blockers: %+v", page.Cards)
+					}
+				}
+				if strings.Contains(response.Body.String(), "Private dependency details.") {
+					t.Fatal("cross-project reason leaked")
+				}
 				if visible := strings.Contains(response.Body.String(), string(blocker.WorkItemID)); visible != (token == testHubAdminToken) {
 					t.Fatalf("dependency visibility = %v for administrator %v", visible, token == testHubAdminToken)
 				}

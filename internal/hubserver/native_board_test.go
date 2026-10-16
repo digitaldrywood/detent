@@ -435,31 +435,57 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocker := private.seedIssue(t, 1)
+	related := f.seedIssue(t, 2)
+	for _, id := range []tracker.NativeWorkItemID{related, blocker} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_relationships(first_issue_id,second_issue_id,relationship_type,created_at) SELECT min(a.id,b.id),max(a.id,b.id),'related',? FROM issues a,issues b WHERE a.native_id=? AND b.native_id=?", formatHubTime(time.Now()), item, id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_dependencies(blocker_issue_id,dependent_issue_id,provenance,created_at,updated_at) SELECT b.id,d.id,'native',?,? FROM issues b,issues d WHERE b.native_id=? AND d.native_id=?", formatHubTime(time.Now()), formatHubTime(time.Now()), blocker, item); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+	assertRelated := func(t *testing.T, issue tracker.NativeIssue, granted bool) {
+		t.Helper()
+		ids := []tracker.NativeWorkItemID{}
+		for _, link := range issue.Related {
+			if link.Title == "" || link.Number == 0 || link.WebURL == "" {
+				t.Fatalf("missing related metadata: %#v", link)
+			}
+			ids = append(ids, link.ID)
+		}
+		want := []tracker.NativeWorkItemID{related}
+		if granted {
+			want = append(want, blocker)
+		}
+		slices.Sort(ids)
+		slices.Sort(want)
+		if !slices.Equal(ids, want) {
+			t.Fatalf("related IDs=%v, want %v (granted=%v)", ids, want, granted)
+		}
+	}
+	var stored tracker.NativeBoardCard
+	var raw string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", item).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatal(err)
+	}
+	assertRelated(t, stored.Issue, true)
 	var page tracker.NativeIssuePage
 	response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &page)
-	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
-	readFrame := func(scanner *bufio.Reader) tracker.NativeBoardFrame {
-		t.Helper()
-		for {
-			kind, data := readHostedEvent(t, scanner)
-			if kind != "activity" {
-				continue
-			}
-			var frame tracker.NativeBoardFrame
-			if err := json.Unmarshal([]byte(data), &frame); err != nil {
-				t.Fatal(err)
-			}
-			return frame
+	for _, card := range page.Cards {
+		if card.Issue.WorkItemID == item {
+			assertRelated(t, card.Issue, false)
 		}
 	}
+	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
+	readFrame := func(scanner *bufio.Reader) tracker.NativeBoardFrame { return readHostedBoardFrame(t, scanner) }
 	initial := readFrame(stream)
 	if initial.Gap || len(initial.Deltas) != 0 || initial.Work == nil || initial.GrantVersion == "" || initial.GrantVersion != page.GrantVersion {
 		t.Fatalf("initial=%#v", initial)
@@ -476,6 +502,11 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 		if delta.Current == nil || delta.Current.Issue.WorkItemID != item {
 			t.Fatalf("delta=%#v", delta)
 		}
+		assertRelated(t, delta.Current.Issue, false)
+		if delta.Previous == nil {
+			t.Fatalf("missing previous card: %#v", delta)
+		}
+		assertRelated(t, delta.Previous.Issue, false)
 	}
 	for readFrame(stream).Sequence != replay.Sequence {
 	}
@@ -504,12 +535,19 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &page)
-			if page.GrantVersion != grantVersion || len(page.Cards) != 1 {
+			if page.GrantVersion != grantVersion || len(page.Cards) != 2 {
 				t.Fatalf("grant snapshot=%#v", page)
 			}
-			card := page.Cards[0]
+			var card tracker.NativeBoardCard
+			for _, candidate := range page.Cards {
+				if candidate.Issue.WorkItemID == item {
+					card = candidate
+					break
+				}
+			}
+			assertRelated(t, card.Issue, test.grant)
 			if test.grant {
-				if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].ID != blocker || card.StatusLine != "Blocked · 1" {
+				if len(card.Issue.Blockers) != 1 || card.Issue.Blockers[0].ID != blocker || card.StatusLine != "Waiting on #1" {
 					t.Fatalf("granted blocker=%#v", card)
 				}
 			} else if len(card.Issue.Blockers) != 0 || card.StatusLine != "" {
@@ -518,6 +556,17 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			resumed := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(replay.Sequence, 10)))
 			if resumed.GrantVersion != grantVersion || len(resumed.Deltas) != 0 || resumed.Gap {
 				t.Fatalf("grant reconnect=%#v", resumed)
+			}
+			replayed := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(initial.Sequence, 10)))
+			if replayed.Gap || len(replayed.Deltas) != 2 {
+				t.Fatalf("grant replay=%#v", replayed)
+			}
+			for _, delta := range replayed.Deltas {
+				if delta.Previous == nil || delta.Current == nil {
+					t.Fatalf("missing replay cards: %#v", delta)
+				}
+				assertRelated(t, delta.Previous.Issue, test.grant)
+				assertRelated(t, delta.Current.Issue, test.grant)
 			}
 		})
 	}
@@ -599,5 +648,74 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 				t.Fatalf("card status differs from durable detail: %+v, error %v", detail.Summary, err)
 			}
 		}
+	}
+}
+
+func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	user := f.user(t, "dependency-viewer", "member", "viewer@example.test", "write", "")
+	created := f.request(t, user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "dependent"}, Title: "Dependent", Body: issueContractTestSections, State: "Todo"})
+	requireNativeStatus(t, created, http.StatusOK)
+	var issue tracker.NativeIssue
+	decodeHubResponse(t, created, &issue)
+	dependent, blocker := issue.WorkItemID, f.seedIssue(t, 2)
+	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var page tracker.NativeIssuePage
+	decodeHubResponse(t, response, &page)
+	stream := openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(page.Sequence, 10))
+	readHostedBoardFrame(t, stream)
+	for _, test := range []struct {
+		name, path string
+		body       any
+		state      string
+		links      int
+	}{
+		{name: "add", path: "/dependencies", body: tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "add"}, ExpectedRevision: 1, RelatedWorkItemID: blocker, Operation: "add"}, state: "Todo", links: 1},
+		{name: "complete", path: "/workflow", body: map[string]any{"idempotency_key": "complete", "expected_revision": "2", "state": "Done", "reason": "user_requested"}, state: "Done", links: 1},
+		{name: "reopen", path: "/workflow", body: map[string]any{"idempotency_key": "reopen", "expected_revision": "3", "state": "Todo", "reason": "user_requested"}, state: "Todo", links: 1},
+		{name: "remove", path: "/dependencies", body: tracker.DependencyMutation{Mutation: tracker.Mutation{IdempotencyKey: "remove"}, ExpectedRevision: 4, RelatedWorkItemID: blocker, Operation: "remove"}, links: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(dependent)+test.path, test.body), http.StatusOK)
+			for {
+				frame := readHostedBoardFrame(t, stream)
+				if frame.Gap {
+					t.Fatal("dependency change invalidated replay")
+				}
+				for _, delta := range frame.Deltas {
+					if delta.Current == nil || delta.Current.Issue.WorkItemID != blocker {
+						continue
+					}
+					links := delta.Current.Issue.Dependents
+					if len(links) != test.links {
+						t.Fatalf("blocker retained stale dependent chips: %+v", links)
+					}
+					if len(links) > 0 && (links[0].ID != dependent || links[0].State != test.state || links[0].Terminal != (test.state == "Done")) {
+						t.Fatalf("blocker retained stale dependent state: %+v", links)
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
+func readHostedBoardFrame(t *testing.T, scanner *bufio.Reader) tracker.NativeBoardFrame {
+	t.Helper()
+	for {
+		kind, data := readHostedEvent(t, scanner)
+		if kind != "activity" {
+			continue
+		}
+		var frame tracker.NativeBoardFrame
+		if err := json.Unmarshal([]byte(data), &frame); err != nil {
+			t.Fatal(err)
+		}
+		return frame
 	}
 }

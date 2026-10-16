@@ -302,6 +302,7 @@ func TestRestrictedRequestsNeverLaunchPi(t *testing.T) {
 		want   error
 	}{
 		{name: "read only", req: runner.AgentTurnRequest{ReadOnly: true}},
+		{name: "text only", req: runner.AgentTurnRequest{TextOnly: true}},
 		{name: "sandbox", policy: isolation.Policy{Tier: isolation.Sandbox}, want: isolation.ErrSandboxUnavailable},
 		{name: "resume session", req: runner.AgentTurnRequest{Resume: runner.AgentResume{SessionID: "session"}}, want: runner.ErrAgentResumeUnsupported},
 		{name: "resume thread", req: runner.AgentTurnRequest{Resume: runner.AgentResume{ThreadID: "thread"}}, want: runner.ErrAgentResumeUnsupported},

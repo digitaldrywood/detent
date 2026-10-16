@@ -18,6 +18,42 @@ import (
 
 const nativeBoardReplayLimit = 2048
 
+func (s *Service) maintainNativeBoard(ctx context.Context) {
+	deadline := time.Now().Add(analyticsBackfillBudget)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		more, err := s.database.drainNativeBoardDirty(ctx, s.config.now())
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.ErrorContext(ctx, "refresh native board card", "error", err)
+		}
+		if err != nil || !more {
+			return
+		}
+	}
+}
+
+func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bool, error) {
+	var id string
+	err := d.reader.QueryRowContext(ctx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1").Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := refreshNativeBoardCard(ctx, tx, id, now, map[string]changeSummaryPolicy{}); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_dirty WHERE work_item_id=?", id); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
 func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
 	readOnly, err := queryOnlyTx(ctx, tx)
 	if err != nil {
@@ -295,6 +331,20 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 				return frame, err
 			}
 		}
+		if delta.Previous != nil {
+			if err := readNativeDependencyDetails(ctx, q, scope, &delta.Previous.Issue); errors.Is(err, sql.ErrNoRows) {
+				delta.Previous = nil
+			} else if err != nil {
+				return frame, err
+			}
+		}
+		if delta.Current != nil {
+			if err := readNativeDependencyDetails(ctx, q, scope, &delta.Current.Issue); errors.Is(err, sql.ErrNoRows) {
+				delta.Current = nil
+			} else if err != nil {
+				return frame, err
+			}
+		}
 		redactNativeBoardCard(delta.Previous, grants)
 		redactNativeBoardCard(delta.Current, grants)
 		frame.Deltas = append(frame.Deltas, delta)
@@ -306,17 +356,22 @@ func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
 	if card.Issue.Terminal {
 		return card.Issue.State
 	}
-	if card.Attempt != nil && card.Attempt.Status == "running" {
-		return "Running"
-	}
 	blockers := 0
+	number := 0
 	for _, blocker := range card.Issue.Blockers {
 		if !blocker.Terminal {
 			blockers++
+			number = blocker.Number
 		}
 	}
 	if blockers > 0 {
-		return "Blocked · " + strconv.Itoa(blockers)
+		if blockers == 1 && number > 0 {
+			return "Waiting on #" + strconv.Itoa(number)
+		}
+		return "Waiting on " + strconv.Itoa(blockers)
+	}
+	if card.Attempt != nil && card.Attempt.Status == "running" {
+		return "Running"
 	}
 	if card.Attempt != nil {
 		switch card.Attempt.Status {

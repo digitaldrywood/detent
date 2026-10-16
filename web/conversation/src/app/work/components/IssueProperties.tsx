@@ -1,3 +1,4 @@
+import { DependencyChips } from "./DependencyDetails.tsx";
 import {
   BoxIcon,
   GaugeIcon,
@@ -349,6 +350,7 @@ export function IssueProperties(props: IssuePropertiesProps): React.ReactElement
         )}
       </Group>
 
+      {(props.item.blockers?.filter((link) => !link.terminal).length ?? 0) > 0 ? <Group title="Blocked by"><DependencyChips showRunning={false} links={props.item.blockers!.filter((link) => !link.terminal)} /></Group> : null}
       <Group title="Related" data-testid="issue-related">
         {props.related.length === 0 ? (
           <div className={ROW_CLASS}>

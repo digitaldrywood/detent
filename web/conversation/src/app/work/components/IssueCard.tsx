@@ -1,4 +1,4 @@
-import { Clock3Icon, GitPullRequestIcon, RotateCcwIcon } from "lucide-react";
+import { Clock3Icon, GitPullRequestIcon, RotateCcwIcon, UnlockIcon } from "lucide-react";
 import React from "react";
 
 import { Badge } from "../../../components/ui/badge.tsx";
@@ -9,39 +9,10 @@ import { isBlocked, isLive, type WorkItemView } from "../lib/model.ts";
 import { useNow } from "../lib/useWork.ts";
 import { LaneMenu } from "./LaneMenu.tsx";
 
-export const PILL_TONE = {
-  mute: "border-border bg-muted text-muted-foreground",
-  ok: "border-transparent bg-success/12 text-success-foreground",
-  warn: "border-transparent bg-warning-surface text-warning-foreground",
-  err: "border-transparent bg-error-surface text-error-foreground",
-  info: "border-transparent bg-info/12 text-info-foreground",
-} as const;
-
-export type PillTone = keyof typeof PILL_TONE;
-
-export function Pill({
-  tone = "mute",
-  className,
-  children,
-  ...rest
-}: {
-  tone?: PillTone;
-  className?: string;
-  children: React.ReactNode;
-} & React.HTMLAttributes<HTMLSpanElement>): React.ReactElement {
-  return (
-    <span
-      className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 font-medium text-[11px] leading-none [&_svg]:size-3",
-        PILL_TONE[tone],
-        className,
-      )}
-      {...rest}
-    >
-      {children}
-    </span>
-  );
-}
+import { Pill, type PillTone } from "./Pill.tsx";
+import { waitingLabel } from "../lib/dependencies.ts";
+import { DependencyPopover } from "./DependencyDetails.tsx";
+export { Pill, PILL_TONE, type PillTone } from "./Pill.tsx";
 
 /** Urgent and High read as pressure; Normal and Low do not. */
 export function priorityTone(priority: string | null, terminal = false): PillTone {
@@ -59,12 +30,12 @@ export function priorityTone(priority: string | null, terminal = false): PillTon
 /** The one sentence the card's status pill says about this issue. */
 export function statusPill(item: WorkItemView, terminal = item.terminal): { tone: PillTone; label: string } | null {
   if (terminal) return { tone: "mute", label: item.state };
-  if (isLive(item, terminal)) return { tone: "ok", label: "Running" };
   if (isBlocked(item, terminal))
     return {
       tone: "err",
-      label: item.blockedBy.length === 1 ? "Blocked · 1" : `Blocked · ${item.blockedBy.length}`,
+      label: waitingLabel(item),
     };
+  if (isLive(item, terminal)) return { tone: "ok", label: "Running" };
   if (item.attempt !== null && item.attempt.status === "failed")
     return { tone: "err", label: "Attempt failed" };
   if (item.attempt !== null && item.attempt.status === "interrupted")
@@ -276,14 +247,17 @@ export function IssueCard({
 
       <div className="mt-0.5 flex min-h-5 min-w-0 flex-wrap items-center justify-between gap-1.5 text-[11px] text-muted-foreground" data-testid="issue-card-status-row">
         {status === null ? null : (
-          <Pill
-            tone={status.tone}
-            title={terminal && attempt !== null ? `Last attempt: ${attempt.status}` : undefined}
-            aria-label={terminal && attempt !== null ? `${status.label}. Last attempt: ${attempt.status}` : undefined}
-          >
-            {status.label}
-          </Pill>
+          <DependencyPopover item={item} kind="blocked" enabled={!terminal && item.blockedBy.length > 0}>
+            <Pill
+              tone={status.tone}
+              title={terminal && attempt !== null ? `Last attempt: ${attempt.status}` : undefined}
+              aria-label={terminal && attempt !== null ? `${status.label}. Last attempt: ${attempt.status}` : undefined}
+            >
+              {status.label}
+            </Pill>
+          </DependencyPopover>
         )}
+        {(item.dependents?.length ?? 0) > 0 ? <DependencyPopover item={item} kind="unblocks"><Pill tone="info"><UnlockIcon aria-hidden />Unblocks {item.dependents!.length}</Pill></DependencyPopover> : null}
         {item.priority === null ? null : (
           <Pill className="ml-auto" tone={priorityTone(item.priority, terminal)} aria-label={`Priority: ${item.priority}`}>
             {item.priority}

@@ -169,6 +169,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/work-items/:item/workflow", s.transitionNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/verification", s.verifyNativeIssue, write)
 	e.POST(nativeBase+"/work-items/:item/dependencies", s.changeNativeDependency, write)
+	e.POST(nativeBase+"/work-items/:item/dependency-reasons", s.updateNativeDependencyReason, write)
 	e.GET(nativeBase+"/work-items/:item/comments", s.listNativeComments, read)
 	e.POST(nativeBase+"/work-items/:item/comments", s.createNativeComment, write)
 	e.PATCH(nativeBase+"/work-items/:item/comments/:comment", s.updateNativeComment, write)
@@ -401,6 +402,14 @@ type nativeCommandOptions struct {
 	OperationID, Item, Feature               string
 	CheckPrincipal, RequireLease, Completion bool
 	ArtifactRead                             bool
+	DeferBoardProjection                     bool
+}
+
+func (options nativeCommandOptions) commit(ctx context.Context, d *database, tx *sql.Tx) error {
+	if options.DeferBoardProjection {
+		return tx.Commit()
+	}
+	return d.commit(ctx, tx)
 }
 
 // executeNativeMutation owns the shared transaction, current native authority,
@@ -455,7 +464,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	if found {
-		if err := s.database.commit(ctx, tx); err != nil {
+		if err := options.commit(ctx, s.database, tx); err != nil {
 			return nil, err
 		}
 		return json.RawMessage(response), nil
@@ -523,8 +532,14 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 	}
-	if err := s.database.commit(ctx, tx); err != nil {
+	if err := options.commit(ctx, s.database, tx); err != nil {
 		return nil, err
+	}
+	if options.DeferBoardProjection {
+		select {
+		case s.boardRefresh <- struct{}{}:
+		default:
+		}
 	}
 	s.notifyNativeDispatch(ctx, scope, input)
 	return json.RawMessage(response), nil
