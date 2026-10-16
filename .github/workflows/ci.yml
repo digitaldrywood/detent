@@ -495,7 +495,7 @@ jobs:
           key: finalize
       - name: Report source blockers at High and publish validated tag
         env:
-          WORKFLOW_CANCELLED: ${{ cancelled() }}
+          WORKFLOW_CANCELLED: ${{ job.status == 'cancelled' }}
           GH_TOKEN: ${{ github.token }}
           CI_DEVELOP_SHA: ${{ needs.preflight.outputs.develop_sha }}
           CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}

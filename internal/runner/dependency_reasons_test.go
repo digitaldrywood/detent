@@ -8,7 +8,10 @@ import (
 )
 
 func TestDependencyReasonTurnUsesIsolatedReadOnlyScratch(t *testing.T) {
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("TMPDIR", root)
 	backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "commentary", Delta: "I will summarize the relationship."}, {Type: AgentUpdateMessageDelta, ItemID: "final", Delta: "Enables project preferences."}}}
 	r := &Runner{}
