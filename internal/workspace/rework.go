@@ -41,6 +41,9 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
 			return false, err
 		}
+		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
+			return false, err
+		}
 		if checkpoint.transaction != nil {
 			current, err := l.RecoveryState(ctx, info, issue)
 			if err != nil {
@@ -334,13 +337,17 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 }
 
 func (l *LocalGit) verifyReworkBranch(ctx context.Context, info Info, issue Issue) (bool, error) {
-	owned, err := l.infoForIssue(issue)
+	owned, err := l.infoForIssueContext(ctx, issue)
 	if err != nil {
 		return false, err
 	}
 	if info.Path != owned.Path || info.Branch == "" || info.Branch != owned.Branch {
 		return false, fmt.Errorf("%w: rework is not on the assigned workspace branch", ErrMergeResolutionInvalid)
 	}
+	return l.verifyAssignedReworkBranch(ctx, info)
+}
+
+func (l *LocalGit) verifyAssignedReworkBranch(ctx context.Context, info Info) (bool, error) {
 	if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
 		return false, err
 	}

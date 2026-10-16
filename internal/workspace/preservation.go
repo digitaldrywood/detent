@@ -32,7 +32,7 @@ type IssuePreserver interface {
 }
 
 func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation, error) {
-	info, err := l.infoForIssue(issue)
+	info, err := l.infoForIssueContext(ctx, issue)
 	if err != nil {
 		return Preservation{}, err
 	}

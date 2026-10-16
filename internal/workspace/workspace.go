@@ -49,6 +49,8 @@ var (
 	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
 )
 
+var nativeIdentifierPattern = regexp.MustCompile(`^(prj_[a-z0-9]+)#[1-9][0-9]*$`)
+
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // autoBranchPrefix is the namespace every branch this backend creates lives
@@ -657,7 +659,25 @@ func SafeKey(identifier string) string {
 	return key
 }
 
+func nativeProjectID(issue Issue) string {
+	if !strings.HasPrefix(issue.ID, "wi_") {
+		return ""
+	}
+	parts := nativeIdentifierPattern.FindStringSubmatch(issue.Identifier)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
+}
+
 func issueKey(issue Issue) string {
+	if project := nativeProjectID(issue); project != "" {
+		issue.ProjectID = project
+	}
+	return legacyIssueKey(issue)
+}
+
+func legacyIssueKey(issue Issue) string {
 	identifierKey := SafeKey(issue.Identifier)
 	projectKey := SafeKey(issue.ProjectID)
 	if strings.TrimSpace(issue.ProjectID) == "" {
@@ -672,9 +692,18 @@ func issueKeyDigest(issue Issue) string {
 }
 
 func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, returnErr error) {
-	info, err := l.infoForIssue(issue)
+	info, err := l.infoForIssueContext(ctx, issue)
 	if err != nil {
 		return Info{}, err
+	}
+	if !issue.NativeRework && nativeProjectID(issue) != "" && info.Key != issueKey(issue) {
+		paused, err := rebaseInProgress(ctx, info.Path)
+		if err != nil {
+			return Info{}, err
+		}
+		if paused {
+			return Info{}, fmt.Errorf("%w: paused rebase requires native rework", ErrMergeResolutionInvalid)
+		}
 	}
 	if issue.Source != nil {
 		release, err := l.acquireSourceOperation(ctx)
@@ -698,8 +727,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
-		if checkpoint.transaction != nil && (!issue.NativeRework || checkpoint.transaction.Branch != info.Branch) {
-			return Info{}, fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
+			return Info{}, err
 		}
 		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		exists, isDir, err := pathExists(info.Path)
@@ -848,7 +877,7 @@ func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
 }
 
 func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult, error) {
-	info, err := l.infoForIssue(issue)
+	info, err := l.infoForIssueContext(ctx, issue)
 	if err != nil {
 		return CleanupResult{}, err
 	}
@@ -946,17 +975,48 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 }
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
+	return l.infoForIssueContext(context.Background(), issue)
+}
+
+func (l *LocalGit) infoForIssueContext(ctx context.Context, issue Issue) (Info, error) {
 	key := issueKey(issue)
 	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
 		return Info{}, err
 	}
 
-	return Info{
-		Path:   path,
-		Key:    key,
-		Branch: l.branchName(issue, key),
-	}, nil
+	info := Info{Path: path, Key: key, Branch: l.branchName(issue, key)}
+	if nativeProjectID(issue) == "" || issue.Landing != nil || issue.WorkspaceSession || !l.autoBranch || key == legacyIssueKey(issue) {
+		return info, nil
+	}
+	exists, _, err := pathExists(path)
+	if err != nil || exists {
+		return info, err
+	}
+	legacyKey := legacyIssueKey(issue)
+	legacyPath, err := l.workspacePath(legacyKey)
+	if err != nil {
+		return Info{}, err
+	}
+	exists, isDir, err := pathExists(legacyPath)
+	if err != nil || !exists {
+		return info, err
+	}
+	legacy := Info{Path: legacyPath, Key: legacyKey, Branch: l.branchName(issue, legacyKey)}
+	if !isDir || !l.isSourceWorktree(ctx, legacyPath) {
+		return Info{}, fmt.Errorf("%w: legacy workspace is not managed by source", ErrCheckpointUnsafe)
+	}
+	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(legacyPath))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return Info{}, err
+	}
+	if err == nil && (!l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(legacyPath), record) || record.IssueID != issue.ID || record.Identifier != issue.Identifier || record.ProjectID != issue.ProjectID || record.Branch != legacy.Branch) {
+		return Info{}, fmt.Errorf("%w: legacy workspace ownership differs", ErrCheckpointUnsafe)
+	}
+	if _, err := l.verifyAssignedReworkBranch(ctx, legacy); err != nil {
+		return Info{}, err
+	}
+	return legacy, nil
 }
 
 // Existing reports the worktree this backend keeps for issue without creating
@@ -977,7 +1037,7 @@ func (l *LocalGit) Existing(issue Issue) (Info, error) {
 }
 
 func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
-	info, err := l.infoForIssue(issue)
+	info, err := l.infoForIssueContext(ctx, issue)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -985,7 +1045,7 @@ func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (Recover
 }
 
 func (l *LocalGit) BranchHold(ctx context.Context, issue Issue) (BranchHold, bool, error) {
-	info, err := l.infoForIssue(issue)
+	info, err := l.infoForIssueContext(ctx, issue)
 	if err != nil {
 		return BranchHold{}, false, err
 	}

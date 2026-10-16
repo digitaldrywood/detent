@@ -29,6 +29,10 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		{name: "runner killed mid-stage resumes elsewhere", validate: owned},
 		{name: "clean environment templates restore elsewhere", validate: owned, templates: map[string]string{".env.example": "API_TOKEN=''\n", ".envrc.example": "export API_TOKEN=''\n"}},
 		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
+		{name: "native alias drift", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias"}},
+		{name: "matching explicit branch across aliases", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", explicit: true}},
+		{name: "legacy canonical to alias", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", legacy: "prj_example"}},
+		{name: "legacy alias to canonical", validate: owned, transaction: &portableReworkCheckpointCase{alias: "prj_example", legacy: "LOCAL/ALIAS"}},
 		{name: "periodic resolved rebase restores staged resolution", validate: owned, transaction: &portableReworkCheckpointCase{resolved: true}},
 		{name: "resolved rebase preserves excluded baseline files", validate: owned, transaction: &portableReworkCheckpointCase{resolved: true, baseline: true}},
 		{name: "excluded paths stay on the machine", validate: owned, excluded: ".env", edit: func(t *testing.T, path string) {
@@ -66,11 +70,25 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			runGit(t, second, "remote", "add", "origin", remote)
 			runGit(t, second, "fetch", "origin")
 			issue := Issue{ID: "wi_checkpoint", Identifier: "prj#1"}
+			if test.transaction != nil && test.transaction.alias != "" {
+				issue.ProjectID, issue.Identifier, issue.NativeRework = "prj_example", "prj_example#1", true
+			}
 			source, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "a"), SourceRoot: first, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
-			info, err := source.Create(t.Context(), issue)
+			if test.transaction != nil && test.transaction.explicit {
+				issue.BranchName = "feature/native-checkpoint"
+			}
+			var info Info
+			if test.transaction != nil && test.transaction.legacy != "" {
+				issue.ProjectID = test.transaction.legacy
+				key := SafeKey(issue.ProjectID) + "-" + SafeKey(issue.Identifier) + "-" + issueKeyDigest(issue)
+				info = Info{Key: key, Path: filepath.Join(source.root, key), Branch: autoBranchPrefix + strings.ToLower(key)}
+				_, err = source.createWorktree(t.Context(), info.Path, info.Branch, false)
+			} else {
+				info, err = source.Create(t.Context(), issue)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,6 +231,9 @@ func writeCheckpointFile(t *testing.T, dir, path, content string) {
 type portableReworkCheckpointCase struct {
 	resolved bool
 	baseline bool
+	alias    string
+	legacy   string
+	explicit bool
 }
 
 func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, issue Issue, first, second, remote string, test portableReworkCheckpointCase) {
@@ -409,43 +430,50 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	}
 	runGit(t, remote, "merge-base", "--is-ancestor", checkpoint.CommitSHA, next.CommitSHA)
 	runGit(t, remote, "gc", "--prune=now")
-	transaction := *checkpoint.transaction
-	transaction.Schema = 99
-	data, err := json.Marshal(transaction)
-	if err != nil {
-		t.Fatal(err)
+	for _, corruption := range []string{"schema", "branch"} {
+		transaction := *checkpoint.transaction
+		if corruption == "schema" {
+			transaction.Schema = 99
+		} else {
+			transaction.Branch = "detent/unrelated"
+		}
+		data, err := json.Marshal(transaction)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scratch := t.TempDir()
+		file := filepath.Join(scratch, "transaction.json")
+		if err := os.WriteFile(file, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		digest := strings.TrimSpace(runGit(t, info.Path, "hash-object", "-w", file))
+		corruptIndex := checkpointRefGit(info.Path, "GIT_INDEX_FILE="+filepath.Join(scratch, "index"))
+		if _, err := corruptIndex(t.Context(), "read-tree", checkpoint.CommitSHA+"^{tree}"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := corruptIndex(t.Context(), "update-index", "--add", "--cacheinfo", "100644,"+digest+",transaction.json"); err != nil {
+			t.Fatal(err)
+		}
+		corruptTree, err := corruptIndex(t.Context(), "write-tree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		corrupt, err := source.checkpointCommit(t.Context(), info.Path, strings.TrimSpace(corruptTree), []string{checkpoint.HeadSHA, original})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "push", "origin", corrupt+":"+checkpoint.Ref+"-incompatible-"+corruption)
+		rejector, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "rejected"), SourceRoot: second, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		unsafe := issue
+		unsafe.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: corrupt, TreeSHA: digest}
+		if _, err := rejector.Create(t.Context(), unsafe); !errors.Is(err, ErrCheckpointUnsafe) {
+			t.Fatalf("incompatible checkpoint accepted: %v", err)
+		}
 	}
-	scratch := t.TempDir()
-	file := filepath.Join(scratch, "transaction.json")
-	if err := os.WriteFile(file, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	digest := strings.TrimSpace(runGit(t, info.Path, "hash-object", "-w", file))
-	corruptIndex := checkpointRefGit(info.Path, "GIT_INDEX_FILE="+filepath.Join(scratch, "index"))
-	if _, err := corruptIndex(t.Context(), "read-tree", checkpoint.CommitSHA+"^{tree}"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := corruptIndex(t.Context(), "update-index", "--add", "--cacheinfo", "100644,"+digest+",transaction.json"); err != nil {
-		t.Fatal(err)
-	}
-	corruptTree, err := corruptIndex(t.Context(), "write-tree")
-	if err != nil {
-		t.Fatal(err)
-	}
-	corrupt, err := source.checkpointCommit(t.Context(), info.Path, strings.TrimSpace(corruptTree), []string{checkpoint.HeadSHA, original})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, info.Path, "push", "origin", corrupt+":"+checkpoint.Ref+"-incompatible")
-	rejector, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "rejected"), SourceRoot: second, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	unsafe := issue
-	unsafe.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref + "-incompatible", CommitSHA: corrupt, TreeSHA: digest}
-	if _, err := rejector.Create(t.Context(), unsafe); !errors.Is(err, ErrCheckpointUnsafe) {
-		t.Fatalf("incompatible checkpoint accepted: %v", err)
-	}
+
 	writeCheckpointFile(t, first, "advance.txt", "advanced target\n")
 	runGit(t, first, "add", "advance.txt")
 	runGit(t, first, "commit", "-m", "advance target")
@@ -462,6 +490,36 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatal(err)
 	}
 	issue.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}
+	if test.alias != "" {
+		issue.ProjectID = test.alias
+	}
+	if test.alias != "" {
+		for _, rejection := range []string{"wrong project", "wrong issue", "explicit unrelated branch", "non-rework", "manifest digest"} {
+			t.Run(rejection, func(t *testing.T) {
+				foreign := issue
+				switch rejection {
+				case "wrong project":
+					foreign.Identifier, foreign.BranchName = "prj_other#1", ""
+				case "wrong issue":
+					foreign.ID = "wi_other"
+				case "explicit unrelated branch":
+					foreign.BranchName = "feature/unrelated"
+				case "non-rework":
+					foreign.NativeRework = false
+				case "manifest digest":
+					if err := restorer.fetchCheckpointRef(t.Context(), foreign.Checkpoint); err != nil {
+						t.Fatal(err)
+					}
+					altered := *foreign.Checkpoint
+					altered.TreeSHA = initial.TreeSHA
+					foreign.Checkpoint = &altered
+				}
+				if _, err := restorer.Create(t.Context(), foreign); !errors.Is(err, ErrCheckpointUnsafe) {
+					t.Fatalf("foreign checkpoint accepted: %v", err)
+				}
+			})
+		}
+	}
 	restored, err := restorer.Create(t.Context(), issue)
 	if err != nil {
 		t.Fatal(err)

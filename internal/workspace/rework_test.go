@@ -32,9 +32,12 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 		authorityLost  bool
 		unstaged       bool
 		untracked      bool
+		legacy         bool
 	}{
 		{name: "runner prepares unsigned conflict"},
 		{name: "inherited signed pause", inheritedPause: true},
+		{name: "legacy unpublished pause", legacy: true},
+		{name: "legacy wrong paused branch", legacy: true, alter: "head-name"},
 		{name: "resolved paused replay integrates selected target", advanceTarget: true},
 		{name: "unresolved conflict", unresolved: true},
 		{name: "authority lost before continuation", authorityLost: true},
@@ -59,7 +62,15 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			}
 			owner := backend.(*LocalGit)
 			issue := Issue{Identifier: "native#141", NativeRework: true}
-			info, err := backend.Create(t.Context(), issue)
+			var info Info
+			if test.legacy {
+				issue = Issue{ID: "wi_pause", ProjectID: "local-alias", Identifier: "prj_example#141", NativeRework: true}
+				key := legacyIssueKey(issue)
+				info = Info{Key: key, Path: filepath.Join(owner.root, key), Branch: autoBranchPrefix + strings.ToLower(key)}
+				runGit(t, source, "worktree", "add", "-b", info.Branch, info.Path, "HEAD")
+			} else {
+				info, err = backend.Create(t.Context(), issue)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,6 +132,13 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			if err != nil || resumed.Created || resumed.Path != info.Path || resumed.Branch != info.Branch {
 				t.Fatalf("native rework creation replaced paused transaction: %#v, %v", resumed, err)
 			}
+			if test.legacy {
+				foreign := issue
+				foreign.NativeRework = false
+				if _, err := backend.Create(t.Context(), foreign); !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("non-rework adopted paused legacy source: %v", err)
+				}
+			}
 			roots, err := GitMetadataWritableRoots(t.Context(), info.Path)
 			if err != nil {
 				t.Fatal(err)
@@ -174,6 +192,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				}
 				if err := os.WriteFile(filepath.Join(linkedWorktreeGitDir(t, info.Path), "rebase-merge", test.alter), []byte(value), 0o600); err != nil {
 					t.Fatal(err)
+				}
+			}
+			if test.legacy && test.alter != "" {
+				if _, err := backend.Create(t.Context(), issue); !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("foreign legacy replay adopted: %v", err)
 				}
 			}
 			if test.infrastructure {
