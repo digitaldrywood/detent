@@ -28,6 +28,7 @@ type nativeSecurityAuditTestExecution struct {
 	submitErr      error
 	publicationErr error
 	evidence       []ValidationEvidence
+	diff           string
 }
 
 type nativeSecurityAuditIsolationBackend struct {
@@ -49,7 +50,11 @@ func (b *nativeSecurityAuditIsolationBackend) RunTurn(ctx context.Context, req A
 
 func (e *nativeSecurityAuditTestExecution) SecurityAuditVersion(ctx context.Context) (NativeValidation, error) {
 	e.versions++
-	return e.ValidatorVersion(ctx)
+	input, err := e.ValidatorVersion(ctx)
+	if e.diff != "" && input.Diff != nil {
+		input.Diff.Patch = e.diff
+	}
+	return input, err
 }
 
 func (e *nativeSecurityAuditTestExecution) RecordSecurityAudit(_ context.Context, review tracker.SecurityAuditReview) error {
@@ -88,8 +93,10 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		processClockOffset          time.Duration
 		rejected, publicationFailed bool
 		missingProcess              bool
+		malformed                   bool
 		severity                    string
 		localProjectID              string
+		large                       bool
 	}{
 		{name: "source audit uses claimed native project", localProjectID: "example-local-key"},
 		{name: "landing audit uses claimed native project", landing: true, localProjectID: "example-local-key"},
@@ -107,8 +114,11 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		{name: "landing Hub rejection publishes diagnostics", rejected: true, failed: true, landing: true},
 		{name: "publication failure retains diagnostics", rejected: true, publicationFailed: true, failed: true},
 		{name: "landing publication failure retains diagnostics", rejected: true, publicationFailed: true, failed: true, landing: true},
+		{name: "native complete large diff", large: true},
+		{name: "landing complete large diff", large: true, landing: true},
 		{name: "explicit false", disabled: true},
 		{name: "backend failure", failed: true},
+		{name: "recorded blocked output is infrastructure", malformed: true, failed: true},
 		{name: "landing exact integrated identity", landing: true},
 		{name: "landing blocking finding", landing: true, blocking: true},
 		{name: "landing backend failure", landing: true, failed: true},
@@ -128,6 +138,9 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				authentication = "api_key"
 			}
 			output := `{"verdict":"pass","summary":"No findings","findings":[]}`
+			if test.malformed {
+				output = `{"status":"blocked","reason":"Audit instructions prohibit tools and file access. Provide the bounded JSON metadata, textual diff, and required output schema inline so the audit can proceed."}`
+			}
 			if test.blocking {
 				output = `{"verdict":"fail","summary":"Authorization bypass","findings":[{"id":"auth","severity":"p1","body":"Missing authorization"}]}`
 			}
@@ -139,7 +152,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				backend.updates[0].WorkerProcess.PID = 0
 			}
 			backend.result.AuthenticationMode = authentication
-			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess {
+			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess && !test.malformed {
 				backend.err = errors.New("backend unavailable")
 			}
 			cfg := config.Default()
@@ -156,6 +169,11 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", Model: "audit-model", Default: true}}
 			var configuredBackend AgentBackend = backend
 			var isolatedBackend *nativeSecurityAuditIsolationBackend
+			var chunks *chunkAuditBackend
+			if test.large {
+				chunks = &chunkAuditBackend{t: t, mode: "pass"}
+				configuredBackend = chunks
+			}
 			if test.claimPolicy || test.ambientPolicy {
 				isolatedBackend = &nativeSecurityAuditIsolationBackend{fakeCodexClient: backend}
 				configuredBackend = isolatedBackend
@@ -168,13 +186,23 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			execution := &nativeSecurityAuditTestExecution{workspace: func() string { return backend.request.Workspace }}
+			execution := &nativeSecurityAuditTestExecution{workspace: func() string {
+				if chunks != nil && len(chunks.requests) > 0 {
+					return chunks.requests[len(chunks.requests)-1].Workspace
+				}
+				return backend.request.Workspace
+			}}
 			execution.recovery.Issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example"}}
 			if test.rejected {
 				execution.submitErr = errors.New("Hub rejected completed audit")
 			}
 			if test.publicationFailed {
 				execution.publicationErr = errors.New("Hub artifact unavailable")
+			}
+			patch := "+change"
+			if test.large {
+				patch = "diff --git a/file.go b/file.go\n@@ -0,0 +1 @@\n" + strings.Repeat("+record\n", 80000)
+				execution.diff = patch
 			}
 			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1"}}
 			ctx := t.Context()
@@ -188,7 +216,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			var approved bool
 			if test.landing {
 				var review *tracker.SecurityAuditReview
-				review, err = runner.auditNativeLanding(ctx, req, NativeLandingTarget{VersionID: "version", Repository: "https://github.com/example-org/example-project"}, workspace.FileDiffs{BaseSHA: "base", HeadSHA: "head", Files: []workspace.FileDiff{{Path: "file.go", Patch: "+change"}}})
+				review, err = runner.auditNativeLanding(ctx, req, NativeLandingTarget{VersionID: "version", Repository: "https://github.com/example-org/example-project"}, workspace.FileDiffs{BaseSHA: "base", HeadSHA: "head", Files: []workspace.FileDiff{{Path: "file.go", Patch: patch}}})
 				approved = review != nil && review.Verdict == "pass"
 				if err == nil && (review == nil || !review.Landing || review.VersionID != "version" || execution.versions != 0) {
 					t.Fatalf("landing audit lost integration identity: %+v", review)
@@ -246,6 +274,12 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				if !reflect.DeepEqual(isolatedBackend.policy, wantPolicy) {
 					t.Fatalf("audit isolation = %+v, want %+v", isolatedBackend.policy, wantPolicy)
 				}
+			}
+			if test.large {
+				if len(chunks.requests) < 2 || chunks.covered.String() != patch || execution.audit == nil || execution.audit.Run.HeadSHA != "head" || execution.audit.Run.BaseSHA != "base" || execution.audit.SessionID != 73 || execution.audit.DiffDigest == "" {
+					t.Fatal("native aggregate lost complete source or immutable receipt identity")
+				}
+				return
 			}
 			if backend.calls != 1 || execution.audit == nil || execution.audit.Run.BaseSHA != "base" || execution.audit.Run.HeadSHA != "head" || execution.audit.Run.ReviewerDigest == "" || execution.audit.SessionID != 73 || execution.audit.Identity.Role != RoleSecurityAudit || execution.audit.Identity.BackendKind != kind || execution.audit.Identity.BackendID != "audit" || execution.audit.Run.AuthenticationMode != authentication || backend.request.Model != "audit-model" {
 				t.Fatalf("audit evidence = %+v; turns=%d", execution.audit, backend.calls)

@@ -217,6 +217,9 @@ func TestParseOutput(t *testing.T) {
 	}
 
 	invalid := []string{
+		`{"status":"blocked","reason":"Audit instructions prohibit tools and file access. Provide the bounded JSON metadata, textual diff, and required output schema inline so the audit can proceed."}`,
+		`{"verdict":"pass","summary":"ok"}`,
+		`{"verdict":"pass","summary":"ok","findings":null}`,
 		"",
 		"looks safe",
 		"```json\n{}\n```",
