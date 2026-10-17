@@ -483,6 +483,11 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
         for link in native:
             self.assertTrue(link.resolve().is_dir(), link)
+        shutil.rmtree(local)
+        recovered = self.run_bootstrap(enrollment="")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        for link in native:
+            self.assertTrue(link.resolve().is_dir(), link)
         for link in (self.home / "go/pkg/mod", self.home / ".npm"):
             link.unlink()
         (self.home / ".npm").mkdir()

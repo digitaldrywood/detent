@@ -399,7 +399,10 @@ local_caches=()
 link_local_cache() {
     local native=$1 target=$local_root/cache/$2 entry
     local_caches+=("$target")
-    [[ ! -L $native ]] || return 0
+    if [[ -L $native ]]; then
+        [[ $(readlink -- "$native") != "$target" ]] || mkdir -p -- "$target"
+        return 0
+    fi
     if [[ -e $native && ! -d $native ]]; then
         printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
         return 0
