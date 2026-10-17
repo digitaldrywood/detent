@@ -1670,6 +1670,67 @@ clients refresh through the existing project event stream.
 
 ### Ordered attempts and recovery
 
+`GET /work-items/{item}?view=recovery` with
+`X-Detent-Recovery-Projection: bounded` reads candidate recovery in one bounded
+response. The complete encoded response, including JSON escaping and envelope,
+fits the existing 1 MiB SDK limit. Source version, frozen policy identity/gates, claim/checkpoint identities, latest
+implementation/acceptance criteria and hold summary retain their authority.
+Command outputs use the existing excerpts and `output_truncated`. Security audit
+summary and finding prose use bounded excerpts marked `text_truncated`, preserving
+audit identity, verdict and every retained finding's ID, status and severity.
+If mandatory review identities alone exceed the review budget, reviews are omitted
+as a group and the exact hold summary and `read.omitted` remain authoritative;
+consume the original records through continuation before acting on that evidence.
+Landing audits share a 64 KiB budget across version and attempt receipt copies.
+An audit that exceeds the remaining budget retains its identity and verdict but
+marks `run_omitted` and omits the run. That incomplete run
+cannot satisfy audit validity; the precomputed hold summary and receipt gate
+result remain authoritative. `read.omitted` names each affected landing path;
+continuation retains the complete original run, including all finding states.
+Discussion
+and ordinary Change evidence have row and byte budgets; `read.omitted` identifies
+context available through `work_comments`, `get_change`, attempt reads and the
+scoped `read.detail_path`. Recovery consumers must read omitted context needed
+for their decision through those owners and follow their cursors.
+
+If combined evidence exceeds the response budget, `read.omitted` identifies
+projected frozen policy details or further omitted evidence. Complete policy
+remains in its original version record; a projected descriptor is not a policy
+approval document. Clients advertising `X-Detent-Recovery-Body: fragments` may
+receive `read.issue_body` with an authenticated cursor, digest and encoded byte
+count instead of inline instructions. This addresses only the `issue_body`
+record through the existing continuation. Its cursor also pins the issue
+revision. The SDK verifies scope, revision, contiguous offsets, record length
+and digest, decodes at most 256 KiB of issue body, and restores it before returning
+successful recovery. Failure aborts candidate hydration. Older clients retain
+complete inline instructions or an explicit refusal, never a successful partial
+issue. Optional retained history is never automatically reconstructed.
+
+`GET /work-items/{item}?view=recovery&limit=1` explicitly reads retained evidence,
+one record fragment per response. `continuation` identifies the scoped item,
+`section`, `record_id`, original `version_id`, base64 `data` (at most 64 KiB
+decoded), `offset`, `total_bytes`, record `sha256` and `next_cursor`. The cursor
+traverses reviews, checks, Change discussion, issue discussion, attempts,
+versions and Change metadata. Each read retrieves one record, not the whole
+history; large records continue before advancing. `section: complete` ends the
+traversal. Cursors retain the existing credential/query binding, pin the current
+Change version and refuse an edited record during fragmentation. Clients consume
+individual records; candidate hydration never reassembles the complete history.
+The authenticated worker `work_item` tool exposes this continuation with
+`project_id`, canonical `reference` and `view: "recovery"`. Repeat with the
+returned `data.next_cursor` as `cursor` until `data.section` is `complete`.
+The full ordinary review, command output, frozen historical policy and retained
+discussion remain available through this selector when other reads return
+excerpts or refuse a record that exceeds their result bound.
+
+Plain recovery reads retain their original contract and response-size refusal.
+Older Hubs ignore the projection header: a new runner still reads small recovery
+and preserves the original size refusal for oversized recovery, without a retry.
+Deploy the Hub before runners to enable bounded hydration; Hub rollback restores
+that same explicit refusal for oversized work. Older runners retain their prior
+behavior against either Hub version. No runner identity or configuration changes
+are needed for either order.
+
 The `fenced_run_history` capability extends schema 1 with a positive decimal-string
 `data.sequence` and `identity: {role, backend, model}`. Identity components are
 bounded to 128 identifier characters. The server derives machine, runner and Hub

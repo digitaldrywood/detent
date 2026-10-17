@@ -374,7 +374,33 @@ type NativeRuntimeCapacity struct {
 	Exclusions       []string                `json:"exclusions"`
 }
 
+type NativeRecoveryPage struct {
+	NativeReference
+	Section    string `json:"section"`
+	RecordID   string `json:"record_id,omitempty"`
+	VersionID  string `json:"version_id,omitempty"`
+	Data       []byte `json:"data"`
+	SHA256     string `json:"sha256"`
+	NextCursor string `json:"next_cursor,omitempty"`
+	Offset     int64  `json:"offset"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+type NativeRecoveryRead struct {
+	DetailPath string                  `json:"detail_path"`
+	Omitted    []string                `json:"omitted"`
+	IssueBody  *NativeRecoveryBodyRead `json:"issue_body,omitempty"`
+}
+
+type NativeRecoveryBodyRead struct {
+	Cursor     string `json:"cursor"`
+	SHA256     string `json:"sha256"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
 type NativeRecovery struct {
+	Read            *NativeRecoveryRead    `json:"read,omitempty"`
+	Continuation    *NativeRecoveryPage    `json:"continuation,omitempty"`
 	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
 	SourceVersionID string                 `json:"source_version_id,omitempty"`
 	Lease           NativeLease            `json:"lease"`
