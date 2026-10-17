@@ -312,15 +312,19 @@ describe("runner rows", () => {
     }
   });
 
-  it.each(["sandbox", "native-trusted"])("disables Sandbox for a Sprite with saved tier %s", (tier) => {
-    const runner = { ...RUNNER, isolation_tier: tier, routing: { ...ROUTING, isolation_tier: tier }, backend_isolation: { codex: ["sandbox", "native-trusted"] }, problems: [{ code: "tier_unavailable", message: "Access unavailable", fix_hint: "Choose supported access", first_seen: "2026-09-10T12:00:00Z" }], sprite: { name: "build-host", status: "warm", can_wake: true, wake_failed: false } };
+  it.each([
+    { tier: "sandbox", probe: ["native-trusted"], allowed: false },
+    { tier: "native-trusted", probe: ["native-trusted"], allowed: false },
+    { tier: "native-trusted", probe: ["sandbox", "native-trusted"], allowed: true },
+  ])("gates Sandbox for a Sprite with saved tier $tier on its isolation probe $probe", ({ tier, probe, allowed }) => {
+    const runner = { ...RUNNER, isolation_tier: tier, routing: { ...ROUTING, isolation_tier: tier }, backend_isolation: { codex: probe }, problems: [{ code: "tier_unavailable", message: "Access unavailable", fix_hint: "Choose supported access", first_seen: "2026-09-10T12:00:00Z" }], sprite: { name: "build-host", status: "warm", can_wake: true, wake_failed: false } };
     render(<RunnersSectionView fleet={{ ...FLEET, editable: true, runners: [runner] }} projects={PROJECTS} onSaveRouting={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Manage Example laptop" }));
     const sheet = within(screen.getByRole("dialog"));
-    expect(sheet.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled")).toBe("true");
+    expect(sheet.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled") === "true").toBe(!allowed);
     expect(sheet.getByRole("radio", { name: tier === "sandbox" ? "Sandbox" : "Full access" }).getAttribute("aria-checked")).toBe("true");
-    expect(sheet.getByText("Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.")).toBeTruthy();
-    expect(sheet.queryByRole("button", { name: "Switch to Sandbox" })).toBeNull();
+    expect(sheet.queryByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") !== null).toBe(!allowed);
+    expect(sheet.queryByRole("button", { name: "Switch to Sandbox" }) !== null).toBe(allowed);
     expect(sheet.getByRole("radio", { name: "Full access" }).getAttribute("aria-disabled")).not.toBe("true");
   });
 

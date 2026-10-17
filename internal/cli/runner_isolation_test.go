@@ -24,32 +24,20 @@ func TestProbeBackendTiers(t *testing.T) {
 		name    string
 		native  bool
 		sandbox bool
-		sprite  bool
 		want    []string
 	}{
-		{"both", true, true, false, []string{"native-trusted", "sandbox"}},
-		{"native only", true, false, false, []string{"native-trusted"}},
-		{"unavailable", false, false, false, []string{}},
-		{"sprite native ready", true, false, true, []string{"native-trusted"}},
-		{"sprite native unavailable", false, true, true, []string{}},
+		{"both", true, true, []string{"native-trusted", "sandbox"}},
+		{"native only", true, false, []string{"native-trusted"}},
+		{"unavailable", false, false, []string{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			got, reasons := probeBackendTiers(ctx, workflowconfig.AgentBackend{}, isolation.Policy{}, test.sprite, func(_ context.Context, _ workflowconfig.AgentBackend, policy isolation.Policy) error {
-				if test.sprite && policy.Tier == isolation.Sandbox {
-					cancel()
-					return ctx.Err()
-				}
+			got, reasons := probeBackendTiers(t.Context(), workflowconfig.AgentBackend{}, isolation.Policy{}, func(_ context.Context, _ workflowconfig.AgentBackend, policy isolation.Policy) error {
 				if policy.Tier == isolation.NativeTrusted && test.native || policy.Tier == isolation.Sandbox && test.sandbox {
 					return nil
 				}
 				return errors.New("backend sandbox tooling is unavailable")
 			})
-			if test.sprite && (ctx.Err() != nil || reasons[isolation.Sandbox] != "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.") {
-				t.Fatalf("unsupported Sprite probe consumed native readiness budget: error=%v reasons=%v", ctx.Err(), reasons)
-			}
-			if !test.sprite && !test.sandbox && reasons[isolation.Sandbox] != "backend sandbox tooling is unavailable" {
+			if !test.sandbox && reasons[isolation.Sandbox] != "backend sandbox tooling is unavailable" {
 				t.Fatalf("sandbox reason lost: %#v", reasons)
 			}
 			if !reflect.DeepEqual(got, test.want) {

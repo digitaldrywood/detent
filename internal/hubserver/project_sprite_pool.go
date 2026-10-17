@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const spriteSandboxUnavailableReason = "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox."
+const spriteSandboxUnavailableReason = "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support."
 
 type spritePoolSettings struct {
 	IsolationTier string            `json:"isolation_tier"`
