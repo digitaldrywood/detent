@@ -144,6 +144,13 @@ func TestProjectSecretPermissions(t *testing.T) {
 	})
 	f.project = f.createProject(t, "Secrets test project")
 	base := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/projects/" + f.project + "/secrets/" + flySpritesToken
+	t.Run("unconfigured organization pool loads without provider credentials", func(t *testing.T) {
+		var pool spritePoolView
+		decodeHubResponse(t, f.api(t, "owner", http.MethodGet, "/api/v2/organizations/"+f.service.config.Hosted.OrganizationID+"/sprite-pool", nil, http.StatusOK), &pool)
+		if pool.MinRunners != 0 || pool.MaxRunners != 0 || pool.IdleSeconds != 300 || pool.Bootstrap != "" || pool.Revision != 0 || len(pool.Members) != 0 {
+			t.Fatalf("unconfigured pool = %+v", pool)
+		}
+	})
 	// Use the existing viewer account with each current provider role. Grants
 	// permit writes, so these refusals specifically catch a lost admin boundary.
 	f.api(t, "owner", http.MethodPut, "/api/v2/organizations/"+f.service.config.Hosted.OrganizationID+"/members/membership_user_browser_viewer/grants", map[string]any{"project_id": f.project, "write": true, "runner": true}, http.StatusOK)
@@ -171,6 +178,21 @@ func TestProjectSecretPermissions(t *testing.T) {
 			var pool spritePoolView
 			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, poolPath, nil, http.StatusOK), &pool)
 			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, status)
+			organizationPoolPath := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool"
+			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &pool)
+			organizationStatus := status
+			if role == "viewer" {
+				organizationStatus = http.StatusForbidden
+			}
+			f.api(t, "viewer", http.MethodPut, organizationPoolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, organizationStatus)
+			var reloaded spritePoolView
+			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &reloaded)
+			if status == http.StatusOK && (reloaded.MaxRunners != 2 || reloaded.Bootstrap != "true" || reloaded.Revision != pool.Revision+1) {
+				t.Fatalf("saved organization pool = %+v", reloaded)
+			}
+			if status != http.StatusOK && reloaded.Revision != pool.Revision {
+				t.Fatal("forbidden write changed the organization pool")
+			}
 		})
 	}
 	t.Run("pool bootstrap is optional and omission preserves saved steps", func(t *testing.T) {
