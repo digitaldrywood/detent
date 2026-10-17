@@ -37,6 +37,9 @@ func TestNativeDiagnosticOwner(t *testing.T) {
 	}
 	for _, test := range []struct{ name, details, want string }{
 		{"known", `,"details":{"rejection":{"category":"runtime_validation","field":"data.runtime.activity"}}`, "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]"},
+		{"version receipt", `,"details":{"rejection":{"category":"version_validation","field":"validation"}}`, "publication rejected: category=version_validation field=validation [private error text omitted]"},
+		{"source verification", `,"details":{"rejection":{"category":"source_verification","field":"source"}}`, "publication rejected: category=source_verification field=source [private error text omitted]"},
+		{"forged version field", `,"details":{"rejection":{"category":"version_validation","field":"sentinel-secret"}}`, "[private error text omitted]"},
 		{"legacy", "", "[private error text omitted]"},
 		{"unknown", `,"details":{"rejection":{"category":"secret","field":"data.runtime.activity"}}`, "[private error text omitted]"},
 		{"forged field", `,"details":{"rejection":{"category":"runtime_validation","field":"secret"}}`, "[private error text omitted]"},

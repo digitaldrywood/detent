@@ -22,6 +22,10 @@ func (r PublicationRejection) Valid() bool {
 		return r.Field == "data.usage"
 	case "owner_validation":
 		return slices.Contains([]string{"data", "data.finalization", "data.runtime.landing", "data.sequence"}, r.Field)
+	case "version_validation":
+		return slices.Contains([]string{"validation", "source", "policy_id"}, r.Field)
+	case "source_verification":
+		return r.Field == "source"
 	case "body_decode":
 		return r.Field == "" || slices.Contains([]string{"schema_version", "type", "data", "data.sequence", "data.runtime", "data.runtime.activity", "data.runtime.validation"}, r.Field)
 	default:

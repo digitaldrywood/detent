@@ -14,6 +14,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -135,6 +136,75 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 	if page, err := call(ctx, secondArgs); err != nil || page.RunnerID != second.binding.RunnerID {
 		t.Fatalf("second runner diagnostic=%+v err=%v", page, err)
 	}
+	changePath := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+	created := performHubAPIRequest(t, f.service, http.MethodPost, changePath, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "diagnostic-change"}, Title: "Rejected version"})
+	requireNativeStatus(t, created, http.StatusOK)
+	var change tracker.ChangeRequest
+	decodeHubResponse(t, created, &change)
+	operator, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return f.token }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := operator.Native(f.project.OrganizationID, f.project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := view.Diagnostics.Records[0]
+	for _, test := range []struct {
+		name, category, field, want string
+		edit                        func(*tracker.PublishChangeVersion)
+	}{
+		{"receipt", "version_validation", "validation", "publication rejected: category=version_validation field=validation [private error text omitted]", func(request *tracker.PublishChangeVersion) {
+			request.Validation = &gate.CommandResult{HeadSHA: "wrong-head", Output: "sentinel-secret-customer"}
+		}},
+		{"source metadata", "version_validation", "source", "publication rejected: category=version_validation field=source [private error text omitted]", func(request *tracker.PublishChangeVersion) {
+			request.Source = &tracker.ChangeSource{Format: "sentinel-secret-customer"}
+		}},
+		{"source verification", "source_verification", "source", "publication rejected: category=source_verification field=source [private error text omitted]", func(request *tracker.PublishChangeVersion) {
+			request.SourceBundle = changeTestSource(t, &request.ChangeVersionInput, []byte("sentinel-secret-customer"))
+			request.SourceBundle[len(request.SourceBundle)-1] ^= 0xff
+			request.Source.BundleSHA256 = tracker.ChangeSourceDigest(request.SourceBundle)
+		}},
+		{"configuration", "version_validation", "policy_id", "publication rejected: category=version_validation field=policy_id [private error text omitted]", func(request *tracker.PublishChangeVersion) {
+			request.PolicyID = "sentinel-secret-customer"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ChangeVersionInput: changeTestInput()}
+			test.edit(&request)
+			_, err := publisher.PublishChangeVersion(t.Context(), issue.WorkItemID, change.ID, request)
+			var failure *hubclient.APIError
+			if !errors.As(err, &failure) || failure.Status != http.StatusUnprocessableEntity || failure.Rejection == nil || failure.Rejection.Category != test.category || failure.Rejection.Field != test.field {
+				t.Fatalf("version rejection=%+v error=%v", failure, err)
+			}
+			if strings.Contains(err.Error(), "sentinel-secret-customer") {
+				t.Fatal("version error disclosed private request")
+			}
+			view.Diagnostics.Records[0].HostOperation = "native.publishVersion"
+			view.Diagnostics.Records[0].LatestError = failure.Rejection.DiagnosticError()
+			post()
+			page, err := call(ctx, operatortool.LocalProjectArguments{ProjectID: view.ProjectID, RunnerID: r.binding.RunnerID, AttemptID: event.Data.AttemptID})
+			if err != nil || len(page.Records) != 1 || page.Records[0].LatestError != test.want || page.Records[0].Unavailable["publication_rejection"] != "" || page.Records[0].NativeAttemptID != event.Data.AttemptID || !page.Records[0].OperationObservedAt.Equal(now) || !page.Records[0].OperationPending {
+				t.Fatalf("version diagnostic=%+v error=%v", page, err)
+			}
+		})
+	}
+	var versions, published int
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_versions WHERE change_id=?", change.ID).Scan(&versions); err != nil || versions != 0 {
+		t.Fatalf("rejected version was accepted: %d %v", versions, err)
+	}
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='change.version_published'", issue.WorkItemID).Scan(&published); err != nil || published != 0 {
+		t.Fatalf("rejected version fabricated history: %d %v", published, err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, changePath+"/"+change.ID, f.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var detail tracker.ChangeDetail
+	decodeHubResponse(t, response, &detail)
+	if detail.Change.CurrentVersion != "" || detail.Change.Revision != change.Revision {
+		t.Fatalf("rejection changed current version: %+v", detail.Change)
+	}
+	view.Diagnostics.Records[0] = original
+	post()
 	var before string
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT project_configuration_json || routing_settings_json || cast(revision AS TEXT) || last_heartbeat_at FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&before); err != nil {
 		t.Fatal(err)
