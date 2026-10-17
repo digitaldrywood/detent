@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,7 +17,31 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 )
+
+func TestProtocolProbeWithoutScratch(t *testing.T) {
+	if os.Getenv("DETENT_TEST_PROTOCOL_PROBE") == "1" {
+		os.Args = []string{os.Args[0], cli.SSHProbeArgument}
+		main()
+		os.Exit(0)
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestProtocolProbeWithoutScratch$")
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "TMPDIR" && key != "TMP" && key != "TEMP" && key != "DETENT_TEST_PROTOCOL_PROBE" {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "DETENT_TEST_PROTOCOL_PROBE=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("protocol probe without scratch: %v: %s", err, output)
+	}
+	if want := fmt.Sprintln(runnerpkg.SSHProtocolVersion); string(output) != want {
+		t.Fatalf("protocol output = %q, want %q", output, want)
+	}
+}
 
 func TestRootCommandHelp(t *testing.T) {
 	cmd := newRootCommand(context.Background())
