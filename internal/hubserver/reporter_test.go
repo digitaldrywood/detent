@@ -190,16 +190,16 @@ func TestReporterNativeCommands(t *testing.T) {
 				status int
 			}{
 				{own, "Todo", http.StatusForbidden},
-				{other, "Cancelled", http.StatusForbidden},
+				{other, "Cancelled", http.StatusNotFound},
 				{own, "Cancelled", http.StatusOK},
 			} {
 				target := f.base + "/work-items/" + string(test.item.WorkItemID) + "/workflow"
 				r := request(u, http.MethodPost, target, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "move-" + string(test.item.WorkItemID) + test.state}, ExpectedRevision: test.item.Revision, State: test.state, Reason: "user_requested"})
 				requireNativeStatus(t, r, test.status)
 			}
-			requireNativeStatus(t, request(u, http.MethodPatch, f.base+"/work-items/"+string(other.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-type-edit"}, ExpectedRevision: other.Revision, Type: new("change_request")}), http.StatusForbidden)
+			requireNativeStatus(t, request(u, http.MethodPatch, f.base+"/work-items/"+string(other.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "reporter-type-edit"}, ExpectedRevision: other.Revision, Type: new("change_request")}), http.StatusNotFound)
 			var comment tracker.NativeComment
-			commentPath := f.base + "/work-items/" + string(other.WorkItemID) + "/comments"
+			commentPath := f.base + "/work-items/" + string(own.WorkItemID) + "/comments"
 			r = request(u, http.MethodPost, commentPath, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Tester observation"})
 			requireNativeStatus(t, r, http.StatusOK)
 			decodeHubResponse(t, r, &comment)
@@ -212,9 +212,9 @@ func TestReporterNativeCommands(t *testing.T) {
 			requireNativeStatus(t, r, http.StatusForbidden)
 			for _, suffix := range []string{"", "/comments", "/history"} {
 				r := request(u, http.MethodGet, f.base+"/work-items/"+string(other.WorkItemID)+suffix, nil)
-				requireNativeStatus(t, r, http.StatusOK)
+				requireNativeStatus(t, r, http.StatusNotFound)
 			}
-			for _, test := range []struct{ method, suffix string }{{http.MethodPatch, ""}, {http.MethodPost, "/dependencies"}, {http.MethodPost, "/restore"}, {http.MethodPost, "/archive"}} {
+			for _, test := range []struct{ method, suffix string }{{http.MethodPost, "/dependencies"}, {http.MethodPost, "/restore"}, {http.MethodPost, "/archive"}} {
 				r := request(u, test.method, f.base+"/work-items/"+string(other.WorkItemID)+test.suffix, map[string]any{"idempotency_key": "denied"})
 				requireNativeStatus(t, r, http.StatusForbidden)
 			}
@@ -247,12 +247,12 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 			for _, definition := range definitions {
 				seen[definition.Name] = true
 			}
-			for _, name := range []string{operatortool.FileIssue, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem} {
+			for _, name := range []string{operatortool.EditItem, operatortool.FileIssue, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem} {
 				if !seen[name] {
 					t.Fatalf("Reporter catalog omits %s", name)
 				}
 			}
-			for _, name := range []string{operatortool.EditItem, operatortool.SetDependency, operatortool.RestoreItem, operatortool.DeleteAttachment} {
+			for _, name := range []string{operatortool.SetDependency, operatortool.RestoreItem, operatortool.DeleteAttachment} {
 				if seen[name] {
 					t.Fatalf("Reporter catalog advertises %s", name)
 				}
@@ -356,6 +356,22 @@ func TestReporterMCPFilesIntoTriage(t *testing.T) {
 				if !reflect.DeepEqual(content.Data.ReportContext, wantContext) {
 					t.Fatalf("report context=%+v", content.Data.ReportContext)
 				}
+				if i == 0 {
+					raw, err := json.Marshal(map[string]any{"project_id": f.project, "identifier": content.Data.WorkItemID, "request_id": "correct-report", "expected_revision": fmt.Sprint(content.Data.Revision), "title": "Tester report", "body": reporterBugSections + issueContractTestSections})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := executor.Execute(ctx, operatortool.Call{Name: operatortool.EditItem, Arguments: raw})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(result.Content, &content); err != nil {
+						t.Fatal(err)
+					}
+					if content.Data.ReporterStatus != "submitted" || content.Data.Body != reporterBugSections+issueContractTestSections || len(content.Data.IssueContract.ConfirmedSections) != 0 {
+						t.Fatalf("MCP edit=%s", result.Content)
+					}
+				}
 			}
 		})
 	}
@@ -389,7 +405,7 @@ func TestReporterPersonalKeyIntersection(t *testing.T) {
 				r := send(http.MethodGet, f.base+"/work-items", nil)
 				requireNativeStatus(t, r, http.StatusOK)
 				r = send(http.MethodPatch, f.base+"/work-items/wi_other", map[string]any{"idempotency_key": "denied"})
-				requireNativeStatus(t, r, http.StatusForbidden)
+				requireNativeStatus(t, r, http.StatusNotFound)
 			}
 			if _, err := f.service.createHostedAPIKeyFor(ctx, catalog.credential, hostedKeyRequest{Name: "admin", Scope: apikey.ScopeAdmin, Days: 30}); err == nil {
 				t.Fatal("reporter created admin key")

@@ -52,7 +52,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScop
 			if err != nil {
 				return nil, err
 			}
-			return s.nativeIssueJSON(ctx, replay)
+			return s.nativeIssueJSON(ctx, scope, replay)
 		}
 		canonical, repository, _, err := tracker.ParseGitHubIssueURL(request.GitHubIssueURL)
 		if err != nil {
@@ -236,11 +236,18 @@ func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 }
 
 func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScope, item string, request tracker.UpdateIssue) (json.RawMessage, error) {
+	scope.action, scope.actionItem = operatortool.EditItem, item
 	options := nativeCommandOptions{OperationID: "PATCH /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item, Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)
 		if err != nil {
 			return nil, err
+		}
+		if err := requireReporterTriage(scope, issue); err != nil {
+			return nil, err
+		}
+		if scope.credential.HostedRole == "reporter" && (request.Type != nil || request.Priority.Present() || request.Labels != nil || request.Assignees != nil) {
+			return nil, operatortool.ErrAccessDenied
 		}
 		if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
 			return nil, err
@@ -262,7 +269,7 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 			if issue.IssueContract == nil {
 				issue.IssueContract = &issuecontract.State{}
 			}
-			if scope.actor().Kind == "human" {
+			if scope.actor().Kind == "human" && scope.credential.HostedRole != "reporter" {
 				issue.IssueContract.ConfirmedSections = config.IssueContractSectionDigests(issue.Body)
 				issue.IssueContract.RecordedAt = now
 			}
@@ -381,7 +388,7 @@ AND (`+condition+`)`, args...).Scan(&blockerID, &blockerProject)
 }
 
 func (s *Service) createNativeCommentCommand(ctx context.Context, scope nativeScope, item string, request tracker.CreateComment) (json.RawMessage, error) {
-	scope.action = operatortool.AddComment
+	scope.action, scope.actionItem = operatortool.AddComment, item
 	options := nativeCommandOptions{OperationID: "POST /api/v2/organizations/" + string(scope.organization) + "/projects/" + string(scope.project) + "/work-items" + "/" + item + "/comments", Item: item, RequireLease: true, Feature: "collaboration"}
 	return s.executeNativeMutation(ctx, scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		issue, _, err := readNativeIssue(ctx, tx, scope, item)

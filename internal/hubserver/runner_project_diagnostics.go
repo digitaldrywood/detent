@@ -68,6 +68,16 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 	if err := authorizeNativeProject(ctx, tx, scope); err != nil {
 		return runnerauth.DiagnosticPage{}, err
 	}
+	var visibleIssues map[string]bool
+	if scope.credential.HostedRole == "reporter" {
+		visibleIssues, err = reporterIssueIDs(ctx, tx, scope)
+		if err != nil {
+			return runnerauth.DiagnosticPage{}, err
+		}
+		if args.IssueID != "" && !visibleIssues[args.IssueID] {
+			return runnerauth.DiagnosticPage{}, nativeNotFound()
+		}
+	}
 	now, err := s.database.currentTime()
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
@@ -119,6 +129,14 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 			}
 		}
 		if view.Diagnostics != nil {
+			if visibleIssues != nil {
+				view.Diagnostics.Records = slices.DeleteFunc(view.Diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool { return !visibleIssues[record.IssueID] })
+				view.Diagnostics.Admissions = slices.DeleteFunc(view.Diagnostics.Admissions, func(record runnerauth.DiagnosticAdmission) bool { return !visibleIssues[record.IssueID] })
+				view.Diagnostics.Counts = nil
+				for index := range view.Diagnostics.Admissions {
+					view.Diagnostics.Admissions[index].RepositoryReservations = nil
+				}
+			}
 			view.Diagnostics.Redact()
 		}
 		page, err = view.Diagnostics.Page(args.ProjectID, r.RunnerID, args.IssueID, args.AttemptID, args.Cursor, args.Limit, now)

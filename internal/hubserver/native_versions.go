@@ -71,7 +71,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 			return nil, err
 		}
 		issue.WebURL = path
-		return json.Marshal(s.nativeIssueResponse(issue))
+		return json.Marshal(s.nativeIssueResponse(scope.reporterIssue(issue)))
 	}
 	if recordID == item {
 		var issue tracker.NativeIssue
@@ -83,7 +83,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND record_id 
 		if err != nil {
 			return nil, err
 		}
-		return s.nativeIssueJSON(ctx, encoded)
+		return s.nativeIssueJSON(ctx, scope, encoded)
 	}
 	return json.RawMessage(body), nil
 }

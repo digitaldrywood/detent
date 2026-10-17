@@ -290,6 +290,8 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
 				if write && credential.HostedRole == "reporter" {
 					switch c.Request().Method + " " + c.Path() {
+					case "PATCH " + nativeBase + "/work-items/:item":
+						scope.action = operatortool.EditItem
 					case "POST " + nativeBase + "/work-items":
 						scope.action = operatortool.FileIssue
 					case "POST " + nativeBase + "/work-items/:item/comments":
@@ -314,6 +316,11 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 					return s.nativeAPIError(c, err)
 				}
 				if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+			}
+			if item := c.Param("item"); item != "" {
+				if err := requireReporterItem(readCtx, s.database.reader, scope, item); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}
