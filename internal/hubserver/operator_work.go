@@ -48,7 +48,7 @@ func (e nativeOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 	}
 	for _, definition := range operatortool.CommandCatalog() {
 		switch definition.Name {
-		case operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem, operatortool.VerifyFix:
+		case operatortool.StopRun, operatortool.MoveItem, operatortool.FileIssue, operatortool.EditItem, operatortool.AddComment, operatortool.EditComment, operatortool.SetDependency, operatortool.RestoreItem, operatortool.OrderItem, operatortool.SetQueuePriority, operatortool.TransferItem, operatortool.VerifyFix:
 			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, ResourceKind: "work_item", Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
@@ -77,6 +77,9 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	}
 	if operatortool.IsAttachmentTool(call.Name) && call.Name != operatortool.UploadAttachment {
 		return e.attachmentOperation(ctx, call)
+	}
+	if call.Name == operatortool.StopRun {
+		return e.stopRun(ctx, call)
 	}
 	if call.Name == operatortool.MoveItem {
 		return e.workflowTransition(ctx, call)

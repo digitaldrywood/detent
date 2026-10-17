@@ -28,7 +28,7 @@ func CommandCatalog() []Definition {
 	return append(append(append([]Definition{
 		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Optional reason_detail is plain text recorded on the transition, for example why an item moved to Blocked and what a human must do. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"reason_detail":{"type":"string","maxLength":`+strconv.Itoa(workpad.MaxFinalSummaryBytes)+`},`+workRevisionProperty, `"identifier","target_state"`, true),
 		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty, `"identifier","priority"`, false),
-		commandDefinition(StopRun, "Stop the exact active run and route its item. Executes directly with current write authority.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
+		stopRunDefinition(),
 		fileIssueDefinition(),
 		definition(ActionResult, "Read the outcome of this connection's exact action. This never approves an action.", `{"type":"object","required":["action_id"],"properties":{"action_id":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false}`),
 		definition(ConnectionInfo, "Read this connection's authenticated identity and organization.", `{"type":"object","properties":{},"additionalProperties":false}`),
@@ -148,6 +148,46 @@ func DecodeNativeMoveItem(raw json.RawMessage) (MoveItemArguments, error) {
 	request.ReasonDetail = strings.TrimSpace(request.ReasonDetail)
 	if _, ok := workpad.LastStatusBlock(request.ReasonDetail); ok {
 		return request, invalidArgument("reason_detail", "must be plain text without a status block")
+	}
+	return request, nil
+}
+
+type NativeStopRunArguments struct {
+	ProjectID        string               `json:"project_id"`
+	RequestID        string               `json:"request_id,omitempty"`
+	Identifier       string               `json:"identifier"`
+	ExpectedRevision tracker.Revision     `json:"expected_revision,string"`
+	LeaseID          tracker.LeaseID      `json:"lease_id"`
+	FencingToken     tracker.FencingToken `json:"fencing_token"`
+	Destination      string               `json:"destination"`
+	Priority         *int                 `json:"priority,omitempty"`
+	Reason           string               `json:"reason,omitempty"`
+}
+
+func stopRunDefinition() Definition {
+	return commandDefinition(StopRun, "Stop the exact active run and route its item with current write authority. Native Hub calls require expected_revision, lease_id and fencing_token from the current attempt. Native stops preserve retained source and return an action_id readable with action_result; the receipt identifies the released lease and resulting item state.", `"identifier":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty+`,"lease_id":{"type":"string","minLength":1,"maxLength":256},"fencing_token":{"type":"integer","minimum":1},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true)
+}
+
+func DecodeNativeStopRun(raw json.RawMessage) (NativeStopRunArguments, error) {
+	var request NativeStopRunArguments
+	var schema argumentSchema
+	if err := json.Unmarshal(stopRunDefinition().InputSchema, &schema); err != nil {
+		return request, err
+	}
+	schema.Required = append(schema.Required, "expected_revision", "lease_id", "fencing_token")
+	if err := validateArgumentSchema(raw, schema); err != nil {
+		return request, err
+	}
+	if err := DecodeArguments(raw, &request); err != nil {
+		return request, err
+	}
+	if request.ExpectedRevision <= 0 || request.FencingToken <= 0 {
+		return request, ErrInvalidArguments
+	}
+	for _, value := range []string{request.ProjectID, request.RequestID, request.Identifier, string(request.LeaseID)} {
+		if strings.TrimSpace(value) == "" {
+			return request, ErrInvalidArguments
+		}
 	}
 	return request, nil
 }

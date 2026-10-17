@@ -209,7 +209,7 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 	if hubFleetTool(call.Name) {
 		return hubFleetExecutor(e).Execute(ctx, call)
 	}
-	if call.Name == operatortool.MoveItem || operatortool.IsAttachmentTool(call.Name) || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
+	if call.Name == operatortool.StopRun || call.Name == operatortool.MoveItem || operatortool.IsAttachmentTool(call.Name) || call.Name == operatortool.FileIssue || operatortool.IsWorkTool(call.Name) || operatortool.IsWorkRead(call.Name) || call.Name == operatortool.ExplainItem {
 		return nativeOperatorExecutor(e).Execute(ctx, call)
 	}
 	defer func() {
@@ -241,6 +241,12 @@ func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 				return result, err
 			}
 			return (hubFleetExecutor{service: s}).actionResult(ctx, action)
+		}
+		if action.Kind == chat.ActionStopRun {
+			if _, _, _, err := (nativeOperatorExecutor{service: s}).stopRunAuthority(ctx, action.Arguments); err != nil {
+				return result, err
+			}
+			return s.hubActionResult(action)
 		}
 		if action.Kind == chat.ActionMoveItem {
 			if _, _, err := (nativeOperatorExecutor{service: s}).workflowAuthority(ctx, action.Arguments); err != nil {
@@ -557,6 +563,9 @@ func (e hostedOperatorExecutor) ExecuteAction(ctx context.Context, action chat.A
 	}
 	if action.Mutation.Source == "chat" {
 		return e.service.executeCoordinatorAction(ctx, action)
+	}
+	if action.Kind == chat.ActionStopRun {
+		return (nativeOperatorExecutor(e)).executeStopRun(ctx, action)
 	}
 	if action.Kind == chat.ActionMoveItem {
 		return (nativeOperatorExecutor(e)).executeWorkflowTransition(ctx, action)
