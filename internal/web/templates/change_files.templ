@@ -40,7 +40,7 @@ templ ChangeFilesReview(data ChangePageData) {
 							}
 						</select>
 					</label>
-					<button type="submit" name="action" value="load" class="rounded-chip border border-line px-3 py-1 text-xs text-accent" disabled?={ len(data.ReviewBundles())==0 }>Load files</button>
+					<button type="submit" name="action" value="load" class="rounded-chip border border-line px-3 py-1 text-xs text-accent" disabled>Load files</button>
 				</div>
 				if len(data.ReviewBundles()) == 0 {
 					<p class="text-xs text-sec">No complete diff bundle is pinned to this version. Local, partial, or unbound artifacts cannot be reviewed here.</p>
@@ -62,7 +62,7 @@ templ ChangeFilesReview(data ChangePageData) {
 					<textarea name="body" maxlength="65536" rows="3" class="min-w-0 rounded-chip border border-line bg-elev p-2 text-text"></textarea>
 				</label>
 				<div class="flex flex-wrap gap-2 text-xs">
-					<button type="submit" name="action" value="discuss" class="rounded-chip border border-line px-3 py-1 text-accent">Post discussion</button>
+					<button type="submit" name="action" value="discuss" class="rounded-chip border border-line px-3 py-1 text-accent" disabled>Post discussion</button>
 					<button type="submit" name="action" value="changes_requested" data-review-decision disabled class="rounded-chip border border-line px-3 py-1 text-accent">Request changes</button>
 					<button type="submit" name="action" value="approved" data-review-decision disabled class="rounded-chip border border-line px-3 py-1 text-accent">Approve version</button>
 					<a href={ data.Path() } class="px-2 py-1 text-accent">Refresh history and gates</a>

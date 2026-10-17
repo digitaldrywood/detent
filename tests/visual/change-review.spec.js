@@ -123,12 +123,45 @@ test('updated version rejects stale approval and resets viewed state', async ({ 
 });
 
 test('revocation clears source and prevents further reviews', async ({ page, request }) => {
+  let releaseScript, scriptRequested;
+  const scriptHeld = new Promise(resolve => { releaseScript = resolve; });
+  const requested = new Promise(resolve => { scriptRequested = resolve; });
+  await page.route('**/static/js/review.js', async route => {
+    scriptRequested();
+    await scriptHeld;
+    await route.continue();
+  }, { times: 1 });
+  const documentPosts = [];
+  page.on('request', request => {
+    if (request.isNavigationRequest() && request.method() === 'POST') documentPosts.push(request.url());
+  });
+  try {
+    await page.reload({ waitUntil: 'commit' });
+    await surface(page).getByRole('textbox', { name: 'Project access token', exact: true }).fill('fixture-member');
+    await requested;
+    await expect(surface(page).getByRole('button', { name: 'Load files', exact: true })).toBeDisabled();
+    await expect(surface(page).getByRole('button', { name: 'Post discussion' })).toBeDisabled();
+    await surface(page).getByRole('textbox', { name: 'Project access token', exact: true }).press('Enter');
+  } finally {
+    releaseScript();
+  }
+  await expect(surface(page).getByRole('button', { name: 'Load files', exact: true })).toBeEnabled();
+  await expect(surface(page).getByRole('button', { name: 'Post discussion' })).toBeEnabled();
+  await surface(page).getByRole('textbox', { name: 'Change discussion or review message' }).fill('Review controls are ready.');
+  await surface(page).getByRole('button', { name: 'Post discussion' }).click();
+  await expect(status(page)).toContainText('Discussion posted');
+  await page.goto(`${url}/?bundle=none`);
+  await expect(surface(page).getByRole('button', { name: 'Post discussion' })).toBeEnabled();
+  await expect(surface(page).getByRole('button', { name: 'Load files', exact: true })).toBeDisabled();
+  await expect(surface(page).getByRole('button', { name: 'Approve version' })).toBeDisabled();
+  await page.goto(url);
   await load(page);
   await request.post(`${url}/fixture/revoke`);
   await page.locator('[data-review-files]').getByRole('button', { name: /long.go/ }).click();
   await expect(status(page)).toContainText('Access revoked');
   await expect(page.locator('[data-review-diff]')).toBeEmpty();
   await expect(surface(page).getByRole('button', { name: 'Approve version' })).toBeDisabled();
+  expect(documentPosts).toEqual([]);
   await evidence(page, 'revoked-access');
 });
 
