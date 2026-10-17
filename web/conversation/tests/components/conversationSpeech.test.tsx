@@ -88,6 +88,24 @@ describe("conversation speech", () => {
     expect(said()).toHaveLength(5);
     await act(async () => { view.rerender(<Harness data={reply("An [unfinished link](https://example.test). Ready. ", true, { seq: 21, id: "next" })} />); });
     expect(said().slice(-2)).toEqual(["An unfinished link.", "Ready."]);
+    const containers = [
+      ["> ~~~js", "> console.log(123);", "> ~~~"],
+      ["> ```js", "> console.log(123);", "> ```"],
+      ["> > ~~~js", "> > console.log(123);", "> > ~~~"],
+      ["- ~~~js", "  console.log(123);", "  ~~~"],
+      ["> 10. ~~~js", ">     console.log(123);", ">     ~~~"],
+      ["~~~js", "> ~~~\nconsole.log(123);", "~~~"],
+      ["> ~~~js", "> > ~~~\n> console.log(123);", "> ~~~"],
+    ];
+    for (const [index, lines] of containers.entries()) {
+      const before = said();
+      const overrides = { seq: 22 + index, id: `block-${index}` };
+      const opening = `Read this.\n${lines[0]}\n${lines[1]}`;
+      await act(async () => { view.rerender(<Harness data={reply(opening, true, overrides)} />); });
+      expect(said()).toEqual([...before, "Read this."]);
+      await act(async () => { view.rerender(<Harness data={reply(`${opening}\n${lines[2]}\nSafe sentence.`, false, overrides)} />); });
+      expect(said()).toEqual([...before, "Read this.", "code block", "Safe sentence."]);
+    }
   });
 
   it("skips indented code and resumes new replies after Stop without disabling voice", async () => {
