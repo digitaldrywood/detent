@@ -830,12 +830,12 @@ func (l *LocalGit) createWorktree(ctx context.Context, path string, branch strin
 	if len(sourceHead) > 0 {
 		baseRef = sourceHead[0]
 	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	if fresh {
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return false, err
-		}
-		defer release()
 		if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
 			return false, err
 		}
@@ -1202,8 +1202,20 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 		if exists {
-			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
-				return err
+			if len(sourceHead) == 0 || sourceHead[0] == "HEAD" {
+				baseRef, err := l.newBranchBaseRef(ctx)
+				if err != nil {
+					return err
+				}
+				_, err = l.runGit(ctx, "merge-base", "--is-ancestor", branch, baseRef)
+				if err == nil {
+					_, err = l.runGit(ctx, "worktree", "add", "-B", branch, path, baseRef)
+					return err
+				}
+				var commandErr *CommandError
+				if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+					return err
+				}
 			}
 			_, err = l.runGit(ctx, "worktree", "add", path, branch)
 			return err
