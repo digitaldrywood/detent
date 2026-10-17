@@ -126,7 +126,7 @@ func WorkReadCatalog() []Definition {
 		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
 		{WorkConfig, "Read configured project lanes, priorities, available labels and effective Reporter filing templates by issue type.", ""},
 		{WorkItem, "Read a work item's detail and source freshness.", "reference"},
-		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
+		{WorkComments, "Read a bounded page of work-item comments with edit revisions. Native pages may return fewer than limit items to fit the byte budget; follow next_cursor until absent. Native projects require cursor paging; offset is supported only for GitHub snapshots. A single comment too large for a page requires work_bulk_export.", "reference cursor offset limit"},
 		{WorkPRComments, "Read a bounded page of the work item's linked PR discussion through the existing forge reader. The application selects the repository and PR; deployments without a PR discussion reader are unavailable.", "reference offset limit"},
 		{WorkHistory, "Read durable application history, identifying the tracker or workflow source; separate from recent_activity's live snapshot.", "reference cursor offset limit"},
 		{WorkVersion, "Read a saved native issue or comment revision.", "reference comment_id revision"},

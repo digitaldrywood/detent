@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +23,129 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestNativeCommentOffsetRefusal(t *testing.T) {
+	client := NativeClient{project: "prj_example"}
+	for _, offset := range []int{1, 100} {
+		t.Run(strconv.Itoa(offset), func(t *testing.T) {
+			arguments, err := json.Marshal(map[string]any{"project_id": "prj_example", "reference": "wi_example", "offset": offset, "limit": 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.readAgentTool(t.Context(), runner.AgentToolCall{Name: operatortool.WorkComments, Arguments: arguments}, time.Now())
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "returned next_cursor") {
+				t.Fatalf("native offset refusal lacks paging guidance: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeCommentReadFallback(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Oversized comment history")
+	h.claim(t, issue.ID)
+	item := tracker.NativeWorkItemID(issue.ID)
+	expected := make([]tracker.NativeComment, 5)
+	for index := range expected {
+		body := "readable comment"
+		if index > 0 {
+			body = strings.Repeat("\x00", (64<<10)-1) + strconv.Itoa(index)
+		}
+		comment, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected[index] = comment
+	}
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	tools, handler := execution.AgentTools()
+	if !slices.ContainsFunc(tools, func(tool runner.AgentTool) bool { return tool.Name == operatortool.WorkBulkExport }) {
+		t.Error("native runner lacks the advertised oversized-comment fallback")
+	}
+	call := func(name string, arguments map[string]any) (runner.AgentToolResult, error) {
+		t.Helper()
+		raw, err := json.Marshal(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return handler(t.Context(), runner.AgentToolCall{Name: name, Arguments: raw})
+	}
+	arguments := map[string]any{"project_id": h.project, "reference": item, "limit": 100}
+	result, err := call(operatortool.WorkComments, arguments)
+	var page operatortool.WorkReadResult[tracker.Page[tracker.NativeComment]]
+	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &page) != nil || len(page.Data.Items) != 1 || page.Data.NextCursor == "" || !reflect.DeepEqual(page.Data.Items[0], expected[0]) {
+		t.Fatalf("readable comment page failed: success=%t err=%v", result.Success, err)
+	}
+	arguments["cursor"] = page.Data.NextCursor
+	result, err = call(operatortool.WorkComments, arguments)
+	var refusal *operatortool.RequestError
+	var content operatortool.RequestError
+	if !errors.As(err, &refusal) || result.Success || json.Unmarshal([]byte(result.Content), &content) != nil || content.Code != "invalid_request" || !strings.Contains(content.Message, "single comment") || !strings.Contains(content.Message, operatortool.WorkBulkExport) {
+		t.Errorf("native runner lost oversized-comment guidance: content=%s err=%v", result.Content, err)
+	}
+	result, err = call(operatortool.WorkBulkExport, map[string]any{"project_id": h.project, "limit": 1})
+	var exported operatortool.WorkBulkExportPage
+	if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &exported) != nil || len(result.Content) <= maxResponseBytes || len(result.Content) > operatortool.WorkBulkExportMaxBytes || exported.ProjectID != string(h.project) || len(exported.Items) != 1 || !reflect.DeepEqual(exported.Items[0].Comments, expected) {
+		t.Fatalf("native oversized-comment fallback failed: success=%t bytes=%d err=%v", result.Success, len(result.Content), err)
+	}
+	t.Logf("recovered %d complete comments in %d export bytes", len(expected), len(result.Content))
+	for _, test := range []struct {
+		name string
+		want error
+	}{
+		{"foreign page", operatortool.ErrAccessDenied},
+		{"foreign item project", operatortool.ErrAccessDenied},
+		{"foreign item organization", operatortool.ErrAccessDenied},
+		{"over byte budget", operatortool.ErrReadUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := exported
+			page.Items = slices.Clone(exported.Items)
+			switch test.name {
+			case "foreign page":
+				page.ProjectID = "prj_foreign"
+			case "foreign item project":
+				page.Items[0].ProjectID = "prj_foreign"
+			case "foreign item organization":
+				page.Items[0].OrganizationID = "org_foreign"
+			}
+			payload, err := json.Marshal(page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "over byte budget" {
+				payload = append(payload, strings.Repeat(" ", operatortool.WorkBulkExportMaxBytes+1-len(payload))...)
+			}
+			client := execution.claim.source.client.client.httpClient
+			transport := client.Transport
+			client.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items/export") {
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+				}
+				return transport.RoundTrip(request)
+			})
+			t.Cleanup(func() { client.Transport = transport })
+			result, err := call(operatortool.WorkBulkExport, map[string]any{"project_id": h.project, "limit": 1})
+			if !errors.Is(err, test.want) || result.Success {
+				t.Fatalf("invalid export was accepted: success=%t err=%v", result.Success, err)
+			}
+		})
+	}
+	for _, name := range []string{operatortool.WorkComments, operatortool.WorkBulkExport} {
+		arguments := map[string]any{"project_id": "prj_foreign"}
+		if name == operatortool.WorkComments {
+			arguments["reference"] = item
+		}
+		result, err := call(name, arguments)
+		if !errors.Is(err, operatortool.ErrAccessDenied) || result.Success {
+			t.Fatalf("%s crossed project scope: %v", name, err)
+		}
+	}
+}
 
 func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if testing.Short() {
@@ -174,8 +300,8 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		t.Fatal("native execution omitted its read tools")
 	}
 	tools, handler := source.AgentTools()
-	if len(tools) != 13 {
-		t.Fatalf("native tools = %d, want 13", len(tools))
+	if len(tools) != 14 {
+		t.Fatalf("native tools = %d, want 14", len(tools))
 	}
 	diagnosticArgs, err := json.Marshal(map[string]any{"project_id": h.project, "runner_id": file.Identity.RunnerID, "issue_id": issue.ID})
 	if err != nil {
