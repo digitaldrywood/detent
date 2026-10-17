@@ -174,6 +174,9 @@ func (s *Service) recordCloudAttachment(c echo.Context) error {
 			return nil, err
 		}
 		record.ProjectID, record.Uploader, record.CreatedAt = string(scope.project), scope.credential.ID, now
+		if scope.credential.HostedRole == "reporter" {
+			record.Uploader = scope.actor().PrincipalID
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, record.ID, scope.organization, scope.project, record.Uploader, record.Name, record.ContentType, record.Size, record.SHA256, record.Width, record.Height, formatHubTime(now)); err != nil {
 			return nil, err
 		}
@@ -241,7 +244,39 @@ func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeS
 	if err != nil {
 		return record, err
 	}
-	rows, err := query.QueryContext(ctx, "SELECT work_item_id,comment_id FROM attachment_references WHERE attachment_id=? ORDER BY work_item_id,comment_id", record.ID)
+	if scope.credential.HostedRole == "reporter" {
+		visibility, args := scope.issueVisibilitySQL("i")
+		args = append([]any{record.ID, scope.organization, scope.project}, args...)
+		var visible bool
+		if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachment_references r JOIN issues i ON i.native_id=r.work_item_id WHERE r.attachment_id=? AND i.organization_id=? AND i.project_id=? AND ("+visibility+"))", args...).Scan(&visible); err != nil {
+			return attachment.Metadata{}, err
+		}
+		ownsUpload := record.Uploader == scope.actor().PrincipalID || record.Uploader == scope.credential.ID
+		if !visible && !ownsUpload {
+			if err := query.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM api_tokens t JOIN hosted_members m ON m.user_id=t.hosted_user_id AND m.membership_id=t.hosted_membership_id WHERE t.id=? AND t.hosted_organization_id=? AND t.key_kind='personal' AND m.principal_id=?)", record.Uploader, scope.organization, scope.actor().PrincipalID).Scan(&ownsUpload); err != nil {
+				return attachment.Metadata{}, err
+			}
+		}
+		if !visible && !ownsUpload {
+			return attachment.Metadata{}, nativeNotFound()
+		}
+		if record.WorkItemID != "" {
+			if err := requireReporterItem(ctx, query, scope, record.WorkItemID); errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+				record.WorkItemID, record.CommentID = "", ""
+			} else if err != nil {
+				return attachment.Metadata{}, err
+			}
+		}
+	}
+	references := "SELECT work_item_id,comment_id FROM attachment_references WHERE attachment_id=?"
+	args := []any{record.ID}
+	if scope.credential.HostedRole == "reporter" {
+		visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+		references += " AND work_item_id IN (SELECT i.native_id FROM issues i WHERE i.organization_id=? AND i.project_id=? AND (" + visibility + "))"
+		args = append(args, scope.organization, scope.project)
+		args = append(args, visibilityArgs...)
+	}
+	rows, err := query.QueryContext(ctx, references+" ORDER BY work_item_id,comment_id", args...)
 	if err != nil {
 		return record, err
 	}
@@ -322,7 +357,16 @@ func (s *Service) referenceCloudAttachmentCommand(ctx context.Context, scope nat
 	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return err
 	}
-	if _, _, err := readNativeIssue(ctx, tx, scope, input.WorkItemID); err != nil {
+	issue, _, err := readNativeIssue(ctx, tx, scope, input.WorkItemID)
+	if err != nil {
+		return err
+	}
+	if input.CommentID == "" {
+		if err := requireReporterTriage(scope, issue); err != nil {
+			return err
+		}
+	}
+	if _, err := readCloudAttachment(ctx, tx, scope, id); err != nil {
 		return err
 	}
 	if input.CommentID != "" {
@@ -413,6 +457,11 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 
 func bindCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, item, comment, body string) error {
 	for _, ref := range attachment.References(body, string(scope.organization), string(scope.project)) {
+		if scope.credential.HostedRole == "reporter" {
+			if _, err := readCloudAttachment(ctx, tx, scope, ref.ID); err != nil {
+				return err
+			}
+		}
 		result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, item, comment, scope.organization, scope.project, ref.ID)
 		if err != nil {
 			return err

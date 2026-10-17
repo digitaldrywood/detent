@@ -680,16 +680,17 @@ tracker:
     - {name: Cancelled, role: terminal}
 ```
 
-For this transition release, `observed_states`, `active_states`, and
-`terminal_states` are accepted with a migration warning. Their old order is
-preserved: observed, active, then terminal. Mixing `lanes` with any old key,
-even an empty list, is an error. The following release will reject the old keys.
+`tracker.observed_states`, `tracker.active_states`, and
+`tracker.terminal_states` are rejected in `detent.yaml`, legacy `WORKFLOW.md`
+frontmatter, and Cloud Workflow settings, including empty and null values.
+Use `tracker.lanes` for all new and updated workflow configuration.
 Run `detent config migrate detent.yaml` (or `detent config migrate WORKFLOW.md`
 for legacy frontmatter) to rewrite the file in place. The command preserves
 lane semantics, comments outside the replaced lists, and the Markdown prompt;
 running it again leaves the file unchanged. An explicit local `lanes` list
 replaces the shared lane list in full. Cloud-authored Markdown is
-migrated automatically by the Hub, preserving each project's stored lane order.
+migrated automatically by the Hub, preserving each project's stored lane order
+and approval provenance. Historical policies and approvals remain readable.
 
 `dependency_auto_unblock`, `blocked_recovery`, and `blocker_auto_promote` are
 opt-in tracker automations: the first advances work whose dependencies cleared,

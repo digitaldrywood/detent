@@ -77,6 +77,11 @@ WHERE organization_id = ? AND project_id = ? AND change_id = ? ORDER BY work_ite
 	var sources []tracker.ExternalReference
 	seen := make(map[string]bool)
 	for _, id := range ids {
+		if err := requireReporterItem(ctx, query, scope, id); errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
 		references, err := readNativeSourceReferences(ctx, query, scope, id)
 		if err != nil {
 			return nil, err
