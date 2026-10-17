@@ -57,6 +57,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 		return target, fmt.Errorf("%w: no version is published", runner.ErrLandingNotReviewed)
 	}
 	if detail.Summary.Status != "reviewed" {
+		target.ReviewPending = true
 		return target, fmt.Errorf("%w: the current version is %s", runner.ErrLandingNotReviewed, detail.Summary.Status)
 	}
 	return target, nil
