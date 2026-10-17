@@ -1,8 +1,11 @@
 package runtimeoutput
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -50,6 +53,36 @@ func Truncate(value string, maxBytes int) Text {
 	buffer := NewBuffer(Policy{MaxBytes: maxBytes})
 	buffer.Append(value)
 	return buffer.Text()
+}
+
+var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:panic:|fatal error:|--- FAIL:|FAIL(?:[\t ]|$)|WARNING: DATA RACE|AssertionError:)`)
+
+// Diagnostic preserves the first failure and the command tail within a byte
+// budget. Both command capture and public receipts use it so an earlier bound
+// cannot discard the failure before a smaller public projection sees it.
+func Diagnostic(value string, maxBytes int) (string, bool) {
+	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return value, false
+	}
+	const earlier = "[earlier output truncated]\n"
+	const omitted = "\n[intervening output truncated]\n"
+	if maxBytes <= len(earlier)+len(omitted) {
+		return validSuffix(value, maxBytes), true
+	}
+	prefix := earlier
+	if failure := diagnosticFailure.FindStringIndex(value); failure != nil {
+		start := failure[0]
+		if start == 0 {
+			prefix = ""
+		}
+		if len(value)-start <= maxBytes-len(prefix) {
+			return prefix + value[start:], true
+		}
+		prefixLimit := (maxBytes - len(prefix) - len(omitted)) / 2
+		prefix += validPrefix(value[start:], prefixLimit) + omitted
+	}
+	return prefix + validSuffix(value, maxBytes-len(prefix)), true
 }
 
 func (p Policy) Apply(value string) Text {
