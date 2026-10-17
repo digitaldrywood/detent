@@ -1,10 +1,14 @@
 package hubserver
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
 )
 
 func TestSavedWorkViews(t *testing.T) {
@@ -145,5 +149,194 @@ func TestSavedWorkViewValidation(t *testing.T) {
 			test.change(&v)
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, "/api/v2/organizations/org_security/work-views", v), http.StatusUnprocessableEntity)
 		})
+	}
+}
+
+func TestSavedWorkViewBounds(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		large bool
+	}{{"count page", false}, {"byte page", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newHostedSecurityFixture(t)
+			alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
+			bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
+			base := "/api/v2/organizations/org_security/work-views"
+			view := savedWorkView{Name: "View", Scope: "organization", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
+			if test.large {
+				view.State.Label = make([]string, 24)
+				for i := range view.State.Label {
+					view.State.Label[i] = strings.Repeat("x", 512)
+				}
+			}
+			want := map[string]bool{}
+			for range 26 {
+				response := f.request(t, alice, http.MethodPost, base, view)
+				requireNativeStatus(t, response, http.StatusOK)
+				var created savedWorkView
+				decodeHubResponse(t, response, &created)
+				want[created.ID] = true
+			}
+			seen := map[string]bool{}
+			cursor := ""
+			for pageNumber := range 27 {
+				response := f.request(t, bob, http.MethodGet, base+cursor, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				if response.Body.Len() > 256<<10 {
+					t.Fatalf("page is %d bytes", response.Body.Len())
+				}
+				var page struct {
+					Views      []savedWorkView `json:"views"`
+					NextCursor string          `json:"next_cursor"`
+				}
+				decodeHubResponse(t, response, &page)
+				if len(page.Views) == 0 || len(page.Views) > 25 {
+					t.Fatalf("page has %d views", len(page.Views))
+				}
+				if pageNumber == 0 && (page.NextCursor == "" || (test.large && len(page.Views) >= 25)) {
+					t.Fatalf("page was not bounded: views=%d cursor=%q", len(page.Views), page.NextCursor)
+				}
+				for _, got := range page.Views {
+					if !want[got.ID] || seen[got.ID] {
+						t.Fatalf("unexpected or duplicate view %s", got.ID)
+					}
+					labels := view.State.Label
+					if labels == nil {
+						labels = []string{}
+					}
+					if got.CanEdit || !reflect.DeepEqual(got.State.Label, labels) {
+						t.Fatal("page changed ownership or selections")
+					}
+					seen[got.ID] = true
+				}
+				if page.NextCursor == "" {
+					break
+				}
+				cursor = "?cursor=" + url.QueryEscape(page.NextCursor)
+			}
+			if len(seen) != len(want) {
+				t.Fatalf("read %d of %d views", len(seen), len(want))
+			}
+			for _, query := range []string{"?cursor=a&cursor=b", "?limit=1000", "?cursor=" + strings.Repeat("x", 101)} {
+				requireNativeStatus(t, f.request(t, bob, http.MethodGet, base+query, nil), http.StatusUnprocessableEntity)
+			}
+		})
+	}
+	t.Run("payload", func(t *testing.T) {
+		t.Parallel()
+		f := newHostedSecurityFixture(t)
+		alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
+		for _, test := range []struct {
+			name  string
+			state savedWorkState
+		}{
+			{"selections", savedWorkState{Label: func() []string {
+				values := make([]string, 256)
+				for i := range values {
+					values[i] = strings.Repeat("x", 512)
+				}
+				return values
+			}()}},
+			{"escaped search", savedWorkState{Q: strings.Repeat("\x01", 8192)}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				state := test.state
+				state.View = "board"
+				state.Tab = "active"
+				state.Sort = "default"
+				state.CompletedWindow = "24h"
+				response := f.request(t, alice, http.MethodPost, "/api/v2/organizations/org_security/work-views", savedWorkView{Name: "View", Scope: "organization", State: state})
+				if response.Code != http.StatusUnprocessableEntity {
+					t.Fatalf("oversized view status=%d, want 422", response.Code)
+				}
+			})
+		}
+	})
+}
+
+func TestSavedWorkViewQuotas(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	users := make([]hostedSecurityUser, 5)
+	for i := range users {
+		name := fmt.Sprintf("member-%d", i)
+		users[i] = f.user(t, name, "member", name+"@example.test", "read", "")
+	}
+	base := "/api/v2/organizations/org_security/work-views"
+	view := savedWorkView{Name: "View", Scope: "organization", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
+	first := make([]savedWorkView, 4)
+	for i := range 4 {
+		for j := range 50 {
+			response := f.request(t, users[i], http.MethodPost, base, view)
+			requireNativeStatus(t, response, http.StatusOK)
+			if j == 0 {
+				decodeHubResponse(t, response, &first[i])
+			}
+		}
+		requireNativeStatus(t, f.request(t, users[i], http.MethodPost, base, view), http.StatusUnprocessableEntity)
+		requireNativeStatus(t, f.request(t, users[i], http.MethodGet, base+"/"+first[i].ID, nil), http.StatusOK)
+	}
+	requireNativeStatus(t, f.request(t, users[4], http.MethodPost, base, view), http.StatusUnprocessableEntity)
+	first[1].Name = "Renamed at capacity"
+	requireNativeStatus(t, f.request(t, users[1], http.MethodPut, base+"/"+first[1].ID, first[1]), http.StatusOK)
+	requireNativeStatus(t, f.request(t, users[0], http.MethodDelete, base+"/"+first[0].ID, nil), http.StatusNoContent)
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	for _, user := range []hostedSecurityUser{users[0], users[4]} {
+		go func() {
+			<-start
+			statuses <- f.request(t, user, http.MethodPost, base, view).Code
+		}()
+	}
+	close(start)
+	success := 0
+	for range 2 {
+		switch status := <-statuses; status {
+		case http.StatusOK:
+			success++
+		case http.StatusConflict, http.StatusUnprocessableEntity:
+		default:
+			t.Fatalf("concurrent create status=%d", status)
+		}
+	}
+	if success != 1 {
+		t.Fatalf("last slot admitted %d creates", success)
+	}
+	requireNativeStatus(t, f.request(t, users[1], http.MethodDelete, base+"/"+first[1].ID, nil), http.StatusNoContent)
+	requireNativeStatus(t, f.request(t, users[4], http.MethodPost, base, view), http.StatusOK)
+	requireNativeStatus(t, f.request(t, users[2], http.MethodGet, base+"/"+first[2].ID, nil), http.StatusOK)
+}
+
+func TestSavedWorkViewStorageScopes(t *testing.T) {
+	t.Parallel()
+	service := openTestService(t, Config{DatabasePath: hostedTestDatabasePath(t), GitHubDisabled: true})
+	for _, user := range []string{"alice", "bob"} {
+		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, "token_"+user, user, apikey.HashToken("token_"+user), "", "operator", "now", "now"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_members(user_id,email,membership_id,role,principal_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, user, user+"@example.test", "membership_"+user, "member", "token_"+user, "now", "now"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, org := range []string{"org_first", "org_second"} {
+		if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO organizations(id,name,created_at) VALUES(?,?,?)`, org, org, "now"); err != nil {
+			t.Fatal(err)
+		}
+		for index, user := range []string{"alice", "bob"} {
+			ownerSlot, orgSlot, err := service.savedWorkViewSlots(t.Context(), org, user)
+			if err != nil || ownerSlot != 0 || orgSlot != index {
+				t.Fatalf("%s/%s slots: owner=%d organization=%d err=%v", org, user, ownerSlot, orgSlot, err)
+			}
+			id := "view_" + org + "_" + user
+			if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_work_views(id,organization_id,owner_id,name,scope,layout,tab,search,sort,completed_window,archived,created_by,all_lanes,owner_slot,organization_slot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, org, user, id, "personal", "board", "active", "", "default", "24h", false, "", true, ownerSlot, orgSlot); err != nil {
+				t.Fatal(err)
+			}
+			view, err := service.readSavedWorkView(t.Context(), org, user, id)
+			if err != nil || !view.CanEdit || view.Name != id {
+				t.Fatalf("view %s=%+v err=%v", id, view, err)
+			}
+		}
 	}
 }

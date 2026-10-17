@@ -64,6 +64,16 @@ safe to repeat. Explicit URL parameters override the saved preference without
 writing it; user changes save after a debounce. Browser storage caches only
 confirmed Hub values under an account, organization, and view scope key.
 
+## Saved Work views
+
+`/api/v2/organizations/{organization}/work-views` stores personal or shared Work
+views. The collection returns `views` and an optional `next_cursor`; send that
+cursor as `?cursor=...` to read the next page. Pages contain at most 25 views
+and 256 KiB of JSON. Each saved view accepts at most 16 KiB of encoded input.
+An owner can store 50 views per organization, and an organization can store 200.
+Updates preserve that allocation; deleting a view releases it. Concurrent
+creates competing for the same free allocation can return a conflict.
+
 ## Release notes
 
 Hosted sessions expose `GET /api/v2/organizations/{organization}/release-notes`
