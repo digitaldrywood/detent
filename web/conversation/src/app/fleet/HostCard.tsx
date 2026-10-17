@@ -33,10 +33,10 @@ export function HostCard({
   const updateNeedsHuman = runner.update?.status === "refused" || runner.update?.status === "uncertain";
   const legacyReinstall = !!runner.claim_refusal_reason && (runner.update?.status === "unavailable" || /^v?0\.117\.(?:[0-9]|[1-4][0-9]|50)$/.test(runner.version ?? ""));
   const version = runner.has_heartbeat === false ? undefined : runner.version?.trim();
-  const offline = runner.connection_health === "offline" || runner.health === "offline" || runner.health === "stale";
+  const lastReported = ["offline", "stale", "revoked", "expired"].some((health) => health === runner.connection_health || health === runner.health);
   const updateStatus = runner.update?.desired && runner.update.status !== "running"
     ? runner.update.status === "draining"
-      ? `waiting for ${runner.leases.length} ${runner.leases.length === 1 ? "job" : "jobs"} to finish`
+      ? "Draining work or installing"
       : runnerUpdateStatusLabel(runner.update.status)
     : undefined;
   return (
@@ -50,7 +50,7 @@ export function HostCard({
         <RunnerStatusDot runner={runner} className="mt-1.5" />
         <div className="min-w-0 space-y-1">
           <h3 className="break-words text-sm font-medium">{runner.display_name}</h3>
-          <p className="break-words text-xs">{version ? offline ? <>Last reported {version} · <time dateTime={runner.last_heartbeat_at} title={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time></> : `Running ${version}` : "Version unknown"}</p>
+          <p className="break-words text-xs">{version ? lastReported ? <>Last reported {version} · <time dateTime={runner.last_heartbeat_at} title={runner.last_heartbeat_at}>{formatRelativeTime(runner.last_heartbeat_at, now)}</time></> : `Running ${version}` : "Version unknown"}</p>
           {updateStatus ? <p className="break-words text-xs text-muted-foreground">Update to {runner.update?.desired?.version} · {updateStatus}</p> : null}
           {updateNeedsHuman ? <p className="text-xs text-warning-foreground">Needs human: reinstall the signed release with <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : legacyReinstall ? <p className="text-xs text-warning-foreground">One-time manual reinstall required to enable heartbeat updates: <code className="break-all">curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh</code>.</p> : null}
         </div>
