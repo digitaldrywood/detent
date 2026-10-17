@@ -85,6 +85,90 @@ defaults to false and includes connections to other localhost services as well
 as temporary test servers; the sandbox tier and host-service grants retain
 their existing owners.
 
+## ChatGPT and Claude custom connectors (Detent Cloud)
+
+Use `https://cloud.detent.build/mcp` with OAuth. No API key, custom header,
+client ID or client secret is needed. Detent uses dynamic client registration
+and the authorization code flow with S256 PKCE. Your normal Cloud sign-in,
+workspace membership, role, project grants and organization key policy apply.
+A reporter can file issues and use the same tools as with a personal key.
+
+Registration returns a sealed client ID without storing an unused client.
+Pending authorization lives in one encrypted browser cookie, expires after ten
+minutes, and creates no server rows. Registration bodies are limited to 64 KiB,
+with at most 20 redirect URIs and a 2,048-character client ID; the pending
+cookie is limited to 3,800 characters. Only authenticated consent stores the
+client, grant and single-use authorization code. Anonymous registration and
+pending requests therefore need no database quota or cleanup sweep.
+Registration and authorization share the existing API token-bucket limiter:
+120 requests per minute per client IP with a burst of 30. Excess requests get
+HTTP 429 with `Retry-After: 60`; tokens refill over time. Only the loopback TLS
+proxy is trusted to append `X-Forwarded-For`; client-supplied prefixes cannot
+change the caller's quota. This uses the same limiter implementation as API
+key authentication, without adding a separate throttling or cleanup mechanism.
+
+### ChatGPT
+
+1. Open ChatGPT Plugins, select the plus button, then **Add custom MCP server**.
+   In older interfaces, enable developer mode and use Settings → Apps (or
+   Connectors). Your plan and workspace policy must permit custom servers.
+2. Enter a name and `https://cloud.detent.build/mcp`, and select OAuth and
+   dynamic client registration if prompted. Leave client credentials empty.
+3. Connect, sign in to Detent with your usual WorkOS login, choose the workspace
+   to grant, review the client and return address, and select **Connect assistant**.
+4. In a conversation, enable the connector, discover its tools, select your
+   organization and project, and ask it to file an issue. Confirm the issue is
+   attributed to your account.
+
+See [OpenAI's connection steps](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+and [MCP authentication guide](https://developers.openai.com/plugins/build/auth).
+The published callbacks are
+`https://chatgpt.com/connector_platform_oauth_redirect` for issuer-aware servers
+and `https://chatgpt.com/connector/oauth/{callback_id}` for callback-specific
+connections. Detent returns the issuer on authorization responses.
+
+### Claude (claude.ai or Claude Desktop)
+
+1. Open Customize → Connectors → Add → Add custom connector (Organization
+   settings → Connectors for workspace owners). Enter a name and
+   `https://cloud.detent.build/mcp` as the remote MCP URL, then continue.
+2. Choose **Sign in now** for authentication and **Register automatically**
+   for the OAuth client when those choices are shown, then add the connector.
+   No client ID or secret is required.
+3. Sign in to Detent, choose the workspace, review the client and return
+   address, and select **Connect assistant**.
+4. Enable the connector in a conversation, discover its tools and select your
+   organization and project before filing an issue. Confirm your account is
+   recorded as the author.
+
+See [Claude's custom connector setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+and [authentication requirements](https://claude.com/docs/connectors/building/authentication).
+Claude's hosted connector callback is `https://claude.ai/api/mcp/auth_callback`,
+including connections from Claude Desktop.
+
+### Grant lifetime and disconnecting
+
+An access token lasts one hour. Refresh tokens rotate on each use and expire
+30 days after issuance. Reusing a consumed refresh token revokes the grant.
+Rotation replaces the grant's single stored refresh credential. Sealed token
+identity and expiry preserve replay detection without retaining token history;
+expired tokens are refused without revoking a newer valid credential.
+Revoking a grant makes its next MCP request return 401, including requests
+using an existing `Mcp-Session-Id`.
+
+Signed-in owners can `GET /api/cloud/account/oauth-grants` and
+`DELETE /api/cloud/account/oauth-grants/GRANT_ID` (same-origin browser request).
+Personal-key and OAuth MCP clients can use `list_oauth_grants` and
+`revoke_oauth_grant` to list or revoke their own grants (revocation requires
+write scope). Listings include the client, workspace, connection time, last use
+and revocation time, never tokens.
+Pass a returned `next_cursor` as `cursor` to retrieve subsequent pages.
+Organizations that block personal keys or require administrator approval also
+refuse new assistant grants; ask an organization administrator about its policy.
+
+Bearer API keys remain supported for Claude Code and Codex, including their
+existing expiry, rotation, revocation and access restrictions.
+
 ## Account and organization service keys
 
 Personal keys are user-owned and stored in the shared entry authentication store.
@@ -426,7 +510,7 @@ for both lifecycle examples. `tools/list` returns the complete current catalog
 by default; optional `_meta["detent/toolsets"]` selects groups. Call the
 discovered `work_list` with `{"project_id":"YOUR_GRANTED_PROJECT_ID","limit":20}`.
 Verify the result's organization/project. No browser state or OAuth login is
-required. GET/SSE returns 405; clients that require SSE/OAuth or cannot send
+required. GET/SSE returns 405; self-hosted clients that require SSE or cannot send
 private bearer headers are unsupported. Report this explicitly and stop.
 An optional GET receiving 405 is supported by the tested SDK.
 
@@ -499,7 +583,8 @@ A concise agent handoff is:
 > using the same expiring scoped key from Settings → API & MCP. Ask me to store
 > it privately as DETENT_API_KEY; never include it in conversation, URLs, logs,
 > screenshots, diagnostics or committed configuration. Use bearer JSON POSTs
-> with no cookies, CSRF or OAuth. If your client cannot do this, say it is
+> with no cookies or CSRF. For Cloud OAuth clients, use the connector steps above.
+> If your self-hosted client cannot do this, say it is
 > unsupported and stop. Use the lifecycle supported by your client, discover
 > tools/list and call work_list for a project granted to that key. Verify the context
 > and report success without secrets. Use local client permissions for sensitive-operation confirmation;

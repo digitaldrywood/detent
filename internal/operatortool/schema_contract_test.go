@@ -55,6 +55,8 @@ func TestCatalogDecoderContract(t *testing.T) {
 		StopRun:               reflect.TypeFor[StopRunArguments](),
 		ActionResult:          reflect.TypeFor[ActionResultArguments](),
 		ConnectionInfo:        reflect.TypeFor[struct{}](),
+		OAuthGrantList:        reflect.TypeFor[OAuthGrantListArguments](),
+		OAuthGrantRevoke:      reflect.TypeFor[OAuthGrantArguments](),
 		AppBootstrapPayload:   reflect.TypeFor[struct{}](),
 		AppUpdates:            reflect.TypeFor[struct{}](),
 		ReleaseNotes:          reflect.TypeFor[ReleaseNotesArguments](),

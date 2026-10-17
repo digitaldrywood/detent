@@ -49,29 +49,55 @@ templ hostedEntryPage(data HostedPageData) {
 					if data.Notice != "" {
 						<p class="entry-message" role="status">{ data.Notice }</p>
 					}
-					if data.Mode == "unavailable" {
+					if data.Mode == "oauth" {
+						@hostedOAuthConsent(data)
+					} else if data.Mode == "unavailable" {
 						<h2>Please try again shortly</h2>
 						<p class="entry-message">A temporary service problem prevented us from opening your organization.</p>
 					} else {
 						<h2>This page is unavailable to your account</h2>
 						<p class="entry-message">Your organization or project access may have changed. Sign in again or return to your organization to check your current access.</p>
 					}
-					<div class="entry-actions">
-						if data.Mode == "unavailable" {
-							<a href={ templ.URL(data.RetryURL) } class="entry-button entry-primary">Try again</a>
-						} else {
-							<a href={ hostedURL(data, "/organization") } class="entry-button entry-primary">Return to organization</a>
-							<a href={ hostedSignInURL(data) } class="entry-button">Sign in again</a>
-						}
-						if data.Email != "" {
-							<form method="post" action={ hostedURL(data, "/logout") }>
-								@hostedCSRF(data.CSRF)
-								<button type="submit" class="entry-button">Sign out</button>
-							</form>
-						}
-					</div>
+					if data.Mode != "oauth" {
+						<div class="entry-actions">
+							if data.Mode == "unavailable" {
+								<a href={ templ.URL(data.RetryURL) } class="entry-button entry-primary">Try again</a>
+							} else {
+								<a href={ hostedURL(data, "/organization") } class="entry-button entry-primary">Return to organization</a>
+								<a href={ hostedSignInURL(data) } class="entry-button">Sign in again</a>
+							}
+							if data.Email != "" {
+								<form method="post" action={ hostedURL(data, "/logout") }>
+									@hostedCSRF(data.CSRF)
+									<button type="submit" class="entry-button">Sign out</button>
+								</form>
+							}
+						</div>
+					}
 				</section>
 			</main>
 		</body>
 	</html>
+}
+
+templ hostedOAuthConsent(data HostedPageData) {
+	<p><strong>{ data.OAuthClient }</strong> wants to connect to your Detent account.</p>
+	<p>Choose the workspace this assistant can access. It can read and act with your current role and project permissions, including filing issues as you. You can revoke access at any time.</p>
+	<p class="entry-message">Client names are supplied by the assistant. Continue only if you started this connection. Return address: { data.OAuthRedirect }</p>
+	<form method="post" action={ templ.URL("/oauth/consent/" + data.OAuthRequest) }>
+		@hostedCSRF(data.CSRF)
+		<fieldset class="entry-workspaces">
+			<legend>Workspace</legend>
+			for _, organization := range data.Organizations {
+				<label><input type="radio" name="organization" value={ organization.ID } required/> { organization.Name }</label>
+			}
+		</fieldset>
+		if len(data.Organizations) == 0 {
+			<p role="status">You have no available workspaces. Join a workspace before connecting an assistant.</p>
+		}
+		<div class="entry-actions">
+			<button type="submit" name="decision" value="allow" class="entry-button entry-primary" disabled?={ len(data.Organizations) == 0 }>Connect assistant</button>
+			<button type="submit" name="decision" value="deny" class="entry-button" formnovalidate>Cancel</button>
+		</div>
+	</form>
 }

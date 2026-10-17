@@ -303,6 +303,7 @@ func (s *Service) routes() {
 	s.registerAdministration()
 	s.registerAccessKeys()
 	s.registerKeyMCP()
+	s.registerOAuth()
 	e := s.echo
 	e.Pre(s.boundary)
 	e.GET("/static/*", echo.WrapHandler(http.StripPrefix("/static/", staticasset.New(detent.StaticFS()))))
