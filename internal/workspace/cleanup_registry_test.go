@@ -153,6 +153,7 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 		name           string
 		active         bool
 		activeProcess  bool
+		alias          bool
 		registered     bool
 		unverified     bool
 		wantRemoved    int
@@ -163,6 +164,7 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 		{name: "removes owned residual", wantRemoved: 1},
 		{name: "retains unverified residual", unverified: true, wantExists: true},
 		{name: "skips active issue", active: true, wantActive: 1, wantExists: true},
+		{name: "skips native active alias", active: true, alias: true, wantActive: 1, wantExists: true},
 		{name: "skips active process", activeProcess: true, wantActive: 1, wantExists: true},
 		{name: "removes safe registered worktree", registered: true, wantRemoved: 1},
 	}
@@ -178,6 +180,9 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 				t.Fatalf("NewLocalGit() error = %v", err)
 			}
 			issue := Issue{ProjectID: "detent", ID: "2140", Identifier: "digitaldrywood/detent#2140"}
+			if tt.alias {
+				issue = Issue{ProjectID: "old-alias", ID: "wi_active", Identifier: "prj_example#1"}
+			}
 			var info Info
 			if tt.registered {
 				info, err = backend.Create(t.Context(), issue)
@@ -189,6 +194,26 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 				}
 			} else {
 				info = strandCleanupWorkspace(t, backend, source, issue)
+				if tt.alias {
+					legacy := legacyIssueKey(issue)
+					old := info.Path
+					info.Key, info.Path, info.Branch = legacy, filepath.Join(root, legacy), autoBranchPrefix+strings.ToLower(legacy)
+					if err := os.Rename(old, info.Path); err != nil {
+						t.Fatal(err)
+					}
+					relative := cleanupOwnershipRecordRelativePath(old)
+					record, err := backend.readOwnershipRecord(relative)
+					if err != nil {
+						t.Fatal(err)
+					}
+					record.Key, record.Path, record.Branch = info.Key, info.Path, info.Branch
+					if err := os.Remove(filepath.Join(root, relative)); err != nil {
+						t.Fatal(err)
+					}
+					if err := backend.writeOwnershipRecord(record); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if tt.unverified {
 				record, err := backend.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
@@ -209,7 +234,11 @@ func TestLocalGitReconcileResiduals(t *testing.T) {
 			}
 			var active []Issue
 			if tt.active {
-				active = []Issue{issue}
+				activeIssue := issue
+				if tt.alias {
+					activeIssue.ProjectID = "new-alias"
+				}
+				active = []Issue{activeIssue}
 			}
 
 			result, err := backend.ReconcileResiduals(t.Context(), active)
