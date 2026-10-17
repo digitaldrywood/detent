@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -10,9 +11,24 @@ import (
 	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+const (
+	maxSavedWorkViewBytes            = 16 << 10
+	maxSavedWorkViewsPerOwner        = 50
+	maxSavedWorkViewsPerOrganization = 200
+	maxSavedWorkViewsPageSize        = 25
+	maxSavedWorkViewsPageBytes       = 256 << 10
+)
+
+type savedWorkViewsPage struct {
+	Views      []savedWorkView `json:"views"`
+	NextCursor string          `json:"next_cursor,omitempty"`
+}
 
 type savedWorkState struct {
 	View            string   `json:"view"`
@@ -67,19 +83,45 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 		if id != "" {
 			return c.JSON(http.StatusOK, current)
 		}
-		ids, err := s.savedWorkViewIDs(readCtx, org, user)
+		params := c.QueryParams()
+		for key, values := range params {
+			if key != "cursor" || len(values) != 1 || len(values[0]) > 100 {
+				return s.nativeAPIError(c, nativeInvalid("Invalid saved views cursor"))
+			}
+		}
+		ids, err := s.savedWorkViewIDs(readCtx, org, user, params.Get("cursor"))
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		views := []savedWorkView{}
+		page := savedWorkViewsPage{Views: []savedWorkView{}}
 		for _, key := range ids {
+			if len(page.Views) == maxSavedWorkViewsPageSize {
+				page.NextCursor = page.Views[len(page.Views)-1].ID
+				break
+			}
 			v, err := s.readSavedWorkView(readCtx, org, user, key)
 			if err != nil {
 				return s.nativeAPIError(c, err)
 			}
-			views = append(views, v)
+			candidate := savedWorkViewsPage{Views: append(page.Views, v), NextCursor: key}
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			if len(encoded)+1 > maxSavedWorkViewsPageBytes {
+				if len(page.Views) == 0 {
+					return s.nativeAPIError(c, nativeInvalid("Saved view exceeds the page size limit"))
+				}
+				page.NextCursor = page.Views[len(page.Views)-1].ID
+				break
+			}
+			page.Views = candidate.Views
 		}
-		return c.JSON(http.StatusOK, map[string]any{"views": views})
+		encoded, err := json.Marshal(page)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSONBlob(http.StatusOK, encoded)
 	}
 	if strings.HasSuffix(c.Path(), "/favorite") {
 		var value struct {
@@ -119,8 +161,18 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
+	ownerSlot, organizationSlot := 0, 0
 	if id == "" {
+		ownerSlot, organizationSlot, err = s.savedWorkViewSlots(readCtx, org, user)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 		id = newNativeID("view")
+	} else {
+		err = s.database.reader.QueryRowContext(readCtx, `SELECT owner_slot,organization_slot FROM hosted_work_views WHERE id=? AND organization_id=? AND owner_id=?`, id, org, user).Scan(&ownerSlot, &organizationSlot)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	v.ID = id
 	v.OwnerID = user
@@ -129,7 +181,13 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO hosted_work_views (id,organization_id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window, archived, created_by,all_lanes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,scope=excluded.scope,project_id=excluded.project_id,layout=excluded.layout,tab=excluded.tab,search=excluded.search,sort=excluded.sort,completed_window=excluded.completed_window,archived=excluded.archived,created_by=excluded.created_by,all_lanes=excluded.all_lanes`, id, org, user, v.Name, v.Scope, v.ProjectID, v.State.View, v.State.Tab, v.State.Q, v.State.Sort, v.State.CompletedWindow, v.State.Archived, v.State.CreatedBy, v.State.Lanes == nil)
+	_, err = tx.ExecContext(ctx, `INSERT INTO hosted_work_views (id,organization_id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window, archived, created_by,all_lanes,owner_slot,organization_slot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,scope=excluded.scope,project_id=excluded.project_id,layout=excluded.layout,tab=excluded.tab,search=excluded.search,sort=excluded.sort,completed_window=excluded.completed_window,archived=excluded.archived,created_by=excluded.created_by,all_lanes=excluded.all_lanes`, id, org, user, v.Name, v.Scope, v.ProjectID, v.State.View, v.State.Tab, v.State.Q, v.State.Sort, v.State.CompletedWindow, v.State.Archived, v.State.CreatedBy, v.State.Lanes == nil, ownerSlot, organizationSlot)
+	if err != nil {
+		var constraint *sqlite.Error
+		if errors.As(err, &constraint) && constraint.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
+			return s.nativeAPIError(c, nativeConflict(0))
+		}
+	}
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `DELETE FROM hosted_work_view_values WHERE view_id=?`, id)
 	}
@@ -183,7 +241,11 @@ func validSavedWorkView(v savedWorkView) bool {
 			}
 		}
 	}
-	return total <= 256
+	if total > 256 {
+		return false
+	}
+	encoded, err := json.Marshal(v)
+	return err == nil && len(encoded) <= maxSavedWorkViewBytes
 }
 
 func (s *Service) readSavedWorkView(ctx context.Context, org, user, id string) (savedWorkView, error) {
@@ -251,8 +313,8 @@ func (s *Service) setSavedWorkFavorite(ctx context.Context, db nativeExecer, id,
 	return err
 }
 
-func (s *Service) savedWorkViewIDs(ctx context.Context, org, user string) ([]string, error) {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM hosted_work_views v WHERE organization_id=? AND (owner_id=? OR scope='organization') AND (project_id IS NULL OR EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?)) ORDER BY name,id`, org, user, user)
+func (s *Service) savedWorkViewIDs(ctx context.Context, org, user, cursor string) ([]string, error) {
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM hosted_work_views v WHERE organization_id=? AND id>? AND (owner_id=? OR scope='organization') AND (project_id IS NULL OR EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?)) ORDER BY id LIMIT ?`, org, cursor, user, user, maxSavedWorkViewsPageSize+1)
 	if err != nil {
 		return nil, err
 	}
@@ -266,4 +328,20 @@ func (s *Service) savedWorkViewIDs(ctx context.Context, org, user string) ([]str
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (s *Service) savedWorkViewSlots(ctx context.Context, org, user string) (int, int, error) {
+	var ownerSlot, organizationSlot int
+	err := s.database.reader.QueryRowContext(ctx, `WITH RECURSIVE slots(slot) AS (SELECT 0 UNION ALL SELECT slot+1 FROM slots WHERE slot+1<?) SELECT slot FROM slots WHERE NOT EXISTS(SELECT 1 FROM hosted_work_views WHERE organization_id=? AND owner_id=? AND owner_slot=slot) ORDER BY slot LIMIT 1`, maxSavedWorkViewsPerOwner, org, user).Scan(&ownerSlot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nativeInvalid("The saved view limit for this owner has been reached")
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	err = s.database.reader.QueryRowContext(ctx, `WITH RECURSIVE slots(slot) AS (SELECT 0 UNION ALL SELECT slot+1 FROM slots WHERE slot+1<?) SELECT slot FROM slots WHERE NOT EXISTS(SELECT 1 FROM hosted_work_views WHERE organization_id=? AND organization_slot=slot) ORDER BY slot LIMIT 1`, maxSavedWorkViewsPerOrganization, org).Scan(&organizationSlot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nativeInvalid("The saved view limit for this organization has been reached")
+	}
+	return ownerSlot, organizationSlot, err
 }
