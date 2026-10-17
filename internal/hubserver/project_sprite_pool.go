@@ -559,7 +559,7 @@ func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeSco
 				member.Status = "awaiting_login"
 				continue
 			}
-			if !checks.Passed() {
+			if !checks.WorkReady() {
 				member.Status = "awaiting_setup"
 				continue
 			}
@@ -574,7 +574,7 @@ func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeSco
 
 func spriteLoginSteps(checks runnerauth.LocalChecks, observed bool, problems []runnerauth.Problem, project tracker.ProjectID) []spriteLoginStep {
 	var steps []spriteLoginStep
-	if !observed || checks.Provider != "passed" {
+	if !observed || !checks.ProviderReady() {
 		for _, problem := range problems {
 			if problem.Message == "not signed in" && problem.FixCommand != "" && (problem.ProjectID == "" || problem.ProjectID == string(project)) && !slices.ContainsFunc(steps, func(step spriteLoginStep) bool { return step.Command == problem.FixCommand }) {
 				steps = append(steps, spriteLoginStep{Check: "provider", Command: problem.FixCommand})

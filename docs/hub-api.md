@@ -175,7 +175,10 @@ manual runners remain available to projects that have not opted in. Manual
 adoption is not supported. Every new member is a fresh runner identity with one
 work slot. A managed member receives claims only after its runner's existing
 setup observation for the project passes, which includes the provider sign-in
-and repository checkout done once in the member's console. Before every paid
+and repository checkout done once in the member's console. A Pi backend,
+which has no authentication-status contract, does not block readiness. A runner
+re-observes a project that is not ready at most every 30 seconds, so a console
+login is picked up without a restart. Before every paid
 provisioning step the controller re-reads the project's desired count; a
 reservation that no longer fits is cancelled before creation or retired before
 it can become eligible, so a completion after a decrement never dispatches.

@@ -141,7 +141,7 @@ func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope n
 		return false, err
 	}
 	checks, observed, err := decodeSpriteMemberChecks(raw)
-	return observed && checks.Passed(), err
+	return observed && checks.WorkReady(), err
 }
 
 func decodeSpriteMemberChecks(raw sql.NullString) (runnerauth.LocalChecks, bool, error) {

@@ -32,3 +32,26 @@ func TestLocalChecksValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalChecksWorkReady(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		checks LocalChecks
+		ready  bool
+	}{
+		{"verified provider", LocalChecks{Checkout: "passed", Doctor: "warning", Provider: "passed", ProviderKinds: []string{"codex"}}, true},
+		{"Pi has no authentication status", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"pi_agent"}}, true},
+		{"Pi with verified Codex", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"codex", "pi_agent"}}, true},
+		{"no observed provider", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending"}, false},
+		{"signed-out provider beside Pi", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "failed", ProviderKinds: []string{"codex", "pi_agent"}}, false},
+		{"checkout not verified", LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "passed", ProviderKinds: []string{"codex"}}, false},
+		{"setup failed", LocalChecks{Setup: "failed", Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.checks.WorkReady(); got != tt.ready {
+				t.Fatalf("WorkReady()=%t, want %t", got, tt.ready)
+			}
+		})
+	}
+}
