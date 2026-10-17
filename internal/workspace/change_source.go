@@ -71,14 +71,18 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 	if err := checkpointHistory(ctx, git, base, head, paths); err != nil {
 		return capture, err
 	}
+	objects, err := changeSourceObjects(ctx, directory, base, head)
+	if err != nil {
+		return capture, err
+	}
 	scratch, err := changeSourceScratch()
 	if err != nil {
 		return capture, err
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
 	prefix := filepath.Join(scratch, "source")
-	packHash, err := runGitAtWithInput(ctx, directory, nil, false, head+"\n^"+base+"\n",
-		"pack-objects", "--revs", "--delta-base-offset", "--max-pack-size=0", prefix)
+	packHash, err := runGitAtWithInput(ctx, directory, nil, false, objects,
+		"pack-objects", "--delta-base-offset", "--max-pack-size=0", prefix)
 	if err != nil {
 		return capture, err
 	}
@@ -117,6 +121,38 @@ func CaptureChangeSource(ctx context.Context, directory, base, head string) (cap
 		return capture, err
 	}
 	return capture, capture.Source.Validate(base, head, capture.Bundle)
+}
+
+func changeSourceObjects(ctx context.Context, directory, base, head string) (string, error) {
+	objects, err := runGitAt(ctx, directory, "rev-list", "--objects", "--no-object-names", head, "^"+base)
+	if err != nil {
+		return "", err
+	}
+	types, err := runGitAtWithInput(ctx, directory, nil, false, objects, "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	if err != nil {
+		return "", err
+	}
+	var retained strings.Builder
+	retained.WriteString(objects)
+	git := func(ctx context.Context, args ...string) (string, error) { return runGitAt(ctx, directory, args...) }
+	for line := range strings.SplitSeq(strings.TrimSpace(types), "\n") {
+		tree, kind, ok := strings.Cut(line, " ")
+		if !ok || kind != "tree" {
+			continue
+		}
+		attributes, err := git(ctx, "ls-tree", "--format=%(objectname)", tree, "--", ".gitattributes")
+		if err != nil {
+			return "", err
+		}
+		if attributes == "" {
+			continue
+		}
+		if err := checkpointBlob(ctx, git, tree+":", ".gitattributes"); err != nil {
+			return "", err
+		}
+		retained.WriteString(attributes)
+	}
+	return retained.String(), nil
 }
 
 func verifyChangeBundle(ctx context.Context, directory, path string) error {
