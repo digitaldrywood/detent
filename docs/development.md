@@ -235,7 +235,12 @@ urgent requests, following the Hub and an elapsed deferral period are not
 compatibility requirements.
 
 Existing update receipts distinguish the running controller from an applied
-execution artifact. Existing attempt runtime reads expose `worker_launch` with
+execution artifact. An applied receipt with `execution_artifact: true` settles
+preparation without claiming the controller restarted; newer ordinary and
+follow-Hub requests can replace it while active work retains the older controller.
+Enrolled update discovery refreshes on its existing check interval so subsequent
+ordinary requests can select newer available releases.
+Existing attempt runtime reads expose `worker_launch` with
 the selected execution version, commit, digest, protocol, captured policy ID and
 revision, selection time and observed process identity. These are provenance in
 the existing reads, not another dashboard surface or state owner.
