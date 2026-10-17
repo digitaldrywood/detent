@@ -259,28 +259,18 @@ func ChangeFilesReview(data ChangePageData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</select></label> <button type=\"submit\" name=\"action\" value=\"load\" class=\"rounded-chip border border-line px-3 py-1 text-xs text-accent\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</select></label> <button type=\"submit\" name=\"action\" value=\"load\" class=\"rounded-chip border border-line px-3 py-1 text-xs text-accent\" disabled>Load files</button></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if len(data.ReviewBundles()) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, " disabled")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, ">Load files</button></div>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if len(data.ReviewBundles()) == 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "<p class=\"text-xs text-sec\">No complete diff bundle is pinned to this version. Local, partial, or unbound artifacts cannot be reviewed here.</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "<p class=\"text-xs text-sec\">No complete diff bundle is pinned to this version. Local, partial, or unbound artifacts cannot be reviewed here.</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 			if data.ArtifactError != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<p class=\"text-xs text-sec\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "<p class=\"text-xs text-sec\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -293,12 +283,12 @@ func ChangeFilesReview(data ChangePageData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "</p>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 27, "</p>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, "<p role=\"status\" aria-live=\"polite\" class=\"text-xs text-sec\" data-review-status>Load and verify the selected bundle to review files. Uploaded content remains available with execution runners offline.</p><div class=\"review-toolbar flex flex-wrap items-center gap-3 text-xs text-sec\"><label>Diff layout <select name=\"layout\" class=\"rounded-chip border border-line bg-elev px-2 py-1 text-text\"><option value=\"line-by-line\">Unified</option><option value=\"side-by-side\">Split</option></select></label> <label class=\"flex items-center gap-2\"><input type=\"checkbox\" data-review-viewed disabled>Viewed this version</label> <span data-review-count></span></div><div class=\"review-files\"><nav aria-label=\"Changed files\" data-review-files></nav><div data-review-diff tabindex=\"0\" role=\"region\" aria-label=\"Selected file diff\"></div></div><label class=\"flex flex-col gap-1 text-xs text-sec\">Change discussion or review message <textarea name=\"body\" maxlength=\"65536\" rows=\"3\" class=\"min-w-0 rounded-chip border border-line bg-elev p-2 text-text\"></textarea></label><div class=\"flex flex-wrap gap-2 text-xs\"><button type=\"submit\" name=\"action\" value=\"discuss\" class=\"rounded-chip border border-line px-3 py-1 text-accent\">Post discussion</button> <button type=\"submit\" name=\"action\" value=\"changes_requested\" data-review-decision disabled class=\"rounded-chip border border-line px-3 py-1 text-accent\">Request changes</button> <button type=\"submit\" name=\"action\" value=\"approved\" data-review-decision disabled class=\"rounded-chip border border-line px-3 py-1 text-accent\">Approve version</button> <a href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 28, "<p role=\"status\" aria-live=\"polite\" class=\"text-xs text-sec\" data-review-status>Load and verify the selected bundle to review files. Uploaded content remains available with execution runners offline.</p><div class=\"review-toolbar flex flex-wrap items-center gap-3 text-xs text-sec\"><label>Diff layout <select name=\"layout\" class=\"rounded-chip border border-line bg-elev px-2 py-1 text-text\"><option value=\"line-by-line\">Unified</option><option value=\"side-by-side\">Split</option></select></label> <label class=\"flex items-center gap-2\"><input type=\"checkbox\" data-review-viewed disabled>Viewed this version</label> <span data-review-count></span></div><div class=\"review-files\"><nav aria-label=\"Changed files\" data-review-files></nav><div data-review-diff tabindex=\"0\" role=\"region\" aria-label=\"Selected file diff\"></div></div><label class=\"flex flex-col gap-1 text-xs text-sec\">Change discussion or review message <textarea name=\"body\" maxlength=\"65536\" rows=\"3\" class=\"min-w-0 rounded-chip border border-line bg-elev p-2 text-text\"></textarea></label><div class=\"flex flex-wrap gap-2 text-xs\"><button type=\"submit\" name=\"action\" value=\"discuss\" class=\"rounded-chip border border-line px-3 py-1 text-accent\" disabled>Post discussion</button> <button type=\"submit\" name=\"action\" value=\"changes_requested\" data-review-decision disabled class=\"rounded-chip border border-line px-3 py-1 text-accent\">Request changes</button> <button type=\"submit\" name=\"action\" value=\"approved\" data-review-decision disabled class=\"rounded-chip border border-line px-3 py-1 text-accent\">Approve version</button> <a href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -311,7 +301,7 @@ func ChangeFilesReview(data ChangePageData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "\" class=\"px-2 py-1 text-accent\">Refresh history and gates</a></div><p class=\"text-2xs text-sec\">Changed files and captured context only. Repository browsing, relocated inline threads, suggested edits, and conflict editing are separate follow-ups. Access credentials remain only in this page.</p></form><script src=\"/static/js/review.js\" defer></script></section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "\" class=\"px-2 py-1 text-accent\">Refresh history and gates</a></div><p class=\"text-2xs text-sec\">Changed files and captured context only. Repository browsing, relocated inline threads, suggested edits, and conflict editing are separate follow-ups. Access credentials remain only in this page.</p></form><script src=\"/static/js/review.js\" defer></script></section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

@@ -261,6 +261,8 @@
       } catch (error) { if (serial === generation) { viewed.checked = !desired; status.textContent = safeError(error); } }
       finally { if (serial === generation) viewed.disabled = false; }
     });
+    form.querySelector('button[value="load"]').disabled = !config.bundles?.length;
+    form.querySelector('button[value="discuss"]').disabled = false;
   }
   const init = () => {
     for (const [root, cleanup] of instances) if (!root.isConnected) { cleanup(); instances.delete(root); }
