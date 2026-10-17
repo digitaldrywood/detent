@@ -55,7 +55,13 @@ func Truncate(value string, maxBytes int) Text {
 	return buffer.Text()
 }
 
-var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:panic:|fatal error:|--- FAIL:|FAIL(?:[\t ]|$)|WARNING: DATA RACE|AssertionError:)`)
+var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:` +
+	`panic:|fatal error:|--- FAIL:|FAIL(?:[\t ]|$)|WARNING: DATA RACE|AssertionError:|` +
+	`MIGRATION ORDERING CONFLICT DETECTED!|g?make(?:\[[0-9]+\])?:[\t ]+\*\*\*|` +
+	`[^\n]*check-fast-stage[^\n]*exit_status=[1-9][0-9]*(?:\b|$)|` +
+	`(?i:[^\n]*\berror(?:[\t ]+TS[0-9]+)?:|ERROR in\b|[^\n]*\[ERROR\]|` +
+	`(?:Type|Syntax|Reference|Range)Error:|npm (?:ERR!|error\b)|(?:pnpm )?ERR_PNPM_[A-Z_]+|ELIFECYCLE\b|` +
+	`[^\n]*(?:build|transform|compilation) failed\b|Failed to compile\b))`)
 
 // Diagnostic preserves the first failure and the command tail within a byte
 // budget. Both command capture and public receipts use it so an earlier bound
@@ -73,6 +79,13 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 	prefix := earlier
 	if failure := diagnosticFailure.FindStringIndex(value); failure != nil {
 		start := failure[0]
+		for range 2 {
+			previous := strings.LastIndexByte(value[:max(0, start-1)], '\n') + 1
+			if failure[0]-previous > min(512, maxBytes/8) {
+				break
+			}
+			start = previous
+		}
 		if start == 0 {
 			prefix = ""
 		}
