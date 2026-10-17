@@ -119,31 +119,36 @@ const appUpdates: UpdatesReport = {
 it("joins reported versions by runner ID and keeps capacity and slot tones intact", () => {
   const capacityRunners = runners.map((runner, index) => ({ ...runner, version: "unused fleet version", update: index === 1 ? { status: "requested", desired: { version: appUpdates.current } } : undefined }));
   const view = render(<CapacityPanel runners={capacityRunners} appUpdates={appUpdates} />);
-  expect(screen.getByText("Runner")).toBeTruthy();
-  expect(screen.getByText("Version")).toBeTruthy();
-  expect(screen.getByText("Slots")).toBeTruthy();
   const rows = screen.getAllByTestId("runner-capacity");
-  expect(within(rows[0]!).getByText(appUpdates.current)).toBeTruthy();
-  expect(within(rows[0]!).getByText("Same as the Hub")).toBeTruthy();
-  expect(within(rows[1]!).getByText("v1.2.3")).toBeTruthy();
-  expect(within(rows[1]!).getByText("Behind the Hub · Update requested").classList.contains("text-warning-foreground")).toBe(true);
+  expect(within(rows[0]!).getByText(appUpdates.current).getAttribute("data-version-lag")).toBe("current");
+  expect(within(rows[1]!).getByLabelText(`v1.2.3 · Behind the Hub ${appUpdates.current} · Update requested`).getAttribute("data-version-lag")).toBe("patch");
   expect(within(rows[2]!).getByText("Not reported")).toBeTruthy();
   expect(screen.getByText("1 runner behind the Hub")).toBeTruthy();
   expect(screen.queryByText("unused fleet version")).toBeNull();
   const slots = [...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"));
   view.rerender(<CapacityPanel runners={capacityRunners} appUpdates={null} />);
-  expect(screen.queryByText("Version")).toBeNull();
+  expect(screen.queryByText("v1.2.3")).toBeNull();
   expect(screen.queryByText(/behind the Hub/)).toBeNull();
   expect(screen.queryByText("Not reported")).toBeNull();
   expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
   expect([...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
 });
 
+it.each([
+  ["v1.2.4-op.r.328.g123456789abc", false, "current"],
+  ["v1.2.3", true, "patch"],
+  ["v1.1.9", true, "minor"],
+  ["0.9.0", true, "minor"],
+  ["unparsed-build", true, "minor"],
+] as const)("colors runner version %s by distance from the Hub", (version, behind, lag) => {
+  render(<CapacityPanel runners={[runners[0]!]} appUpdates={{ ...appUpdates, runners: [{ runner_id: runners[0]!.id, display_name: "Example desktop", version, behind, online: true }] }} />);
+  expect(screen.getByText(version).getAttribute("data-version-lag")).toBe(lag);
+});
+
 it("keeps missing runner records unreported and pluralizes the Hub warning", () => {
   render(<CapacityPanel runners={runners} appUpdates={{ ...appUpdates, runners: [], behind_count: 2 }} />);
   expect(screen.getAllByText("Not reported")).toHaveLength(3);
   expect(screen.getByText("2 runners behind the Hub")).toBeTruthy();
-  expect(screen.queryByText("Same as the Hub")).toBeNull();
 });
 
 it.each([true, false])("shows the Hub build and Version column only when updates are available (%s)", async (available) => {
@@ -155,14 +160,13 @@ it.each([true, false])("shows the Hub build and Version column only when updates
   const hub = screen.queryByText("Hub");
   if (available) {
     expect(hub?.parentElement?.textContent).toBe(`Hub${appUpdates.current}`);
-    expect(screen.getByText("Version")).toBeTruthy();
-    expect(screen.getByText(/^Behind the Hub/)).toBeTruthy();
+    expect(screen.getByLabelText(/^v1\.2\.3 · Behind the Hub/)).toBeTruthy();
     mocks.api.appUpdates.mockResolvedValue({ ...appUpdates, current: "v1.2.5" });
     fireEvent.click(screen.getByRole("button", { name: "Refresh diagnostics" }));
     await waitFor(() => expect(screen.getByText("Hub").parentElement?.textContent).toBe("Hubv1.2.5"));
   } else {
     expect(hub).toBeNull();
-    expect(screen.queryByText("Version")).toBeNull();
+    expect(screen.queryByText("v1.2.3")).toBeNull();
     expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
   }
 });
@@ -394,24 +398,21 @@ it.each([
   const capacity = { ...base.provider_capacity[0]!, billing, usage_windows: [{ kind: "weekly", percent_used: percent, observed_at: age === undefined ? undefined : new Date(now - age).toISOString(), reset_at: new Date(now + 3_600_000).toISOString() }] };
   render(<CapacityPanel runners={[{ ...base, provider_capacity: [capacity] }]} now={now} />);
   const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
-  expect(panel.getByText(new RegExp(`${capacity.backend}.*${billing === "subscription" ? "Subscription" : billing === "api_key" ? "API key" : "Billing unknown"}`))).toBeTruthy();
+  expect(panel.getByLabelText(`${capacity.backend} · ${billing === "subscription" ? "Subscription" : billing === "api_key" ? "API key" : "Billing unknown"}`)).toBeTruthy();
   if (billing === "api_key") {
     expect(panel.getByRole("link", { name: "View runner-reported API spend in Usage" }).getAttribute("href")).toBe("/usage");
-    expect(panel.queryByText(/95% used|At risk|Resets|Observed/)).toBeNull();
+    expect(panel.queryByRole("meter")).toBeNull();
   } else {
-    expect(panel.getByText(percent === undefined ? /Usage unknown/ : new RegExp(`${percent}% used`))).toBeTruthy();
-    expect(panel.getByText(/Resets/)).toBeTruthy();
-    expect(panel.getByText(age === undefined ? "Observation unknown" : /Observed/)).toBeTruthy();
-    if (status) expect(panel.getByText(status)).toBeTruthy();
-    else expect(panel.queryByText("At risk")).toBeNull();
+    const meter = panel.getByRole("meter");
+    expect(meter.getAttribute("aria-label")).toBe(`weekly · ${percent === undefined ? "Usage unknown" : `${percent}% used`}${status ? ` · ${status}` : ""}`);
+    expect(panel.getByLabelText(/^Resets /)).toBeTruthy();
+    expect(panel.getByLabelText(age === undefined ? "Observation unknown" : status === "Stale" ? /^Stale · observed/ : /^Observed/)).toBeTruthy();
   }
-  expect(panel.queryByText("Healthy")).toBeNull();
 });
 
 it("clears subscription risk at reset", () => {
   const now = Date.parse("2026-10-15T12:00:00Z");
   render(<CapacityPanel runners={[{ ...base, provider_capacity: [{ ...base.provider_capacity[0]!, billing: "subscription", usage_windows: [{ kind: "five_hour", percent_used: 85, observed_at: new Date(now - 30_000).toISOString(), reset_at: new Date(now).toISOString() }] }] }]} now={now} />);
   const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
-  expect(panel.getByText("Stale")).toBeTruthy();
-  expect(panel.queryByText("At risk")).toBeNull();
+  expect(panel.getByRole("meter").getAttribute("aria-label")).toBe("five hour · 85% used · Stale");
 });
