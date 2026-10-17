@@ -1,3 +1,4 @@
+import type { ConversationSpeech } from "../hooks/useConversationSpeech.ts";
 // Renders conversation messages and their pending questions and media previews.
 import { LegendListRef } from "@legendapp/list/react";
 import React from "react";
@@ -25,6 +26,7 @@ import type { ExecutionSurface } from "../lib/execution.ts";
 export const RETRY_COPY = "Retry re-queues this message once; nothing is duplicated.";
 
 export interface TimelineProps {
+  readonly speech?: ConversationSpeech;
   readonly detail: ConversationDetail;
   readonly onLoadOlder: () => void;
   readonly onRetry: (entry: PendingMessage) => void;
@@ -148,6 +150,7 @@ export function Timeline(props: TimelineProps): React.ReactElement {
       <div className="min-h-0 flex-1" aria-live="polite" aria-relevant="additions">
         <TimelineCardsProvider value={cardContext}>
           <MessagesTimeline
+            speech={props.speech}
             isWorking={isWorking}
             activeTurnStartedAt={activeTurnStartedAt}
             listRef={listRef}
