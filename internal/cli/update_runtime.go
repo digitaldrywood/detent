@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -98,6 +99,17 @@ func newRuntimeUpdateScheduler(
 	schedulerConfig.Updater, err = newRuntimeUpdater(cfg, executable, version)
 	if err != nil {
 		return nil, err
+	}
+	if !detentupdate.IsDevelopmentVersion(version) {
+		service, ok := schedulerConfig.Updater.(*detentupdate.Service)
+		if !ok {
+			return nil, errors.New("worker release service is unavailable")
+		}
+		schedulerConfig.WorkerArtifacts, err = detentupdate.NewWorkerArtifacts(service, filepath.Join(filepath.Dir(schedulerConfig.StatePath), "workers"))
+		if err != nil {
+			return nil, err
+		}
+		schedulerConfig.WorkerPreflight = workerProtocolPreflight
 	}
 	if cfg.Shutdown != nil && cfg.Restart != nil {
 		schedulerConfig.RequestRestart = func(binary string) bool {

@@ -31,6 +31,13 @@ outcomes through the selected tracker's completion contract; they never write
 lane labels, status fields or approval comments. Native workers report through
 the authenticated final outcome, and the host owns publication and lane writes.
 
+An ephemeral execution process never owns a second claim, renewal or completion
+writer. Its controller retains the fenced execution, local store and worker
+cleanup through acknowledged outcome publication and lease release. Worker
+exit alone never frees execution capacity. Local process journals cross the
+worker protocol only for sessions opened by that worker's channel; remote
+process identities never enter the local reaper.
+
 The lane ledger owns `UpdateIssueState` and state-field `SetIssueField` calls.
 Enumerated connector adapters implement or forward those operations without
 deciding transitions. Admission uses the injected orchestrator writer. Raw
@@ -50,6 +57,10 @@ retry starts a fresh attempt.
 **Enforcement:** `TestRepositorySources` in `internal/invariants`;
 `TestAdmissionRequiresLedgerWriter` in `internal/admission`. Review rejects
 lane-write bypasses and new ownership exceptions.
+`TestLocalSessionProcessOwnership` in `internal/runner`,
+`TestNativeDelayedResponsesPreserveSuccessor` in `internal/hubclient`, and
+`TestLocalWorkerReleaseAndPolicyCoexistence` in `internal/cli` preserve execution
+ownership across process exit, finalization and release retries.
 
 **Workflow authority enforcement:** `TestRepositoryNativeWorkflowProjection` in
 `internal/config`, `TestNativeCloudWorkflowFallback` in `internal/project`, and
@@ -361,6 +372,16 @@ READY request; if higher-ranked projects have nothing ready, dispatch whatever
 is ready. The system never cancels, stops or preempts running work; only a user
 cancels work.
 
+Compatible execution releases and ordinary policy changes do not drain a
+runner or withhold its free slots. Each new attempt captures its verified
+execution release and effective policy; continuations keep that identity.
+Routine controller replacement waits for an idle reservation while existing
+workers continue and new compatible workers can launch through the older
+controller. Only an identified critical security release, a concrete incompatible
+execution protocol or shared-state contract, or intentional operator maintenance
+uses the existing drain owner. Update requests, version skew and elapsed
+deferral time alone never authorize a drain.
+
 Pending requests own no capacity. Submission, release and capacity changes
 share real-slot acquisition with atomic project, lane and host ceilings.
 Eligible hosts remain alternatives until acquisition; retry host preference
@@ -397,6 +418,10 @@ durations, private instruction causality or zero-valued analytics.
 `TestHostedAnalyticsReads` and `TestNativeAnalyticsRuntimePopulation` in
 `internal/hubserver` enforce scoped current evidence and recorded-read boundaries.
 Review rejects semantic reservation and preemption substitutes.
+
+`TestWorkerArtifactsRoutineUpdatePaths` and `TestSchedulerDrainPolicy` in
+`internal/update` and `TestLocalWorkerReleaseAndPolicyCoexistence` in
+`internal/cli` enforce compatible update capacity and exceptional-only drains.
 
 ## INV-12 — Native toolchain caches
 
@@ -571,6 +596,15 @@ root, from an exact commit or a Hub-stored source bundle. Work a job must keep
 the Hub when the job checkpoints or ends; the copy on the machine is only a
 cache. Any eligible runner can claim any item. No item is pinned to the machine
 that last ran it, and losing a machine loses no work.
+
+Verified execution artifacts are immutable versioned caches. New attempts
+resolve release discovery again and never fall back to an unchecked or obsolete
+binary when discovery or verification fails. A captured artifact remains owned
+until its workers and cleanup finish; only then may an obsolete artifact be
+removed. Execution processes access local session state through the controller's
+bounded typed protocol, never concurrent SQLite migrations or independent store
+writers. The supported protocol and lifecycle are documented in
+[ephemeral execution workers](development.md#ephemeral-execution-workers).
 
 A change may not add machine-local state that later jobs depend on, discover
 configuration by scanning the machine, or route work by where earlier work

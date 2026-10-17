@@ -26,6 +26,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -56,15 +58,18 @@ func SSHWorkerReady() bool {
 
 type sshRunner struct {
 	*runnerpkg.Runner
-	workdir      string
-	projectID    string
-	memory       globalconfig.Memory
-	goBuildSlots int
-	connection   serviceapi.Connection
-	logger       *slog.Logger
-	command      func(context.Context, string, string) *exec.Cmd
-	mu           sync.Mutex
-	health       map[string]sshHostHealth
+	artifacts      *detentupdate.WorkerArtifacts
+	commitIdentity workspace.CommitIdentity
+	buildCache     *toolcache.Managed
+	workdir        string
+	projectID      string
+	memory         globalconfig.Memory
+	goBuildSlots   int
+	connection     serviceapi.Connection
+	logger         *slog.Logger
+	command        func(context.Context, string, string) *exec.Cmd
+	mu             sync.Mutex
+	health         map[string]sshHostHealth
 }
 
 type sshHostHealth struct {
@@ -73,6 +78,8 @@ type sshHostHealth struct {
 }
 
 type sshBootstrap struct {
+	Local           bool
+	CommitIdentity  workspace.CommitIdentity
 	Issues          []connector.Issue
 	Version         int
 	Workflow        config.Workflow
@@ -121,6 +128,9 @@ func (r *sshRunner) WorkerHostAvailable(ctx context.Context, host string) bool {
 
 func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (result runnerpkg.RunResult, runErr error) {
 	if request.WorkerHost == "" || request.WorkerHost == "local" {
+		if r.artifacts != nil {
+			return r.runLocalWorker(ctx, request)
+		}
 		return r.Runner.Run(ctx, request)
 	}
 	if request.Execution != nil {
@@ -255,6 +265,7 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 	finished := make(chan struct{})
 	var once sync.Once
 	sources := &runnerpkg.SSHExecutionSources{}
+	var cleanups []func() error
 	peer = runnerpkg.NewSSHPeer(ctx, input, output, func(ctx context.Context, method string, args []json.RawMessage) (any, error) {
 		<-ready
 		if strings.HasPrefix(method, "source.") {
@@ -279,7 +290,7 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 			return nil, errors.New("incompatible SSH worker protocol")
 		}
 		bootstrap.Run.Sources = sources
-		result, err := runSSHBootstrap(ctx, peer, bootstrap, logger, method)
+		result, err := runSSHBootstrap(ctx, peer, bootstrap, logger, method, func(cleanup func() error) { cleanups = append(cleanups, cleanup) })
 		if method == "run" {
 			if err != nil {
 				outcome := runnerpkg.RunResult{}
@@ -306,10 +317,14 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 		once.Do(func() { close(finished) })
 		<-finished
 	}
-	return nil
+	var failures []error
+	for _, cleanup := range cleanups {
+		failures = append(failures, cleanup())
+	}
+	return errors.Join(failures...)
 }
 
-func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBootstrap, logger *slog.Logger, operation string) (result any, runErr error) {
+func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBootstrap, logger *slog.Logger, operation string, retainCleanup func(func() error)) (result any, runErr error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -327,15 +342,23 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 	goBudget := hostGoBudget(boot.GoBuildSlots)
 	// Bootstrap credentials have no durable owner. Remove them after the
 	// lifecycle has joined; retained work is never a retained credential.
-	defer func() {
-		runErr = errors.Join(runErr, os.RemoveAll(filepath.Join(scratch, "github-cli")))
+	cleanup := func() error {
+		credentialErr := os.RemoveAll(filepath.Join(scratch, "github-cli"))
 		clean := runErr == nil && operation != "run"
 		if response, ok := result.(runnerpkg.SSHRunResponse); ok {
 			clean = runErr == nil && response.Err() == nil && response.Result.FinalState == runnerpkg.FinalStateCompleted
 		}
 		if clean {
-			runErr = errors.Join(runErr, os.RemoveAll(scratch))
+			return errors.Join(credentialErr, os.RemoveAll(scratch))
 		}
+		return credentialErr
+	}
+	defer func() {
+		if boot.Local {
+			retainCleanup(cleanup)
+			return
+		}
+		runErr = errors.Join(runErr, cleanup())
 	}()
 	// Provide host-local scratch to the worker before any Go or provider work.
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
@@ -357,7 +380,11 @@ func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBoots
 		defer closeProxy()
 		connection.Address = address
 	}
-	deps, err := buildRunnerDependenciesWithIdentity(ctx, boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, runnerpkg.SSHSessionStore{Peer: peer}, logger, connection, workspace.CommitIdentity{})
+	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}
+	if boot.Local {
+		sessions = runnerpkg.LocalSessionStore{SSHSessionStore: runnerpkg.SSHSessionStore{Peer: peer}}
+	}
+	deps, err := buildRunnerDependenciesWithIdentity(ctx, boot.Workflow, boot.ProjectID, boot.Workdir, boot.Memory, sessions, logger, connection, boot.CommitIdentity)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", runnerpkg.ErrWorkspacePreparation, err)
 	}

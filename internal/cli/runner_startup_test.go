@@ -118,7 +118,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 						defer func() { retried <- struct{}{} }()
 					}
 					return token, err
-				})
+				}, nil)
 			if test.policyPending || test.terminal {
 				approvedFactory := factory
 				factory = func(cfg globalconfig.Project) (*project.Project, error) {
