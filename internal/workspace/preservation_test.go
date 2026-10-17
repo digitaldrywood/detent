@@ -248,18 +248,11 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 				return validationProcessFixture{
 					started: func(procgroup.Identity) error {
 						registered = true
-						maintenanceCtx, cancel := context.WithCancel(processCtx)
-						defer cancel()
-						maintenanceCtx = toolcache.WithWaitObserver(maintenanceCtx, func(lock string, waiting bool) {
-							if lock == "consumers" && waiting {
-								cancel()
-							}
-						})
-						if _, err := cache.Maintain(maintenanceCtx, toolcache.Policy{MaxBytes: 1024}, time.Now()); !errors.Is(err, context.Canceled) {
-							t.Errorf("maintenance did not exclude the running hook: %v", err)
+						if report, err := cache.Maintain(processCtx, toolcache.Policy{MaxBytes: 1024}, time.Now()); err != nil || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2048 {
+							t.Errorf("maintenance did not yield to the running hook: %+v, %v", report, err)
 						}
-						if _, err := os.Stat(entry); err != nil {
-							t.Errorf("running hook's cache entry evicted: %v", err)
+						if data, err := os.ReadFile(entry); err != nil || len(data) != 2048 {
+							t.Errorf("running hook's cache entry changed: bytes=%d err=%v", len(data), err)
 						}
 						return nil
 					},
@@ -295,10 +288,11 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if reserved != !dirty || registered != !dirty || finished != !dirty {
 				t.Fatalf("cleanup hook ownership: reserved=%t registered=%t finished=%t dirty=%t", reserved, registered, finished, dirty)
 			}
-			maintenanceCtx, cancel := context.WithTimeout(t.Context(), time.Second)
-			defer cancel()
-			if report, err := cache.Maintain(maintenanceCtx, toolcache.Policy{MaxBytes: 1024}, time.Now()); err != nil || report.SizeEvictedBytes < 2048 {
+			if report, err := cache.Maintain(t.Context(), toolcache.Policy{MaxBytes: 1024}, time.Now()); err != nil || report.SizeEvictedBytes < 2048 || report.RetainedBytes > 1024 {
 				t.Fatalf("hook retained cache protection after cleanup: %#v, %v", report, err)
+			}
+			if _, err := os.Stat(entry); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unprotected hook cache entry retained: %v", err)
 			}
 			want := "hook work"
 			if dirty {

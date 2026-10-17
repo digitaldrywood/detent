@@ -126,13 +126,13 @@ func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (r
 	if report.RetainedBytes <= policy.NormalizedForCapacity(capacity).MaxBytes {
 		return report, nil
 	}
-	queue, err := m.lock(ctx, "admission", false)
-	if err != nil {
+	queue, err := m.tryLock(ctx, "admission", false)
+	if err != nil || queue == nil {
 		return report, err
 	}
 	defer func() { err = errors.Join(err, queue.Close()) }()
-	usage, err := m.lock(ctx, "consumers", false)
-	if err != nil {
+	usage, err := m.tryLock(ctx, "consumers", false)
+	if err != nil || usage == nil {
 		return report, err
 	}
 	defer func() { err = errors.Join(err, usage.Close()) }()
@@ -141,13 +141,6 @@ func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (r
 }
 
 func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(filepath.Join(m.root, ".detent-"+name+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
 	waiting := false
 	observe, observing := ctx.Value(waitObserverContextKey{}).(func(string, bool))
 	defer func() {
@@ -156,12 +149,9 @@ func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File,
 		}
 	}()
 	for {
-		err = tryCacheLock(file, shared)
-		if err == nil {
-			return file, nil
-		}
-		if !errors.Is(err, errCacheInUse) {
-			return nil, errors.Join(err, file.Close())
+		file, err := m.tryLock(ctx, name, shared)
+		if err != nil || file != nil {
+			return file, err
 		}
 		if !waiting && observing && observe != nil {
 			waiting = true
@@ -171,10 +161,26 @@ func (m *Managed) lock(ctx context.Context, name string, shared bool) (*os.File,
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, errors.Join(ctx.Err(), file.Close())
+			return nil, ctx.Err()
 		case <-timer.C:
 		}
 	}
+}
+
+func (m *Managed) tryLock(ctx context.Context, name string, shared bool) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(filepath.Join(m.root, ".detent-"+name+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := tryCacheLock(file, shared); errors.Is(err, errCacheInUse) {
+		return nil, file.Close()
+	} else if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
 }
 
 var errCacheInUse = errors.New("managed Go build cache is in use")

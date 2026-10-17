@@ -323,6 +323,20 @@ Native `verify_fix` answers a Done issue whose `verification.state` is `pending`
 
 Native `file_issue` accepts `type: bug` or `type: change_request`. Reporters must provide one; other roles may omit it. `edit_item` changes the type for members, and `work_item` and `work_list` return it when set. `work_list type=change_request` filters by the stored classification independently of labels.
 
+Native `file_issue` may return `possible_duplicates` and a `challenge_token`
+without creating an issue. Review the candidates and use supported reads such
+as `work_item` and `work_comments` when needed to decide whether they concern
+the same problem. If filing is already authorized and the evidence clearly
+establishes a distinct problem, repeat `file_issue` without another human
+question, keeping the same `request_id` and content and adding the returned
+`challenge_token` and `not_duplicate_of` with the challenged issue numbers.
+For an actual duplicate, use the existing issue and comment within the caller's
+authorization. Ask the human only for genuinely ambiguous overlap, a product
+decision, or an action beyond authorization; do not automatically dismiss
+candidates. This does not grant filing or native issue-contract confirmation
+authority. See the [native filing challenge contract](hub-api.md#native-collaboration-protocol)
+for expiry, replay and related-history behavior.
+
 `edit_item` replaces the body with the complete reviewed text; it never truncates
 or merges partial content. Its body limit is 64 KiB of UTF-8, and the complete
 serialized JSON arguments, including escaping and other fields, must fit 64 KiB.

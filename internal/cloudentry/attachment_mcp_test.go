@@ -103,62 +103,105 @@ func entryMCPClient(t *testing.T, browser *browser, token, protocol, path string
 
 func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spacesFixture, browser, anonymous *browser, project, otherProject, writeToken, readToken, foreignToken string, record attachment.Metadata, content string) {
 	t.Helper()
+	personal := createTestAccessKey(t, browser, "project", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "project", Projects: []string{project}}}}, "")
+	if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_keys SET permission='read' WHERE id=?", personal.ID); err != nil {
+		t.Fatal(err)
+	}
 	selector := map[string]any{"project_id": project, "attachment_id": record.ID}
-	for _, protocol := range []string{"2024-11-05", "2025-11-25", mcp.ProtocolVersion} {
-		t.Run("attachment operations "+protocol, func(t *testing.T) {
-			call := attachmentMCPClient(t, anonymous, readToken, protocol)
-			listing, failed := call("tools/list", nil)
-			if failed || !strings.Contains(string(listing), `"name":"read_attachment"`) || strings.Contains(string(listing), `"name":"delete_attachment"`) || strings.Contains(string(listing), `"name":"reference_attachment"`) {
-				t.Fatalf("read-only catalog=%s", listing)
-			}
-			before := len(store.requests())
-			raw, failed := call(operatortool.ReadAttachmentMetadata, selector)
-			var metadata attachment.Metadata
-			if failed || json.Unmarshal(raw, &metadata) != nil || metadata.ID != record.ID || metadata.Size != record.Size || metadata.SHA256 != record.SHA256 || len(store.requests()) != before {
-				t.Fatalf("metadata=%s storage=%v", raw, len(store.requests()) != before)
-			}
-			for _, part := range []struct {
-				offset int64
-				length int
-				want   int
-				eof    bool
-			}{
-				{0, 0, operatortool.AttachmentContentBytes, false},
-				{17, 31, 31, false},
-				{record.Size - 7, 31, 7, true},
-				{record.Size, 1, 0, true},
-			} {
-				input := map[string]any{"project_id": project, "attachment_id": record.ID, "offset": part.offset}
-				if part.length != 0 {
-					input["length"] = part.length
+	for _, route := range []string{"per-org", "personal global"} {
+		for _, protocol := range []string{"2024-11-05", "2025-11-25", mcp.ProtocolVersion} {
+			t.Run("attachment operations "+route+" "+protocol, func(t *testing.T) {
+				call := attachmentMCPClient(t, anonymous, readToken, protocol)
+				if route == "personal global" {
+					invoke := entryMCPClient(t, anonymous, personal.Token, protocol, "/mcp")
+					call = func(name string, arguments any) (json.RawMessage, bool) {
+						if input, ok := arguments.(map[string]any); ok {
+							if _, selected := input["organization_id"]; !selected {
+								input["organization_id"] = "org_alpha"
+							}
+						}
+						return invoke(name, arguments)
+					}
 				}
-				raw, failed := call(operatortool.ReadAttachment, input)
-				var read struct {
-					Metadata attachment.Metadata `json:"metadata"`
-					Content  string              `json:"content_base64"`
-					Offset   int64               `json:"offset"`
-					Returned int                 `json:"returned_bytes"`
-					EOF      bool                `json:"eof"`
-				}
-				if failed || json.Unmarshal(raw, &read) != nil {
-					t.Fatalf("read=%s", raw)
-				}
-				decoded, err := base64.StdEncoding.DecodeString(read.Content)
-				if err != nil || read.Offset != part.offset || read.Returned != part.want || read.EOF != part.eof || string(decoded) != content[part.offset:part.offset+int64(part.want)] || read.Metadata.SHA256 != record.SHA256 {
-					t.Fatalf("read evidence=%s", raw)
-				}
-			}
-			for _, name := range []string{operatortool.DeleteAttachment, operatortool.ReferenceAttachment} {
-				input := map[string]any{"project_id": project, "attachment_id": record.ID, "request_id": "read-only", "work_item_id": "wi_missing"}
-				if name == operatortool.DeleteAttachment {
-					delete(input, "work_item_id")
+				selector := map[string]any{"project_id": project, "attachment_id": record.ID}
+				listing, failed := call("tools/list", nil)
+				if failed || !strings.Contains(string(listing), `"name":"read_attachment"`) || strings.Contains(string(listing), `"name":"delete_attachment"`) || strings.Contains(string(listing), `"name":"reference_attachment"`) {
+					t.Fatalf("read-only catalog=%s", listing)
 				}
 				before := len(store.requests())
-				if raw, failed := call(name, input); !failed || len(store.requests()) != before {
-					t.Fatalf("read-only mutation=%s", raw)
+				raw, failed := call(operatortool.ReadAttachmentMetadata, selector)
+				var metadata attachment.Metadata
+				if failed || json.Unmarshal(raw, &metadata) != nil || metadata.ID != record.ID || metadata.Size != record.Size || metadata.SHA256 != record.SHA256 || len(store.requests()) != before {
+					t.Fatalf("metadata=%s storage=%v", raw, len(store.requests()) != before)
 				}
-			}
-		})
+				for _, part := range []struct {
+					offset int64
+					length int
+					want   int
+					eof    bool
+				}{
+					{0, 0, operatortool.AttachmentContentBytes, false},
+					{17, 31, 31, false},
+					{record.Size - 7, 31, 7, true},
+					{record.Size, 1, 0, true},
+				} {
+					input := map[string]any{"project_id": project, "attachment_id": record.ID, "offset": part.offset}
+					if part.length != 0 {
+						input["length"] = part.length
+					}
+					raw, failed := call(operatortool.ReadAttachment, input)
+					var read struct {
+						Metadata attachment.Metadata `json:"metadata"`
+						Content  string              `json:"content_base64"`
+						Offset   int64               `json:"offset"`
+						Returned int                 `json:"returned_bytes"`
+						EOF      bool                `json:"eof"`
+					}
+					if failed || json.Unmarshal(raw, &read) != nil {
+						t.Fatalf("read=%s", raw)
+					}
+					decoded, err := base64.StdEncoding.DecodeString(read.Content)
+					if err != nil || read.Offset != part.offset || read.Returned != part.want || read.EOF != part.eof || string(decoded) != content[part.offset:part.offset+int64(part.want)] || read.Metadata.SHA256 != record.SHA256 {
+						t.Fatalf("read evidence=%s", raw)
+					}
+				}
+				for _, name := range []string{operatortool.DeleteAttachment, operatortool.ReferenceAttachment} {
+					input := map[string]any{"project_id": project, "attachment_id": record.ID, "request_id": "read-only", "work_item_id": "wi_missing"}
+					if name == operatortool.DeleteAttachment {
+						delete(input, "work_item_id")
+					}
+					before := len(store.requests())
+					if raw, failed := call(name, input); !failed || len(store.requests()) != before {
+						t.Fatalf("read-only mutation=%s", raw)
+					}
+				}
+				if route == "personal global" {
+					for _, name := range []string{operatortool.ReadAttachment, operatortool.ReadAttachmentMetadata} {
+						for _, input := range []map[string]any{
+							{"project_id": project, "attachment_id": "att_00000000000000000000000000000001"},
+							{"project_id": otherProject, "attachment_id": record.ID},
+							{"organization_id": "org_beta", "project_id": project, "attachment_id": record.ID},
+						} {
+							before := len(store.requests())
+							if raw, failed := call(name, input); !failed || len(store.requests()) != before {
+								t.Fatalf("missing or forbidden personal read=%s", raw)
+							}
+						}
+					}
+					for _, input := range []map[string]any{
+						{"project_id": project, "attachment_id": record.ID, "length": 32769},
+						{"project_id": project, "attachment_id": record.ID, "length": 0},
+						{"project_id": project, "attachment_id": record.ID, "offset": -1},
+						{"project_id": project, "attachment_id": record.ID, "offset": record.Size + 1},
+					} {
+						before := len(store.requests())
+						if raw, failed := call(operatortool.ReadAttachment, input); !failed || len(store.requests()) != before {
+							t.Fatalf("invalid personal read=%s", raw)
+						}
+					}
+				}
+			})
+		}
 	}
 	call := attachmentMCPClient(t, anonymous, writeToken, mcp.ProtocolVersion)
 	for _, input := range []map[string]any{
@@ -195,6 +238,12 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 	if raw, failed := call(operatortool.ReadAttachment, selector); !failed {
 		t.Fatalf("incomplete content succeeded=%s", raw)
 	}
+	personalCall := entryMCPClient(t, anonymous, personal.Token, mcp.ProtocolVersion, "/mcp")
+	raw, failed := personalCall(operatortool.ReadAttachment, map[string]any{"organization_id": "org_alpha", "project_id": project, "attachment_id": record.ID})
+	var refusal apikey.Refusal
+	if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "attachment_unavailable" {
+		t.Fatalf("incomplete personal content=%s failed=%v", raw, failed)
+	}
 	store.mu.Lock()
 	store.objects[objectKey] = stored
 	store.mu.Unlock()
@@ -222,7 +271,7 @@ func exerciseAttachmentMCPOperations(t *testing.T, f entryFixture, store *spaces
 			}
 		}
 	}
-	raw, failed := call(operatortool.ReadAttachmentMetadata, selector)
+	raw, failed = call(operatortool.ReadAttachmentMetadata, selector)
 	var bound attachment.Metadata
 	if failed || json.Unmarshal(raw, &bound) != nil || len(bound.ReferencedBy) != 2 {
 		t.Fatalf("replayed references=%s", raw)
@@ -445,8 +494,13 @@ func TestAttachmentEntryKeyUploads(t *testing.T) {
 					t.Fatal("uploaded object does not contain the PNG")
 				}
 				readCall := attachmentMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion)
+				readArguments := map[string]any{"project_id": project, "attachment_id": uploaded.ID}
+				if route == "multi-org MCP" {
+					readCall = entryMCPClient(t, anonymous, credential.key.Token, mcp.ProtocolVersion, "/mcp")
+					readArguments["organization_id"] = "org_alpha"
+				}
 				for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
-					raw, refused := readCall(name, map[string]any{"project_id": project, "attachment_id": uploaded.ID})
+					raw, refused := readCall(name, readArguments)
 					var result struct {
 						ID            string              `json:"id"`
 						Metadata      attachment.Metadata `json:"metadata"`

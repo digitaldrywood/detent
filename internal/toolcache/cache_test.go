@@ -628,43 +628,51 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 	if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
 		t.Fatal(err)
 	}
-	waiting := make(chan struct{}, 1)
-	maintenanceCtx, cancelMaintenance := context.WithCancel(t.Context())
-	defer cancelMaintenance()
-	maintenanceCtx = WithWaitObserver(maintenanceCtx, func(lock string, active bool) {
-		if lock == "consumers" && active {
-			waiting <- struct{}{}
+	for _, lock := range []string{"admission", "consumers"} {
+		t.Run("busy "+lock, func(t *testing.T) {
+			if lock == "admission" {
+				admission, err := cache.lock(t.Context(), "admission", false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer admission.Close()
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			ctx = WithWaitObserver(ctx, func(_ string, waiting bool) {
+				if waiting {
+					cancel()
+				}
+			})
+			report, err := cache.Maintain(ctx, Policy{MaxBytes: 1024}, time.Now())
+			if err != nil || report.Error != "" || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2048 {
+				t.Fatalf("busy maintenance did not yield with its retained-size observation: %+v, %v", report, err)
+			}
+			if data, err := os.ReadFile(entry); err != nil || len(data) != 2048 {
+				t.Fatalf("busy maintenance changed protected entry: bytes=%d err=%v", len(data), err)
+			}
+		})
+	}
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	ctx = WithWaitObserver(ctx, func(_ string, waiting bool) {
+		if waiting {
+			stop()
 		}
 	})
-	done := make(chan error, 1)
-	go func() {
-		_, err := cache.Maintain(maintenanceCtx, Policy{MaxBytes: 1024}, time.Now())
-		done <- err
-	}()
-	select {
-	case <-waiting:
-	case <-t.Context().Done():
-		t.Fatal("maintenance did not wait for protected consumers")
-	}
-	cancelMaintenance()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled maintenance: %v", err)
-	}
-	if _, err := os.Stat(entry); err != nil {
-		t.Fatalf("canceled maintenance evicted protected entry: %v", err)
-	}
-	ctx, stop := context.WithTimeout(t.Context(), time.Second)
-	defer stop()
 	_, thirdRelease, err := other.Use(other.WithContext(ctx))
 	if err != nil {
-		t.Fatalf("canceled maintenance retained admission: %v", err)
+		t.Fatalf("busy maintenance retained admission: %v", err)
 	}
 	if err := errors.Join(thirdRelease(), secondRelease(), release()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := cache.Maintain(canceled, Policy{MaxBytes: 1024}, time.Now()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled maintenance: %v", err)
+	}
 	report, err := cache.Maintain(ctx, Policy{MaxBytes: 1024}, time.Now())
 	if err != nil || report.RetainedBytes > 1024 || report.SizeEvictedBytes != 2048 {
-		t.Fatalf("maintenance after cancellation: %+v, %v", report, err)
+		t.Fatalf("idle maintenance: %+v, %v", report, err)
 	}
 	_, finalRelease, err := UseFromContext(cache.WithContext(ctx))
 	if err != nil {

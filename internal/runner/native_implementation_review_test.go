@@ -34,6 +34,13 @@ type implementationReviewExecution struct {
 	discussion        NativeReviewDiscussion
 	head              string
 	securityAudit     *NativeSecurityAuditEvidence
+	reviewSource      tracker.NativeChangeReference
+}
+
+func (e *implementationReviewExecution) PrepareReview(_ context.Context, source tracker.NativeChangeReference) error {
+	*e.events = append(*e.events, "prepare review")
+	e.reviewSource = source
+	return e.recordError
 }
 
 func (e *implementationReviewExecution) ReviewVersion(context.Context) (NativeValidation, error) {
@@ -111,6 +118,10 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 		right.Close()
 	})
 	transport := &sshNativeExecution{sshExecution: &sshExecution{peer: remote}}
+	source := tracker.NativeChangeReference{ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
+	if err := transport.PrepareReview(t.Context(), source); err != nil || execution.reviewSource != source {
+		t.Fatalf("SSH lost review continuation binding: %+v, %v", execution.reviewSource, err)
+	}
 	input, err := transport.ReviewVersion(t.Context())
 	if err != nil || input.Version == nil || input.Version.ID != "version_example" {
 		t.Fatalf("SSH lost immutable source-review version: %+v, %v", input, err)
@@ -146,8 +157,12 @@ func TestNativeImplementationReviewSSHCallbacksRemainSeparate(t *testing.T) {
 	if !reflect.DeepEqual(execution.reviewResult, review) || !reflect.DeepEqual(execution.validatorResult, validator) {
 		t.Fatalf("SSH confused source and acceptance records: source=%+v acceptance=%+v", execution.reviewResult, execution.validatorResult)
 	}
-	if want := []string{"review version", "record review", "validator version", "record validator", "audit version", "record audit"}; !reflect.DeepEqual(events, want) {
+	if want := []string{"prepare review", "review version", "record review", "validator version", "record validator", "audit version", "record audit"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("SSH lost separate review callbacks: got %v, want %v", events, want)
+	}
+	execution.recordError = ErrExecutionAuthorityUnavailable
+	if err := transport.PrepareReview(t.Context(), source); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("SSH lost review continuation refusal: %v", err)
 	}
 }
 
