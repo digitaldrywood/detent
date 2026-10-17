@@ -308,9 +308,14 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			requireNativeStatus(t, reporterEntryRequest(t, f, deployment, key.Token, "REST-key", http.MethodPost, f.base+"/attachment-metadata", upload, nil), http.StatusCreated)
-			operatorSQL(t, f.hostedSecurityFixture, "UPDATE attachments SET uploader=? WHERE id=?", key.ID, record.ID)
-			requireNativeStatus(t, reporterEntryRequest(t, f, deployment, "", "web-session", http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil, nil), http.StatusOK)
+			attachmentResponse := reporterEntryRequest(t, f, deployment, key.Token, "REST-key", http.MethodPost, f.base+"/attachment-metadata", upload, nil)
+			if deployment == "shared" {
+				requireNativeStatus(t, attachmentResponse, http.StatusCreated)
+				operatorSQL(t, f.hostedSecurityFixture, "UPDATE attachments SET uploader=? WHERE id=?", key.ID, record.ID)
+				requireNativeStatus(t, reporterEntryRequest(t, f, deployment, "", "web-session", http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil, nil), http.StatusOK)
+			} else {
+				requireNativeStatus(t, attachmentResponse, http.StatusNotFound)
+			}
 			var own tracker.NativeIssue
 			for _, transport := range []string{"web-session", "REST-key"} {
 				raw, err := json.Marshal(tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: transport}, Type: "bug", Title: "Report from " + transport, Body: reporterBugSections})
