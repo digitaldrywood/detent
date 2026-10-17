@@ -20,9 +20,12 @@ type WorkerArtifacts struct {
 	service       *Service
 	root          string
 	mu            sync.Mutex
+	prepareMu     sync.Mutex
 	live          map[string]int
 	latest        string
 	latestArchive string
+	prepared      Status
+	refusal       error
 }
 
 type WorkerArtifact struct {
@@ -61,12 +64,45 @@ func (a *WorkerArtifact) Release() error {
 }
 
 func (a *WorkerArtifacts) Acquire(ctx context.Context, preflight BinaryPreflight) (*WorkerArtifact, error) {
-	return a.AcquireLaunch(ctx, preflight, nil)
+	return a.PrepareLaunch(ctx, preflight, nil)
 }
 
 func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if a.refusal != nil {
+		return nil, a.refusal
+	}
+	if !a.prepared.VerifiedRelease {
+		return nil, errors.New("no verified execution artifact has been prepared")
+	}
+	if capture != nil {
+		if err := capture(a.prepared); err != nil {
+			return nil, fmt.Errorf("capture worker launch: %w", err)
+		}
+	}
+	data, err := os.ReadFile(a.prepared.Binary)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != a.prepared.BinarySHA256 {
+		return nil, errors.New("prepared execution artifact failed integrity verification")
+	}
+	if preflight != nil {
+		if err := preflight(ctx, a.prepared.Binary); err != nil {
+			return nil, err
+		}
+	}
+	return a.retainLocked(a.prepared, a.latest, a.latestArchive), nil
+}
+
+func (a *WorkerArtifacts) PrepareLaunch(ctx context.Context, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
+	a.prepareMu.Lock()
+	defer a.prepareMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -81,6 +117,11 @@ func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPre
 	status := Status{CurrentVersion: a.service.cfg.CurrentVersion, LatestVersion: displayVersion(release.TagName), LatestTag: release.TagName, Critical: releaseCritical(release)}
 	if capture != nil {
 		if err := capture(status); err != nil {
+			if errors.Is(err, ErrWorkerCriticalUpdate) {
+				a.mu.Lock()
+				a.refusal = err
+				a.mu.Unlock()
+			}
 			return nil, fmt.Errorf("capture worker launch: %w", err)
 		}
 	}
@@ -110,6 +151,11 @@ func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPre
 	identity := binaryIdentityVerifier(service.cfg.BinaryVerifier, status.LatestVersion, status.LatestCommit)
 	target := filepath.Join(staging, name)
 	if err := replaceBinaryNow(ctx, Replacement{Context: ctx, Target: target, Binary: binary, Mode: mode, GOOS: service.cfg.GOOS, Verify: identity, Preflight: candidateIdentityPreflight(identity, preflight), Sign: service.cfg.BinarySigner}); err != nil {
+		if errors.Is(err, ErrWorkerProtocolIncompatible) {
+			a.mu.Lock()
+			a.refusal = err
+			a.mu.Unlock()
+		}
 		return nil, fmt.Errorf("prepare worker executable: %w", err)
 	}
 	installed, err := os.ReadFile(target)
@@ -121,6 +167,8 @@ func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPre
 		return nil, err
 	}
 	status.BinarySHA256 = hex.EncodeToString(digest[:])
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	directory := filepath.Join(a.root, "worker-"+status.BinarySHA256)
 	path := filepath.Join(directory, name)
 	if existing, err := os.ReadFile(path); err == nil {
@@ -137,6 +185,7 @@ func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPre
 	status.VerifiedRelease = true
 	status.Action = ActionUpdated
 	a.latest, a.latestArchive = directory, cache.path
+	a.prepared, a.refusal = status, nil
 	return a.retainLocked(status, directory, cache.path), nil
 }
 
@@ -177,6 +226,10 @@ func (a *WorkerArtifacts) retainLocked(status Status, directory, archive string)
 }
 
 func (a *WorkerArtifacts) pruneLocked() error {
+	if !a.prepareMu.TryLock() {
+		return nil
+	}
+	defer a.prepareMu.Unlock()
 	entries, err := os.ReadDir(a.root)
 	if err != nil {
 		return err
