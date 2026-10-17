@@ -67,7 +67,7 @@ func (s *RunnerSetup) Prepare(ctx context.Context, cfg globalconfig.Project) (er
 	if err != nil {
 		return err
 	}
-	digest := sha256.Sum256(append([]byte(hooks.Shell+"\x00"), content...))
+	digest := sha256.Sum256(append([]byte(hooks.Shell+"\x00"+filepath.Clean(cfg.Workdir)+"\x00"), content...))
 	hash := hex.EncodeToString(digest[:])
 	previous, err := s.store.ProjectRunnerSetupHash(ctx, s.runnerID, cfg.ID)
 	if err != nil {

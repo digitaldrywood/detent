@@ -966,10 +966,11 @@ hooks:
   timeout_ms: 300000
 ```
 
-Each runner records the successful SHA-256 of the script content and shell in
-its local store, scoped to its runner identity and project. Unchanged setup
-does not run for later attempts or after restarting with the same store.
-Changing the script or shell runs setup again before the next dispatch. With
+Each runner records the successful SHA-256 of the script content, shell and
+source checkout path in its local store, scoped to its runner identity and
+project. Unchanged setup does not run for later attempts or after restarting
+with the same store. Changing the script, shell or checkout path runs setup
+again before the next dispatch. With
 `workflow_ref`, the script comes from the same Git revision as the project's
 configuration; otherwise it comes from the source checkout, including local
 edits. Paths must remain inside the repository. Keep setup self-contained:

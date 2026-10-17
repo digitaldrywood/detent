@@ -752,7 +752,7 @@ launcher="$lib_dir/start"
     printf 'export MAKEFLAGS=%q\n' "-l$make_load_limit"
     if [[ -n $local_root ]]; then
         printf 'export XDG_CACHE_HOME=%q\nexport GOMODCACHE=%q\nexport npm_config_cache=%q\n' \
-            "$local_root/cache" "$local_root/cache/go-mod" "$local_root/cache/npm"
+            "${XDG_CACHE_HOME:-$local_root/cache}" "${GOMODCACHE:-$local_root/cache/go-mod}" "${npm_config_cache:-$local_root/cache/npm}"
         printf 'export PLAYWRIGHT_BROWSERS_PATH=%q\n' "${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}"
     fi
     printf 'mkdir -p -- %q %q\n' "$workspace_root/.tmp" "$launch_dir"
@@ -773,7 +773,7 @@ last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
 printf 'Sprite resource profile: %s CPUs; runner Make load limit -l%s; workers run at lower CPU priority than the runner.\n' "$cpu_count" "$make_load_limit"
 if [[ -n $local_root ]]; then
-    printf 'Local disk: build caches in %s; checkouts in %s.\n' "$local_root/cache" "$workspace_root"
+    printf 'Local disk: build caches in %s; checkouts in %s.\n' "${XDG_CACHE_HOME:-$local_root/cache}" "$workspace_root"
 fi
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then

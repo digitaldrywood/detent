@@ -197,8 +197,8 @@ manually installing project tools on individual Sprites.
 
 Both pool members and manually enrolled Sprites use the same runner owner.
 It runs setup when preparing the project, records a successful content hash in
-that Sprite's local store, and runs again only when the script or configured
-shell changes. Later attempts and runner restarts reuse that hash. Each Sprite
+that Sprite's local store, and runs again only when the script, configured
+shell or checkout path changes. Later attempts and runner restarts reuse that hash. Each Sprite
 has its own record, so every member installs the tools automatically. Keep the
 runner store when restoring a checkpoint to preserve successful setup evidence.
 When changing Makefile tool pins or dependency lockfiles, also change the setup
@@ -316,16 +316,18 @@ Sprite. On the local disk it does not. The runner store, identity,
 configuration, provider sign-ins and installed tools stay in the home
 directory.
 
-An explicit `--workspace-root` and an operator-chosen `workspace_root` in the
-configuration are kept. A rerun moves a configuration still on the old default,
-`~/detent-runner`, to the local disk; checkouts left at the old path can be
-deleted. Checkouts and caches are disposable: the launcher recreates the
-directories when the Service starts, the runner clones a missing checkout, and
-missing caches are rebuilt at the cost of a slower next build. `/tmp` keeps
-its contents while the Sprite is idle. If a Sprite ever comes back with an
-empty `/tmp`, run the project's `hooks.runner_setup` script once by hand, or
-change it, because its recorded success does not cover dependencies it
-installed inside the lost checkout. The 20 GB local disk fits only a few
+An explicit `--workspace-root`, an operator-chosen `workspace_root` in the
+configuration, and `XDG_CACHE_HOME`, `GOMODCACHE` or `npm_config_cache` set
+when the bootstrap runs are kept. A rerun moves a configuration still on the
+old default, `~/detent-runner`, to the local disk; checkouts left at the old
+path can be deleted. A recorded `hooks.runner_setup` success applies to one
+checkout path, so setup runs again for the moved checkout. Checkouts and caches
+are disposable: the launcher recreates the directories when the Service
+starts, the runner clones a missing checkout, and missing caches are rebuilt at
+the cost of a slower next build. `/tmp` keeps its contents while the Sprite is
+idle. If a Sprite ever comes back with an empty `/tmp`, run the project's
+`hooks.runner_setup` script once by hand, or change it, because its recorded
+success does not cover dependencies it installed inside the lost checkout. The 20 GB local disk fits only a few
 checkouts with their caches, so keep **Concurrency** at `1`.
 
 The bootstrap prints the profile in its closing summary. It rewrites the

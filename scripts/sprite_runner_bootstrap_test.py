@@ -456,6 +456,12 @@ class SpriteBootstrapTests(unittest.TestCase):
             "PLAYWRIGHT_BROWSERS_PATH": str(self.home / ".cache/ms-playwright"),
         })
         self.assertIn(f"Local disk: build caches in {local / 'cache'}", first.stdout)
+        operator_modules = self.root / "operator-modules"
+        self.env["GOMODCACHE"] = str(operator_modules)
+        operator = self.run_bootstrap(enrollment="")
+        del self.env["GOMODCACHE"]
+        self.assertEqual(operator.returncode, 0, operator.stderr)
+        self.assertIn(["export", f"GOMODCACHE={operator_modules}"], [shlex.split(line) for line in launcher.read_text().splitlines()])
         config = self.home / ".config/detent-runner/global.yaml"
         for name, root, want in (
             ("legacy default", self.home / "detent-runner", local / "work"),
