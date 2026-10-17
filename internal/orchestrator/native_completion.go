@@ -187,6 +187,13 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		reviewChangesRequested = review.ChangesRequested && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	}
+	if change != nil && change.Validator != nil {
+		if criteria := change.Validator.UnsatisfiableCriteria(); len(criteria) > 0 {
+			event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+			event.Result.FinalMessage = "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- ")
+			return o.handlePermissionWaitCompletion(ctx, state, event, running)
+		}
+	}
 	needsReview := change != nil && change.VersionError != "" || !changed && !accepted || reported && !accepted
 	review := cfg.reviewTargetState()
 	if autoPromoteOptoutLabel(issue, cfg) {

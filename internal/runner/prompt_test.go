@@ -1135,6 +1135,10 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 		forbidden []string
 	}{
 		{
+			name: "unverified criterion classes",
+			want: []string{`"unverified_class"`, "rework_fixable", "unsatisfiable", "outside system", "production or deployed environment", "a deployment", "human action", "missing tests", "failing checks", "missing screenshots", "unimplemented behavior", "rewrite it as a pre-merge check or remove it", "Blocked on this run"},
+		},
+		{
 			name: "native host command evidence",
 			opts: ValidatorPromptOptions{VersionID: "version", HeadSHA: "head", Commands: []gate.CommandResult{{ReceiptID: "timing_build", Command: "cd frontend && pnpm build", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "build passed"}}},
 			want: []string{"host", `receipt_id="timing_build"`, "receipt_ids", "pnpm build", "build passed", "head=", "tree=", "exit=", "detent_run_validation", "Worker prose and human approval do not replace test evidence"},
