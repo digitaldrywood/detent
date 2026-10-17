@@ -81,11 +81,14 @@ entry attachment owner using its current lease and fencing token. The existing
 runner `events` grant authorizes this path; no new credential or grant is needed.
 Absolute paths, traversal outside the workspace, escaping symlinks, nonregular
 files, unsupported types and files over 20 MiB are refused. Images and small
-text, Markdown, CSV, JSON and log files are supported, with at most ten files
-per attempt. The Hub records the attachment references and captions on the
-attempt and publishes them with its completion response, or in an evidence-only
-comment when the attempt ends without a response. Use ignored workspace output
-or remove uploaded files before staging. Browser screenshots and runtime logs
+text, Markdown, CSV, JSON and log files are supported. Uploads use the existing
+project storage quota without a per-attempt file-count limit. Each upload records
+its attempt and bounded caption on the typed attachment owner and publishes an
+evidence comment atomically. Completion preserves these references and publishes
+the final response separately, so evidence cannot truncate that response or
+exceed a comment's size limit. Attempt evidence reads retain the existing 1 MiB
+record budget; paginated issue comments retain all references. Use ignored
+workspace output or remove uploaded files before staging. Browser screenshots and runtime logs
 belong on the issue, never in committed repository files.
 
 The hosted MCP `upload_attachment` tool accepts `project_id`, `name`,

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -72,34 +73,72 @@ func readEvidenceAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, inp
 }
 
 func recordAttachmentEvidence(ctx context.Context, tx *sql.Tx, scope nativeScope, input attachment.EvidenceRequest, record attachment.Metadata, now time.Time) error {
-	data, err := readEvidenceAttempt(ctx, tx, scope, input, now)
-	if err != nil {
+	if _, err := readEvidenceAttempt(ctx, tx, scope, input, now); err != nil {
 		return err
 	}
-	if len(data.Evidence) >= 10 {
-		return nativeInvalid("An attempt may attach at most ten evidence files")
+	issue, _, err := readNativeIssue(ctx, tx, scope, string(input.WorkItemID))
+	if err != nil {
+		return err
 	}
 	reference := record.Markdown(string(scope.organization))
-	data.Evidence = append(data.Evidence, tracker.NativeEvidence{AttachmentID: record.ID, Caption: input.Caption, Reference: reference})
-	encoded, err := marshalNative(data)
+	comment, err := insertNativeComment(ctx, tx, scope, issue, escapeEvidenceCaption(input.Caption)+"\n\n"+reference, nil, now)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=?, updated_at=? WHERE id=?", encoded, formatHubTime(now), input.AttemptID); err != nil {
+	_, err = tx.ExecContext(ctx, `UPDATE attachments SET evidence_attempt_id=?, evidence_caption=?, work_item_id=?, comment_id=? WHERE organization_id=? AND project_id=? AND id=?`, input.AttemptID, input.Caption, input.WorkItemID, comment.ID, scope.organization, scope.project, record.ID)
+	return err
+}
+
+func escapeEvidenceCaption(caption string) string {
+	escape := strings.NewReplacer("\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;", "#", "\\#", "!", "\\!")
+	return escape.Replace(caption)
+}
+
+func readAttachmentEvidence(ctx context.Context, query nativeQueryer, scope nativeScope, item string, data *tracker.NativeRunData) error {
+	rows, err := query.QueryContext(ctx, `SELECT id,name,content_type,evidence_caption FROM attachments WHERE organization_id=? AND project_id=? AND work_item_id=? AND evidence_attempt_id=? ORDER BY created_at,id`, scope.organization, scope.project, item, data.AttemptID)
+	if err != nil {
 		return err
 	}
-	return bindCloudAttachmentReferences(ctx, tx, scope, string(input.WorkItemID), "", reference)
+	defer rows.Close()
+	budget := 1 << 20
+	for rows.Next() {
+		var record attachment.Metadata
+		var caption string
+		if err := rows.Scan(&record.ID, &record.Name, &record.ContentType, &caption); err != nil {
+			return err
+		}
+		record.ProjectID = string(scope.project)
+		file := tracker.NativeEvidence{AttachmentID: record.ID, Caption: caption, Reference: record.Markdown(string(scope.organization))}
+		encoded, err := json.Marshal(file)
+		if err != nil {
+			return err
+		}
+		budget -= len(encoded) + 1
+		if budget < 0 {
+			return &nativeError{Code: "attempt_record_too_large", Message: "Attempt evidence exceeds the 1048576-byte read limit; read the work item comments for all references", status: http.StatusUnprocessableEntity, publicMessage: true}
+		}
+		data.Evidence = append(data.Evidence, file)
+	}
+	return rows.Err()
 }
 
 func publishAttemptEvidence(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, data tracker.NativeRunData, now time.Time) error {
 	if len(data.Evidence) == 0 {
-		return nil
+		if data.CompletionBody == "" {
+			return nil
+		}
+		var uploaded bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND project_id=? AND evidence_attempt_id=?)`, scope.organization, scope.project, data.AttemptID).Scan(&uploaded); err != nil {
+			return err
+		}
+		if !uploaded {
+			return nil
+		}
 	}
 	var evidence strings.Builder
-	escape := strings.NewReplacer("\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;", "#", "\\#", "!", "\\!")
 	for _, file := range data.Evidence {
 		evidence.WriteString("\n\n")
-		evidence.WriteString(escape.Replace(file.Caption))
+		evidence.WriteString(escapeEvidenceCaption(file.Caption))
 		evidence.WriteString("\n\n")
 		evidence.WriteString(file.Reference)
 	}
