@@ -220,10 +220,13 @@ An assumed, skipped or unrelated check remains not verified. A not-verified
 criterion that repository rework can satisfy requires Rework and is named in
 the summary. A criterion no rework can satisfy before merge because it depends
 on an outside system, a deployed environment, a deployment or human action sends
-the item to Blocked on that validator run, never to Rework for that reason.
+the native item to Blocked on that validator run, never to Rework for that reason.
 Its human_action names each unsatisfiable criterion and asks the human to
 rewrite it as a pre-merge check or remove it; mixed criteria also go to Blocked.
-Minimum score and blocked finding severities remain authoritative. This setting
+Existing prerequisite and human blockers retain their owner. Source rework,
+minimum score and blocked finding severities take precedence over synthesizing
+a criterion human_action. Non-native validators retain the configured unverified
+criteria policy. This setting
 does not enable the optional validator or replace the native completion contract,
 which owns permitted post-integration handoffs and pending acceptance disclosure.
 

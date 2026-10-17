@@ -1136,7 +1136,13 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 	}{
 		{
 			name: "unverified criterion classes",
+			opts: ValidatorPromptOptions{VersionID: "version"},
 			want: []string{`"unverified_class"`, "rework_fixable", "unsatisfiable", "outside system", "production or deployed environment", "a deployment", "human action", "missing tests", "failing checks", "missing screenshots", "unimplemented behavior", "rewrite it as a pre-merge check or remove it", "Blocked on this run"},
+		},
+		{
+			name:      "non-native criteria retain configured policy",
+			want:      []string{"Any not_verified criterion under rework policy forces rework"},
+			forbidden: []string{`"unverified_class"`, "Blocked on this run", "set unverified_class"},
 		},
 		{
 			name: "native host command evidence",

@@ -136,10 +136,18 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		for _, entry := range entries {
 			criteria = append(criteria, entry.Criterion)
 		}
-		change.Validator = &gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, CriteriaEvidence: entries}
+		change.Validator = &gate.ValidatorResult{VersionID: "version_1", Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, CriteriaEvidence: entries}
 		gate.NormalizeCriterionEvidence(change.Validator, criteria, "")
 		gate.ApplyCriterionPolicy(gate.ValidatorConfig{UnverifiedCriteria: gate.UnverifiedCriteriaRework}, change.Validator)
 		return &change
+	}
+	criterionReview := func(verdict string, score float64, findings ...gate.Finding) *runpkg.NativeChange {
+		change := criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable})
+		change.Validator.Verdict = verdict
+		change.Validator.Score = score
+		change.Validator.Findings = findings
+		gate.ApplyCriterionPolicy(gate.ValidatorConfig{}, change.Validator)
+		return change
 	}
 	connectorAction := "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + chatGPTCriterion + "\n- " + claudeCriterion
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
@@ -157,6 +165,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		states        []connector.WorkflowState
 		statesErr     error
 		reviewed      *bool
+		reviewState   *connector.ChangeReview
 		updateErr     error
 		plain         bool
 		quotaWait     bool
@@ -302,6 +311,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "native publication authority failure is instance owned", states: workflow, runErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version lands directly without a dispatchable landing lane", change: accepted, states: undispatched, wantDirect: true},
+		{name: "unsatisfiable criterion preserves blocking finding", change: criterionReview("wait", 1, gate.Finding{Severity: "p1", Body: "Source defect"}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Source defect"}},
+		{name: "unsatisfiable criterion preserves minimum score", change: criterionReview("wait", .2), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
+		{name: "unsatisfiable criterion preserves explicit source rework", change: criterionReview("rework", 1), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
+		{name: "unsatisfiable criterion preserves published review findings", change: criterionReview("wait", 1), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "opened Change Request"},
+		{name: "unsatisfiable criterion preserves reported human action", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
+		{name: "unsatisfiable criterion preserves prerequisite owner", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
 		{name: "fixable criterion keeps Rework", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing screenshot", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
 		{name: "1245 production connectors block on first validator run", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction, roundTrip: true},
 		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction},
@@ -416,7 +431,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.blockerState != "" {
 				tick.resolvedIssues = []connector.Issue{{ID: "prerequisite", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#411", State: test.blockerState, Closed: test.blockerState == "Done"}}
 			}
-			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr, reviewed: test.reviewed}
+			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr, reviewed: test.reviewed, reviewState: test.reviewState}
 			if test.plain {
 				tracker = tick
 			}
