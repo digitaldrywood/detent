@@ -209,6 +209,13 @@ func (o *Orchestrator) completeNativeChangeRun(
 	validatorRework := change != nil && change.Validator != nil && change.Validator.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	implementationRework := change != nil && change.ImplementationReview != nil && change.ImplementationReview.Verdict == gate.ValidatorVerdictRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
 	auditRework := change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "rework" && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
+	if !blocked && !clearedBlockers && !reviewChangesRequested && !validatorRework && !implementationRework && !auditRework && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "") && change != nil && change.VersionError == "" && change.Validator != nil && change.Validator.Verdict == gate.ValidatorVerdictWait {
+		if criteria := change.Validator.UnsatisfiableCriteria(); len(criteria) > 0 {
+			event.Result.FinalState = runpkg.FinalStateNeedsHumanAttention
+			event.Result.FinalMessage = "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + strings.Join(criteria, "\n- ")
+			return o.handlePermissionWaitCompletion(ctx, state, event, running)
+		}
+	}
 	unfinished := reviewChangesRequested || auditRework || validatorRework || implementationRework || change != nil && reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusInProgress && len(report.Blockers) == 0 && report.HumanAction == ""
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {

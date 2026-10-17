@@ -323,6 +323,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "historical completed reviews cannot displace current evidence wait", reviewResume: "wait", staged: true, reviewEvidence: "older_pair"},
 		{name: "acceptance before latest source review remains missing evidence", reviewResume: "pass", staged: true, reviewEvidence: "pre_source_pass"},
 		{name: "latest source wait supersedes old passing review pair", reviewResume: "wait", staged: true, reviewEvidence: "source_wait_after_pair"},
+		{name: "rewritten unsatisfiable acceptance resumes retained source without coding", reviewResume: "pass", staged: true, reviewEvidence: "unsatisfiable_acceptance"},
 		{name: "latest acceptance wait supersedes old passing review pair", reviewResume: "pass", staged: true, reviewEvidence: "validator_wait_after_pair"},
 		{name: "latest acceptance findings supersede old passing review pair", reviewResume: "pass", staged: true, reviewEvidence: "validator_rework_after_pair", writableResume: true},
 		{name: "current acceptance findings before source pass still code", reviewResume: "pass", staged: true, reviewEvidence: "validator_rework_before_source", writableResume: true},
@@ -538,6 +539,11 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{acceptancePass, sourcePass}
 				case "source_wait_after_pair":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptancePass, review(true, gate.ValidatorVerdictWait, version.ID)}
+				case "unsatisfiable_acceptance":
+					acceptance := review(false, gate.ValidatorVerdictWait, version.ID)
+					acceptance.Validator.NotVerified = []string{"A real third-party client signs in against production"}
+					acceptance.Validator.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: acceptance.Validator.NotVerified[0], Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}}
+					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptance}
 				case "validator_wait_after_pair":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{sourcePass, acceptancePass, review(false, gate.ValidatorVerdictWait, version.ID)}
 				case "validator_rework_after_pair":
@@ -599,7 +605,14 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.source.Version.ID = "version_newer"
 				}
 
-				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: source, AutoBranch: true})
+				freshSource := filepath.Join(t.TempDir(), "source")
+				runRunnerGit(t, source, "clone", remote, freshSource)
+				runRunnerGit(t, freshSource, "remote", "set-url", "origin", "https://github.com/example-org/example-project")
+				runRunnerGit(t, freshSource, "config", "url."+remote+".insteadOf", "https://github.com/example-org/example-project")
+				runRunnerGit(t, freshSource, "config", "user.name", "Test User")
+				runRunnerGit(t, freshSource, "config", "user.email", "test@example.com")
+				runRunnerGit(t, freshSource, "config", "commit.gpgsign", "false")
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: freshSource, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
