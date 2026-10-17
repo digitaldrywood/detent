@@ -23,7 +23,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	issue := f.create(t, "bounded write")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	worker := f.worker(t, "bounded-worker")
-	var expired []tracker.NativeWorkItemID
+	var expired [2]tracker.NativeWorkItemID
 	for index := range 2 {
 		item := f.create(t, "Retained completed execution "+strconv.Itoa(index))
 		lease := claimNativeAttempt(t, f, worker, "bounded-machine-"+strconv.Itoa(index), "bounded-session-"+strconv.Itoa(index), item.WorkItemID)
@@ -34,9 +34,24 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 		event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "bounded-completed-"+strconv.Itoa(index), 2
 		event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: now}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
-		expired = append(expired, item.WorkItemID)
+		expired[index] = item.WorkItemID
 	}
 	drainTestNativeBoard(t, f.service)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_board_items SET expires_at=? WHERE work_item_id=?", now.UTC().Format("2006-01-02T15:04:05.000000000Z"), issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrationFiles.ReadFile("migrations/20261017153000_board_execution_expiry.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, _, _ := strings.Cut(string(migration), "-- +goose Down")
+	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+		t.Fatal(err)
+	}
+	var retainedExpiry int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_items WHERE work_item_id IN (?,?) AND expires_at<>''", expired[0], expired[1]).Scan(&retainedExpiry); err != nil || retainedExpiry != 2 {
+		t.Fatalf("migration retained expiry=%d want 2 err=%v", retainedExpiry, err)
+	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	var statements []string
 	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
@@ -95,13 +110,31 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 		t.Fatalf("request commit refreshed unrelated expired executions: retained=%d want 2", count)
 	}
 	for want := 1; want >= 0; want-- {
-		more, err := f.service.database.drainNativeBoardDirty(t.Context(), now)
+		statements = statements[:0]
+		more, err := f.service.database.drainNativeBoardDirty(ctx, now)
 		if err != nil || !more {
 			t.Fatalf("background expiry refresh: more=%v err=%v", more, err)
+		}
+		if len(statements) == 0 {
+			t.Fatal("background expiry refresh recorded no query")
+		}
+		plan := explainQueryPlan(t, f.service.database.reader, statements[0], []any{now.UTC().Format("2006-01-02T15:04:05.000000000Z")})
+		indexed := false
+		for _, detail := range plan {
+			if strings.Contains(detail, "SCAN native_board_items") || strings.Contains(detail, "TEMP B-TREE") {
+				t.Fatalf("unbounded background expiry discovery: %v", plan)
+			}
+			indexed = indexed || strings.Contains(detail, "native_board_expiry_idx")
+		}
+		if !indexed {
+			t.Fatalf("background expiry discovery lacks an expiry index: %v", plan)
 		}
 		if count := retained(); count != want {
 			t.Fatalf("background expiry refreshed more than one execution: retained=%d want %d", count, want)
 		}
+	}
+	if more, err := f.service.database.drainNativeBoardDirty(t.Context(), now); err != nil || more {
+		t.Fatalf("completed expiry refresh still has work: more=%v err=%v", more, err)
 	}
 }
 

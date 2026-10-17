@@ -32,10 +32,10 @@ func (s *Service) maintainNativeBoard(ctx context.Context) {
 
 func (d *database) drainNativeBoardDirty(ctx context.Context, now time.Time) (bool, error) {
 	var id string
-	err := d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM native_board_dirty
-UNION SELECT work_item_id FROM native_board_items
-WHERE (running=1 OR json_extract(record_json,'$.execution') IS NOT NULL) AND expires_at<=?
-ORDER BY work_item_id LIMIT 1`, now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
+	err := d.reader.QueryRowContext(ctx, `SELECT work_item_id FROM (SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id LIMIT 1)
+UNION ALL SELECT work_item_id FROM (SELECT work_item_id FROM native_board_items
+WHERE expires_at<>'' AND expires_at<=? ORDER BY expires_at,work_item_id LIMIT 1)
+LIMIT 1`, now.UTC().Format("2006-01-02T15:04:05.000000000Z")).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -187,9 +187,6 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 			closed = issue.ClosedAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		}
 		expires := ""
-		if current.Attempt != nil {
-			expires = current.Attempt.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
-		}
 		if current.Execution != nil {
 			expires = current.Execution.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z")
 		}
