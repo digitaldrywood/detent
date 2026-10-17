@@ -61,11 +61,11 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		r.Completion.Source = "host_native_completion"
 		r.Completion.Coverage = "recorded_host_completion_branch_only; independent_of_provider_disposition_and_claim_release"
 	}
-	if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed"}, r.Phase) || r.LocalAttemptID < 0 || len(r.Phases) > 128 || r.PhasesDropped < 0 {
+	if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, r.Phase) || r.LocalAttemptID < 0 || len(r.Phases) > 128 || r.PhasesDropped < 0 {
 		return nativeInvalid("Runtime observations require bounded phase and attempt identity")
 	}
 	for _, p := range r.Phases {
-		if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed"}, p.Name) || p.StartedAt.IsZero() || !p.FinishedAt.IsZero() && p.FinishedAt.Before(p.StartedAt) {
+		if !slices.Contains([]string{"implementation", "rework", "planning", "merging", "validation", "completed", "waiting_cache_admission", "waiting_cache_consumers"}, p.Name) || p.StartedAt.IsZero() || !p.FinishedAt.IsZero() && p.FinishedAt.Before(p.StartedAt) {
 			return nativeInvalid("Invalid runtime phase interval")
 		}
 	}

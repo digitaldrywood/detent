@@ -609,6 +609,9 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 						err = publisher.PrepareFinish(ctx, "succeeded", completion.Result.FinalMessage, nil)
 					}
 					if err != nil {
+						if record.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
+							err = fmt.Errorf("%w: %w", errNativeReviewPending, err)
+						}
 						o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, err)
 						if _, deferred := state.deferredCompletions[issueID]; deferred {
 							settled = false
@@ -617,6 +620,21 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 					}
 					if changes, ok := execution.(runpkg.ChangeExecution); ok {
 						completion.Result.NativeChange = changes.NativeChange()
+					}
+					if record.Availability.Class == string(gate.ReasonAutomatedReviewMissing) && completion.Result.NativeChange != nil {
+						change, review, err := o.refreshNativeChangeReview(ctx, issueID, completion.Result.NativeChange)
+						completion.Result.NativeChange = change
+						if err == nil && change.VersionError == "" && !change.Reviewed && !review.ChangesRequested {
+							err = o.continueNativeRun(ctx, state, completion, record.Running, true)
+							if err == nil {
+								continue
+							}
+						}
+						if err != nil {
+							o.deferTrackerUnavailableCompletion(ctx, state, completion, record.Running, fmt.Errorf("%w: %w", errNativeReviewPending, err))
+							settled = false
+							continue
+						}
 					}
 				}
 			}
