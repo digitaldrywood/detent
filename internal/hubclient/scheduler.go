@@ -363,6 +363,11 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 			retain = s.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 			native.execution.mu.Unlock()
 		}
+		if native.execution != nil {
+			if err := native.execution.closeWorkers(ctx); err != nil {
+				return errors.Join(finishErr, err)
+			}
+		}
 		if !retain {
 			err = native.source.client.Release(ctx, native.lease, "released")
 		}

@@ -80,6 +80,7 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
+	WorkerLaunch    *NativeWorkerLaunch              `json:"worker_launch,omitempty"`
 	Pipeline        []gate.PipelineTiming            `json:"pipeline,omitempty"`
 	PipelineDropped int                              `json:"pipeline_dropped,omitempty"`
 	Validation      *gate.CommandResult              `json:"validation,omitempty"`
@@ -96,6 +97,20 @@ type NativeRuntimeObservation struct {
 	Landing         *NativeLandingReceipt            `json:"landing,omitempty"`
 	REST            *NativeRESTEvidence              `json:"rest,omitempty"`
 	GitHub          *NativeGitHubScope               `json:"github,omitempty"`
+}
+
+type NativeWorkerLaunch struct {
+	PID              int       `json:"pid"`
+	GroupID          int       `json:"pgid"`
+	ProcessStart     time.Time `json:"process_start"`
+	ExecutionVersion string    `json:"execution_version"`
+	ExecutionCommit  string    `json:"execution_commit"`
+	ExecutionSHA256  string    `json:"execution_sha256"`
+	ControlVersion   string    `json:"control_version"`
+	PolicyID         string    `json:"policy_id"`
+	PolicyRevision   string    `json:"policy_revision"`
+	Protocol         int       `json:"protocol"`
+	SelectedAt       time.Time `json:"selected_at"`
 }
 
 type NativeRecoveryDecision struct {
@@ -359,7 +374,33 @@ type NativeRuntimeCapacity struct {
 	Exclusions       []string                `json:"exclusions"`
 }
 
+type NativeRecoveryPage struct {
+	NativeReference
+	Section    string `json:"section"`
+	RecordID   string `json:"record_id,omitempty"`
+	VersionID  string `json:"version_id,omitempty"`
+	Data       []byte `json:"data"`
+	SHA256     string `json:"sha256"`
+	NextCursor string `json:"next_cursor,omitempty"`
+	Offset     int64  `json:"offset"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+type NativeRecoveryRead struct {
+	DetailPath string                  `json:"detail_path"`
+	Omitted    []string                `json:"omitted"`
+	IssueBody  *NativeRecoveryBodyRead `json:"issue_body,omitempty"`
+}
+
+type NativeRecoveryBodyRead struct {
+	Cursor     string `json:"cursor"`
+	SHA256     string `json:"sha256"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
 type NativeRecovery struct {
+	Read            *NativeRecoveryRead    `json:"read,omitempty"`
+	Continuation    *NativeRecoveryPage    `json:"continuation,omitempty"`
 	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
 	Lease           NativeLease            `json:"lease"`
 	Issue           NativeIssue            `json:"issue"`

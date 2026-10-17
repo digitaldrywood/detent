@@ -109,6 +109,12 @@ func newNativeWebServer(t *testing.T) (*web.Server, *nativeWebFixture) {
 				}
 			case "/work-items/wi_example":
 				response = fixture.issue
+				if r.URL.Query().Get("view") == "recovery" {
+					if r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("cursor") != "retained-cursor" {
+						t.Error("native recovery selectors were dropped")
+					}
+					response = tracker.NativeRecovery{Continuation: &tracker.NativeRecoveryPage{NativeReference: fixture.issue.NativeReference, Section: "discussion", RecordID: "retained-record", Data: []byte("{}"), TotalBytes: 2}}
+				}
 			case "/work-items/wi_visible":
 				response = tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_visible", OrganizationID: "org_example", ProjectID: "prj_example"}, Title: "Visible peer"}
 			case "/work-items/wi_example/history":

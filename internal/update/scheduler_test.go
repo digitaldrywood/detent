@@ -311,7 +311,7 @@ func TestSchedulerDrainPolicy(t *testing.T) {
 		wantPendingBefore bool
 		wantIdleCalls     int
 	}{
-		{name: "busy runtime force drains at cap", advance: 2 * time.Hour, wantPendingBefore: true, wantIdleCalls: 1},
+		{name: "busy runtime remains pending after cap", advance: 2 * time.Hour, wantPendingBefore: true, wantIdleCalls: 2},
 		{name: "critical release drains immediately", critical: true},
 	}
 
@@ -379,6 +379,12 @@ func TestSchedulerDrainPolicy(t *testing.T) {
 				}
 			}
 
+			if !tt.critical {
+				if idleCalls != tt.wantIdleCalls || drainCalls != 0 || updater.applyCalls != 0 || scheduler.Status().State != "pending_idle" {
+					t.Fatalf("routine update drained a busy runtime: Idle=%d Drain=%d Apply=%d status=%+v", idleCalls, drainCalls, updater.applyCalls, scheduler.Status())
+				}
+				return
+			}
 			if idleCalls != tt.wantIdleCalls || drainCalls != 1 || updater.applyCalls != 1 {
 				t.Fatalf("calls: Idle=%d Drain=%d Apply=%d, want %d/1/1", idleCalls, drainCalls, updater.applyCalls, tt.wantIdleCalls)
 			}
@@ -392,7 +398,7 @@ func TestSchedulerDrainPolicy(t *testing.T) {
 	}
 }
 
-func TestSchedulerApplyPendingWaitsForBothAttempts(t *testing.T) {
+func TestSchedulerCriticalApplyWaitsForBothAttempts(t *testing.T) {
 	t.Parallel()
 
 	completed := make(chan struct{})
@@ -400,6 +406,7 @@ func TestSchedulerApplyPendingWaitsForBothAttempts(t *testing.T) {
 	done := make(chan error, 1)
 	updater := &schedulerUpdaterStub{
 		checkStatus: Status{
+			Critical:        true,
 			CurrentVersion:  "1.2.3",
 			LatestVersion:   "1.2.4",
 			UpdateAvailable: true,
@@ -440,9 +447,11 @@ func TestSchedulerApplyPendingWaitsForBothAttempts(t *testing.T) {
 	if _, err := scheduler.ApplyPending(context.Background()); !errors.Is(err, ErrNoPendingUpdate) {
 		t.Fatalf("ApplyPending() before check error = %v, want %v", err, ErrNoPendingUpdate)
 	}
-	if _, err := scheduler.CheckNow(context.Background()); err != nil {
-		t.Fatalf("CheckNow() error = %v", err)
-	}
+	scheduler.updateStatus(func(status *AutoStatus) {
+		status.State = "pending_idle"
+		status.AvailableVersion = "1.2.4"
+		status.Critical = true
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go func() {
@@ -788,7 +797,7 @@ func TestSchedulerRestartPreservesPendingDeferral(t *testing.T) {
 		restartAdvance   time.Duration
 		wantIdleCalls    int
 	}{
-		{name: "busy runtime keeps original deadline", restartAdvance: 2 * time.Hour},
+		{name: "busy runtime does not drain after restart", restartAdvance: 2 * time.Hour, wantIdleCalls: 1},
 		{name: "critical release retries drain immediately", critical: true, initialDrainFail: true},
 	}
 
@@ -866,6 +875,12 @@ func TestSchedulerRestartPreservesPendingDeferral(t *testing.T) {
 			}
 			if _, err := restarted.applyWhenIdle(context.Background()); err != nil {
 				t.Fatalf("applyWhenIdle() error = %v", err)
+			}
+			if !tt.critical {
+				if idleCalls != tt.wantIdleCalls || drainCalls != 0 || updater.applyCalls != 0 {
+					t.Fatalf("routine restart update drained: Idle=%d Drain=%d Apply=%d", idleCalls, drainCalls, updater.applyCalls)
+				}
+				return
 			}
 			if idleCalls != tt.wantIdleCalls || drainCalls != 1 || updater.applyCalls != 1 {
 				t.Fatalf("calls: Idle=%d Drain=%d Apply=%d, want %d/1/1", idleCalls, drainCalls, updater.applyCalls, tt.wantIdleCalls)
@@ -1101,19 +1116,25 @@ func schedulerDrainReservation(context.Context) (func(), error) {
 	return func() {}, nil
 }
 
-func TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled(t *testing.T) {
+func TestSchedulerExplicitReleaseWithoutWorkerArtifacts(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name      string
+		critical  bool
+		checkErr  error
 		drainErr  error
+		wantErr   error
+		wantDrain bool
 		wantCalls int
 	}{
-		{"drained", nil, 1},
-		{"drain failed", context.Canceled, 0},
+		{name: "critical drained", critical: true, wantDrain: true, wantCalls: 1},
+		{name: "critical drain failed", critical: true, drainErr: context.Canceled, wantErr: context.Canceled, wantDrain: true},
+		{name: "ordinary busy request refused", wantErr: ErrRefused},
+		{name: "release discovery failure", checkErr: context.DeadlineExceeded, wantErr: context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			drained := false
-			updater := &schedulerUpdaterStub{applyStatus: Status{Action: ActionUpdated, Binary: "/fixture/detent"}}
+			updater := &schedulerUpdaterStub{checkStatus: Status{Critical: test.critical}, checkErr: test.checkErr, applyStatus: Status{Action: ActionUpdated, Binary: "/fixture/detent"}}
 			scheduler, err := NewScheduler(SchedulerConfig{
 				CheckInterval: time.Hour, Updater: updater,
 				ReserveDrain: func(context.Context) (func(), error) { drained = true; return func() {}, test.drainErr },
@@ -1128,13 +1149,13 @@ func TestSchedulerExplicitReleaseDrainsWhenAutomaticUpdatesDisabled(t *testing.T
 				t.Fatal(err)
 			}
 			_, err = scheduler.ApplyRelease(t.Context(), true)
-			if !errors.Is(err, test.drainErr) {
+			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("error = %v", err)
 			}
 			if len(updater.applyOptions) > 0 && !updater.applyOptions[0].FromRelease {
 				t.Error("explicit release option lost")
 			}
-			if !drained || updater.applyCalls != test.wantCalls {
+			if drained != test.wantDrain || updater.applyCalls != test.wantCalls {
 				t.Fatalf("drained=%t calls=%d", drained, updater.applyCalls)
 			}
 		})

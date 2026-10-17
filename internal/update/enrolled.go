@@ -16,14 +16,16 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	if request == nil {
 		if s.operationMu.TryLock() {
-			if s.enrolledDiscovery == "" && s.cfg.Updater != nil {
+			lastCheck := s.Status().LastCheckAt
+			refresh := s.cfg.WorkerArtifacts != nil && !s.cfg.Enabled && (lastCheck == nil || !s.cfg.Now().Before(lastCheck.Add(s.cfg.CheckInterval)))
+			if (s.enrolledDiscovery == "" || refresh) && s.cfg.Updater != nil {
 				s.updateStatus(func(*AutoStatus) { s.enrolledDiscovery = "unknown" })
 				if !s.cfg.Enabled {
+					checkedAt := s.cfg.Now().UTC()
+					s.updateStatus(func(status *AutoStatus) { status.LastCheckAt = &checkedAt })
 					checked, err := s.cfg.Updater.Check(ctx)
 					if err == nil {
 						s.updateStatus(func(status *AutoStatus) {
-							checkedAt := s.cfg.Now().UTC()
-							status.LastCheckAt = &checkedAt
 							status.LastError = ""
 							if checked.UpdateAvailable {
 								s.enrolledDiscovery = "available"
@@ -106,7 +108,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		}
 		return s.enrolledObservation(running)
 	}
-	receipt.Status = "draining"
+	receipt.Status = "applying"
 	receipt.FailureReason = ""
 	s.setEnrolledReceipt(receipt)
 	if s.persistCurrentState() != nil {
@@ -117,7 +119,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	opts.FromRelease = request.FromRelease
 	opts.Urgent = request.Urgent
 	opts.FollowHub = request.FollowHub
-	applied, err := s.drainAndApplyWithOptionsLocked(ctx, opts)
+	applied, err := s.applyRequestedLocked(ctx, opts)
 	if err != nil || applied.Action != ActionUpdated || applied.FailureReason != "" {
 		receipt.Status = "refused"
 		if applied.Action == ActionUpdated {
@@ -223,12 +225,13 @@ func cloneEnrolledReceipt(receipt *runnerauth.UpdateReceipt) *runnerauth.UpdateR
 	return &copy
 }
 
-func (s *Scheduler) recordEnrolledApplied(applied Status) {
+func (s *Scheduler) recordEnrolledApplied(applied Status, executionArtifact bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.enrolledReceipt == nil || s.enrolledReceipt.Status != "draining" {
+	if s.enrolledReceipt == nil || s.enrolledReceipt.Status != "draining" && s.enrolledReceipt.Status != "applying" {
 		return
 	}
+	s.enrolledReceipt.ExecutionArtifact = executionArtifact
 	s.enrolledReceipt.Status = "applied"
 	s.enrolledReceipt.ObservedAt = s.cfg.Now().UTC()
 	s.enrolledReceipt.Applied = &runnerauth.BuildEvidence{

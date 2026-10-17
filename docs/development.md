@@ -178,6 +178,83 @@ coverage for now is the goleak-backed test gate.
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contributor workflow.
 
 
+## Ephemeral execution workers
+
+A release-installed controller launches local work through the existing private
+worker transport. Every attempt resolves the release list again. At the launch
+selection boundary, the release response is snapshotted and the effective
+workflow and its policy revision are captured before downloading or starting the
+worker. The policy must match the existing claim; a mismatch refuses this launch
+through instance failure handling so a retry can acquire the current policy.
+This is a recorded local selection, not a transaction spanning release and policy
+publication. Publications after selection affect the next attempt. A retry
+selects again; inline phases of the same attempt retain and verify its original
+artifact and workflow, including after newer releases or policies appear.
+
+Checksums, signatures, release provenance, binary identity and the host platform
+are verified before a child starts. Verified archives are reused locally, but
+metadata and verification remain required for a new attempt. If release discovery,
+download, signature verification, platform selection or policy resolution fails,
+that launch fails as instance infrastructure; active workers continue. An
+unavailable release source does not authorize a cached older release fallback.
+Retaining an artifact for an existing attempt checks its captured binary digest
+without selecting a different release.
+Corrupt cached archives are evicted and fetched through the same signature and
+checksum verification path. Archive ownership follows the associated execution
+artifact; obsolete archives are removed after their final owner exits.
+
+Ordinary approved policy changes flow through project reconciliation or managed
+policy application without pausing the project or waiting for active attempts.
+Only new claims and launches use the updated workflow; captured continuations
+keep their original workflow. Isolation-changing local binding operations still
+use their existing settled-work contract. Refused reloads record their complete
+error chain through the existing workflow reload diagnostics.
+
+The existing private worker protocol is version 4. It includes typed session
+process registration and cleanup scoped to one channel. A controller can launch
+any newer verified execution release advertising this protocol on its platform;
+its own build number is not a compatibility ceiling. Children never open the
+controller's SQLite store, run migrations, claim work, renew leases or publish a
+competing completion. The controller performs these operations and all Hub
+communication under the captured lease and fence. Authentication, grants,
+revocations and emergency controls remain live even when ordinary policy is
+captured. Local provider process records stay in the controller's existing
+journal and reaper; remote SSH process IDs remain remote.
+
+On Linux and macOS the execution child has a dedicated process group and owned
+output pipes. The controller observes parent exit independently of inherited
+output descriptors. It keeps the channel, immutable artifact and any managed Go
+cache consumer lock through finalization and cleanup. Paid provider descendants
+use the existing journaled process identities, process-group termination and
+scratch cleanup. A provider result is not completion: failed outcome delivery
+retains the existing completion owner and capacity for its normal retry. Cleanup
+must finish before the claim owner releases capacity. Old artifacts are pruned
+only when their final owner releases them; the selected latest artifact remains a
+cache. Compatible versions share this typed protocol and the existing managed
+cache admission/consumer file locks, rather than a shared SQLite schema.
+
+Routine automatic, explicit and Hub-requested updates prepare verified execution
+artifacts without draining. An idle reservation may install and restart the
+controller through the existing supervisor; active attempts keep their processes.
+The controller otherwise remains on its captured build while newer compatible
+workers use free slots. The existing exceptional drain replaces the controller
+only for release metadata identifying a critical security update or a verified
+worker reporting an incompatible protocol. Its log records the reason and runner
+scope. Intentional operator maintenance drains retain their existing owner;
+urgent requests, following the Hub and an elapsed deferral period are not
+compatibility requirements.
+
+Existing update receipts distinguish the running controller from an applied
+execution artifact. An applied receipt with `execution_artifact: true` settles
+preparation without claiming the controller restarted; newer ordinary and
+follow-Hub requests can replace it while active work retains the older controller.
+Enrolled update discovery refreshes on its existing check interval so subsequent
+ordinary requests can select newer available releases.
+Existing attempt runtime reads expose `worker_launch` with
+the selected execution version, commit, digest, protocol, captured policy ID and
+revision, selection time and observed process identity. These are provenance in
+the existing reads, not another dashboard surface or state owner.
+
 ## Concurrent migrations and generated files
 
 New Goose SQL migrations in `internal/store/migrations` and
