@@ -639,11 +639,19 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 			return clearPendingUpdate(opts.RecoveryStatePath, status.LatestVersion)
 		}
 	}
+	installed := binary
 	replacement.AfterReplace = func(_ context.Context, target string) error {
+		if s.cfg.GOOS != "windows" {
+			installed, err = os.ReadFile(target)
+			if err != nil {
+				return fmt.Errorf("read verified installed binary: %w", err)
+			}
+		}
+		sum := sha256.Sum256(installed)
 		return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
 			HomeDir: s.cfg.HomeDir,
 			Env:     s.cfg.Env,
-		}, target, status.LatestVersion, manifest.Commit)
+		}, target, status.LatestVersion, manifest.Commit, hex.EncodeToString(sum[:]))
 	}
 	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
@@ -651,15 +659,8 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return status, err
 	}
 
-	installed := binary
 	if s.cfg.GOOS == "windows" {
 		status.ReplacementPending = true
-	} else {
-		installed, err = os.ReadFile(s.cfg.ExecutablePath)
-		if err != nil {
-			status.Action = ActionUpdated
-			return status, err
-		}
 	}
 	sum := sha256.Sum256(installed)
 	status.BinarySHA256 = hex.EncodeToString(sum[:])
@@ -1869,6 +1870,7 @@ type installLockMetadata struct {
 	binary  string
 	version string
 	commit  string
+	sha256  string
 }
 
 func readInstallLock(path string) (installLockMetadata, bool) {
@@ -1890,6 +1892,8 @@ func readInstallLock(path string) (installLockMetadata, bool) {
 			metadata.version = value
 		case "commit":
 			metadata.commit = value
+		case "sha256":
+			metadata.sha256 = value
 		}
 	}
 	return metadata, metadata.binary != ""
@@ -1919,12 +1923,12 @@ func InstalledReleaseVersion(opts DetectionOptions) string {
 	return ""
 }
 
-func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string, commit string) error {
+func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string, version string, commit string, binarySHA256 string) error {
 	lockPath, ok := installLockPath(goos, opts)
 	if !ok {
 		return errors.New("resolve release install lock path: home directory is unavailable")
 	}
-	return writeInstallLock(lockPath, binary, version, commit, time.Now().UTC())
+	return writeInstallLock(lockPath, binary, version, commit, time.Now().UTC(), binarySHA256)
 }
 
 type installLockSnapshot struct {
@@ -1962,7 +1966,7 @@ func installLockPath(goos string, opts DetectionOptions) (string, bool) {
 	return "", false
 }
 
-func writeInstallLock(path string, binary string, version string, commit string, installedAt time.Time) error {
+func writeInstallLock(path string, binary string, version string, commit string, installedAt time.Time, binarySHA256 string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("install lock path is required")
 	}
@@ -1973,6 +1977,9 @@ func writeInstallLock(path string, binary string, version string, commit string,
 		return errors.New("install lock commit is required")
 	}
 	raw := fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\ninstalled_at=%s\n", binary, strings.TrimSpace(version), strings.TrimSpace(commit), installedAt.UTC().Format(time.RFC3339))
+	if binarySHA256 != "" {
+		raw += "sha256=" + binarySHA256 + "\n"
+	}
 	return writeInstallLockContents(path, raw)
 }
 
