@@ -198,6 +198,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			t.Errorf("stdin EOF = %v, error = %v", eof, err)
 			return
 		}
+		if provider.stage != nil {
+			provider.stage("exec")
+		}
 		if !strings.Contains(string(script), provider.token) || strings.Contains(r.URL.RawQuery, provider.token) {
 			t.Error("fresh enrollment must travel only through stdin")
 		}
@@ -1302,28 +1305,51 @@ func TestProjectSpriteDrain(t *testing.T) {
 }
 
 func TestProjectSpriteProvisioningRecovery(t *testing.T) {
-	t.Run("failed provisioning stops after bounded attempts", func(t *testing.T) {
-		f, scope, provider := newSpritePoolFixture(t, "bootstrap")
-		allocation := setSpriteAllocationFixture(t, f, 1, 0)
-		for range spriteProvisionAttempts + 2 {
-			_ = f.service.scaleSpritePool(t.Context(), scope, false)
-		}
-		provider.fail = ""
-		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
-			t.Fatal(err)
-		}
-		held, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
-		if err != nil || held.ProvisionFailures != spriteProvisionAttempts || len(provider.created) != spriteProvisionAttempts || len(provider.deleted) != spriteProvisionAttempts {
-			t.Fatalf("allocation=%+v created=%d deleted=%d err=%v", held, len(provider.created), len(provider.deleted), err)
-		}
-		setSpriteAllocationFixture(t, f, 1, allocation.Revision)
-		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
-			t.Fatal(err)
-		}
-		if members := projectSpriteMembers(t, f, scope); len(members) != 1 || members[0].State != "enrolled" || len(provider.created) != spriteProvisionAttempts+1 {
-			t.Fatalf("retry after new request members=%+v created=%d", members, len(provider.created))
-		}
-	})
+	for _, test := range []struct {
+		name    string
+		rewrite bool
+		created int
+	}{
+		{"failed provisioning stops after bounded attempts", false, spriteProvisionAttempts},
+		{"a rewrite during an attempt keeps every attempt for the new request", true, spriteProvisionAttempts + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "bootstrap")
+			allocation := setSpriteAllocationFixture(t, f, 1, 0)
+			if test.rewrite {
+				var rewrite sync.Once
+				provider.stage = func(stage string) {
+					if stage == "exec" {
+						rewrite.Do(func() { setSpriteAllocationFixture(t, f, 1, allocation.Revision) })
+					}
+				}
+				_ = f.service.scaleSpritePool(t.Context(), scope, false)
+				provider.stage = nil
+				rewritten, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+				if err != nil || rewritten.Revision != 2 || rewritten.ProvisionFailures != 0 {
+					t.Fatalf("old attempt charged the rewritten request: %+v err=%v", rewritten, err)
+				}
+			}
+			for range spriteProvisionAttempts + 2 {
+				_ = f.service.scaleSpritePool(t.Context(), scope, false)
+			}
+			provider.fail = ""
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			held, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+			if err != nil || held.ProvisionFailures != spriteProvisionAttempts || len(provider.created) != test.created || len(provider.deleted) != test.created {
+				t.Fatalf("allocation=%+v created=%d deleted=%d err=%v", held, len(provider.created), len(provider.deleted), err)
+			}
+			setSpriteAllocationFixture(t, f, 1, held.Revision)
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			if members := projectSpriteMembers(t, f, scope); len(members) != 1 || members[0].State != "enrolled" || len(provider.created) != test.created+1 {
+				t.Fatalf("retry after new request members=%+v created=%d", members, len(provider.created))
+			}
+		})
+	}
 	t.Run("Hub restart releases an interrupted reservation", func(t *testing.T) {
 		f, scope, provider := newSpritePoolFixture(t, "")
 		setSpriteAllocationFixture(t, f, 1, 0)

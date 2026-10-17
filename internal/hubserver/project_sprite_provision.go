@@ -134,6 +134,7 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 	if err != nil {
 		return false, err
 	}
+	var allocationRevision tracker.Revision
 	for _, project := range projects {
 		allocationScope := scope
 		allocationScope.project = project
@@ -158,6 +159,7 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 			}
 			scope.project = project
 			settings.MinRunners = allocation.DesiredCount
+			allocationRevision = allocation.Revision
 			break
 		}
 	}
@@ -208,7 +210,7 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 	if err != nil {
 		return false, err
 	}
-	inserted, err := tx.ExecContext(ctx, `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id) SELECT ?,?,organization_slug,?,'bootstrapping',?,?,? FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, name, enrollment.ID, formatHubTime(now), formatHubTime(now), scope.project, scope.organization, flySpritesToken)
+	inserted, err := tx.ExecContext(ctx, `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at,allocation_project_id,allocation_revision) SELECT ?,?,organization_slug,?,'bootstrapping',?,?,?,? FROM organization_secrets WHERE organization_id=? AND kind=?`, scope.organization, name, enrollment.ID, formatHubTime(now), formatHubTime(now), scope.project, allocationRevision, scope.organization, flySpritesToken)
 	if err := requireRunnerUpdate(inserted, err); err != nil {
 		return false, err
 	}
@@ -290,7 +292,7 @@ func (s *Service) retirePoolSpriteReservation(ctx context.Context, scope nativeS
 		return err
 	}
 	if changed > 0 && failed {
-		if _, err := tx.ExecContext(ctx, `UPDATE project_sprite_allocations SET provision_failures=provision_failures+1 WHERE organization_id=? AND project_id=(SELECT allocation_project_id FROM organization_sprite_members WHERE organization_id=? AND name=?)`, scope.organization, scope.organization, name); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE project_sprite_allocations SET provision_failures=provision_failures+1 WHERE organization_id=? AND EXISTS(SELECT 1 FROM organization_sprite_members m WHERE m.organization_id=project_sprite_allocations.organization_id AND m.name=? AND m.allocation_project_id=project_sprite_allocations.project_id AND m.allocation_revision=project_sprite_allocations.revision)`, scope.organization, name); err != nil {
 			return err
 		}
 	}
