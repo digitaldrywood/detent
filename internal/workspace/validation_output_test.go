@@ -44,6 +44,54 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		{name: "replacement crosses byte budget", output: strings.Repeat("a", limit-1) + "\xff", command: "cat output.txt", truncated: true},
 		{name: "failed command preserves unicode tail", output: strings.Repeat("✓", 32*1024) + "end\n", command: "cat output.txt; exit 7", exit: 7, truncated: true},
 		{
+			name: "early migration repository stage survives public receipt",
+			output: strings.Repeat("ok repository setup\n", 300) + "./scripts/check-migration-order.sh dev\nMIGRATION ORDERING CONFLICT DETECTED!\nmigrations/20261017090000_example.sql is below dev migration 20261017100000_other.sql\ncheck-fast-stage stage=repository exit_status=1\n" +
+				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
+				strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"./scripts/check-migration-order.sh dev", "MIGRATION ORDERING CONFLICT DETECTED!", "20261017090000_example.sql", "stage=repository exit_status=1"},
+		},
+		{
+			name: "early make target survives public receipt",
+			output: strings.Repeat("ok repository setup\n", 300) + "make[1]: *** [check-migrations] Error 1\n" +
+				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
+				strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"make[1]: *** [check-migrations] Error 1"},
+		},
+		{
+			name: "early stage exit survives public receipt",
+			output: strings.Repeat("ok repository setup\n", 300) + "[check-fast-stage] stage=repository command=check-repository exit_status=2\n" +
+				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
+				strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"stage=repository command=check-repository exit_status=2"},
+		},
+		{
+			name: "early TypeScript compiler survives public receipt",
+			output: strings.Repeat("ok repository setup\n", 300) + "src/widget.ts(12,7): error TS2322: Type 'string' is not assignable to type 'number'.\n" +
+				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
+				strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"src/widget.ts(12,7): error TS2322"},
+		},
+		{
+			name: "early bundler survives public receipt",
+			output: strings.Repeat("ok repository setup\n", 300) + "✘ [ERROR] Could not resolve \"./missing\"\n    src/widget.tsx:12:7\n" +
+				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
+				strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"[ERROR] Could not resolve \"./missing\"", "src/widget.tsx:12:7"},
+		},
+		{
+			name: "early npm build survives public receipt",
+			output: strings.Repeat("ok repository setup\n", 300) + "npm error code ELIFECYCLE\nnpm error command failed: npm run build\n" +
+				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
+				strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"npm error code ELIFECYCLE", "npm error command failed: npm run build"},
+		},
+		{
 			name: "early Go timeout survives public receipt",
 			output: strings.Repeat("ok example.org/build\n", 100) +
 				"panic: test timed out after 1m0s\nrunning tests:\n\tTestWorker/世界 (1m0s)\n" +
