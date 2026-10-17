@@ -28,9 +28,29 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 	if err != nil {
 		return result, err
 	}
-	err = c.client.request(ctx, http.MethodGet, c.base()+path+"?view=recovery", nil, &result)
+	err = c.client.requestWithHeaders(ctx, http.MethodGet, c.base()+path+"?view=recovery", http.Header{"X-Detent-Recovery-Projection": {"bounded"}}, nil, &result)
+	if err == nil && result.Continuation != nil {
+		return tracker.NativeRecovery{}, errors.New("read recovery: unbounded detail continuation is not candidate hydration")
+	}
 	if err == nil && (result.Issue.OrganizationID != c.organization || result.Issue.ProjectID != c.project || result.Issue.WorkItemID != id) {
 		return result, errors.New("read recovery: scoped work item is missing")
 	}
 	return result, err
+}
+
+func (c *NativeClient) RecoveryEvidence(ctx context.Context, id tracker.NativeWorkItemID, cursor string) (tracker.NativeRecoveryPage, error) {
+	path, err := nativeItemPath(id)
+	if err != nil {
+		return tracker.NativeRecoveryPage{}, err
+	}
+	params := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {cursor}}
+	var result tracker.NativeRecovery
+	if err := c.client.request(ctx, http.MethodGet, c.base()+path+"?"+params.Encode(), nil, &result); err != nil {
+		return tracker.NativeRecoveryPage{}, err
+	}
+	page := result.Continuation
+	if page == nil || page.OrganizationID != c.organization || page.ProjectID != c.project || page.WorkItemID != id || len(page.Data) > 256<<10 || page.Offset < 0 || page.TotalBytes < page.Offset || int64(len(page.Data)) > page.TotalBytes-page.Offset {
+		return tracker.NativeRecoveryPage{}, errors.New("read recovery evidence: incomplete or mismatched record")
+	}
+	return *page, nil
 }

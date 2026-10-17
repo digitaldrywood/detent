@@ -1183,9 +1183,11 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		runtimeBytes int
+		bounded      bool
 	}{
 		{name: "small recovery", runtimeBytes: 10},
 		{name: "oversized runtime evidence", runtimeBytes: 2 << 20},
+		{name: "bounded evidence requires host detail reads", runtimeBytes: 10, bounded: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			execution := &testExecution{recovery: tracker.NativeRecovery{
@@ -1203,9 +1205,15 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 					},
 				}},
 			}}
+			if test.bounded {
+				execution.recovery.Read = &tracker.NativeRecoveryRead{DetailPath: "scoped recovery evidence", Omitted: []string{"discussion", "change_detail.reviews"}}
+			}
 			prompt, err := nativeRecoveryPrompt(execution)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.bounded && (!strings.Contains(prompt, "Before acting on the omitted") || !strings.Contains(prompt, "following every returned section cursor") || !strings.Contains(prompt, "scoped recovery evidence") || !strings.Contains(prompt, "call work_item") || !strings.Contains(prompt, "view=recovery")) {
+				t.Fatal("bounded recovery was not wired to scoped detail consumers")
 			}
 			if len(prompt) > 16384 {
 				t.Fatalf("recovery prompt = %d bytes, runtime evidence was re-inlined", len(prompt))
