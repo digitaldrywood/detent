@@ -1556,7 +1556,6 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	scheduleConfig := p.scheduleConfig
 	globalDispatchGate := p.orchDeps.GlobalDispatchGate
 	scheduling := p.policyScheduling
-	previousPolicy := p.workflow.Config.Policy
 	p.mu.Unlock()
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = applyProjectAgentDefaults(workflow.Config, projectConfig)
@@ -1565,21 +1564,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 		return p.workflowReloadError("repository policy reload rejected", update.Path, err)
 	}
 	if managed && update.Workflow.Config.Policy.ID != "" && (workflow.Config.Policy.ID != update.Workflow.Config.Policy.ID || workflow.Config.Policy.SourceRevision != update.Workflow.Config.Policy.SourceRevision) {
-		return errors.New("the approved policy changed during application; read the current policy before retrying")
-	}
-	if previousPolicy.ID != "" && previousPolicy.ID != workflow.Config.Policy.ID && !previousPolicy.SameAuthoredInputs(workflow.Config.Policy) {
-		if !managed && workflow.Config.Policy.Configuration == nil {
-			return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("policy_mismatch: effective policy changed; apply the approved revision through the selected configuration owner after current work finishes"))
-		}
-		var err error
-		if !managed && workflow.Config.Policy.Configuration != nil {
-			err = p.requireSettledAttempts(ctx)
-		} else {
-			err = p.requireSettledWork(ctx)
-		}
-		if err != nil {
-			return err
-		}
+		return p.workflowReloadError("repository policy reload rejected", update.Path, errors.New("the approved policy changed during application; read the current policy before retrying"))
 	}
 	workflowActiveHours := workflow.Config.ActiveHours.Normalize()
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)

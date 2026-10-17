@@ -25,6 +25,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -32,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -210,7 +212,21 @@ func (f workerHubTransport) RoundTrip(request *http.Request) (*http.Response, er
 	return f(request)
 }
 
-func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, policy.Descriptor, func(string) connector.Issue, func()) {
+const localWorkerWorkflow = "---\ntracker:\n  kind: hub_native\nworker:\n  github_token: fixture-token\ngate:\n  run: true\n---\nRun the fixture.\n"
+
+type localWorkerPolicyScheduling struct{ *hubclient.Scheduler }
+
+func (s localWorkerPolicyScheduling) FetchCandidateIssues(context.Context, orchestrator.SchedulingRequest) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+type localWorkerPolicyWatcher struct{ updates <-chan configwatcher.Update }
+
+func (w localWorkerPolicyWatcher) Watch(context.Context) (<-chan configwatcher.Update, error) {
+	return w.updates, nil
+}
+
+func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	t.Helper()
 	const adminToken = "fixture-admin"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
@@ -270,8 +286,15 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor := policy.Descriptor{SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
-		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"}}.WithID()
+	workflow, err := config.ParseWorkflow([]byte(localWorkerWorkflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := projectpkg.ResolvePolicy(globalconfig.Project{ID: "local"}, workflow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow.Config.Policy = descriptor
 	if _, err := native.ApproveProjectPolicy(t.Context(), policy.Change{Policy: descriptor}); err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +360,7 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 		}
 		return connector.Issue{ID: string(issue.WorkItemID), Title: name, State: issue.State}
 	}
-	return scheduler, native, connection, descriptor, create, func() { request(http.MethodDelete, "/api/v1/tokens/"+token.ID, nil, nil) }
+	return scheduler, native, connection, workflow, create, func() { request(http.MethodDelete, "/api/v1/tokens/"+token.ID, nil, nil) }
 }
 
 func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
@@ -349,20 +372,79 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
-	scheduler, native, connection, descriptor, create, revoke := localWorkerHub(t)
+	scheduler, native, connection, workflow, create, revoke := localWorkerHub(t)
+	descriptor := workflow.Config.Policy
 	artifacts, publish, cacheRoot := localWorkerArtifacts(t)
 	publish("1.0.0")
-	cfg := config.Default()
-	cfg.Policy = descriptor
-	cfg.Worker.GitHubToken = "fixture-token"
-	cfg.Tracker.APIKey = "fixture-token"
-	workflow := config.Workflow{Config: cfg, Prompt: "Run the fixture."}
 	built, err := buildRunner(workflow, "local", t.TempDir(), globalconfig.Memory{}, gobudget.Budget{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), serviceapi.Connection{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	run := built.(*sshRunner)
 	run.artifacts = artifacts
+	policyUpdates := make(chan configwatcher.Update)
+	root := t.TempDir()
+	path := filepath.Join(root, "WORKFLOW.md")
+	if err := os.WriteFile(path, []byte(localWorkerWorkflow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := projectpkg.New(projectpkg.Config{Project: globalconfig.Project{ID: "local", Workdir: root, Workflow: path}, Workflow: workflow}, projectpkg.Dependencies{
+		Runner: run, Scheduling: localWorkerPolicyScheduling{scheduler}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WorkflowReconcileInterval: time.Hour,
+		WorkflowWatcherFactory: func(string) (projectpkg.WorkflowWatcher, error) { return localWorkerPolicyWatcher{policyUpdates}, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := selected.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := selected.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	policyEvents, err := selected.Events().Subscribe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer policyEvents.Close()
+	applyPolicy := func(prompt string) {
+		t.Helper()
+		candidate, err := config.ParseWorkflow([]byte(strings.ReplaceAll(localWorkerWorkflow, "Run the fixture.", prompt)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		replacement, err := projectpkg.ResolvePolicy(selected.Config(), candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replacement.SameAuthoredInputs(descriptor) {
+			t.Fatal("policy publication did not change authored inputs")
+		}
+		if _, err := native.ApproveProjectPolicy(ctx, policy.Change{ExpectedID: descriptor.ID, Policy: replacement}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case policyUpdates <- configwatcher.Update{Path: path, Workflow: candidate, At: time.Now().UTC()}:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		for {
+			select {
+			case event := <-policyEvents.C():
+				if event.Kind != projectpkg.EventWorkflowReloaded {
+					continue
+				}
+				if selected.Workflow().Config.Policy.ID != replacement.ID {
+					t.Fatalf("project reload did not adopt published policy: %+v", selected.WorkflowSourceStatus())
+				}
+				descriptor = replacement
+				return
+			case <-ctx.Done():
+				t.Fatalf("policy reload waited for active work: %+v", selected.WorkflowSourceStatus())
+			}
+		}
+	}
 	type worker struct {
 		issue    connector.Issue
 		identity procgroup.Identity
@@ -492,14 +574,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	publish("1.0.1")
 	b := start("Render invoice", "1.0.1", runnerpkg.RunModeImplement)
 	finish(b, false)
-	previous := descriptor
-	descriptor.SourceRevision = strings.Repeat("b", 40)
-	descriptor = descriptor.WithID()
-	if _, err := native.ApproveProjectPolicy(ctx, policy.Change{ExpectedID: previous.ID, Policy: descriptor}); err != nil {
-		t.Fatal(err)
-	}
-	workflow.Config.Policy = descriptor
-	run.UpdateWorkflow(workflow)
+	applyPolicy("Apply the current review instructions.")
 	continuePhase(b)
 	c := start("Archive inventory", "1.0.1", runnerpkg.RunModeImplement)
 	if alive, err := procgroup.Alive(a.identity); err != nil || !alive {
@@ -507,14 +582,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	}
 	finish(c, true)
 	publish("1.0.2")
-	previous = descriptor
-	descriptor.SourceRevision = strings.Repeat("c", 40)
-	descriptor = descriptor.WithID()
-	if _, err := native.ApproveProjectPolicy(ctx, policy.Change{ExpectedID: previous.ID, Policy: descriptor}); err != nil {
-		t.Fatal(err)
-	}
-	workflow.Config.Policy = descriptor
-	run.UpdateWorkflow(workflow)
+	applyPolicy("Apply the updated validation instructions.")
 	d := start("Validate manifest", "1.0.2", runnerpkg.RunModeImplement)
 	finish(d, false)
 	publish("1.0.3")
