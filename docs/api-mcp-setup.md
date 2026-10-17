@@ -100,6 +100,12 @@ with at most 20 redirect URIs and a 2,048-character client ID; the pending
 cookie is limited to 3,800 characters. Only authenticated consent stores the
 client, grant and single-use authorization code. Anonymous registration and
 pending requests therefore need no database quota or cleanup sweep.
+Registration and authorization share the existing API token-bucket limiter:
+120 requests per minute per client IP with a burst of 30. Excess requests get
+HTTP 429 with `Retry-After: 60`; tokens refill over time. Only the loopback TLS
+proxy is trusted to append `X-Forwarded-For`; client-supplied prefixes cannot
+change the caller's quota. This uses the same limiter implementation as API
+key authentication, without adding a separate throttling or cleanup mechanism.
 
 ### ChatGPT
 
