@@ -14,7 +14,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" || query.WorkspaceLane {
 		return 0, false, nil
 	}
-	r, err := readRunner(ctx, tx, query.NativeScope.organization, query.NativeScope.credential.Runner.RunnerID, now)
+	r, err := readRunnerForDispatch(ctx, tx, *query.NativeScope, now, query.LandingBatchGroup)
 	if err != nil {
 		return 0, false, err
 	}
@@ -61,7 +61,7 @@ projects:
 			}
 			return 0, false, err
 		}
-		if err := approval.Policy.Requirements.Match(r.RunnerID, string(r.MachineID), r.Tags); err != nil {
+		if len(r.Exclusions(project, approval.Policy.Requirements, false)) > 0 {
 			continue projects
 		}
 		for {

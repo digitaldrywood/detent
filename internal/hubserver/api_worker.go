@@ -453,23 +453,30 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		return tracker.Lease{}, err
 	}
 	query.LandingBatchGroup = joining
-	capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now, joining)
-	if err != nil {
-		return tracker.Lease{}, err
-	}
-	if capacity <= 0 {
-		if query.NativeScope != nil {
-			refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
-			recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
-			if query.NativeScope.credential.Runner.RunnerID != "" || !errors.Is(recorded, refusal) {
-				return tracker.Lease{}, recorded
-			}
+	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" {
+		capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now, joining)
+		if err != nil {
+			return tracker.Lease{}, err
 		}
-		return tracker.Lease{}, ErrNoClaimableWork
+		if capacity <= 0 {
+			if query.NativeScope != nil {
+				refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
+				recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
+				if !errors.Is(recorded, refusal) {
+					return tracker.Lease{}, recorded
+				}
+			}
+			return tracker.Lease{}, ErrNoClaimableWork
+		}
 	}
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
-			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
+		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now, joining); err != nil {
+			source := "native_runner_routing"
+			var refusal *nativeError
+			if errors.As(err, &refusal) && refusal.Code == "host_capacity" {
+				source = "native_host_capacity"
+			}
+			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, source, err, now)
 		}
 		if !query.WorkspaceLane {
 			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {

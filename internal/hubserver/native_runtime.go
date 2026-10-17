@@ -416,7 +416,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		e.Unavailable = append(e.Unavailable, "capacity_projection_truncated")
 	}
 	for _, r := range runners {
-		capacity := tracker.NativeRuntimeCapacity{ProviderCapacity: r.ProviderCapacity, RunnerID: r.RunnerID, ObservedAt: r.LastHeartbeatAt, Health: r.Health, Available: max(0, min(r.HostCapacity-r.HostUsed, min(r.CapacityLimit, r.ReportedCapacity)-r.Used)), Exclusions: []string{}}
+		capacity := tracker.NativeRuntimeCapacity{ProviderCapacity: r.ProviderCapacity, RunnerID: r.RunnerID, ObservedAt: r.LastHeartbeatAt, Health: r.Health, Available: max(0, min(r.HostCapacity-r.HostUsed, r.RemainingCapacity(scope.project))), Exclusions: []string{}}
 		for _, exclusion := range r.Exclusions(scope.project, approval.Policy.Requirements, false) {
 			capacity.Exclusions = append(capacity.Exclusions, exclusion.Code)
 		}

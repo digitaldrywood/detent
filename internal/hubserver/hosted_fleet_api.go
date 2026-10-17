@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -300,6 +301,12 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 			return nil, err
 		}
 		routing := runner.Routing
+		routing.ProjectCapacityLimits = maps.Clone(routing.ProjectCapacityLimits)
+		for project := range routing.ProjectCapacityLimits {
+			if !visible[project] {
+				delete(routing.ProjectCapacityLimits, project)
+			}
+		}
 		routing.UpdateRequest = nil
 		routing.CapacityRequest = nil
 		routing.ProjectConfigurationCommand = nil

@@ -849,6 +849,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				return
 			}
 			if test.sameBatch {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Batch runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.project.ID}, "project_capacity_limits": map[tracker.ProjectID]int{f.project.ID: 1}, "idempotency_key": "batch-project-limit"}), http.StatusOK)
 				waiter = owner
 				ownerSession, waiterSession = "landing/shared/owner", "landing/shared/waiter"
 			}
@@ -1036,15 +1037,19 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				want = http.StatusOK
 			}
 			preview := performHubAPIRequest(t, f.service, http.MethodPost, secondFixture.base+"/claims/preview", waiter.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{LandingCapacity: test.contenderCapacity, PolicyID: secondFixture.descriptor.ID, MachineID: waiter.binding.MachineID}})
-			requireNativeStatus(t, preview, http.StatusOK)
-			var page tracker.NativeCapacityPage
-			decodeHubResponse(t, preview, &page)
-			visible := false
-			for _, item := range page.Items {
-				visible = visible || item.WorkItemID == second.WorkItemID
-			}
-			if visible != (want == http.StatusOK) {
-				t.Fatalf("preview landing eligibility = %v, claim status = %d", visible, want)
+			if test.sameBatch {
+				requireNativeStatus(t, preview, http.StatusConflict)
+			} else {
+				requireNativeStatus(t, preview, http.StatusOK)
+				var page tracker.NativeCapacityPage
+				decodeHubResponse(t, preview, &page)
+				visible := false
+				for _, item := range page.Items {
+					visible = visible || item.WorkItemID == second.WorkItemID
+				}
+				if visible != (want == http.StatusOK) {
+					t.Fatalf("preview landing eligibility = %v, claim status = %d", visible, want)
+				}
 			}
 			if test.admission != "" {
 				context := tracker.NativeAdmissionContext{ObservedAt: f.service.config.now(), PolicyID: secondFixture.descriptor.ID, WorkflowStates: []string{"Merging"}}
@@ -1101,6 +1106,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if available != 1 {
 					t.Fatalf("two native batch owners consumed more than one host slot: available=%d, want1", available)
 				}
+				runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now())
+				if err != nil || runner.Used != 1 || runner.ProjectUsed[f.project.ID] != 1 || len(runner.Leases) != 2 {
+					t.Fatalf("native batch project accounting=%+v error=%v", runner, err)
+				}
+				third := f.ready(t, "independent batch")
+				requireNativeStatus(t, f.claim(t, owner, third, "landing/other/third", test.contenderCapacity), http.StatusConflict)
 			}
 			if test.fallback {
 				todo := f.createIndependent(t, "source work")
