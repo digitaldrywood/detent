@@ -337,7 +337,7 @@ func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentTool
 	}
 	tools := []AgentTool{
 		{Name: "detent_read_review_threads", Description: "Read unresolved review conversations on this native item's recorded GitHub PR and published head. Inspect the actual immutable Change source using native reads before judging feedback. Pending local edits are not evidence that published feedback is fixed. Human-rooted conversations remain human-owned.", InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-		{Name: "detent_resolve_review_thread", Description: "Record an explicit fixed or dismissed disposition with concrete source/test evidence and resolve one bot conversation on this item's currently published, fully reviewed head. Read its full conversation first. Supply that published head, not an unpublished local repair. If a source fix is needed, stage it and return for normal host publication/review; resolve only once the actual published version contains the fix. This does not approve or merge source and never resolves a human-rooted conversation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"head_sha":{"type":"string"},"thread_id":{"type":"string"},"disposition":{"type":"string","enum":["fixed","dismissed"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["head_sha","thread_id","disposition","evidence"],"additionalProperties":false}`)},
+		{Name: "detent_resolve_review_thread", Description: "Record an explicit fixed or dismissed disposition with concrete source/test evidence and resolve one bot conversation on this item's currently published, fully reviewed head. Read its full conversation first. Supply that published head, not an unpublished local repair. If a source fix is needed, stage it and return for normal host publication/review; resolve only once the actual published version contains the fix. Pending host publication or configured review/audit is a source handoff, not an instance failure: when source and worker-owned checks are complete, report complete and disclose the pending host work. Preserve genuine blockers and human actions. This does not approve or merge source and never resolves a human-rooted conversation.", InputSchema: json.RawMessage(`{"type":"object","properties":{"head_sha":{"type":"string"},"thread_id":{"type":"string"},"disposition":{"type":"string","enum":["fixed","dismissed"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["head_sha","thread_id","disposition","evidence"],"additionalProperties":false}`)},
 	}
 	return tools, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
 		var input struct {
@@ -362,12 +362,29 @@ func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentTool
 			return AgentToolResult{}, err
 		}
 		target, targetErr := landing.LandingTarget(ctx)
-		if targetErr != nil && (call.Name != "detent_read_review_threads" || !errors.Is(targetErr, ErrLandingNotReviewed)) {
+		if targetErr != nil && (!errors.Is(targetErr, ErrLandingNotReviewed) || call.Name == "detent_resolve_review_thread" && !target.ReviewPending) {
 			return AgentToolResult{Content: targetErr.Error()}, nil
 		}
 		if !target.GitHubPullRequest || target.External == nil {
 			return AgentToolResult{Content: "this native version has no recorded GitHub pull request"}, nil
 		}
+		if call.Name == "detent_resolve_review_thread" {
+			if input.Head != target.HeadSHA {
+				return AgentToolResult{Content: "review disposition does not name the current published head"}, nil
+			}
+			if targetErr != nil {
+				data, err := json.Marshal(struct {
+					Status   string `json:"status"`
+					Reason   string `json:"reason_code"`
+					Change   string `json:"change_id"`
+					Version  string `json:"version_id"`
+					Head     string `json:"head_sha"`
+					Guidance string `json:"guidance"`
+				}{"pending", "host_publication_pending", target.ChangeID, target.VersionID, target.HeadSHA, "The published version is not reviewed. Disposition remains refused until host publication and configured review/audit finish. If the assigned source is staged and all worker-owned checks pass, report complete with no blockers for that host handoff. Preserve other blockers and human actions. Do not resolve against unpublished repairs."})
+				return AgentToolResult{Content: string(data)}, err
+			}
+		}
+
 		client, _, err := r.nativeLandingGitHubClient(ctx, req, workerGitHubPolicy{})
 		if err != nil {
 			return AgentToolResult{}, err
@@ -386,9 +403,6 @@ func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentTool
 				Threads  []workspace.ReviewConversation `json:"threads"`
 			}{target.ChangeID, target.VersionID, target.HeadSHA, targetErr == nil, threads})
 			return AgentToolResult{Content: string(data), Success: err == nil}, err
-		}
-		if input.Head != target.HeadSHA {
-			return AgentToolResult{Content: "review disposition does not name the current published head"}, nil
 		}
 		if strings.TrimSpace(input.Evidence) == "" {
 			return AgentToolResult{Content: "review disposition requires explicit source or test evidence"}, nil
