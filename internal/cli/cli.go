@@ -242,6 +242,8 @@ type ProjectManager interface {
 type Option func(*options)
 
 type options struct {
+	resolveProjects   func(context.Context, globalconfig.Config) (globalconfig.Config, error)
+	readStartup       func(string) (globalconfig.Config, error)
 	resolvePath       func(string) (globalconfig.PathResolution, error)
 	read              func(string) (globalconfig.Config, error)
 	readProject       func(string, string) (globalconfig.Config, []string, error)
@@ -522,6 +524,9 @@ detent --format json config path`),
 func defaultOptions() options {
 	return options{
 		resolvePath: globalconfig.ResolvePath,
+		readStartup: func(path string) (globalconfig.Config, error) {
+			return readLocalConfigurationSource(path)
+		},
 		read: func(path string) (globalconfig.Config, error) {
 			return readLocalConfigurationFile(path)
 		},

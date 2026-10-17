@@ -336,6 +336,14 @@ func (p *runnerProjects) syncRuntimeLocked() bool {
 }
 
 func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previous ...globalconfig.Config) (globalconfig.Config, error) {
+	return resolveRunnerProjectsWithMode(ctx, cfg, false, previous...)
+}
+
+func resolveRunnerProjectsReadOnly(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
+	return resolveRunnerProjectsWithMode(ctx, cfg, true)
+}
+
+func resolveRunnerProjectsWithMode(ctx context.Context, cfg globalconfig.Config, readOnly bool, previous ...globalconfig.Config) (globalconfig.Config, error) {
 	if cfg.Client.IdentityFile == "" || cfg.WorkspaceRoot == "" {
 		return cfg, nil
 	}
@@ -348,7 +356,11 @@ func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previou
 		}
 	}
 	settings := cfg.Client.Normalized()
-	client, err := hubclient.New(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
+	newClient := hubclient.New
+	if readOnly {
+		newClient = hubclient.NewRunnerReader
+	}
+	client, err := newClient(hubclient.Config{URL: settings.URL, IdentityFile: settings.IdentityFile, HTTPClient: &http.Client{Timeout: settings.RequestTimeout()}})
 	if err != nil {
 		return cfg, err
 	}
@@ -356,7 +368,7 @@ func resolveRunnerProjects(ctx context.Context, cfg globalconfig.Config, previou
 	if err != nil {
 		return cfg, fmt.Errorf("read runner's allowed projects: %w", err)
 	}
-	resolved, err := runnerProjectsForIdentity(ctx, cfg, client, identity, len(previous) == 0)
+	resolved, err := runnerProjectsForIdentity(ctx, cfg, client, identity, !readOnly && len(previous) == 0)
 	if len(previous) > 0 && err == nil {
 		resolved.Projects = slices.DeleteFunc(resolved.Projects, func(selected globalconfig.Project) bool {
 			return !slices.ContainsFunc(previous[0].Projects, func(current globalconfig.Project) bool { return current.ID == selected.ID }) && !runnerCheckoutReady(ctx, selected)
