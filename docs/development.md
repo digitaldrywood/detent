@@ -199,6 +199,16 @@ that launch fails as instance infrastructure; active workers continue. An
 unavailable release source does not authorize a cached older release fallback.
 Retaining an artifact for an existing attempt checks its captured binary digest
 without selecting a different release.
+Corrupt cached archives are evicted and fetched through the same signature and
+checksum verification path. Archive ownership follows the associated execution
+artifact; obsolete archives are removed after their final owner exits.
+
+Ordinary approved policy changes flow through project reconciliation or managed
+policy application without pausing the project or waiting for active attempts.
+Only new claims and launches use the updated workflow; captured continuations
+keep their original workflow. Isolation-changing local binding operations still
+use their existing settled-work contract. Refused reloads record their complete
+error chain through the existing workflow reload diagnostics.
 
 The existing private worker protocol is version 4. It includes typed session
 process registration and cleanup scoped to one channel. A controller can launch

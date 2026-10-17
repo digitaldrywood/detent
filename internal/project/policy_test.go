@@ -358,6 +358,20 @@ func TestProjectPolicyReloadAndGateIsolation(t *testing.T) {
 						}
 						scheduling.approved[cfg.ID] = approved
 					}
+					if change == "newly approved revision" {
+						if err := p.handleWorkflowUpdate(t.Context(), update); err != nil {
+							t.Fatal(err)
+						}
+						if p.Workflow().Config.Policy.ID != scheduling.approved[cfg.ID].ID || p.WorkflowSourceStatus().LastReloadError != "" {
+							t.Fatal("approved policy was not applied")
+						}
+						versionAfter, err := json.Marshal(version)
+						if err != nil || string(versionAfter) != string(versionBefore) {
+							t.Fatal("policy reload changed captured source review identity")
+						}
+						return
+					}
+
 					if err := p.handleWorkflowUpdate(t.Context(), update); err == nil {
 						t.Fatal("unsafe reload was accepted")
 					}
@@ -525,9 +539,6 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	if err != nil || len(active) != 1 || active[0].ID != attemptID || p.Workflow().Config.Policy.ID != upgradedPolicy.ID || !p.Running() {
 		t.Fatalf("canonical upgrade changed active work: %+v %v", active, err)
 	}
-	if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
-		t.Fatal(err)
-	}
 	changed, err := workflowconfig.ParseWorkflowOverlay(raw, []byte("---\nplan:\n  enabled: true\ngate:\n  validator:\n    enabled: true\nagent:\n  auto_promote:\n    enabled: true\n---\n"), "operator-approved.local.md")
 	if err != nil {
 		t.Fatal(err)
@@ -549,6 +560,13 @@ func TestNativeSharedPolicyReloadsRunningProject(t *testing.T) {
 	}
 	if current.Config.Policy.ID != replacement.ID || !current.Config.Plan.Enabled || !current.Config.Gate.Validator.Enabled || !current.Config.Agent.AutoPromote.Enabled || !p.Running() {
 		t.Fatalf("shared policy was not reloaded in the running project: %+v", current.Config.Policy)
+	}
+	active, err = attempts.ListActiveWorkAttempts(t.Context(), store.WorkAttemptQuery{ProjectID: cfg.ID})
+	if err != nil || len(active) != 1 || active[0].ID != attemptID {
+		t.Fatalf("changed authored policy interrupted active work: %+v %v", active, err)
+	}
+	if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Second), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+		t.Fatal(err)
 	}
 	scheduling.mu.Lock()
 	scheduling.modelSelection = workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{Preset: new("sol_first"), NormalModel: new("gpt-6.1-sol")}, workflowconfig.ModelSelection{})
