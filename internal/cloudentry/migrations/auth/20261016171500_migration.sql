@@ -34,11 +34,9 @@ CREATE TABLE oauth_requests (
 );
 CREATE TABLE oauth_refresh_tokens (
     token_hash TEXT PRIMARY KEY,
-    grant_id TEXT NOT NULL REFERENCES oauth_grants(id),
-    expires_at TEXT NOT NULL,
-    consumed_at TEXT
+    grant_id TEXT NOT NULL UNIQUE REFERENCES oauth_grants(id),
+    expires_at TEXT NOT NULL
 );
-CREATE INDEX oauth_refresh_grant ON oauth_refresh_tokens(grant_id);
 
 -- +goose Down
 DROP TABLE oauth_refresh_tokens;
