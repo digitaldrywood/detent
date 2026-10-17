@@ -1546,20 +1546,28 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 			writeCheckpointFile(t, first.Path, "local-progress.txt", "keep\n")
 			existing, existingErr := backend.Existing(issue)
 			second, err := backend.Create(t.Context(), issue)
-			if strings.Contains(name, "wrong") || name == "legacy foreign source" {
-				if err == nil || existingErr == nil {
-					t.Fatalf("foreign legacy workspace accepted: %v, %v", err, existingErr)
+			if strings.HasPrefix(name, "legacy") {
+				if !errors.Is(existingErr, ErrMissingWorkspace) {
+					t.Fatalf("legacy cache was discovered as authoritative source: %#v, %v", existing, existingErr)
 				}
-			} else {
-				if err != nil || existingErr != nil || existing.Path != first.Path || second.Created || second.Path != first.Path || second.Branch != first.Branch {
-					t.Fatalf("workspace not reused: %#v, %#v, %v, %v", existing, second, existingErr, err)
+				if err != nil || !second.Created || second.Path == first.Path || second.Key != issueKey(issue) {
+					t.Fatalf("canonical workspace not created: %#v, %v", second, err)
 				}
+				if _, err := os.Stat(filepath.Join(second.Path, "local-progress.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unpublished legacy progress adopted: %v", err)
+				}
+			} else if err != nil || existingErr != nil || existing.Path != first.Path || second.Created || second.Path != first.Path || second.Branch != first.Branch {
+				t.Fatalf("workspace not reused: %#v, %#v, %v, %v", existing, second, existingErr, err)
 			}
 			if got := readFile(t, filepath.Join(first.Path, "local-progress.txt")); got != "keep\n" {
 				t.Fatalf("local progress = %q", got)
 			}
-			if got := strings.Count(readFile(t, tracePath), "after-create"); got != 1 {
-				t.Fatalf("after_create runs = %d, want 1", got)
+			wantHooks := 1
+			if strings.HasPrefix(name, "legacy") {
+				wantHooks = 2
+			}
+			if got := strings.Count(readFile(t, tracePath), "after-create"); got != wantHooks {
+				t.Fatalf("after_create runs = %d, want %d", got, wantHooks)
 			}
 		})
 	}

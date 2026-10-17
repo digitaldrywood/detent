@@ -51,7 +51,7 @@ type CheckpointBackend interface {
 }
 
 func (l *LocalGit) PrepareCheckpoint(ctx context.Context, info Info, issue Issue) (CheckpointPlan, error) {
-	expected, err := l.infoForIssueContext(ctx, issue)
+	expected, err := l.infoForIssue(issue)
 	if err != nil {
 		return CheckpointPlan{}, err
 	}

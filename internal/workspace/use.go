@@ -51,7 +51,7 @@ func (u *workspaceUses) cleanup(key string) (func(), bool) {
 }
 
 func (l *LocalGit) Use(ctx context.Context, issue Issue) (func(), error) {
-	info, err := l.infoForIssueContext(ctx, issue)
+	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return nil, err
 	}

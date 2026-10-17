@@ -692,18 +692,9 @@ func issueKeyDigest(issue Issue) string {
 }
 
 func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, returnErr error) {
-	info, err := l.infoForIssueContext(ctx, issue)
+	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return Info{}, err
-	}
-	if !issue.NativeRework && nativeProjectID(issue) != "" && info.Key != issueKey(issue) {
-		paused, err := rebaseInProgress(ctx, info.Path)
-		if err != nil {
-			return Info{}, err
-		}
-		if paused {
-			return Info{}, fmt.Errorf("%w: paused rebase requires native rework", ErrMergeResolutionInvalid)
-		}
 	}
 	if issue.Source != nil {
 		release, err := l.acquireSourceOperation(ctx)
@@ -877,7 +868,7 @@ func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
 }
 
 func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult, error) {
-	info, err := l.infoForIssueContext(ctx, issue)
+	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return CleanupResult{}, err
 	}
@@ -975,48 +966,12 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 }
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
-	return l.infoForIssueContext(context.Background(), issue)
-}
-
-func (l *LocalGit) infoForIssueContext(ctx context.Context, issue Issue) (Info, error) {
 	key := issueKey(issue)
 	path, err := l.workspacePathForIssue(issue, key)
 	if err != nil {
 		return Info{}, err
 	}
-
-	info := Info{Path: path, Key: key, Branch: l.branchName(issue, key)}
-	if nativeProjectID(issue) == "" || issue.Landing != nil || issue.WorkspaceSession || !l.autoBranch || key == legacyIssueKey(issue) {
-		return info, nil
-	}
-	exists, _, err := pathExists(path)
-	if err != nil || exists {
-		return info, err
-	}
-	legacyKey := legacyIssueKey(issue)
-	legacyPath, err := l.workspacePath(legacyKey)
-	if err != nil {
-		return Info{}, err
-	}
-	exists, isDir, err := pathExists(legacyPath)
-	if err != nil || !exists {
-		return info, err
-	}
-	legacy := Info{Path: legacyPath, Key: legacyKey, Branch: l.branchName(issue, legacyKey)}
-	if !isDir || !l.isSourceWorktree(ctx, legacyPath) {
-		return Info{}, fmt.Errorf("%w: legacy workspace is not managed by source", ErrCheckpointUnsafe)
-	}
-	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(legacyPath))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return Info{}, err
-	}
-	if err == nil && (!l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(legacyPath), record) || record.IssueID != issue.ID || record.Identifier != issue.Identifier || record.ProjectID != issue.ProjectID || record.Branch != legacy.Branch) {
-		return Info{}, fmt.Errorf("%w: legacy workspace ownership differs", ErrCheckpointUnsafe)
-	}
-	if _, err := l.verifyAssignedReworkBranch(ctx, legacy); err != nil {
-		return Info{}, err
-	}
-	return legacy, nil
+	return Info{Path: path, Key: key, Branch: l.branchName(issue, key)}, nil
 }
 
 // Existing reports the worktree this backend keeps for issue without creating
@@ -1037,7 +992,7 @@ func (l *LocalGit) Existing(issue Issue) (Info, error) {
 }
 
 func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (RecoveryState, error) {
-	info, err := l.infoForIssueContext(ctx, issue)
+	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -1045,7 +1000,7 @@ func (l *LocalGit) IssueRecoveryState(ctx context.Context, issue Issue) (Recover
 }
 
 func (l *LocalGit) BranchHold(ctx context.Context, issue Issue) (BranchHold, bool, error) {
-	info, err := l.infoForIssueContext(ctx, issue)
+	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return BranchHold{}, false, err
 	}

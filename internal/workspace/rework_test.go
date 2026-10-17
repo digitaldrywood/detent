@@ -37,7 +37,6 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 		{name: "runner prepares unsigned conflict"},
 		{name: "inherited signed pause", inheritedPause: true},
 		{name: "legacy unpublished pause", legacy: true},
-		{name: "legacy wrong paused branch", legacy: true, alter: "head-name"},
 		{name: "resolved paused replay integrates selected target", advanceTarget: true},
 		{name: "unresolved conflict", unresolved: true},
 		{name: "authority lost before continuation", authorityLost: true},
@@ -117,6 +116,34 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					t.Fatalf("signer choice was not recorded: %q", got)
 				}
 			}
+			if test.legacy {
+				runGit(t, info.Path, "fetch", "origin")
+				if _, err := runGitAt(t.Context(), info.Path, "rebase", "--no-update-refs", "origin/main"); err == nil {
+					t.Fatal("expected legacy source conflict")
+				}
+				status := runGit(t, info.Path, "status", "--porcelain")
+				index := runGit(t, info.Path, "ls-files", "--stage", "-z")
+				contents := readFile(t, filepath.Join(info.Path, "README.md"))
+				if _, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("unpublished legacy replay authorized: %v", err)
+				}
+				if _, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("unpublished legacy replay finalized: %v", err)
+				}
+				if _, _, err := owner.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrCheckpointUnsafe) {
+					t.Fatalf("unpublished legacy replay published without source authority: %v", err)
+				}
+				if _, err := owner.Existing(issue); !errors.Is(err, ErrMissingWorkspace) {
+					t.Fatalf("unpublished legacy replay discovered: %v", err)
+				}
+				if got := runGit(t, info.Path, "status", "--porcelain"); got != status || runGit(t, info.Path, "ls-files", "--stage", "-z") != index || readFile(t, filepath.Join(info.Path, "README.md")) != contents {
+					t.Fatal("refusal changed retained legacy conflict")
+				}
+				if got := strings.TrimSpace(runGit(t, source, "rev-parse", "refs/heads/"+info.Branch)); got != original {
+					t.Fatal("refusal moved legacy branch")
+				}
+				return
+			}
 			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 			wantStatus := MergePrepareStatusConflict
 			if test.clean {
@@ -131,13 +158,6 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 			resumed, err := backend.Create(t.Context(), issue)
 			if err != nil || resumed.Created || resumed.Path != info.Path || resumed.Branch != info.Branch {
 				t.Fatalf("native rework creation replaced paused transaction: %#v, %v", resumed, err)
-			}
-			if test.legacy {
-				foreign := issue
-				foreign.NativeRework = false
-				if _, err := backend.Create(t.Context(), foreign); !errors.Is(err, ErrMergeResolutionInvalid) {
-					t.Fatalf("non-rework adopted paused legacy source: %v", err)
-				}
 			}
 			roots, err := GitMetadataWritableRoots(t.Context(), info.Path)
 			if err != nil {
@@ -192,11 +212,6 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				}
 				if err := os.WriteFile(filepath.Join(linkedWorktreeGitDir(t, info.Path), "rebase-merge", test.alter), []byte(value), 0o600); err != nil {
 					t.Fatal(err)
-				}
-			}
-			if test.legacy && test.alter != "" {
-				if _, err := backend.Create(t.Context(), issue); !errors.Is(err, ErrMergeResolutionInvalid) {
-					t.Fatalf("foreign legacy replay adopted: %v", err)
 				}
 			}
 			if test.infrastructure {

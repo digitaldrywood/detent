@@ -30,6 +30,7 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		{name: "clean environment templates restore elsewhere", validate: owned, templates: map[string]string{".env.example": "API_TOKEN=''\n", ".envrc.example": "export API_TOKEN=''\n"}},
 		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
 		{name: "native alias drift", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias"}},
+		{name: "published checkpoint with retained legacy cache", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", cached: true}},
 		{name: "matching explicit branch across aliases", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", explicit: true}},
 		{name: "legacy canonical to alias", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias", legacy: "prj_example"}},
 		{name: "legacy alias to canonical", validate: owned, transaction: &portableReworkCheckpointCase{alias: "prj_example", legacy: "LOCAL/ALIAS"}},
@@ -80,15 +81,12 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			if test.transaction != nil && test.transaction.explicit {
 				issue.BranchName = "feature/native-checkpoint"
 			}
-			var info Info
 			if test.transaction != nil && test.transaction.legacy != "" {
 				issue.ProjectID = test.transaction.legacy
 				key := SafeKey(issue.ProjectID) + "-" + SafeKey(issue.Identifier) + "-" + issueKeyDigest(issue)
-				info = Info{Key: key, Path: filepath.Join(source.root, key), Branch: autoBranchPrefix + strings.ToLower(key)}
-				_, err = source.createWorktree(t.Context(), info.Path, info.Branch, false)
-			} else {
-				info, err = source.Create(t.Context(), issue)
+				issue.BranchName = autoBranchPrefix + strings.ToLower(key)
 			}
+			info, err := source.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -234,6 +232,7 @@ type portableReworkCheckpointCase struct {
 	alias    string
 	legacy   string
 	explicit bool
+	cached   bool
 }
 
 func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, issue Issue, first, second, remote string, test portableReworkCheckpointCase) {
@@ -490,8 +489,23 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 		t.Fatal(err)
 	}
 	issue.Checkpoint = &CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, TreeSHA: checkpoint.TreeSHA}
+	if test.legacy != "" {
+		issue.BranchName = ""
+	}
 	if test.alias != "" {
 		issue.ProjectID = test.alias
+	}
+	var cached Info
+	var cachedStatus string
+	if test.cached {
+		key := legacyIssueKey(issue)
+		cached = Info{Key: key, Path: filepath.Join(restorer.root, key), Branch: autoBranchPrefix + strings.ToLower(key)}
+		runGit(t, second, "worktree", "add", "-b", cached.Branch, cached.Path, "HEAD")
+		writeCheckpointFile(t, cached.Path, "README.md", "unpublished legacy source\n")
+		cachedStatus = runGit(t, cached.Path, "status", "--porcelain")
+		if existing, err := restorer.Existing(issue); !errors.Is(err, ErrMissingWorkspace) {
+			t.Fatalf("legacy cache selected before authoritative restore: %#v, %v", existing, err)
+		}
 	}
 	if test.alias != "" {
 		for _, rejection := range []string{"wrong project", "wrong issue", "explicit unrelated branch", "non-rework", "manifest digest"} {
@@ -523,6 +537,14 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	restored, err := restorer.Create(t.Context(), issue)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if test.cached {
+		if restored.Path == cached.Path || restored.Branch == cached.Branch || restored.Key != issueKey(issue) {
+			t.Fatalf("legacy cache adopted: %#v", restored)
+		}
+		if got := readFile(t, filepath.Join(cached.Path, "README.md")); got != "unpublished legacy source\n" || runGit(t, cached.Path, "status", "--porcelain") != cachedStatus {
+			t.Fatal("authoritative restore changed retained legacy source")
+		}
 	}
 	if runGit(t, restored.Path, "ls-files", "--stage", "-z") != index || runGit(t, restored.Path, "status", "--porcelain") != status {
 		t.Fatal("restored index alternatives or staged/unstaged state differ")

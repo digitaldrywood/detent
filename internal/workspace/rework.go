@@ -337,17 +337,13 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 }
 
 func (l *LocalGit) verifyReworkBranch(ctx context.Context, info Info, issue Issue) (bool, error) {
-	owned, err := l.infoForIssueContext(ctx, issue)
+	owned, err := l.infoForIssue(issue)
 	if err != nil {
 		return false, err
 	}
 	if info.Path != owned.Path || info.Branch == "" || info.Branch != owned.Branch {
 		return false, fmt.Errorf("%w: rework is not on the assigned workspace branch", ErrMergeResolutionInvalid)
 	}
-	return l.verifyAssignedReworkBranch(ctx, info)
-}
-
-func (l *LocalGit) verifyAssignedReworkBranch(ctx context.Context, info Info) (bool, error) {
 	if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
 		return false, err
 	}
