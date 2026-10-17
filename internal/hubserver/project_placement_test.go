@@ -257,12 +257,16 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 		name, mode                     string
 		ceiling, overflow, limit, want int
 		organization                   bool
+		allocation                     string
 	}{
-		{"overflow bounds concurrent warm claims", "local_first", 4, 2, 0, 2, false},
-		{"smaller Sprite maximum bounds overflow", "local_first", 4, 2, 1, 1, false},
-		{"explicit Sprite maximum bounds concurrent warm claims", "blended", 1, 0, 1, 1, false},
-		{"legacy blended retains deployed capacity", "blended", 1, 0, 0, 6, false},
-		{"organization Sprite maximum spans projects", "blended", 1, 0, 1, 1, true},
+		{"overflow bounds concurrent warm claims", "local_first", 4, 2, 0, 2, false, ""},
+		{"smaller Sprite maximum bounds overflow", "local_first", 4, 2, 1, 1, false, ""},
+		{"explicit Sprite maximum bounds concurrent warm claims", "blended", 1, 0, 1, 1, false, ""},
+		{"legacy blended retains deployed capacity", "blended", 1, 0, 0, 6, false, ""},
+		{"organization Sprite maximum spans projects", "blended", 1, 0, 1, 1, true, ""},
+		{"managed zero holds organization runners", "blended", 4, 0, 0, 0, true, "zero"},
+		{"managed project requires explicit member ownership", "blended", 4, 0, 0, 0, false, "manual"},
+		{"desired members do not cap job slots", "blended", 4, 0, 0, 6, false, "owned"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -273,11 +277,24 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 			}
 			setPlacementFixture(t, f, placement, test.ceiling)
 			sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 8, "gpt-6.1-sol", "test-model")
+			if test.allocation != "" {
+				desired := 1
+				if test.allocation == "zero" {
+					desired = 0
+				}
+				setSpriteAllocationFixture(t, f, desired, 0)
+				if test.allocation == "owned" {
+					now := formatHubTime(f.service.config.now())
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, sprite.redemption.Hostname, sprite.enrollment.ID, now, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			var items []tracker.NativeIssue
 			for i := range 6 {
 				items = append(items, f.create(t, fmt.Sprintf("queued %d", i)))
 			}
-			if test.organization {
+			if test.organization && test.allocation == "" {
 				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
 				approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE id=?", sprite.binding.RunnerID); err != nil {
@@ -285,6 +302,11 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 				}
 				for i := range 3 {
 					items[i] = later.create(t, fmt.Sprintf("later %d", i))
+				}
+			}
+			if test.allocation == "zero" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET scope='organization' WHERE id=?`, sprite.binding.RunnerID); err != nil {
+					t.Fatal(err)
 				}
 			}
 			start := make(chan struct{})
