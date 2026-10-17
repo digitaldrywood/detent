@@ -89,7 +89,7 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 			}
 		}
 		if entry.Kind == EvidenceNotVerified {
-			if strings.ToLower(strings.TrimSpace(entry.UnverifiedClass)) == CriterionUnsatisfiable {
+			if result.VersionID != "" && strings.ToLower(strings.TrimSpace(entry.UnverifiedClass)) == CriterionUnsatisfiable {
 				entry.UnverifiedClass = CriterionUnsatisfiable
 			} else {
 				entry.UnverifiedClass = CriterionReworkFixable
@@ -192,8 +192,9 @@ func ApplyCriterionPolicy(cfg ValidatorConfig, result *ValidatorResult) {
 	unsatisfiable := len(result.UnsatisfiableCriteria()) > 0
 	if unsatisfiable || cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
 		if normalizeValidatorVerdict(result.Verdict) != ValidatorVerdictError {
+			verdict := normalizeValidatorVerdict(result.Verdict)
 			result.Verdict = ValidatorVerdictRework
-			if unsatisfiable {
+			if effective := effectiveValidatorConfig(cfg); unsatisfiable && verdict != ValidatorVerdictRework && !validatorHasBlockedSeverity(effective, result.Findings) && result.Score >= effective.MinScore {
 				result.Verdict = ValidatorVerdictWait
 			}
 		}

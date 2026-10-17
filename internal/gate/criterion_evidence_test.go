@@ -33,6 +33,7 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "rejected receipt test", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "go test", RestatesImplementation: true}}, gaps: []string{"Reject invalid input", "Return valid input"}, findings: 1},
 		{name: "unexplained test", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceTest, Reference: "TestInvalid"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "duplicate criterion", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceTest, Reference: "TestOne", Behavior: "Error"}, {Criterion: "Reject invalid input", Kind: EvidenceTest, Reference: "TestTwo", Behavior: "Error"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "non-native criterion cannot classify unsatisfiable", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceNotVerified, UnverifiedClass: CriterionUnsatisfiable}}, edit: func(r *ValidatorResult) { r.VersionID = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "unknown criterion", entries: []CriterionEvidence{{Criterion: "Unrelated", Kind: EvidenceTest, Reference: "TestOne", Behavior: "Error"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "bound receipt", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "head", TreeSHA: "tree", Behavior: "Malformed input returns an error"}}, commands: []CommandResult{{Command: "make check", HeadSHA: "head", TreeSHA: "tree"}}, gaps: []string{"Return valid input"}},
 		{name: "missing receipt", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check", HeadSHA: "head", TreeSHA: "tree", Behavior: "Malformed input returns an error"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
@@ -115,7 +116,7 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "unsupported kind", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: "approval", Reference: "human"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := ValidatorResult{HeadSHA: "head", CriteriaEvidence: test.entries, Commands: test.commands}
+			result := ValidatorResult{VersionID: "version", HeadSHA: "head", CriteriaEvidence: test.entries, Commands: test.commands}
 			if test.receiptIDs != nil {
 				result.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check-app; npx playwright test", ReceiptIDs: test.receiptIDs, HeadSHA: "head", TreeSHA: "tree", Behavior: "Both checks reject malformed input"}}
 				result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: "head", TreeSHA: "tree"}}
@@ -168,6 +169,9 @@ func TestCriterionEvidencePolicy(t *testing.T) {
 		wantReason  Reason
 	}{
 		{name: "default reworks", verdict: "pass", score: .95, gaps: []string{"Reject invalid input"}, wantVerdict: "rework", wantReason: ReasonValidatorRework},
+		{name: "unsatisfiable preserves blocking severity", verdict: "wait", score: .95, findings: []Finding{{Severity: "p1", Body: "Source defect"}}, gaps: []string{"Production client signs in"}, entries: []CriterionEvidence{{Criterion: "Production client signs in", Kind: EvidenceNotVerified, UnverifiedClass: CriterionUnsatisfiable}}, wantVerdict: "rework", wantReason: ReasonValidatorBlockedSeverity},
+		{name: "unsatisfiable preserves minimum score", verdict: "wait", score: .2, gaps: []string{"Production client signs in"}, entries: []CriterionEvidence{{Criterion: "Production client signs in", Kind: EvidenceNotVerified, UnverifiedClass: CriterionUnsatisfiable}}, wantVerdict: "rework", wantReason: ReasonValidatorRework},
+		{name: "unsatisfiable preserves explicit rework", verdict: "rework", score: .95, gaps: []string{"Production client signs in"}, entries: []CriterionEvidence{{Criterion: "Production client signs in", Kind: EvidenceNotVerified, UnverifiedClass: CriterionUnsatisfiable}}, wantVerdict: "rework", wantReason: ReasonValidatorRework},
 		{name: "unsatisfiable cannot disclose", policy: UnverifiedCriteriaDisclose, verdict: "pass", score: .95, gaps: []string{"Production client signs in"}, entries: []CriterionEvidence{{Criterion: "Production client signs in", Kind: EvidenceNotVerified, UnverifiedClass: CriterionUnsatisfiable}}, wantVerdict: "wait", wantReason: ReasonValidatorRework},
 		{name: "disclosure passes", policy: UnverifiedCriteriaDisclose, verdict: "pass", score: .95, gaps: []string{"Reject invalid input"}, wantVerdict: "pass"},
 		{name: "fully verified", verdict: "pass", score: .95, wantVerdict: "pass"},
