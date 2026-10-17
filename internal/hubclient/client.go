@@ -152,6 +152,7 @@ type APIError struct {
 	Code            string
 	Message         string
 	CurrentRevision tracker.Revision
+	Rejection       *runnerauth.PublicationRejection
 }
 
 func (e *APIError) Error() string {
@@ -346,6 +347,9 @@ func (e *APIError) UnmarshalJSON(data []byte) error {
 		Code            string           `json:"code"`
 		Message         string           `json:"message"`
 		CurrentRevision tracker.Revision `json:"current_revision,string"`
+		Details         struct {
+			Rejection *runnerauth.PublicationRejection `json:"rejection"`
+		} `json:"details"`
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
@@ -353,6 +357,10 @@ func (e *APIError) UnmarshalJSON(data []byte) error {
 	e.Code = value.Code
 	e.Message = value.Message
 	e.CurrentRevision = value.CurrentRevision
+	e.Rejection = nil
+	if value.Code == "invalid_request" && value.Details.Rejection != nil && value.Details.Rejection.Valid() {
+		e.Rejection = value.Details.Rejection
+	}
 	return nil
 }
 

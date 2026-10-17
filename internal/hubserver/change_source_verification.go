@@ -21,7 +21,7 @@ func (s *Service) prepareChangeSource(ctx context.Context, scope nativeScope, it
 		return err
 	}
 	if err := request.Source.Validate(request.BaseSHA, request.HeadSHA, request.SourceBundle); err != nil {
-		return nativeInvalid(err.Error())
+		return nativeRejection(nativeInvalid(err.Error()), "version_validation", "source")
 	}
 	return s.verifyChangeSource(ctx, *request.Source, request.SourceBundle)
 }
@@ -84,7 +84,7 @@ func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeS
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return nativeInvalid(err.Error())
+		return nativeRejection(nativeInvalid(err.Error()), "source_verification", "source")
 	}
 	return nil
 }

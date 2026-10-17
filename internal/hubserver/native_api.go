@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,6 +60,15 @@ func (e *nativeError) Error() string {
 
 func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
+}
+
+func nativeRejection(err error, category, field string) error {
+	var failure *nativeError
+	rejection := runnerauth.PublicationRejection{Category: category, Field: field}
+	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
+		return err
+	}
+	return &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", status: failure.status, Details: map[string]any{"rejection": rejection}}
 }
 
 func nativeNotFound() error {

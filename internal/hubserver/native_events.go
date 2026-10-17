@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -28,32 +32,32 @@ func validNativeID(id, prefix string) bool {
 
 func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 	if request.SchemaVersion != 1 || !slices.Contains([]string{"run.started", "run.finished", "run.checkpointed", "run.observed"}, request.Type) {
-		return nativeInvalid("Unsupported event type or schema version")
+		return nativeRejection(nativeInvalid("Unsupported event type or schema version"), "event_validation", "")
 	}
 	data := request.Data
 	if data.Runtime != nil && data.Sequence <= 0 || request.Type == "run.observed" && data.Runtime == nil {
-		return nativeInvalid("Runtime evidence requires an ordered observation")
+		return nativeRejection(nativeInvalid("Runtime evidence requires an ordered observation"), "event_validation", "data")
 	}
 	if !validNativeID(data.RunID, "run") || !validNativeID(data.AttemptID, "attempt") || !validNativeID(data.PolicyID, "policy") || data.FencingToken <= 0 || data.LeaseID == "" {
-		return nativeInvalid("Typed run, attempt, policy and current lease references are required")
+		return nativeRejection(nativeInvalid("Typed run, attempt, policy and current lease references are required"), "event_validation", "data")
 	}
 	if request.Type == "run.finished" {
 		if !slices.Contains([]string{"succeeded", "failed", "cancelled", "interrupted"}, data.Outcome) {
-			return nativeInvalid("Run outcome is invalid")
+			return nativeRejection(nativeInvalid("Run outcome is invalid"), "event_validation", "data.outcome")
 		}
 	} else if data.Outcome != "" {
-		return nativeInvalid("Only a finished run has an outcome")
+		return nativeRejection(nativeInvalid("Only a finished run has an outcome"), "event_validation", "data.outcome")
 	}
 	if len(data.ArtifactIDs) > 20 || request.Type != "run.checkpointed" && len(data.ArtifactIDs) != 0 {
-		return nativeInvalid("Artifact references require a checkpoint and are limited to 20")
+		return nativeRejection(nativeInvalid("Artifact references require a checkpoint and are limited to 20"), "event_validation", "data.artifact_ids")
 	}
 	for _, id := range data.ArtifactIDs {
 		if !validNativeID(id, "artifact") {
-			return nativeInvalid("Artifact references must be typed IDs")
+			return nativeRejection(nativeInvalid("Artifact references must be typed IDs"), "event_validation", "data.artifact_ids")
 		}
 	}
 	if err := validateNativeRunUsage(request); err != nil {
-		return err
+		return nativeRejection(err, "usage_validation", "data.usage")
 	}
 	if err := validateNativeRuntime(data.Runtime); err != nil {
 		return err
@@ -64,7 +68,7 @@ func validateNativeRunEvent(request tracker.NativeRunEvent) error {
 func (s *Service) appendNativeRunEvent(c echo.Context) error {
 	var request tracker.NativeRunEvent
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidNativeEventRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if err := validateNativeRunEvent(request); err != nil {
@@ -109,19 +113,19 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 					return nil, err
 				}
 				if version.HeadSHA != f.HeadSHA {
-					return nil, nativeInvalid("Finalizer version must name its recorded head")
+					return nil, nativeRejection(nativeInvalid("Finalizer version must name its recorded head"), "owner_validation", "data.finalization")
 				}
 			}
 			if source := f.SourceVersion; source != nil {
 				if source.ChangeID != f.ChangeID {
-					return nil, nativeInvalid("Finalizer source must belong to the reported Change")
+					return nil, nativeRejection(nativeInvalid("Finalizer source must belong to the reported Change"), "owner_validation", "data.finalization")
 				}
 				version, err := readChangeVersion(ctx, tx, source.ChangeID, source.VersionID)
 				if err != nil {
 					return nil, err
 				}
 				if version.HeadSHA != source.HeadSHA || version.AttemptID != f.SourceAttemptID {
-					return nil, nativeInvalid("Finalizer source must match its recorded version and attempt")
+					return nil, nativeRejection(nativeInvalid("Finalizer source must match its recorded version and attempt"), "owner_validation", "data.finalization")
 				}
 			}
 		}
@@ -137,11 +141,11 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 					return nil, err
 				}
 				if version.HeadSHA != l.HeadSHA {
-					return nil, nativeInvalid("Landing evidence must name its immutable version head")
+					return nil, nativeRejection(nativeInvalid("Landing evidence must name its immutable version head"), "owner_validation", "data.runtime.landing")
 				}
 			}
 			if l.Landed && (change.Landed == nil || change.Landed.VersionID != l.VersionID || change.Landed.MergeSHA != l.MergeSHA || change.Landed.HeadSHA != l.HeadSHA || change.Landed.BaseRef != l.BaseRef || change.Landed.Method != l.Method) {
-				return nil, nativeInvalid("Landing evidence requires the recorded Change landing authority")
+				return nil, nativeRejection(nativeInvalid("Landing evidence requires the recorded Change landing authority"), "owner_validation", "data.runtime.landing")
 			}
 		}
 		if request.Type == "run.finished" && request.Data.Outcome == "succeeded" && request.Data.Sequence > 0 {
@@ -152,7 +156,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 		publish := true
 		if request.Data.Sequence > 0 {
 			if request.Data.MachineID != "" && request.Data.MachineID != lease.session.Machine.ID || request.Data.SessionID != "" && request.Data.SessionID != lease.session.SessionID || request.Data.RunnerID != "" && request.Data.RunnerID != scope.credential.Runner.RunnerID {
-				return nil, nativeInvalid("Execution identity must match the authenticated lease owner")
+				return nil, nativeRejection(nativeInvalid("Execution identity must match the authenticated lease owner"), "owner_validation", "data")
 			}
 			request.Data.MachineID = lease.session.Machine.ID
 			request.Data.SessionID = lease.session.SessionID
@@ -173,7 +177,7 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 				return nil, err
 			}
 			if reserved {
-				return nil, nativeInvalid("Provider reservations require ordered execution events")
+				return nil, nativeRejection(nativeInvalid("Provider reservations require ordered execution events"), "owner_validation", "data.sequence")
 			}
 			var ordered int
 			if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_attempts WHERE id = ? OR lease_id = ?", request.Data.AttemptID, request.Data.LeaseID).Scan(&ordered); err != nil {
@@ -205,4 +209,17 @@ func (s *Service) appendNativeRunEvent(c echo.Context) error {
 			Accepted bool `json:"accepted"`
 		}{true}, nil
 	})
+}
+
+func (s *Service) invalidNativeEventRequest(c echo.Context, err error) error {
+	var maxBytes *http.MaxBytesError
+	if errors.As(err, &maxBytes) {
+		return invalidAPIRequest(c, err)
+	}
+	field := ""
+	var typeError *json.UnmarshalTypeError
+	if errors.As(err, &typeError) && (runnerauth.PublicationRejection{Category: "body_decode", Field: typeError.Field}).Valid() {
+		field = typeError.Field
+	}
+	return s.nativeAPIError(c, nativeRejection(nativeInvalid("Request body is invalid"), "body_decode", field))
 }

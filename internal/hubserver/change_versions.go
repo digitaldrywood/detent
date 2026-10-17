@@ -20,7 +20,7 @@ import (
 
 func validateChangeVersion(input tracker.ChangeVersionInput) error {
 	if v := input.Validation; v != nil && (v.HeadSHA != input.HeadSHA || v.ExitCode != 0 || v.DurationNS <= 0 || strings.TrimSpace(v.Command) == "" || len(v.Command) > 4096 || len(v.Output) > 64*1024 || !validCommitID(v.TreeSHA) || !v.Evidence.Valid()) {
-		return nativeInvalid("Validation receipt must cover the published head and identify a successful command")
+		return nativeRejection(nativeInvalid("Validation receipt must cover the published head and identify a successful command"), "version_validation", "validation")
 	}
 	for _, commit := range []string{input.BaseSHA, input.HeadSHA, input.MergeBaseSHA} {
 		if !changerequest.ValidHash(commit, 40) && !changerequest.ValidHash(commit, 64) {
@@ -114,15 +114,15 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if request.Source != nil {
 		if err := request.Source.Validate(request.BaseSHA, request.HeadSHA, request.SourceBundle); err != nil {
-			return nil, nativeInvalid(err.Error())
+			return nil, nativeRejection(nativeInvalid(err.Error()), "version_validation", "source")
 		}
 	} else if len(request.SourceBundle) != 0 {
-		return nil, nativeInvalid("Source bundle requires immutable source metadata")
+		return nil, nativeRejection(nativeInvalid("Source bundle requires immutable source metadata"), "version_validation", "source")
 	}
 	var configurationJSON string
 	if err := tx.QueryRowContext(ctx, "SELECT metadata_json FROM policy_revisions WHERE scope = ? AND policy_id = ?", string(scope.organization)+"/"+string(scope.project), request.PolicyID).Scan(&configurationJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nativeInvalid("Change configuration has not been reported for this project")
+			return nil, nativeRejection(nativeInvalid("Change configuration has not been reported for this project"), "version_validation", "policy_id")
 		}
 		return nil, err
 	}
