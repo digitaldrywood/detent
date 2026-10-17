@@ -41,8 +41,11 @@ func TestNativeAgentEvidence(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 
-	for _, completion := range []string{"Verified the page in a browser.", ""} {
-		t.Run("completion="+completion, func(t *testing.T) {
+	for _, test := range []struct {
+		completion, tier string
+	}{{"Verified the page in a browser.", isolation.NativeTrusted}, {"", isolation.Sandbox}} {
+		t.Run(test.tier+"/completion="+test.completion, func(t *testing.T) {
+			completion := test.completion
 			f := newEntryFixture(t)
 			store := newSpacesFixture(t, false)
 			storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
@@ -134,7 +137,9 @@ func TestNativeAgentEvidence(t *testing.T) {
 				return runner.ValidationEvidence{Name: path, ContentType: media, Content: content}, err
 			})
 			tools, handler := execution.(runner.ToolExecution).AgentTools()
-			backend, err := claudecode.NewAgentBackend(claudecode.Options{CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
+			backend, err := claudecode.NewAgentBackend(claudecode.Options{IsolationPolicy: func() (isolation.Policy, error) {
+				return isolation.Policy{Tier: test.tier}, nil
+			}, CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
 				cmd := exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestClaudeEvidenceWorkerProcess$", "--"}, args...)...)
 				cmd.Env = append(os.Environ(), "DETENT_CLAUDE_EVIDENCE_HELPER=1")
 				return cmd
@@ -395,9 +400,17 @@ func TestClaudeEvidenceWorkerProcess(t *testing.T) {
 	if os.Getenv("DETENT_CLAUDE_EVIDENCE_HELPER") != "1" {
 		return
 	}
-	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
-		t.Fatal(err)
+	var settings struct {
+		Sandbox struct {
+			Enabled bool `json:"enabled"`
+			Network struct {
+				AllowedDomains    []string `json:"allowedDomains"`
+				AllowLocalBinding bool     `json:"allowLocalBinding"`
+				StrictAllowlist   bool     `json:"strictAllowlist"`
+			} `json:"network"`
+		} `json:"sandbox"`
 	}
+	var effective json.RawMessage
 	var config struct {
 		Servers map[string]struct {
 			Type    string            `json:"type"`
@@ -412,10 +425,57 @@ func TestClaudeEvidenceWorkerProcess(t *testing.T) {
 				t.Fatalf("MCP configuration: %v", err)
 			}
 		}
+		if arg == "--settings" && i+1 < len(os.Args) {
+			effective = json.RawMessage(os.Args[i+1])
+			if err := json.Unmarshal(effective, &settings); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	server, ok := config.Servers["detent"]
 	if !ok || len(config.Servers) != 1 || server.Type != "http" {
 		t.Fatal("Claude did not receive the scoped HTTP MCP server")
+	}
+	if settings.Sandbox.Enabled {
+		address, err := url.Parse(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		network := settings.Sandbox.Network
+		if !network.StrictAllowlist || network.AllowLocalBinding || !slices.Contains(network.AllowedDomains, address.Host) {
+			t.Fatal("sandbox did not authorize the worker MCP endpoint")
+		}
+		if len(network.AllowedDomains) != len(isolation.Domains())+1 {
+			t.Fatal("sandbox gained network access beyond the worker MCP endpoint")
+		}
+		decoder := json.NewDecoder(os.Stdin)
+		for _, subtype := range []string{"initialize", "get_settings"} {
+			var control struct {
+				Type      string `json:"type"`
+				RequestID string `json:"request_id"`
+				Request   struct {
+					Subtype string `json:"subtype"`
+				} `json:"request"`
+			}
+			if err := decoder.Decode(&control); err != nil || control.Type != "control_request" || control.Request.Subtype != subtype {
+				t.Fatalf("sandbox handshake %s: %+v, %v", subtype, control, err)
+			}
+			response := map[string]any{}
+			if subtype == "get_settings" {
+				response["effective"] = effective
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": control.RequestID, "response": response}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var prompt struct {
+			Type string `json:"type"`
+		}
+		if err := decoder.Decode(&prompt); err != nil || prompt.Type != "user" {
+			t.Fatalf("sandbox prompt: %+v, %v", prompt, err)
+		}
+	} else if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	session := ""

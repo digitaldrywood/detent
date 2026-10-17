@@ -83,7 +83,8 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 		}
 		turnErr = errors.Join(turnErr, closeErr, shutdownErr, serveErr)
 	}()
-	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"detent": map[string]any{"type": "http", "url": "http://" + listener.Addr().String(), "headers": map[string]string{"Authorization": token}}}})
+	bounded.toolAddress = listener.Addr().String()
+	config, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"detent": map[string]any{"type": "http", "url": "http://" + bounded.toolAddress, "headers": map[string]string{"Authorization": token}}}})
 	if err != nil {
 		return result, err
 	}
