@@ -16,8 +16,14 @@ import (
 )
 
 type Policy struct {
-	MaxAge   time.Duration `yaml:"max_age"`
-	MaxBytes int64         `yaml:"max_bytes,omitempty"`
+	MaxAge       time.Duration `yaml:"max_age"`
+	MaxBytes     int64         `yaml:"max_bytes,omitempty"`
+	reclaimBytes int64
+}
+
+func (p Policy) WithReclaimBytes(bytes int64) Policy {
+	p.reclaimBytes = max(0, bytes)
+	return p
 }
 
 func (p Policy) Normalized() Policy {

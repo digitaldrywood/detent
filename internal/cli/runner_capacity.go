@@ -124,14 +124,16 @@ func runnerStorageConstraint(ctx context.Context, cfg globalconfig.Config) strin
 	if err != nil {
 		return "Host storage is unavailable; waiting for a storage observation."
 	}
-	return runnerStorageConstraintForPaths(cfg, paths, func(root string) (uint64, uint64, error) {
-		free, err := toolcache.FreeBytes(root)
-		if err != nil {
-			return 0, 0, err
-		}
-		total, err := toolcache.CapacityBytes(root)
-		return free, total, err
-	})
+	return runnerStorageConstraintForPaths(cfg, paths, runnerStorageVolume)
+}
+
+func runnerStorageVolume(root string) (uint64, uint64, error) {
+	free, err := toolcache.FreeBytes(root)
+	if err != nil {
+		return 0, 0, err
+	}
+	total, err := toolcache.CapacityBytes(root)
+	return free, total, err
 }
 
 func runnerStorageConstraintForPaths(cfg globalconfig.Config, paths toolcache.Paths, volume func(string) (uint64, uint64, error)) string {
