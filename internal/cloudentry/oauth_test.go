@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"reflect"
 	"strings"
@@ -31,14 +32,18 @@ func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
 			}
 		}
 	}
-	large := oauthClient{Name: "Oversized assistant", RedirectURIs: []string{"https://assistant.example.test/" + strings.Repeat("x", 1900)}}
-	raw, err := json.Marshal(large)
-	if err != nil {
-		t.Fatal(err)
-	}
-	refused := attachmentRequest(t, b, http.MethodPost, "/oauth/register", bytes.NewReader(raw), map[string]string{"Content-Type": "application/json"})
-	if refused.Code != http.StatusBadRequest {
-		t.Fatalf("oversized registration=%d", refused.Code)
+	for _, test := range []struct{ name, body string }{
+		{"sealed client ID", `{"redirect_uris":["https://assistant.example.test/` + strings.Repeat("x", 1900) + `"]}`},
+		{"client name", `{"client_name":"` + strings.Repeat("x", 129) + `","redirect_uris":["https://assistant.example.test/callback"]}`},
+		{"redirect count", `{"redirect_uris":[` + strings.Repeat(`"https://assistant.example.test/callback",`, 20) + `"https://assistant.example.test/callback"]}`},
+		{"request body", `{"redirect_uris":["https://assistant.example.test/callback"],"extra":"` + strings.Repeat("x", 64<<10) + `"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			refused := attachmentRequest(t, b, http.MethodPost, "/oauth/register", strings.NewReader(test.body), map[string]string{"Content-Type": "application/json"})
+			if refused.Code != http.StatusBadRequest {
+				t.Fatalf("oversized registration=%d", refused.Code)
+			}
+		})
 	}
 	for _, table := range []string{"oauth_clients", "oauth_requests", "oauth_grants", "oauth_refresh_tokens"} {
 		var count int
@@ -335,105 +340,224 @@ func TestOAuthConsentBinding(t *testing.T) {
 	}
 }
 
+func connectTestOAuth(t *testing.T, b *browser, endpoint, name, redirect string) (oauthClient, oauthTokenResponse) {
+	t.Helper()
+	origin, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := func(endpoint string) string {
+		t.Helper()
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Scheme != origin.Scheme || u.Host != origin.Host {
+			t.Fatalf("invalid discovered endpoint: %q", endpoint)
+		}
+		return u.RequestURI()
+	}
+	challenge := b.do(http.MethodPost, path(endpoint), nil, nil)
+	_, metadata, found := strings.Cut(challenge.Header.Get("WWW-Authenticate"), `resource_metadata="`)
+	metadata, _, closed := strings.Cut(metadata, `"`)
+	if challenge.StatusCode != http.StatusUnauthorized || !found || !closed {
+		t.Fatalf("challenge=%+v", challenge)
+	}
+	var resource struct {
+		Resource string   `json:"resource"`
+		Servers  []string `json:"authorization_servers"`
+	}
+	response := b.do(http.MethodGet, path(metadata), nil, nil)
+	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &resource) != nil || resource.Resource != endpoint || len(resource.Servers) != 1 {
+		t.Fatalf("resource metadata=%+v", response)
+	}
+	issuer, err := url.Parse(resource.Servers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer.Path = "/.well-known/oauth-authorization-server" + issuer.Path
+	var server struct {
+		Issuer        string `json:"issuer"`
+		Authorization string `json:"authorization_endpoint"`
+		Token         string `json:"token_endpoint"`
+		Registration  string `json:"registration_endpoint"`
+	}
+	response = b.do(http.MethodGet, path(issuer.String()), nil, nil)
+	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &server) != nil || server.Issuer != resource.Servers[0] {
+		t.Fatalf("server metadata=%+v", response)
+	}
+	raw, err := json.Marshal(oauthClient{Name: name, RedirectURIs: []string{redirect}, AuthMethod: "none", GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := attachmentRequest(t, b, http.MethodPost, path(server.Registration), bytes.NewReader(raw), map[string]string{"Content-Type": "application/json"})
+	var client oauthClient
+	if registered.Code != http.StatusCreated || json.Unmarshal(registered.Body.Bytes(), &client) != nil || client.ID == "" {
+		t.Fatalf("registration=%d %s", registered.Code, registered.Body.String())
+	}
+	query := testOAuthQuery(client)
+	query.Set("resource", resource.Resource)
+	started := b.do(http.MethodGet, path(server.Authorization)+"?"+query.Encode(), nil, nil)
+	if started.StatusCode != http.StatusSeeOther {
+		t.Fatalf("authorization=%+v", started)
+	}
+	consentPath := started.Header.Get("Location")
+	consent := b.do(http.MethodGet, consentPath, nil, nil)
+	if consent.StatusCode == http.StatusSeeOther {
+		b.login(consentPath, "user_alice:porg_alpha")
+		consent = b.do(http.MethodGet, consentPath, nil, nil)
+	}
+	if consent.StatusCode != http.StatusOK || !strings.Contains(consent.Body, name) {
+		t.Fatalf("consent=%+v", consent)
+	}
+	approved := b.do(http.MethodPost, consentPath, url.Values{"csrf": {csrfFrom(t, consent.Body)}, "organization": {"org_alpha"}, "decision": {"allow"}}, nil)
+	callback, err := url.Parse(approved.Header.Get("Location"))
+	if approved.StatusCode != http.StatusSeeOther || err != nil || callback.Query().Get("state") != query.Get("state") || callback.Query().Get("iss") != server.Issuer || callback.Query().Get("code") == "" {
+		t.Fatalf("callback=%+v", approved)
+	}
+	code := callback.Query().Get("code")
+	callback.RawQuery = ""
+	if callback.String() != redirect {
+		t.Fatalf("callback destination=%s", callback)
+	}
+	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {client.ID}, "redirect_uri": {redirect}, "code": {code}, "code_verifier": {testOAuthVerifier}, "resource": {resource.Resource}}
+	response = b.do(http.MethodPost, path(server.Token), form, nil)
+	var token oauthTokenResponse
+	if response.StatusCode != http.StatusOK || json.Unmarshal([]byte(response.Body), &token) != nil || token.AccessToken == "" || token.RefreshToken == "" {
+		t.Fatalf("token=%+v", response)
+	}
+	return client, token
+}
+
 func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
-	f := newEntryFixture(t)
-	f.provider.member("user_alice", "porg_alpha", "reporter")
-	owner := newBrowser(t, f.service.Handler())
-	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
-	personal := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "")
-	client := registerTestOAuth(t, owner, "Assistant", "none")
-	token := exchangeTestOAuth(t, owner, approveTestOAuth(t, owner, client, "org_alpha"))
-	anonymous := newBrowser(t, f.service.Handler())
-	oauthCall := entryMCPClient(t, anonymous, token.AccessToken, "2025-11-25", "/mcp")
-	personalCall := entryMCPClient(t, anonymous, personal.Token, "2025-11-25", "/mcp")
-	oauthTools, failed := oauthCall("tools/list", nil)
-	if failed {
-		t.Fatalf("OAuth tools=%s", oauthTools)
-	}
-	personalTools, failed := personalCall("tools/list", nil)
-	if failed || !bytes.Equal(oauthTools, personalTools) {
-		t.Fatalf("reporter catalogs differ: OAuth=%s key=%s", oauthTools, personalTools)
-	}
-	project := attachmentProject(t, owner, "org_alpha")
-	args := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "oauth-report", "type": "bug", "title": "Example report", "description": "## Steps to reproduce\nOpen the example page.\n## Expected\nThe page loads.\n## Actual\nAn error appears.\n## Where\nExample page.\n## Environment\nExample browser.", "state": "Todo"}
-	raw, failed := oauthCall(operatortool.FileIssue, args)
-	var envelope struct {
-		Data struct {
-			Actor struct {
-				Kind        string `json:"kind"`
-				PrincipalID string `json:"principal_id"`
-				ViaKey      string `json:"via_key"`
-			} `json:"actor"`
-			State string `json:"state"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var principal string
-	if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", "user_alice").Scan(&principal); err != nil {
-		t.Fatal(err)
-	}
-	if failed || envelope.Data.Actor.Kind != "human" || envelope.Data.Actor.PrincipalID != principal || !strings.HasPrefix(envelope.Data.Actor.ViaKey, "oauth_grant_") || envelope.Data.State != "Triage" {
-		t.Fatalf("file issue=%s failed=%v", raw, failed)
-	}
-	for _, call := range []func(string, any) (json.RawMessage, bool){oauthCall, personalCall} {
-		if raw, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); !failed {
-			t.Fatalf("foreign workspace=%s", raw)
-		}
-		if raw, failed := call(operatortool.MembershipList, map[string]any{"organization_id": "org_alpha"}); !failed || !strings.Contains(string(raw), "role_denied") {
-			t.Fatalf("reporter administration=%s", raw)
-		}
-	}
-	listed := owner.do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
-	var grants struct {
-		Grants []oauthGrant `json:"grants"`
-	}
-	if listed.StatusCode != 200 || json.Unmarshal([]byte(listed.Body), &grants) != nil || len(grants.Grants) != 1 || grants.Grants[0].LastUsedAt == nil || strings.Contains(listed.Body, token.AccessToken) || strings.Contains(listed.Body, token.RefreshToken) {
-		t.Fatalf("grants=%+v", listed)
-	}
-	foreign := newBrowser(t, f.service.Handler())
-	foreign.login("/organizations/org_beta/organization", "user_bob:porg_beta")
-	beta, err := sql.Open("sqlite", storeDSN(f.fixtures["org_beta"].path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer beta.Close()
-	otherPrincipal := "hosted_" + apikey.HashToken("user_bob")[:32]
-	if _, err := beta.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) SELECT ?,?,?, '','operator',1,created_at,updated_at FROM hosted_members WHERE user_id=?`, otherPrincipal, otherPrincipal, apikey.HashToken("user_bob_principal"), "user_alice"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := beta.ExecContext(t.Context(), `INSERT INTO hosted_members(user_id,email,membership_id,role,active,principal_id,created_at,updated_at) SELECT ?,?,?,?,1,?,created_at,updated_at FROM hosted_members WHERE user_id=?`, "user_bob", "bob@example.test", "om_user_bob_porg_beta", "member", otherPrincipal, "user_alice"); err != nil {
-		t.Fatal(err)
-	}
-	foreignToken := exchangeTestOAuth(t, foreign, approveTestOAuth(t, foreign, client, "org_beta"))
-	foreignCall := entryMCPClient(t, anonymous, foreignToken.AccessToken, "2025-11-25", "/mcp")
-	if raw, failed := foreignCall(operatortool.OAuthGrantList, map[string]any{}); failed || !strings.Contains(string(raw), "org_beta") || strings.Contains(string(raw), grants.Grants[0].ID) {
-		t.Fatalf("foreign MCP grants=%s", raw)
-	}
-	if p := foreign.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+grants.Grants[0].ID, nil, nil); p.StatusCode < 400 {
-		t.Fatal("foreign owner revoked grant")
-	}
-	if raw, failed := oauthCall(operatortool.OAuthGrantList, map[string]any{}); failed || !strings.Contains(string(raw), client.ID) {
-		t.Fatalf("MCP grants=%s", raw)
-	}
-	if raw, failed := personalCall(operatortool.OAuthGrantRevoke, map[string]any{"grant_id": grants.Grants[0].ID}); failed {
-		t.Fatalf("MCP revoke=%s", raw)
-	}
-	if raw, failed := oauthCall("tools/list", nil); !failed || !strings.Contains(string(raw), "invalid_token") {
-		t.Fatalf("revoked session=%s", raw)
-	}
-	if raw, failed := foreignCall("tools/list", nil); failed {
-		t.Fatalf("other owner's session revoked=%s", raw)
-	}
-	refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
-	if p := owner.do(http.MethodPost, "/oauth/token", refresh, nil); p.StatusCode != 400 {
-		t.Fatal("revoked refresh accepted")
+	for _, test := range []struct{ name, redirect string }{
+		{"ChatGPT", "https://chatgpt.com/connector_platform_oauth_redirect"},
+		{"ChatGPT callback ID", "https://chatgpt.com/connector/oauth/example-callback"},
+		{"Claude", "https://claude.ai/api/mcp/auth_callback"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			f.provider.member("user_alice", "porg_alpha", "reporter")
+			transport, _ := entryTenantTransport(t, f.service.Handler())
+			origin, err := url.Parse(testPublicURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxy := httputil.NewSingleHostReverseProxy(origin)
+			proxy.Transport = transport
+			owner := newBrowser(t, proxy)
+			owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+			personal := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "")
+			connector := newBrowser(t, proxy)
+			client, token := connectTestOAuth(t, connector, testPublicURL+"/mcp", test.name, test.redirect)
+			anonymous := newBrowser(t, proxy)
+			oauthCall := entryMCPClient(t, anonymous, token.AccessToken, "2025-11-25", "/mcp")
+			personalCall := entryMCPClient(t, anonymous, personal.Token, "2025-11-25", "/mcp")
+			oauthTools, failed := oauthCall("tools/list", nil)
+			if failed {
+				t.Fatalf("OAuth tools=%s", oauthTools)
+			}
+			personalTools, failed := personalCall("tools/list", nil)
+			if failed || !bytes.Equal(oauthTools, personalTools) {
+				t.Fatalf("reporter catalogs differ: OAuth=%s key=%s", oauthTools, personalTools)
+			}
+			var catalog struct {
+				Tools []struct{ Name string } `json:"tools"`
+			}
+			if err := json.Unmarshal(oauthTools, &catalog); err != nil {
+				t.Fatal(err)
+			}
+			var fileIssue string
+			for _, tool := range catalog.Tools {
+				if tool.Name == operatortool.FileIssue {
+					fileIssue = tool.Name
+				}
+			}
+			if fileIssue == "" {
+				t.Fatal("reporter cannot discover issue filing")
+			}
+			project := attachmentProject(t, owner, "org_alpha")
+			args := map[string]any{"organization_id": "org_alpha", "project_id": project, "request_id": "oauth-report", "type": "bug", "title": "Example report", "description": "## Steps to reproduce\nOpen the example page.\n## Expected\nThe page loads.\n## Actual\nAn error appears.\n## Where\nExample page.\n## Environment\nExample browser.", "state": "Todo"}
+			raw, failed := oauthCall(fileIssue, args)
+			var envelope struct {
+				Data struct {
+					Actor struct {
+						Kind        string `json:"kind"`
+						PrincipalID string `json:"principal_id"`
+						ViaKey      string `json:"via_key"`
+					} `json:"actor"`
+					State string `json:"state"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			db, err := sql.Open("sqlite", storeDSN(f.fixtures["org_alpha"].path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var principal string
+			if err := db.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", "user_alice").Scan(&principal); err != nil {
+				t.Fatal(err)
+			}
+			if failed || envelope.Data.Actor.Kind != "human" || envelope.Data.Actor.PrincipalID != principal || !strings.HasPrefix(envelope.Data.Actor.ViaKey, "oauth_grant_") || envelope.Data.State != "Triage" {
+				t.Fatalf("file issue=%s failed=%v", raw, failed)
+			}
+			for _, call := range []func(string, any) (json.RawMessage, bool){oauthCall, personalCall} {
+				if raw, failed := call("list_projects", map[string]any{"organization_id": "org_beta"}); !failed {
+					t.Fatalf("foreign workspace=%s", raw)
+				}
+				if raw, failed := call(operatortool.MembershipList, map[string]any{"organization_id": "org_alpha"}); !failed || !strings.Contains(string(raw), "role_denied") {
+					t.Fatalf("reporter administration=%s", raw)
+				}
+			}
+			listed := owner.do(http.MethodGet, "/api/cloud/account/oauth-grants", nil, nil)
+			var grants struct {
+				Grants []oauthGrant `json:"grants"`
+			}
+			if listed.StatusCode != 200 || json.Unmarshal([]byte(listed.Body), &grants) != nil || len(grants.Grants) != 1 || grants.Grants[0].LastUsedAt == nil || strings.Contains(listed.Body, token.AccessToken) || strings.Contains(listed.Body, token.RefreshToken) {
+				t.Fatalf("grants=%+v", listed)
+			}
+			foreign := newBrowser(t, proxy)
+			foreign.login("/organizations/org_beta/organization", "user_bob:porg_beta")
+			beta, err := sql.Open("sqlite", storeDSN(f.fixtures["org_beta"].path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer beta.Close()
+			otherPrincipal := "hosted_" + apikey.HashToken("user_bob")[:32]
+			if _, err := beta.ExecContext(t.Context(), `INSERT INTO api_tokens(id,name,token_hash,token_fingerprint,scope,native_only,created_at,updated_at) SELECT ?,?,?, '','operator',1,created_at,updated_at FROM hosted_members WHERE user_id=?`, otherPrincipal, otherPrincipal, apikey.HashToken("user_bob_principal"), "user_alice"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := beta.ExecContext(t.Context(), `INSERT INTO hosted_members(user_id,email,membership_id,role,active,principal_id,created_at,updated_at) SELECT ?,?,?,?,1,?,created_at,updated_at FROM hosted_members WHERE user_id=?`, "user_bob", "bob@example.test", "om_user_bob_porg_beta", "member", otherPrincipal, "user_alice"); err != nil {
+				t.Fatal(err)
+			}
+			foreignToken := exchangeTestOAuth(t, foreign, approveTestOAuth(t, foreign, client, "org_beta"))
+			foreignCall := entryMCPClient(t, anonymous, foreignToken.AccessToken, "2025-11-25", "/mcp")
+			if raw, failed := foreignCall(operatortool.OAuthGrantList, map[string]any{}); failed || !strings.Contains(string(raw), "org_beta") || strings.Contains(string(raw), grants.Grants[0].ID) {
+				t.Fatalf("foreign MCP grants=%s", raw)
+			}
+			if p := foreign.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+grants.Grants[0].ID, nil, nil); p.StatusCode < 400 {
+				t.Fatal("foreign owner revoked grant")
+			}
+			if raw, failed := oauthCall(operatortool.OAuthGrantList, map[string]any{}); failed || !strings.Contains(string(raw), client.ID) {
+				t.Fatalf("MCP grants=%s", raw)
+			}
+			if raw, failed := personalCall(operatortool.OAuthGrantRevoke, map[string]any{"grant_id": grants.Grants[0].ID}); failed {
+				t.Fatalf("MCP revoke=%s", raw)
+			}
+			if raw, failed := oauthCall("tools/list", nil); !failed || !strings.Contains(string(raw), "invalid_token") {
+				t.Fatalf("revoked session=%s", raw)
+			}
+			if response := anonymous.do(http.MethodPost, "/mcp", nil, map[string]string{"Authorization": "Bearer " + token.AccessToken}); response.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("revoked HTTP request=%+v", response)
+			}
+			if raw, failed := foreignCall("tools/list", nil); failed {
+				t.Fatalf("other owner's session revoked=%s", raw)
+			}
+			refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
+			if p := owner.do(http.MethodPost, "/oauth/token", refresh, nil); p.StatusCode != 400 {
+				t.Fatal("revoked refresh accepted")
+			}
+		})
 	}
 }
 
