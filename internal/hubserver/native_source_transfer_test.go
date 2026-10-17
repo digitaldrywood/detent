@@ -25,9 +25,12 @@ func TestNativeSourceTransfer(t *testing.T) {
 		dirty, running, expired, released, denied, stale, cancel, concurrent bool
 		uncertain, prestart, cleanEffect, held, staleVersion, historical     bool
 		status                                                               int
+		sameRunner, advanced                                                 bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
+		{name: "new publication retains stale transfer selection", advanced: true, released: true, status: http.StatusOK},
+		{name: "same runner version-bound recovery", released: true, dirty: true, sameRunner: true, status: http.StatusOK},
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
 		{name: "concurrent transfer revisions", released: true, concurrent: true, status: http.StatusOK},
 		{name: "released historical running attempt", historical: true, released: true, status: http.StatusOK},
@@ -53,6 +56,9 @@ func TestNativeSourceTransfer(t *testing.T) {
 			a.redemption.DisplayName, b.redemption.DisplayName = "Source Air", "Destination Mini"
 			a.enroll(t)
 			b.enroll(t)
+			if test.sameRunner {
+				b = a
+			}
 			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.issue.WorkItemID, MachineID: a.binding.MachineID, SessionID: "source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -98,6 +104,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			}
 			if test.dirty {
 				event.Data.Handoff.WorktreeState = "dirty"
+				event.Data.Handoff.HeadSHA = input.BaseSHA
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, event), http.StatusOK)
 			input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
@@ -171,6 +178,16 @@ func TestNativeSourceTransfer(t *testing.T) {
 			}
 			var view sourceRecoveryView
 			decodeHubResponse(t, response, &view)
+			recovery := performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"?view=recovery", f.token, nil)
+			requireNativeStatus(t, recovery, http.StatusOK)
+			var resumed tracker.NativeRecovery
+			decodeHubResponse(t, recovery, &resumed)
+			if resumed.SourceVersionID != version.ID {
+				t.Fatalf("transfer lost selected restoration version: %q", resumed.SourceVersionID)
+			}
+			if test.dirty && (resumed.SourceAttempt() == nil || resumed.SourceAttempt().Checkpoint.HeadSHA != input.BaseSHA) {
+				t.Fatal("transfer rewrote older dirty checkpoint custody")
+			}
 			if view.SourceRunnerID != a.binding.RunnerID || view.DestinationRunnerID != b.binding.RunnerID || !view.Available || !view.Quiesced || view.HeadSHA != input.HeadSHA || view.BaseSHA != input.BaseSHA {
 				t.Fatalf("transfer lost source identity: %#v", view)
 			}
@@ -182,6 +199,21 @@ func TestNativeSourceTransfer(t *testing.T) {
 			var audited int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND json_extract(data_json,'$.operation')='source_recovery'", f.issue.WorkItemID).Scan(&audited); err != nil || audited != 1 {
 				t.Fatalf("duplicate audit events: %d %v", audited, err)
+			}
+			if test.advanced {
+				input.Code.SHA256 = strings.Repeat("a", 64)
+				next := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "new-version"}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, next, http.StatusOK)
+				var newer tracker.ChangeVersion
+				decodeHubResponse(t, next, &newer)
+				recovery = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"?view=recovery", f.token, nil)
+				requireNativeStatus(t, recovery, http.StatusOK)
+				resumed = tracker.NativeRecovery{}
+				decodeHubResponse(t, recovery, &resumed)
+				if newer.ID == version.ID || resumed.SourceVersionID != version.ID || resumed.Change == nil || resumed.Change.VersionID != newer.ID {
+					t.Fatalf("new publication erased stale transfer binding: selected=%q current=%+v", resumed.SourceVersionID, resumed.Change)
+				}
+				return
 			}
 			current, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, string(f.issue.WorkItemID))
 			if err != nil {
@@ -204,6 +236,8 @@ func TestNativeSourceTransfer(t *testing.T) {
 				}
 			}
 			if test.name == "transfer and duplicate request" {
+				foreign := newNativeFixture(t, f.service, "", "foreign-source")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"?view=recovery", foreign.token, nil), http.StatusNotFound)
 				body := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"_meta": map[string]any{"io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": map[string]any{}, "io.modelcontextprotocol/clientInfo": map[string]any{"name": "test", "version": "1"}}, "name": operatortool.TransferItem, "arguments": map[string]any{"project_id": f.project.ID, "identifier": f.issue.WorkItemID, "request_id": "mcp-transfer", "expected_revision": strconv.FormatInt(int64(view.Revision), 10), "version_id": version.ID, "destination_runner_id": b.binding.RunnerID}}}
 				path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/mcp"
 				for _, credential := range []string{f.token, testHubAdminToken} {
@@ -271,6 +305,13 @@ func TestNativeSourceTransfer(t *testing.T) {
 				decodeHubResponse(t, response, &view)
 				if view.DestinationRunnerID != "" {
 					t.Fatal("cancellation retained destination")
+				}
+				recovery := performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"?view=recovery", f.token, nil)
+				requireNativeStatus(t, recovery, http.StatusOK)
+				resumed = tracker.NativeRecovery{}
+				decodeHubResponse(t, recovery, &resumed)
+				if resumed.SourceVersionID != "" {
+					t.Fatal("cancelled transfer retained version precedence")
 				}
 				return
 			}

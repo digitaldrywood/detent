@@ -56,6 +56,10 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 	if err != nil {
 		return workspace.ChangeSource{}, err
 	}
+	selected := e.Recovery().SourceVersionID
+	if selected != "" && selected != detail.Change.CurrentVersion {
+		return workspace.ChangeSource{}, errors.New("the transferred version differs from the current Change; re-read source recovery and reconcile the selected version before transfer")
+	}
 	if detail.Change.CurrentVersion == "" {
 		return workspace.ChangeSource{}, nil
 	}
@@ -64,6 +68,7 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 			continue
 		}
 		source := workspace.ChangeSource{Version: version}
+		source.Transferred = selected != ""
 		for _, previous := range detail.Versions {
 			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || previous.Source == nil ||
 				previous.Source.Format != "git-bundle" || previous.Source.HeadSHA != previous.HeadSHA || previous.Source.BaseSHA != previous.BaseSHA ||

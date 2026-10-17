@@ -361,6 +361,7 @@ type NativeRuntimeCapacity struct {
 
 type NativeRecovery struct {
 	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
+	SourceVersionID string                 `json:"source_version_id,omitempty"`
 	Lease           NativeLease            `json:"lease"`
 	Issue           NativeIssue            `json:"issue"`
 	Discussion      []NativeComment        `json:"discussion"`
