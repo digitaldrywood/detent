@@ -340,8 +340,12 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	for _, test := range []struct {
 		name                    string
 		staleRunner, staleBuild bool
+		prefixed                bool
 	}{
 		{name: "current same-version repair"},
+		{name: "prefixed same-version repair", prefixed: true},
+		{name: "prefixed stale runner revision", prefixed: true, staleRunner: true},
+		{name: "prefixed stale build revision", prefixed: true, staleBuild: true},
 		{name: "stale runner revision", staleRunner: true},
 		{name: "stale build revision", staleBuild: true},
 	} {
@@ -352,11 +356,14 @@ func TestRunnerUpdateApplication(t *testing.T) {
 			}
 			repair := *repairRunner.Update
 			repair.Running.Source = "release"
+			if test.prefixed {
+				repair.Running.Version = "v" + repair.Running.Version
+			}
 			repair.AvailableVersion = ""
 			repair.Discovery = "up_to_date"
 			repair.Revision = repair.BuildRevision()
 			repairRunner.Update = &repair
-			request := runnerUpdateChange{ExpectedRevision: repairRunner.Revision, ExpectedBuildRevision: repair.Revision, Service: "detent", Version: repair.Running.Version, Release: true}
+			request := runnerUpdateChange{ExpectedRevision: repairRunner.Revision, ExpectedBuildRevision: repair.Revision, Service: "detent", Version: strings.TrimPrefix(repair.Running.Version, "v"), Release: true}
 			if test.staleRunner {
 				request.ExpectedRevision++
 			}

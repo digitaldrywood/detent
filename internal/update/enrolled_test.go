@@ -269,23 +269,24 @@ func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 
 func TestSchedulerEnrolledUpdate(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		pending     bool
-		stale       bool
-		unavailable bool
-		restart     bool
-		applyError  error
-		want        string
-		calls       int
-		follow      bool
-		urgent      bool
-		version     string
-		lastApplied string
-		nextVersion string
-		nextWant    string
-		logged      bool
-		release     bool
-		prior       bool
+		name           string
+		pending        bool
+		stale          bool
+		unavailable    bool
+		restart        bool
+		applyError     error
+		want           string
+		calls          int
+		follow         bool
+		urgent         bool
+		version        string
+		runningVersion string
+		lastApplied    string
+		nextVersion    string
+		nextWant       string
+		logged         bool
+		release        bool
+		prior          bool
 	}{
 		{name: "restart declined", want: "uncertain", calls: 1, logged: true},
 		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
@@ -302,6 +303,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		{name: "Hub equal patched version does not drain", follow: true, version: "1.2.3", want: "refused"},
 		{name: "operator repairs equal unverified release", release: true, version: "1.2.3", restart: true, want: "restart_requested", calls: 1},
 		{name: "Hub repairs equal unverified release", follow: true, release: true, prior: true, version: "1.2.3", restart: true, want: "restart_requested", calls: 1},
+		{name: "operator repairs prefixed unverified release", release: true, version: "1.2.3", runningVersion: "v1.2.3", restart: true, want: "restart_requested", calls: 1},
+		{name: "Hub repairs prefixed unverified release", follow: true, release: true, prior: true, version: "1.2.3", runningVersion: "v1.2.3", restart: true, want: "restart_requested", calls: 1},
+		{name: "prefixed repair refuses stale revision", follow: true, release: true, version: "1.2.3", runningVersion: "v1.2.3", stale: true, want: "refused"},
 		{name: "same version repair retains newer installed artifact", follow: true, release: true, version: "1.2.3", lastApplied: "1.2.5", want: "refused"},
 		{name: "same version repair refuses stale revision", follow: true, release: true, version: "1.2.3", stale: true, want: "refused"},
 		{name: "Hub older version does not drain", follow: true, version: "1.2.2", want: "refused"},
@@ -313,6 +317,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now().UTC()
 			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "private_patched_source", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			if test.runningVersion != "" {
+				running.Version = test.runningVersion
+			}
 			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.2.4"}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, applyErr: test.applyError}
 			if test.release {
 				running.Source = "release"
