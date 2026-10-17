@@ -272,21 +272,27 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if err != nil {
 		return false, err
 	}
-	if issue.Source.Transferred && (len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.HeadSHA != issue.Source.Version.HeadSHA && state.UnpushedCommits > 0 && !slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)) {
-		return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("transferred version %s requires head %s; unresolved local source custody remains at head %s; preserve and reconcile the assigned worktree through source recovery before retrying transfer", issue.Source.Version.ID, issue.Source.Version.HeadSHA, state.HeadSHA))
+	if issue.Source.Transferred && issue.Source.Version.Source == nil {
+		return false, refuse(LandRefusalMissingHead, "the transferred version has no retained bundle; republish the exact head with source capture before retrying transfer")
 	}
-	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
-		return false, nil
-	}
-	previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
-	if state.UnpushedCommits > 0 && !previous {
-		return false, nil
-	}
-	if state.HeadSHA != issue.Source.Version.BaseSHA || previous {
-		if !previous {
+	transferred := issue.Source.Transferred
+	if !transferred {
+		if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+			return false, nil
+		}
+		previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
+		if state.UnpushedCommits > 0 && !previous {
+			return false, nil
+		}
+		if state.HeadSHA != issue.Source.Version.BaseSHA && !previous {
 			return false, refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
 		}
+	}
+	if transferred || state.HeadSHA != issue.Source.Version.BaseSHA {
 		if _, err := l.quarantineWorktree(ctx, info.Path); err != nil {
+			if transferred {
+				return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("transferred version %s has unresolved local source custody; reconcile the assigned worktree through source recovery before retrying transfer: %v", issue.Source.Version.ID, err))
+			}
 			return false, err
 		}
 		if _, err := l.runGit(ctx, "branch", "-f", info.Branch, issue.Source.Version.HeadSHA); err != nil {

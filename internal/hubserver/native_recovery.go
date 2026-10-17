@@ -70,9 +70,6 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 			}
 		}
 	}
-	if result.Change == nil || result.SourceVersionID != result.Change.VersionID {
-		result.SourceVersionID = ""
-	}
 	ids, err := nativePageIDs(ctx, tx, `SELECT id FROM native_comments
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (
  json_extract(actor_json, '$.kind') = 'human' OR json_extract(edited_by_json, '$.kind') = 'human' OR id = (
