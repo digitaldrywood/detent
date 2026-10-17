@@ -109,7 +109,11 @@ projects:
 					}
 					continue
 				}
-				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, query.ProviderCandidates)
+				joining := ""
+				if id == query.WorkItemID {
+					joining = query.LandingBatchGroup
+				}
+				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, query.ProviderCandidates, joining)
 				if err != nil {
 					return 0, false, err
 				}
