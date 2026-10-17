@@ -165,6 +165,7 @@ func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
 			}
 			return migrateGitHubIssueReferences(ctx, tx, logger)
 		}}, nil),
+		goose.NewGoMigration(20261016204002, &goose.GoFunc{RunTx: migrateCloudWorkflowLanes}, nil),
 	}
 }
 

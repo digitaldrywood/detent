@@ -102,6 +102,9 @@ func TestReviewBrowserFixture(t *testing.T) {
 		}
 		detail := tracker.ChangeDetail{Change: change, Versions: versions[:current+1], Summary: summary}
 		data := templates.ChangePageData{ProjectID: "fixture", IssueID: change.WorkItemID, ChangeID: change.ID, VersionID: versions[index].ID, Detail: &detail, Artifacts: []artifact.Reference{refs[index]}}
+		if r.URL.Query().Get("bundle") == "none" {
+			data.Artifacts = nil
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if r.URL.Query().Get("content") == "1" {
 			err = templates.ChangeContent(data).Render(r.Context(), w)

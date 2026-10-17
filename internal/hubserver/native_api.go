@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -59,6 +60,15 @@ func (e *nativeError) Error() string {
 
 func nativeInvalid(message string) error {
 	return &nativeError{Code: "invalid_request", Message: message, status: http.StatusUnprocessableEntity}
+}
+
+func nativeRejection(err error, category, field string) error {
+	var failure *nativeError
+	rejection := runnerauth.PublicationRejection{Category: category, Field: field}
+	if !errors.As(err, &failure) || failure.Code != "invalid_request" || !rejection.Valid() {
+		return err
+	}
+	return &nativeError{Code: failure.Code, Message: "The requested operation is unavailable", status: failure.status, Details: map[string]any{"rejection": rejection}}
 }
 
 func nativeNotFound() error {
@@ -280,6 +290,8 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
 				if write && credential.HostedRole == "reporter" {
 					switch c.Request().Method + " " + c.Path() {
+					case "PATCH " + nativeBase + "/work-items/:item":
+						scope.action = operatortool.EditItem
 					case "POST " + nativeBase + "/work-items":
 						scope.action = operatortool.FileIssue
 					case "POST " + nativeBase + "/work-items/:item/comments":
@@ -304,6 +316,11 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 					return s.nativeAPIError(c, err)
 				}
 				if err := s.database.authorizeNativeProject(readCtx, scope); err != nil {
+					return s.nativeAPIError(c, err)
+				}
+			}
+			if item := c.Param("item"); item != "" {
+				if err := requireReporterItem(readCtx, s.database.reader, scope, item); err != nil {
 					return s.nativeAPIError(c, err)
 				}
 			}

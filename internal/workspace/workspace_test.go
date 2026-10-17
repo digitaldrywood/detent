@@ -1496,51 +1496,80 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
-
 	t.Parallel()
 	skipWindows(t)
-
-	source := initSourceRepo(t)
-	root := filepath.Join(t.TempDir(), "workspaces")
-	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
-
-	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
-		Root:       root,
-		SourceRoot: source,
-		AutoBranch: true,
-		Hooks: Hooks{
-			AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath),
-			Timeout:     hookCompletionTimeout(),
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewBackend() error = %v", err)
-	}
-
-	first, err := backend.Create(context.Background(), Issue{Identifier: "DD-REUSE"})
-	if err != nil {
-		t.Fatalf("first Create() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(first.Path, "local-progress.txt"), []byte("keep\n"), 0o600); err != nil {
-		t.Fatalf("write local progress: %v", err)
-	}
-
-	second, err := backend.Create(context.Background(), Issue{Identifier: "DD-REUSE"})
-	if err != nil {
-		t.Fatalf("second Create() error = %v", err)
-	}
-
-	if second.Created {
-		t.Fatal("second Create() Created = true, want false")
-	}
-	if second.Path != first.Path {
-		t.Fatalf("second Create() Path = %q, want %q", second.Path, first.Path)
-	}
-	if got := readFile(t, filepath.Join(second.Path, "local-progress.txt")); got != "keep\n" {
-		t.Fatalf("local-progress.txt = %q, want keep", got)
-	}
-	if got := strings.Count(readFile(t, tracePath), "after-create"); got != 1 {
-		t.Fatalf("after_create runs = %d, want 1", got)
+	for _, name := range []string{"existing", "native canonical", "legacy unpublished", "legacy recorded", "legacy wrong item", "legacy wrong branch", "legacy foreign source"} {
+		t.Run(name, func(t *testing.T) {
+			source := initSourceRepo(t)
+			root := filepath.Join(t.TempDir(), "workspaces")
+			tracePath := filepath.Join(t.TempDir(), "after-create.trace")
+			backend, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true, Hooks: Hooks{
+				AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath), Timeout: hookCompletionTimeout(),
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "DD-REUSE"}
+			if name != "existing" {
+				issue = Issue{ID: "wi_reuse", ProjectID: "local-alias", Identifier: "prj_example#1"}
+			}
+			var first Info
+			if strings.HasPrefix(name, "legacy") {
+				key := legacyIssueKey(issue)
+				first = Info{Path: filepath.Join(root, key), Key: key, Branch: autoBranchPrefix + strings.ToLower(key)}
+				origin := source
+				if name == "legacy foreign source" {
+					origin = initSourceRepo(t)
+				}
+				runGit(t, origin, "worktree", "add", "-b", first.Branch, first.Path, "HEAD")
+				if err := backend.runHook(t.Context(), "after_create", backend.hooks.AfterCreate, first, issue); err != nil {
+					t.Fatal(err)
+				}
+				if name == "legacy recorded" || name == "legacy wrong item" {
+					recorded := issue
+					if name == "legacy wrong item" {
+						recorded.ID = "wi_other"
+					}
+					if err := backend.recordCleanupOwnership(t.Context(), first, recorded, true); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if name == "legacy wrong branch" {
+					runGit(t, first.Path, "checkout", "-b", "unrelated")
+				}
+			} else {
+				first, err = backend.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeCheckpointFile(t, first.Path, "local-progress.txt", "keep\n")
+			existing, existingErr := backend.Existing(issue)
+			second, err := backend.Create(t.Context(), issue)
+			if strings.HasPrefix(name, "legacy") {
+				if !errors.Is(existingErr, ErrMissingWorkspace) {
+					t.Fatalf("legacy cache was discovered as authoritative source: %#v, %v", existing, existingErr)
+				}
+				if err != nil || !second.Created || second.Path == first.Path || second.Key != issueKey(issue) {
+					t.Fatalf("canonical workspace not created: %#v, %v", second, err)
+				}
+				if _, err := os.Stat(filepath.Join(second.Path, "local-progress.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unpublished legacy progress adopted: %v", err)
+				}
+			} else if err != nil || existingErr != nil || existing.Path != first.Path || second.Created || second.Path != first.Path || second.Branch != first.Branch {
+				t.Fatalf("workspace not reused: %#v, %#v, %v, %v", existing, second, existingErr, err)
+			}
+			if got := readFile(t, filepath.Join(first.Path, "local-progress.txt")); got != "keep\n" {
+				t.Fatalf("local progress = %q", got)
+			}
+			wantHooks := 1
+			if strings.HasPrefix(name, "legacy") {
+				wantHooks = 2
+			}
+			if got := strings.Count(readFile(t, tracePath), "after-create"); got != wantHooks {
+				t.Fatalf("after_create runs = %d, want %d", got, wantHooks)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -224,6 +225,25 @@ func checkpointUnpublishedHistory(ctx context.Context, git checkpointGitRunner, 
 			}
 		}
 	}
+	return nil
+}
+
+func (l *LocalGit) bindCheckpointBranch(issue Issue, info Info, checkpoint *CheckpointRef) error {
+	if checkpoint.transaction == nil {
+		return nil
+	}
+	if !issue.NativeRework || checkpoint.Ref != CheckpointRefName(issue) {
+		return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+	}
+	if checkpoint.transaction.Branch != info.Branch {
+		pattern := `^detent/[a-z0-9_.-]+-` + regexp.QuoteMeta(strings.ToLower(SafeKey(issue.Identifier))) + `-[a-f0-9]{12}$`
+		if nativeProjectID(issue) == "" || !l.autoBranch || issue.WorkspaceSession || issue.Landing != nil || strings.TrimSpace(issue.BranchName) != "" || !regexp.MustCompile(pattern).MatchString(checkpoint.transaction.Branch) {
+			return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+		}
+	}
+	transaction := *checkpoint.transaction
+	transaction.Branch = info.Branch
+	checkpoint.transaction = &transaction
 	return nil
 }
 

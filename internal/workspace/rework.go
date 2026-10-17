@@ -41,6 +41,9 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
 			return false, err
 		}
+		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
+			return false, err
+		}
 		if checkpoint.transaction != nil {
 			current, err := l.RecoveryState(ctx, info, issue)
 			if err != nil {

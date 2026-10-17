@@ -35,14 +35,16 @@ type GitHubImport struct {
 }
 
 type GitHubImportRequest struct {
-	Discovery   *tracker.GitHubDiscovery
-	Scheduled   *gate.ScheduledEvidence
-	SourceID    string
-	Repository  string
-	Profile     string
-	IssueNumber int
-	Stage       string
-	Cursor      string
+	Discovery         *tracker.GitHubDiscovery
+	Scheduled         *gate.ScheduledEvidence
+	ScheduledWorkflow string
+	ScheduledBranch   string
+	SourceID          string
+	Repository        string
+	Profile           string
+	IssueNumber       int
+	Stage             string
+	Cursor            string
 }
 
 type GitHubImportRecord struct {

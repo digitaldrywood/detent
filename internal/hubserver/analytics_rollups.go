@@ -138,6 +138,9 @@ func (q analyticsRollupReader) QueryRowContext(ctx context.Context, statement st
 
 func analyticsProjectReader(ctx context.Context, q nativeQueryer, scope nativeScope) (nativeQueryer, error) {
 	rollups, ok := q.(analyticsRollupReader)
+	if ok && scope.credential.HostedRole == "reporter" {
+		return rollups.nativeQueryer, nil
+	}
 	if !ok {
 		return q, nil
 	}

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,11 +16,31 @@ import (
 )
 
 func TestRunnerProblemsHeartbeat(t *testing.T) {
-	for _, code := range []string{"tier_unavailable", "backend_missing", "backend_probe_failed", "host_service_unreachable", "settings_invalid", "keep_awake_failed"} {
-		t.Run(code, func(t *testing.T) {
+	for _, test := range []struct {
+		code   string
+		sprite bool
+		tier   string
+	}{
+		{"tier_unavailable", false, "sandbox"},
+		{"backend_missing", false, "sandbox"},
+		{"backend_probe_failed", false, "sandbox"},
+		{"host_service_unreachable", false, "sandbox"},
+		{"settings_invalid", false, "sandbox"},
+		{"keep_awake_failed", false, "sandbox"},
+		{"tier_unavailable", true, "sandbox"},
+		{"tier_unavailable", true, "native-trusted"},
+	} {
+		t.Run(test.code+"/"+test.tier+"/sprite="+strconv.FormatBool(test.sprite), func(t *testing.T) {
+			code := test.code
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.redemption.IsolationTier = test.tier
 			r.enroll(t)
+			if test.sprite {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"test": {isolation.Sandbox, isolation.NativeTrusted}}}
 			observed := time.Now().UTC().Add(-time.Minute)
 			heartbeat["problems"] = []map[string]any{{"reported_at": observed, "project_id": "site", "code": code, "message": "Tooling needs repair", "fix_hint": "Repair the runner tooling", "subject": "codex", "check": "codex login status", "error_output": "Not logged in; OPENAI_API_KEY=private-key", "fix_command": "codex login --device-auth"}}
@@ -39,6 +60,13 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			health, problems := read()
 			if health != "needs_attention" || len(problems) != 1 || problems[0].Code != code || problems[0].ProjectID != "site" || problems[0].FixHint == "" || problems[0].FirstSeen.IsZero() {
 				t.Fatalf("health=%s problems=%+v", health, problems)
+			}
+			wantMessage := "Tooling needs repair"
+			if test.sprite && test.tier == "sandbox" {
+				wantMessage = "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox."
+			}
+			if problems[0].Message != wantMessage {
+				t.Fatalf("problem message = %q, want %q", problems[0].Message, wantMessage)
 			}
 			if problems[0].Subject != "codex" || problems[0].Check != "codex login status" || problems[0].FixCommand != "codex login --device-auth" || problems[0].ReportedAt.IsZero() || strings.Contains(problems[0].ErrorOutput, "private-key") {
 				t.Fatalf("unsafe or missing details: %+v", problems)

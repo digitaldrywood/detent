@@ -60,6 +60,7 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 	active := map[string]bool{}
 	for _, issue := range request.Active {
 		active[issueKey(issue)] = true
+		active[legacyIssueKey(issue)] = true
 	}
 	entries, err := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -85,7 +86,7 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 			recordError(err)
 			continue
 		}
-		if active[record.Key] {
+		if active[record.Key] || nativeOwnershipActive(record, request.Active) {
 			continue
 		}
 		records = append(records, record)
@@ -133,6 +134,7 @@ func (l *LocalGit) sweepLanding(ctx context.Context, root *os.Root, request Rete
 	active := map[string]bool{}
 	for _, issue := range request.Active {
 		active[issueKey(issue)] = true
+		active[legacyIssueKey(issue)] = true
 	}
 	var failures []error
 	for _, entry := range strings.Split(output, "\x00\x00") {

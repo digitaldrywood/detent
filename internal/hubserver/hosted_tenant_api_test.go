@@ -646,24 +646,72 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 	decodeHubResponse(t, response, &issue)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: binding.MachineID, SessionID: "private-run", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
 	requireNativeStatus(t, response, http.StatusOK)
+	response = f.setupRequest(t, "owner", http.MethodPost, base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "second-run"}, Title: "Second run", Body: issueContractTestSections, State: "Todo"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var second tracker.NativeIssue
+	decodeHubResponse(t, response, &second)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/claims", credential, tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: second.WorkItemID, MachineID: binding.MachineID, SessionID: "second-run", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+	requireNativeStatus(t, response, http.StatusOK)
+	var reporterPrincipal string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT principal_id FROM hosted_members WHERE user_id=?", "user_browser_viewer").Scan(&reporterPrincipal); err != nil {
+		t.Fatal(err)
+	}
 	checks := runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending", CheckoutMessage: "Cannot clone https://github.com/acme/private.git", CheckoutFix: "gh auth login"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, map[string]any{"version": "test", "capacity": 2, "display_name": "Shared runner", "local_checks": checks}), http.StatusOK)
 	for _, test := range []struct {
-		account string
-		used    int
-		leases  int
+		name, account, role   string
+		allProjects, ownIssue bool
+		used, leases          int
 	}{
-		{account: "owner", used: 1, leases: 1},
-		{account: "viewer", used: 0, leases: 0},
+		{name: "owner all projects", account: "owner", role: "owner", allProjects: true, used: 2, leases: 2},
+		{name: "viewer restricted projects", account: "viewer", role: "viewer"},
+		{name: "reporter restricted projects", account: "viewer", role: "reporter"},
+		{name: "reporter all projects hidden work", account: "viewer", role: "reporter", allProjects: true},
+		{name: "reporter all projects own and hidden work", account: "viewer", role: "reporter", allProjects: true, ownIssue: true, used: 1, leases: 1},
+		{name: "member all projects", account: "viewer", role: "member", allProjects: true, used: 2, leases: 2},
+		{name: "admin all projects", account: "viewer", role: "admin", allProjects: true, used: 2, leases: 2},
+		{name: "viewer all projects", account: "viewer", role: "viewer", allProjects: true, used: 2, leases: 2},
 	} {
-		t.Run(test.account, func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
+			if test.account == "viewer" {
+				if err := f.provider.SetMembershipRole(t.Context(), "membership_user_browser_viewer", test.role); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_members SET role=? WHERE user_id=?", test.role, "user_browser_viewer"); err != nil {
+					t.Fatal(err)
+				}
+				if test.allProjects {
+					requireNativeStatus(t, f.form(t, "owner", "/organization/grants", url.Values{"user": {"user_browser_viewer"}, "project": {f.privateProject}}), http.StatusSeeOther)
+				} else if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hosted_project_grants WHERE user_id=? AND project_id=?", "user_browser_viewer", f.privateProject); err != nil {
+					t.Fatal(err)
+				}
+			}
+			actor := second.Actor
+			if test.ownIssue {
+				actor.PrincipalID = reporterPrincipal
+			}
+			encoded, err := json.Marshal(actor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json=? WHERE native_id=?", string(encoded), second.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+
 			var fleet hostedFleetResponse
 			browserHostedDecode(t, f.api(t, test.account, http.MethodGet, organization+"/fleet", nil, http.StatusOK), &fleet)
 			if len(fleet.Runners) != 1 || fleet.Runners[0].MachineID != string(binding.MachineID) || fleet.Runners[0].HostUsed != test.used || len(fleet.Runners[0].Leases) != test.leases {
 				t.Fatalf("fleet = %#v", fleet.Runners)
 			}
+			if test.role == "reporter" {
+				for _, lease := range fleet.Runners[0].Leases {
+					if !test.ownIssue || lease.WorkItemID != second.WorkItemID {
+						t.Fatalf("hidden lease=%+v", lease)
+					}
+				}
+			}
 			checkout, reported := fleet.Runners[0].ProjectCheckouts[tracker.ProjectID(f.privateProject)]
-			if reported != (test.account == "owner") || reported && (checkout.Status != "missing" || checkout.FixCommand != "gh auth login" || checkout.Message != checks.CheckoutMessage) {
+			if reported != test.allProjects || reported && (checkout.Status != "missing" || checkout.FixCommand != "gh auth login" || checkout.Message != checks.CheckoutMessage) {
 				t.Fatalf("checkout guidance leaked or missing: %+v", fleet.Runners[0].ProjectCheckouts)
 			}
 		})

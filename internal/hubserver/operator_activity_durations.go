@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -36,7 +37,11 @@ AND (?='' OR coalesce(lr.runner_id,(SELECT json_extract(a.data_json,'$.runner_id
 ORDER BY d.started_at,d.attempt_id LIMIT ?`
 
 func (s *Service) readActivityTypicalDurations(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, runner string) ([]operatortool.ActivityTypicalDuration, bool, error) {
-	rows, err := q.QueryContext(ctx, activityDurationQuery, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), runner, runner, maxAnalyticsPopulation+1)
+	visibility, args := reportsIssueClause(ctx, "(SELECT a.work_item_id FROM native_attempts a WHERE a.id=d.attempt_id)")
+	statement := strings.Replace(activityDurationQuery, "ORDER BY", visibility+" ORDER BY", 1)
+	args = append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), runner, runner}, args...)
+	args = append(args, maxAnalyticsPopulation+1)
+	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, false, err
 	}

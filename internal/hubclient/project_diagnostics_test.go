@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -34,6 +35,34 @@ func TestNativeDiagnosticOwner(t *testing.T) {
 			t.Fatalf("busy=%t records=%+v", busy, r)
 		}
 	}
+	for _, test := range []struct{ name, details, want string }{
+		{"known", `,"details":{"rejection":{"category":"runtime_validation","field":"data.runtime.activity"}}`, "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]"},
+		{"version receipt", `,"details":{"rejection":{"category":"version_validation","field":"validation"}}`, "publication rejected: category=version_validation field=validation [private error text omitted]"},
+		{"source verification", `,"details":{"rejection":{"category":"source_verification","field":"source"}}`, "publication rejected: category=source_verification field=source [private error text omitted]"},
+		{"forged version field", `,"details":{"rejection":{"category":"version_validation","field":"sentinel-secret"}}`, "[private error text omitted]"},
+		{"legacy", "", "[private error text omitted]"},
+		{"unknown", `,"details":{"rejection":{"category":"secret","field":"data.runtime.activity"}}`, "[private error text omitted]"},
+		{"forged field", `,"details":{"rejection":{"category":"runtime_validation","field":"secret"}}`, "[private error text omitted]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var failure APIError
+			if err := json.Unmarshal([]byte(`{"code":"invalid_request","message":"sentinel-secret"`+test.details+`}`), &failure); err != nil {
+				t.Fatal(err)
+			}
+			for _, host := range []bool{false, true} {
+				if host {
+					e.HostOperation("native.publishVersion", now, &failure, true)
+				} else {
+					e.diagnosticOperation("append.run.observed")(&failure)
+				}
+				records := s.projectDiagnosticClaims(source)
+				if len(records) != 1 || records[0].LatestError != test.want || records[0].LatestErrorCode != "invalid_request" || records[0].NativeAttemptID != "attempt_test" || !records[0].OperationObservedAt.Equal(now) || !records[0].OperationPending {
+					t.Fatalf("lost rejection or correlation: %+v", records)
+				}
+			}
+		})
+	}
+
 	if len(s.projectDiagnosticClaims(&NativeConnector{})) != 0 {
 		t.Fatal("cross-project claim disclosed")
 	}

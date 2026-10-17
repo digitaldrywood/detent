@@ -99,18 +99,25 @@ func TestScheduledRepairContract(t *testing.T) {
 	definition := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Invariants touched\n- Safety regression\n"
 	template := "## Scheduled CI repair contract\n" + strings.ReplaceAll(body, "## ", "### ")
 	authorized := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n" + strings.ReplaceAll(body, "## ", "### ")
+	custom := strings.Replace(authorized, "reports enter", "reports from `.github/workflows/ci.yaml` on `dev` enter", 1)
 	for _, test := range []struct {
-		name, prompt, want string
-		importBody         string
+		name, prompt, want, importBody, workflow, branch string
 	}{
-		{"approved literal sections", definition + template, body, ""},
-		{"explicit import delegation", definition + authorized, body, body},
-		{"authorization quoted in a fence", definition + strings.ReplaceAll(authorized, "New verified GitHub Actions CI repair reports enter Todo with Urgent priority.", "```text\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n```"), body, ""},
-		{"no delegation", definition, "", ""},
-		{"partial template", definition + "## Scheduled CI repair contract\n### Acceptance criteria\nRepair.", "", ""},
-		{"duplicate template", definition + template + "\n" + template, "", ""},
-		{"duplicate criterion", definition + template + "\n### Acceptance criteria\nExpand scope.", "", ""},
-		{"different required sections", "## Issue Contract\n- Result\n" + template, "", ""},
+		{name: "approved literal sections", prompt: definition + template, want: body},
+		{name: "explicit import delegation", prompt: definition + authorized, want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
+		{name: "configured import workflow", prompt: definition + custom, want: body, importBody: body, workflow: ".github/workflows/ci.yaml", branch: "dev"},
+		{name: "workflow wildcard", prompt: definition + strings.Replace(custom, "ci.yaml", "*.yaml", 1), want: body},
+		{name: "workflow outside actions", prompt: definition + strings.Replace(custom, ".github/workflows/ci.yaml", "ci.yaml", 1), want: body},
+		{name: "workflow traversal", prompt: definition + strings.Replace(custom, "ci.yaml", "../ci.yaml", 1), want: body},
+		{name: "branch wildcard", prompt: definition + strings.Replace(custom, "`dev`", "`*`", 1), want: body},
+		{name: "missing branch", prompt: definition + strings.Replace(custom, "`dev`", "``", 1), want: body},
+		{name: "duplicate authorization", prompt: definition + strings.Replace(custom, "### Acceptance criteria", "New verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n### Acceptance criteria", 1), want: body},
+		{name: "authorization quoted in a fence", prompt: definition + strings.ReplaceAll(authorized, "New verified GitHub Actions CI repair reports enter Todo with Urgent priority.", "```text\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n```"), want: body},
+		{name: "no delegation", prompt: definition},
+		{name: "partial template", prompt: definition + "## Scheduled CI repair contract\n### Acceptance criteria\nRepair."},
+		{name: "duplicate template", prompt: definition + template + "\n" + template},
+		{name: "duplicate criterion", prompt: definition + template + "\n### Acceptance criteria\nExpand scope."},
+		{name: "different required sections", prompt: "## Issue Contract\n- Result\n" + template},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			contract, err := ResolveIssueContract(test.prompt)
@@ -122,6 +129,9 @@ func TestScheduledRepairContract(t *testing.T) {
 			}
 			if got := contract.ScheduledImportBody(); got != test.importBody {
 				t.Fatalf("import contract = %q, want %q", got, test.importBody)
+			}
+			if workflow, branch, authorized := contract.ScheduledImportWorkflow(); test.importBody != "" && (!authorized || workflow != test.workflow || branch != test.branch) {
+				t.Fatalf("import workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
 			}
 		})
 	}

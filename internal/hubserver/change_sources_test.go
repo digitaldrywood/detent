@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -45,13 +46,27 @@ func TestChangeSourceSurvivesRestartAndPreservesScope(t *testing.T) {
 			metadata := *input.Source
 			metadata.BundleSHA256, metadata.Bytes = tracker.ChangeSourceDigest(invalid.bundle), int64(len(invalid.bundle))
 			refused.Source, refused.SourceBundle = &metadata, invalid.bundle
+			err := workspace.VerifyChangeSource(t.Context(), metadata, invalid.bundle)
+			if err == nil || !strings.Contains(err.Error(), "git bundle create") {
+				t.Fatalf("unusable source lacks actionable verifier guidance: %v", err)
+			}
+			if strings.Contains(invalid.name, "budget") && !strings.Contains(err.Error(), "verification budget") {
+				t.Fatalf("pack reached Git before the verification budget refused it: %v", err)
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, refused)
 			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
-			if !bytes.Contains(response.Body.Bytes(), []byte("git bundle create")) || len(f.detail(t).Versions) != 0 {
-				t.Fatal("unusable source was retained or lacks actionable refusal guidance")
+			var failure struct {
+				Code    string `json:"code"`
+				Details struct {
+					Rejection runnerauth.PublicationRejection `json:"rejection"`
+				} `json:"details"`
 			}
-			if strings.Contains(invalid.name, "budget") && !bytes.Contains(response.Body.Bytes(), []byte("verification budget")) {
-				t.Fatal("pack reached Git before the verification budget refused it")
+			decodeHubResponse(t, response, &failure)
+			if failure.Code != "invalid_request" || failure.Details.Rejection != (runnerauth.PublicationRejection{Category: "source_verification", Field: "source"}) {
+				t.Fatalf("unusable source lacks typed refusal details: %s", response.Body.Bytes())
+			}
+			if len(f.detail(t).Versions) != 0 {
+				t.Fatal("unusable source was retained")
 			}
 		})
 	}

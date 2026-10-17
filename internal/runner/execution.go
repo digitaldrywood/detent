@@ -340,6 +340,21 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return AgentToolResult{Content: "unsupported tool"}, nil
 		}
 	}
+	if tools, handler := r.nativeReviewThreadTools(req); len(tools) != 0 {
+		previous := req.AgentToolHandler
+		req.AgentTools = append(append([]AgentTool(nil), req.AgentTools...), tools...)
+		req.AgentToolHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+			for _, tool := range tools {
+				if call.Name == tool.Name {
+					return handler(ctx, call)
+				}
+			}
+			if previous != nil {
+				return previous(ctx, call)
+			}
+			return AgentToolResult{Content: "unsupported tool"}, nil
+		}
+	}
 	guarded = r.installDependencyReasonGenerator(guarded, req)
 	var result RunResult
 	var runErr error

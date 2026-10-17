@@ -68,15 +68,12 @@ describe("Sprite pool setup and attention", () => {
       expect(row.textContent).toContain("Not set up. Sprites start runners for every project when work is queued.");
       expect(row.textContent).not.toContain("Floor");
       expect(row.querySelector(".text-warning-foreground, .text-destructive, [role=alert]")).toBeNull();
-      const setup = controls.getByRole(token === true ? "button" : "link", { name: "Set up Sprites" });
-      if (token === true) {
-        fireEvent.click(setup);
-        expect(await screen.findByRole("dialog", { name: "Organization Sprite pool" })).toBeDefined();
-        await userEvent.keyboard("{Escape}");
-        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      } else {
-        expect(setup.getAttribute("href")).toBe("/organizations/org_build/settings/integrations#sprites");
-      }
+      fireEvent.click(controls.getByRole("button", { name: "Set up Sprites" }));
+      const dialog = await screen.findByRole("dialog", { name: "Organization Sprite pool" });
+      expect((within(dialog).getByLabelText("Maximum runners") as HTMLInputElement).value).toBe("0");
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     } else {
       expect(controls.getByRole("button", { name: "Configure pool" })).toBeDefined();
       expect(row.textContent).toContain(`Floor 0 · Ceiling ${pool.max_runners} · Idle 300s · ${pool.members.length} members`);
@@ -86,6 +83,13 @@ describe("Sprite pool setup and attention", () => {
           : "Could not check the organization’s Sprites token.");
         expect(controls.getByRole("link", { name: state === "missing" ? "Set a Sprites token" : "Review the token" }).getAttribute("href"))
           .toBe("/organizations/org_build/settings/integrations#sprites");
+        fireEvent.click(controls.getByRole("button", { name: "Configure pool" }));
+        const dialog = await screen.findByRole("dialog");
+        expect(within(dialog).getByRole("status").textContent).toContain(state === "missing" ? "No organization Sprites token is set" : "Could not check the organization’s Sprites token");
+        expect(within(dialog).getByRole("link", { name: state === "missing" ? "Set a Sprites token" : "Review the token" }).getAttribute("href")).toBe("/organizations/org_build/settings/integrations#sprites");
+        expect((within(dialog).getByLabelText("Maximum runners") as HTMLInputElement).value).toBe(String(pool.max_runners));
+        await userEvent.keyboard("{Escape}");
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       } else {
         expect(row.querySelector(".text-warning-foreground")).toBeNull();
       }

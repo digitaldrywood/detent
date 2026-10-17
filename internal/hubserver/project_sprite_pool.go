@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const spriteSandboxUnavailableReason = "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox."
+
 type spritePoolSettings struct {
 	IsolationTier string            `json:"isolation_tier"`
 	Placement     *policy.Placement `json:"placement,omitempty"`
@@ -38,9 +40,10 @@ type spritePoolMember struct {
 
 type spritePoolView struct {
 	spritePoolSettings
-	Members             []spritePoolMember `json:"members"`
-	Decision            *placementDecision `json:"placement_decision,omitempty"`
-	RunnerSetupDeclared *bool              `json:"runner_setup_declared"`
+	IsolationTierUnavailableReason string             `json:"isolation_tier_unavailable_reason,omitempty"`
+	Members                        []spritePoolMember `json:"members"`
+	Decision                       *placementDecision `json:"placement_decision,omitempty"`
+	RunnerSetupDeclared            *bool              `json:"runner_setup_declared"`
 }
 
 type spriteScaleInput struct {
@@ -105,6 +108,9 @@ func (s *Service) readSpritePool(ctx context.Context, scope nativeScope) (sprite
 	if err != nil {
 		return view, err
 	}
+	if view.IsolationTier == isolation.Sandbox {
+		view.IsolationTierUnavailableReason = spriteSandboxUnavailableReason
+	}
 	if err := json.Unmarshal([]byte(placement), view.Placement); err != nil {
 		return view, err
 	}
@@ -149,19 +155,23 @@ func (s *Service) setSpritePool(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	settings.IsolationTier = view.IsolationTier
-	if input.IsolationTier != nil {
-		settings.IsolationTier = *input.IsolationTier
-	}
 	if input.Bootstrap != nil {
 		settings.Bootstrap = *input.Bootstrap
 	} else {
 		settings.Bootstrap = view.Bootstrap
 	}
-	if err := s.updateSpritePool(c.Request().Context(), scope, settings); err != nil {
+	if err := s.updateSpritePool(c.Request().Context(), scope, settings, input.IsolationTier); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	s.startSpritePoolForQueue(scope)
 	return s.getSpritePool(c)
+}
+
+func validateSpritePoolAccess(tier *string) error {
+	if tier != nil && *tier == isolation.Sandbox {
+		return nativeInvalid(spriteSandboxUnavailableReason)
+	}
+	return nil
 }
 
 func validateSpritePoolSettings(settings *spritePoolSettings) error {
@@ -187,7 +197,13 @@ func validateSpritePoolSettings(settings *spritePoolSettings) error {
 	return nil
 }
 
-func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings) error {
+func (s *Service) updateSpritePool(ctx context.Context, scope nativeScope, settings spritePoolSettings, tier *string) error {
+	if err := validateSpritePoolAccess(tier); err != nil {
+		return err
+	}
+	if tier != nil {
+		settings.IsolationTier = *tier
+	}
 	if !canManageProjectSecrets(scope.credential) {
 		return nativeInvalid("Sprite pool settings require owner or admin access")
 	}

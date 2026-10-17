@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
 func TestPrepareTurnPromptScratchFailure(t *testing.T) {
@@ -197,5 +199,41 @@ func TestTurnInputItemsWritesEveryImageInsideTheTurnDirectory(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAuditPromptsRemainInline(t *testing.T) {
+	t.Parallel()
+	diff := "diff --git a/example.go b/example.go\n@@ -1 +1 @@\n+" + strings.Repeat("\t\"escaped\"\\value\n", 24000)
+	snapshot := securityaudit.Snapshot{Repository: "owner/repository", IssueID: "issue", BaseSHA: "base", HeadSHA: "head", Diff: diff, DiffBytes: len(diff)}
+	plan, err := securityaudit.BuildPlan(snapshot, 2*1024*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reconstructed strings.Builder
+	for i := range plan.Len() {
+		_, prompt := plan.Chunk(i)
+		actual, cleanup, err := prepareTurnPrompt(prompt, t.TempDir())
+		cleanup()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if actual != prompt {
+			t.Fatalf("audit chunk %d replaced with file-reading instructions", i)
+		}
+		_, payload, ok := strings.Cut(actual, "\n\nAudit payload:\n")
+		if !ok {
+			t.Fatal("missing complete audit payload")
+		}
+		var input struct {
+			Diff string `json:"textual_diff"`
+		}
+		if err := json.Unmarshal([]byte(payload), &input); err != nil {
+			t.Fatal(err)
+		}
+		reconstructed.WriteString(input.Diff)
+	}
+	if reconstructed.String() != diff {
+		t.Fatal("transport lost audit source bytes")
 	}
 }

@@ -122,7 +122,7 @@ func TestSpritePoolConversion(t *testing.T) {
 				}
 				settings := view.spritePoolSettings
 				settings.MinRunners, settings.MaxRunners = 160, 180
-				if err := f.service.updateSpritePool(t.Context(), scope, settings); err != nil {
+				if err := f.service.updateSpritePool(t.Context(), scope, settings, nil); err != nil {
 					t.Fatalf("cannot restore known original bounds after upgrade: %v", err)
 				}
 				previousRevision := view.Revision

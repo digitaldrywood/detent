@@ -235,6 +235,10 @@ and [admission criteria](admission.md).
 
 ## Review delivery, then tune
 
+Use the [recovery operating procedure](diagnosis.md#recovery-operating-procedure)
+to compare delivery before and after a rollout, verify the formerly failing
+path and hand off monitoring with explicit exceptions.
+
 Use a consistent observation window and retain failures and cancellations in
 the data. Track:
 

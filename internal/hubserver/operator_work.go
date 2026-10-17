@@ -177,7 +177,7 @@ func (e nativeOperatorExecutor) Execute(ctx context.Context, call operatortool.C
 			}
 			item, resolveErr := resolve(ctx, e.service.database.reader, scope, request.Identifier)
 			if resolveErr != nil {
-				if definition.Annotations.ReadOnly {
+				if definition.Annotations.ReadOnly || scope.credential.HostedRole == "reporter" {
 					return operatortool.Result{}, safeWorkReadError(resolveErr)
 				}
 				return operatortool.Result{}, hubSafeChangeError(resolveErr)
@@ -315,10 +315,10 @@ func operatorNativeConflict(err error) error {
 
 func safeNativeWorkError(err error) error {
 	var refusal *nativeError
+	if errors.As(err, &refusal) && refusal.publicMessage {
+		return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
+	}
 	if errors.As(err, &refusal) && refusal.Code == "invalid_request" {
-		if refusal.publicMessage {
-			return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}
-		}
 		switch refusal.Message {
 		case linkedIssueRepositoryRequired, linkedIssueRepositoryMismatch:
 			return &operatortool.RequestError{Code: refusal.Code, Message: refusal.Message}

@@ -224,9 +224,18 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 			{"prose is instructions", "# Workflow\n- Todo\n- Done\n"},
 			{"invalid supplied configuration", "---\ntracker:\n  kind: unknown\n---\nWork\n"},
 			{"competing tracker", "---\ntracker:\n  kind: memory\n---\nWork\n"},
-			{"removed occupied state", "---\ntracker:\n  kind: hub_native\n  active_states: [Repair]\n  observed_states: [Blocked]\n  terminal_states: [Done]\n---\nWork\n"},
+			{"removed occupied state", "---\ntracker:\n  kind: hub_native\n  lanes: [{name: Repair, role: active}, {name: Blocked, role: holding}, {name: Done, role: terminal}]\n---\nWork\n"},
 		} {
 			api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": test.name, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": test.markdown}, http.StatusUnprocessableEntity)
+		}
+		for _, key := range []string{"observed_states", "active_states", "terminal_states"} {
+			for _, value := range []string{"[Todo]", "[]", "null"} {
+				legacy := "---\ntracker:\n  kind: hub_native\n  " + key + ": " + value + "\n---\nWork.\n"
+				response := api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": key + value, "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "workflow_markdown": legacy}, http.StatusUnprocessableEntity)
+				if !strings.Contains(response.Body.String(), "tracker."+key+" is no longer supported") {
+					t.Fatalf("legacy input response = %s", response.Body.String())
+				}
+			}
 		}
 		api(t, "owner", http.MethodPut, base+"/onboarding/integration", map[string]any{"idempotency_key": "competing-array", "expected_revision": fmt.Sprint(integration.Revision), "intake": "disabled", "projection": "disabled", "states": states}, http.StatusUnprocessableEntity)
 		workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "WORKFLOW.md", Workflow: []byte(markdown)})

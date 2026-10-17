@@ -402,6 +402,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 		age                       time.Duration
 		active, live, lookupError bool
 		landing                   bool
+		alias                     bool
 		remove                    bool
 	}{
 		{name: "expired unpushed", age: 8 * 24 * time.Hour, remove: true}, {name: "boundary", age: 7 * 24 * time.Hour, remove: true},
@@ -409,10 +410,16 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 		{name: "live", age: 8 * 24 * time.Hour, live: true}, {name: "lookup failure", age: 8 * 24 * time.Hour, lookupError: true},
 		{name: "expired landing preserves Code", age: 8 * 24 * time.Hour, landing: true, remove: true},
 		{name: "active issue protects landing", age: 8 * 24 * time.Hour, landing: true, active: true},
+		{name: "active native alias protects work", age: 8 * 24 * time.Hour, active: true, alias: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			backend := retentionBackend(t)
 			issue := Issue{ID: "2681", Identifier: "repo#2681"}
+			if test.alias {
+				issue = Issue{ID: "wi_retention", ProjectID: "old-alias", Identifier: "prj_example#1"}
+				key := legacyIssueKey(issue)
+				runGit(t, backend.sourceRoot, "worktree", "add", "-b", autoBranchPrefix+strings.ToLower(key), filepath.Join(backend.root, key), "HEAD")
+			}
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
@@ -462,6 +469,9 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			if test.active {
 				activeIssue := issue
 				activeIssue.Landing = nil
+				if test.alias {
+					activeIssue.ProjectID = "new-alias"
+				}
 				request.Active = []Issue{activeIssue}
 			}
 			if test.live {

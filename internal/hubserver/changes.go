@@ -150,6 +150,9 @@ func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 }
 
 func readChange(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string) (tracker.ChangeRequest, error) {
+	if err := requireReporterItem(ctx, query, scope, item); err != nil {
+		return tracker.ChangeRequest{}, err
+	}
 	var change tracker.ChangeRequest
 	var raw string
 	err := query.QueryRowContext(ctx, `SELECT c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
@@ -161,7 +164,14 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id
 	if err != nil {
 		return change, fmt.Errorf("decode snapshot: %w", err)
 	}
-	return change, nil
+	visibleChange, visible, err := reporterChange(ctx, query, scope, change)
+	if err != nil {
+		return tracker.ChangeRequest{}, err
+	}
+	if !visible {
+		return tracker.ChangeRequest{}, nativeNotFound()
+	}
+	return visibleChange, nil
 }
 
 func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
@@ -323,6 +333,19 @@ func (s *Service) readChanges(ctx context.Context, scope nativeScope, item strin
 WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY c.rowid`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
+	}
+	if scope.credential.HostedRole == "reporter" {
+		filtered := []tracker.ChangeRequest{}
+		for _, change := range result {
+			value, visible, err := reporterChange(ctx, s.database.reader, scope, change)
+			if err != nil {
+				return nil, err
+			}
+			if visible {
+				filtered = append(filtered, value)
+			}
+		}
+		result = filtered
 	}
 	return result, nil
 }

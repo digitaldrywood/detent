@@ -440,7 +440,7 @@ func TestPlacementSettingsCompatibility(t *testing.T) {
 	}
 	settings := view.spritePoolSettings
 	settings.Placement = &policy.Placement{Mode: "local_first", TodoThreshold: 12, OverflowSlots: 2}
-	if err := f.service.updateSpritePool(t.Context(), scope, settings); err != nil {
+	if err := f.service.updateSpritePool(t.Context(), scope, settings, nil); err != nil {
 		t.Fatal(err)
 	}
 	view, err = f.service.readSpritePool(t.Context(), scope)
@@ -450,14 +450,14 @@ func TestPlacementSettingsCompatibility(t *testing.T) {
 	legacy := view.spritePoolSettings
 	legacy.Placement = nil
 	legacy.IdleSeconds = 600
-	if err := f.service.updateSpritePool(t.Context(), scope, legacy); err != nil {
+	if err := f.service.updateSpritePool(t.Context(), scope, legacy, nil); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := f.service.readSpritePool(t.Context(), scope)
 	if err != nil || updated.Placement == nil || *updated.Placement != *settings.Placement || updated.IdleSeconds != 600 {
 		t.Fatalf("legacy PUT changed placement: %+v err=%v", updated, err)
 	}
-	if err := f.service.updateSpritePool(t.Context(), scope, legacy); err == nil {
+	if err := f.service.updateSpritePool(t.Context(), scope, legacy, nil); err == nil {
 		t.Fatal("stale settings revision accepted")
 	}
 }
