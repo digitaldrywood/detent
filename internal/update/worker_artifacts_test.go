@@ -52,9 +52,10 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 			if path == "critical" {
 				fixture.releases[len(fixture.releases)-1].Body = "[detent-critical]"
 			}
-			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, WorkerPreflight: preflight,
-				Updater: updater, Enabled: true, AutoApplyEnabled: true, CheckInterval: time.Hour,
-				StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: runnerauth.BuildEvidence{Version: "1.0.0", Commit: testPreviousCommit, OS: "linux", Architecture: "amd64"},
+			now := time.Now().UTC()
+			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, WorkerPreflight: preflight, Now: func() time.Time { return now },
+				Updater: updater, Enabled: path != "enrolled", AutoApplyEnabled: true, CheckInterval: time.Hour,
+				StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: runnerauth.BuildEvidence{Version: "1.0.0", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now},
 				ReserveIdle:    func(context.Context) (func(), bool) { return nil, false },
 				ReserveDrain:   func(context.Context) (func(), error) { drains++; return func() {}, nil },
 				RequestRestart: func(string) bool { restarts++; return true },
@@ -72,8 +73,28 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				observed := scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
 				request := &runnerauth.UpdateRequest{ID: "update-1", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: observed.Revision, RequestedAt: time.Now().UTC()}
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
-				if observed.Receipt == nil || observed.Receipt.Status != "applied" || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" {
+				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" {
 					t.Fatalf("untruthful mixed-version update receipt: %+v", observed)
+				}
+				resumed, resumeErr := NewScheduler(scheduler.cfg)
+				if resumeErr != nil {
+					t.Fatal(resumeErr)
+				}
+				if receipt := resumed.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil).Receipt; receipt == nil || !receipt.ExecutionReady() {
+					t.Fatalf("execution preparation required controller restart after reload: %+v", receipt)
+				}
+				publish("1.0.2")
+				now = now.Add(time.Hour)
+				updater.checkStatus.LatestVersion = "1.0.2"
+				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+				if observed.AvailableVersion != "1.0.2" || observed.Discovery != "available" {
+					t.Fatalf("later release discovery stalled: %+v", observed)
+				}
+				request.FollowHub = false
+				request.ID, request.Version, request.ExpectedBuildRevision = "update-2", "1.0.2", observed.Revision
+				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
+				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Receipt.Applied.Version != "1.0.2" || observed.Running.Version != "1.0.0" || observed.Validate() != nil {
+					t.Fatalf("consecutive execution preparation failed: %+v", observed)
 				}
 			default:
 				_, err = scheduler.ApplyRelease(t.Context(), true)

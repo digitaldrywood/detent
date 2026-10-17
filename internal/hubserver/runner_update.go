@@ -37,7 +37,7 @@ func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time
 	if view.Status == "unavailable" || r.Update != nil && r.Update.Discovery == "unknown" {
 		return &nativeError{Code: "unavailable", Message: "The enrolled runner has no current installed update owner; upgrade or reconnect that runner", status: http.StatusServiceUnavailable}
 	}
-	if view.Status == "requested" || view.Status == "applying" || view.Status == "draining" || view.Status == "uncertain" || view.Status == "applied" || view.Status == "restart_requested" {
+	if view.Status == "requested" || view.Status == "applying" || view.Status == "draining" || view.Status == "uncertain" || view.Status == "applied" && (r.Update.Receipt == nil || !r.Update.Receipt.ExecutionReady()) || view.Status == "restart_requested" {
 		return runnerUpdateConflict(r.Revision, "The existing runner update has not settled; read get_runner_update and wait for its running or refused receipt")
 	}
 	if request.ExpectedRevision != r.Revision {
@@ -261,7 +261,7 @@ func (s *Service) applyRunnerUpdate(c echo.Context) error {
 
 func runnerUpdateSuperseded(current runnerauth.UpdateRequest, receipt *runnerauth.UpdateReceipt, target string) bool {
 	reported := receipt != nil && receipt.Request == current
-	completed := reported && receipt.Status == "applied" && receipt.Running != nil && receipt.Applied != nil && receipt.Running.Matches(*receipt.Applied)
+	completed := reported && (receipt.ExecutionReady() || receipt.Status == "applied" && receipt.Running != nil && receipt.Applied != nil && receipt.Running.Matches(*receipt.Applied))
 	if reported && !completed && !slices.Contains([]string{"running", "refused", "uncertain"}, receipt.Status) {
 		return false
 	}

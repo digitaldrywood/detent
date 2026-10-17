@@ -65,14 +65,15 @@ func (r UpdateRequest) Validate() error {
 }
 
 type UpdateReceipt struct {
-	DrainReason    string         `json:"drain_reason,omitempty"`
-	FailureReason  string         `json:"failure_reason,omitempty"`
-	Running        *BuildEvidence `json:"running,omitempty"`
-	VerifiedTarget *BuildEvidence `json:"verified_target,omitempty"`
-	Request        UpdateRequest  `json:"request"`
-	Status         string         `json:"status"`
-	Applied        *BuildEvidence `json:"applied,omitempty"`
-	ObservedAt     time.Time      `json:"observed_at"`
+	ExecutionArtifact bool           `json:"execution_artifact,omitempty"`
+	DrainReason       string         `json:"drain_reason,omitempty"`
+	FailureReason     string         `json:"failure_reason,omitempty"`
+	Running           *BuildEvidence `json:"running,omitempty"`
+	VerifiedTarget    *BuildEvidence `json:"verified_target,omitempty"`
+	Request           UpdateRequest  `json:"request"`
+	Status            string         `json:"status"`
+	Applied           *BuildEvidence `json:"applied,omitempty"`
+	ObservedAt        time.Time      `json:"observed_at"`
 }
 
 func (r UpdateReceipt) Validate() error {
@@ -88,7 +89,14 @@ func (r UpdateReceipt) Validate() error {
 	if r.Applied != nil && (r.Applied.Validate() != nil || r.Applied.Version != r.Request.Version) || slices.Contains([]string{"applied", "restart_requested", "running"}, r.Status) && r.Applied == nil {
 		return errors.New("update receipt requires applied build evidence")
 	}
+	if r.ExecutionArtifact && (r.Applied == nil || !r.Applied.VerifiedRelease || r.VerifiedTarget != nil) {
+		return errors.New("execution artifact receipt requires a verified applied release")
+	}
 	return nil
+}
+
+func (r UpdateReceipt) ExecutionReady() bool {
+	return r.ExecutionArtifact && r.Applied != nil && r.Applied.VerifiedRelease && r.FailureReason == "" && (r.Status == "applied" || r.Status == "running")
 }
 
 type UpdateObservation struct {
