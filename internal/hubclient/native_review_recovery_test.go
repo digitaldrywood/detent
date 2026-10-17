@@ -85,8 +85,10 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 		name, stage, verdict string
 		refusal              string
 		restore, malformed   bool
+		hostHandoff          bool
 	}{
 		{name: "healthy"},
+		{name: "tool-directed host publication handoff", hostHandoff: true},
 		{name: "source", stage: "source"},
 		{name: "security", stage: "security"},
 		{name: "validator", stage: "validator"},
@@ -105,8 +107,13 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				{Name: "Blocked", Transitions: []string{"Todo"}},
 				{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Review"}},
 				{Name: "Done", Terminal: true},
-				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}},
+				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging"}},
 			}, true)
+			gateCommand := "true"
+			gateMarker := filepath.Join(t.TempDir(), "source-gate")
+			if test.hostHandoff || test.name == "healthy" {
+				gateCommand = "printf gate >> '" + strings.ReplaceAll(gateMarker, "'", "'\"'\"'") + "'"
+			}
 			previous := h.descriptor.ID
 			h.descriptor.Gates.AutomatedReview = gate.AutomatedReviewRequired
 			h.descriptor.Gates.Validator = true
@@ -145,6 +152,48 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				}
 			})
 			provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed}
+			var previousVersion tracker.ChangeVersion
+			if test.hostHandoff {
+				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
+				if err != nil {
+					t.Fatal(err)
+				}
+				readHead := func() string {
+					output, err := exec.CommandContext(t.Context(), "git", "-C", info.Path, "rev-parse", "HEAD").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					return strings.TrimSpace(string(output))
+				}
+				base := readHead()
+				if err := os.WriteFile(filepath.Join(info.Path, "PRESERVED.md"), []byte("published source\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, info.Path, "add", "PRESERVED.md")
+				nativeChangeGit(t, info.Path, "commit", "-m", "published source")
+				head := readHead()
+				capture, err := workspace.CaptureChangeSource(t.Context(), info.Path, base, head)
+				if err != nil {
+					t.Fatal(err)
+				}
+				change, err := h.admin.CreateChange(t.Context(), current.WorkItemID, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+				if err != nil {
+					t.Fatal(err)
+				}
+				previousVersion = h.publishCaptured(t, current.WorkItemID, change.ID, head, &capture, "", base)
+				detail, err := h.admin.currentChange(t.Context(), current.WorkItemID)
+				if err != nil || detail.Summary.Status != "needs_evidence" || len(detail.Reviews) != 0 {
+					t.Fatalf("old version unexpectedly reviewed: %+v, %v", detail, err)
+				}
+				currentIssue, err := h.admin.Issue(t.Context(), current.WorkItemID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+				provider.finalMessage = "Source complete; published review is pending.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Published version needs host review\nhuman_action: null\n```"
+			}
 			provider.available.Store(test.stage == "")
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, nil))
@@ -160,11 +209,14 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					provider.validator = test.verdict
 				}
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{Logger: logger, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}})
+			agent, err := runner.NewRunner(runner.Dependencies{Logger: logger, Store: runtimeStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review", "Merging", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false)}}
+			if test.hostHandoff {
+				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
+			}
 			dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: agent, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			orch, err := orchestrator.New(cfg, dependencies)
 			if err != nil {
@@ -323,10 +375,25 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if deferred != (test.stage != "") || len(detail.Versions) != 1 || len(detail.Reviews) != 3 || detail.Summary.Status != "reviewed" || provider.writableCalls != 1 {
+					wantVersions := 1
+					if test.hostHandoff {
+						wantVersions++
+					}
+					if deferred != (test.stage != "") || len(detail.Versions) != wantVersions || len(detail.Reviews) != 3 || detail.Summary.Status != "reviewed" || provider.writableCalls != 1 {
 						t.Fatalf("invalid recovery: deferred=%v versions=%d reviews=%+v writable=%d", deferred, len(detail.Versions), detail.Reviews, provider.writableCalls)
 					}
-					version := detail.Versions[0]
+					version := detail.Versions[len(detail.Versions)-1]
+					if test.hostHandoff {
+						if detail.Versions[0].ID != previousVersion.ID || version.HeadSHA == previousVersion.HeadSHA || version.Validation == nil || version.Validation.HeadSHA != version.HeadSHA || version.Validation.TreeSHA == "" || version.Source == nil || version.Source.HeadSHA != version.HeadSHA {
+							t.Fatal("handoff lost old source or failed to validate the new source")
+						}
+					}
+					if test.hostHandoff || test.name == "healthy" {
+						output, err := os.ReadFile(gateMarker)
+						if err != nil || string(output) != "gategategate" {
+							t.Fatalf("expected only finalization, source review and validator commands: output=%q error=%v", output, err)
+						}
+					}
 					sessions := map[int64]bool{}
 					for _, review := range detail.Reviews {
 						if review.VersionID != version.ID {

@@ -444,15 +444,28 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	defer rows.Close()
+	var attempts []tracker.NativeAttempt
+	for rows.Next() {
+		attempt, err := scanNativeAttempt(rows, s.config.now())
+		if err != nil {
+			return tracker.Page[tracker.NativeAttempt]{}, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
+	}
 	page := tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}
 	hasMore := false
-	for rows.Next() {
+	for _, attempt := range attempts {
 		if len(page.Items) == limit {
 			hasMore = true
 			break
 		}
-		attempt, err := scanNativeAttempt(rows, s.config.now())
-		if err != nil {
+		if err := readAttachmentEvidence(ctx, s.database.reader, scope, item, &attempt.NativeRunData); err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
 		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
@@ -477,9 +490,6 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		}
 		page.Items = candidate.Items
 		cursor = next
-	}
-	if err := rows.Err(); err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	if hasMore {
 		page.NextCursor, err = encodeNativeCursor(cursor, key)
@@ -594,7 +604,12 @@ func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, 
 	if _, _, err := readNativeIssue(ctx, q, scope, item); err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	return readNativeAttemptRecord(ctx, q, scope, item, id, now)
+	attempt, err := readNativeAttemptRecord(ctx, q, scope, item, id, now)
+	if err != nil {
+		return attempt, err
+	}
+	err = readAttachmentEvidence(ctx, q, scope, item, &attempt.NativeRunData)
+	return attempt, err
 }
 
 func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {
