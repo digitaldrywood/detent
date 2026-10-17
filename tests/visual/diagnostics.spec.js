@@ -102,7 +102,7 @@ test("Browse opens Diagnostics, orders findings, and changes the read window", a
     page.getByRole("img", { name: "Hourly slots in use and Todo queue depth" }),
   ).toBeVisible();
   const capacity = page.getByRole("region", { name: "Capacity right now", exact: true });
-  await expect(capacity).toContainText("3 of 20 slots running work");
+  await expect(capacity).toContainText("3 of 20 slots occupied");
   await expect(capacity.getByRole("link", { name: "Example desktop" })).toBeVisible();
   await rows.first().getByRole("link").click();
   await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2\?tab=diagnostics$/);
