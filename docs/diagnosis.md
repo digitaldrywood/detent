@@ -56,12 +56,15 @@ permissions by copying tenant databases or inspecting hidden credentials.
    filing. Simplify that owner or remove the unnecessary restriction before
    adding checks. Preserve live work, published source and genuine human holds;
    use supported revision-aware operations for authorized historical corrections.
-2. For this repository, keep one recovery release on the existing frozen
-   series. Fixes land on develop first and reach the release through reviewed
-   `cherry-pick -x` PRs, its green full suite, an immutable tag, staging smoke
-   and production smoke. Follow [the release contract](branching.md#release-branches);
-   other projects retain their chosen contract. Do not cut another moving
-   candidate or restart successful validation to avoid stabilizing the first.
+2. For this repository, resume an active, unshipped frozen candidate instead
+   of starting a competing release. With no active candidate, if the prior
+   series has shipped and a new full release is requested, cut the next
+   `release/vX.Y` from current develop once and freeze it. Fixes land on develop
+   first, then reviewed `cherry-pick -x` PRs reach the release. Its green full
+   suite permits an immutable tag, staging smoke and production smoke. Follow
+   [the release contract](branching.md#release-branches); other projects retain
+   their chosen contract. Do not restart successful validation or chase a moving
+   candidate instead of stabilizing the active one.
 3. Verify the installed Hub and every relevant runner's version, commit and
    observation time. Requested, downloaded or saved updates are not applied
    updates. Check terminal operation receipts and fresh readback. Track offline
