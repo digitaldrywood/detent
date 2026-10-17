@@ -23,6 +23,9 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 		wantFailure bool
 		selected    string
 		unrelated   bool
+		noHub       bool
+		tracker     string
+		wantRefusal bool
 	}{
 		{
 			name:       "valid project is startup compatible",
@@ -51,6 +54,9 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 			wantDetail:  "cannot start",
 			wantFailure: true,
 		},
+		{name: "standalone project is refused", noHub: true, tracker: "memory", wantRefusal: true},
+		{name: "Hub native project without Hub remains compatible", noHub: true, tracker: "hub_native", wantStatus: doctorOK, wantDetail: "loaded and validated"},
+		{name: "unreadable project without Hub remains degraded", noHub: true, loadErr: os.ErrNotExist, wantStatus: doctorWarn, wantDetail: "isolate this project as degraded"},
 	}
 
 	for _, tt := range tests {
@@ -59,6 +65,9 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 
 			configPath := t.TempDir() + "/global.yaml"
 			global := validDoctorGlobalWithProjects(configPath, "alpha")
+			if !tt.noHub {
+				global.Client.URL = "https://hub.example.test"
+			}
 			if tt.unrelated {
 				global.Projects = append(global.Projects, globalconfig.Project{ID: "beta", Workflow: "beta/WORKFLOW.md", Workdir: "/beta", Weight: 1})
 			}
@@ -70,7 +79,11 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 				if tt.loadErr != nil {
 					return workflowconfig.Workflow{}, tt.loadErr
 				}
-				return workflowconfig.Workflow{Config: validDoctorWorkflow("/alpha")}, nil
+				cfg := validDoctorWorkflow("/alpha")
+				if tt.tracker != "" {
+					cfg.Tracker.Kind = tt.tracker
+				}
+				return workflowconfig.Workflow{Config: cfg}, nil
 			}
 
 			report := runDoctorStartupPreflight(t.Context(), doctorConfig{
@@ -81,6 +94,13 @@ func TestRunDoctorStartupPreflight(t *testing.T) {
 				},
 			}, successfulDoctorOptionsWithConfig(configPath, global), deps)
 
+			if tt.wantRefusal {
+				assertDoctorCheck(t, report, "Candidate startup", doctorFail, "Standalone local board")
+				if !report.HasFailures() {
+					t.Fatal("preflight accepted a standalone project that cannot start")
+				}
+				return
+			}
 			assertDoctorCheck(t, report, "Candidate startup", doctorOK, "candidate resolved")
 			assertDoctorCheck(t, report, "Project alpha startup", tt.wantStatus, tt.wantDetail)
 			if got := report.HasFailures(); got != tt.wantFailure {
@@ -105,6 +125,7 @@ func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			configPath := filepath.Join(t.TempDir(), "global.yaml")
 			global := validDoctorGlobalWithProjects(configPath, "alpha")
+			global.Client.URL = "https://hub.example.test"
 			global.Client.NativeProjects = map[string]string{"alpha": "prj_test"}
 			if test.globalIntake {
 				global.Projects[0].IntakeConfigured = true

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -29,7 +28,7 @@ func validateHubStartup(ctx context.Context, cfg globalconfig.Config, deps runti
 	for _, project := range cfg.Projects {
 		workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
 		if err != nil {
-			return fmt.Errorf("load project workflow: %w", err)
+			continue
 		}
 		if workflow.Config.Tracker.Kind != workflowconfig.TrackerHubNative {
 			return NewValidationError("Standalone local board projects are no longer supported without client.hub_url.", hubMigrationHint, nil)
