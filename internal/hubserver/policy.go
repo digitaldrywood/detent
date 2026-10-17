@@ -187,7 +187,7 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		if observed.PreviouslyApproved && (repositoryApproved || observed.Policy.SameAuthoredInputs(approved) && observed.Policy.Authored.Version < approved.Authored.Version) {
+		if observed.PreviouslyApproved && (repositoryApproved && approved.Workflow != nil || observed.Policy.SameAuthoredInputs(approved) && observed.Policy.Authored.Version < approved.Authored.Version) {
 			delete(seen, id)
 			continue
 		}

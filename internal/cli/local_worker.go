@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,7 +125,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if err != nil {
 		return result, errors.Join(r.hostFailure("local", err), artifact.Release())
 	}
-	scratchRoot := sshScratchRoot()
+	scratchRoot := strings.TrimSpace(workflow.Config.Workspace.Root)
 	var scratch string
 	defer func() {
 		if artifact != nil {
@@ -135,7 +136,14 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		}
 	}()
 	if scratchRoot == "" {
-		return result, r.hostFailure("local", errors.New("execution worker requires TMPDIR, TMP or TEMP"))
+		return result, r.hostFailure("local", errors.New("execution worker requires a configured workspace root"))
+	}
+	if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+		return result, r.hostFailure("local", err)
+	}
+	scratchRoot, err = filepath.EvalSymlinks(scratchRoot)
+	if err != nil {
+		return result, r.hostFailure("local", err)
 	}
 	scratch, err = os.MkdirTemp(scratchRoot, "execution-")
 	if err != nil {

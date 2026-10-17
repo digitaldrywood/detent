@@ -364,6 +364,9 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 }
 
 func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, "")
+	}
 	if testing.Short() {
 		t.Skip("process and Hub lifecycle integration")
 	}
@@ -373,6 +376,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	scheduler, native, connection, workflow, create, revoke := localWorkerHub(t)
+	workflow.Config.Workspace.Root = t.TempDir()
 	descriptor := workflow.Config.Policy
 	artifacts, publish, cacheRoot := localWorkerArtifacts(t)
 	publish("1.0.0")

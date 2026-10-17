@@ -43,7 +43,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 		{name: "dispatch heartbeat", supported: true, dispatch: true},
 		{name: "denied heartbeat", supported: true, denied: true},
 		{name: "heartbeat upgrade stops claims", supported: true, dispatch: true, draining: true},
-		{name: "failed Hub update retries while drained", supported: true, dispatch: true, draining: true, retryUpdate: true},
+		{name: "failed critical Hub update retries while drained", supported: true, dispatch: true, draining: true, retryUpdate: true},
 		{name: "configuration control permits candidate heartbeat", supported: true, reenterControl: true},
 		{name: "configuration receipt preserves routing order", supported: true, overlapControl: true},
 		{name: "configuration observation follows dispatch heartbeat", supported: true, precedingDispatch: true},
@@ -460,7 +460,7 @@ type heartbeatUpdater struct {
 }
 
 func (heartbeatUpdater) Check(context.Context) (detentupdate.Status, error) {
-	return detentupdate.Status{}, nil
+	return detentupdate.Status{Critical: true, LatestVersion: "1.2.4"}, nil
 }
 
 func (u heartbeatUpdater) Apply(ctx context.Context, options detentupdate.ApplyOptions) (detentupdate.Status, error) {
