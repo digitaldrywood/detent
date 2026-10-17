@@ -1610,7 +1610,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil) {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (workspaceIssue.NativeRework || nativeLanding || reviewRecovery != nil || req.Execution.Recovery().SourceVersionID != "") {
 		if local, ok := runWorkspace.(interface {
 			Existing(workspace.Issue) (workspace.Info, error)
 		}); ok {
@@ -1700,11 +1700,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	info, err := runWorkspace.Create(ctx, workspaceIssue)
 	if err != nil {
-		if workspaceIssue.NativeRework && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
+		sourceRecovery := workspaceIssue.NativeRework || workspaceIssue.Source != nil && workspaceIssue.Source.Transferred
+		if sourceRecovery && errors.Is(err, workspace.ErrMergeResolutionInvalid) {
 			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
 		}
 		var sourceRefusal *workspace.LandRefusal
-		if workspaceIssue.NativeRework && workspaceIssue.Source != nil && errors.As(err, &sourceRefusal) {
+		if sourceRecovery && workspaceIssue.Source != nil && errors.As(err, &sourceRefusal) {
 			return RunResult{}, fmt.Errorf("%w: recover reviewed source: %w", ErrNativeRecoveryRequired, err)
 		}
 		if nativeLanding && (IsCapacityError(err) || errors.Is(err, github.ErrRateLimited)) {

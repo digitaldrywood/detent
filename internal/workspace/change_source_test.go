@@ -97,6 +97,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		previous    bool
 		absent      bool
 		corrupt     bool
+		transferred bool
 	}{
 		{name: "additional advertised ref", edit: editBundle(bytes.Replace(capture.Bundle, []byte("\n\n"), []byte("\n"+head+" refs/heads/extra\n\n"), 1))},
 		{name: "wrong advertised head", edit: editBundle(bytes.Replace(capture.Bundle, []byte(head+" HEAD"), []byte(base+" HEAD"), 1))},
@@ -117,6 +118,11 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		{name: "superseded Hub-only source is preserved and restored", unpublished: true, previous: true},
 		{name: "superseded Hub-only branch without workspace is preserved and restored", unpublished: true, previous: true, absent: true},
 		{name: "unknown unpublished source survives restoration", unpublished: true},
+		{name: "transferred version refuses mixed dirty custody", pending: "mixed", transferred: true},
+		{name: "transferred version refuses staged-only custody", pending: "index", transferred: true},
+		{name: "transferred version refuses untracked custody", pending: "untracked", transferred: true},
+		{name: "transferred version refuses unknown unpublished head", unpublished: true, transferred: true},
+		{name: "transferred version restores superseded head with custody", published: true, previous: true, transferred: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "second")
@@ -128,6 +134,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 			}
 			metadata := capture.Source
 			retained := &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Repository: repository, Source: &metadata}}, Bundle: capture.Bundle}
+			retained.Version.ID, retained.Transferred = "version_selected", test.transferred
 			if test.edit != nil {
 				test.edit(retained)
 			}
@@ -188,7 +195,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					return
 				}
 				var refusal *LandRefusal
-				if test.unpublished && !test.corrupt {
+				if test.unpublished && !test.corrupt && !test.transferred {
 					if restoreErr != nil || restored.Created {
 						t.Fatalf("unpublished work must remain available unchanged: %+v, %v", restored, restoreErr)
 					}
@@ -285,6 +292,12 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 					writeFileDiffFile(t, info.Path, "README.md", wantFiles["README.md"])
 				}
 				_, restoreErr := backend.Create(t.Context(), issue)
+				if test.transferred {
+					var refusal *LandRefusal
+					if !errors.As(restoreErr, &refusal) || refusal.Kind != LandRefusalHeadMoved || !strings.Contains(refusal.Reason, retained.Version.ID) || !strings.Contains(refusal.Reason, head) || !strings.Contains(refusal.Reason, "source recovery") {
+						t.Fatalf("transfer accepted obsolete dirty source or lacks recovery action: %v", restoreErr)
+					}
+				}
 				if restoreErr != nil {
 					t.Logf("source restoration refused: %v", restoreErr)
 				}

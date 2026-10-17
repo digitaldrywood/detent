@@ -42,6 +42,9 @@ type checkpointRefs struct {
 // nativeRestorableCheckpoint returns the newest git checkpoint unless a later
 // attempt published a Change version that supersedes it.
 func nativeRestorableCheckpoint(recovery tracker.NativeRecovery, current *workspace.ChangeSource) *workspace.CheckpointRef {
+	if recovery.SourceVersionID != "" {
+		return nil
+	}
 	previous := recovery.SourceAttempt()
 	if previous == nil || !previous.Checkpoint.GitRef() || previous.Checkpoint.UncertainForgeEffect() {
 		return nil

@@ -25,6 +25,9 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	if err != nil {
 		return result, err
 	}
+	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN recovery_runner_id != '' THEN recovery_version_id ELSE '' END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, item).Scan(&result.SourceVersionID); err != nil {
+		return result, err
+	}
 	source, err := readNativeSourceCheckpoint(ctx, tx, scope, item)
 	if err != nil {
 		return result, err
@@ -66,6 +69,9 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 				result.SourceAttemptID = sourceAttempt
 			}
 		}
+	}
+	if result.Change == nil || result.SourceVersionID != result.Change.VersionID {
+		result.SourceVersionID = ""
 	}
 	ids, err := nativePageIDs(ctx, tx, `SELECT id FROM native_comments
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (

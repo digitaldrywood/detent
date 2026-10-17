@@ -20,6 +20,7 @@ type ChangeSource struct {
 	Version       tracker.ChangeVersion `json:"version"`
 	Bundle        []byte                `json:"bundle,omitempty"`
 	PreviousHeads []string              `json:"previous_heads,omitempty"`
+	Transferred   bool                  `json:"transferred,omitempty"`
 }
 
 func changeSourceScratch() (string, error) {
@@ -261,12 +262,18 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	}
 	defer release()
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	if err == nil && paused && issue.Source.Transferred {
+		return false, refuse(LandRefusalHeadMoved, "the transferred version has unresolved paused-rebase custody; preserve and reconcile the assigned worktree through source recovery before retrying transfer")
+	}
 	if err != nil || paused {
 		return false, err
 	}
 	state, err := l.RecoveryState(ctx, info, issue)
 	if err != nil {
 		return false, err
+	}
+	if issue.Source.Transferred && (len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.HeadSHA != issue.Source.Version.HeadSHA && state.UnpushedCommits > 0 && !slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)) {
+		return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("transferred version %s requires head %s; unresolved local source custody remains at head %s; preserve and reconcile the assigned worktree through source recovery before retrying transfer", issue.Source.Version.ID, issue.Source.Version.HeadSHA, state.HeadSHA))
 	}
 	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
 		return false, nil
