@@ -13,9 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/cloudorigin"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
@@ -55,8 +57,21 @@ func (c *Client) cachedCapabilities(ctx context.Context) (nativeCapabilities, er
 	if !c.capabilitiesAt.IsZero() && (c.capabilitiesDigest != "" || time.Since(c.capabilitiesAt) < capabilitiesTTL) {
 		return c.capabilities, nil
 	}
+	path := "/api/v2/capabilities"
+	headers := make(http.Header)
+	if c.runner != nil {
+		file, err := runnerauth.Load(c.runner.path)
+		if err != nil {
+			return nativeCapabilities{}, err
+		}
+		headers.Set("X-Detent-Organization", string(file.Identity.OrganizationID))
+		switch c.baseURL.String() {
+		case cloudorigin.Production, cloudorigin.Staging, cloudorigin.Legacy(cloudorigin.Production), cloudorigin.Legacy(cloudorigin.Staging):
+			path = "/organizations/" + url.PathEscape(string(file.Identity.OrganizationID)) + path
+		}
+	}
 	var capabilities nativeCapabilities
-	if err := c.request(ctx, http.MethodGet, "/api/v2/capabilities", nil, &capabilities); err != nil {
+	if err := c.requestWithHeaders(ctx, http.MethodGet, path, headers, nil, &capabilities); err != nil {
 		return nativeCapabilities{}, err
 	}
 	c.capabilities, c.capabilitiesAt = capabilities, time.Now()

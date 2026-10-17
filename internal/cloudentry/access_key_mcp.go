@@ -238,30 +238,42 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	if call.Name == operatortool.UploadAttachment {
+	if call.Name == operatortool.UploadAttachment || call.Name == operatortool.ReadAttachment || call.Name == operatortool.ReadAttachmentMetadata {
 		var authorized struct {
-			EntryUpload bool              `json:"entry_upload"`
-			Mutation    mutation.Metadata `json:"mutation"`
+			EntryUpload     bool              `json:"entry_upload"`
+			EntryAttachment string            `json:"entry_attachment"`
+			Mutation        mutation.Metadata `json:"mutation"`
 		}
-		if json.Unmarshal(raw, &authorized) != nil || !authorized.EntryUpload {
+		if json.Unmarshal(raw, &authorized) != nil {
 			return operatortool.Result{}, operatortool.ErrAccessDenied
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, e.service.config.PublicURL+"/mcp", nil)
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		upload, err := e.service.uploadAttachmentMCP(ctx, request, org.ID, arguments, authorized.Mutation)
+		var response *attachmentResponse
+		if call.Name == operatortool.UploadAttachment {
+			if !authorized.EntryUpload {
+				return operatortool.Result{}, operatortool.ErrAccessDenied
+			}
+			response, err = e.service.uploadAttachmentMCP(ctx, request, org.ID, arguments, authorized.Mutation)
+		} else {
+			if authorized.EntryAttachment != call.Name {
+				return operatortool.Result{}, operatortool.ErrAccessDenied
+			}
+			response, err = e.service.readAttachmentMCP(ctx, request, org.ID, call.Name, arguments)
+		}
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		if upload.status != http.StatusCreated && upload.status != http.StatusOK {
+		if response.status != http.StatusCreated && response.status != http.StatusOK {
 			var refusal apikey.Refusal
-			if json.Unmarshal(upload.body.Bytes(), &refusal) != nil || refusal.Code == "" {
+			if json.Unmarshal(response.body.Bytes(), &refusal) != nil || refusal.Code == "" {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
 			}
 			return operatortool.Result{}, &refusal
 		}
-		raw = upload.body.Bytes()
+		raw = response.body.Bytes()
 	}
 	return operatortool.Result{Content: raw}, nil
 }

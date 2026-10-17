@@ -22,6 +22,10 @@ func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			source := initSourceRepo(t)
 			runGit(t, source, "config", "gc.auto", "0")
+			checkpointWrite(t, source, ".gitattributes", "*.bin -diff\n")
+			checkpointWrite(t, source, "nested/.gitattributes", "*.bin -text\n")
+			runGit(t, source, "add", ".gitattributes", "nested/.gitattributes")
+			runGit(t, source, "commit", "-m", "inherited attributes")
 			data := make([]byte, 5<<20)
 			if _, err := rand.Read(data); err != nil {
 				t.Fatal(err)
@@ -29,10 +33,13 @@ func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
 			base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
 			for i := range 5 {
 				data[i] ^= 1
-				if err := os.WriteFile(filepath.Join(source, "blob.bin"), data, 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(source, "nested/blob.bin"), data, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				runGit(t, source, "add", "blob.bin")
+				runGit(t, source, "add", "nested/blob.bin")
+				if i == 4 {
+					runGit(t, source, "rm", ".gitattributes")
+				}
 				runGit(t, source, "commit", "-m", "blob revision")
 			}
 			if packed {
@@ -367,7 +374,7 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 		})
 	}
 
-	for _, scenario := range []string{"inherited synthetic fixtures", "runtime synthetic checkpoint fixtures", "introduced credential", "inherited credential", "unsafe intermediate commit"} {
+	for _, scenario := range []string{"inherited synthetic fixtures", "runtime synthetic checkpoint fixtures", "introduced credential", "inherited credential", "inherited attributes credential", "unsafe intermediate commit"} {
 		t.Run("capture "+scenario, func(t *testing.T) {
 			source := initSourceRepo(t)
 			paths := []string{"internal/hubserver/health_email_test.go", "internal/hubserver/slack_delivery_test.go"}
@@ -388,6 +395,10 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 				paths = append(paths, path)
 			}
 			credential := "ghp_" + strings.Repeat("Z", 36)
+			if scenario == "inherited attributes credential" {
+				checkpointWrite(t, source, ".gitattributes", "* token="+credential+"\n")
+				runGit(t, source, "add", ".gitattributes")
+			}
 			if scenario == "inherited credential" {
 				checkpointWrite(t, source, paths[0], readFile(t, filepath.Join(source, paths[0]))+"\n"+credential)
 			}
