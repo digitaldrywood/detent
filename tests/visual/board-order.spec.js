@@ -34,20 +34,20 @@ async function orderedRuntime(name, refreshed) {
   }));
   const fixturePath = path.join(home, "issues.yaml");
   fs.writeFileSync(fixturePath, JSON.stringify({ issues: issues.map(({ issue_id, project_id, ...issue }) => ({ ...issue, id: issue_id })) }));
-  return startDetentRuntime(name, ["--fixture", fixturePath], { home });
+  return startDetentRuntime(name, [], {
+    home,
+    holdStartup: true,
+    env: {
+      DETENT_BOARD_SNAPSHOT_BROWSER_HOME: home,
+      DETENT_BOARD_SNAPSHOT_BROWSER_FIXTURE: fixturePath,
+    },
+  });
 }
 
 test("fleet and project lanes keep priority and newest activity order through SSE morphs", async ({ page }) => {
   const initial = await orderedRuntime("board-order-initial", false);
   const refreshed = await orderedRuntime("board-order-refreshed", true);
   try {
-    for (const runtime of [initial, refreshed]) {
-      await expect.poll(async () => {
-        const response = await page.request.get(`${runtime.url}/api/v1/state`);
-        const snapshot = await response.json();
-        return snapshot.projects?.some((project) => project.tracker?.complete);
-      }).toBe(true);
-    }
     await page.addInitScript(() => {
       window.boardOrderSources = [];
       window.EventSource = class extends EventTarget {
