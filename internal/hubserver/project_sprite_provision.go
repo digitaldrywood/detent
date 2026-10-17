@@ -149,11 +149,14 @@ func (s *Service) createPoolSprite(ctx context.Context, scope nativeScope, setti
 			if !valid {
 				continue
 			}
-			scope.project = project
-			allowed, err := monthlySpriteAllowed(ctx, tx, scope, now)
-			if err != nil || !allowed {
+			decision, err := checkMonthlyBudget(ctx, tx, allocationScope, budget.CostExposure{SpriteInfrastructure: true}, false, now)
+			if err != nil {
 				return false, err
 			}
+			if !decision.Allowed {
+				continue
+			}
+			scope.project = project
 			settings.MinRunners = allocation.DesiredCount
 			break
 		}
@@ -448,10 +451,10 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 		return nil
 	}
 	if state == "enrolled" {
-		var count, floor int
+		var count, floor, ceiling, otherMembers int
 		var idle string
 		var threshold int
-		if err := tx.QueryRowContext(ctx, `SELECT p.min_runners,p.idle_seconds,m.idle_since,(SELECT count(*) FROM organization_sprite_members a WHERE a.organization_id=p.organization_id AND a.allocation_project_id=m.allocation_project_id AND a.state<>'deleted') FROM organization_sprite_pools p JOIN organization_sprite_members m ON m.organization_id=p.organization_id WHERE p.organization_id=? AND m.name=?`, scope.organization, member.Name).Scan(&floor, &threshold, &idle, &count); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT p.min_runners,p.max_runners,p.idle_seconds,m.idle_since,(SELECT count(*) FROM organization_sprite_members a WHERE a.organization_id=p.organization_id AND a.allocation_project_id=m.allocation_project_id AND a.state NOT IN ('deleted','deleting')),(SELECT count(*) FROM organization_sprite_members a WHERE a.organization_id=p.organization_id AND a.allocation_project_id<>m.allocation_project_id AND a.state NOT IN ('deleted','deleting')) FROM organization_sprite_pools p JOIN organization_sprite_members m ON m.organization_id=p.organization_id WHERE p.organization_id=? AND m.name=?`, scope.organization, member.Name).Scan(&floor, &ceiling, &threshold, &idle, &count, &otherMembers); err != nil {
 			return err
 		}
 		if scope.project != "" {
@@ -461,6 +464,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 			}
 			floor = allocation.DesiredCount
 		}
+		floor = min(floor, max(ceiling-otherMembers, 0))
 		at, err := parseTimeValue(idle)
 		if err != nil {
 			return err

@@ -163,13 +163,16 @@ Replays return the original command response; reads return current allocation.
 
 The existing organization controller reserves members under the shared
 organization ceiling and reported provider limits. It retains existing members
-and assigns available slots to the oldest unsatisfied project request, breaking
+and assigns available slots to the oldest eligible unsatisfied project request, breaking
 ties by project ID, before satisfying new organization demand. Each member has
 one allocation owner. Managed projects accept work only on their own members;
 desired zero holds new claims, including workspace claims. Organization and
 manual runners remain available to projects that have not opted in. Manual
 adoption is not supported. Downsizing uses the existing idle, budget-retention
 and active-lease checks; it never retires another allocation's members.
+Lowering the organization ceiling retires idle excess members across allocations,
+preserving desired counts and showing the resulting shortfalls. A project whose
+budget prevents creation does not block eligible requests or organization demand.
 
 Legacy per-project pools convert in place at schema upgrade: their floors and
 ceilings are summed, and their existing members retain Sprite names, runner IDs
