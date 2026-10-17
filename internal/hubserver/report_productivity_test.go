@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -215,6 +216,33 @@ func TestOrganizationProductivity(t *testing.T) {
 				t.Fatalf("filtered=%+v", out.Current)
 			}
 			assertProductivitySums(t, out)
+		})
+	}
+	for _, tt := range []struct {
+		name   string
+		filter reportsFilter
+	}{
+		{"unfiltered", reportsFilter{}},
+		{"filtered", reportsFilter{Labels: []string{"productivity"}, Priorities: []string{"1", "2"}, Types: []string{"bug", "change_request"}, FiledBy: []string{"person_one", "person_two"}, Runners: []string{"runner_browser_preview"}}},
+	} {
+		t.Run("rollup query path/"+tt.name, func(t *testing.T) {
+			var summaryRead bool
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				tables := sqlTableAliases(query)
+				summaryRead = summaryRead || tables["report_issue_summaries"] != ""
+				for _, table := range []string{"issues", "native_attempts", "collaboration_events", "attempt_usage", "leases", "lease_runners", "runner_identities", "change_requests", "change_versions", "change_evidence", "quality_landings"} {
+					if tables[table] != "" {
+						t.Errorf("organization read queried raw table %s: %s", table, query)
+					}
+				}
+			}})
+			window := operatortool.AnalyticsWindow{From: to.Add(-24 * time.Hour), To: to, Bucket: time.Hour}
+			if _, err := f.service.readOrganizationProductivity(ctx, []string{string(projects[0]), string(projects[1])}, window, tt.filter); err != nil {
+				t.Fatal(err)
+			}
+			if !summaryRead {
+				t.Fatal("organization read did not query productivity summaries")
+			}
 		})
 	}
 	before := read(url.Values{"range": {"24h"}, "labels": {"productivity"}})
