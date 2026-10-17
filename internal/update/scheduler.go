@@ -120,7 +120,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
-	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil {
+	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
 		switch {
 		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
@@ -414,7 +414,7 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		status.LastError = ""
 		clearPending(status)
 	})
-	s.recordEnrolledApplied(applied)
+	s.recordEnrolledApplied(applied, true)
 	return applied, s.persistCurrentState()
 }
 
@@ -511,7 +511,7 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		status.LastError = ""
 		clearPending(status)
 	})
-	s.recordEnrolledApplied(applied)
+	s.recordEnrolledApplied(applied, false)
 	persistErr := s.persistCurrentState()
 	if persistErr != nil {
 		applied.FailureReason = "Update state persistence failed"
