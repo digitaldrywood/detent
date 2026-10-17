@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -214,6 +216,25 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	}
 	f.service = openTestService(t, config)
 	now = now.Add(90*time.Second + time.Nanosecond)
+	refuseEvidence := func(mutation tracker.Mutation) {
+		t.Helper()
+		credential, _, err := f.service.authenticateAPIToken(t.Context(), worker, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+		err = recordAttachmentEvidence(t.Context(), tx, scope, attachment.EvidenceRequest{Mutation: mutation, WorkItemID: issue.WorkItemID, AttemptID: event.Data.AttemptID, Caption: "Expired evidence"}, attachment.Metadata{}, now)
+		var failure *nativeError
+		if !errors.As(err, &failure) || failure.Code != "stale_execution" {
+			t.Fatalf("stale evidence was not fenced: %v", err)
+		}
+	}
+	refuseEvidence(tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken})
 	other := worker
 	replacement := claimNativeAttempt(t, f, other, "first-machine", "other-session", issue.WorkItemID)
 	if replacement.FencingToken <= lease.FencingToken {
@@ -232,8 +253,10 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", worker, tracker.CreateComment{Mutation: test.mutation, Body: "stale mutation"}), http.StatusConflict)
+			refuseEvidence(test.mutation)
 		})
 	}
+	refuseEvidence(tracker.Mutation{LeaseID: replacement.ID, FencingToken: replacement.FencingToken})
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", other, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-owner", LeaseID: replacement.ID, FencingToken: replacement.FencingToken}, Body: "current owner"}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "operator"}, Body: "operator collaboration"}), http.StatusOK)
 	for _, operation := range []string{"renew", "release", "events"} {
