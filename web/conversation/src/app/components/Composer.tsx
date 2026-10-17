@@ -1,6 +1,6 @@
 // Composes the conversation editor, attachments, pending questions, and turn controls.
 // Commands and delivery state come from the hub adapters.
-import { PaperclipIcon, PlugZapIcon, XIcon } from "lucide-react";
+import { PaperclipIcon, PlugZapIcon, Volume2Icon, XIcon } from "lucide-react";
 import React from "react";
 
 import type { ServerProviderSkill } from "../../contracts/ui.ts";
@@ -69,9 +69,13 @@ import {
 } from "./ComposerPromptEditor.tsx";
 import { SlashCommandMenu, slashOptionId } from "./SlashCommandMenu.tsx";
 
+import type { ConversationSpeech } from "../hooks/useConversationSpeech.ts";
+import { ComposerControl, ComposerControlIcon } from "../../components/chat/ComposerControl.tsx";
+
 export type ComposerBannerEntry = ComposerBannerStackItem | ComposerBannerStackContent;
 
 export interface ComposerProps {
+  readonly speech?: ConversationSpeech;
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly onSend: () => void;
@@ -728,22 +732,37 @@ export function Composer(props: ComposerProps): React.ReactElement {
                       data-testid="composer-scope-chips"
                       aria-hidden={controlsHidden || undefined}
                       className={cn(
-                        "-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 ps-3.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                        "-m-1 -ms-3.5 flex min-w-0 flex-1 items-center gap-1 p-1 ps-3.5",
                         controlsHidden && "invisible",
                       )}
                     >
-                      {props.footerLeading}
-                      {footerControls === "none" ? null : (
-                        <ComposerPreferenceControls
-                          preferences={props.preferences}
-                          choices={props.preferenceChoices}
-                          onChange={props.onPreferencesChange}
-                          disabled={disabled}
-                          hidden={controlsHidden}
+                      <div className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                        {props.footerLeading}
+                        {footerControls === "none" ? null : (
+                          <ComposerPreferenceControls
+                            preferences={props.preferences}
+                            choices={props.preferenceChoices}
+                            onChange={props.onPreferencesChange}
+                            disabled={disabled}
+                            hidden={controlsHidden}
+                            size={compactFooter ? "xs" : "sm"}
+                            openRequest={pickerRequest}
+                          />
+                        )}
+                      </div>
+                      {props.speech?.supported ? (
+                        <ComposerControl
+                          type="button"
+                          className={cn("shrink-0", controlsHidden && "invisible")}
                           size={compactFooter ? "xs" : "sm"}
-                          openRequest={pickerRequest}
-                        />
-                      )}
+                          aria-pressed={props.speech.enabled}
+                          data-pressed={props.speech.enabled ? "" : undefined}
+                          onClick={props.speech.toggle}
+                        >
+                          <ComposerControlIcon icon={Volume2Icon} size={compactFooter ? "xs" : "sm"} />
+                          Voice
+                        </ComposerControl>
+                      ) : null}
                     </div>
 
                     <div

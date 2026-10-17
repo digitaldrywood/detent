@@ -1,3 +1,4 @@
+import type { ConversationSpeech } from "../../app/hooks/useConversationSpeech.ts";
 import {
   type AssistantCitation,
   type EnvironmentId,
@@ -201,6 +202,8 @@ import {
 // ---------------------------------------------------------------------------
 
 interface TimelineRowSharedState {
+  speech: ConversationSpeech | undefined;
+  speechMetaDetached: boolean;
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
@@ -303,6 +306,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
 // ---------------------------------------------------------------------------
 
 interface MessagesTimelineProps {
+  speech?: ConversationSpeech | undefined;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -391,6 +395,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  speech,
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
@@ -742,6 +747,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       citationRequest: readyCitationRequest,
       listRef,
       timestampFormat,
+      speech,
+      speechMetaDetached: rows.some((row) => row.kind === "assistant-meta" && row.message.id === speech?.readingMessageId),
       routeThreadKey,
       // Keep Markdown callbacks memoized during unrelated activity updates.
       threadRef: citationThreadRef,
@@ -767,6 +774,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       readyCitationRequest,
       listRef,
       timestampFormat,
+      speech,
+      rows,
       routeThreadKey,
       citationThreadRef,
       markdownCwd,
@@ -1690,7 +1699,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           resolvedTheme={ctx.resolvedTheme}
           onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
-        {row.showAssistantMeta ? (
+        {row.showAssistantMeta || (ctx.speech?.readingMessageId === row.message.id && !ctx.speechMetaDetached) ? (
           <AssistantMessageMeta
             className="mt-1.5"
             message={row.message}
@@ -1740,7 +1749,7 @@ function AssistantMessageMeta({
     <div
       className={cn(
         "flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
-        alwaysVisible
+        alwaysVisible || ctx.speech?.readingMessageId === message.id
           ? "opacity-100"
           : "opacity-0 focus-within:opacity-100 group-hover/assistant:opacity-100",
         className,
@@ -1751,6 +1760,14 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {ctx.speech?.readingMessageId === message.id ? (
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <span role="status">Reading aloud</span>
+          <Button type="button" variant="ghost-muted" size="compact" onClick={ctx.speech.stop} aria-label="Stop reading aloud">
+            Stop
+          </Button>
+        </span>
+      ) : null}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>
