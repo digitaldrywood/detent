@@ -985,6 +985,9 @@ func EvaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, b
 		out.Findings = findings
 		return out, true
 	}
+	if len(result.UnsatisfiableCriteria()) > 0 && normalizeValidatorVerdict(result.Verdict) != ValidatorVerdictRework && result.Score >= cfg.MinScore {
+		return decision(ActionWait, ReasonValidatorWait), true
+	}
 	if len(result.UnsatisfiableCriteria()) > 0 || cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
 		out := decision(ActionRework, ReasonValidatorRework)
 		out.Findings = append(findings, Finding{Severity: "p2", Body: "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")})

@@ -228,9 +228,9 @@ func (b *implementationReviewBackend) RunTurn(_ context.Context, request AgentTu
 				b.t.Fatalf("validator lost accepted security audit context %q", identity)
 			}
 		}
-		if b.validatorResponse != "" {
-			response = b.validatorResponse
-		}
+	}
+	if request.Model == "validator-model" && b.validatorResponse != "" {
+		response = b.validatorResponse
 	}
 	return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: response})
 }
@@ -258,8 +258,11 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		gateFailure      bool
 		securityAudit    bool
 		acceptanceRework bool
+		unsatisfiable    bool
 	}{
 		{name: "separate source and acceptance passes reuse source receipt", validator: true, verdict: "pass"},
+		{name: "1245 production criterion publishes wait", validator: true, verdict: "pass", unsatisfiable: true},
+		{name: "1245 production criterion publishes wait over SSH", validator: true, verdict: "pass", unsatisfiable: true, ssh: true},
 		{name: "accepted audit reaches validator", validator: true, verdict: "pass", securityAudit: true},
 		{name: "accepted audit crosses SSH", validator: true, verdict: "pass", securityAudit: true, ssh: true},
 		{name: "accepted audit does not approve acceptance", validator: true, verdict: "pass", securityAudit: true, acceptanceRework: true},
@@ -471,7 +474,12 @@ fi
 			if test.missingTree {
 				execution.validation = &gate.CommandResult{}
 			}
-			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- Preserve existing behavior"}})
+			criterion := "Preserve existing behavior"
+			if test.unsatisfiable {
+				criterion = "a real ChatGPT custom connector signs in against production"
+				backend.validatorResponse = fmt.Sprintf(`{"verdict":"pass","score":1,"summary":"Requires production","criteria_evidence":[{"criterion":%q,"kind":"not_verified","unverified_class":"unsatisfiable","reference":"Requires a real third-party client against production"}]}`, criterion)
+			}
+			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- " + criterion}})
 			if (err != nil) != (test.recordError != nil) {
 				t.Fatalf("source verdict became a run failure or recording failure was ignored: %v", err)
 			}
@@ -481,6 +489,9 @@ fi
 			}
 			if !reflect.DeepEqual(events, want) {
 				t.Fatalf("native completion omitted or reordered independent review: got %v, want %v", events, want)
+			}
+			if test.unsatisfiable && (execution.validatorResult.Verdict != gate.ValidatorVerdictWait || !reflect.DeepEqual(execution.validatorResult.UnsatisfiableCriteria(), []string{criterion})) {
+				t.Fatalf("unsatisfiable acceptance did not publish wait with the exact criterion: %+v", execution.validatorResult)
 			}
 			if test.acceptanceRework && execution.validatorResult.Verdict != gate.ValidatorVerdictRework {
 				t.Fatalf("accepted security audit overrode independent acceptance: %+v", execution.validatorResult)
