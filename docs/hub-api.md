@@ -1674,7 +1674,13 @@ clients refresh through the existing project event stream.
 `X-Detent-Recovery-Projection: bounded` reads candidate recovery in one bounded
 response. Source version, frozen policy, claim/checkpoint identities, latest
 implementation/acceptance criteria and hold summary retain their authority.
-Command outputs use the existing excerpts and `output_truncated`. Discussion
+Command outputs use the existing excerpts and `output_truncated`. Security audit
+summary and finding prose use bounded excerpts marked `text_truncated`, preserving
+audit identity, verdict and every retained finding's ID, status and severity.
+If mandatory review identities alone exceed the review budget, reviews are omitted
+as a group and the exact hold summary and `read.omitted` remain authoritative;
+consume the original records through continuation before acting on that evidence.
+Discussion
 and ordinary Change evidence have row and byte budgets; `read.omitted` identifies
 context available through `work_comments`, `get_change`, attempt reads and the
 scoped `read.detail_path`. Recovery consumers must read omitted context needed

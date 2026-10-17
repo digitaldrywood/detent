@@ -11,7 +11,9 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 
+	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -295,9 +297,10 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 	if detail := result.ChangeDetail; detail != nil {
 		for i := range detail.Versions {
 			detail.Versions[i].Validation = boundedChangeCommand(detail.Versions[i].Validation)
-			detail.Versions[i].Landing = boundedChangeLanding(detail.Versions[i].Landing)
+			detail.Versions[i].Landing = boundedRecoveryLanding(detail.Versions[i].Landing)
 		}
 		for i := range detail.Reviews {
+			detail.Reviews[i].SecurityAudit = boundedRecoveryAudit(detail.Reviews[i].SecurityAudit)
 			detail.Reviews[i].Validator = boundedChangeReviewResult(detail.Reviews[i].Validator)
 			detail.Reviews[i].ImplementationReview = boundedChangeReviewResult(detail.Reviews[i].ImplementationReview)
 		}
@@ -329,7 +332,7 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 	for i := range result.Attempts {
 		if runtime := result.Attempts[i].Runtime; runtime != nil {
 			runtime.Validation = boundedChangeCommand(runtime.Validation)
-			runtime.Landing = boundedChangeLanding(runtime.Landing)
+			runtime.Landing = boundedRecoveryLanding(runtime.Landing)
 		}
 	}
 	if len(result.Attempts) > 0 {
@@ -341,6 +344,43 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 		result.Read = nil
 	}
 	return nil
+}
+
+func boundedRecoveryAudit(audit *tracker.SecurityAuditReview) *tracker.SecurityAuditReview {
+	if audit == nil {
+		return nil
+	}
+	result := *audit
+	budget := 16 << 10
+	bound := func(value string) string {
+		limit := min(4096, budget)
+		if len(value) <= limit {
+			budget -= len(value)
+			return value
+		}
+		result.TextTruncated = true
+		if limit == 0 {
+			return ""
+		}
+		text := runtimeoutput.Truncate(value, limit).Value
+		budget -= len(text)
+		return text
+	}
+	result.Run.Summary = bound(strings.TrimSpace(result.Run.Summary))
+	result.Run.Findings = slices.Clone(result.Run.Findings)
+	for i := range result.Run.Findings {
+		result.Run.Findings[i].Body = bound(result.Run.Findings[i].Body)
+		result.Run.Findings[i].Path = bound(result.Run.Findings[i].Path)
+	}
+	return &result
+}
+
+func boundedRecoveryLanding(landing *tracker.NativeLandingReceipt) *tracker.NativeLandingReceipt {
+	result := boundedChangeLanding(landing)
+	if result != nil {
+		result.SecurityAudit = boundedRecoveryAudit(result.SecurityAudit)
+	}
+	return result
 }
 
 func boundedRecoveryRecords[T any](records []T, budget int) ([]T, bool, error) {
@@ -456,7 +496,11 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 			if err != nil {
 				return nil, false, err
 			}
-			budget -= len(encoded)
+			if len(encoded) <= budget {
+				budget -= len(encoded)
+			} else {
+				return []tracker.ChangeReview{}, true, nil
+			}
 		}
 	}
 	for i := len(reviews) - 1; i >= 0; i-- {

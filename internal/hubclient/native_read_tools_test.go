@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -700,6 +701,16 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 			{ID: fmt.Sprintf("review_human_%d", i), VersionID: current.ID, Decision: "changes_requested", Body: strings.Repeat("human feedback <\n", 65536), Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: current.CreatedAt},
 			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
 		}
+		now := time.Now().UTC()
+		run := securityaudit.Run{ID: int64(42 + i), InvocationID: fmt.Sprintf("audit-%d", i), ProjectID: string(h.project), IssueID: string(item), Repository: current.Repository, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: policy.Digest([]byte("audit")), Verdict: "pass", Summary: strings.Repeat("s", (1<<20)-(16<<10))}
+		audit := &tracker.SecurityAuditReview{VersionID: current.ID, SessionID: run.ID, Verdict: "pass", DiffDigest: policy.Digest([]byte("diff")), Run: run}
+		decision := "approved"
+		if i == 1 {
+			audit.Run.Summary = "Blocking audit"
+			audit.Run.Verdict, audit.Verdict, decision = "fail", "rework", "changes_requested"
+			audit.Run.Findings = []securityaudit.Finding{{ID: "blocking", Severity: "p2", Body: strings.Repeat("finding <\n", 90_000)}, {ID: "resolved", Severity: "p1", Status: "resolved", Body: "Already addressed"}}
+		}
+		reviews = append(reviews, tracker.ChangeReview{ID: fmt.Sprintf("review_audit_%d", i), VersionID: current.ID, Decision: decision, SecurityAudit: audit, Actor: tracker.Actor{Kind: "runner", PrincipalID: "audit-worker"}, CreatedAt: current.CreatedAt})
 		wants[item] = evidence{change: change, versions: []tracker.ChangeVersion{old, current}, reviews: reviews, comment: comment}
 	}
 	h.reopen(func(path string) error {
@@ -724,6 +735,47 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	for _, item := range items {
 		t.Run(string(item), func(t *testing.T) {
 			want := wants[item]
+			recovery, err := h.native.Recovery(t.Context(), item)
+			if err != nil {
+				t.Fatalf("large audit prevented worker recovery: %v", err)
+			}
+			if recovery.ChangeDetail == nil || recovery.Read == nil || !slices.Contains(recovery.Read.Omitted, "change_detail.reviews") {
+				t.Fatal("projected audit did not expose retained evidence")
+			}
+			original := want.reviews[len(want.reviews)-1]
+			var projected tracker.ChangeReview
+			for _, review := range recovery.ChangeDetail.Reviews {
+				if review.ID == original.ID {
+					projected = review
+				}
+			}
+			if projected.SecurityAudit == nil || !projected.SecurityAudit.TextTruncated || projected.Decision != original.Decision || projected.VersionID != original.VersionID {
+				t.Fatal("bounded recovery lost authoritative audit identity or decision")
+			}
+			got, expected := *projected.SecurityAudit, *original.SecurityAudit
+			if len(got.Run.Summary) > 4096 || strings.TrimSpace(got.Run.Summary) == "" || len(got.Run.Findings) != len(expected.Run.Findings) {
+				t.Fatal("audit prose remained unbounded or lost finding state")
+			}
+			key := securityaudit.Key{ProjectID: string(h.project), Repository: expected.Run.Repository, BaseSHA: expected.Run.BaseSHA, HeadSHA: expected.Run.HeadSHA}
+			for _, severities := range [][]string{{"p1", "p2"}, {"p3"}, {"none"}} {
+				actual := securityaudit.Evaluate(got.Run, nil, key, "", severities)
+				before := securityaudit.Evaluate(expected.Run, nil, key, "", severities)
+				if actual.Allowed != before.Allowed || actual.Reason != before.Reason || len(actual.Findings) != len(before.Findings) {
+					t.Fatal("projection changed audit validity or configured blocking semantics")
+				}
+			}
+			got.TextTruncated = false
+			got.Run.Summary = expected.Run.Summary
+			got.Run.Findings = slices.Clone(got.Run.Findings)
+			for i := range got.Run.Findings {
+				if len(got.Run.Findings[i].Body) > 4096 || len(got.Run.Findings[i].Path) > 4096 {
+					t.Fatal("unbounded finding prose")
+				}
+				got.Run.Findings[i].Body, got.Run.Findings[i].Path = expected.Run.Findings[i].Body, expected.Run.Findings[i].Path
+			}
+			if !reflect.DeepEqual(got, expected) {
+				t.Fatal("projection changed audit identity, verdict, timestamps, digest or finding ID/status/severity")
+			}
 			seen := map[string]bool{}
 			cursor := ""
 			var record []byte
@@ -829,7 +881,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 				}
 				cursor = page.NextCursor
 			}
-			if len(seen) != 5 {
+			if len(seen) != 6 {
 				t.Fatalf("worker lost retained evidence: %v", seen)
 			}
 		})

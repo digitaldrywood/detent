@@ -1,7 +1,11 @@
 package hubserver
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -9,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -65,6 +70,19 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementation review is not acceptance", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review is not human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"implementation review does not leave stale human approval", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"security audit large finding identities", func(r *tracker.ReviewChange) {
+			for i := range 6000 {
+				r.SecurityAudit.Run.Findings = append(r.SecurityAudit.Run.Findings, securityaudit.Finding{ID: fmt.Sprintf("finding-%06d-%s", i, strings.Repeat("i", 64)), Status: "resolved", Severity: "p1", Body: "Resolved"})
+			}
+		}, http.StatusOK, "reviewed", nil},
+		{"security audit large summary", func(r *tracker.ReviewChange) {
+			r.SecurityAudit.Run.Summary = strings.Repeat("s", (1<<20)-(16<<10))
+		}, http.StatusOK, "reviewed", nil},
+		{"security audit large blocking findings", func(r *tracker.ReviewChange) {
+			blockingAudit(r)
+			r.SecurityAudit.Run.Findings[0].Body = strings.Repeat("f", (1<<20)-(16<<10))
+			r.SecurityAudit.Run.Findings = append(r.SecurityAudit.Run.Findings, securityaudit.Finding{ID: "resolved", Status: "resolved", Severity: "p1", Body: "Already addressed"})
+		}, http.StatusOK, "needs_evidence", nil},
 		{"security audit metered pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"security audit before required implementation review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"security audit blocking finding before required implementation review", blockingAudit, http.StatusOK, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
@@ -207,6 +225,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			issue := f.create(t, "work")
+			largeAudit := strings.HasPrefix(test.name, "security audit large")
+			if largeAudit {
+				body := issue.Body + strings.Repeat("i", (64<<10)-len(issue.Body))
+				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "large-body"}, ExpectedRevision: issue.Revision, Body: &body})
+				requireNativeStatus(t, response, http.StatusOK)
+			}
 			worker := f.worker(t, "worker")
 			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID, descriptor.ID)
 			event := nativeStartedEvent(lease)
@@ -312,6 +336,13 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if largeAudit {
+				raw, err := json.Marshal(request)
+				if err != nil || len(raw) >= maxAPIRequestBodyBytes {
+					t.Fatalf("audit request bytes=%d err=%v", len(raw), err)
+				}
+				t.Logf("authenticated audit write bytes=%d", len(raw))
+			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
 			field := map[string]string{"security audit missing invocation": "invocation_id", "security audit missing run": "run.id", "security audit missing session": "session_id", "security audit foreign issue": "issue_id", "security audit foreign project": "project_id", "security audit foreign session": "session_id", "security audit stale base": "base_sha", "security audit stale head": "head_sha"}[test.name]
@@ -328,6 +359,66 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			if detail.Summary.Status != test.status || detail.Summary.NativeReview != review {
 				t.Fatalf("validator summary = %+v, want %s", detail.Summary, test.status)
+			}
+			if largeAudit {
+				server := httptest.NewServer(f.service.Handler())
+				t.Cleanup(server.Close)
+				client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return worker }, HTTPClient: server.Client()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native(f.project.OrganizationID, f.project.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := native.Recovery(t.Context(), issue.WorkItemID)
+				if err != nil {
+					t.Fatalf("authenticated audit blocked SDK recovery: %v", err)
+				}
+				if recovery.ChangeDetail == nil || !reflect.DeepEqual(recovery.ChangeDetail.Summary, detail.Summary) {
+					t.Fatal("audit projection changed summary or review identity")
+				}
+				if test.name == "security audit large finding identities" {
+					if len(recovery.ChangeDetail.Reviews) != 0 || recovery.Read == nil || !slices.Contains(recovery.Read.Omitted, "change_detail.reviews") {
+						t.Fatal("audit identities exceeded the review budget without explicit continuation")
+					}
+					var record []byte
+					cursor := ""
+					for pages := 0; ; pages++ {
+						if pages > 32 {
+							t.Fatal("audit identity continuation did not terminate")
+						}
+						page, err := native.RecoveryEvidence(t.Context(), issue.WorkItemID, cursor)
+						if err != nil || page.Section != "reviews" || len(page.Data) > 64<<10 || page.Offset != int64(len(record)) {
+							t.Fatalf("audit identity continuation: section=%s err=%v", page.Section, err)
+						}
+						record = append(record, page.Data...)
+						if int64(len(record)) == page.TotalBytes {
+							var exact tracker.ChangeReview
+							if json.Unmarshal(record, &exact) != nil || !reflect.DeepEqual(exact, detail.Reviews[0]) {
+								t.Fatal("review budget lost exact audit finding identities")
+							}
+							break
+						}
+						cursor = page.NextCursor
+					}
+					return
+				}
+				if len(recovery.ChangeDetail.Reviews) != 1 {
+					t.Fatal("authoritative audit is missing")
+				}
+				projected := recovery.ChangeDetail.Reviews[0]
+				original := detail.Reviews[len(detail.Reviews)-1]
+				key := securityaudit.Key{ProjectID: string(f.project.ID), Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}
+				evaluation := securityaudit.Evaluate(projected.SecurityAudit.Run, nil, key, "", []string{"p1", "p2"})
+				if evaluation.Allowed != (request.Decision == "approved") || evaluation.Reason != securityaudit.Evaluate(original.SecurityAudit.Run, nil, key, "", []string{"p1", "p2"}).Reason || projected.Decision != original.Decision {
+					t.Fatal("bounded audit changed security gate semantics")
+				}
+				raw, err := json.Marshal(recovery)
+				if err != nil || len(raw) > 1<<20 {
+					t.Fatalf("bounded recovery bytes=%d err=%v", len(raw), err)
+				}
+				t.Logf("SDK recovery bytes=%d security=%s summary=%s", len(raw), evaluation.Reason, recovery.ChangeDetail.Summary.Status)
 			}
 			wantSession := int64(42)
 			if test.stages != nil && test.stages.freshAcceptance {
