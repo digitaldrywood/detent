@@ -605,7 +605,7 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
 		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
 	}
-	if preparationErr != nil {
+	if preparationErr != nil || e.change != nil && e.change.VersionError != "" {
 		outcome = "failed"
 	}
 	if e.data.Outcome != "" {
