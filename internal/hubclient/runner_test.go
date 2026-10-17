@@ -1024,3 +1024,106 @@ func TestLockIdentityFileRefusesHeldFile(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRunnerReaderReconcilesAtomicRotation(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		pending   bool
+		expired   bool
+		wrongHost bool
+		wantErr   string
+	}{
+		{name: "pending credential accepted", pending: true},
+		{name: "rotation persisted"},
+		{name: "expired Hub response", expired: true, wantErr: "expired"},
+		{name: "Hub binding changed", wrongHost: true, wantErr: "binding cannot be replaced"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			file, err := runnerauth.Initialize(path, "https://hub.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			file.Identity.OrganizationID = "org_example"
+			file.Identity.Operations = []string{runnerauth.Read}
+			file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+			if err := runnerauth.Save(path, file); err != nil {
+				t.Fatal(err)
+			}
+			replacement, err := runnerauth.Initialize(filepath.Join(t.TempDir(), "private", "replacement.json"), file.HubURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			var rotated []byte
+			transport := executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Method != http.MethodGet {
+					t.Fatalf("reader attempted %s", r.Method)
+				}
+				status := http.StatusOK
+				body := `{"code":"unauthorized"}`
+				if calls == 1 {
+					release, err := lockIdentityFile(path)
+					if err != nil {
+						return nil, err
+					}
+					file.PendingCredential = replacement.Credential
+					if !tt.pending {
+						file.Credential, file.PendingCredential = replacement.Credential, ""
+					}
+					if err := errors.Join(runnerauth.Save(path, file), release()); err != nil {
+						return nil, err
+					}
+					rotated, err = os.ReadFile(path)
+					if err != nil {
+						return nil, err
+					}
+					if tt.wrongHost {
+						file.HubURL = "https://other.example.test"
+						rotated, err = json.Marshal(file)
+						if err != nil {
+							return nil, err
+						}
+						if err := os.WriteFile(path, rotated, 0600); err != nil {
+							return nil, err
+						}
+					}
+
+					status = http.StatusUnauthorized
+				} else {
+					if r.Header.Get("Authorization") != "Bearer "+replacement.Credential {
+						t.Fatal("reader did not use the rotated credential")
+					}
+					identity := file.Identity
+					if tt.expired {
+						identity.ExpiresAt = time.Now().Add(-time.Hour)
+					}
+					raw, err := json.Marshal(identity)
+					if err != nil {
+						return nil, err
+					}
+					body = string(raw)
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			client, err := NewRunnerReader(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: transport}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := client.RunnerIdentity(t.Context())
+			if tt.wantErr == "" && (err != nil || identity.Binding != file.Identity.Binding) || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("reader identity = %+v, %v; want %q", identity, err, tt.wantErr)
+			}
+			if calls > 2 {
+				t.Fatalf("reader requests = %d, want at most two credential reads", calls)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(rotated) {
+				t.Fatalf("reader overwrote rotation: %v", err)
+			}
+		})
+	}
+}

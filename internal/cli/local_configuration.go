@@ -101,11 +101,19 @@ func writeRuntimeConfiguration(ctx context.Context, settings store.LocalConfigur
 }
 
 func readLocalConfigurationFile(path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
+	cfg, err := readLocalConfigurationSource(path, opts...)
+	if err != nil {
+		return cfg, err
+	}
+	return resolveRunnerProjects(context.Background(), cfg)
+}
+
+func readLocalConfigurationSource(path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
 	cfg, found, err := readLocalConfigurationProjection(path, opts...)
 	if found || err != nil {
 		return cfg, err
 	}
-	return readRunnerRuntimeConfig(context.Background(), path, opts...)
+	return readRunnerConfiguration(path, opts...)
 }
 
 func readLocalConfigurationProjectFile(path, id string, opts ...globalconfig.Option) (globalconfig.Config, []string, error) {
