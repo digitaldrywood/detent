@@ -110,7 +110,7 @@ describe("runner rows", () => {
     expect(card.getByText(problem.fix_hint)).toBeTruthy();
     if (updateWarning) {
       expect(card.getByText(/Needs human: reinstall/)).toBeTruthy();
-      expect(card.getByText("Update needs attention · 1.2.4")).toBeTruthy();
+      expect(card.getByText("Update to 1.2.4 · Update needs attention")).toBeTruthy();
     }
     rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...RUNNER, problems: [] }] }} now={NOW} />);
     expect(screen.queryByText(/Needs human:/)).toBeNull();
@@ -157,18 +157,55 @@ describe("runner rows", () => {
   });
 
   it.each([
-    ["draining", "Waiting for active work"],
-    ["refused", "Update failed"],
-    ["uncertain", "Update needs attention"],
-    ["restart_requested", "Restart requested"],
-    ["running", "Updated"],
-  ])("shows the enrolled update outcome %s", (status, label) => {
-    renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, update: { status, desired: { version: "1.2.4" } } }] });
-    expect(screen.getByText(`${label} · 1.2.4`)).toBeTruthy();
+    ["requested", "Update requested", 1],
+    ["draining", "waiting for 0 jobs to finish", 0],
+    ["draining", "waiting for 1 job to finish", 1],
+    ["draining", "waiting for 4 jobs to finish", 4],
+    ["refused", "Update failed", 1],
+    ["uncertain", "Update needs attention", 1],
+    ["applied", "Update installed", 1],
+    ["restart_requested", "Restart requested", 1],
+  ] as const)("shows the enrolled update outcome %s: %s", (status, label, count) => {
+    const leases = Array.from({ length: count }, (_, index) => ({ ...RUNNER.leases[0]!, lease_id: `lease_${index}` }));
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version: "1.2.3", leases, update: { status, desired: { version: "1.2.4" } } }] });
+    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
+    expect(screen.queryByText("Running 1.2.4")).toBeNull();
+    expect(screen.getByText(`Update to 1.2.4 · ${label}`)).toBeTruthy();
     if (status === "refused" || status === "uncertain") {
       expect(screen.getByText(/Needs human: reinstall/)).toBeTruthy();
       expect(screen.getByText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh")).toBeTruthy();
     }
+  });
+  it("changes the running version only after the replacement reports it", () => {
+    const runner = { ...RUNNER, version: "1.2.3", update: { status: "applied", desired: { version: "1.2.4" } } };
+    const { rerender } = render(<RunnersSectionView fleet={{ ...FLEET, runners: [runner] }} now={NOW} />);
+    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
+    expect(screen.getByText("Update to 1.2.4 · Update installed")).toBeTruthy();
+    rerender(<RunnersSectionView fleet={{ ...FLEET, runners: [{ ...runner, version: "1.2.4", update: { ...runner.update, status: "running" } }] }} now={NOW} />);
+    expect(screen.getByText("Running 1.2.4")).toBeTruthy();
+    expect(screen.queryByText(/Update to/)).toBeNull();
+    expect(screen.queryByText("Running 1.2.3")).toBeNull();
+  });
+  it.each([undefined, { status: "unavailable", desired: null }])("shows the running version with no pending update (%s)", (update) => {
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version: "1.2.3", update }] });
+    expect(screen.getByText("Running 1.2.3")).toBeTruthy();
+    expect(screen.queryByText(/Update to/)).toBeNull();
+  });
+  it.each([
+    ["missing", undefined, true, "online", "healthy", "Version unknown"],
+    ["empty", "", true, "online", "healthy", "Version unknown"],
+    ["no heartbeat", "1.2.3", false, "online", "healthy", "Version unknown"],
+    ["offline unknown", undefined, false, "offline", "offline", "Version unknown"],
+    ["offline", "1.2.3", true, "offline", "needs_attention", "Last reported 1.2.3 · 5 minutes ago"],
+    ["legacy offline", "1.2.3", true, undefined, "offline", "Last reported 1.2.3 · 5 minutes ago"],
+    ["legacy stale", "1.2.3", true, undefined, "stale", "Last reported 1.2.3 · 5 minutes ago"],
+  ] as const)("keeps %s running-version evidence distinct from the target", (_name, version, has_heartbeat, connection_health, health, label) => {
+    renderSection({ ...FLEET, runners: [{ ...RUNNER, version, has_heartbeat, connection_health, health, update: { status: "draining", desired: { version: "1.2.4" } } }] });
+    const card = within(screen.getByTestId("host-card"));
+    expect(card.getByText(label.startsWith("Last reported") ? /^Last reported/ : label).textContent).toBe(label);
+    expect(card.queryByText(/^Running 1\.2\./)).toBeNull();
+    expect(card.getByText("Update to 1.2.4 · waiting for 1 job to finish")).toBeTruthy();
+    if (label.startsWith("Last reported")) expect(card.getByText("5 minutes ago").getAttribute("datetime")).toBe(RUNNER.last_heartbeat_at);
   });
   it.each(["0.117.47", "0.117.50"])("explains the one-time reinstall for %s", (version) => {
     renderSection({ ...FLEET, runners: [{ ...FLEET.runners[0]!, version, claim_refusal_reason: "Too old to take work, needs 0.117.51", update: { status: "unavailable", desired: null } }] });
