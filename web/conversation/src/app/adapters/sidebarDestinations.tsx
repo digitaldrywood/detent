@@ -1,9 +1,11 @@
-import { BookmarkIcon, StarIcon } from "lucide-react";
+import { BookmarkIcon, LayoutListIcon } from "lucide-react";
+import { ViewActions } from "../work/SavedViewActions.tsx";
 import { useSavedViews, savedViewPath } from "../work/lib/savedViews.tsx";
 import {
   ActivityIcon,
   CircleAlertIcon,
   TriangleAlertIcon,
+  UsersIcon,
   BookOpenIcon,
   ChartNoAxesColumnIcon,
   ChevronDownIcon,
@@ -67,6 +69,7 @@ function NavRow({
   disabled = false,
   trailing,
   testId,
+  action,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -76,6 +79,7 @@ function NavRow({
   disabled?: boolean;
   trailing?: React.ReactNode;
   testId?: string;
+  action?: React.ReactNode;
 }): React.ReactElement {
   const button = (
     <SidebarMenuButton
@@ -88,7 +92,7 @@ function NavRow({
       onClick={disabled ? undefined : onClick}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className="w-full min-w-0 focus-visible:ring-inset"
+      className={cn("w-full min-w-0 focus-visible:ring-inset", action && "pr-8")}
     >
       {icon}
       <span className="min-w-0 flex-1 truncate text-left">{label}</span>
@@ -119,6 +123,7 @@ function NavRow({
       ) : (
         button
       )}
+      {action}
     </SidebarMenuItem>
   );
 }
@@ -175,6 +180,7 @@ export function SidebarDestinations(): React.ReactElement | null {
   const navigation = data?.navigation;
   const findings = data?.findings ?? [];
   const [needsExpanded, setNeedsExpanded] = React.useState(true);
+  const [favoritesExpanded, setFavoritesExpanded] = React.useState(true);
   const activeProjectId = data?.activeProjectId ?? null;
 
   const navigate = React.useCallback(
@@ -211,13 +217,47 @@ export function SidebarDestinations(): React.ReactElement | null {
         />
       </SidebarMenu>
 
-      {saved ? <section aria-label="Favorites" className="flex flex-col pb-1">
-        <p className="px-2 py-1.5 text-xs font-medium text-sidebar-muted-foreground">Favorites</p>
-        <SidebarMenu className="gap-px">
-          {saved.views.filter((view) => view.favorite).map((view) => <NavRow key={view.id} testId={`favorite-${view.id}`} icon={<StarIcon />} label={view.name} active={navigation.activePath === savedViewPath(view)} onClick={() => navigate(savedViewPath(view))} />)}
-          <NavRow testId="nav-views" icon={<BookmarkIcon />} label="Views" active={navigation.activePath === "/work/views"} onClick={() => navigate("/work/views")} />
-        </SidebarMenu>
-      </section> : null}
+      {saved ? (
+        <section aria-label="Favorites" className="flex flex-col pb-1">
+          <SectionHeader
+            label="Favorites"
+            expanded={favoritesExpanded}
+            onToggle={() => setFavoritesExpanded((value) => !value)}
+          />
+          {favoritesExpanded ? (
+            <SidebarMenu className="gap-px">
+              {saved.views.filter((view) => view.favorite).map((view) => (
+                <NavRow
+                  key={view.id}
+                  testId={`favorite-${view.id}`}
+                  icon={view.state.view === "board" ? <KanbanIcon /> : <LayoutListIcon />}
+                  label={view.name}
+                  active={navigation.activePath === savedViewPath(view)}
+                  onClick={() => navigate(savedViewPath(view))}
+                  trailing={view.scope === "organization" && navigation.activePath !== savedViewPath(view) ? <UsersIcon aria-label="Shared with organization" /> : undefined}
+                  action={
+                    <ViewActions
+                      view={view}
+                      sidebar
+                      active={navigation.activePath === savedViewPath(view)}
+                      onDeleted={() => {
+                        if (navigation.activePath === savedViewPath(view)) navigate("/work");
+                      }}
+                    />
+                  }
+                />
+              ))}
+              <NavRow
+                testId="nav-views"
+                icon={<BookmarkIcon />}
+                label="Views"
+                active={navigation.activePath === "/work/views"}
+                onClick={() => navigate("/work/views")}
+              />
+            </SidebarMenu>
+          ) : null}
+        </section>
+      ) : null}
 
       {findings.length > 0 ? (
         <section aria-label="Needs you" data-testid="sidebar-needs-you" className="flex flex-col pb-1">
