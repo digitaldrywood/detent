@@ -212,6 +212,30 @@ func TestOAuthCodeExchangeAndRotation(t *testing.T) {
 		if _, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(rotated.AccessToken)); err != nil {
 			t.Fatal(err)
 		}
+		rotating := url.Values{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "resource": {testPublicURL + "/mcp"}}
+		for range 32 {
+			rotating.Set("refresh_token", rotated.RefreshToken)
+			rotated = exchangeTestOAuth(t, owner, rotating)
+		}
+		var retained int
+		if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM oauth_refresh_tokens WHERE grant_id=?", key.ID).Scan(&retained); err != nil || retained != 1 {
+			t.Fatalf("refresh history retained=%d want=1 err=%v", retained, err)
+		}
+		foreign := client
+		if c.ID == client.ID {
+			foreign = other
+		}
+		for _, invalid := range []url.Values{
+			{"client_id": {c.ID}, "client_secret": {c.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {"A" + rotated.RefreshToken}, "resource": {testPublicURL + "/mcp"}},
+			{"client_id": {foreign.ID}, "client_secret": {foreign.Secret}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}},
+		} {
+			if response := owner.do(http.MethodPost, "/oauth/token", invalid, nil); response.StatusCode != http.StatusBadRequest {
+				t.Fatalf("invalid refresh=%+v", response)
+			}
+			if _, err := f.service.activeMCPKey(t.Context(), apikey.HashToken(rotated.AccessToken)); err != nil {
+				t.Fatalf("invalid refresh revoked grant: %v", err)
+			}
+		}
 		if replay := owner.do(http.MethodPost, "/oauth/token", refresh, nil); replay.StatusCode != 400 {
 			t.Fatal("refresh replay succeeded")
 		}
@@ -562,7 +586,7 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 }
 
 func TestOAuthCurrentAuthority(t *testing.T) {
-	for _, scenario := range []string{"membership removed", "project grant removed", "role downgraded", "policy blocked", "policy approval", "refresh expired", "browser revoke"} {
+	for _, scenario := range []string{"membership removed", "project grant removed", "role downgraded", "policy blocked", "policy approval", "refresh expired", "expired consumed refresh", "browser revoke"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newEntryFixture(t)
 			b := newBrowser(t, f.service.Handler())
@@ -604,6 +628,18 @@ func TestOAuthCurrentAuthority(t *testing.T) {
 				exec("INSERT INTO organization_key_policy(organization_id,personal_keys) VALUES(?,?)", "org_alpha", "approval")
 			case "refresh expired":
 				exec("UPDATE oauth_refresh_tokens SET expires_at='2000-01-01T00:00:00Z' WHERE grant_id=?", key.ID)
+			case "expired consumed refresh":
+				now := f.service.config.now()
+				f.service.config.now = func() time.Time { return now.Add(29 * 24 * time.Hour) }
+				refresh := url.Values{"client_id": {client.ID}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken}, "resource": {testPublicURL + "/mcp"}}
+				rotated := exchangeTestOAuth(t, b, refresh)
+				f.service.config.now = func() time.Time { return now.Add(30 * 24 * time.Hour) }
+				if response := b.do(http.MethodPost, "/oauth/token", refresh, nil); response.StatusCode != http.StatusBadRequest {
+					t.Fatalf("expired consumed refresh=%+v", response)
+				}
+				refresh.Set("refresh_token", rotated.RefreshToken)
+				exchangeTestOAuth(t, b, refresh)
+				return
 			case "browser revoke":
 				denied := b.do(http.MethodDelete, "/api/cloud/account/oauth-grants/"+key.ID, nil, map[string]string{"Origin": "https://other.example.test"})
 				if denied.StatusCode != 403 {
