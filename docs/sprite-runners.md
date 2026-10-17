@@ -197,8 +197,8 @@ manually installing project tools on individual Sprites.
 
 Both pool members and manually enrolled Sprites use the same runner owner.
 It runs setup when preparing the project, records a successful content hash in
-that Sprite's local store, and runs again only when the script or configured
-shell changes. Later attempts and runner restarts reuse that hash. Each Sprite
+that Sprite's local store, and runs again when the script, configured
+shell or checkout path changes, or when the checkout is recreated. Later attempts and runner restarts reuse that hash. Each Sprite
 has its own record, so every member installs the tools automatically. Keep the
 runner store when restoring a checkpoint to preserve successful setup evidence.
 When changing Makefile tool pins or dependency lockfiles, also change the setup
@@ -285,6 +285,64 @@ proceed under I/O or CPU pressure. Project, pool, provider, and other capacity
 limits still apply. The printed summary shows the configured floors. See
 [host pressure configuration](config.md).
 
+### Resource profile
+
+Sprites have no machine-size option. `sprite create` and `POST /v1/sprites`
+take only a name; a Sprite has 8 vCPUs and platform-managed memory with no
+swap. The home directory, including the runner store, identity and
+configuration, lives on the Sprite's persistent network block device. `/tmp`
+is a separate 20 GB local disk. Every block device uses the `none` I/O
+scheduler, so `ionice` classes and cgroup `io.weight` have no effect inside a
+Sprite.
+
+One runner slot does not bound the parallelism inside a job. A single nested
+`make` gate with explicit `-j` jobs, Go builds, linters and JavaScript test
+runners can saturate the CPUs and the block device, delay the runner's
+heartbeat and provider probes past their deadlines, and lose the claim's
+lease. The bootstrap therefore declares this profile in the Service launcher
+it writes on every run:
+
+| Control | Owner | Effect |
+| --- | --- | --- |
+| `MAKEFLAGS=-l<CPUs/4>`, at least 1 (`-l2` on 8 vCPUs) | Service launcher | GNU Make starts no further parallel job while the load average is above the limit, including recipes with an explicit `-j`. Linux counts tasks waiting on disk in the load average, so the limit also spaces out I/O bursts. Every target still runs. |
+| Go build budget | Existing `global.cpu.go_build_budget` | Go compile, link and vet processes in a Go module workspace queue for host-wide slots, with `-p` and `GOMAXPROCS` at a quarter of the budget. |
+| Lower worker CPU priority | Existing worker process owner | Agent processes and everything they start run five nice levels below the runner, so heartbeats, lease renewal and provider probes win CPU contention. |
+| Local disk for checkouts and caches | Bootstrap default workspace root and native cache layout | When `/tmp` is its own ext4, XFS or Btrfs mount, new registrations use `/tmp/detent-runner/work` as the workspace root. Native cache directories that are still at their default location and empty (`~/.cache/go-build`, Detent's managed `~/.cache/detent`, `~/.cache/golangci-lint`, `~/go/pkg/mod` and `~/.npm`) become links into `/tmp/detent-runner/cache`. |
+
+Gate builds and tests write heavily to checkouts, temporary directories and
+caches. On the network block device that traffic starves the runner's probes
+and can make the device disconnect, which restarts every process in the
+Sprite. On the local disk it does not. The runner store, identity,
+configuration, provider sign-ins, installed tools and Playwright's Chromium
+stay in the home directory.
+
+The runner sets no cache variables: tools keep their native default paths, and
+only the directories behind them move. Operator cache settings, whether from
+the environment, `go env -w` or `.npmrc`, are left alone, and a native cache
+that already has content stays where it is. An explicit `--workspace-root` and
+an operator-chosen `workspace_root` in the configuration are kept. A rerun
+moves a configuration still on the old default, `~/detent-runner`, to the
+local disk; checkouts left at the old path can be deleted.
+
+Checkouts and caches are disposable. The Service starts from the home
+directory, and its launcher recreates the local checkout and cache directories
+before starting the runner. The runner clones a missing checkout,
+`hooks.runner_setup` runs again for a moved or recreated checkout, and missing
+caches are rebuilt at the cost of a slower next build. `/tmp` keeps its
+contents while the Sprite is idle. The 20 GB local disk fits only a few
+checkouts with their caches, so keep **Concurrency** at `1`.
+
+The bootstrap prints the profile in its closing summary. It rewrites the
+launcher on every run, so hand edits to it do not survive an update; change
+the bootstrap instead. Projects whose own build files have concurrency
+settings should derive them from the CPU count in the repository, not from
+per-Sprite edits.
+
+A Sprite is ready for gate-heavy work only after a representative cold
+validation run under this profile passes while the runner's probes stay inside
+their deadlines. If it cannot, report the measured limitation as a readiness
+failure rather than raising timeouts or skipping checks.
+
 ### Standard runner toolset
 
 Every runner receives the standard tools during bootstrap, so agents can
@@ -355,7 +413,8 @@ Default locations are:
 | --- | --- |
 | Runner configuration | `~/.config/detent-runner/global.yaml` |
 | Private runner identity | `~/.config/detent-runner/identity.json` |
-| Project checkouts | `~/detent-runner/PROJECT_ID` |
+| Project checkouts | `/tmp/detent-runner/work/PROJECT_ID` on the local disk, otherwise `~/detent-runner/PROJECT_ID` |
+| Native build caches | Default paths; on the local disk they link into `/tmp/detent-runner/cache` |
 | Service launcher | `~/.local/lib/detent-sprite-runner/start` |
 
 Keep the paths printed by registration if you selected custom paths. The
@@ -443,13 +502,15 @@ reported, confirm that selected path through the runner’s existing project
 local-check report before using it. A clone elsewhere is not evidence of the
 configured checkout.
 
-Inside the Sprite, for a fresh default installation, replace the project ID
-below. For a custom root, use the absolute root printed by the bootstrap instead.
+Inside the Sprite, replace the project ID below and set `ROOT` to the managed
+checkout root the bootstrap printed: `/tmp/detent-runner/work` on a Sprite with
+a local disk, otherwise `~/detent-runner`, or your custom root.
 Wait until the runner has cloned the checkout after Git authentication:
 
 ```sh
 PROJECT_ID='prj_example'
-CHECKOUT="$HOME/detent-runner/$PROJECT_ID"
+ROOT='/tmp/detent-runner/work'
+CHECKOUT="$ROOT/$PROJECT_ID"
 printf 'Managed checkout: %s\n' "$CHECKOUT" &&
 test -d "$CHECKOUT/.git" &&
 git -C "$CHECKOUT" rev-parse --show-toplevel &&

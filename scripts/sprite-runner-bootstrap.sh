@@ -366,12 +366,23 @@ fi
 unset words
 config_path=${config_path:-$HOME/.config/detent-runner/global.yaml}
 requested_workspace_root=$workspace_root
-workspace_root=${workspace_root:-$HOME/detent-runner}
-[[ $config_path == /* && $workspace_root == /* ]] || die "--config and --workspace-root must be absolute paths"
+[[ $config_path == /* && ( -z $workspace_root || $workspace_root == /* ) ]] || die "--config and --workspace-root must be absolute paths"
 identity_path="$(dirname -- "$config_path")/identity.json"
 if [[ -z $token ]] && [[ ! -f $config_path || ! -f $identity_path ]]; then
     die "no enrollment command given and $config_path is not registered yet"
 fi
+
+legacy_workspace_root=$HOME/detent-runner
+registered_now=
+local_root=
+if command -v findmnt >/dev/null; then
+    read -r local_fstype local_mount < <(findmnt -n -o FSTYPE,TARGET --mountpoint /tmp 2>/dev/null || true) || true
+    if [[ ${local_fstype:-} =~ ^(ext4|xfs|btrfs)$ && ${local_mount:-} == /* ]]; then
+        local_root=$local_mount/detent-runner
+    fi
+fi
+workspace_root=${workspace_root:-${local_root:+$local_root/work}}
+workspace_root=${workspace_root:-$legacy_workspace_root}
 
 [[ $(uname -s) == Linux ]] || die "run this script inside a Fly Sprite (Linux)"
 case $(uname -m) in
@@ -384,6 +395,45 @@ for tool in curl tar sha256sum npm node apt-get apt-cache dpkg-query; do
     command -v "$tool" >/dev/null || die "$tool is required (preinstalled in fresh Sprites)"
 done
 [[ -z $setup_manifest ]] || check_setup_manifest
+local_caches=()
+link_local_cache() {
+    local native=$1 target=$local_root/cache/$2 entry
+    local_caches+=("$target")
+    if [[ -L $native ]]; then
+        [[ $(readlink -- "$native") != "$target" ]] || mkdir -p -- "$target"
+        return 0
+    fi
+    if [[ -e $native && ! -d $native ]]; then
+        printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+        return 0
+    fi
+    if [[ -d $native ]]; then
+        for entry in "$native"/* "$native"/.[!.]*; do
+            [[ -e $entry && ${entry##*/} != _logs ]] || continue
+            printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+            return 0
+        done
+        rm -rf -- "$native"
+    fi
+    mkdir -p -- "$target" "$(dirname -- "$native")"
+    ln -s -- "$target" "$native"
+}
+if [[ -n $local_root ]]; then
+    native_cache_home=${XDG_CACHE_HOME:-$HOME/.cache}
+    go_env_file=${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}
+    if [[ -z ${GOCACHE:-} ]] && ! grep -Eqs '^GOCACHE=' "$go_env_file"; then
+        link_local_cache "$native_cache_home/go-build" go-build
+        link_local_cache "$native_cache_home/detent" detent
+    fi
+    [[ -n ${GOLANGCI_LINT_CACHE:-} ]] || link_local_cache "$native_cache_home/golangci-lint" golangci-lint
+    if [[ -z ${GOMODCACHE:-}${GOPATH:-} ]] && ! grep -Eqs '^(GOMODCACHE|GOPATH)=' "$go_env_file"; then
+        link_local_cache "$HOME/go/pkg/mod" go-mod
+    fi
+    if [[ -z ${npm_config_cache:-}${NPM_CONFIG_CACHE:-} ]] &&
+        ! grep -Eqs '^[[:space:]]*cache[[:space:]]*=' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; then
+        link_local_cache "$HOME/.npm" npm
+    fi
+fi
 
 umask 077
 bin_dir="$HOME/.local/bin"
@@ -641,16 +691,20 @@ if [[ -n $token ]]; then
     # A valid stored credential reuses the same runner; the token is only redeemed when it is not.
     DETENT_RUNNER_ENROLLMENT_TOKEN=$token detent hub runner register "${register_args[@]}" --config "$config_path" --workspace-root "$workspace_root"
     unset token
+    registered_now=1
 else
     printf 'Reusing the registered runner in %s\n' "$config_path"
 fi
 
 last_completed='runner registration command completed or stored identity reused; verify Hub connection'
 
-pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" <<'NODE'
+migrate_workspace_root=
+if [[ -n $local_root && -z $requested_workspace_root ]]; then migrate_workspace_root=$workspace_root; fi
+pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$legacy_workspace_root" "$migrate_workspace_root" <<'NODE'
 const fs = require('node:fs');
 const YAML = require(process.argv[2]);
 const configPath = process.argv[3];
+const [legacyWorkspaceRoot, migrateWorkspaceRoot] = process.argv.slice(4);
 const original = fs.readFileSync(configPath, 'utf8');
 const config = YAML.parseDocument(original);
 if (config.errors.length) throw config.errors[0];
@@ -672,6 +726,10 @@ for (const signal of ['io', 'cpu']) {
         changed = true;
     }
 }
+if (migrateWorkspaceRoot && config.get('workspace_root') === legacyWorkspaceRoot) {
+    config.set('workspace_root', migrateWorkspaceRoot);
+    changed = true;
+}
 if (changed) {
     const temporary = `${configPath}.sprite-bootstrap-${process.pid}`;
     try {
@@ -687,7 +745,9 @@ console.log(`Sprite pressure capacity: io=${config.getIn(['global', 'io', 'degra
 NODE
 )
 
-resolved_roots=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$workspace_root" "$requested_workspace_root" "$HOME" <<'NODE'
+resolve_base=$workspace_root
+if [[ -z $requested_workspace_root && -z $registered_now ]]; then resolve_base=$legacy_workspace_root; fi
+resolved_roots=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$resolve_base" "$requested_workspace_root" "$HOME" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 try {
@@ -725,10 +785,17 @@ workspace_root=${resolved_roots%%$'\n'*}
 launch_dir=${resolved_roots#*$'\n'}
 
 mkdir -p "$workspace_root/.tmp" "$launch_dir"
+cpu_count=$(nproc)
+[[ $cpu_count =~ ^[1-9][0-9]*$ ]] || die "could not read the Sprite CPU count"
+make_load_limit=$((cpu_count / 4 > 0 ? cpu_count / 4 : 1))
 launcher="$lib_dir/start"
 {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
     printf 'export HOME=%q\nexport PATH=%q\nexport TMPDIR=%q\n' "$HOME" "$PATH" "$workspace_root/.tmp"
+    printf 'export MAKEFLAGS=%q\n' "-l$make_load_limit"
+    printf 'mkdir -p --'
+    printf ' %q' "$workspace_root/.tmp" "$launch_dir" "${local_caches[@]}"
+    printf '\n'
     printf 'cd -- %q\n' "$launch_dir"
     printf 'exec %q --config %q --headless\n' "$bin_dir/detent" "$config_path"
 } > "$launcher"
@@ -737,13 +804,17 @@ chmod 700 "$launcher"
 # upgrades and finished manual setup take effect.
 existing_service=false
 if sprite-env services get detent-runner >/dev/null 2>&1; then existing_service=true; fi
-sprite-env services create detent-runner --cmd "$launcher" --dir "$launch_dir" --no-stream
+sprite-env services create detent-runner --cmd "$launcher" --dir "$HOME" --no-stream
 if [[ $existing_service == true ]]; then
     sprite-env curl -X POST 'http://sprite/v1/services/detent-runner/restart?duration=1s'
 fi
 
 last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
+printf 'Sprite resource profile: %s CPUs; runner Make load limit -l%s; workers run at lower CPU priority than the runner.\n' "$cpu_count" "$make_load_limit"
+if [[ -n $local_root ]]; then
+    printf 'Local disk: checkouts in %s; native caches linked into %s.\n' "$workspace_root" "$local_root/cache"
+fi
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
     printf '  Claude: run claude auth login, or configure a Sprites Anthropic connector.\n'

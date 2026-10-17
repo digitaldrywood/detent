@@ -21,6 +21,12 @@ with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps([name, args]) + "\n")
 if name == "uname":
     print("Linux" if args == ["-s"] else os.environ.get("FIXTURE_ARCH", "x86_64"))
+elif name == "findmnt":
+    if not os.environ.get("FIXTURE_LOCAL_DISK"):
+        sys.exit(1)
+    print("ext4 " + os.environ["FIXTURE_LOCAL_DISK"])
+elif name == "nproc":
+    print(os.environ.get("FIXTURE_NPROC", "8"))
 elif name == "id":
     print("1000" if args == ["-u"] else "sprite")
 elif name == "sudo":
@@ -66,10 +72,14 @@ elif name == "go":
 elif name == "npm" and args == ["--version"]:
     print(os.environ.get("FIXTURE_NPM_VERSION", "11.6.2"))
 elif name == "npm" and args[:3] == ["config", "get", "cache"]:
-    print(os.path.join(os.getcwd(), os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE") or os.path.join(os.environ["HOME"], ".npm")))
+    print(os.path.join(os.getcwd(), os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE") or os.environ.get("FIXTURE_NPMRC_CACHE") or os.path.join(os.environ["HOME"], ".npm")))
 elif name == "npm" and args[:2] == ["cache", "verify"]:
     (pathlib.Path(os.environ.get("npm_config_cache") or os.path.join(os.environ["HOME"], ".npm")) / "_cacache").mkdir(parents=True, exist_ok=True)
 elif name == "npm":
+    if os.environ.get("FIXTURE_NPM_POPULATES"):
+        npm_cache = pathlib.Path(os.path.join(os.environ["HOME"], ".npm"))
+        for entry in ("_cacache", "_logs"):
+            (npm_cache / entry).mkdir(parents=True, exist_ok=True)
     prefix = pathlib.Path(args[args.index("--prefix") + 1]) / "bin"
     prefix.mkdir(parents=True, exist_ok=True)
     packages = {"@openai/codex@0.160.0": "codex", "@anthropic-ai/claude-code@2.1.289": "claude", "playwright@1.63.0": "playwright"}
@@ -162,6 +172,8 @@ elif name == "detent":
             if identity != registered:
                 sys.exit("runner credential does not match enrollment")
         (root / "detent-cwd").write_text(os.getcwd())
+        keys = ("MAKEFLAGS", "TMPDIR", "XDG_CACHE_HOME", "GOMODCACHE", "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH")
+        (root / "detent-env.json").write_text(json.dumps({key: os.environ.get(key) for key in keys}))
         print("v0.117.41")
 elif name == "sprite-env":
     if args[:2] == ["services", "get"]:
@@ -199,7 +211,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.home.mkdir()
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
-        for name in ("uname", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
+        for name in ("uname", "nproc", "findmnt", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
             path = self.fake_bin / name
             path.write_text(STUB)
             path.chmod(0o755)
@@ -298,6 +310,10 @@ class SpriteBootstrapTests(unittest.TestCase):
         service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
         self.assertEqual(service.returncode, 0, service.stderr)
         self.assertEqual((self.root / "detent-cwd").read_text(), str(work.resolve()))
+        launched = json.loads((self.root / "detent-env.json").read_text())
+        self.assertEqual(launched["MAKEFLAGS"], "-l2")
+        self.assertIsNone(launched["XDG_CACHE_HOME"])
+        self.assertIn("Sprite resource profile: 8 CPUs; runner Make load limit -l2", first.stdout)
         self.assertIn(["detent", ["--config", str(config), "--headless"]], self.calls())
         self.assertIn("claude auth login", first.stdout)
         self.assertIn("codex login", first.stdout)
@@ -370,7 +386,9 @@ class SpriteBootstrapTests(unittest.TestCase):
                 result = self.run_bootstrap(extra=("--config", str(config)), enrollment="" if original is not None else None)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 service = json.loads((self.root / "service-detent-runner.json").read_text())
-                self.assertEqual(service[service.index("--dir") + 1], preserved.get("workspace_root", str(self.home / "detent-runner")))
+                self.assertEqual(service[service.index("--dir") + 1], str(self.home))
+                launch = preserved.get("workspace_root", str(self.home / "detent-runner"))
+                self.assertIn(["cd", "--", launch], [shlex.split(line) for line in (self.home / ".local/lib/detent-sprite-runner/start").read_text().splitlines()])
                 self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
                 parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
                                          "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(JSON.stringify(YAML.parse(fs.readFileSync(process.argv[2], 'utf8'))));",
@@ -414,11 +432,100 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertIn(f"Managed checkout root: {root}\n", result.stdout)
                 self.assertIn(f"New managed checkout for prj_example: {root / 'prj_example'}", result.stderr)
                 service = json.loads((self.root / "service-detent-runner.json").read_text())
-                self.assertEqual(service[service.index("--dir") + 1], str(launch_dir))
+                self.assertEqual(service[service.index("--dir") + 1], str(self.home))
                 launcher = (self.home / ".local/lib/detent-sprite-runner/start").read_text()
                 self.assertIn(["cd", "--", str(launch_dir)], [shlex.split(line) for line in launcher.splitlines()])
                 self.assertTrue((root / ".tmp").is_dir())
                 self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
+
+    def test_local_disk_hosts_checkouts_and_caches(self):
+        # Catches checkouts or caches left on the persistent network disk, and
+        # migrations that override an operator-chosen workspace root.
+        disk = self.root / "local disk"
+        disk.mkdir()
+        self.env["FIXTURE_LOCAL_DISK"] = str(disk)
+        self.env["FIXTURE_NPM_POPULATES"] = "1"
+        (self.home / ".npm/_logs").mkdir(parents=True)
+        local = disk / "detent-runner"
+        first = self.run_bootstrap()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        args = self.registrations()[0]
+        self.assertEqual(args[args.index("--workspace-root") + 1], str(local / "work"))
+        launcher = self.home / ".local/lib/detent-sprite-runner/start"
+        service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(service.returncode, 0, service.stderr)
+        self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
+        self.assertEqual(json.loads((self.root / "detent-env.json").read_text()), {
+            "MAKEFLAGS": "-l2",
+            "TMPDIR": str(local / "work/.tmp"),
+            "XDG_CACHE_HOME": None,
+            "GOMODCACHE": None,
+            "npm_config_cache": None,
+            "PLAYWRIGHT_BROWSERS_PATH": None,
+        })
+        native = {
+            self.home / ".cache/go-build": local / "cache/go-build",
+            self.home / ".cache/detent": local / "cache/detent",
+            self.home / ".cache/golangci-lint": local / "cache/golangci-lint",
+            self.home / "go/pkg/mod": local / "cache/go-mod",
+            self.home / ".npm": local / "cache/npm",
+        }
+        for link, target in native.items():
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(pathlib.Path(os.readlink(link)), target)
+        self.assertTrue((local / "cache/npm/_cacache").is_dir())
+        self.assertFalse((self.home / ".cache/ms-playwright").is_symlink())
+        self.assertIn(f"Local disk: checkouts in {local / 'work'}; native caches linked into {local / 'cache'}", first.stdout)
+        shutil.rmtree(local)
+        (self.root / "detent-cwd").unlink()
+        lost = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(lost.returncode, 0, lost.stderr)
+        self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
+        for link in native:
+            self.assertTrue(link.resolve().is_dir(), link)
+        shutil.rmtree(local)
+        recovered = self.run_bootstrap(enrollment="")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        for link in native:
+            self.assertTrue(link.resolve().is_dir(), link)
+        for link in (self.home / "go/pkg/mod", self.home / ".npm"):
+            link.unlink()
+        (self.home / ".npm").mkdir()
+        (self.home / ".npm/_cacache").mkdir()
+        self.env.update(GOMODCACHE=str(self.root / "operator-modules"))
+        operator = self.run_bootstrap(enrollment="")
+        del self.env["GOMODCACHE"]
+        self.assertEqual(operator.returncode, 0, operator.stderr)
+        self.assertFalse((self.home / "go/pkg/mod").exists())
+        self.assertFalse((self.home / ".npm").is_symlink())
+        self.assertIn(f"Native cache {self.home / '.npm'} already has content", operator.stderr)
+        shutil.rmtree(self.home / ".npm")
+        (self.home / ".npmrc").write_text("cache = /operator/npm\n")
+        npmrc = self.run_bootstrap(enrollment="")
+        self.assertEqual(npmrc.returncode, 0, npmrc.stderr)
+        self.assertFalse((self.home / ".npm").is_symlink())
+        (self.home / ".npmrc").unlink()
+        self.assertNotIn("GOMODCACHE", launcher.read_text())
+        (self.home / ".config/detent-runner/global.yaml").write_text("workspace_root: custom-relative\n")
+        relative = self.run_bootstrap(enrollment="")
+        self.assertEqual(relative.returncode, 0, relative.stderr)
+        self.assertIn(f"Managed checkout root: {self.home / 'detent-runner' / 'custom-relative'}\n", relative.stdout)
+        config = self.home / ".config/detent-runner/global.yaml"
+        for name, root, want in (
+            ("legacy default", self.home / "detent-runner", local / "work"),
+            ("operator root", self.home / "chosen", self.home / "chosen"),
+        ):
+            with self.subTest(name=name):
+                config.write_text(f"# operator config\nworkspace_root: {root}\n")
+                rerun = self.run_bootstrap(enrollment="")
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
+                                         "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(YAML.parse(fs.readFileSync(process.argv[2], 'utf8')).workspace_root);",
+                                         self.env["FIXTURE_YAML_MODULE"], str(config)],
+                                        text=True, capture_output=True, timeout=10)
+                self.assertEqual(parsed.stdout.strip(), str(want), parsed.stderr)
+                self.assertIn("# operator config", config.read_text())
+                self.assertIn("cd -- " + str(want).replace(" ", "\\ "), launcher.read_text())
 
     def test_empty_input_reuses_an_existing_registration_only(self):
         # Catches reruns that need a fresh token, and a fresh Sprite that
