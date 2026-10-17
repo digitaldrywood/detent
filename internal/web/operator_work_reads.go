@@ -116,6 +116,9 @@ func (r dashboardWorkReads) ReadWork(ctx context.Context, name string, request o
 			return s.readNativeWork(ctx, client, tracked, request, name)
 		}
 	}
+	if request.View != "" || name == operatortool.WorkItem && request.Cursor != "" {
+		return operatortool.Result{}, operatortool.ErrInvalidArguments
+	}
 	if snapshot.GeneratedAt.IsZero() {
 		return operatortool.Result{}, operatortool.ErrSnapshotUnavailable
 	}
@@ -362,6 +365,10 @@ func connectorIssueForWork(issue telemetry.Issue) connector.Issue {
 }
 
 func (s *Server) readNativeWork(ctx context.Context, client *hubclient.NativeClient, tracked *project.Project, request operatortool.WorkReadRequest, name string) (operatortool.Result, error) {
+	if name == operatortool.WorkItem && request.View == "recovery" {
+		page, err := client.RecoveryEvidence(ctx, tracker.NativeWorkItemID(request.Reference), request.Cursor)
+		return nativeWorkResult(request, page, err)
+	}
 	if request.Offset != 0 && name != operatortool.WorkReferences && name != operatortool.BoardSessionHistory && name != operatortool.WorkPRComments {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments
 	}

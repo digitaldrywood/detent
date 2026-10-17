@@ -955,6 +955,10 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 			recovery.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
 		}
 	}
+	detailInstructions := ""
+	if recovery.Read != nil {
+		detailInstructions = "Recovery read.omitted names evidence outside this bounded context. Before acting on the omitted discussion, reviews, checks or criteria, use work_comments, get_change and work_attempt_receipt with the supplied native identities, following every returned section cursor. Source identity and frozen policy identity/gates remain exact; read.omitted explicitly identifies projected policy details, which must be read from the complete version record before using them. Required issue instructions were restored before dispatch; command output excerpts carry output_truncated. For complete retained records, call work_item with project_id, reference set to the native work-item ID, and view=recovery. Follow data.next_cursor using the same arguments and cursor until data.section is complete. Each call returns one base64 JSON fragment with section, record_id, original version_id, offset, total_bytes and SHA-256; decode fragments for the required record and verify its identity and digest. This reads oversized ordinary reviews, full command output, historical frozen policy and retained discussion through authenticated worker tools. Do not reconstruct the entire history as one document or treat omitted evidence as passing. "
+	}
 	data, err := json.Marshal(recovery)
 	if err != nil {
 		return "", err
@@ -966,7 +970,7 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 		"Prior local-only checkpoints do not establish workspace or provider-session availability on this host. " +
 		"Verify local state before resuming. Missing or inaccessible dirty/unpushed checkpoints require recovery; preserve existing work. " +
 		"A pending or ambiguous external effect requires reconciliation: inspect the remote ref/head or existing PR before retrying. " +
-		"This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
+		detailInstructions + "This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
 		"The issue body is already supplied above; attempt runtime diagnostics and historical events are omitted here and remain available through those reads. " +
 		"Do not fetch GitHub issue history. Artifact and Change references require scoped verification; they are not download capabilities.\n" + string(data), nil
 }

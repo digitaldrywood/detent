@@ -121,6 +121,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		}
 		return operatortool.NativeRuntimeResult(name, request, evidence)
 	case operatortool.WorkItem:
+		if request.View == "recovery" {
+			params := url.Values{"view": {"recovery"}, "limit": {"1"}, "cursor": {request.Cursor}}
+			recovery, err := s.readNativeRecoveryPage(ctx, scope, request.Reference, "/api/v2/organizations/"+url.PathEscape(string(scope.organization))+"/projects/"+url.PathEscape(string(scope.project))+"/work-items/"+url.PathEscape(request.Reference), params)
+			return hubWorkResult(r, request, recovery.Continuation, err)
+		}
 		view := operatortool.NativeItemView(request.ProjectID, item)
 		if strings.Contains(item.Body, "detent-checks") {
 			view.ValidationAudit, err = readValidationAudit(ctx, s.database.reader, scope, request.Reference, "", "", "")

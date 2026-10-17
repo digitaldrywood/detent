@@ -121,6 +121,9 @@ func (e *nativeExecution) AgentTools() ([]runner.AgentTool, runner.AgentToolHand
 			definition.Description += " reference must be a canonical native work-item ID beginning with wi_; numbers, titles and URLs are not supported. Use cursor, not offset, for paging."
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		case operatortool.RunnerProjectDiagnostics, operatortool.ListChanges, operatortool.GetChange, operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment:
+			if definition.Name == operatortool.GetChange {
+				definition.Description += " For complete retained records, including oversized reviews, full command output and historical frozen policy, use work_item with view=recovery and follow its record fragment cursors."
+			}
 			tools = append(tools, runner.AgentTool{Name: definition.Name, Description: definition.Description, InputSchema: definition.InputSchema})
 		}
 	}
@@ -232,6 +235,10 @@ func (c *NativeClient) readAgentTool(ctx context.Context, call runner.AgentToolC
 		}
 		switch call.Name {
 		case operatortool.WorkItem:
+			if request.View == "recovery" {
+				value, err = c.RecoveryEvidence(ctx, id, request.Cursor)
+				break
+			}
 			var issue tracker.NativeIssue
 			issue, err = c.Issue(ctx, id)
 			if err == nil && (issue.ProjectID != c.project || issue.WorkItemID != id) {

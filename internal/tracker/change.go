@@ -142,13 +142,15 @@ type PublishChangeVersion struct {
 }
 
 type SecurityAuditReview struct {
-	VersionID  string                 `json:"version_id,omitempty"`
-	Landing    bool                   `json:"landing,omitempty"`
-	Identity   agentidentity.Identity `json:"identity"`
-	Verdict    string                 `json:"verdict"`
-	SessionID  int64                  `json:"session_id"`
-	DiffDigest string                 `json:"diff_digest"`
-	Run        securityaudit.Run      `json:"run"`
+	RunOmitted    bool                   `json:"run_omitted,omitempty"`
+	TextTruncated bool                   `json:"text_truncated,omitempty"`
+	VersionID     string                 `json:"version_id,omitempty"`
+	Landing       bool                   `json:"landing,omitempty"`
+	Identity      agentidentity.Identity `json:"identity"`
+	Verdict       string                 `json:"verdict"`
+	SessionID     int64                  `json:"session_id"`
+	DiffDigest    string                 `json:"diff_digest"`
+	Run           securityaudit.Run      `json:"run"`
 }
 
 type ChangeReview struct {
