@@ -217,10 +217,7 @@ inputs and environment applicability, and rerun only for a concrete gap or risk.
 Historical diagnosis evidence retains its original source identity and is
 assessed separately from passing candidate evidence under the repair contract.
 An assumed, skipped or unrelated check remains not verified. Any not-verified
-criterion under validator review requires rework and is named in the summary,
-except a criterion no rework can satisfy because it depends on an outside system,
-deployment or human action: that is an issue authoring defect, and the item goes
-to Blocked with a human_action to rewrite the criterion, never to Rework;
+criterion under validator review requires rework and is named in the summary;
 minimum score and blocked finding severities remain authoritative. This setting
 does not enable the optional validator or replace the native completion contract,
 which owns permitted post-integration handoffs and pending acceptance disclosure.
