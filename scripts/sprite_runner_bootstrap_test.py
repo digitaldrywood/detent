@@ -76,6 +76,10 @@ elif name == "npm" and args[:3] == ["config", "get", "cache"]:
 elif name == "npm" and args[:2] == ["cache", "verify"]:
     (pathlib.Path(os.environ.get("npm_config_cache") or os.path.join(os.environ["HOME"], ".npm")) / "_cacache").mkdir(parents=True, exist_ok=True)
 elif name == "npm":
+    if os.environ.get("FIXTURE_NPM_POPULATES"):
+        npm_cache = pathlib.Path(os.path.join(os.environ["HOME"], ".npm"))
+        for entry in ("_cacache", "_logs"):
+            (npm_cache / entry).mkdir(parents=True, exist_ok=True)
     prefix = pathlib.Path(args[args.index("--prefix") + 1]) / "bin"
     prefix.mkdir(parents=True, exist_ok=True)
     packages = {"@openai/codex@0.160.0": "codex", "@anthropic-ai/claude-code@2.1.289": "claude", "playwright@1.63.0": "playwright"}
@@ -440,6 +444,8 @@ class SpriteBootstrapTests(unittest.TestCase):
         disk = self.root / "local disk"
         disk.mkdir()
         self.env["FIXTURE_LOCAL_DISK"] = str(disk)
+        self.env["FIXTURE_NPM_POPULATES"] = "1"
+        (self.home / ".npm/_logs").mkdir(parents=True)
         local = disk / "detent-runner"
         first = self.run_bootstrap()
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -467,6 +473,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         for link, target in native.items():
             self.assertTrue(link.is_symlink(), link)
             self.assertEqual(pathlib.Path(os.readlink(link)), target)
+        self.assertTrue((local / "cache/npm/_cacache").is_dir())
         self.assertFalse((self.home / ".cache/ms-playwright").is_symlink())
         self.assertIn(f"Local disk: checkouts in {local / 'work'}; native caches linked into {local / 'cache'}", first.stdout)
         shutil.rmtree(local)
@@ -487,6 +494,12 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertFalse((self.home / "go/pkg/mod").exists())
         self.assertFalse((self.home / ".npm").is_symlink())
         self.assertIn(f"Native cache {self.home / '.npm'} already has content", operator.stderr)
+        shutil.rmtree(self.home / ".npm")
+        (self.home / ".npmrc").write_text("cache = /operator/npm\n")
+        npmrc = self.run_bootstrap(enrollment="")
+        self.assertEqual(npmrc.returncode, 0, npmrc.stderr)
+        self.assertFalse((self.home / ".npm").is_symlink())
+        (self.home / ".npmrc").unlink()
         self.assertNotIn("GOMODCACHE", launcher.read_text())
         (self.home / ".config/detent-runner/global.yaml").write_text("workspace_root: custom-relative\n")
         relative = self.run_bootstrap(enrollment="")

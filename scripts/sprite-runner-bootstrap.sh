@@ -395,6 +395,42 @@ for tool in curl tar sha256sum npm node apt-get apt-cache dpkg-query; do
     command -v "$tool" >/dev/null || die "$tool is required (preinstalled in fresh Sprites)"
 done
 [[ -z $setup_manifest ]] || check_setup_manifest
+local_caches=()
+link_local_cache() {
+    local native=$1 target=$local_root/cache/$2 entry
+    local_caches+=("$target")
+    [[ ! -L $native ]] || return 0
+    if [[ -e $native && ! -d $native ]]; then
+        printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+        return 0
+    fi
+    if [[ -d $native ]]; then
+        for entry in "$native"/* "$native"/.[!.]*; do
+            [[ -e $entry && ${entry##*/} != _logs ]] || continue
+            printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+            return 0
+        done
+        rm -rf -- "$native"
+    fi
+    mkdir -p -- "$target" "$(dirname -- "$native")"
+    ln -s -- "$target" "$native"
+}
+if [[ -n $local_root ]]; then
+    native_cache_home=${XDG_CACHE_HOME:-$HOME/.cache}
+    go_env_file=${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}
+    if [[ -z ${GOCACHE:-} ]] && ! grep -Eqs '^GOCACHE=' "$go_env_file"; then
+        link_local_cache "$native_cache_home/go-build" go-build
+        link_local_cache "$native_cache_home/detent" detent
+    fi
+    [[ -n ${GOLANGCI_LINT_CACHE:-} ]] || link_local_cache "$native_cache_home/golangci-lint" golangci-lint
+    if [[ -z ${GOMODCACHE:-}${GOPATH:-} ]] && ! grep -Eqs '^(GOMODCACHE|GOPATH)=' "$go_env_file"; then
+        link_local_cache "$HOME/go/pkg/mod" go-mod
+    fi
+    if [[ -z ${npm_config_cache:-}${NPM_CONFIG_CACHE:-} ]] &&
+        ! grep -Eqs '^[[:space:]]*cache[[:space:]]*=' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; then
+        link_local_cache "$HOME/.npm" npm
+    fi
+fi
 
 umask 077
 bin_dir="$HOME/.local/bin"
@@ -645,31 +681,6 @@ elif [[ $(detent --version 2>/dev/null || true) != "$version" ]] || ! grep -qxF 
 fi
 detent --version
 last_completed='Detent installed'
-local_caches=()
-link_local_cache() {
-    local native=$1 target=$local_root/cache/$2
-    local_caches+=("$target")
-    if [[ -L $native ]]; then
-        return
-    fi
-    if [[ -e $native && ! -d $native ]] || [[ -d $native && -n $(ls -A -- "$native") ]]; then
-        printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
-        return
-    fi
-    mkdir -p -- "$target" "$(dirname -- "$native")"
-    rmdir -- "$native" 2>/dev/null || true
-    ln -s -- "$target" "$native"
-}
-if [[ -n $local_root ]]; then
-    native_cache_home=${XDG_CACHE_HOME:-$HOME/.cache}
-    if [[ -z ${GOCACHE:-} && $(go env GOCACHE) == "$native_cache_home/go-build" ]]; then
-        link_local_cache "$native_cache_home/go-build" go-build
-        link_local_cache "$native_cache_home/detent" detent
-    fi
-    [[ -n ${GOLANGCI_LINT_CACHE:-} ]] || link_local_cache "$native_cache_home/golangci-lint" golangci-lint
-    [[ $(go env GOMODCACHE) != "$HOME/go/pkg/mod" ]] || link_local_cache "$HOME/go/pkg/mod" go-mod
-    [[ $(npm config get cache) != "$HOME/.npm" ]] || link_local_cache "$HOME/.npm" npm
-fi
 prepare_setup_revision
 last_completed='setup revision recorded'
 
