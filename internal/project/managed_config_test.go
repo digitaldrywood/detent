@@ -33,7 +33,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, scenario := range []string{"resume", "resume running", "resume drained", "resume manager drained", "resume native drained", "resume native busy drained", "resume drained restart refused", "resume native", "resume database", "resume restart refused", "resume runtime pause", "resume stale revision", "resume wrong policy", "native policy running", "native policy paused", "native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "apply policy hooks", "apply policy hooks active", "apply policy hooks deferred", "apply policy hooks backend failure", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
+	for _, scenario := range []string{"resume", "resume running", "resume drained", "resume manager drained", "resume native drained", "resume native busy drained", "resume drained restart refused", "resume native", "resume database", "resume restart refused", "resume runtime pause", "resume stale revision", "resume wrong policy", "native policy running", "native policy busy running", "native policy paused", "native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "apply policy hooks", "apply policy hooks active", "apply policy hooks deferred", "apply policy hooks backend failure", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
@@ -446,8 +446,10 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: time.Now(), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
-					t.Fatal(err)
+				if scenario != "native policy busy running" {
+					if err := attempts.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: time.Now(), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+						t.Fatal(err)
+					}
 				}
 				completed, err := attempts.WorkAttempt(t.Context(), attemptID)
 				if err != nil {
@@ -675,9 +677,14 @@ func TestManagedProjectConfiguration(t *testing.T) {
 				if err != nil || string(replayed) != string(after) {
 					t.Fatal("retry rewrote configuration")
 				}
-			case "apply policy", "apply policy hooks", "local overlay", "local policy", "local policy overlays", "local policy native":
+			case "apply policy", "apply policy hooks", "apply policy hooks active", "apply policy hooks deferred", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy":
 				if !result.Applied || result.EffectivePolicy.ID != request.PolicyID || !result.Paused || string(after) != string(original) {
 					t.Fatalf("apply=%+v", result)
+				}
+				if scenario == "local policy native busy" || scenario == "apply policy hooks active" || scenario == "apply policy hooks deferred" {
+					if owner.Read(t.Context(), "selected").UnsettledAttempts != 1 {
+						t.Fatal("policy application settled active or deferred work")
+					}
 				}
 				selected, _ := manager.Registry().Get("selected")
 				if localPolicy {
