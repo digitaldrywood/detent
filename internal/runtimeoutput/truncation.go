@@ -90,7 +90,7 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 			prefix = ""
 		}
 		if len(value)-start <= maxBytes-len(prefix) {
-			return prefix + value[start:], true
+			return prefix + validSuffix(value, maxBytes-len(prefix)), true
 		}
 		prefixLimit := (maxBytes - len(prefix) - len(omitted)) / 2
 		prefix += validPrefix(value[start:], prefixLimit) + omitted

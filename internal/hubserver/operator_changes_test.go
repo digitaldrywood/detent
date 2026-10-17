@@ -376,6 +376,13 @@ func TestOperatorChangeCommands(t *testing.T) {
 					"Authorization: Bearer private-bearer\nTOKEN=private-assignment\n/home/private/project/build.log\n" +
 					strings.Repeat(" PASS frontend suite 世界\n", 8000) + "make: *** [check-fast] Error 2\n"
 			}},
+		{name: "captured terminal make failure preserves preceding diagnostic", want: "local_nonzero", capture: true,
+			diagnostics: []string{"./scripts/check-repository.sh", "Repository schema mismatch 世界", "migrations/example.sql: missing delivery column", "expected column: delivery_id", "actual column: legacy_id", "make: *** [check-repository] Error 2", "[redacted]", "truncated"},
+			edit: func(r *tracker.NativeLandingReceipt) {
+				r.Gate.ExitCode = 2
+				r.Gate.Output = strings.Repeat(" PASS frontend suite 世界\n", 8000) +
+					"./scripts/check-repository.sh\nRepository schema mismatch 世界\nmigrations/example.sql: missing delivery column\nexpected column: delivery_id\nactual column: legacy_id\nTOKEN=private-assignment\n/home/private/project/build.log\nmake: *** [check-repository] Error 2\n"
+			}},
 		{name: "different checked content", want: "different_content", edit: func(r *tracker.NativeLandingReceipt) { r.Gate.TreeSHA = strings.Repeat("a", 40) }},
 		{name: "scope differs", want: "different_check_scope", edit: func(r *tracker.NativeLandingReceipt) {
 			r.Gate.Evidence.Checks[0].Scope = "unit-short"
