@@ -106,7 +106,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		}
 		return s.enrolledObservation(running)
 	}
-	receipt.Status = "draining"
+	receipt.Status = "applying"
 	receipt.FailureReason = ""
 	s.setEnrolledReceipt(receipt)
 	if s.persistCurrentState() != nil {
@@ -117,7 +117,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	opts.FromRelease = request.FromRelease
 	opts.Urgent = request.Urgent
 	opts.FollowHub = request.FollowHub
-	applied, err := s.drainAndApplyWithOptionsLocked(ctx, opts)
+	applied, err := s.applyRequestedLocked(ctx, opts)
 	if err != nil || applied.Action != ActionUpdated || applied.FailureReason != "" {
 		receipt.Status = "refused"
 		if applied.Action == ActionUpdated {
@@ -226,7 +226,7 @@ func cloneEnrolledReceipt(receipt *runnerauth.UpdateReceipt) *runnerauth.UpdateR
 func (s *Scheduler) recordEnrolledApplied(applied Status) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.enrolledReceipt == nil || s.enrolledReceipt.Status != "draining" {
+	if s.enrolledReceipt == nil || s.enrolledReceipt.Status != "draining" && s.enrolledReceipt.Status != "applying" {
 		return
 	}
 	s.enrolledReceipt.Status = "applied"

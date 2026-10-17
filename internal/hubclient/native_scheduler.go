@@ -628,6 +628,10 @@ func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken,
 	if nativeAuthorityLost(err) || lostAuthority {
 		s.mu.Lock()
 		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
+			if current.execution != nil && current.execution.hasWorkers() {
+				s.mu.Unlock()
+				return errors.Join(orchestrator.ErrSchedulingClaimLost, current.execution.unavailable(err))
+			}
 			current.source.client.slotFreed()
 			delete(s.claims, issueID)
 			delete(s.nativeClaims, issueID)

@@ -80,6 +80,7 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
+	WorkerLaunch    *NativeWorkerLaunch              `json:"worker_launch,omitempty"`
 	Pipeline        []gate.PipelineTiming            `json:"pipeline,omitempty"`
 	PipelineDropped int                              `json:"pipeline_dropped,omitempty"`
 	Validation      *gate.CommandResult              `json:"validation,omitempty"`
@@ -96,6 +97,20 @@ type NativeRuntimeObservation struct {
 	Landing         *NativeLandingReceipt            `json:"landing,omitempty"`
 	REST            *NativeRESTEvidence              `json:"rest,omitempty"`
 	GitHub          *NativeGitHubScope               `json:"github,omitempty"`
+}
+
+type NativeWorkerLaunch struct {
+	PID              int       `json:"pid"`
+	GroupID          int       `json:"pgid"`
+	ProcessStart     time.Time `json:"process_start"`
+	ExecutionVersion string    `json:"execution_version"`
+	ExecutionCommit  string    `json:"execution_commit"`
+	ExecutionSHA256  string    `json:"execution_sha256"`
+	ControlVersion   string    `json:"control_version"`
+	PolicyID         string    `json:"policy_id"`
+	PolicyRevision   string    `json:"policy_revision"`
+	Protocol         int       `json:"protocol"`
+	SelectedAt       time.Time `json:"selected_at"`
 }
 
 type NativeRecoveryDecision struct {
