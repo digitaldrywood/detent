@@ -46,7 +46,7 @@ func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time
 	if request.ExpectedBuildRevision != r.Update.Revision {
 		return runnerUpdateConflict(r.Revision, "The observed build revision has changed; read get_runner_update and use its current observation revision")
 	}
-	repair := request.Release && request.Version == r.Update.Running.Version && r.Update.Running.Source == "release" && !r.Update.Running.VerifiedRelease
+	repair := request.Release && strings.TrimPrefix(request.Version, "v") == strings.TrimPrefix(r.Update.Running.Version, "v") && r.Update.Running.Source == "release" && !r.Update.Running.VerifiedRelease
 	if request.Version != r.Update.AvailableVersion && !repair {
 		return runnerUpdateConflict(r.Revision, "The selected version differs from the observed available version; read get_runner_update and select its available version")
 	}
