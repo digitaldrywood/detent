@@ -105,6 +105,10 @@ type NativeReviewExecution interface {
 	RecordReview(context.Context, gate.ValidatorResult) error
 }
 
+type NativeReviewContinuationExecution interface {
+	PrepareReview(context.Context, tracker.NativeChangeReference) error
+}
+
 type SourceValidationExecution interface {
 	RecordSourceValidation(context.Context, gate.CommandResult) error
 }
@@ -293,6 +297,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	release := r.keepAwake(ctx)
 	defer release()
 	if req.Execution == nil {
+		if req.NativeReviewContinuation != nil {
+			return RunResult{}, fmt.Errorf("%w: native review execution is unavailable", ErrNativeRecoveryRequired)
+		}
 		return r.run(ctx, req)
 	}
 	if ctx == nil {
@@ -300,6 +307,16 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	}
 	guarded, stop, err := req.Execution.Guard(ctx)
 	if err != nil {
+		if continuation := req.NativeReviewContinuation; continuation != nil {
+			result := RunResult{FinalState: FinalStateCompleted, FinalMessage: continuation.FinalMessage}
+			if changes, ok := req.Execution.(ChangeExecution); ok {
+				result.NativeChange = changes.NativeChange()
+				if result.NativeChange != nil {
+					result.NativeChange.ImplementationReviewError = err.Error()
+				}
+			}
+			return result, &NativeImplementationReviewError{Err: err}
+		}
 		return RunResult{}, err
 	}
 	defer stop()
@@ -324,7 +341,18 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 	}
 	guarded = r.installDependencyReasonGenerator(guarded, req)
-	result, runErr := r.run(guarded, req)
+	var result RunResult
+	var runErr error
+	if continuation := req.NativeReviewContinuation; continuation != nil {
+		result = RunResult{FinalState: FinalStateCompleted, FinalMessage: continuation.FinalMessage}
+		if execution, ok := req.Execution.(NativeReviewContinuationExecution); ok {
+			runErr = execution.PrepareReview(guarded, continuation.Source)
+		} else {
+			runErr = fmt.Errorf("%w: native review continuation is unavailable", ErrNativeRecoveryRequired)
+		}
+	} else {
+		result, runErr = r.run(guarded, req)
+	}
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())
 	}
@@ -963,7 +991,10 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
-		return err
+		if err != nil {
+			return fmt.Errorf("%w: acceptance input: %w", ErrValidatorInfrastructure, err)
+		}
+		return nil
 	}
 	if routeErr != nil {
 		return routeErr
@@ -976,7 +1007,11 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	}
 	result, err := r.Validate(ctx, request)
 	if err != nil {
-		return err
+		var decisionErr *validatorDecisionError
+		if errors.As(err, &decisionErr) {
+			return err
+		}
+		return fmt.Errorf("%w: acceptance review: %w", ErrValidatorInfrastructure, err)
 	}
 	if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
 		result.Verdict = string(decision.Action)
@@ -984,7 +1019,10 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	} else {
 		result.Verdict = gate.ValidatorVerdictPass
 	}
-	return execution.RecordValidator(ctx, result)
+	if err := execution.RecordValidator(ctx, result); err != nil {
+		return fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, err)
+	}
+	return nil
 }
 
 func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, error) {
@@ -1039,6 +1077,11 @@ func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {
 }
 
 type NativeImplementationReviewError struct{ Err error }
+
+type validatorDecisionError struct{ Err error }
+
+func (e *validatorDecisionError) Error() string { return e.Err.Error() }
+func (e *validatorDecisionError) Unwrap() error { return e.Err }
 
 func (e *NativeImplementationReviewError) Error() string            { return e.Err.Error() }
 func (e *NativeImplementationReviewError) Unwrap() error            { return e.Err }
