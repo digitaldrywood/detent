@@ -113,6 +113,9 @@ func validCheckpointRef(ref string) bool {
 }
 
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+	if data.Runtime != nil && data.Runtime.WorkerLaunch != nil && data.Runtime.WorkerLaunch.PolicyID != data.PolicyID {
+		return nativeRejection(nativeInvalid("Execution worker policy differs from its lease"), "execution_validation", "data.runtime.worker_launch.policy_id")
+	}
 	if f := data.TerminalFailure; f != nil {
 		if eventType != "run.finished" || data.Sequence <= 0 || f.ObservedAt.IsZero() || data.Outcome == "succeeded" {
 			return nativeRejection(nativeInvalid("Execution failures require an ordered failed or interrupted terminal event"), "execution_validation", "data.terminal_failure")
@@ -323,6 +326,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		if previous.Runtime != nil && !reconnecting {
 			if data.Runtime == nil || previous.Runtime.LocalAttemptID != 0 && (data.Runtime.LocalAttemptID != previous.Runtime.LocalAttemptID || data.Runtime.Generation != previous.Runtime.Generation) || data.Runtime.HeartbeatAt.Before(previous.Runtime.HeartbeatAt) {
 				return false, false, nativeExecutionConflict("Runtime attribution or observation order changed during an attempt")
+			}
+			if selected := previous.Runtime.WorkerLaunch; selected != nil {
+				if data.Runtime.WorkerLaunch == nil {
+					return false, false, nativeExecutionConflict("Execution worker launch identity was removed")
+				}
+				before, after := *selected, *data.Runtime.WorkerLaunch
+				before.PID, before.GroupID, before.ProcessStart = after.PID, after.GroupID, after.ProcessStart
+				if before != after {
+					return false, false, nativeExecutionConflict("Execution worker release or policy changed during an attempt")
+				}
 			}
 		}
 		if event.Type == "run.observed" {

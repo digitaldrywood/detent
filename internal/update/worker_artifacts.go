@@ -7,10 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 )
+
+var ErrWorkerProtocolIncompatible = errors.New("execution worker protocol is incompatible with the controller")
+var ErrWorkerCriticalUpdate = errors.New("critical security release requires the existing exceptional update drain")
 
 type WorkerArtifacts struct {
 	service *Service
@@ -21,8 +25,24 @@ type WorkerArtifacts struct {
 }
 
 type WorkerArtifact struct {
+	binary  string
 	Status  Status
 	release func() error
+	retain  func() (*WorkerArtifact, error)
+}
+
+func (a *WorkerArtifact) Command(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	if a == nil || a.binary == "" {
+		return nil, errors.New("execution command requires a verified artifact")
+	}
+	return releaseCommand(ctx, a.binary, args...), nil
+}
+
+func (a *WorkerArtifact) Retain() (*WorkerArtifact, error) {
+	if a == nil || a.retain == nil {
+		return nil, errors.New("execution artifact is no longer owned")
+	}
+	return a.retain()
 }
 
 func NewWorkerArtifacts(service *Service, root string) (*WorkerArtifacts, error) {
@@ -40,6 +60,10 @@ func (a *WorkerArtifact) Release() error {
 }
 
 func (a *WorkerArtifacts) Acquire(ctx context.Context, preflight BinaryPreflight) (*WorkerArtifact, error) {
+	return a.AcquireLaunch(ctx, preflight, nil)
+}
+
+func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -53,6 +77,12 @@ func (a *WorkerArtifacts) Acquire(ctx context.Context, preflight BinaryPreflight
 	if err != nil || !found {
 		return nil, fmt.Errorf("resolve worker release: %w", errors.Join(err, errors.New("no eligible worker release")))
 	}
+	status := Status{CurrentVersion: a.service.cfg.CurrentVersion, LatestVersion: displayVersion(release.TagName), LatestTag: release.TagName, Critical: releaseCritical(release)}
+	if capture != nil {
+		if err := capture(status); err != nil {
+			return nil, fmt.Errorf("capture worker launch: %w", err)
+		}
+	}
 	if err := os.MkdirAll(a.root, 0o700); err != nil {
 		return nil, fmt.Errorf("create worker artifact cache: %w", err)
 	}
@@ -62,7 +92,6 @@ func (a *WorkerArtifacts) Acquire(ctx context.Context, preflight BinaryPreflight
 		return nil, fmt.Errorf("select worker platform: %w", err)
 	}
 	service.cfg.Client = &workerArchiveCache{ReleaseClient: service.cfg.Client, root: a.root, assets: assets}
-	status := Status{CurrentVersion: service.cfg.CurrentVersion, LatestVersion: displayVersion(release.TagName), LatestTag: release.TagName, Critical: releaseCritical(release)}
 	status, binary, mode, err := service.prepareReleaseBinary(ctx, status, release)
 	if err != nil {
 		return nil, fmt.Errorf("verify worker release: %w", err)
@@ -106,22 +135,40 @@ func (a *WorkerArtifacts) Acquire(ctx context.Context, preflight BinaryPreflight
 	status.VerifiedRelease = true
 	status.Action = ActionUpdated
 	a.latest = directory
+	return a.retainLocked(status, directory), nil
+}
+
+func (a *WorkerArtifacts) retainLocked(status Status, directory string) *WorkerArtifact {
 	a.live[directory]++
-	var once sync.Once
-	var releaseErr error
-	return &WorkerArtifact{Status: status, release: func() error {
-		once.Do(func() {
-			a.mu.Lock()
-			defer a.mu.Unlock()
+	released := false
+	return &WorkerArtifact{Status: status, binary: status.Binary, retain: func() (*WorkerArtifact, error) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if released || a.live[directory] == 0 {
+			return nil, errors.New("execution artifact is no longer owned")
+		}
+		data, err := os.ReadFile(status.Binary)
+		if err != nil {
+			return nil, err
+		}
+		digest := sha256.Sum256(data)
+		if hex.EncodeToString(digest[:]) != status.BinarySHA256 {
+			return nil, errors.New("retained execution artifact failed integrity verification")
+		}
+		return a.retainLocked(status, directory), nil
+	}, release: func() error {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if !released {
+			released = true
 			if a.live[directory] > 1 {
 				a.live[directory]--
-				return
+			} else {
+				delete(a.live, directory)
 			}
-			delete(a.live, directory)
-			releaseErr = a.pruneLocked()
-		})
-		return releaseErr
-	}}, nil
+		}
+		return a.pruneLocked()
+	}}
 }
 
 func (a *WorkerArtifacts) pruneLocked() error {
