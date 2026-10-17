@@ -16,6 +16,7 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 		ctx = context.Background()
 	}
 	opts = doctorOptions(opts)
+	opts.resolveProjects = resolveRunnerProjectsReadOnly
 	deps = deps.withDefaults()
 	report := doctorReport{}
 	selected := strings.TrimSpace(cfg.ProjectID)

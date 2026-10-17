@@ -242,6 +242,7 @@ type ProjectManager interface {
 type Option func(*options)
 
 type options struct {
+	resolveProjects   func(context.Context, globalconfig.Config) (globalconfig.Config, error)
 	resolvePath       func(string) (globalconfig.PathResolution, error)
 	read              func(string) (globalconfig.Config, error)
 	readProject       func(string, string) (globalconfig.Config, []string, error)

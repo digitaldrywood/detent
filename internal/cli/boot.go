@@ -77,7 +77,11 @@ func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, ho
 
 	cfg, err := opts.read(path)
 	if err == nil {
-		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if opts.resolveProjects != nil {
+			cfg, err = opts.resolveProjects(ctx, cfg)
+		} else {
+			cfg, err = resolveRunnerProjects(ctx, cfg)
+		}
 		if err != nil {
 			return BootConfig{}, err
 		}
