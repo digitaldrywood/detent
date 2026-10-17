@@ -1,9 +1,11 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,8 +32,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		lastApplied string
 		nextVersion string
 		nextWant    string
+		logged      bool
 	}{
-		{name: "restart declined", want: "uncertain", calls: 1},
+		{name: "restart declined", want: "uncertain", calls: 1, logged: true},
 		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},
@@ -48,7 +51,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		{name: "Hub follow refuses stale build", follow: true, stale: true, want: "refused"},
 		{name: "stale observed build", stale: true, want: "refused"},
 		{name: "missing restart owner", unavailable: true, want: "refused"},
-		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1},
+		{name: "private refusal redacted", applyError: errors.New("/private/credentials/token=secret"), want: "refused", calls: 1, logged: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now().UTC()
@@ -62,7 +65,8 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				updater.applyStatus.Action = ActionRefused
 			}
 			drains, restarts := 0, 0
-			config := SchedulerConfig{CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "scheduler.json"), Updater: updater, RunningBuild: running,
+			var logs bytes.Buffer
+			config := SchedulerConfig{Logger: slog.New(slog.NewTextHandler(&logs, nil)), CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "scheduler.json"), Updater: updater, RunningBuild: running,
 				LastAppliedVersion: test.lastApplied,
 				ReserveDrain:       func(context.Context) (func(), error) { drains++; return func() {}, nil }, RequestRestart: func(string) bool { restarts++; return test.restart }, Now: func() time.Time { return now }}
 			if test.unavailable {
@@ -94,6 +98,12 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			repeated := scheduler.EnrolledUpdate(t.Context(), running, &request)
 			if repeated.Receipt.Status != test.want || updater.applyCalls != test.calls || drains != test.calls {
 				t.Fatalf("repeat receipt=%+v calls/drains=%d/%d", repeated, updater.applyCalls, drains)
+			}
+			if got := strings.Count(logs.String(), "enrolled runner update not applied"); got != map[bool]int{true: 1}[test.logged] {
+				t.Fatalf("refusal logged %d times: %s", got, logs.String())
+			}
+			if test.logged && (!strings.Contains(logs.String(), "failure_reason=") || (test.applyError != nil) != strings.Contains(logs.String(), "error=")) {
+				t.Fatalf("refusal log lacks failure reason or error: %s", logs.String())
 			}
 			if test.calls == 0 {
 				now = now.Add(config.CheckInterval)

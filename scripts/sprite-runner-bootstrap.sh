@@ -355,10 +355,12 @@ else
     printf 'Docker %s\n' "$docker_status"
 fi
 
+install_lock="$HOME/.detent/install.lock"
 if [[ -n $source_root ]]; then
     printf 'Building Detent from %s\n' "$source_root"
+    if grep -qxF "binary=$bin_dir/detent" "$install_lock" 2>/dev/null; then rm -f "$install_lock"; fi
     (cd "$source_root" && GOBIN="$bin_dir" go install ./cmd/detent)
-elif [[ $(detent --version 2>/dev/null || true) != "$version" ]]; then
+elif [[ $(detent --version 2>/dev/null || true) != "$version" ]] || ! grep -qxF "binary=$bin_dir/detent" "$install_lock" 2>/dev/null; then
     printf 'Installing pinned Detent %s\n' "$version"
     release=${version#v}
     archive="detent_${release}_linux_${arch}.tar.gz"
@@ -369,6 +371,12 @@ elif [[ $(detent --version 2>/dev/null || true) != "$version" ]]; then
     verify "$archive" "$scratch/$checksums"
     tar -xzf "$scratch/$archive" -C "$scratch" detent
     install -m 755 "$scratch/detent" "$bin_dir/detent"
+    commit=$("$bin_dir/detent" --format pretty version | sed -n 's/^commit: //p' | head -n 1)
+    [[ $commit =~ ^[0-9a-f]{7,64}$ ]] || die "cannot read the installed Detent commit"
+    mkdir -p "${install_lock%/*}"
+    printf 'binary=%s\nversion=%s\ncommit=%s\ninstalled_at=%s\nsha256=%s\n' "$bin_dir/detent" "$release" "$commit" \
+        "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(sha256sum "$bin_dir/detent" | awk '{print $1}')" > "$install_lock.tmp"
+    mv "$install_lock.tmp" "$install_lock"
 fi
 detent --version
 
