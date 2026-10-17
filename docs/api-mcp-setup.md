@@ -144,6 +144,9 @@ including connections from Claude Desktop.
 
 An access token lasts one hour. Refresh tokens rotate on each use and expire
 30 days after issuance. Reusing a consumed refresh token revokes the grant.
+Rotation replaces the grant's single stored refresh credential. Sealed token
+identity and expiry preserve replay detection without retaining token history;
+expired tokens are refused without revoking a newer valid credential.
 Revoking a grant makes its next MCP request return 401, including requests
 using an existing `Mcp-Session-Id`.
 
