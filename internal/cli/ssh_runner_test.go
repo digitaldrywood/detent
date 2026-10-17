@@ -463,6 +463,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure .
 		publish("1.0.0")
 		run.artifacts = artifacts
 		request.WorkerHost = "local"
+		t.Setenv("TMPDIR", root)
 		t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("DETENT_SSH_TEST_HELPER", "worker")
 	}

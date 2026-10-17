@@ -195,6 +195,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 				updateScheduler, err = detentupdate.NewScheduler(detentupdate.SchedulerConfig{
 					CheckInterval: 2 * time.Second, StatePath: filepath.Join(root, "update.json"), RunningBuild: updateReport.Running,
 					Now:            func() time.Time { return now },
+					ReserveIdle:    func(context.Context) (func(), bool) { return func() {}, true },
 					ReserveDrain:   func(context.Context) (func(), error) { return func() {}, nil },
 					RequestRestart: func(string) bool { updateRestarts++; return true },
 					Updater: heartbeatUpdater{apply: func(_ context.Context, options detentupdate.ApplyOptions) (detentupdate.Status, error) {
