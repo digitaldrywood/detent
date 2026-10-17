@@ -373,6 +373,7 @@ if [[ -z $token ]] && [[ ! -f $config_path || ! -f $identity_path ]]; then
 fi
 
 legacy_workspace_root=$HOME/detent-runner
+registered_now=
 local_root=
 if command -v findmnt >/dev/null; then
     read -r local_fstype local_mount < <(findmnt -n -o FSTYPE,TARGET --mountpoint /tmp 2>/dev/null || true) || true
@@ -397,7 +398,7 @@ done
 if [[ -n $local_root ]]; then
     export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}
     export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$local_root/cache}
-    if [[ -z ${GOMODCACHE:-} ]] && ! grep -Eqs '^(GOMODCACHE|GOPATH)=' "${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}"; then
+    if [[ -z ${GOMODCACHE:-}${GOPATH:-} ]] && ! grep -Eqs '^(GOMODCACHE|GOPATH)=' "${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}"; then
         export GOMODCACHE=$local_root/cache/go-mod
     fi
     if [[ -z ${npm_config_cache:-}${NPM_CONFIG_CACHE:-} && $(npm config get cache 2>/dev/null || true) == "$HOME/.npm" ]]; then
@@ -661,6 +662,7 @@ if [[ -n $token ]]; then
     # A valid stored credential reuses the same runner; the token is only redeemed when it is not.
     DETENT_RUNNER_ENROLLMENT_TOKEN=$token detent hub runner register "${register_args[@]}" --config "$config_path" --workspace-root "$workspace_root"
     unset token
+    registered_now=1
 else
     printf 'Reusing the registered runner in %s\n' "$config_path"
 fi
@@ -714,7 +716,9 @@ console.log(`Sprite pressure capacity: io=${config.getIn(['global', 'io', 'degra
 NODE
 )
 
-resolved_roots=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$workspace_root" "$requested_workspace_root" "$HOME" <<'NODE'
+resolve_base=$workspace_root
+if [[ -z $requested_workspace_root && -z $registered_now ]]; then resolve_base=$legacy_workspace_root; fi
+resolved_roots=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$identity_path" "$resolve_base" "$requested_workspace_root" "$HOME" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 try {

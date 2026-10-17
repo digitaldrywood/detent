@@ -484,6 +484,16 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertNotIn("GOMODCACHE", exported)
         self.assertNotIn("npm_config_cache", exported)
         self.assertIn("XDG_CACHE_HOME", exported)
+        go_env.unlink()
+        self.env["GOPATH"] = str(self.root / "operator-gopath")
+        gopath = self.run_bootstrap(enrollment="")
+        del self.env["GOPATH"]
+        self.assertEqual(gopath.returncode, 0, gopath.stderr)
+        self.assertNotIn("GOMODCACHE", [line.split()[1].split("=")[0] for line in launcher.read_text().splitlines() if line.startswith("export ")])
+        (self.home / ".config/detent-runner/global.yaml").write_text("workspace_root: custom-relative\n")
+        relative = self.run_bootstrap(enrollment="")
+        self.assertEqual(relative.returncode, 0, relative.stderr)
+        self.assertIn(f"Managed checkout root: {self.home / 'detent-runner' / 'custom-relative'}\n", relative.stdout)
         config = self.home / ".config/detent-runner/global.yaml"
         for name, root, want in (
             ("legacy default", self.home / "detent-runner", local / "work"),
