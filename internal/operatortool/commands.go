@@ -2,9 +2,11 @@ package operatortool
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -24,7 +26,7 @@ const (
 // it is independent of JSON-RPC request IDs and is never an approval token.
 func CommandCatalog() []Definition {
 	return append(append(append([]Definition{
-		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty, `"identifier","target_state"`, true),
+		commandDefinition(MoveItem, "Request an item's configured workflow transition through the application owner. Read get_native_project for native states and allowed transitions; native requests require expected_revision. Optional reason_detail is plain text recorded on the transition, for example why an item moved to Blocked and what a human must do. Authorized transitions execute directly, including terminal states.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"target_state":{"type":"string","minLength":1,"maxLength":256},"reason_detail":{"type":"string","maxLength":`+strconv.Itoa(workpad.MaxFinalSummaryBytes)+`},`+workRevisionProperty, `"identifier","target_state"`, true),
 		commandDefinition(SetPriority, "Set an item's configured priority directly through the dashboard command.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"priority":{"type":"string","minLength":1,"maxLength":256},`+workRevisionProperty, `"identifier","priority"`, false),
 		commandDefinition(StopRun, "Stop the exact active run and route its item. Executes directly with current write authority.", `"identifier":{"type":"string","minLength":1,"maxLength":256},"destination":{"type":"string","enum":["Blocked","Backlog","Cancelled","Todo"]},"priority":{"type":"integer","minimum":1,"maximum":4},"reason":{"type":"string","maxLength":280}`, `"identifier","destination"`, true),
 		fileIssueDefinition(),
@@ -113,6 +115,7 @@ type MoveItemArguments struct {
 	RequestID        string `json:"request_id,omitempty"`
 	Identifier       string `json:"identifier"`
 	TargetState      string `json:"target_state"`
+	ReasonDetail     string `json:"reason_detail,omitempty"`
 	ExpectedRevision int64  `json:"expected_revision,string"`
 }
 
@@ -141,6 +144,10 @@ func DecodeNativeMoveItem(raw json.RawMessage) (MoveItemArguments, error) {
 		if strings.TrimSpace(value) == "" {
 			return request, invalidArgument(field, "must not be blank")
 		}
+	}
+	request.ReasonDetail = strings.TrimSpace(request.ReasonDetail)
+	if _, ok := workpad.LastStatusBlock(request.ReasonDetail); ok {
+		return request, invalidArgument("reason_detail", "must be plain text without a status block")
 	}
 	return request, nil
 }
