@@ -127,11 +127,11 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
 	stateValid := err == nil && (loadedState.EnrolledReceipt == nil || !loadedState.EnrolledReceipt.AdvancedFollowHubRelease())
-	if receipt := loadedState.EnrolledReceipt; stateValid && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
+	if receipt := loadedState.EnrolledReceipt; stateValid && receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && !receipt.ExecutionReady() && (receipt.Running == nil || !cfg.RunningBuild.VerifiedRelease) {
 		switch {
 		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
-		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
+		case receipt.Applied != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.Applied)), receipt.VerifiedTarget != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.VerifiedTarget)):
 			receipt.FailureReason = "Update did not restart into the verified build"
 		}
 		if receipt.FailureReason != "" {

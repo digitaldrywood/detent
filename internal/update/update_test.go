@@ -899,14 +899,99 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if strings.TrimSpace(string(raw)) != "updated" {
 				t.Fatalf("updated binary = %q, want updated", raw)
 			}
-			evidenceOptions := DetectionOptions{CurrentVersion: version, ExecutablePath: binary, GOOS: "linux", HomeDir: legacyHome, Env: installEnv}
-			if !InstalledReleaseVerified(evidenceOptions, testUpdatedCommit, status.BinarySHA256) || InstalledReleaseVerified(evidenceOptions, testPreviousCommit, status.BinarySHA256) || InstalledReleaseVerified(evidenceOptions, testUpdatedCommit, strings.Repeat("0", 64)) {
+			evidenceOptions := DetectionOptions{CurrentVersion: version, ExecutablePath: binary, GOOS: "linux", GOARCH: "amd64", HomeDir: legacyHome, Env: installEnv}
+			if !InstalledReleaseVerified(t.Context(), evidenceOptions, testUpdatedCommit, status.BinarySHA256) || InstalledReleaseVerified(t.Context(), evidenceOptions, testPreviousCommit, status.BinarySHA256) || InstalledReleaseVerified(t.Context(), evidenceOptions, testUpdatedCommit, strings.Repeat("0", 64)) {
 				t.Fatal("install evidence did not bind the verified binary and commit")
 			}
 			wrongVersion := evidenceOptions
 			wrongVersion.CurrentVersion = "9.9.9"
-			if InstalledReleaseVerified(wrongVersion, testUpdatedCommit, status.BinarySHA256) {
+			if InstalledReleaseVerified(t.Context(), wrongVersion, testUpdatedCommit, status.BinarySHA256) {
 				t.Fatal("install evidence accepted a different version")
+			}
+			if test.name == "same version CLI repair" {
+				for _, platform := range []string{"darwin", "windows"} {
+					t.Run("cached evidence supports "+platform, func(t *testing.T) {
+						options := evidenceOptions
+						options.GOOS = platform
+						lock := filepath.Join(t.TempDir(), "install.lock")
+						options.Env = map[string]string{"DETENT_INSTALL_LOCK": lock}
+						cachedArchive := archive
+						if platform == "windows" {
+							cachedArchive = detentWindowsUpdateArchive(t, "updated")
+						}
+						name := archiveAssetNames("v"+version, platform, "amd64")[0]
+						archiveSum := sha256.Sum256(cachedArchive)
+						checksums := fmt.Appendf(nil, "%x  %s\n%x  %s\n", archiveSum, name, provenanceSum, provenanceAssetName)
+						signature := testMinisignSignature(t, privateKey, keyID, checksums, "detent checksums v"+version)
+						proof := releaseEvidence{Schema: 1, ArchiveName: name, Checksums: checksums, Signature: signature, Provenance: provenanceBytes}
+						key, err := writeReleaseEvidence(lock, proof, cachedArchive)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := writeInstallLock(lock, binary, version, testUpdatedCommit, key, time.Now()); err != nil {
+							t.Fatal(err)
+						}
+						if !InstalledReleaseVerified(t.Context(), options, testUpdatedCommit, status.BinarySHA256) {
+							t.Fatal("trusted platform artifact was not verified")
+						}
+						options.GOARCH = "arm64"
+						if InstalledReleaseVerified(t.Context(), options, testUpdatedCommit, status.BinarySHA256) {
+							t.Fatal("different platform accepted cached evidence")
+						}
+					})
+				}
+				for _, kind := range []string{"signature", "untrusted key", "checksums", "provenance", "archive", "platform", "marker only", "missing cache", "oversized header"} {
+					t.Run("cached evidence refuses "+kind, func(t *testing.T) {
+						forgedLock := filepath.Join(t.TempDir(), "install.lock")
+						evidence := releaseEvidence{Schema: 1, ArchiveName: archiveName, Checksums: []byte(checksums), Signature: append([]byte(nil), signature...), Provenance: append([]byte(nil), provenanceBytes...)}
+						cachedArchive := archive
+						options := evidenceOptions
+						options.Env = map[string]string{"DETENT_INSTALL_LOCK": forgedLock}
+						switch kind {
+						case "signature":
+							evidence.Signature[0] ^= 1
+						case "untrusted key":
+							_, otherKey, err := ed25519.GenerateKey(nil)
+							if err != nil {
+								t.Fatal(err)
+							}
+							evidence.Signature = testMinisignSignature(t, otherKey, keyID, evidence.Checksums, "detent checksums v"+version)
+						case "checksums":
+							evidence.Checksums = append(evidence.Checksums, 'x')
+						case "provenance":
+							evidence.Provenance = []byte("untrusted provenance")
+						case "archive":
+							cachedArchive = detentUpdateArchive(t, "unsigned replacement")
+						case "platform":
+							options.GOARCH = "arm64"
+						}
+						key, err := writeReleaseEvidence(forgedLock, evidence, cachedArchive)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := writeInstallLock(forgedLock, binary, version, testUpdatedCommit, key, time.Now()); err != nil {
+							t.Fatal(err)
+						}
+						switch kind {
+						case "marker only":
+							raw := fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\nsha256=%s\n", binary, version, testUpdatedCommit, status.BinarySHA256)
+							if err := os.WriteFile(forgedLock, []byte(raw), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						case "missing cache":
+							if err := os.Remove(filepath.Join(forgedLock+".releases", key)); err != nil {
+								t.Fatal(err)
+							}
+						case "oversized header":
+							if err := os.WriteFile(filepath.Join(forgedLock+".releases", key), []byte{255, 255, 255, 255}, 0o600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if InstalledReleaseVerified(t.Context(), options, testUpdatedCommit, status.BinarySHA256) {
+							t.Fatalf("%s cached evidence granted verification", kind)
+						}
+					})
+				}
 			}
 			service.cfg.CurrentVersion = version
 			service.cfg.CurrentCommit = testUpdatedCommit
@@ -959,7 +1044,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				t.Fatalf("other installation receipt = %q, error = %v", legacyRaw, legacyErr)
 			}
 			metadata, ok := readInstallLock(lockPath)
-			if !ok || metadata.commit != testUpdatedCommit || metadata.sha256 != status.BinarySHA256 {
+			if !ok || metadata.commit != testUpdatedCommit || metadata.evidence != hex.EncodeToString(archiveSum[:]) {
 				t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
 			}
 		})

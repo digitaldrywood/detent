@@ -135,10 +135,11 @@ func (a *WorkerArtifacts) PrepareLaunch(ctx context.Context, preflight BinaryPre
 	}
 	cache := &workerArchiveCache{ReleaseClient: service.cfg.Client, root: a.root, assets: assets}
 	service.cfg.Client = cache
-	status, binary, mode, err := service.prepareReleaseBinary(ctx, status, release)
+	status, prepared, err := service.prepareReleaseBinary(ctx, status, release)
 	if err != nil {
 		return nil, fmt.Errorf("verify worker release: %w", err)
 	}
+	binary, mode := prepared.binary, prepared.mode
 	staging, err := os.MkdirTemp(a.root, ".install-")
 	if err != nil {
 		return nil, fmt.Errorf("stage worker artifact: %w", err)

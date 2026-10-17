@@ -163,7 +163,7 @@ func TestHubRuntimeUpdateSchedule(t *testing.T) {
 			if test.isolated {
 				cfg.Isolated = &IsolatedRuntimeInfo{}
 			}
-			scheduler, err := newRuntimeUpdateScheduler(cfg, nil,
+			scheduler, err := newRuntimeUpdateScheduler(t.Context(), cfg, nil,
 				func(context.Context) (func(), bool) { return func() {}, true },
 				func(context.Context) (func(), error) { return func() {}, nil },
 			)

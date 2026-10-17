@@ -410,6 +410,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		return err
 	}
 	updateScheduler, err := newRuntimeUpdateScheduler(
+		ctx,
 		cfg,
 		logger,
 		func(ctx context.Context) (func(), bool) {
