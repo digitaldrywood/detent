@@ -59,8 +59,10 @@ func refreshProductivitySummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	}
 	completedKind, completedID, completedName := "unknown", "", ""
 	if state == nativeShippedState {
-		err = tx.QueryRowContext(ctx, `SELECT 'runner',r.id,r.display_name FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id JOIN lease_runners lr ON lr.lease_id=l.lease_id JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id AND r.machine_id=l.machine_id
- WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND julianday(a.started_at)<=julianday(?) ORDER BY julianday(a.started_at) DESC,a.id DESC LIMIT 1`, scope.organization, scope.project, id, closed).Scan(&completedKind, &completedID, &completedName)
+		err = tx.QueryRowContext(ctx, `WITH final_attempt AS (
+ SELECT organization_id,lease_id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND julianday(started_at)<=julianday(?) ORDER BY julianday(started_at) DESC,id DESC LIMIT 1
+ ) SELECT CASE WHEN r.id IS NULL THEN 'unknown' ELSE 'runner' END,coalesce(r.id,''),coalesce(r.display_name,'')
+ FROM final_attempt a LEFT JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id AND r.machine_id=l.machine_id`, scope.organization, scope.project, id, closed).Scan(&completedKind, &completedID, &completedName)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
