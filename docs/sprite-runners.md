@@ -204,6 +204,35 @@ runner store when restoring a checkpoint to preserve successful setup evidence.
 When changing Makefile tool pins or dependency lockfiles, also change the setup
 script so existing runners invalidate their successful setup hash.
 
+Before enrollment, the bootstrap records the Sprite's setup revision in
+`~/.local/lib/detent-sprite-runner/setup-manifest.json`: platform, bootstrap
+release, pinned toolchain, and the allowlisted native caches (`go-build`,
+`go-mod`, `npm`). It never contains provider logins, GitHub credentials, the
+runner identity, or job data. Tools found outside the managed set in
+`~/.local/bin` or the runner's npm prefix are reported as customizations the
+setup cannot reproduce; move them into `hooks.runner_setup`. The manifest is
+install output only: the runner never reads it, so jobs do not depend on it.
+Native caches are optional and never copied between Sprites. A missing cache is
+rebuilt by its toolchain on demand. The bootstrap never deletes cache contents:
+a default npm cache that lost its marker is repaired with `npm cache verify`,
+and a Go cache without its marker is reported because Go verifies entries and
+rebuilds invalid ones on use. Explicit operator cache overrides stay unmanaged.
+After resolving symlinks and parent segments, the bootstrap refuses a cache
+path that overlaps provider logins (including `GH_CONFIG_DIR`, `CODEX_HOME`,
+`CLAUDE_CONFIG_DIR` and `DOCKER_CONFIG`), credentials, the runner
+configuration or identity file, or contains the requested or configured workspace root, and leaves a cache
+inside the workspace root unmanaged. The manifest records exact APT package revisions and the
+distribution, so a fresh Sprite with different repository candidates does not
+match the revision.
+
+To reproduce a revision on a fresh Sprite without the original, pass its
+manifest: `bash sprite-runner-bootstrap.sh --version vX.Y.Z --setup-manifest
+setup-manifest.json`. The bootstrap stops before enrollment if the platform,
+release, toolchain, or cache allowlist differ, or if either side has
+customizations it cannot reproduce. Each new Sprite still signs in once in its
+own console (for example `codex login --device-auth`, `gh auth login` and
+`gh auth setup-git`); provider logins are never copied.
+
 A failure prevents that project's claims and dispatch on that Sprite until
 setup succeeds. The runner reports an instance failure in its logs and the
 project's local-check API report; no issue failure allowance is consumed.
@@ -487,6 +516,8 @@ inspect the runner log if it exits. The bootstrap checkpoint is an installation
 checkpoint. Save the ready checkpoint only after the real task below completes. Restoring with
 `sprite-env checkpoints restore CHECKPOINT_ID` rewinds the same Sprite's files,
 including credentials; it does not renew credentials that have since expired.
+This checkpoint holds the runner identity and logins, so it is for recovering
+this Sprite only, never a reusable setup for another Sprite.
 
 Check **Settings > Runners** for its connection, provider, and project readiness.
 Resolve any remaining policy or authentication requirements before testing wake.
