@@ -575,7 +575,17 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
-    listSavedViews: (signal) => send(Schema.Struct({ views: Schema.Array(SavedWorkView) }), "GET", `${options.origin}${options.apiBase}/work-views`, undefined, signal),
+    listSavedViews: async (signal) => {
+      const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
+      const views: SavedView[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await send(schema, "GET", url(`${options.apiBase}/work-views`, { cursor }), undefined, signal);
+        views.push(...page.views);
+        cursor = page.next_cursor;
+      } while (cursor !== undefined);
+      return { views: views.toSorted((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) };
+    },
     getSavedView: (id, signal) => send(SavedWorkView, "GET", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}`, undefined, signal),
     saveView: (input, id) => send(SavedWorkView, id === undefined ? "POST" : "PUT", `${options.origin}${options.apiBase}/work-views${id === undefined ? "" : `/${encodeURIComponent(id)}`}`, input, undefined, true),
     favoriteView: (id, favorite) => send(SavedWorkView, "PUT", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}/favorite`, { favorite }, undefined, true),
