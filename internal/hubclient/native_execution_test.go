@@ -831,3 +831,60 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
+	t.Parallel()
+	for _, phase := range []string{"waiting_cache_admission", "waiting_cache_consumers"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Cache wait recovery")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			ctx := t.Context()
+			if err := execution.Start(ctx, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: time.Now()}
+			if err := execution.ObserveRuntime(ctx, observation); err != nil {
+				t.Fatal(err)
+			}
+			before := execution.data
+			original := h.native.client.httpClient.Transport
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if !strings.HasSuffix(request.URL.Path, "/events") {
+					return original.RoundTrip(request)
+				}
+				return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"invalid_request"}`)), Request: request}, nil
+			})
+			observation.Phase = phase
+			if err := execution.ObserveRuntime(ctx, observation); err == nil {
+				t.Fatal("legacy Hub accepted cache wait")
+			}
+			if execution.pending == nil {
+				t.Fatal("rejected observation was not retained")
+			}
+			pending := *execution.pending
+			h.native.client.httpClient.Transport = original
+			observation.Phase = "implementation"
+			if err := execution.ObserveRuntime(ctx, observation); err != nil {
+				t.Fatalf("pending cache wait prevented resumed execution: %v", err)
+			}
+			observation.Phase = "completed"
+			if err := execution.ObserveRuntime(ctx, observation); err != nil {
+				t.Fatal(err)
+			}
+			if execution.pending != nil || execution.data.Sequence != pending.Data.Sequence+2 || execution.data.AttemptID != before.AttemptID || execution.data.LeaseID != before.LeaseID || execution.data.Runtime.Phase != "completed" {
+				t.Fatal("cache wait recovery lost ordered runtime evidence or ownership")
+			}
+			if len(execution.data.Runtime.Phases) != 4 || execution.data.Runtime.Phases[1].Name != phase {
+				t.Fatal("cache wait interval was lost")
+			}
+			observation.Phase = "waiting_cache_unknown"
+			var apiErr *APIError
+			if err := execution.ObserveRuntime(ctx, observation); !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
+				t.Fatalf("unknown runtime phase was not rejected: %v", err)
+			}
+		})
+	}
+}
