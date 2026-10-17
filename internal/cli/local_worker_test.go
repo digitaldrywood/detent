@@ -399,6 +399,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	run.artifacts = artifacts
 	policyUpdates := make(chan configwatcher.Update)
 	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
 	path := filepath.Join(root, "WORKFLOW.md")
 	if err := os.WriteFile(path, []byte(localWorkerWorkflow), 0o600); err != nil {
 		t.Fatal(err)
