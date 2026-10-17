@@ -2028,6 +2028,11 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 	}{
 		{name: "publication only is complete", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
 		{name: "pending publish is complete", message: report("status: blocked\nreason_code: awaiting_host_publish\nblockers: []\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "tool-directed host wait is complete", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Current published version needs host review\nhuman_action: null\n"), wantStatus: "complete"},
+		{name: "unclassified tool failure stays blocked", message: report("status: blocked\nreason_code: instance_limitation\nblockers:\n  - ref: instance:tool\n    reason: Current published version needs host review\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "instance_limitation"},
+		{name: "host wait cannot clear another instance failure", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:network\n    reason: Network unavailable\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "host wait cannot clear mixed blockers", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Needs review\n  - ref: \"#42\"\n    reason: Product dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
+		{name: "host wait cannot clear human action", message: report("status: blocked\nreason_code: host_publication_pending\nblockers:\n  - ref: instance:tool\n    reason: Needs review\nhuman_action: Approve the migration\n"), wantStatus: "blocked", wantReason: "host_publication_pending"},
 		{name: "post-publication acceptance stays blocked", message: report("status: blocked\nreason_code: post_publish_acceptance_pending\nblockers: []\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "post_publish_acceptance_pending"},
 		{name: "publication with a blocker stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers:\n  - ref: '#42'\n    reason: Await dependency\nhuman_action: null\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
 		{name: "publication with human action stays blocked", message: report("status: blocked\nreason_code: publication_blocked\nblockers: []\nhuman_action: Approve the release\n"), wantStatus: "blocked", wantReason: "publication_blocked"},
@@ -2036,7 +2041,7 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := NativeDispositionFromMessage(tt.message)
-			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason {
+			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
 				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
 			}
 		})
