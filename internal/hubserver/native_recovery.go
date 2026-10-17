@@ -210,7 +210,7 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 		if selection.Digest != "" && selection.Digest != sha || selection.Offset >= int64(len(content)) {
 			return tracker.NativeRecovery{}, nativeConflict(0)
 		}
-		end := min(selection.Offset+(256<<10), int64(len(content)))
+		end := min(selection.Offset+(64<<10), int64(len(content)))
 		page.Section, page.RecordID, page.VersionID = section, id, version
 		page.Offset, page.TotalBytes, page.SHA256, page.Data = selection.Offset, int64(len(content)), sha, content[selection.Offset:end]
 		if end == int64(len(content)) {

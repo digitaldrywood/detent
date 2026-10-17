@@ -1631,7 +1631,7 @@ for their decision through those owners and follow their cursors.
 
 `GET /work-items/{item}?view=recovery&limit=1` explicitly reads retained evidence,
 one record fragment per response. `continuation` identifies the scoped item,
-`section`, `record_id`, original `version_id`, base64 `data` (at most 256 KiB
+`section`, `record_id`, original `version_id`, base64 `data` (at most 64 KiB
 decoded), `offset`, `total_bytes`, record `sha256` and `next_cursor`. The cursor
 traverses reviews, checks, Change discussion, issue discussion, attempts,
 versions and Change metadata. Each read retrieves one record, not the whole
@@ -1639,6 +1639,12 @@ history; large records continue before advancing. `section: complete` ends the
 traversal. Cursors retain the existing credential/query binding, pin the current
 Change version and refuse an edited record during fragmentation. Clients consume
 individual records; candidate hydration never reassembles the complete history.
+The authenticated worker `work_item` tool exposes this continuation with
+`project_id`, canonical `reference` and `view: "recovery"`. Repeat with the
+returned `data.next_cursor` as `cursor` until `data.section` is `complete`.
+The full ordinary review, command output, frozen historical policy and retained
+discussion remain available through this selector when other reads return
+excerpts or refuse a record that exceeds their result bound.
 
 Plain recovery reads retain their original contract and response-size refusal.
 Older Hubs ignore the projection header: a new runner still reads small recovery

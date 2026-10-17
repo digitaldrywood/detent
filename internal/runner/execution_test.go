@@ -1212,7 +1212,7 @@ func TestNativeRecoveryPromptIncludesContext(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.bounded && (!strings.Contains(prompt, "Before acting on the omitted") || !strings.Contains(prompt, "following every returned section cursor") || !strings.Contains(prompt, "scoped recovery evidence")) {
+			if test.bounded && (!strings.Contains(prompt, "Before acting on the omitted") || !strings.Contains(prompt, "following every returned section cursor") || !strings.Contains(prompt, "scoped recovery evidence") || !strings.Contains(prompt, "call work_item") || !strings.Contains(prompt, "view=recovery")) {
 				t.Fatal("bounded recovery was not wired to scoped detail consumers")
 			}
 			if len(prompt) > 16384 {
