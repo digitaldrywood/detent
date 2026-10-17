@@ -288,6 +288,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, sprite.redemption.Hostname, sprite.enrollment.ID, now, now); err != nil {
 						t.Fatal(err)
 					}
+					setSpriteMemberChecks(t, f, spriteMemberReady)
 				}
 			}
 			var items []tracker.NativeIssue

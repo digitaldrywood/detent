@@ -3,22 +3,25 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type projectSpriteAllocation struct {
-	ProjectID      tracker.ProjectID `json:"project_id"`
-	Managed        bool              `json:"managed"`
-	DesiredCount   int               `json:"desired_count"`
-	AllocatedCount int               `json:"allocated_count"`
-	Shortfall      int               `json:"shortfall"`
-	Revision       tracker.Revision  `json:"revision,string"`
+	ProjectID         tracker.ProjectID `json:"project_id"`
+	Managed           bool              `json:"managed"`
+	DesiredCount      int               `json:"desired_count"`
+	AllocatedCount    int               `json:"allocated_count"`
+	Shortfall         int               `json:"shortfall"`
+	ProvisionFailures int               `json:"provision_failures"`
+	Revision          tracker.Revision  `json:"revision,string"`
 }
 
 type projectSpriteAllocationRequest struct {
@@ -29,7 +32,7 @@ type projectSpriteAllocationRequest struct {
 
 func readProjectSpriteAllocation(ctx context.Context, q nativeQueryer, scope nativeScope) (projectSpriteAllocation, error) {
 	result := projectSpriteAllocation{ProjectID: scope.project}
-	err := q.QueryRowContext(ctx, `SELECT desired_count,revision,(SELECT count(*) FROM organization_sprite_members m WHERE m.organization_id=a.organization_id AND m.allocation_project_id=a.project_id AND m.state<>'deleted') FROM project_sprite_allocations a WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&result.DesiredCount, &result.Revision, &result.AllocatedCount)
+	err := q.QueryRowContext(ctx, `SELECT desired_count,revision,provision_failures,(SELECT count(*) FROM organization_sprite_members m WHERE m.organization_id=a.organization_id AND m.allocation_project_id=a.project_id AND m.state<>'deleted') FROM project_sprite_allocations a WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&result.DesiredCount, &result.Revision, &result.ProvisionFailures, &result.AllocatedCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, nil
 	}
@@ -90,7 +93,7 @@ func updateProjectSpriteAllocation(request projectSpriteAllocationRequest) func(
 		if scope.credential.HostedPrincipal != "" {
 			actor = scope.credential.HostedPrincipal
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_allocations(organization_id,project_id,desired_count,revision,requested_at,configured_by) VALUES(?,?,?,1,?,?) ON CONFLICT(organization_id,project_id) DO UPDATE SET desired_count=excluded.desired_count,revision=project_sprite_allocations.revision+1,requested_at=CASE WHEN ? >= project_sprite_allocations.desired_count THEN excluded.requested_at ELSE project_sprite_allocations.requested_at END,configured_by=excluded.configured_by`, scope.organization, scope.project, request.DesiredCount, formatHubTime(now), actor, current.AllocatedCount)
+		_, err = tx.ExecContext(ctx, `INSERT INTO project_sprite_allocations(organization_id,project_id,desired_count,revision,requested_at,configured_by) VALUES(?,?,?,1,?,?) ON CONFLICT(organization_id,project_id) DO UPDATE SET desired_count=excluded.desired_count,revision=project_sprite_allocations.revision+1,provision_failures=0,requested_at=CASE WHEN ? >= project_sprite_allocations.desired_count THEN excluded.requested_at ELSE project_sprite_allocations.requested_at END,configured_by=excluded.configured_by`, scope.organization, scope.project, request.DesiredCount, formatHubTime(now), actor, current.AllocatedCount)
 		if err != nil {
 			return nil, err
 		}
@@ -115,10 +118,65 @@ func readSpriteAllocationProjects(ctx context.Context, q nativeQueryer, scope na
 	return projects, rows.Err()
 }
 
+const spriteProvisionAttempts = 3
+
+var errSpriteReservationStale = errors.New("project Sprite count changed before this member was ready")
+
 func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID) (bool, error) {
-	var allowed bool
-	err := q.QueryRowContext(ctx, `SELECT CASE WHEN EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?) THEN EXISTS(SELECT 1 FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id WHERE m.organization_id=? AND m.allocation_project_id=? AND m.state='enrolled' AND a.desired_count>0 AND r.machine_id=?) ELSE NOT EXISTS(SELECT 1 FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?) END`, scope.organization, scope.project, scope.organization, scope.project, machine, scope.organization, machine).Scan(&allowed)
-	return allowed, err
+	var managed bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM project_sprite_allocations WHERE organization_id=? AND project_id=?)`, scope.organization, scope.project).Scan(&managed); err != nil {
+		return false, err
+	}
+	if !managed {
+		var member bool
+		err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?)`, scope.organization, machine).Scan(&member)
+		return !member, err
+	}
+	var raw sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT json_extract(r.local_checks_json,?) FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id WHERE m.organization_id=? AND m.allocation_project_id=? AND m.state='enrolled' AND r.state='active' AND a.desired_count>0 AND r.machine_id=?`, "$."+jsonPathKey(string(scope.project)), scope.organization, scope.project, machine).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	checks, err := decodeSpriteMemberChecks(raw)
+	return checks != nil && checks.Passed(), err
+}
+
+func decodeSpriteMemberChecks(raw sql.NullString) (*runnerauth.LocalChecks, error) {
+	if !raw.Valid || raw.String == "" {
+		return nil, nil
+	}
+	var checks runnerauth.LocalChecks
+	if err := json.Unmarshal([]byte(raw.String), &checks); err != nil {
+		return nil, err
+	}
+	return &checks, nil
+}
+
+func spriteMemberWanted(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, name string) (bool, error) {
+	var project tracker.ProjectID
+	var state, created string
+	if err := q.QueryRowContext(ctx, `SELECT allocation_project_id,state,created_at FROM organization_sprite_members WHERE organization_id=? AND name=?`, organization, name).Scan(&project, &state, &created); err != nil {
+		return false, err
+	}
+	if state != "bootstrapping" && state != "enrolled" {
+		return false, nil
+	}
+	if project == "" {
+		return true, nil
+	}
+	var desired, ceiling, others, ahead int
+	err := q.QueryRowContext(ctx, `SELECT COALESCE((SELECT a.desired_count FROM project_sprite_allocations a JOIN projects p ON p.id=a.project_id AND p.organization_id=a.organization_id AND p.deleted_at IS NULL WHERE a.organization_id=? AND a.project_id=?),0),
+COALESCE((SELECT max_runners FROM organization_sprite_pools WHERE organization_id=?),0),
+(SELECT count(*) FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id<>? AND state NOT IN ('deleted','deleting')),
+(SELECT count(*) FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id=? AND name<>? AND (state='enrolled' OR state='bootstrapping' AND (created_at<? OR created_at=? AND name<?)))`,
+		organization, project, organization, organization, project, organization, project, name, created, created, name).Scan(&desired, &ceiling, &others, &ahead)
+	if err != nil {
+		return false, err
+	}
+	return ahead < min(desired, max(ceiling-others, 0)), nil
 }
 
 func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeScope, count int, now time.Time) (int, bool, error) {

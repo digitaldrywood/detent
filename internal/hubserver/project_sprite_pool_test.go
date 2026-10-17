@@ -109,6 +109,7 @@ type spritePoolProvider struct {
 	started          chan struct{}
 	deleteStarted    chan struct{}
 	releaseDelete    chan struct{}
+	stage            func(string)
 }
 
 func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeScope, *spritePoolProvider) {
@@ -165,6 +166,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/checkpoint") {
+			if provider.stage != nil {
+				provider.stage("checkpoint")
+			}
 			provider.checkpoint++
 			if provider.fail == "checkpoint" {
 				_, _ = io.WriteString(w, `{"type":"error"}`)
@@ -234,6 +238,9 @@ func newSpritePoolFixture(t *testing.T, failure string) (nativeFixture, nativeSc
 		provider.mu.Lock()
 		provider.runners = append(provider.runners, redemption)
 		provider.mu.Unlock()
+		if provider.stage != nil {
+			provider.stage("registered")
+		}
 		_ = conn.Write(r.Context(), websocket.MessageBinary, append([]byte{1}, []byte("Customer setup completed\nRunner bootstrap completed\n")...))
 		_ = conn.Write(r.Context(), websocket.MessageBinary, []byte{3, 0})
 	})
@@ -804,6 +811,19 @@ func setSpriteAllocationFixture(t *testing.T, f nativeFixture, desired int, revi
 	return result.(projectSpriteAllocation)
 }
 
+func setSpriteMemberChecks(t *testing.T, f nativeFixture, checks runnerauth.LocalChecks) {
+	t.Helper()
+	raw, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET local_checks_json=json_set(local_checks_json,?,json(?)) WHERE enrollment_id IN (SELECT enrollment_id FROM organization_sprite_members WHERE organization_id=? AND allocation_project_id=?)`, "$."+jsonPathKey(string(f.project.ID)), string(raw), f.project.OrganizationID, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+var spriteMemberReady = runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}
+
 func TestProjectSpriteAllocationCommands(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 2)
@@ -881,6 +901,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			if len(provider.created) != 2 {
 				t.Fatalf("created=%d", len(provider.created))
 			}
+			setSpriteMemberChecks(t, first, spriteMemberReady)
 			for _, runner := range provider.runners {
 				for _, project := range []nativeFixture{first, second} {
 					allowed, err := spriteAllocationRunnerAllowed(t.Context(), f.service.database.reader, nativeScope{organization: scope.organization, project: project.project.ID}, runner.MachineID)
@@ -1086,6 +1107,7 @@ func TestProjectSpriteWorkspaceClaims(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,allocation_project_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,?,'test',?,'enrolled',?,?)`, f.project.OrganizationID, f.project.ID, f.runner.redemption.Hostname, f.runner.enrollment.ID, now, now); err != nil {
 					t.Fatal(err)
 				}
+				setSpriteMemberChecks(t, f.nativeFixture, spriteMemberReady)
 			}
 			session := f.opened(t, f.token, map[string]any{"work_item_id": string(f.issue.WorkItemID)})
 			item := f.item(t, session.ID)
@@ -1122,5 +1144,273 @@ func TestHostedProjectSpriteAllocationAuthority(t *testing.T) {
 	allowed, err = f.service.projectSpriteAllocationAuthority(t.Context(), f.service.database.reader, scope)
 	if err != nil || allowed {
 		t.Fatalf("revoked project grant allowed=%t err=%v", allowed, err)
+	}
+}
+
+func projectSpriteMembers(t *testing.T, f nativeFixture, scope nativeScope) []spritePoolMember {
+	t.Helper()
+	view, err := f.service.readSpritePool(t.Context(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.describeSpritePoolMembers(t.Context(), scope, view.Members); err != nil {
+		t.Fatal(err)
+	}
+	var members []spritePoolMember
+	for _, member := range view.Members {
+		if member.AllocationProjectID == f.project.ID && member.State != "deleted" {
+			members = append(members, member)
+		}
+	}
+	return members
+}
+
+func TestProjectSpriteScaleSequence(t *testing.T) {
+	f, scope, provider := newSpritePoolFixture(t, "")
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_pools SET max_runners=3 WHERE organization_id=?`, scope.organization); err != nil {
+		t.Fatal(err)
+	}
+	revision := tracker.Revision(0)
+	for _, step := range []struct{ desired, created, deleted int }{{1, 1, 0}, {3, 3, 0}, {1, 3, 2}, {0, 3, 3}, {2, 5, 3}} {
+		revision = setSpriteAllocationFixture(t, f, step.desired, revision).Revision
+		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+			t.Fatal(err)
+		}
+		members := projectSpriteMembers(t, f, scope)
+		for _, member := range members {
+			if member.State != "enrolled" || member.Status != "awaiting_login" {
+				t.Fatalf("desired %d left member %+v", step.desired, member)
+			}
+		}
+		if len(members) != step.desired || len(provider.created) != step.created || len(provider.deleted) != step.deleted {
+			t.Fatalf("desired %d: members=%d created=%d deleted=%d", step.desired, len(members), len(provider.created), len(provider.deleted))
+		}
+	}
+	seen := map[string]bool{}
+	for _, name := range provider.created {
+		if seen[name] {
+			t.Fatalf("duplicate member %s", name)
+		}
+		seen[name] = true
+	}
+}
+
+func TestProjectSpriteLateProvisioning(t *testing.T) {
+	for _, test := range []struct {
+		stage      string
+		checkpoint int
+	}{
+		{"registered", 0},
+		{"checkpoint", 1},
+	} {
+		t.Run(test.stage, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			setSpriteAllocationFixture(t, f, 1, 0)
+			provider.stage = func(stage string) {
+				if stage == test.stage {
+					setSpriteAllocationFixture(t, f, 0, 1)
+				}
+			}
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			provider.stage = nil
+			if len(provider.created) != 1 || len(provider.deleted) != 1 || provider.checkpoint != test.checkpoint || len(provider.runners) != 1 {
+				t.Fatalf("created=%d deleted=%d checkpoint=%d runners=%d", len(provider.created), len(provider.deleted), provider.checkpoint, len(provider.runners))
+			}
+			if members := projectSpriteMembers(t, f, scope); len(members) != 0 {
+				t.Fatalf("late completion retained %+v", members)
+			}
+			setSpriteAllocationFixture(t, f, 1, 2)
+			setSpriteMemberChecks(t, f, spriteMemberReady)
+			allowed, err := spriteAllocationRunnerAllowed(t.Context(), f.service.database.reader, scope, provider.runners[0].MachineID)
+			if err != nil || allowed {
+				t.Fatalf("late member allowed=%t err=%v", allowed, err)
+			}
+			allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+			if err != nil || allocation.ProvisionFailures != 0 {
+				t.Fatalf("stale reservation counted as failure: %+v err=%v", allocation, err)
+			}
+		})
+	}
+}
+
+func TestProjectSpriteDrain(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		expired bool
+		retire  func(t *testing.T, f nativeFixture, runner string)
+	}{
+		{name: "active work publishes before deletion", retire: func(t *testing.T, f nativeFixture, _ string) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE leases SET released_at=? WHERE lease_id='lease-drain'`, formatHubTime(f.service.config.now())); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "expired lease on an offline member waits for audited retirement", expired: true, retire: func(t *testing.T, f nativeFixture, runner string) {
+			hosted := f.service.config.Hosted
+			f.service.config.Hosted = nil
+			response := performHubAPIRequest(t, f.service, http.MethodDelete, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/runners/"+runner, testHubAdminToken, nil)
+			f.service.config.Hosted = hosted
+			requireNativeStatus(t, response, http.StatusNoContent)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			setSpriteAllocationFixture(t, f, 1, 0)
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			setSpriteMemberChecks(t, f, spriteMemberReady)
+			member := projectSpriteMembers(t, f, scope)[0]
+			now := f.service.config.now()
+			expires := now.Add(time.Hour)
+			if test.expired {
+				expires = now.Add(-time.Hour)
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?`, formatHubTime(now.Add(-time.Hour)), member.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT 'lease-drain',i.id,r.machine_id,'session-drain',?,?,?,?,? FROM issues i JOIN runner_identities r ON r.organization_id=i.organization_id WHERE i.project_id=? AND r.id=? LIMIT 1`, formatHubTime(expires), formatHubTime(now), formatHubTime(now), formatHubTime(now), formatHubTime(now), scope.project, member.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES('lease-drain',?)`, member.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			setSpriteAllocationFixture(t, f, 0, 1)
+			for range 2 {
+				if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			members := projectSpriteMembers(t, f, scope)
+			if len(members) != 1 || members[0].State != "deleting" || members[0].Status != "draining" || len(provider.deleted) != 0 {
+				t.Fatalf("draining members=%+v deleted=%d", members, len(provider.deleted))
+			}
+			var runnerState string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT state FROM runner_identities WHERE id=?`, member.RunnerID).Scan(&runnerState); err != nil || runnerState != "draining" {
+				t.Fatalf("runner state=%q err=%v", runnerState, err)
+			}
+			test.retire(t, f, member.RunnerID)
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			if members := projectSpriteMembers(t, f, scope); len(members) != 0 || len(provider.deleted) != 1 {
+				t.Fatalf("after durable recovery members=%+v deleted=%d", members, len(provider.deleted))
+			}
+		})
+	}
+}
+
+func TestProjectSpriteProvisioningRecovery(t *testing.T) {
+	t.Run("failed provisioning stops after bounded attempts", func(t *testing.T) {
+		f, scope, provider := newSpritePoolFixture(t, "bootstrap")
+		allocation := setSpriteAllocationFixture(t, f, 1, 0)
+		for range spriteProvisionAttempts + 2 {
+			_ = f.service.scaleSpritePool(t.Context(), scope, false)
+		}
+		provider.fail = ""
+		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+			t.Fatal(err)
+		}
+		held, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+		if err != nil || held.ProvisionFailures != spriteProvisionAttempts || len(provider.created) != spriteProvisionAttempts || len(provider.deleted) != spriteProvisionAttempts {
+			t.Fatalf("allocation=%+v created=%d deleted=%d err=%v", held, len(provider.created), len(provider.deleted), err)
+		}
+		setSpriteAllocationFixture(t, f, 1, allocation.Revision)
+		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+			t.Fatal(err)
+		}
+		if members := projectSpriteMembers(t, f, scope); len(members) != 1 || members[0].State != "enrolled" || len(provider.created) != spriteProvisionAttempts+1 {
+			t.Fatalf("retry after new request members=%+v created=%d", members, len(provider.created))
+		}
+	})
+	t.Run("Hub restart releases an interrupted reservation", func(t *testing.T) {
+		f, scope, provider := newSpritePoolFixture(t, "")
+		setSpriteAllocationFixture(t, f, 1, 0)
+		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+			t.Fatal(err)
+		}
+		interrupted := projectSpriteMembers(t, f, scope)[0]
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE organization_sprite_members SET state='bootstrapping' WHERE name=?`, interrupted.Name); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_enrollments SET expires_at=? WHERE id=?`, formatHubTime(f.service.config.now().Add(-time.Minute)), interrupted.EnrollmentID); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+			t.Fatal(err)
+		}
+		members := projectSpriteMembers(t, f, scope)
+		if len(members) != 1 || members[0].Name == interrupted.Name || members[0].State != "enrolled" || len(provider.created) != 2 || len(provider.deleted) != 1 || provider.deleted[0] != interrupted.Name {
+			t.Fatalf("members=%+v created=%v deleted=%v", members, provider.created, provider.deleted)
+		}
+		allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, scope)
+		if err != nil || allocation.ProvisionFailures != 1 {
+			t.Fatalf("allocation=%+v err=%v", allocation, err)
+		}
+	})
+}
+
+func TestProjectSpriteLoginReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		checks       *runnerauth.LocalChecks
+		heartbeatAgo time.Duration
+		wakeFailed   bool
+		allowed      bool
+		status       string
+		commands     []string
+	}{
+		{name: "no setup observation", status: "awaiting_login", commands: []string{"codex login --device-auth", "gh auth login", "gh auth setup-git"}},
+		{name: "provider sign-in pending", checks: &runnerauth.LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "failed", ProviderKinds: []string{"claude_code"}}, status: "awaiting_login", commands: []string{"claude auth login"}},
+		{name: "GitHub sign-in pending", checks: &runnerauth.LocalChecks{Checkout: "failed", Doctor: "pending", Provider: "passed", ProviderKinds: []string{"codex"}}, status: "awaiting_login", commands: []string{"gh auth login", "gh auth setup-git"}},
+		{name: "doctor failure after logins", checks: &runnerauth.LocalChecks{Checkout: "passed", Doctor: "failed", Provider: "passed", ProviderKinds: []string{"codex"}}, status: "awaiting_setup"},
+		{name: "verified logins", checks: &spriteMemberReady, allowed: true, status: "ready"},
+		{name: "verified sleeping member", checks: &spriteMemberReady, heartbeatAgo: time.Minute, allowed: true, status: "sleeping"},
+		{name: "failed wake is unreachable", checks: &spriteMemberReady, heartbeatAgo: time.Minute, wakeFailed: true, allowed: true, status: "unreachable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, scope, provider := newSpritePoolFixture(t, "")
+			setSpriteAllocationFixture(t, f, 1, 0)
+			if err := f.service.scaleSpritePool(t.Context(), scope, false); err != nil {
+				t.Fatal(err)
+			}
+			runner := provider.runners[0]
+			if test.checks != nil {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"display_name": runner.DisplayName, "capacity": runner.Capacity, "version": runner.Version, "sprite_name": runner.SpriteName, "local_checks": test.checks})
+				requireNativeStatus(t, response, http.StatusOK)
+				f.service.spriteWakeWork.Wait()
+			}
+			heartbeat := f.service.config.now().Add(-test.heartbeatAgo)
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE machine_id=?`, formatHubTime(heartbeat), runner.MachineID); err != nil {
+				t.Fatal(err)
+			}
+			if test.wakeFailed {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_wake_failed_at',?) WHERE id=?`, formatHubTime(heartbeat.Add(time.Second)), runner.MachineID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			allowed, err := spriteAllocationRunnerAllowed(t.Context(), f.service.database.reader, scope, runner.MachineID)
+			if err != nil || allowed != test.allowed {
+				t.Fatalf("allowed=%t err=%v, want %t", allowed, err, test.allowed)
+			}
+			hosted := f.service.config.Hosted
+			f.service.config.Hosted = nil
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/sprite-pool", testHubAdminToken, nil)
+			f.service.config.Hosted = hosted
+			requireNativeStatus(t, response, http.StatusOK)
+			var view spritePoolView
+			decodeHubResponse(t, response, &view)
+			if len(view.Members) != 1 || view.Members[0].Status != test.status {
+				t.Fatalf("members=%+v, want status %s", view.Members, test.status)
+			}
+			var commands []string
+			for _, step := range view.Members[0].WaitingFor {
+				commands = append(commands, step.Command)
+			}
+			if strings.Join(commands, "\n") != strings.Join(test.commands, "\n") {
+				t.Fatalf("waiting for %q, want %q", commands, test.commands)
+			}
+		})
 	}
 }

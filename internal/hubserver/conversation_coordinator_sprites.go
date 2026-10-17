@@ -266,10 +266,16 @@ func (s *Service) coordinatorSpritePoolStatus(ctx context.Context, scope nativeS
 			validation = "Sprites organization token validated"
 		}
 	}
+	if err := s.describeSpritePoolMembers(ctx, scope, view.Members); err != nil {
+		return nil, err
+	}
 	members := make([]map[string]any, 0, len(view.Members))
 	connected := 0
 	for _, member := range view.Members {
-		item := map[string]any{"name": member.Name, "state": member.State, "runner_id": member.RunnerID, "connected": false, "provider_readiness": "unavailable"}
+		item := map[string]any{"name": member.Name, "state": member.State, "status": member.Status, "runner_id": member.RunnerID, "connected": false, "provider_readiness": "unavailable"}
+		if len(member.WaitingFor) > 0 {
+			item["waiting_for"] = member.WaitingFor
+		}
 		if member.RunnerID != "" && member.State == "enrolled" {
 			r, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
 			if err != nil {

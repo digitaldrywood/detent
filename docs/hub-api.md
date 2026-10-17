@@ -157,9 +157,13 @@ An owner/admin opts a project into managed members by writing `desired_count`,
 `expected_revision` (a decimal string, initially `"0"`) and `idempotency_key`.
 The organization pool must already be configured. Desired count is independent
 of runner job capacity and may exceed available capacity. Reads return
-`managed`, `desired_count`, `allocated_count`, `shortfall` and `revision`.
+`managed`, `desired_count`, `allocated_count`, `shortfall`,
+`provision_failures` and `revision`.
 Allocated count includes reserved and retiring members until deletion finishes.
 Replays return the original command response; reads return current allocation.
+Each failed paid provisioning attempt for the current revision increments
+`provision_failures`; after three, creation for that project pauses until the
+desired count is written again, which resets the count.
 
 The existing organization controller reserves members under the shared
 organization ceiling and reported provider limits. It retains existing members
@@ -168,11 +172,32 @@ ties by project ID, before satisfying new organization demand. Each member has
 one allocation owner. Managed projects accept work only on their own members;
 desired zero holds new claims, including workspace claims. Organization and
 manual runners remain available to projects that have not opted in. Manual
-adoption is not supported. Downsizing uses the existing idle, budget-retention
-and active-lease checks; it never retires another allocation's members.
-Lowering the organization ceiling retires idle excess members across allocations,
+adoption is not supported. Every new member is a fresh runner identity with one
+work slot. A managed member receives claims only after its runner's existing
+setup observation for the project passes, which includes the provider sign-in
+and repository checkout done once in the member's console. Before every paid
+provisioning step the controller re-reads the project's desired count; a
+reservation that no longer fits is cancelled before creation or retired before
+it can become eligible, so a completion after a decrement never dispatches.
+Decreasing desired count drains surplus members, preferring members that are not
+ready, then idle members, then busy ones: a draining member takes no new claims,
+keeps its credential so active work can finish and publish, and its Sprite is
+deleted only after the Hub holds no unreleased lease for it. An expired lease
+or offline heartbeat never proves deletion safe; the lease must be released by
+the runner, superseded through existing lease recovery, or released by an
+audited runner revocation. Organization members keep the existing idle and
+budget-retention checks, and downsizing never retires another allocation's
+members. Lowering the organization ceiling retires excess members across allocations,
 preserving desired counts and showing the resulting shortfalls. A project whose
 budget prevents creation does not block eligible requests or organization demand.
+
+Pool reads include each member's `status`: `provisioning`, `awaiting_login`,
+`awaiting_setup`, `ready`, `sleeping` (paused and wakeable through the existing
+Service restart), `unreachable` (credential revoked or expired, or the last wake
+failed), `draining` (retiring with unreleased work), `deleting` or `deleted`.
+A member awaiting login lists `waiting_for` steps, each with a `check`
+(`provider` or `github`) and the exact console `command`, such as
+`codex login --device-auth`, `gh auth login` and `gh auth setup-git`.
 
 Legacy per-project pools convert in place at schema upgrade: their floors and
 ceilings are summed, and their existing members retain Sprite names, runner IDs
