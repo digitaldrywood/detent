@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
+	"github.com/digitaldrywood/detent/internal/httpratelimit"
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -223,8 +224,8 @@ type Server struct {
 	refreshes           *manualRefreshTracker
 	demo                *demoScenarioSet
 	apiKeys             *apikey.Service
-	ipLimiter           *apiRateLimiter
-	keyLimiter          *apiRateLimiter
+	ipLimiter           *httpratelimit.Limiter
+	keyLimiter          *httpratelimit.Limiter
 	asyncWrites         *asyncStoreWriter
 	dashboardAuthSecret [32]byte
 	afterFunc           func(time.Duration, func()) *time.Timer
@@ -358,8 +359,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		refreshes:           newManualRefreshTracker(),
 		demo:                newDemoScenarioSet(cfg.Demo),
 		apiKeys:             apikey.NewService(deps.Store),
-		ipLimiter:           newAPIRateLimiter(300, 60),
-		keyLimiter:          newAPIRateLimiter(120, 30),
+		ipLimiter:           httpratelimit.New(300, 60),
+		keyLimiter:          httpratelimit.New(120, 30),
 		asyncWrites:         newAsyncStoreWriter(256, logger),
 		dashboardAuthSecret: dashboardAuthSecret,
 		afterFunc:           time.AfterFunc,

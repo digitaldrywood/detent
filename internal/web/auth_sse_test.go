@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/httpratelimit"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -56,13 +57,13 @@ func TestLoopbackPeerReadTrustPreservesRateLimits(t *testing.T) {
 		{
 			name: "pre-auth IP limiter",
 			configure: func(server *Server) {
-				server.ipLimiter = newAPIRateLimiter(1, 1)
+				server.ipLimiter = httpratelimit.New(1, 1)
 			},
 		},
 		{
 			name: "credential limiter",
 			configure: func(server *Server) {
-				server.keyLimiter = newAPIRateLimiter(1, 1)
+				server.keyLimiter = httpratelimit.New(1, 1)
 			},
 		},
 	}

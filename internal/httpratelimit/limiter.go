@@ -1,4 +1,4 @@
-package web
+package httpratelimit
 
 import (
 	"math"
@@ -9,9 +9,9 @@ import (
 	"golang.org/x/time/rate"
 )
 
-type apiRateLimiter struct {
+type Limiter struct {
 	mu          sync.Mutex
-	entries     map[string]*apiRateLimitEntry
+	entries     map[string]*bucket
 	limit       rate.Limit
 	limitHeader int
 	burst       int
@@ -19,27 +19,27 @@ type apiRateLimiter struct {
 	stopped     bool
 }
 
-type apiRateLimitEntry struct {
+type bucket struct {
 	limiter  *rate.Limiter
 	lastSeen time.Time
 }
 
-func newAPIRateLimiter(requestsPerMinute int, burst int) *apiRateLimiter {
+func New(requestsPerMinute int, burst int) *Limiter {
 	if requestsPerMinute <= 0 {
 		requestsPerMinute = 120
 	}
 	if burst <= 0 {
 		burst = requestsPerMinute
 	}
-	return &apiRateLimiter{
-		entries:     map[string]*apiRateLimitEntry{},
+	return &Limiter{
+		entries:     map[string]*bucket{},
 		limit:       rate.Every(time.Minute / time.Duration(requestsPerMinute)),
 		limitHeader: requestsPerMinute,
 		burst:       burst,
 	}
 }
 
-func (l *apiRateLimiter) Allow(key string, now time.Time) (bool, int) {
+func (l *Limiter) Allow(key string, now time.Time) (bool, int) {
 	if l == nil {
 		return true, 0
 	}
@@ -55,7 +55,7 @@ func (l *apiRateLimiter) Allow(key string, now time.Time) (bool, int) {
 	l.cleanupLocked(now)
 	entry := l.entries[key]
 	if entry == nil {
-		entry = &apiRateLimitEntry{limiter: rate.NewLimiter(l.limit, l.burst)}
+		entry = &bucket{limiter: rate.NewLimiter(l.limit, l.burst)}
 		l.entries[key] = entry
 	}
 	entry.lastSeen = now
@@ -67,14 +67,14 @@ func (l *apiRateLimiter) Allow(key string, now time.Time) (bool, int) {
 	return allowed, remaining
 }
 
-func (l *apiRateLimiter) Limit() int {
+func (l *Limiter) Limit() int {
 	if l == nil {
 		return 0
 	}
 	return l.limitHeader
 }
 
-func (l *apiRateLimiter) Stop() {
+func (l *Limiter) Stop() {
 	if l == nil {
 		return
 	}
@@ -84,7 +84,7 @@ func (l *apiRateLimiter) Stop() {
 	l.entries = nil
 }
 
-func (l *apiRateLimiter) cleanupLocked(now time.Time) {
+func (l *Limiter) cleanupLocked(now time.Time) {
 	if !l.lastCleanup.IsZero() && now.Sub(l.lastCleanup) < 5*time.Minute {
 		return
 	}
