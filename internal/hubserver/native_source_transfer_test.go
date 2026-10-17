@@ -25,10 +25,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 		dirty, running, expired, released, denied, stale, cancel, concurrent bool
 		uncertain, prestart, cleanEffect, held, staleVersion, historical     bool
 		status                                                               int
-		sameRunner                                                           bool
+		sameRunner, advanced                                                 bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
+		{name: "new publication retains stale transfer selection", advanced: true, released: true, status: http.StatusOK},
 		{name: "same runner version-bound recovery", released: true, dirty: true, sameRunner: true, status: http.StatusOK},
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
 		{name: "concurrent transfer revisions", released: true, concurrent: true, status: http.StatusOK},
@@ -198,6 +199,21 @@ func TestNativeSourceTransfer(t *testing.T) {
 			var audited int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND json_extract(data_json,'$.operation')='source_recovery'", f.issue.WorkItemID).Scan(&audited); err != nil || audited != 1 {
 				t.Fatalf("duplicate audit events: %d %v", audited, err)
+			}
+			if test.advanced {
+				input.Code.SHA256 = strings.Repeat("a", 64)
+				next := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "new-version"}, ExpectedVersionID: version.ID, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, next, http.StatusOK)
+				var newer tracker.ChangeVersion
+				decodeHubResponse(t, next, &newer)
+				recovery = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"?view=recovery", f.token, nil)
+				requireNativeStatus(t, recovery, http.StatusOK)
+				resumed = tracker.NativeRecovery{}
+				decodeHubResponse(t, recovery, &resumed)
+				if newer.ID == version.ID || resumed.SourceVersionID != version.ID || resumed.Change == nil || resumed.Change.VersionID != newer.ID {
+					t.Fatalf("new publication erased stale transfer binding: selected=%q current=%+v", resumed.SourceVersionID, resumed.Change)
+				}
+				return
 			}
 			current, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}, string(f.issue.WorkItemID))
 			if err != nil {

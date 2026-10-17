@@ -44,8 +44,8 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 		{name: "operator republished same tree", republish: true},
 		{name: "operator republished same tree with policy update", republish: true, updatePolicy: true},
 		{name: "version-bound transfer restores selected source", republish: true, transfer: true},
-		{name: "same-runner transfer refuses obsolete dirty custody before coding", republish: true, transferDirty: true, transfer: true},
-		{name: "code-lane transfer refuses dirty custody through recovery owner", republish: true, transferDirty: true, transfer: true, transferCode: true},
+		{name: "same-runner transfer restores source and preserves dirty custody", republish: true, transferDirty: true, transfer: true},
+		{name: "code-lane transfer restores source and preserves dirty custody", republish: true, transferDirty: true, transfer: true, transferCode: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			updatePolicy := test.updatePolicy
@@ -87,7 +87,8 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			}
 			initialBase := head(sourceA)
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution) runner.RunResult {
-				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				root := filepath.Join(t.TempDir(), "workspaces")
+				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -119,25 +120,20 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 				}
 				result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 				if test.transferDirty && (candidate.State == "Rework" || transferredCode) {
-					var refusal *workspace.LandRefusal
-					if !errors.Is(err, runner.ErrNativeRecoveryRequired) || errors.Is(err, runner.ErrWorkspacePreparation) || !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved || !strings.Contains(refusal.Reason, "source recovery") || provider.calls != 0 {
-						t.Fatalf("transfer executed obsolete source or lacks actionable refusal: calls=%d error=%v", provider.calls, err)
-					}
-					info, err := backend.(*workspace.LocalGit).Existing(workspace.Issue{ProjectID: "local", ID: candidate.ID, Identifier: candidate.Identifier})
-					if err != nil || head(info.Path) != initialBase {
-						t.Fatalf("refusal moved local source: %+v, %v", info, err)
+					paths, err := filepath.Glob(filepath.Join(root, ".detent", "quarantine", "*"))
+					if err != nil || len(paths) != 1 || head(paths[0]) != initialBase {
+						t.Fatalf("transfer did not preserve old source: paths=%v error=%v", paths, err)
 					}
 					for name, want := range map[string]string{"README.md": "local staged source\n", "PENDING.md": "local untracked source\n"} {
-						data, err := os.ReadFile(filepath.Join(info.Path, name))
+						data, err := os.ReadFile(filepath.Join(paths[0], name))
 						if err != nil || string(data) != want {
 							t.Fatalf("refusal lost %s: %q, %v", name, data, err)
 						}
 					}
-					data, err := exec.CommandContext(t.Context(), "git", "-C", info.Path, "show", ":README.md").Output()
+					data, err := exec.CommandContext(t.Context(), "git", "-C", paths[0], "show", ":README.md").Output()
 					if err != nil || string(data) != "local staged source\n" {
 						t.Fatalf("refusal lost index custody: %q, %v", data, err)
 					}
-					return result
 				}
 				if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed {
 					t.Fatalf("runner did not publish newly validated source: %+v, %v", result.NativeChange, err)
@@ -234,7 +230,21 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			}
 			providerB := &committingAgent{validator: "pass", complete: true}
 			providerB.duringTurn = func() {
-				for name, expected := range map[string]string{"CHANGE.md": "changed\n", "UPSTREAM.md": "new dev base\n"} {
+				expectedFiles := map[string]string{"CHANGE.md": "changed\n"}
+				if test.transferCode {
+					if got := head(providerB.workspace); got != recovered.Version.HeadSHA {
+						t.Fatalf("code transfer started at %s, want selected head %s", got, recovered.Version.HeadSHA)
+					}
+				} else {
+					expectedFiles["UPSTREAM.md"] = "new dev base\n"
+				}
+				if test.transferDirty {
+					status, err := exec.CommandContext(t.Context(), "git", "-C", providerB.workspace, "status", "--porcelain").Output()
+					if err != nil || len(status) != 0 {
+						t.Fatalf("transfer resumed local dirty bytes: %q, %v", status, err)
+					}
+				}
+				for name, expected := range expectedFiles {
 					data, err := os.ReadFile(filepath.Join(providerB.workspace, name))
 					if err != nil || string(data) != expected {
 						t.Fatalf("second Mac started without recovered/refreshed source: %s = %q, %v", name, data, err)
@@ -242,10 +252,11 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 				}
 			}
 			second := run(sourceB, providerB, candidates[0], h.scheduler.RunExecution(issue.ID))
-			if test.transferDirty {
-				return
+			expectedBase := newBase
+			if test.transferCode {
+				expectedBase = initialBase
 			}
-			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != newBase || providerB.calls != 2 {
+			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != expectedBase || providerB.calls != 2 {
 				t.Fatalf("rework reused old head or validation: %+v, calls=%d", second.NativeChange, providerB.calls)
 			}
 			detail, err := h.admin.Change(context.Background(), item, first.NativeChange.ChangeID)
