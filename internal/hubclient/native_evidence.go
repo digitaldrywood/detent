@@ -22,7 +22,7 @@ import (
 func evidenceTool() runner.AgentTool {
 	return runner.AgentTool{
 		Name:        "attach_evidence",
-		Description: "Attach an image or small text/log file from the current attempt workspace to this native issue, with a short caption. Use this for browser verification screenshots. The path must be workspace-relative; files outside the workspace and files over 20 MiB are refused. Evidence is recorded on the attempt and published with its completion comment. Never commit verification evidence to the repository.",
+		Description: "Attach an image or text/log file from the current attempt workspace to this native issue, with a short caption. Use this for browser screenshots, design review PNGs and their screen/state index. The path must be workspace-relative; files outside the workspace and files over 20 MiB are refused. The host uploads the file bytes; do not embed them in tool arguments. Evidence is recorded on the attempt and published with its completion comment. Publication does not approve a design. Never commit verification evidence to the repository.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","minLength":1},"caption":{"type":"string","minLength":1,"maxLength":1024}},"required":["path","caption"],"additionalProperties":false}`),
 	}
 }
