@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -261,12 +263,11 @@ func refreshProductivityRunners(ctx context.Context, tx *sql.Tx, scope nativeSco
 		return err
 	}
 	defer rows.Close()
-	type key struct {
-		runner string
-		hour   int64
+	type interval struct {
+		runner           string
+		started, updated int64
 	}
-	type interval struct{ started, updated int64 }
-	intervals := map[key]interval{}
+	var intervals []interval
 	for rows.Next() {
 		var runner, start, end string
 		if err := rows.Scan(&runner, &start, &end); err != nil {
@@ -283,23 +284,30 @@ func refreshProductivityRunners(ctx context.Context, tx *sql.Tx, scope nativeSco
 			rows.Close()
 			return err
 		}
-		for h := from.Truncate(time.Hour); !h.After(to); h = h.Add(time.Hour) {
-			k := key{runner, h.Unix()}
-			v, ok := intervals[k]
-			if !ok {
-				v = interval{from.UnixNano(), to.UnixNano()}
-			} else {
-				v.started = min(v.started, from.UnixNano())
-				v.updated = max(v.updated, to.UnixNano())
-			}
-			intervals[k] = v
-		}
+		intervals = append(intervals, interval{runner, from.UnixNano(), to.UnixNano()})
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	for k, v := range intervals {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO report_issue_runners VALUES(?,?,?,?,?,?,?)`, scope.organization, scope.project, id, k.runner, k.hour, v.started, v.updated); err != nil {
+	slices.SortFunc(intervals, func(a, b interval) int {
+		if order := cmp.Compare(a.runner, b.runner); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.started, b.started)
+	})
+	merged := intervals[:0]
+	for _, next := range intervals {
+		if len(merged) > 0 {
+			last := &merged[len(merged)-1]
+			if last.runner == next.runner && next.started <= last.updated {
+				last.updated = max(last.updated, next.updated)
+				continue
+			}
+		}
+		merged = append(merged, next)
+	}
+	for _, v := range merged {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO report_issue_runners VALUES(?,?,?,?,?,?)`, scope.organization, scope.project, id, v.runner, v.started, v.updated); err != nil {
 			return err
 		}
 	}

@@ -123,8 +123,8 @@ func (s *Service) readOrganizationProductivity(ctx context.Context, projects []s
 		if err != nil {
 			return out, err
 		}
-		clause += ` AND EXISTS(SELECT 1 FROM report_issue_runners r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND r.work_item_id=s.work_item_id AND r.hour>=? AND r.hour<=? AND r.started_ns<? AND r.updated_ns>=? AND r.runner_id IN (SELECT value FROM json_each(?)))`
-		args = append(args, prior.From.Truncate(time.Hour).Unix(), w.To.Truncate(time.Hour).Unix(), w.To.UnixNano(), prior.From.UnixNano(), raw)
+		clause += ` AND EXISTS(SELECT 1 FROM report_issue_runners r WHERE r.organization_id=s.organization_id AND r.project_id=s.project_id AND r.work_item_id=s.work_item_id AND r.started_ns<? AND r.updated_ns>=? AND r.runner_id IN (SELECT value FROM json_each(?)))`
+		args = append(args, w.To.UnixNano(), prior.From.UnixNano(), raw)
 	}
 	var statement strings.Builder
 	statement.WriteString(`WITH selected AS (SELECT s.* FROM report_issue_summaries s WHERE `)

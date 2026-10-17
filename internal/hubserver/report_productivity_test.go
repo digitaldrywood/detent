@@ -132,6 +132,7 @@ func TestOrganizationProductivity(t *testing.T) {
 	read := func(params url.Values) organizationProductivity {
 		t.Helper()
 		params.Set("project", "all")
+		params.Set("scope", "organization")
 		var out organizationProductivity
 		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?"+params.Encode(), http.StatusOK), &out)
 		return out
@@ -254,6 +255,77 @@ func TestOrganizationProductivity(t *testing.T) {
 	b, _ := json.Marshal(after)
 	if string(a) != string(b) {
 		t.Fatal("read depends on live attempt payloads")
+	}
+}
+
+func TestProductivityRunnerIntervals(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	now := f.service.config.now().UTC().Truncate(time.Hour)
+	org := tracker.OrganizationID("org_browser_preview")
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := tx.ExecContext(t.Context(), query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	intervals := []struct{ from, to time.Time }{
+		{now.AddDate(-10, 0, 0), now.Add(-100 * time.Hour)},
+		{now.AddDate(-5, 0, 0), now.Add(-90 * time.Hour)},
+		{now.Add(-2*time.Hour + 10*time.Minute), now.Add(-2*time.Hour + 20*time.Minute)},
+		{now.Add(-2*time.Hour + 40*time.Minute), now.Add(-2*time.Hour + 50*time.Minute)},
+	}
+	for i := range 2 {
+		issue, err := createNativeFixtureIssueTx(t.Context(), tx, nativeScope{organization: org, project: tracker.ProjectID(f.project)}, tracker.CreateIssue{Title: "Interval issue", Body: nativeContractTestBody, State: "Todo"}, now.Add(-2*time.Hour+30*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := string(issue.WorkItemID)
+		for j, span := range intervals {
+			lease := fmt.Sprintf("lease_interval_%d_%d", i, j)
+			exec(`INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?, (SELECT id FROM issues WHERE native_id=?),machine_id,?,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_0'`, lease, id, lease)
+			exec(`INSERT INTO lease_runners(lease_id,runner_id) SELECT ?,runner_id FROM lease_runners WHERE lease_id='lease_browser_usage_0_0'`, lease)
+			exec(`INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES(?,?,?,?,?,(SELECT max(fencing_token)+1 FROM native_attempts),?,?,'succeeded','{}',?,?)`, "attempt_"+lease, org, f.project, id, lease, "run_"+id, j+1, formatHubTime(span.from), formatHubTime(span.to))
+		}
+		for range 2 {
+			if err := refreshProductivitySummary(t.Context(), tx, nativeScope{organization: org, project: tracker.ProjectID(f.project)}, id); err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			var first, last int64
+			if err := tx.QueryRowContext(t.Context(), `SELECT count(*),min(started_ns),max(updated_ns) FROM report_issue_runners WHERE work_item_id=?`, id).Scan(&count, &first, &last); err != nil {
+				t.Fatal(err)
+			}
+			if count != 3 || first != intervals[0].from.UnixNano() || last != intervals[3].to.UnixNano() {
+				t.Fatalf("runner intervals: count=%d first=%d last=%d", count, first, last)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name  string
+		end   time.Duration
+		filed int
+	}{
+		{"gap", 35 * time.Minute, 0},
+		{"overlap", 45 * time.Minute, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w := operatortool.AnalyticsWindow{From: now.Add(-2*time.Hour + 30*time.Minute), To: now.Add(-2*time.Hour + tt.end)}
+			report, err := f.service.readOrganizationProductivity(t.Context(), []string{f.project}, w, reportsFilter{Runners: []string{"runner_browser_preview"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Current.Filed != tt.filed {
+				t.Fatalf("filed=%d want=%d", report.Current.Filed, tt.filed)
+			}
+		})
 	}
 }
 
