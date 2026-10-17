@@ -2,16 +2,19 @@ package gate
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func TestCriterionEvidence(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
+	tests := []struct {
 		name       string
 		entries    []CriterionEvidence
 		commands   []CommandResult
+		reads      []AttachmentRead
+		kind       string
 		gaps       []string
 		findings   int
 		receiptIDs []string
@@ -89,7 +92,42 @@ func TestCriterionEvidence(t *testing.T) {
 			r.CriteriaEvidence[0].TreeSHA = ""
 		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 
+		{name: "1231 criterion 8 receipt list", kind: EvidenceAttachment, receiptIDs: []string{"timing_acd11650e031a5d126443f23f4e76017", "timing_c1dac16d7403a4347dc4d3c3c4a8e9b9", "attachment:att_d30e6c4e65ad29fa0ca0a5c05f158a62:9b4e9fb33661fc33301c4e7fe154e6fdcc12a9a07e70644880648010938458fc"},
+			commands: []CommandResult{
+				{ReceiptID: "timing_acd11650e031a5d126443f23f4e76017", Command: "[redacted]", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_c1dac16d7403a4347dc4d3c3c4a8e9b9", Command: "[redacted]", HeadSHA: "head", TreeSHA: "tree"},
+			}, reads: []AttachmentRead{
+				{ReceiptID: "attachment:att_d30e6c4e65ad29fa0ca0a5c05f158a62:9b4e9fb33661fc33301c4e7fe154e6fdcc12a9a07e70644880648010938458fc", AttachmentID: "att_d30e6c4e65ad29fa0ca0a5c05f158a62", SHA256: "9b4e9fb33661fc33301c4e7fe154e6fdcc12a9a07e70644880648010938458fc", ProjectID: "prj_example", HeadSHA: "head", TreeSHA: "tree"},
+			}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].HeadSHA = ""; r.CriteriaEvidence[0].TreeSHA = "" }, gaps: []string{"Return valid input"}},
+		{name: "1231 criterion 9 receipt list", kind: EvidenceAttachment, receiptIDs: []string{"timing_431cd79563fbf826a6fbdef39170d967", "timing_2446eb818dc03b11bc6aee4df26659f6", "timing_8a75dad48a4bd24e947b83a300ade1f6", "timing_62820c89f85a765c6a14b48da1967700", "timing_c76625d77fcee6aeda6d1c0ee4895f48", "timing_acd11650e031a5d126443f23f4e76017", "timing_c1dac16d7403a4347dc4d3c3c4a8e9b9", "attachment:att_51b76da935901799143716ab64790e67:c71544610a557c3ee6fd691c2b4b184db1732f36a259f87e2faddf12f7f3b832"},
+			commands: []CommandResult{
+				{ReceiptID: "timing_acd11650e031a5d126443f23f4e76017", Command: "[redacted]", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_431cd79563fbf826a6fbdef39170d967", Command: "git '--no-pager' '--literal-pathspecs' 'show' '--no-ext-diff' '--no-textconv' '087895fcd27646c859bdc9956fdea9fa75bb216c:docs/development.md'", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_c76625d77fcee6aeda6d1c0ee4895f48", Command: "make check-land", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_2446eb818dc03b11bc6aee4df26659f6", Command: "git '--no-pager' '--literal-pathspecs' 'show' '--no-ext-diff' '--no-textconv' '087895fcd27646c859bdc9956fdea9fa75bb216c:docs/invariants.md'", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_8a75dad48a4bd24e947b83a300ade1f6", Command: "git '--no-pager' '--literal-pathspecs' 'show' '--no-ext-diff' '--no-textconv' '087895fcd27646c859bdc9956fdea9fa75bb216c:docs/invariants.md'", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_c1dac16d7403a4347dc4d3c3c4a8e9b9", Command: "[redacted]", HeadSHA: "head", TreeSHA: "tree"},
+				{ReceiptID: "timing_62820c89f85a765c6a14b48da1967700", Command: "git '--no-pager' '--literal-pathspecs' 'show' '--no-ext-diff' '--no-textconv' '087895fcd27646c859bdc9956fdea9fa75bb216c:docs/invariants.md'", HeadSHA: "head", TreeSHA: "tree"},
+			}, reads: []AttachmentRead{
+				{ReceiptID: "attachment:att_51b76da935901799143716ab64790e67:c71544610a557c3ee6fd691c2b4b184db1732f36a259f87e2faddf12f7f3b832", AttachmentID: "att_51b76da935901799143716ab64790e67", SHA256: "c71544610a557c3ee6fd691c2b4b184db1732f36a259f87e2faddf12f7f3b832", ProjectID: "prj_example", HeadSHA: "head", TreeSHA: "tree"},
+			}, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].HeadSHA = ""; r.CriteriaEvidence[0].TreeSHA = "" }, gaps: []string{"Return valid input"}},
 		{name: "mixed visual and command evidence", mixed: true, gaps: []string{"Return valid input"}},
+		{name: "mixed missing copied source", mixed: true, edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].HeadSHA = ""
+			r.CriteriaEvidence[0].TreeSHA = ""
+		}, gaps: []string{"Return valid input"}},
+		{name: "mixed copied source typo", mixed: true, edit: func(r *ValidatorResult) {
+			r.CriteriaEvidence[0].HeadSHA = "typo"
+			r.CriteriaEvidence[0].TreeSHA = "typo"
+		}, gaps: []string{"Return valid input"}},
+		{name: "mixed host receipts supply missing finalization tree", mixed: true, tree: new(""), gaps: []string{"Return valid input"}},
+		{name: "mixed inconsistent trees without finalization", mixed: true, tree: new(""), edit: func(r *ValidatorResult) { r.AttachmentReads[1].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed missing trustworthy tree", mixed: true, tree: new(""), edit: func(r *ValidatorResult) { r.AttachmentReads[0].TreeSHA = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed ambiguous attachment receipt", mixed: true, edit: func(r *ValidatorResult) { r.AttachmentReads = append(r.AttachmentReads, r.AttachmentReads[0]) }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed missing attachment digest", mixed: true, edit: func(r *ValidatorResult) { r.AttachmentReads[0].SHA256 = "" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed command wrong head", mixed: true, edit: func(r *ValidatorResult) { r.Commands[0].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed image wrong tree", mixed: true, edit: func(r *ValidatorResult) { r.AttachmentReads[1].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "mixed missing observed attachment", mixed: true, edit: func(r *ValidatorResult) { r.AttachmentReads = nil }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "mixed failed command", mixed: true, edit: func(r *ValidatorResult) { r.Commands[0].ExitCode = 1 }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "mixed command wrong tree", mixed: true, edit: func(r *ValidatorResult) { r.Commands[0].TreeSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "mixed image wrong head", mixed: true, edit: func(r *ValidatorResult) { r.AttachmentReads[1].HeadSHA = "other" }, gaps: []string{"Reject invalid input", "Return valid input"}},
@@ -97,7 +135,7 @@ func TestCriterionEvidence(t *testing.T) {
 		{name: "mixed duplicate selected receipt", mixed: true, edit: func(r *ValidatorResult) {
 			r.CriteriaEvidence[0].ReceiptIDs = append(r.CriteriaEvidence[0].ReceiptIDs, "timing_app")
 		}, gaps: []string{"Reject invalid input", "Return valid input"}},
-		{name: "attachment requires image read", mixed: true, edit: func(r *ValidatorResult) { r.CriteriaEvidence[0].ReceiptIDs = []string{"timing_app"} }, gaps: []string{"Reject invalid input", "Return valid input"}},
+		{name: "attachment requires image read", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "image.png", ReceiptIDs: []string{"timing_app"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "The image shows an error"}}, commands: []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "observed attachment", edit: func(r *ValidatorResult) {
 			r.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "invalid-input.png", ReceiptIDs: []string{"image-read"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "The capture shows the error beside the invalid field"}}
 			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "head", TreeSHA: "tree"}}
@@ -108,17 +146,30 @@ func TestCriterionEvidence(t *testing.T) {
 			r.AttachmentReads = []AttachmentRead{{ReceiptID: "image-read", AttachmentID: "attachment", SHA256: "digest", HeadSHA: "other", TreeSHA: "tree"}}
 		}, gaps: []string{"Reject invalid input", "Return valid input"}},
 		{name: "unsupported kind", entries: []CriterionEvidence{{Criterion: "Reject invalid input", Kind: "approval", Reference: "human"}}, gaps: []string{"Reject invalid input", "Return valid input"}},
-	} {
+	}
+	for _, test := range slices.Clone(tests) {
+		if test.mixed || len(test.reads) > 0 {
+			test.name += " as receipt"
+			test.kind = EvidenceReceipt
+			tests = append(tests, test)
+		}
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := ValidatorResult{HeadSHA: "head", CriteriaEvidence: test.entries, Commands: test.commands}
+			result := ValidatorResult{HeadSHA: "head", CriteriaEvidence: test.entries, Commands: test.commands, AttachmentReads: test.reads}
 			if test.receiptIDs != nil {
 				result.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceReceipt, Reference: "make check-app; npx playwright test", ReceiptIDs: test.receiptIDs, HeadSHA: "head", TreeSHA: "tree", Behavior: "Both checks reject malformed input"}}
-				result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: "head", TreeSHA: "tree"}}
+				if test.commands == nil {
+					result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "timing_browser", Command: "npx playwright test", HeadSHA: "head", TreeSHA: "tree"}}
+				}
 			}
 			if test.mixed {
 				result.CriteriaEvidence = []CriterionEvidence{{Criterion: "Reject invalid input", Kind: EvidenceAttachment, Reference: "light.png, dark.png; make check-app", ReceiptIDs: []string{"light-read", "dark-read", "timing_app"}, HeadSHA: "head", TreeSHA: "tree", Behavior: "Light and dark narrow views show the error and the application checks pass"}}
 				result.AttachmentReads = []AttachmentRead{{ReceiptID: "light-read", AttachmentID: "light", SHA256: "light-digest", HeadSHA: "head", TreeSHA: "tree"}, {ReceiptID: "dark-read", AttachmentID: "dark", SHA256: "dark-digest", HeadSHA: "head", TreeSHA: "tree"}}
 				result.Commands = []CommandResult{{ReceiptID: "timing_app", Command: "make check-app", HeadSHA: "head", TreeSHA: "tree"}}
+			}
+			if test.kind != "" {
+				result.CriteriaEvidence[0].Kind = test.kind
 			}
 			if test.edit != nil {
 				test.edit(&result)
@@ -127,15 +178,22 @@ func TestCriterionEvidence(t *testing.T) {
 			if test.tree != nil {
 				tree = *test.tree
 			}
+			var receiptIDs []string
+			if len(result.CriteriaEvidence) > 0 {
+				receiptIDs = slices.Clone(result.CriteriaEvidence[0].ReceiptIDs)
+			}
 			NormalizeCriterionEvidence(&result, []string{"Reject invalid input", "Return valid input"}, tree)
 			if len(result.CriteriaEvidence) != 2 || result.CriteriaEvidence[0].Criterion != "Reject invalid input" || result.CriteriaEvidence[1].Criterion != "Return valid input" || !reflect.DeepEqual(result.NotVerified, test.gaps) || len(result.Findings) != test.findings {
 				t.Fatalf("normalized evidence = %+v", result)
+			}
+			if len(result.NotVerified) == 1 && (test.mixed || len(test.reads) > 0) && (!slices.Equal(result.CriteriaEvidence[0].ReceiptIDs, receiptIDs) || result.CriteriaEvidence[0].Kind != EvidenceAttachment) {
+				t.Fatalf("mixed evidence lost receipt identities or type: %+v", result.CriteriaEvidence[0])
 			}
 			wantTree := tree
 			if wantTree == "" {
 				wantTree = "tree"
 			}
-			if entry := result.CriteriaEvidence[0]; entry.Kind == EvidenceReceipt && (entry.HeadSHA != result.HeadSHA || entry.TreeSHA != wantTree) {
+			if entry := result.CriteriaEvidence[0]; (entry.Kind == EvidenceReceipt || entry.Kind == EvidenceAttachment) && (entry.HeadSHA != result.HeadSHA || entry.TreeSHA != wantTree) {
 				t.Fatalf("normalized receipt identity = %+v, want head %q and tree %q", entry, result.HeadSHA, wantTree)
 			}
 		})
