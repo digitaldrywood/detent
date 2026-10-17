@@ -1,3 +1,5 @@
+import { SavedViewControls } from "./SavedViews.tsx";
+import type { SavedView } from "./lib/savedViews.tsx";
 // Moving a card is optimistic and conflict-aware. The card lands in the new
 // lane immediately, the transition goes to the hub with the revision the card
 // was rendered from, and a `409` puts the card back where it was, reloads, and
@@ -87,15 +89,15 @@ function narrowed(view: WorkViewState): boolean {
   );
 }
 
-export function WorkBoard({ projectId }: { projectId: string | null }): React.ReactElement {
+export function WorkBoard({ projectId, savedView }: { projectId: string | null; savedView?: SavedView }): React.ReactElement {
   const navigate = useNavigate();
   const shell = useShell();
   const { setOpenMobile } = useSidebar();
   const client = useClient();
   const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
-  usePageTitle("Work", project?.name);
+  usePageTitle(savedView?.name ?? "Work", project?.name);
   const http = useWorkHttp();
-  const [view, setView] = useViewState(projectId);
+  const [view, setView] = useViewState(projectId, savedView);
   const board = useBoard(projectId, view);
   const currentView = React.useRef(view);
   currentView.current = view;
@@ -293,7 +295,7 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
   const topBar = (
     <WorkTopBar
       context="Work"
-      title={scopeName}
+      title={savedView?.name ?? scopeName}
       titleTooltip={scopeName}
       completed={noProjects ? null : (
         <div className="flex shrink-0 items-center gap-1">
@@ -387,6 +389,8 @@ export function WorkBoard({ projectId }: { projectId: string | null }): React.Re
 
       {board.workflows.length > 0 ? <WorkToolbar
         view={view}
+        savedViewActive={savedView !== undefined}
+        savedControls={<SavedViewControls state={view} projectId={projectId} active={savedView} onChange={setView} />}
         onChange={setView}
         lanes={board.lanes}
         totals={board.totals?.lanes}

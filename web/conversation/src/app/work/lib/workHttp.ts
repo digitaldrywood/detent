@@ -1,3 +1,4 @@
+import { SavedWorkView, type SavedView, type SavedViewInput } from "./savedViewSchema.ts";
 // Same-origin HTTP for the hub's native work API.
 //
 // A sibling of `runtime/rpc/http.ts` rather than an extension of it: that
@@ -160,6 +161,11 @@ export interface ListWorkItemsInput {
 export interface WorkHttp {
   readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
   readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
+  readonly listSavedViews: (signal?: AbortSignal) => Promise<{ readonly views: readonly SavedView[] }>;
+  readonly getSavedView: (id: string, signal?: AbortSignal) => Promise<SavedView>;
+  readonly saveView: (input: SavedViewInput, id?: string) => Promise<SavedView>;
+  readonly favoriteView: (id: string, favorite: boolean) => Promise<SavedView>;
+  readonly deleteView: (id: string) => Promise<void>;
   readonly getViewPreference: (projectId: string | null, signal?: AbortSignal) => Promise<{ readonly query: string | null }>;
   readonly setViewPreference: (projectId: string | null, query: string | null) => Promise<{ readonly query: string | null }>;
   readonly origin: string;
@@ -569,6 +575,21 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
+    listSavedViews: async (signal) => {
+      const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
+      const views: SavedView[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await send(schema, "GET", url(`${options.apiBase}/work-views`, { cursor }), undefined, signal);
+        views.push(...page.views);
+        cursor = page.next_cursor;
+      } while (cursor !== undefined);
+      return { views: views.toSorted((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)) };
+    },
+    getSavedView: (id, signal) => send(SavedWorkView, "GET", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}`, undefined, signal),
+    saveView: (input, id) => send(SavedWorkView, id === undefined ? "POST" : "PUT", `${options.origin}${options.apiBase}/work-views${id === undefined ? "" : `/${encodeURIComponent(id)}`}`, input, undefined, true),
+    favoriteView: (id, favorite) => send(SavedWorkView, "PUT", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}/favorite`, { favorite }, undefined, true),
+    deleteView: async (id) => { await send(Schema.Void, "DELETE", `${options.origin}${options.apiBase}/work-views/${encodeURIComponent(id)}`, undefined, undefined, true); },
     getViewPreference: (projectId, signal) => send(viewPreferenceSchema, "GET", viewPreferenceUrl(projectId), undefined, signal),
     setViewPreference: (projectId, query) => send(viewPreferenceSchema, query === null ? "DELETE" : "PUT", viewPreferenceUrl(projectId), query === null ? undefined : { query }, undefined, true),
     eventsUrl: (projectId, workspaceId, workItemId, board) =>

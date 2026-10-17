@@ -1,3 +1,4 @@
+import { SavedViewsProvider, useSavedViews } from "./work/lib/savedViews.tsx";
 import { conversationBus } from "../runtime/state/conversationList.ts";
 // Application shell.
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -137,7 +138,9 @@ export function Shell(): React.ReactElement {
       <AnchoredToastProvider>
         <OrganizationMembersProvider enabled={/^\/settings(\/|$)/.test(pathname)}>
           <HealthFindingsProvider projects={client.bootstrap.projects}>
-            <ShellBody />
+            <SavedViewsProvider key={JSON.stringify([client.http.origin, client.http.apiBase, client.bootstrap.organization.id, client.bootstrap.actor?.principal_id])}>
+              <ShellBody />
+            </SavedViewsProvider>
           </HealthFindingsProvider>
         </OrganizationMembersProvider>
       </AnchoredToastProvider>
@@ -151,7 +154,8 @@ function ShellBody(): React.ReactElement {
   const list = useListState(client);
   const search = useAtomSet(client.searchConversations, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
-  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; workItemId?: string };
+  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; workItemId?: string; viewId?: string };
+  const savedView = useSavedViews()?.views.find((view) => view.id === params.viewId);
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
   // through a redirect; `params` alone cannot tell `/work` from `/work/changes`.
@@ -171,7 +175,8 @@ function ShellBody(): React.ReactElement {
   const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
-  const projectId = params.projectId ?? context.resolvedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  const savedProjectId = savedView === undefined ? undefined : savedView.project_id ?? "";
+  const projectId = params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
   React.useEffect(() => {
     setProjectIdState(projectId);
     writeLastProject(projectId);
