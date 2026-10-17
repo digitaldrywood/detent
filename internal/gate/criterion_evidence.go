@@ -12,6 +12,8 @@ const (
 	EvidenceTest               = "test"
 	EvidenceAttachment         = "attachment"
 	EvidenceNotVerified        = "not_verified"
+	CriterionReworkFixable     = "rework_fixable"
+	CriterionUnsatisfiable     = "unsatisfiable"
 )
 
 type AttachmentRead struct {
@@ -28,6 +30,7 @@ type AttachmentRead struct {
 type CriterionEvidence struct {
 	Criterion              string   `json:"criterion"`
 	Kind                   string   `json:"kind"`
+	UnverifiedClass        string   `json:"unverified_class,omitempty"`
 	Reference              string   `json:"reference"`
 	ReceiptIDs             []string `json:"receipt_ids,omitempty"`
 	HeadSHA                string   `json:"head_sha,omitempty"`
@@ -52,6 +55,9 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 			entry.Kind = strings.ToLower(strings.TrimSpace(entry.Kind))
 			entry.Reference = strings.TrimSpace(entry.Reference)
 			entry.Behavior = strings.TrimSpace(entry.Behavior)
+			if entry.Kind != EvidenceNotVerified || entry.RestatesImplementation {
+				entry.UnverifiedClass = ""
+			}
 			if entry.RestatesImplementation {
 				entry.Kind = EvidenceNotVerified
 				entry.Behavior = "Test restates the implementation instead of asserting the criterion's behavior"
@@ -88,13 +94,30 @@ func NormalizeCriterionEvidence(result *ValidatorResult, criteria []string, tree
 			}
 		}
 		if entry.Kind == EvidenceNotVerified {
+			if result.VersionID != "" && strings.ToLower(strings.TrimSpace(entry.UnverifiedClass)) == CriterionUnsatisfiable {
+				entry.UnverifiedClass = CriterionUnsatisfiable
+			} else {
+				entry.UnverifiedClass = CriterionReworkFixable
+			}
 			if entry.Reference == "" {
 				entry.Reference = "Evidence not supplied"
 			}
 			result.NotVerified = append(result.NotVerified, criterion)
+		} else {
+			entry.UnverifiedClass = ""
 		}
 		result.CriteriaEvidence = append(result.CriteriaEvidence, entry)
 	}
+}
+
+func (result ValidatorResult) UnsatisfiableCriteria() []string {
+	var criteria []string
+	for _, entry := range result.CriteriaEvidence {
+		if entry.Kind == EvidenceNotVerified && entry.UnverifiedClass == CriterionUnsatisfiable && slices.Contains(result.NotVerified, entry.Criterion) && !slices.Contains(criteria, entry.Criterion) {
+			criteria = append(criteria, entry.Criterion)
+		}
+	}
+	return criteria
 }
 
 func (entry *CriterionEvidence) matchesAttachmentReads(reads []AttachmentRead, commands []CommandResult, head, tree string) bool {
@@ -182,9 +205,14 @@ func (entry *CriterionEvidence) normalizeReceipts(commands []CommandResult, head
 }
 
 func ApplyCriterionPolicy(cfg ValidatorConfig, result *ValidatorResult) {
-	if cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
+	unsatisfiable := len(result.UnsatisfiableCriteria()) > 0
+	if unsatisfiable || cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
 		if normalizeValidatorVerdict(result.Verdict) != ValidatorVerdictError {
+			verdict := normalizeValidatorVerdict(result.Verdict)
 			result.Verdict = ValidatorVerdictRework
+			if effective := effectiveValidatorConfig(cfg); unsatisfiable && verdict != ValidatorVerdictRework && !validatorHasBlockedSeverity(effective, result.Findings) && result.Score >= effective.MinScore {
+				result.Verdict = ValidatorVerdictWait
+			}
 		}
 		disclosure := "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")
 		if !strings.Contains(result.Summary, disclosure) {

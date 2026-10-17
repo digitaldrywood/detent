@@ -25,10 +25,12 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 		verdict         string
 		decision        string
 		technicalResume bool
+		unsatisfiable   bool
 		summaryFailure  bool
 		feedback        string
 	}{
 		{name: "source pass leaves separate acceptance required", validator: true, verdict: "pass", decision: "approved"},
+		{name: "unsatisfiable acceptance remains commented for completion", validator: true, verdict: "pass", decision: "approved", unsatisfiable: true},
 		{name: "source pass without acceptance validator", verdict: "pass", decision: "approved"},
 		{name: "source wait preserves typed pending evidence", validator: true, verdict: "wait", decision: "commented"},
 		{name: "operator evidence resume survives restart and uses new review sessions", validator: true, verdict: "wait", decision: "commented", technicalResume: true},
@@ -268,6 +270,25 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					validator := execution.(runner.NativeValidatorExecution)
 					if err := validator.RecordValidator(ctx, result); err == nil || !strings.Contains(err.Error(), "separate sessions") {
 						t.Fatalf("source-review session could also authorize acceptance: %v", err)
+					}
+					if test.unsatisfiable {
+						result.SessionID++
+						result.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable, Reference: "Requires production"}}
+						gate.NormalizeCriterionEvidence(&result, []string{"Complete the requested work."}, receipt.TreeSHA)
+						cfg := gate.ValidatorConfig{Enabled: true}
+						gate.ApplyCriterionPolicy(cfg, &result)
+						if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
+							result.Verdict = string(decision.Action)
+						}
+						if err := validator.RecordValidator(ctx, result); err != nil {
+							t.Fatal(err)
+						}
+						detail, err := h.admin.runtimeChange(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+						completion := execution.(runner.ChangeExecution).NativeChange()
+						if err != nil || len(detail.Reviews) != 2 || detail.Reviews[1].Decision != "commented" || completion.Validator == nil || completion.Validator.Verdict != gate.ValidatorVerdictWait || !reflect.DeepEqual(completion.Validator.UnsatisfiableCriteria(), []string{"Complete the requested work."}) || completion.Reviewed {
+							t.Fatalf("unsatisfiable publication lost wait or criterion class: reviews=%+v completion=%+v error=%v", detail.Reviews, completion, err)
+						}
+						return
 					}
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictRework
