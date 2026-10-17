@@ -140,19 +140,17 @@ func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope n
 	if err != nil {
 		return false, err
 	}
-	checks, err := decodeSpriteMemberChecks(raw)
-	return checks != nil && checks.Passed(), err
+	checks, observed, err := decodeSpriteMemberChecks(raw)
+	return observed && checks.Passed(), err
 }
 
-func decodeSpriteMemberChecks(raw sql.NullString) (*runnerauth.LocalChecks, error) {
-	if !raw.Valid || raw.String == "" {
-		return nil, nil
-	}
+func decodeSpriteMemberChecks(raw sql.NullString) (runnerauth.LocalChecks, bool, error) {
 	var checks runnerauth.LocalChecks
-	if err := json.Unmarshal([]byte(raw.String), &checks); err != nil {
-		return nil, err
+	if !raw.Valid || raw.String == "" {
+		return checks, false, nil
 	}
-	return &checks, nil
+	err := json.Unmarshal([]byte(raw.String), &checks)
+	return checks, err == nil, err
 }
 
 func spriteMemberWanted(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, name string) (bool, error) {

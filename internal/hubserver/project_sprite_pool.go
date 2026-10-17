@@ -551,11 +551,11 @@ func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeSco
 			continue
 		}
 		if member.AllocationProjectID != "" {
-			checks, err := decodeSpriteMemberChecks(raw)
+			checks, observed, err := decodeSpriteMemberChecks(raw)
 			if err != nil {
 				return err
 			}
-			if member.WaitingFor = spriteLoginSteps(checks, runner.Problems, member.AllocationProjectID); len(member.WaitingFor) > 0 {
+			if member.WaitingFor = spriteLoginSteps(checks, observed, runner.Problems, member.AllocationProjectID); len(member.WaitingFor) > 0 {
 				member.Status = "awaiting_login"
 				continue
 			}
@@ -572,15 +572,15 @@ func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeSco
 	return nil
 }
 
-func spriteLoginSteps(checks *runnerauth.LocalChecks, problems []runnerauth.Problem, project tracker.ProjectID) []spriteLoginStep {
+func spriteLoginSteps(checks runnerauth.LocalChecks, observed bool, problems []runnerauth.Problem, project tracker.ProjectID) []spriteLoginStep {
 	var steps []spriteLoginStep
-	if checks == nil || checks.Provider != "passed" {
+	if !observed || checks.Provider != "passed" {
 		for _, problem := range problems {
 			if problem.Message == "not signed in" && problem.FixCommand != "" && (problem.ProjectID == "" || problem.ProjectID == string(project)) && !slices.ContainsFunc(steps, func(step spriteLoginStep) bool { return step.Command == problem.FixCommand }) {
 				steps = append(steps, spriteLoginStep{Check: "provider", Command: problem.FixCommand})
 			}
 		}
-		if len(steps) == 0 && checks != nil {
+		if len(steps) == 0 && observed {
 			for _, kind := range checks.ProviderKinds {
 				switch kind {
 				case "codex":
@@ -590,11 +590,11 @@ func spriteLoginSteps(checks *runnerauth.LocalChecks, problems []runnerauth.Prob
 				}
 			}
 		}
-		if len(steps) == 0 && (checks == nil || len(checks.ProviderKinds) == 0) {
+		if len(steps) == 0 && len(checks.ProviderKinds) == 0 {
 			steps = append(steps, spriteLoginStep{Check: "provider", Command: "codex login --device-auth"})
 		}
 	}
-	if checks == nil || checks.Checkout != "passed" {
+	if !observed || checks.Checkout != "passed" {
 		steps = append(steps, spriteLoginStep{Check: "github", Command: "gh auth login"}, spriteLoginStep{Check: "github", Command: "gh auth setup-git"})
 	}
 	return steps
