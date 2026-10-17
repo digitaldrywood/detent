@@ -209,7 +209,11 @@ func (s *Service) observeImportedScheduledRepair(ctx context.Context, scope nati
 	if err != nil || repoErr != nil || len(evidence) != 1 || !strings.EqualFold(repository, sourceRepository) || !strings.EqualFold(repository, evidence[0].Repository) || origin.Source != evidence[0].RunURL {
 		return result
 	}
-	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: repository, Stage: "scheduled", Scheduled: &evidence[0]})
+	workflow, branch, authorized := contract.ScheduledImportWorkflow()
+	if !authorized {
+		return result
+	}
+	page, err := s.config.ImportBackend.FetchImportPage(ctx, GitHubImportRequest{Profile: "native", Repository: repository, Stage: "scheduled", Scheduled: &evidence[0], ScheduledWorkflow: workflow, ScheduledBranch: branch})
 	if err != nil || page.Scheduled == nil {
 		return result
 	}
