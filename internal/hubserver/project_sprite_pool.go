@@ -65,7 +65,7 @@ func decideSpriteScale(input spriteScaleInput) spriteScaleDecision {
 	if input.Depth == 0 {
 		surplus = input.Idle
 	}
-	return spriteScaleDecision{Delete: min(input.Idle, max(input.Count-input.Floor, 0), surplus)}
+	return spriteScaleDecision{Delete: min(input.Idle, max(input.Count-input.Floor, 0), max(surplus, input.Count-input.Ceiling))}
 }
 
 func (s *Service) registerSpritePoolRoutes(e *echo.Echo) {
@@ -283,16 +283,21 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 		input.Depth, input.Free, input.Pending = 0, 0, 0
 		input.Floor, input.Ceiling = allocation.DesiredCount, allocation.DesiredCount
 	}
+	otherMembers := 0
+	for _, member := range view.Members {
+		if member.AllocationProjectID != scope.project && member.State != "deleted" && member.State != "deleting" {
+			otherMembers++
+		}
+	}
+	input.Ceiling = min(input.Ceiling, max(view.MaxRunners-otherMembers, 0))
+	input.Floor = min(input.Floor, input.Ceiling)
 	idle := []spritePoolMember{}
 	for _, member := range view.Members {
-		if member.State == "deleted" || member.AllocationProjectID != scope.project {
+		if member.State == "deleted" || member.State == "deleting" || member.AllocationProjectID != scope.project {
 			continue
 		}
 		input.Count++
 		if member.State == "bootstrapping" {
-			continue
-		}
-		if member.State == "deleting" {
 			continue
 		}
 		if member.RunnerID == "" {
