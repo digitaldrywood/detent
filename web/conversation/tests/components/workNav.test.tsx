@@ -3,7 +3,7 @@
 // The sidebar's Work destination and Browse group (design inventory A.1, A.6).
 // They are the one Detent insertion in the copied `components/Sidebar.tsx`,
 // and they live in `app/adapters/sidebarDestinations.tsx`.
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SavedView } from "../../src/app/work/lib/savedViews.tsx";
@@ -29,10 +29,17 @@ describe("the sidebar's Work navigation", () => {
     expect(favorite.getAttribute("aria-current")).toBe("page");
     expect(screen.getByTestId("nav-work").getAttribute("aria-current")).toBeNull();
     expect(screen.queryByRole("button", { name: "Unpinned" })).toBeNull();
-    fireEvent.click(favorite);
+    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
+    expect(screen.queryByRole("button", { name: "Active bugs" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
+    fireEvent.click(screen.getByRole("button", { name: "Active bugs" }));
     expect(onNavigate).toHaveBeenLastCalledWith("/work/views/view_one");
     fireEvent.click(screen.getByRole("button", { name: "Views" }));
     expect(onNavigate).toHaveBeenLastCalledWith("/work/views");
+    fireEvent.click(screen.getByRole("button", { name: "Actions for Active bugs" }));
+    expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeTruthy();
+    expect(within(screen.getByRole("menu")).getByRole("menuitem", { name: "Delete view" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
   });
   it("sends Work to the active project's board", async () => {
     const { onNavigate } = await renderSidebar();

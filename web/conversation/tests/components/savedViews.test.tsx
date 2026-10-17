@@ -152,7 +152,7 @@ describe("Saved Work views", () => {
       "Closed bugs",
     );
     await user.click(
-      within(dialog).getByRole("button", { name: "Create view" }),
+      within(dialog).getByRole("button", { name: "Save view" }),
     );
     await waitFor(() =>
       expect(fixture.http.saveView).toHaveBeenCalledWith(
@@ -206,7 +206,7 @@ describe("Saved Work views", () => {
       screen.getByRole("textbox", { name: "Name" }),
       "Another view",
     );
-    await user.click(screen.getByRole("button", { name: "Create view" }));
+    await user.click(screen.getByRole("button", { name: "Save view" }));
     await waitFor(() =>
       expect(fixture.http.saveView).toHaveBeenLastCalledWith(
         expect.objectContaining({ state: { ...state, sort: "updated" } }),
@@ -267,7 +267,7 @@ describe("Saved Work views", () => {
       });
       await user.click(
         within(dialog).getByRole("button", {
-          name: action === "Rename" ? "Save" : "Create view",
+          name: action === "Rename" ? "Rename" : "Save view",
         }),
       );
       await waitFor(() =>
@@ -329,7 +329,7 @@ describe("Saved Work views", () => {
       await screen.findByRole("button", { name: "Save as view" }),
     );
     await user.type(screen.getByRole("textbox", { name: "Name" }), "My view");
-    await user.click(screen.getByRole("button", { name: "Create view" }));
+    await user.click(screen.getByRole("button", { name: "Save view" }));
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(
       screen.getByRole("textbox", { name: "Name" }).getAttribute("value"),
