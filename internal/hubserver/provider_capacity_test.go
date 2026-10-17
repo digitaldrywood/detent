@@ -141,30 +141,32 @@ func TestProviderProjectBackendReservations(t *testing.T) {
 	now := time.Date(2026, 10, 16, 3, 0, 0, 0, time.UTC)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
 	code := newNativeFixture(t, service, "", "code")
+	otherCode := newNativeFixture(t, service, code.project.OrganizationID, "other-code")
 	design := newNativeFixture(t, service, code.project.OrganizationID, "design")
 	r := prepareRunnerForScope(t, code, "organization", runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	r.redemption.Capacity = 3
 	r.enroll(t)
 	reports := []providercapacity.Report{
-		{Provider: "openai", Backend: "codex-code", AccountAlias: "runner", Models: []string{"sol", "code-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
+		{Provider: "openai", Backend: "codex-code", AccountAlias: "runner", Models: []string{"sol", "code-model", "astra", "other-code-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
 		{Provider: "anthropic", Backend: "claude-design", AccountAlias: "runner", Models: []string{"opus", "design-model", "provider_default"}, Availability: "unknown", ObservedAt: now},
 	}
 	publishCapacity(t, code, r, reports...)
 	for _, test := range []struct {
 		fixture        nativeFixture
 		backend, model string
-	}{{code, "codex-code", "sol"}, {design, "claude-design", "opus"}} {
-		t.Run(test.backend, func(t *testing.T) {
+	}{{code, "codex-code", "sol"}, {otherCode, "codex-code", "astra"}, {design, "claude-design", "opus"}} {
+		t.Run(test.model, func(t *testing.T) {
 			f := test.fixture
 			approveHubTestPolicy(t, service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "work")
-			claim := providerClaim(r, issue, test.backend)
+			claim := providerClaim(r, issue, test.model)
 			claim.ProviderCandidates[0].Requirement.Backend = test.backend
 			claim.ProviderCandidates[0].Requirement.Model = test.model
 			response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
-			if lease.WorkItemID != issue.WorkItemID || lease.ProviderReservation == nil || lease.ProviderReservation.Backend != test.backend || lease.ProviderReservation.Model != test.model || lease.ProviderReservation.Report.Backend != test.backend || lease.ProviderReservation.Report.Availability != "unknown" {
+			if lease.WorkItemID != issue.WorkItemID || lease.ProviderReservation == nil || lease.ProviderReservation.Backend != test.backend || lease.ProviderReservation.Model != test.model || lease.ProviderReservation.Report.Backend != test.backend || lease.ProviderReservation.Report.AccountAlias != "runner" || lease.ProviderReservation.Report.Availability != "unknown" {
 				t.Fatalf("project reservation=%+v", lease)
 			}
 		})
@@ -177,7 +179,11 @@ func TestProviderProjectBackendReservations(t *testing.T) {
 		t.Fatalf("capacity=%+v", capacity)
 	}
 	for _, view := range capacity.ProviderCapacity {
-		if view.Used != 1 || view.State != "unknown" || view.Reason == "" {
+		wantUsed := 1
+		if view.Backend == "codex-code" {
+			wantUsed = 2
+		}
+		if view.Used != wantUsed || view.State != "unknown" || view.Reason == "" {
 			t.Fatalf("project capacity observation=%+v", view)
 		}
 	}
