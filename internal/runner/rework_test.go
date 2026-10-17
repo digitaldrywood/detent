@@ -599,6 +599,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.source.Version.ID = "version_newer"
 				}
 
+				runRunnerGit(t, source, "worktree", "remove", info.Path)
 				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "fresh-workspaces"), SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
