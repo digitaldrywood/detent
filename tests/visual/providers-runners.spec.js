@@ -83,14 +83,15 @@ for (const width of [1440, 390]) {
       expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
       if (sprite) {
         const instructions = dialog.getByRole("list", { name: "Sprite setup instructions" });
-        await expect(instructions.getByRole("listitem")).toHaveCount(8);
-        await expect(instructions).toContainText("sprite create build-sprite");
-        await expect(instructions).toContainText("sprite console -s build-sprite");
+        await instructions.getByRole("button", { name: "Copy the create command", exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('sprite list -o "${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}" && sprite create -o "${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}" build-sprite');
+        await instructions.getByRole("button", { name: "Copy the console command", exact: true }).click();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('sprite console -o "${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}" -s build-sprite');
         await expect(instructions).toContainText("/v0.9.1/scripts/sprite-runner-bootstrap.sh");
         await expect(instructions).toContainText("bash sprite-runner-bootstrap.sh --version v0.9.1");
         await expect(instructions).toContainText("claude auth login");
         await expect(instructions).toContainText("codex login --device-auth");
-        await expect(instructions).toContainText("Approve the repository policy");
+        await expect(instructions).toContainText("approve policy only if offered");
         await expect(dialog.getByRole("button", { name: "Show token" })).toHaveCount(0);
       }
       await copy.click();
