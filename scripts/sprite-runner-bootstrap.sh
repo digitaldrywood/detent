@@ -386,7 +386,7 @@ if [[ -n $local_root ]]; then
     export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}
     export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$local_root/cache}
     export GOMODCACHE=${GOMODCACHE:-$local_root/cache/go-mod}
-    export npm_config_cache=${npm_config_cache:-$local_root/cache/npm}
+    export npm_config_cache=${npm_config_cache:-${NPM_CONFIG_CACHE:-$local_root/cache/npm}}
 fi
 
 [[ $(uname -s) == Linux ]] || die "run this script inside a Fly Sprite (Linux)"

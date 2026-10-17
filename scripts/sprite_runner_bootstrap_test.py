@@ -464,11 +464,14 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertEqual(lost.returncode, 0, lost.stderr)
         self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
         operator_modules = self.root / "operator-modules"
-        self.env["GOMODCACHE"] = str(operator_modules)
+        operator_npm = self.root / "operator-npm"
+        self.env.update(GOMODCACHE=str(operator_modules), NPM_CONFIG_CACHE=str(operator_npm))
         operator = self.run_bootstrap(enrollment="")
-        del self.env["GOMODCACHE"]
+        del self.env["GOMODCACHE"], self.env["NPM_CONFIG_CACHE"]
         self.assertEqual(operator.returncode, 0, operator.stderr)
-        self.assertIn(["export", f"GOMODCACHE={operator_modules}"], [shlex.split(line) for line in launcher.read_text().splitlines()])
+        exports = [shlex.split(line) for line in launcher.read_text().splitlines()]
+        self.assertIn(["export", f"GOMODCACHE={operator_modules}"], exports)
+        self.assertIn(["export", f"npm_config_cache={operator_npm}"], exports)
         config = self.home / ".config/detent-runner/global.yaml"
         for name, root, want in (
             ("legacy default", self.home / "detent-runner", local / "work"),
