@@ -137,14 +137,23 @@ function speechSegments(text: string, complete: boolean): Array<{ text: string; 
   while (index < text.length) {
     const rest = text.slice(index);
     const lineStart = index === 0 || text[index - 1] === "\n";
-    const fence = lineStart ? /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/.exec(rest) : null;
+    const container = lineStart ? speechContainerContent(rest) : { content: rest, quoteDepth: 0 };
+    const fence = lineStart ? /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)/.exec(container.content) : null;
     if (fence) {
       const marker = fence[1]!;
-      const closing = new RegExp(`(?:^|\\n) {0,3}${marker[0]}{${marker.length},}[^\\S\\n]*(?:\\n|$)`)
-        .exec(rest.slice(fence[0].length));
-      if (!closing && !complete) break;
+      const openingEnd = rest.length - container.content.length + fence[0].length;
+      const closing = new RegExp(`^[\\t ]*${marker[0]}{${marker.length},}[^\\S\\n]*(?:\\n|$)`);
+      let closingEnd: number | null = null;
+      for (const line of rest.slice(openingEnd).matchAll(/[^\n]*(?:\n|$)/g)) {
+        const candidate = speechContainerContent(line[0], false);
+        if (candidate.quoteDepth === container.quoteDepth && closing.test(candidate.content)) {
+          closingEnd = openingEnd + line.index + line[0].length;
+          break;
+        }
+      }
+      if (closingEnd === null && !complete) break;
       if (spoken.trim()) emit(index);
-      index += closing ? fence[0].length + closing.index + closing[0].length : rest.length;
+      index += closingEnd ?? rest.length;
       spoken = "code block";
       emit(index);
       continue;
@@ -195,4 +204,16 @@ function speechSegments(text: string, complete: boolean): Array<{ text: string; 
   }
   if (complete && index === text.length) emit(index);
   return segments;
+}
+
+function speechContainerContent(text: string, lists = true): { content: string; quoteDepth: number } {
+  let content = text;
+  let quoteDepth = 0;
+  while (true) {
+    const quote = /^ {0,3}>[\t ]?/.exec(content);
+    const prefix = quote ?? (lists ? /^ {0,3}(?:[-+*]|\d{1,9}[.)])[\t ]+/.exec(content) : null);
+    if (prefix === null) return { content, quoteDepth };
+    if (quote !== null) quoteDepth += 1;
+    content = content.slice(prefix[0].length);
+  }
 }
