@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,17 +56,7 @@ ORDER BY work_item_id LIMIT 1`, now.UTC().Format("2006-01-02T15:04:05.000000000Z
 	return true, tx.Commit()
 }
 
-func (d *database) commit(ctx context.Context, tx *sql.Tx) error {
-	readOnly, err := queryOnlyTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if readOnly {
-		return tx.Commit()
-	}
-	if err := refreshNativeBoard(ctx, tx, d.now()); err != nil {
-		return err
-	}
+func (d *database) commit(_ context.Context, tx *sql.Tx) error {
 	return tx.Commit()
 }
 
@@ -85,32 +74,6 @@ RETURNING organization_id,project_id,sequence`, scope).Scan(&organization, &proj
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence,replay_floor) VALUES(?,?,?,?)
 ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence,replay_floor=excluded.replay_floor`, organization, project, sequence, sequence)
-	return err
-}
-
-func queryOnlyTx(ctx context.Context, tx *sql.Tx) (bool, error) {
-	var readOnly bool
-	if err := tx.QueryRowContext(ctx, "PRAGMA query_only").Scan(&readOnly); err != nil {
-		return false, fmt.Errorf("read transaction mode: %w", err)
-	}
-	return readOnly, nil
-}
-
-func refreshNativeBoard(ctx context.Context, tx *sql.Tx, now time.Time) error {
-	ids, err := nativePageIDs(ctx, tx, "SELECT work_item_id FROM native_board_dirty ORDER BY work_item_id")
-	if err != nil {
-		return err
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	policies := map[string]changeSummaryPolicy{}
-	for _, id := range ids {
-		if err := refreshNativeBoardCard(ctx, tx, id, now, policies); err != nil {
-			return err
-		}
-	}
-	_, err = tx.ExecContext(ctx, "DELETE FROM native_board_dirty")
 	return err
 }
 

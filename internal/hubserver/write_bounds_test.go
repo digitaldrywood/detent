@@ -17,6 +17,9 @@ import (
 func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	now := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	issue := f.create(t, "bounded write")
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	worker := f.worker(t, "bounded-worker")
@@ -33,7 +36,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 		expired = append(expired, item.WorkItemID)
 	}
-	now = now.Add(91 * time.Second)
+	drainTestNativeBoard(t, f.service)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	var statements []string
 	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
@@ -47,14 +50,38 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	if err := appendNativeHistory(ctx, tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, f.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range expired {
+		if err := appendNativeHistory(ctx, tx, scope, string(id), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready"}}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
 	statements = statements[:0]
 	if err := f.service.database.commit(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	for _, statement := range statements {
-		if strings.Contains(statement, "analytics_") {
-			t.Fatalf("request commit ran derived analytics work: %s", statement)
+		if strings.Contains(statement, "analytics_") || strings.Contains(statement, "native_board") {
+			t.Fatalf("request commit ran derived projection work: %s", statement)
 		}
+	}
+	for want := 3; want > 0; want-- {
+		var dirty int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_dirty").Scan(&dirty); err != nil || dirty != want {
+			t.Fatalf("request left dirty cards=%d want %d err=%v", dirty, want, err)
+		}
+		more, err := f.service.database.drainNativeBoardDirty(t.Context(), now)
+		if err != nil || !more {
+			t.Fatalf("background dirty refresh: more=%v err=%v", more, err)
+		}
+	}
+	now = now.Add(91 * time.Second)
+	tx, err = f.service.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := f.service.database.commit(ctx, tx); err != nil {
+		t.Fatal(err)
 	}
 	retained := func() int {
 		t.Helper()
@@ -76,7 +103,6 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 			t.Fatalf("background expiry refreshed more than one execution: retained=%d want %d", count, want)
 		}
 	}
-
 }
 
 func TestINV18HubMigrationsUseTypedColumns(t *testing.T) {

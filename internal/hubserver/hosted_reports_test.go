@@ -134,6 +134,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, f.service)
 	drainTestAnalytics(t, f.service)
 	var priorCost float64
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT sum(cost_estimate) FROM attempt_usage WHERE period>=? AND period<?", w.From.Add(-48*time.Hour).Format(usagePeriodLayout), w.From.Format(usagePeriodLayout)).Scan(&priorCost); err != nil || priorCost == 0 {

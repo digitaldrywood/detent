@@ -24,6 +24,9 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 16, 20, 0, 0, 0, time.UTC)
 	service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+	if err := service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	type currentWork struct {
 		fixture     nativeFixture
 		runner      runnerFixture
@@ -151,6 +154,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 					endpoint, status = "/release", http.StatusNoContent
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+endpoint, w.worker, mutation), status)
+				drainTestNativeBoard(t, service)
 				var rawCard string
 				if err := service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", issue.WorkItemID).Scan(&rawCard); err != nil {
 					t.Fatal(err)
@@ -218,12 +222,16 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	issue := f.create(t, "Pushed card")
 	other := f.create(t, "Unchanged card")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 	read := func() tracker.NativeIssuePage {
 		t.Helper()
+		drainTestNativeBoard(t, f.service)
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=board&state=Todo&limit=2000", f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page tracker.NativeIssuePage
@@ -258,6 +266,7 @@ func TestNativeBoardProjectionAndReplay(t *testing.T) {
 			if response.Code < 200 || response.Code >= 300 {
 				t.Fatalf("%s: %d %s", test.name, response.Code, response.Body.String())
 			}
+			drainTestNativeBoard(t, f.service)
 			tx, err := f.service.database.reader.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -367,6 +376,7 @@ SELECT ?,?,NULL,NULL FROM retained`, nativeBoardReplayLimit, scope.organization,
 			changed = changed.WithID()
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: descriptor.ID, Policy: changed}), http.StatusOK)
 			descriptor = changed
+			drainTestNativeBoard(t, f.service)
 			for _, id := range []tracker.NativeWorkItemID{history.WorkItemID, other.WorkItemID} {
 				var raw string
 				var rank int
@@ -394,7 +404,11 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	drainTestNativeBoard(t, f.service)
 	var since int64
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_board_sequences WHERE project_id=?", scope.project).Scan(&since); err != nil {
 		t.Fatal(err)
@@ -407,6 +421,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	worker := f.worker(t, "board-worker")
 	assertDelta := func(t *testing.T, status string, count int, reset ...bool) {
 		t.Helper()
+		drainTestNativeBoard(t, f.service)
 		frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
 		if err != nil {
 			t.Fatal(err)
@@ -548,6 +563,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	var historicalChange tracker.ChangeRequest
 	decodeHubResponse(t, response, &historicalChange)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+historicalChange.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "historical-version"}, ChangeVersionInput: changeTestInput()}), http.StatusOK)
+	drainTestNativeBoard(t, f.service)
 	for _, statement := range []string{
 		"CREATE TABLE policy_dirty_cards(work_item_id TEXT PRIMARY KEY)",
 		"CREATE TRIGGER count_change_policy_cards AFTER INSERT ON native_board_dirty BEGIN INSERT OR IGNORE INTO policy_dirty_cards VALUES(NEW.work_item_id); END",
@@ -663,6 +679,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 			t.Fatalf("related IDs=%v, want %v (granted=%v)", ids, want, granted)
 		}
 	}
+	drainTestNativeBoard(t, f.service)
 	var stored tracker.NativeBoardCard
 	var raw string
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT record_json FROM native_board_items WHERE work_item_id=?", item).Scan(&raw); err != nil {
@@ -690,6 +707,7 @@ func TestHostedBoardStreamReplay(t *testing.T) {
 	for index := range 2 {
 		response := f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(item)+"/comments", map[string]any{"idempotency_key": fmt.Sprintf("board-stream-%d", index), "body": "Pushed activity"})
 		requireNativeStatus(t, response, http.StatusOK)
+		drainTestNativeBoard(t, f.service)
 	}
 	replay := readFrame(openHostedTestStream(t, f, user, "?board=true&since="+strconv.FormatInt(initial.Sequence, 10)))
 	if replay.Gap || len(replay.Deltas) != 2 || replay.Sequence <= initial.Sequence {
@@ -823,6 +841,7 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 	if err := service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, service)
 	for _, project := range projects {
 		scope := nativeScope{organization: project.fixture.project.OrganizationID, project: project.fixture.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 		page, err := service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
@@ -899,6 +918,19 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func drainTestNativeBoard(t *testing.T, service *Service) {
+	t.Helper()
+	for {
+		more, err := service.database.drainNativeBoardDirty(t.Context(), service.config.now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			return
+		}
 	}
 }
 

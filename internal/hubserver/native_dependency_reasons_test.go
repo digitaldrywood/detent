@@ -28,6 +28,7 @@ func TestNativeDependencyReasonCAS(t *testing.T) {
 		t.Fatalf("dependency summaries: %+v %+v", current.Blockers, neighbor.Dependents)
 	}
 	path := f.base + "/work-items/" + string(dependent.WorkItemID) + "/dependency-reasons"
+	drainTestNativeBoard(t, f.service)
 	var beforeSequence int64
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT MAX(sequence) FROM native_board_deltas").Scan(&beforeSequence); err != nil {
 		t.Fatal(err)

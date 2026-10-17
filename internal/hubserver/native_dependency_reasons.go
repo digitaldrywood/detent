@@ -197,7 +197,7 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 		return invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration", DeferBoardProjection: true}
+	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration"}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
 		if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") {
 			return nil, nativeInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")

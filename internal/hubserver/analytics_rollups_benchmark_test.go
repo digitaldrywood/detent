@@ -100,13 +100,9 @@ func BenchmarkAnalyticsRollupAppend(b *testing.B) {
 				if err := appendNativeHistory(b.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready"}}, f.service.config.now()); err != nil {
 					b.Fatal(err)
 				}
-				if projected {
-					err = f.service.database.commit(b.Context(), tx)
-				} else {
-					err = refreshNativeBoard(b.Context(), tx, f.service.config.now())
-					if err == nil {
-						err = tx.Commit()
-					}
+				err = f.service.database.commit(b.Context(), tx)
+				if err == nil && projected {
+					_, err = f.service.database.drainNativeBoardDirty(b.Context(), f.service.config.now())
 				}
 				if err != nil {
 					b.Fatal(err)
