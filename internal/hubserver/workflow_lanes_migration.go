@@ -80,7 +80,7 @@ FROM project_policies p JOIN policy_revisions r ON r.scope=p.scope AND r.policy_
 	if descriptor.Workflow != nil || descriptor.Configuration == nil {
 		return nil
 	}
-	oldWorkflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: before})
+	oldWorkflow, err := workflowconfig.ParseHistoricalProjectDefinition(workflowconfig.ProjectDefinitionSources{WorkflowPath: "Cloud WORKFLOW.md", Workflow: before})
 	if err != nil {
 		return err
 	}

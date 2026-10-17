@@ -53,7 +53,7 @@ func (s *cloudPolicyScheduling) ProjectWorkflowMarkdown(context.Context, string)
 
 func TestNativeCloudWorkflowFallback(t *testing.T) {
 	t.Parallel()
-	markdown := "---\ntracker:\n  kind: hub_native\n  active_states: [Todo, Repair, Merging]\n  observed_states: [Backlog, Blocked, Human Review]\n  terminal_states: [Done, Cancelled]\nplan:\n  enabled: true\n---\nCloud instructions.\n"
+	markdown := "---\ntracker:\n  kind: hub_native\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Plan Review\n      role: holding\n    - name: Todo\n      role: active\n    - name: Repair\n      role: active\n    - name: Merging\n      role: active\n    - name: Done\n      role: terminal\n    - name: Cancelled\n      role: terminal\nplan:\n  enabled: true\n---\nCloud instructions.\n"
 	for _, test := range []struct {
 		name, instructions, config string
 		wantCloud                  bool
@@ -61,7 +61,7 @@ func TestNativeCloudWorkflowFallback(t *testing.T) {
 	}{
 		{name: "no files", wantCloud: true},
 		{name: "instructions only", instructions: "# Agent instructions\n- Todo\n- A prose lane is not configuration\n", wantCloud: true},
-		{name: "split takes precedence", instructions: "Repository instructions.\n", config: "schema: 1\ntracker:\n  kind: hub_native\n  active_states: [Todo, Rework]\n"},
+		{name: "split takes precedence", instructions: "Repository instructions.\n", config: "schema: 1\ntracker:\n  kind: hub_native\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Todo\n      role: active\n    - name: Rework\n      role: active\n    - name: Closed\n      role: terminal\n    - name: Cancelled\n      role: terminal\n    - name: Canceled\n      role: terminal\n    - name: Duplicate\n      role: terminal\n    - name: Done\n      role: terminal\n"},
 		{name: "legacy takes precedence", instructions: "---\ntracker:\n  kind: hub_native\n---\nRepository instructions.\n"},
 		{name: "invalid supplied definition", instructions: "Repository instructions.\n", config: "schema: 999\ntracker:\n  kind: memory\n", wantError: "schema"},
 		{name: "mixed supplied definition", instructions: "---\ntracker:\n  kind: memory\n---\nInstructions.\n", config: "schema: 1\ntracker:\n  kind: memory\n", wantError: "mixed"},
