@@ -21,6 +21,12 @@ with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps([name, args]) + "\n")
 if name == "uname":
     print("Linux" if args == ["-s"] else os.environ.get("FIXTURE_ARCH", "x86_64"))
+elif name == "findmnt":
+    if not os.environ.get("FIXTURE_LOCAL_DISK"):
+        sys.exit(1)
+    print("ext4 " + os.environ["FIXTURE_LOCAL_DISK"])
+elif name == "nproc":
+    print(os.environ.get("FIXTURE_NPROC", "8"))
 elif name == "id":
     print("1000" if args == ["-u"] else "sprite")
 elif name == "sudo":
@@ -162,6 +168,8 @@ elif name == "detent":
             if identity != registered:
                 sys.exit("runner credential does not match enrollment")
         (root / "detent-cwd").write_text(os.getcwd())
+        keys = ("MAKEFLAGS", "TMPDIR", "XDG_CACHE_HOME", "GOMODCACHE", "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH")
+        (root / "detent-env.json").write_text(json.dumps({key: os.environ.get(key) for key in keys}))
         print("v0.117.41")
 elif name == "sprite-env":
     if args[:2] == ["services", "get"]:
@@ -199,7 +207,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.home.mkdir()
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
-        for name in ("uname", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
+        for name in ("uname", "nproc", "findmnt", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
             path = self.fake_bin / name
             path.write_text(STUB)
             path.chmod(0o755)
@@ -298,6 +306,10 @@ class SpriteBootstrapTests(unittest.TestCase):
         service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
         self.assertEqual(service.returncode, 0, service.stderr)
         self.assertEqual((self.root / "detent-cwd").read_text(), str(work.resolve()))
+        launched = json.loads((self.root / "detent-env.json").read_text())
+        self.assertEqual(launched["MAKEFLAGS"], "-l2")
+        self.assertIsNone(launched["XDG_CACHE_HOME"])
+        self.assertIn("Sprite resource profile: 8 CPUs; runner Make load limit -l2", first.stdout)
         self.assertIn(["detent", ["--config", str(config), "--headless"]], self.calls())
         self.assertIn("claude auth login", first.stdout)
         self.assertIn("codex login", first.stdout)
@@ -419,6 +431,47 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertIn(["cd", "--", str(launch_dir)], [shlex.split(line) for line in launcher.splitlines()])
                 self.assertTrue((root / ".tmp").is_dir())
                 self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
+
+    def test_local_disk_hosts_checkouts_and_caches(self):
+        # Catches checkouts or caches left on the persistent network disk, and
+        # migrations that override an operator-chosen workspace root.
+        disk = self.root / "local disk"
+        disk.mkdir()
+        self.env["FIXTURE_LOCAL_DISK"] = str(disk)
+        local = disk / "detent-runner"
+        first = self.run_bootstrap()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        args = self.registrations()[0]
+        self.assertEqual(args[args.index("--workspace-root") + 1], str(local / "work"))
+        launcher = self.home / ".local/lib/detent-sprite-runner/start"
+        service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(service.returncode, 0, service.stderr)
+        self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
+        self.assertEqual(json.loads((self.root / "detent-env.json").read_text()), {
+            "MAKEFLAGS": "-l2",
+            "TMPDIR": str(local / "work/.tmp"),
+            "XDG_CACHE_HOME": str(local / "cache"),
+            "GOMODCACHE": str(local / "cache/go-mod"),
+            "npm_config_cache": str(local / "cache/npm"),
+            "PLAYWRIGHT_BROWSERS_PATH": str(self.home / ".cache/ms-playwright"),
+        })
+        self.assertIn(f"Local disk: build caches in {local / 'cache'}", first.stdout)
+        config = self.home / ".config/detent-runner/global.yaml"
+        for name, root, want in (
+            ("legacy default", self.home / "detent-runner", local / "work"),
+            ("operator root", self.home / "chosen", self.home / "chosen"),
+        ):
+            with self.subTest(name=name):
+                config.write_text(f"# operator config\nworkspace_root: {root}\n")
+                rerun = self.run_bootstrap(enrollment="")
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
+                                         "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(YAML.parse(fs.readFileSync(process.argv[2], 'utf8')).workspace_root);",
+                                         self.env["FIXTURE_YAML_MODULE"], str(config)],
+                                        text=True, capture_output=True, timeout=10)
+                self.assertEqual(parsed.stdout.strip(), str(want), parsed.stderr)
+                self.assertIn("# operator config", config.read_text())
+                self.assertIn("cd -- " + str(want).replace(" ", "\\ "), launcher.read_text())
 
     def test_empty_input_reuses_an_existing_registration_only(self):
         # Catches reruns that need a fresh token, and a fresh Sprite that

@@ -366,12 +366,22 @@ fi
 unset words
 config_path=${config_path:-$HOME/.config/detent-runner/global.yaml}
 requested_workspace_root=$workspace_root
-workspace_root=${workspace_root:-$HOME/detent-runner}
-[[ $config_path == /* && $workspace_root == /* ]] || die "--config and --workspace-root must be absolute paths"
+[[ $config_path == /* && ( -z $workspace_root || $workspace_root == /* ) ]] || die "--config and --workspace-root must be absolute paths"
 identity_path="$(dirname -- "$config_path")/identity.json"
 if [[ -z $token ]] && [[ ! -f $config_path || ! -f $identity_path ]]; then
     die "no enrollment command given and $config_path is not registered yet"
 fi
+
+legacy_workspace_root=$HOME/detent-runner
+local_root=
+if command -v findmnt >/dev/null; then
+    read -r local_fstype local_mount < <(findmnt -n -o FSTYPE,TARGET --mountpoint /tmp 2>/dev/null || true) || true
+    if [[ ${local_fstype:-} =~ ^(ext4|xfs|btrfs)$ && ${local_mount:-} == /* ]]; then
+        local_root=$local_mount/detent-runner
+    fi
+fi
+workspace_root=${workspace_root:-${local_root:+$local_root/work}}
+workspace_root=${workspace_root:-$legacy_workspace_root}
 
 [[ $(uname -s) == Linux ]] || die "run this script inside a Fly Sprite (Linux)"
 case $(uname -m) in
@@ -647,10 +657,13 @@ fi
 
 last_completed='runner registration command completed or stored identity reused; verify Hub connection'
 
-pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" <<'NODE'
+migrate_workspace_root=
+if [[ -n $local_root && -z $requested_workspace_root ]]; then migrate_workspace_root=$workspace_root; fi
+pressure_status=$(node - "$npm_prefix/lib/node_modules/yaml" "$config_path" "$legacy_workspace_root" "$migrate_workspace_root" <<'NODE'
 const fs = require('node:fs');
 const YAML = require(process.argv[2]);
 const configPath = process.argv[3];
+const [legacyWorkspaceRoot, migrateWorkspaceRoot] = process.argv.slice(4);
 const original = fs.readFileSync(configPath, 'utf8');
 const config = YAML.parseDocument(original);
 if (config.errors.length) throw config.errors[0];
@@ -671,6 +684,10 @@ for (const signal of ['io', 'cpu']) {
         config.setIn(path, 1);
         changed = true;
     }
+}
+if (migrateWorkspaceRoot && config.get('workspace_root') === legacyWorkspaceRoot) {
+    config.set('workspace_root', migrateWorkspaceRoot);
+    changed = true;
 }
 if (changed) {
     const temporary = `${configPath}.sprite-bootstrap-${process.pid}`;
@@ -725,10 +742,20 @@ workspace_root=${resolved_roots%%$'\n'*}
 launch_dir=${resolved_roots#*$'\n'}
 
 mkdir -p "$workspace_root/.tmp" "$launch_dir"
+cpu_count=$(nproc)
+[[ $cpu_count =~ ^[1-9][0-9]*$ ]] || die "could not read the Sprite CPU count"
+make_load_limit=$((cpu_count / 4 > 0 ? cpu_count / 4 : 1))
 launcher="$lib_dir/start"
 {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
     printf 'export HOME=%q\nexport PATH=%q\nexport TMPDIR=%q\n' "$HOME" "$PATH" "$workspace_root/.tmp"
+    printf 'export MAKEFLAGS=%q\n' "-l$make_load_limit"
+    if [[ -n $local_root ]]; then
+        printf 'export XDG_CACHE_HOME=%q\nexport GOMODCACHE=%q\nexport npm_config_cache=%q\n' \
+            "$local_root/cache" "$local_root/cache/go-mod" "$local_root/cache/npm"
+        printf 'export PLAYWRIGHT_BROWSERS_PATH=%q\n' "${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}"
+    fi
+    printf 'mkdir -p -- %q %q\n' "$workspace_root/.tmp" "$launch_dir"
     printf 'cd -- %q\n' "$launch_dir"
     printf 'exec %q --config %q --headless\n' "$bin_dir/detent" "$config_path"
 } > "$launcher"
@@ -744,6 +771,10 @@ fi
 
 last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
+printf 'Sprite resource profile: %s CPUs; runner Make load limit -l%s; workers run at lower CPU priority than the runner.\n' "$cpu_count" "$make_load_limit"
+if [[ -n $local_root ]]; then
+    printf 'Local disk: build caches in %s; checkouts in %s.\n' "$local_root/cache" "$workspace_root"
+fi
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
     printf '  Claude: run claude auth login, or configure a Sprites Anthropic connector.\n'
