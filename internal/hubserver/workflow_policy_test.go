@@ -455,12 +455,8 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				if setup.Policy == nil || setup.Policy.Policy.ID != candidate.ID {
 					t.Fatalf("older runner reverted approval: %+v", setup.Policy)
 				}
-				if test.changedInputs {
-					if len(setup.ObservedPolicies) != 1 || !setup.ObservedPolicies[0].PreviouslyApproved || !setup.ObservedPolicies[0].Conflict {
-						t.Fatalf("historical authored policy is not reported as a conflict: %+v", setup.ObservedPolicies)
-					}
-				} else if len(setup.ObservedPolicies) != 0 {
-					t.Fatalf("older authored version requested reapproval: %+v", setup.ObservedPolicies)
+				if len(setup.ObservedPolicies) != 0 {
+					t.Fatalf("historical approved revision requested reapproval: %+v", setup.ObservedPolicies)
 				}
 			}
 			if test.active {
