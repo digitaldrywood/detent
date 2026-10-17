@@ -214,7 +214,7 @@ describe("the Enroll dialog", () => {
     fireEvent.click(screen.getByLabelText("A Fly Sprite"));
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByText("Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.")).toBeTruthy();
+    expect(screen.getByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.")).toBeTruthy();
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toMatch(/^detent-[a-z0-9]+$/);
     expect(screen.getByText(/The Sprite gets the same name/)).toBeTruthy();
     await waitFor(() => expect(screen.queryByText("Checking Sprites tokens…")).toBeNull());
@@ -270,7 +270,7 @@ describe("the Enroll dialog", () => {
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-disabled")).not.toBe("true");
     fireEvent.click(sandbox);
     expect(sandbox.getAttribute("aria-checked")).toBe("true");
-    expect(screen.queryByText("Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.")).toBeNull();
+    expect(screen.queryByText("Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.")).toBeNull();
   });
 
   it.each([["Sandbox", "sandbox"], ["Full access", "native-trusted"]] as const)("requires an explicit %s selection and carries it into the register command", async (label, tier) => {

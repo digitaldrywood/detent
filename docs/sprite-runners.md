@@ -126,16 +126,26 @@ token in the next step registers a runner with Detent.
 ## 4. Enroll a runner in the Hub
 
 Open **Settings > Runners > Enroll a runner**. Under **Where will it run?**,
-select **A Fly Sprite**. Sprite runners use **Full access** (`native-trusted`),
-which lets agents use the VM's files, credentials and network. Sandbox is not
-yet available on Sprites: the Sprite VM does not support the agent sandbox.
-The enrollment access choice is passed to
+select **A Fly Sprite**. New Sprite runners use **Full access**
+(`native-trusted`), which lets agents use the VM's files, credentials and
+network. The enrollment access choice is passed to
 `detent hub runner register --isolation-tier`.
+
+Sandbox becomes available on a Sprite runner once its isolation probe reports
+sandbox support for every configured agent backend. Sprite processes inherit an
+ambient Linux capability set that makes the Codex sandbox refuse to start, so
+Detent v0.117.42 and later start sandboxed agent processes with inheritable
+and ambient capabilities dropped. Older runners fail the probe and stay on Full
+access; update the runner, wait for its next heartbeat, then switch it to
+Sandbox. Sandbox limits agent writes to the workspace and outbound network to
+the sandbox domain allowlist; it does not hide files elsewhere on the VM from
+agent reads.
 
 For **Add runner > AI assisted**, Luna explains Full access and includes
 `isolation_tier: native-trusted` in new approved Sprite pool settings. The saved
 choice applies to newly provisioned pool members. Existing runners and pools
-configured for sandbox retain their stored tier and report why it is unavailable.
+configured for sandbox retain their stored tier and report why it is unavailable
+until their probe passes. Sprite pools cannot select Sandbox.
 Changing an existing runner uses a separate `set_runner_tier` preview: an
 organization owner or admin must approve it, even when ordinary chat
 confirmations are off. No re-enrollment is needed. Ask Luna why a runner is not

@@ -63,7 +63,7 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			}
 			wantMessage := "Tooling needs repair"
 			if test.sprite && test.tier == "sandbox" {
-				wantMessage = "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox."
+				wantMessage = "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support."
 			}
 			if problems[0].Message != wantMessage {
 				t.Fatalf("problem message = %q, want %q", problems[0].Message, wantMessage)
