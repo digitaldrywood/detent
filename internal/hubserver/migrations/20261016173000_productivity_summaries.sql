@@ -44,10 +44,9 @@ CREATE TABLE report_issue_runners (
  project_id TEXT NOT NULL,
  work_item_id TEXT NOT NULL,
  runner_id TEXT NOT NULL,
- hour INTEGER NOT NULL,
  started_ns INTEGER NOT NULL,
  updated_ns INTEGER NOT NULL,
- PRIMARY KEY(organization_id,project_id,work_item_id,runner_id,hour),
+ PRIMARY KEY(organization_id,project_id,work_item_id,runner_id,started_ns),
  FOREIGN KEY(organization_id,project_id,work_item_id) REFERENCES report_issue_summaries ON UPDATE CASCADE ON DELETE CASCADE
 );
 INSERT INTO analytics_rollup_backfill SELECT organization_id,id FROM projects WHERE true ON CONFLICT DO NOTHING;

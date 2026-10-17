@@ -150,13 +150,18 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 	})
 	t.Run("all projects", func(t *testing.T) {
+		legacy := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}, "labels": {"rpt-cloud"}})
+		projectReport := read(t, url.Values{"project": {f.project}, "range": {"24h"}, "labels": {"rpt-cloud"}})
+		if legacy.Analytics.ProjectID != reportsAllProjects || legacy.Completion.Done != projectReport.Completion.Done || legacy.Completion.Cost != projectReport.Completion.Cost || legacy.Rework == nil || legacy.Failures == nil || legacy.Stages == nil || legacy.Spend == nil {
+			t.Fatalf("legacy organization report=%+v", legacy)
+		}
 		var organization organizationProductivity
-		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project=all&range=24h&labels=rpt-cloud", http.StatusOK), &organization)
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h&labels=rpt-cloud", http.StatusOK), &organization)
 		project := read(t, url.Values{"project": {f.project}, "range": {"24h"}, "labels": {"rpt-cloud"}})
 		if organization.Current.Completed != project.Completion.Done || organization.Current.CompletionCost != project.Completion.Cost || organization.Current.Cancelled != project.Completion.Cancelled {
 			t.Fatalf("organization=%+v project=%+v", organization.Current, project.Completion)
 		}
-		f.usage(t, "staff", browserHostedOrganizationBase+"/reports?project=all&range=24h", http.StatusForbidden)
+		f.usage(t, "staff", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h", http.StatusForbidden)
 	})
 	t.Run("custom range", func(t *testing.T) {
 		day := to.Add(-time.Hour).Format(time.DateOnly)
@@ -233,7 +238,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
 		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
 		var organization organizationProductivity
-		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project=all&range=24h", http.StatusOK), &organization)
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h", http.StatusOK), &organization)
 		if organization.Current.Completed != unfiltered.Completion.Done {
 			t.Fatalf("all projects counted an unreadable project: %d, want %d", organization.Current.Completed, unfiltered.Completion.Done)
 		}
