@@ -123,7 +123,6 @@ function CommentCard({
   const [busy, setBusy] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [changeError, setChangeError] = React.useState<string | null>(null);
-  const [changeTarget, setChangeTarget] = React.useState<ActivityComment | null>(null);
   const trigger = React.useRef<HTMLButtonElement>(null);
   const article = React.useRef<HTMLElement>(null);
   const wasEditing = React.useRef(false);
@@ -134,11 +133,11 @@ function CommentCard({
   const canChange = comment?.own === true && !comment.deleted && onChangeComment != null;
   const finishEditing = () => setEditing(false);
   const change = async (deleted: boolean) => {
-    if (changeTarget === null || onChangeComment == null || busy || (!deleted && editUploading)) return;
+    if (comment === undefined || onChangeComment == null || !canChange || busy || (!deleted && editUploading)) return;
     setBusy(true);
     setChangeError(null);
     try {
-      await onChangeComment(changeTarget, deleted ? "" : editDraft, deleted);
+      await onChangeComment(comment, deleted ? "" : editDraft, deleted);
       setConfirmDelete(false);
       finishEditing();
     } catch (cause) {
@@ -159,8 +158,8 @@ function CommentCard({
                 <EllipsisIcon className="size-3.5" />
               </MenuTrigger>
               <MenuPopup align="end" sideOffset={4}>
-                <MenuItem onClick={() => { setChangeTarget(comment); setEditDraft(comment.body); setChangeError(null); setEditing(true); }}>Edit</MenuItem>
-                <MenuItem variant="destructive" onClick={() => { setChangeTarget(comment); setChangeError(null); setConfirmDelete(true); }}>Delete</MenuItem>
+                <MenuItem onClick={() => { setEditDraft(comment.body); setChangeError(null); setEditing(true); }}>Edit</MenuItem>
+                <MenuItem variant="destructive" onClick={() => { setChangeError(null); setConfirmDelete(true); }}>Delete</MenuItem>
               </MenuPopup>
             </Menu> : null}
           </div>

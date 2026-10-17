@@ -21,6 +21,7 @@ import {
   mergeActivity,
   type ActivityRow,
 } from "../../src/app/work/lib/activity.ts";
+import { WorkApiError } from "../../src/app/work/lib/workHttp.ts";
 import { useActivityCitation } from "../../src/app/work/lib/useActivityCitation.ts";
 import { ActivityFeed, LiveRow } from "../../src/app/work/components/ActivityFeed.tsx";
 import { ClientContext } from "../../src/app/client.ts";
@@ -230,6 +231,7 @@ describe("the feed", () => {
   async function openCommentAction(user: ReturnType<typeof userEvent.setup>, action: "Edit" | "Delete") {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Comment actions" }));
     await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Edit" })));
     await user.keyboard(action === "Edit" ? "{Home}" : "{End}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: action }));
     await user.keyboard("{Enter}");
@@ -245,7 +247,7 @@ describe("the feed", () => {
   it("edits only owned comments by keyboard, cancels drafts, keeps failed edits, and returns focus", async () => {
     const user = userEvent.setup();
     const rows = commentRows();
-    const onChange = vi.fn().mockRejectedValueOnce(new Error("Save unavailable")).mockResolvedValueOnce(undefined);
+    const onChange = vi.fn().mockRejectedValueOnce(new Error("Save unavailable")).mockRejectedValueOnce(new WorkApiError({ status: 409, code: "revision_conflict", message: "Comment changed in another session" })).mockResolvedValueOnce(undefined);
     const view = render(<ActivityFeed rows={rows} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
     expect(screen.getAllByRole("button", { name: "Comment actions" })).toHaveLength(1);
     await user.tab();
@@ -264,7 +266,6 @@ describe("the feed", () => {
     expect(screen.getByText("Original comment")).toBeTruthy();
     await openCommentAction(user, "Edit");
     await user.keyboard("{Control>}a{/Control}Corrected comment");
-    view.rerender(<ActivityFeed rows={rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, revision: "2" } } : entry)} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
     await user.tab();
     await user.tab();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save" }));
@@ -273,7 +274,14 @@ describe("the feed", () => {
     expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Corrected comment");
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save" }));
     await user.keyboard("{Enter}");
+    expect((await screen.findByRole("alert")).textContent).toContain("Comment changed in another session");
     expect(onChange).toHaveBeenLastCalledWith(rows[0]!.comment, "Corrected comment", false);
+    const refreshed = rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "Changed in another session", revision: "2" } } : entry);
+    view.rerender(<ActivityFeed rows={refreshed} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
+    expect((screen.getByRole("textbox", { name: "Edit comment" }) as HTMLTextAreaElement).value).toBe("Corrected comment");
+    expect(screen.getByRole("alert").textContent).toContain("Comment changed in another session");
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenLastCalledWith(refreshed[0]!.comment, "Corrected comment", false);
     const edited = rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "Corrected comment", edited: true } } : entry);
     view.rerender(<ActivityFeed rows={edited} live={null} liveAt={Infinity} onReply={null} posting={false} onChangeComment={onChange} />);
     expect(await screen.findByText("Corrected comment")).toBeTruthy();
@@ -285,7 +293,7 @@ describe("the feed", () => {
   it("confirms deletion by keyboard, preserves cancelled or failed deletes, keeps later replies, and returns focus", async () => {
     const user = userEvent.setup();
     const rows = commentRows();
-    const onChange = vi.fn().mockRejectedValueOnce(new Error("Delete unavailable")).mockResolvedValueOnce(undefined);
+    const onChange = vi.fn().mockRejectedValueOnce(new Error("Delete unavailable")).mockRejectedValueOnce(new WorkApiError({ status: 409, code: "revision_conflict", message: "Comment changed in another session" })).mockResolvedValueOnce(undefined);
     const props = { rows, live: null, liveAt: Infinity, onReply: null, posting: false, onChangeComment: onChange };
     const view = render(<ActivityFeed {...props} />);
     await user.tab();
@@ -307,7 +315,14 @@ describe("the feed", () => {
     expect(screen.getByText("Original comment")).toBeTruthy();
     expect(document.activeElement).toBe(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
     await user.keyboard("{Enter}");
+    expect((await screen.findByRole("alert")).textContent).toContain("Comment changed in another session");
     expect(onChange).toHaveBeenLastCalledWith(rows[0]!.comment, "", true);
+    const refreshed = rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "Changed in another session", revision: "2" } } : entry);
+    view.rerender(<ActivityFeed {...props} rows={refreshed} />);
+    expect(screen.getByText("Changed in another session")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Comment changed in another session");
+    await user.keyboard("{Enter}");
+    expect(onChange).toHaveBeenLastCalledWith(refreshed[0]!.comment, "", true);
     view.rerender(<ActivityFeed {...props} rows={rows.map((entry, index) => index === 0 ? { ...entry, comment: { ...entry.comment!, body: "", deleted: true } } : entry)} />);
     expect(await screen.findByText("This comment was deleted")).toBeTruthy();
     expect(screen.queryByText("Original comment")).toBeNull();
