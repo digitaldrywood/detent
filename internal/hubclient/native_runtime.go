@@ -129,6 +129,9 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	}
 	previous := e.data.Runtime
 	if previous != nil {
+		if observation.WorkerLaunch == nil {
+			observation.WorkerLaunch = previous.WorkerLaunch
+		}
 		observation.Pipeline, observation.PipelineDropped = gate.MergePipeline(previous.Pipeline, observation.Pipeline, max(previous.PipelineDropped, observation.PipelineDropped))
 		if observation.Validation == nil {
 			observation.Validation = previous.Validation
@@ -187,7 +190,7 @@ func (e *nativeExecution) ObserveRuntime(ctx context.Context, observation tracke
 	if previous != nil {
 		before = runtimeEvidence(*previous)
 	}
-	publish := previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
+	publish := previous == nil || len(before.Phases) == 0 && len(current.Phases) > 0 || current.Phase != before.Phase || !reflect.DeepEqual(current.WorkerLaunch, before.WorkerLaunch) || !reflect.DeepEqual(current.Identity, before.Identity) || !reflect.DeepEqual(current.Landing, before.Landing)
 	changed := previous == nil || !reflect.DeepEqual(current, before)
 	if !changed {
 		return nil

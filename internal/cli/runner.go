@@ -110,7 +110,7 @@ func withRunnerFactoryWithIsolation(
 			token = githubTokenSource[0]()
 		}
 		return strings.TrimSpace(token), nil
-	})
+	}, nil)
 }
 
 func withRunnerFactoryWithProjectTokens(
@@ -122,6 +122,7 @@ func withRunnerFactoryWithProjectTokens(
 	serviceTokenSource func(string) string,
 	isolationPolicy func() (isolation.Policy, error),
 	tokenSource func(context.Context, globalconfig.Project, workflowconfig.Config) (string, error),
+	artifacts *detentupdate.WorkerArtifacts,
 	usage ...*runnerpkg.ProviderUsage,
 ) project.Factory {
 	var providerUsage *runnerpkg.ProviderUsage
@@ -165,6 +166,9 @@ func withRunnerFactoryWithProjectTokens(
 				identity = reporter.CommitIdentity()
 			}
 			run, err = buildRunnerWithIdentity(ctx, workflow, cfg.ID, cfg.Workdir, cfg.EffectiveMemory(), hostGoBudget(cfg.GlobalCPU.GoBuildBudget), sessionStore, deps.Logger, projectServiceConnection, identity, deps.HostBuildCache, providerUsage, isolationPolicy)
+			if local, ok := run.(*sshRunner); ok {
+				local.artifacts = artifacts
+			}
 			if err == nil {
 				if reporter, ok := deps.Scheduling.(interface {
 					ReportCommitPolicy(string, workspace.CommitReport)
@@ -266,7 +270,7 @@ func buildRunnerWithIdentity(
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
 	}
-	return &sshRunner{Runner: run, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
+	return &sshRunner{Runner: run, commitIdentity: commitIdentity, buildCache: buildCache, workdir: projectWorkdir, projectID: projectID, memory: memory, goBuildSlots: goBudget.Slots, connection: serviceConnection, logger: logger, command: sshCommand}, nil
 }
 
 func hostGoBudget(slots int) gobudget.Budget {

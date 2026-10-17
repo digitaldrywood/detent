@@ -162,8 +162,9 @@ WHERE i.removed_at IS NULL
 )
 SELECT o.descriptor_json, o.source_json, o.runner_id, o.observed_at, o.policy_id,
 EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = o.policy_id AND r.approved_by <> 'runner-report'),
-(SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope)
-FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), scope, approved.ID)
+(SELECT count(DISTINCT policy_id) FROM current_reports WHERE scope = o.scope),
+EXISTS (SELECT 1 FROM policy_revisions r WHERE r.scope = o.scope AND r.policy_id = ? AND r.approved_by = 'repository-default-branch')
+FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observed_at DESC, o.runner_id`, formatHubTime(now), approved.ID, scope, approved.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +175,8 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 		var raw, source, id string
 		var observed policy.ObservedPolicy
 		var distinct int
-		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct); err != nil {
+		var repositoryApproved bool
+		if err := rows.Scan(&raw, &source, &observed.RunnerID, &observed.ObservedAt, &id, &observed.PreviouslyApproved, &distinct, &repositoryApproved); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
 		if index, ok := seen[id]; ok {
@@ -185,7 +187,7 @@ FROM current_reports o WHERE o.scope = ? AND o.policy_id <> ? ORDER BY o.observe
 		if err := json.Unmarshal([]byte(raw), &observed.Policy); err != nil {
 			return nil, errors.Join(err, rows.Close())
 		}
-		if observed.PreviouslyApproved && observed.Policy.SameAuthoredInputs(approved) && observed.Policy.Authored.Version < approved.Authored.Version {
+		if observed.PreviouslyApproved && (repositoryApproved && approved.Workflow != nil || observed.Policy.SameAuthoredInputs(approved) && observed.Policy.Authored.Version < approved.Authored.Version) {
 			delete(seen, id)
 			continue
 		}

@@ -44,6 +44,8 @@ type AutoStatus struct {
 }
 
 type SchedulerConfig struct {
+	WorkerArtifacts    *WorkerArtifacts
+	WorkerPreflight    BinaryPreflight
 	RunningBuild       runnerauth.BuildEvidence
 	Enabled            bool
 	AutoApplyEnabled   bool
@@ -62,6 +64,8 @@ type SchedulerConfig struct {
 	NextDelay          func(time.Duration) time.Duration
 	Wait               func(context.Context, time.Duration) bool
 }
+
+func (s *Scheduler) WorkerArtifacts() *WorkerArtifacts { return s.cfg.WorkerArtifacts }
 
 type Scheduler struct {
 	enrolledReceipt    *runnerauth.UpdateReceipt
@@ -116,9 +120,9 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
-	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil {
+	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil && !receipt.ExecutionReady() {
 		switch {
-		case receipt.Status == "draining":
+		case receipt.Status == "draining" || receipt.Status == "applying":
 			receipt.FailureReason = "Update was interrupted before completion"
 		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
 			receipt.FailureReason = "Update did not restart into the verified build"
@@ -268,6 +272,9 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 		s.cfg.Logger.Warn("automatic update apply skipped for non-release install", "install_source", checked.InstallSource, "latest_version", checked.LatestVersion)
 		return checked, s.persistLastCheck(checkedAt)
 	}
+	if s.cfg.WorkerArtifacts != nil {
+		return s.applyWorkerReleaseLocked(ctx, s.cfg.ApplyOptions)
+	}
 	if checked.Critical {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "pending_idle"
@@ -307,11 +314,9 @@ func (s *Scheduler) ApplyPending(ctx context.Context) (Status, error) {
 	if !s.pendingIdle() {
 		return Status{}, ErrNoPendingUpdate
 	}
-	return s.drainAndApplyLocked(ctx)
+	return s.applyRequestedLocked(ctx, s.cfg.ApplyOptions)
 }
 
-// ApplyRelease applies an explicitly requested update through the runtime drain,
-// including when automatic checking or applying is disabled.
 func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -323,7 +328,94 @@ func (s *Scheduler) ApplyRelease(ctx context.Context, fromRelease bool) (Status,
 	defer s.operationMu.Unlock()
 	opts := s.cfg.ApplyOptions
 	opts.FromRelease = fromRelease
-	return s.drainAndApplyWithOptionsLocked(ctx, opts)
+	return s.applyRequestedLocked(ctx, opts)
+}
+
+func (s *Scheduler) applyRequestedLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	if s.cfg.WorkerArtifacts != nil {
+		return s.applyWorkerReleaseLocked(ctx, opts)
+	}
+	if s.cfg.ReserveIdle != nil {
+		releaseIdle, idle := s.cfg.ReserveIdle(ctx)
+		if idle {
+			return s.applyWithOptionsLocked(ctx, releaseIdle, opts)
+		}
+		if releaseIdle != nil {
+			releaseIdle()
+		}
+	}
+	checked, err := s.cfg.Updater.Check(ctx)
+	if err != nil {
+		return Status{FailureReason: "Execution release preparation failed"}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
+	}
+	if checked.Critical && (opts.ExpectedVersion == "" || opts.ExpectedVersion == checked.LatestVersion) {
+		s.updateStatus(func(status *AutoStatus) { status.Critical = true })
+		return s.drainAndApplyWithOptionsLocked(ctx, opts)
+	}
+	return Status{Action: ActionRefused, FailureReason: "Active work requires independent execution worker support before a compatible update"}, ErrRefused
+}
+
+func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	s.updateStatus(func(status *AutoStatus) {
+		status.State = "applying"
+		status.LastError = ""
+	})
+	artifact, err := s.cfg.WorkerArtifacts.AcquireLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
+		if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
+			return errors.New("requested release is no longer the latest execution release")
+		}
+		if status.Critical {
+			comparison, err := CompareVersions(status.LatestVersion, status.CurrentVersion)
+			if err != nil {
+				return err
+			}
+			if comparison > 0 {
+				return ErrWorkerCriticalUpdate
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, ErrWorkerCriticalUpdate) || errors.Is(err, ErrWorkerProtocolIncompatible) {
+		s.cfg.Logger.Warn("exceptional execution update requires controller replacement", "reason", err, "scope", "this runner")
+		reason := ErrWorkerProtocolIncompatible.Error()
+		if errors.Is(err, ErrWorkerCriticalUpdate) {
+			reason = ErrWorkerCriticalUpdate.Error()
+		}
+		s.mu.Lock()
+		if s.enrolledReceipt != nil {
+			s.enrolledReceipt.Status, s.enrolledReceipt.DrainReason = "draining", reason
+		}
+		s.mu.Unlock()
+		if err := s.persistCurrentState(); err != nil {
+			return Status{FailureReason: "Update state persistence failed"}, err
+		}
+		return s.drainAndApplyWithOptionsLocked(ctx, opts)
+	}
+	if err != nil {
+		return Status{FailureReason: "Execution release preparation failed"}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
+	}
+	applied := artifact.Status
+	if err := artifact.Release(); err != nil {
+		return applied, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
+	}
+	if s.cfg.ReserveIdle != nil {
+		releaseIdle, idle := s.cfg.ReserveIdle(ctx)
+		if idle {
+			return s.applyWithOptionsLocked(ctx, releaseIdle, opts)
+		}
+		if releaseIdle != nil {
+			releaseIdle()
+		}
+	}
+	s.updateStatus(func(status *AutoStatus) {
+		status.State = "applied"
+		status.LastAppliedVersion = applied.LatestVersion
+		status.AvailableVersion = ""
+		status.LastError = ""
+		clearPending(status)
+	})
+	s.recordEnrolledApplied(applied, true)
+	return applied, s.persistCurrentState()
 }
 
 func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {
@@ -332,7 +424,10 @@ func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {
 	if !s.pendingIdle() {
 		return Status{}, nil
 	}
-	if s.Status().Critical || s.deferralExpired() {
+	if s.cfg.WorkerArtifacts != nil {
+		return s.applyWorkerReleaseLocked(ctx, s.cfg.ApplyOptions)
+	}
+	if s.Status().Critical {
 		return s.drainAndApplyLocked(ctx)
 	}
 	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
@@ -350,6 +445,14 @@ func (s *Scheduler) drainAndApplyLocked(ctx context.Context) (Status, error) {
 }
 
 func (s *Scheduler) drainAndApplyWithOptionsLocked(ctx context.Context, opts ApplyOptions) (Status, error) {
+	s.mu.Lock()
+	if s.enrolledReceipt != nil && s.enrolledReceipt.Status == "applying" {
+		s.enrolledReceipt.Status = "draining"
+		if s.enrolledReceipt.DrainReason == "" {
+			s.enrolledReceipt.DrainReason = ErrWorkerCriticalUpdate.Error()
+		}
+	}
+	s.mu.Unlock()
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "draining"
 		status.LastError = ""
@@ -408,7 +511,7 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		status.LastError = ""
 		clearPending(status)
 	})
-	s.recordEnrolledApplied(applied)
+	s.recordEnrolledApplied(applied, false)
 	persistErr := s.persistCurrentState()
 	if persistErr != nil {
 		applied.FailureReason = "Update state persistence failed"
@@ -443,22 +546,7 @@ func (s *Scheduler) nextPendingAction() (time.Duration, bool) {
 	if status.State != "pending_idle" || strings.TrimSpace(status.AvailableVersion) == "" {
 		return 0, false
 	}
-	if status.PendingSince == nil || status.MaxDeferral <= 0 {
-		return s.cfg.IdlePollInterval, true
-	}
-	remaining := status.PendingSince.Add(status.MaxDeferral).Sub(s.cfg.Now())
-	if remaining <= 0 {
-		return 0, true
-	}
-	return min(s.cfg.IdlePollInterval, remaining), true
-}
-
-func (s *Scheduler) deferralExpired() bool {
-	status := s.Status()
-	return status.State == "pending_idle" &&
-		status.PendingSince != nil &&
-		status.MaxDeferral > 0 &&
-		!s.cfg.Now().Before(status.PendingSince.Add(status.MaxDeferral))
+	return s.cfg.IdlePollInterval, true
 }
 
 func (s *Scheduler) Status() AutoStatus {
