@@ -25,6 +25,9 @@ func (s *session) catalog(ctx context.Context, cursor string, toolsets []string)
 		return catalogPage{}, operatortool.ErrInvalidArguments
 	}
 	registry := operatortool.Registry()
+	if scoped, ok := s.executor.(*ConnectionExecutor); ok {
+		registry = scoped.tools
+	}
 	registered := make(map[string]bool, len(registry))
 	for _, definition := range registry {
 		registered[definition.Name] = true
@@ -44,6 +47,9 @@ func (s *session) catalog(ctx context.Context, cursor string, toolsets []string)
 		selected[toolset] = true
 	}
 	definitions := operatortool.Catalog()
+	if scoped, ok := s.executor.(*ConnectionExecutor); ok {
+		definitions = scoped.tools
+	}
 	if lister, ok := s.executor.(interface {
 		ListTools(context.Context) ([]operatortool.Definition, error)
 	}); ok {
