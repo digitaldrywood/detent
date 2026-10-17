@@ -397,7 +397,7 @@ describe("runner rows", () => {
     expect(rows[0]!.textContent).toContain("1 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("0 of 2 slots in use");
     expect(rows[1]!.textContent).toContain("Can’t take work");
-    expect(screen.getByText("1 of 4 slots running work")).toBeTruthy();
+    expect(screen.getByText("1 of 4 slots occupied")).toBeTruthy();
     expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   });
 });
@@ -414,7 +414,7 @@ describe("shared host capacity", () => {
         { ...lease, lease_id: "lease_third", work_item_id: "wi_third" },
       ] },
     ] });
-    expect(screen.getByText("3 of 8 slots running work")).toBeTruthy();
+    expect(screen.getByText("3 of 8 slots occupied")).toBeTruthy();
     const host = screen.getByTestId("runner-capacity");
     expect(host.querySelectorAll("[data-slot-state]")).toHaveLength(8);
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(3);
@@ -447,7 +447,7 @@ describe("shared host capacity", () => {
   ])("preserves running work and limits free slots for %s", (_name, values, free) => {
     renderSection(decodeFleet({ ...FLEET, runners: [{ ...active, ...values }] }));
     const host = screen.getByTestId("runner-capacity");
-    expect(screen.getByText("1 of 8 slots running work")).toBeTruthy();
+    expect(screen.getByText("1 of 8 slots occupied")).toBeTruthy();
     expect(host.querySelectorAll('[data-slot-state="running"]')).toHaveLength(1);
     expect(host.querySelectorAll('[data-slot-state="free"]')).toHaveLength(free);
     expect(host.querySelectorAll('[data-slot-state="unavailable"]')).toHaveLength(7 - free);
@@ -472,7 +472,7 @@ describe("shared host capacity", () => {
   it("keeps distinct machine identities separate despite identical names", () => {
     renderSection({ ...FLEET, runners: [active, { ...active, id: "runner_other", machine_id: "machine_other" }] });
     expect(screen.getAllByTestId("runner-capacity")).toHaveLength(2);
-    expect(screen.getByText("2 of 16 slots running work")).toBeTruthy();
+    expect(screen.getByText("2 of 16 slots occupied")).toBeTruthy();
   });
 });
 

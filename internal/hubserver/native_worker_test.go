@@ -39,12 +39,14 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v1/machines/register", testHubAdminToken, machine), http.StatusNotFound)
 	request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: "native-machine", SessionID: "native-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
+	drainTestNativeBoard(t, f.service)
 	beforeRefusal, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(time.Second)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, request), http.StatusConflict)
+	drainTestNativeBoard(t, f.service)
 	afterRefusal, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, beforeRefusal.Sequence)
 	if err != nil || afterRefusal.Gap || len(afterRefusal.Deltas) != 1 {
 		t.Fatalf("claim refusal frame=%#v err=%v", afterRefusal, err)

@@ -25,6 +25,7 @@ export interface AttemptView {
   readonly id: string;
   readonly status: string;
   readonly running: boolean;
+  readonly stage?: string | null;
   readonly runner: string | null;
   readonly backend: string | null;
   readonly model: string | null;

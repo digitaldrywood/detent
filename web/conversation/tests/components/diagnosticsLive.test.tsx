@@ -88,7 +88,7 @@ it("puts shared host totals and every runner before grouped typed findings witho
   for (const name of ["Example desktop", "Example laptop", "Example build host"]) {
     expect(within(live).getByRole("link", { name }).getAttribute("href")).toBe("/settings/runners");
   }
-  expect(within(live).getByText("3 of 20 slots running work")).toBeTruthy();
+  expect(within(live).getByText("3 of 20 slots occupied")).toBeTruthy();
   expect(within(live).getByText("10 free")).toBeTruthy();
   expect(within(live).getByText("Finishing work before updating")).toBeTruthy();
   const settings = within(attention).getByText("Project settings could not be loaded").closest("article")!;
@@ -130,7 +130,7 @@ it("joins reported versions by runner ID and keeps capacity and slot tones intac
   expect(screen.queryByText("v1.2.3")).toBeNull();
   expect(screen.queryByText(/behind the Hub/)).toBeNull();
   expect(screen.queryByText("Not reported")).toBeNull();
-  expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
+  expect(screen.getByText("3 of 20 slots occupied")).toBeTruthy();
   expect([...view.container.querySelectorAll("[data-slot-state]")].map((slot) => slot.getAttribute("data-slot-state"))).toEqual(slots);
 });
 
@@ -167,7 +167,7 @@ it.each([true, false])("shows the Hub build and Version column only when updates
   } else {
     expect(hub).toBeNull();
     expect(screen.queryByText("v1.2.3")).toBeNull();
-    expect(screen.getByText("3 of 20 slots running work")).toBeTruthy();
+    expect(screen.getByText("3 of 20 slots occupied")).toBeTruthy();
   }
 });
 
@@ -190,7 +190,7 @@ it.each([null, []])("keeps unavailable capacity distinct from no enrolled runner
 
 it.each([20, 19])("shows active utilization without attention when %i of 20 slots are working", (used) => {
   render(<DiagnosticsView {...viewProps} runners={runners.map((runner, index) => ({ ...runner, state: "active", update: undefined, problems: [], host_used: runner.host_capacity - (index === 2 ? 20 - used : 0), leases: Array.from({ length: runner.host_capacity - (index === 2 ? 20 - used : 0) }, (_, lease) => ({ ...base.leases[0]!, lease_id: `${runner.id}-${lease}` })) }))} />);
-  expect(screen.getByText(`${used} of 20 slots running work`)).toBeTruthy();
+  expect(screen.getByText(`${used} of 20 slots occupied`)).toBeTruthy();
   expect(screen.getByText(/No open findings\./)).toBeTruthy();
   expect(screen.queryByText("Needs attention", { selector: "[data-slot=badge]" })).toBeNull();
 });
@@ -202,7 +202,7 @@ it.each([
   render(<DiagnosticsView {...viewProps} runners={[{ ...runners[0]!, health, capacity_health: health, connection_health: health, problems: [] }]} />);
   const live = screen.getByRole("region", { name: "Capacity right now" });
   expect(within(live).getByText(label)).toBeTruthy();
-  expect(within(live).getByText("1 of 8 slots running work")).toBeTruthy();
+  expect(within(live).getByText("1 of 8 slots occupied")).toBeTruthy();
   expect(within(live).getByText("0 free")).toBeTruthy();
   expect(within(live).queryByText("Online")).toBeNull();
 });
