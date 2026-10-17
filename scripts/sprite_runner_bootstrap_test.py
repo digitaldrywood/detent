@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -98,7 +99,7 @@ elif name == "apt-get":
             (root / (package + ".version")).write_text(version)
 elif name == "node":
     script = sys.stdin.read()
-    if args[:1] == ["-p"] or (len(args) == 3 and args[1].endswith("/yaml")):
+    if args[:1] == ["-p"] or (len(args) > 1 and args[1].endswith("/yaml")):
         sys.exit(subprocess.run([os.environ["FIXTURE_NODE"], *args], input=script, text=True).returncode)
     if not (root / "chromium-ready").exists() or os.environ.get("BROWSER_FAIL"):
         sys.exit(1)
@@ -133,10 +134,19 @@ elif name == "detent":
         config.parent.mkdir(parents=True, exist_ok=True)
         if not config.exists():
             config.write_text("client:\n  hub_url: https://hub.example\nglobal:\n  max_concurrent_agents: 2\n")
-            (config.parent / "identity.json").write_text("original identity\n")
+            runner_key = hashlib.sha256(str(config).encode()).hexdigest()
+            identity = {"schema": 1, "identity": {"runner_id": "runner_" + runner_key, "project_ids": ["prj_example", "prj_second"]}, "credential": "fixture_credential_" + runner_key}
+            (config.parent / "identity.json").write_text(json.dumps(identity))
+            (root / (identity["identity"]["runner_id"] + ".json")).write_text(json.dumps(identity))
     elif args == ["--format", "pretty", "version"]:
         print("version: 0.117.41\ncommit: " + "a" * 40 + "\nbuild date: unknown")
     else:
+        if "--headless" in args:
+            config = pathlib.Path(args[args.index("--config") + 1])
+            identity = json.loads(config.with_name("identity.json").read_text())
+            registered = json.loads((root / (identity["identity"]["runner_id"] + ".json")).read_text())
+            if identity != registered:
+                sys.exit("runner credential does not match enrollment")
         (root / "detent-cwd").write_text(os.getcwd())
         print("v0.117.41")
 elif name == "sprite-env":
@@ -150,7 +160,8 @@ elif name == "sprite-env":
         print('{"id":"v1"}')
 elif name in ("codex", "claude", "gh"):
     if args[-1:] == ["status"]:
-        sys.exit(1)
+        auth_path = {"codex": ".codex/auth.json", "claude": ".claude/.credentials.json", "gh": ".config/gh/hosts.yml"}[name]
+        sys.exit(0 if (pathlib.Path.home() / auth_path).is_file() else 1)
     if name == "gh" and pathlib.Path(__file__).parent == root / "bin":
         print("gh version 2.0.0 (fixture)")
     else:
@@ -246,6 +257,8 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(config.read_text(), human_config)
         self.assertEqual(config.with_name("identity.json").read_bytes(), identity)
+        for project in ("prj_example", "prj_second"):
+            self.assertIn(str(work / project), first.stderr)
         self.assertFalse(list(self.root.rglob("SHOULD_NOT_EXIST")))
         registrations = self.registrations()
         self.assertEqual(len(registrations), 2)
@@ -320,6 +333,7 @@ class SpriteBootstrapTests(unittest.TestCase):
     def test_pressure_floor_config_merge(self):
         cases = (
             ("fresh", None, {"client": {"hub_url": "https://hub.example"}, "global": {"max_concurrent_agents": 2}}, 1, 1),
+            ("retained workspace", f"workspace_root: {self.home / 'retained root'}\n", {"workspace_root": str(self.home / "retained root")}, 1, 1),
             ("no global", "client: {hub_url: https://hub.example}\n", {"client": {"hub_url": "https://hub.example"}}, 1, 1),
             ("missing keys", "# operator config\nclient: {capacity: 4}\nglobal:\n  max_concurrent_agents: 4\n  io:\n    pressure_full_avg10_threshold: 8\n  cpu:\n    pressure_some_avg10_threshold: 60\n",
              {"client": {"capacity": 4}, "global": {"max_concurrent_agents": 4, "io": {"pressure_full_avg10_threshold": 8}, "cpu": {"pressure_some_avg10_threshold": 60}}}, 1, 1),
@@ -335,9 +349,12 @@ class SpriteBootstrapTests(unittest.TestCase):
                 if original is not None:
                     config.write_text(original)
                     config.chmod(0o640)
-                    identity.write_text("operator identity\n")
+                    identity.write_text(json.dumps({"schema": 1, "identity": {"runner_id": "runner_operator", "project_ids": []}, "credential": "operator_fixture_credential"}))
                 result = self.run_bootstrap(extra=("--config", str(config)), enrollment="" if original is not None else None)
                 self.assertEqual(result.returncode, 0, result.stderr)
+                service = json.loads((self.root / "service-detent-runner.json").read_text())
+                self.assertEqual(service[service.index("--dir") + 1], preserved.get("workspace_root", str(self.home / "detent-runner")))
+                self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
                 parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
                                          "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(JSON.stringify(YAML.parse(fs.readFileSync(process.argv[2], 'utf8'))));",
                                          self.env["FIXTURE_YAML_MODULE"], str(config)],
@@ -350,7 +367,7 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertEqual(json.loads(parsed.stdout), expected)
                 self.assertIn(f"Sprite pressure capacity: io={io_floor}, cpu={cpu_floor}", result.stdout)
                 if original is not None:
-                    self.assertEqual(identity.read_text(), "operator identity\n")
+                    self.assertEqual(json.loads(identity.read_text())["identity"], {"runner_id": "runner_operator", "project_ids": []})
                     self.assertEqual(config.stat().st_mode & 0o777, 0o640)
                     for line in original.splitlines():
                         if line.startswith("#"):
@@ -361,6 +378,30 @@ class SpriteBootstrapTests(unittest.TestCase):
                 rerun = self.run_bootstrap(extra=("--config", str(config)), enrollment="")
                 self.assertEqual(rerun.returncode, 0, rerun.stderr)
                 self.assertEqual(config.read_bytes(), merged)
+
+    def test_configured_workspace_root_uses_runner_path_expansion(self):
+        default = self.home / "detent-runner"
+        cases = (
+            ("home relative", "~/retained root", self.home / "retained root", self.home / "retained root"),
+            ("home", "~", self.home, self.home),
+            ("working directory relative", "relative root", default / "relative root", default),
+        )
+        for name, configured, root, launch_dir in cases:
+            with self.subTest(name=name):
+                config = self.home / name / "global.yaml"
+                config.parent.mkdir()
+                config.write_text(json.dumps({"workspace_root": configured}) + "\n")
+                config.with_name("identity.json").write_text(json.dumps({"schema": 1, "identity": {"runner_id": "runner_operator", "project_ids": ["prj_example"]}, "credential": "operator_fixture_credential"}))
+                result = self.run_bootstrap(extra=("--config", str(config)), enrollment="")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Managed checkout root: {root}\n", result.stdout)
+                self.assertIn(f"New managed checkout for prj_example: {root / 'prj_example'}", result.stderr)
+                service = json.loads((self.root / "service-detent-runner.json").read_text())
+                self.assertEqual(service[service.index("--dir") + 1], str(launch_dir))
+                launcher = (self.home / ".local/lib/detent-sprite-runner/start").read_text()
+                self.assertIn(["cd", "--", str(launch_dir)], [shlex.split(line) for line in launcher.splitlines()])
+                self.assertTrue((root / ".tmp").is_dir())
+                self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
 
     def test_empty_input_reuses_an_existing_registration_only(self):
         # Catches reruns that need a fresh token, and a fresh Sprite that
@@ -445,6 +486,56 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(bool(self.registrations()), expected_registration)
                 self.assertNotIn("Restore this same Sprite:", result.stdout)
+                self.assertIn("Last completed step:", result.stderr)
+                self.assertIn("Resume inside this same Sprite:", result.stderr)
+                self.assertNotIn(TOKEN, result.stdout + result.stderr)
+                if mode == "CHECKPOINT_FAIL":
+                    original_home = self.env["HOME"]
+                    identities = []
+                    try:
+                        for home in (self.home, self.root / "second sprite home"):
+                            with self.subTest(home=home.name):
+                                self.env["HOME"] = str(home)
+                                auth_files = {}
+                                for relative in (".codex/auth.json", ".claude/.credentials.json", ".config/gh/hosts.yml"):
+                                    path = home / relative
+                                    path.parent.mkdir(parents=True, exist_ok=True)
+                                    auth_files[path] = (home.name + ": " + relative).encode()
+                                    path.write_bytes(auth_files[path])
+                                    path.chmod(0o600)
+                                self.env[mode] = value
+                                failed = self.run_bootstrap(enrollment="" if home == self.home else ENROLLMENT)
+                                del self.env[mode]
+                                self.assertNotEqual(failed.returncode, 0)
+                                self.assertIn("runner Service configured; verify running state", failed.stderr)
+                                config = home / ".config/detent-runner/global.yaml"
+                                identity = config.with_name("identity.json").read_bytes()
+                                original = config.read_bytes()
+                                identities.append(json.loads(identity))
+                                (self.root / "calls.jsonl").unlink()
+                                resumed = self.run_bootstrap(enrollment="")
+                                self.assertEqual(resumed.returncode, 0, resumed.stderr)
+                                self.assertFalse(self.registrations())
+                                self.assertEqual(config.read_bytes(), original)
+                                self.assertEqual(config.with_name("identity.json").read_bytes(), identity)
+                                for path, contents in auth_files.items():
+                                    self.assertEqual(path.read_bytes(), contents)
+                                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                                for command in ("codex login", "claude auth login", "gh auth login"):
+                                    self.assertNotIn(command, resumed.stdout)
+                                self.assertIn("Last completed step: installation checkpoint created", resumed.stdout)
+                                launcher = home / ".local/lib/detent-sprite-runner/start"
+                                service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+                                self.assertEqual(service.returncode, 0, service.stderr)
+                        self.assertNotEqual(identities[0]["identity"]["runner_id"], identities[1]["identity"]["runner_id"])
+                        self.assertNotEqual(identities[0]["credential"], identities[1]["credential"])
+                        for home in (self.home, self.root / "second sprite home"):
+                            self.env["HOME"] = str(home)
+                            service = subprocess.run(["bash", str(home / ".local/lib/detent-sprite-runner/start")], env=self.env, text=True, capture_output=True, timeout=20)
+                            self.assertEqual(service.returncode, 0, service.stderr)
+                    finally:
+                        self.env["HOME"] = original_home
+                        self.env.pop(mode, None)
 
     def test_updates_outdated_tools_and_repairs_browser(self):
         self.env["FIXTURE_ARCH"] = "aarch64"
@@ -467,6 +558,16 @@ class SpriteBootstrapTests(unittest.TestCase):
 
     def test_docker_install_requires_sprite_capabilities(self):
         self.env["DOCKER_CANDIDATE"] = "(none)"
+        self.env["DOCKER_SUPPORTED"] = "1"
+        unavailable = self.run_bootstrap()
+        self.assertNotEqual(unavailable.returncode, 0)
+        self.assertFalse(any(command in ("curl", "npm", "playwright") for command, _ in self.calls()), unavailable.stdout)
+        self.assertFalse(self.registrations())
+        self.assertIn("Last completed step: enrollment input and Sprite prerequisites checked", unavailable.stderr)
+        self.assertIn("Resume inside this same Sprite:", unavailable.stderr)
+        self.assertNotIn(TOKEN, unavailable.stdout + unavailable.stderr)
+        self.env.pop("DOCKER_SUPPORTED")
+        (self.root / "calls.jsonl").unlink()
         skipped = self.run_bootstrap()
         self.assertEqual(skipped.returncode, 0, skipped.stderr)
         self.assertFalse((self.root / "docker.io.version").exists())
@@ -527,7 +628,10 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertNotIn(TOKEN, result.stdout + result.stderr)
                 if failure:
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse(link.is_symlink())
+                    if failure == "configured APT repositories":
+                        self.assertTrue(link.is_symlink())
+                    else:
+                        self.assertFalse(link.is_symlink())
                     self.assertEqual(len(self.registrations()), before)
                     if failure == "configured APT repositories":
                         self.assertIn(failure, result.stderr)
