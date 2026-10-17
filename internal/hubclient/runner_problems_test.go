@@ -118,14 +118,30 @@ func TestHeartbeatIncompleteProbe(t *testing.T) {
 }
 
 func TestIsolationProbeCancellation(t *testing.T) {
-	for _, cached := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unobserved", true: "cached"}[cached], func(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		cached, complete bool
+	}{
+		{"unobserved cancellation", false, false},
+		{"cached cancellation", true, false},
+		{"completed native only", false, true},
+		{"refresh native only", true, true},
+	} {
+		cached := test.cached
+		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				completed := time.Now()
 				calls := 0
-				scheduler := &Scheduler{now: time.Now, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
+				holds, releases := 0, 0
+				scheduler := &Scheduler{now: time.Now, leaseHold: func(context.Context) (func(), error) {
+					holds++
+					return func() { releases++ }, nil
+				}, isolationReport: func(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
 					calls++
 					if cached && calls == 1 {
+						return isolation.Report{"example-project/codex": {isolation.NativeTrusted, isolation.Sandbox}}, nil
+					}
+					if test.complete {
 						return isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, nil
 					}
 					<-ctx.Done()
@@ -137,6 +153,18 @@ func TestIsolationProbeCancellation(t *testing.T) {
 					time.Sleep(time.Minute)
 				}
 				report, problems := scheduler.probeIsolation(t.Context())
+				if holds != calls || releases != holds {
+					t.Fatalf("probe hold leaked: calls=%d holds=%d releases=%d", calls, holds, releases)
+				}
+				if test.complete {
+					if !report.Supports(isolation.NativeTrusted) || report.Supports(isolation.Sandbox) || len(problems) != 0 {
+						t.Fatalf("native result unavailable or manufactured sandbox: report=%+v problems=%+v", report, problems)
+					}
+					if !reflect.DeepEqual(scheduler.lastIsolation, report) || !scheduler.lastIsolationAt.Equal(time.Now()) {
+						t.Fatalf("completed native result was not refreshed: %+v at %v", scheduler.lastIsolation, scheduler.lastIsolationAt)
+					}
+					return
+				}
 				if report.Supports(isolation.NativeTrusted) != cached {
 					t.Fatalf("cancelled probe changed cached capabilities: %+v", report)
 				}
