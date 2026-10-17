@@ -1,6 +1,6 @@
 // Composes the conversation editor, attachments, pending questions, and turn controls.
 // Commands and delivery state come from the hub adapters.
-import { PaperclipIcon, PlugZapIcon, XIcon } from "lucide-react";
+import { MicIcon, PaperclipIcon, PlugZapIcon, SquareIcon, XIcon } from "lucide-react";
 import React from "react";
 
 import type { ServerProviderSkill } from "../../contracts/ui.ts";
@@ -68,6 +68,7 @@ import {
   type SlashMenuKey,
 } from "./ComposerPromptEditor.tsx";
 import { SlashCommandMenu, slashOptionId } from "./SlashCommandMenu.tsx";
+import { useVoiceInput } from "./useVoiceInput.ts";
 
 export type ComposerBannerEntry = ComposerBannerStackItem | ComposerBannerStackContent;
 
@@ -168,11 +169,16 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const attachingBlocked = attachControl === "none" || (attachments === undefined && props.onFiles === undefined) || disabled;
   const fileInput = React.useRef<HTMLInputElement>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
+  const voice = useVoiceInput(disabled || props.sending || props.pendingQuestion != null, (text) => {
+    const separator = props.value.length > 0 && !/\s$/.test(props.value) ? " " : "";
+    props.onChange(`${props.value}${separator}${text}`);
+  });
   // A draft with a staged file is sendable: the first send uploads it.
   const hasContent = props.value.trim().length > 0 || staged.length > 0;
   const canSend =
     hasContent &&
     !props.sending &&
+    !voice.busy &&
     props.blockedReason == null &&
     !disabled &&
     props.uploadingFiles !== true &&
@@ -189,9 +195,22 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const banners = React.useMemo(() => {
     const rail = props.banners ?? NO_BANNERS;
     const reason = props.blockedReason;
-    if (disabled || reason == null || reason.length === 0) return rail;
+    const notices: ComposerBannerEntry[] = [...rail];
+    if (voice.error || voice.notice) notices.push({
+      id: "composer-voice",
+      variant: voice.error ? "error" : "info",
+      content: (
+        <ComposerBanner.Row role={voice.error ? "alert" : "status"}>
+          <ComposerBanner.Icon><MicIcon /></ComposerBanner.Icon>
+          <ComposerBanner.Content className="whitespace-normal break-words">
+            <span className="min-w-0">{voice.error ?? voice.notice}</span>
+          </ComposerBanner.Content>
+        </ComposerBanner.Row>
+      ),
+    });
+    if (disabled || reason == null || reason.length === 0) return notices;
     return [
-      ...rail,
+      ...notices,
       {
         id: "composer-blocked",
         variant: "warning" as const,
@@ -200,7 +219,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
         title: reason,
       },
     ];
-  }, [disabled, props.banners, props.blockedReason]);
+  }, [disabled, props.banners, props.blockedReason, voice.error, voice.notice]);
 
   const [footerWidth, setFooterWidth] = React.useState<number | null>(null);
   React.useEffect(() => {
@@ -398,6 +417,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
   const highlightedCommand = slashMatches[highlighted];
 
   const submit = () => {
+    if (voice.busy) return;
     if (pending !== null) {
       pending.onAdvance();
       return;
@@ -686,6 +706,23 @@ export function Composer(props: ComposerProps): React.ReactElement {
                     )}
 
                     {props.promptContext}
+                    {voice.busy ? (
+                      <div className="mb-2 flex min-w-0 items-center gap-2 text-muted-foreground text-xs">
+                        {voice.phase === "recording" ? (
+                          <>
+                            <span className="size-2 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
+                            <span role="status">Recording</span>
+                            <span className="flex h-4 items-center gap-0.5" aria-hidden="true">
+                              {[0.5, 0.8, 1, 0.7, 0.4].map((height, index) => (
+                                <span key={index} className="w-0.5 rounded-full bg-destructive" style={{ height: `${Math.max(2, voice.level * height * 16)}px` }} />
+                              ))}
+                            </span>
+                            <span role="timer" aria-live="off" className="font-mono tabular-nums">{Math.floor(voice.seconds / 60)}:{String(voice.seconds % 60).padStart(2, "0")}</span>
+                          </>
+                        ) : <span role="status">{voice.phase === "transcribing" ? "Transcribing…" : "Preparing voice input…"}</span>}
+                      </div>
+                    ) : null}
+                    {voice.transcript ? <p className="mb-2 whitespace-pre-wrap break-words text-muted-foreground text-sm">{voice.transcript}</p> : null}
                     <ComposerPromptEditor
                       {...(props.editorRef === undefined ? {} : { editorRef: props.editorRef })}
                       className={props.promptClassName}
@@ -822,6 +859,23 @@ export function Composer(props: ComposerProps): React.ReactElement {
                           </Tooltip>
                         </>
                       )}
+                      <Tooltip>
+                        <TooltipTrigger render={
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={disabled || props.sending || pending !== null}
+                            aria-label={voice.phase === "recording" ? "Stop recording" : voice.busy ? "Cancel voice input" : "Start voice input"}
+                            aria-pressed={voice.busy}
+                            onPointerDown={(event) => event.preventDefault()}
+                            onClick={voice.toggle}
+                          />
+                        }>
+                          {voice.busy ? <SquareIcon /> : <MicIcon />}
+                        </TooltipTrigger>
+                        <TooltipPopup>{voice.busy ? "Stop voice input" : "Voice input"}</TooltipPopup>
+                      </Tooltip>
                       <ComposerPrimaryActions
                         compact={compactActions}
                         sendLabel={props.sendLabel}
@@ -834,6 +888,8 @@ export function Composer(props: ComposerProps): React.ReactElement {
                         sendDisabledReason={
                           disabled
                             ? (props.blockedReason ?? "Sending is unavailable")
+                            : voice.busy
+                              ? "Finish voice input before sending"
                             : attachments?.uploading === true || props.uploadingFiles === true
                               ? "Waiting for the upload to finish"
                               : (props.blockedReason ?? null)
