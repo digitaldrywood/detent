@@ -17,14 +17,13 @@ import (
 
 func TestRunnerRunningBuildProvenance(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		info     buildinfo.Info
-		receipt  bool
-		verified bool
+		name    string
+		info    buildinfo.Info
+		receipt bool
 	}{
 		{name: "private patched source", info: buildinfo.Info{Version: "v1.2.3", Commit: strings.Repeat("a", 40), Dirty: true}},
 		{name: "version is not release approval", info: buildinfo.Info{Version: "v1.2.3", Commit: strings.Repeat("a", 40)}},
-		{name: "verified CLI repair survives restart", info: buildinfo.Info{Version: "v1.2.3", Commit: strings.Repeat("a", 40)}, receipt: true, verified: true},
+		{name: "forged marker cannot verify release", info: buildinfo.Info{Version: "v1.2.3", Commit: strings.Repeat("a", 40)}, receipt: true},
 		{name: "patched source cannot use release marker", info: buildinfo.Info{Version: "v1.2.3", Commit: strings.Repeat("a", 40), Dirty: true}, receipt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -50,8 +49,8 @@ func TestRunnerRunningBuildProvenance(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			evidence := runnerRunningBuild(test.info, "fallback")
-			if evidence.Validate() != nil || evidence.Version != test.info.Version || evidence.Commit != test.info.Commit || evidence.OS != runtime.GOOS || evidence.Architecture != runtime.GOARCH || len(evidence.SHA256) != 64 || evidence.VerifiedRelease != test.verified {
+			evidence := runnerRunningBuild(t.Context(), test.info, "fallback")
+			if evidence.Validate() != nil || evidence.Version != test.info.Version || evidence.Commit != test.info.Commit || evidence.OS != runtime.GOOS || evidence.Architecture != runtime.GOARCH || len(evidence.SHA256) != 64 || evidence.VerifiedRelease {
 				t.Fatalf("running build=%+v", evidence)
 			}
 			if test.info.Dirty && evidence.Source != "private_patched_source" {

@@ -202,18 +202,18 @@ func (r *StartupRecovery) confirmSupersedingInstall(ctx context.Context, pending
 		return errors.New("verified release installation receipt is unavailable")
 	}
 	receipt, found := readInstallLock(path)
-	if !found || !samePath(receipt.binary, pending.ExecutablePath, r.cfg.GOOS) || receipt.version != r.cfg.CurrentVersion || !sameExactCommit(receipt.commit, r.cfg.CurrentCommit) || receipt.sha256 == "" {
+	if !found || !samePath(receipt.binary, pending.ExecutablePath, r.cfg.GOOS) || receipt.version != r.cfg.CurrentVersion || !sameExactCommit(receipt.commit, r.cfg.CurrentCommit) || receipt.evidence == "" {
 		return errors.New("verified release installation receipt does not match the running build")
 	}
 	verify := binaryIdentityVerifier(r.cfg.BinaryVerifier, r.cfg.CurrentVersion, r.cfg.CurrentCommit)
 	if _, err := verify(ctx, pending.ExecutablePath); err != nil {
 		return fmt.Errorf("confirm superseding Detent installation: %w", err)
 	}
-	installed, err := os.ReadFile(pending.ExecutablePath)
+	digest, err := binaryDigest(pending.ExecutablePath)
 	if err != nil {
 		return fmt.Errorf("read superseding Detent installation: %w", err)
 	}
-	if !strings.EqualFold(receipt.sha256, fmt.Sprintf("%x", sha256.Sum256(installed))) {
+	if !verifyReleaseEvidence(ctx, path, receipt.evidence, DetectionOptions{CurrentVersion: r.cfg.CurrentVersion, GOOS: r.cfg.GOOS}, r.cfg.CurrentCommit, digest) {
 		return errors.New("superseding executable differs from the verified release installation")
 	}
 	return nil
