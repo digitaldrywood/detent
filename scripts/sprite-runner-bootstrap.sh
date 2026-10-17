@@ -382,6 +382,12 @@ if command -v findmnt >/dev/null; then
 fi
 workspace_root=${workspace_root:-${local_root:+$local_root/work}}
 workspace_root=${workspace_root:-$legacy_workspace_root}
+if [[ -n $local_root ]]; then
+    export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}
+    export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$local_root/cache}
+    export GOMODCACHE=${GOMODCACHE:-$local_root/cache/go-mod}
+    export npm_config_cache=${npm_config_cache:-$local_root/cache/npm}
+fi
 
 [[ $(uname -s) == Linux ]] || die "run this script inside a Fly Sprite (Linux)"
 case $(uname -m) in
@@ -751,9 +757,8 @@ launcher="$lib_dir/start"
     printf 'export HOME=%q\nexport PATH=%q\nexport TMPDIR=%q\n' "$HOME" "$PATH" "$workspace_root/.tmp"
     printf 'export MAKEFLAGS=%q\n' "-l$make_load_limit"
     if [[ -n $local_root ]]; then
-        printf 'export XDG_CACHE_HOME=%q\nexport GOMODCACHE=%q\nexport npm_config_cache=%q\n' \
-            "${XDG_CACHE_HOME:-$local_root/cache}" "${GOMODCACHE:-$local_root/cache/go-mod}" "${npm_config_cache:-$local_root/cache/npm}"
-        printf 'export PLAYWRIGHT_BROWSERS_PATH=%q\n' "${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}"
+        printf 'export XDG_CACHE_HOME=%q\nexport GOMODCACHE=%q\nexport npm_config_cache=%q\nexport PLAYWRIGHT_BROWSERS_PATH=%q\n' \
+            "$XDG_CACHE_HOME" "$GOMODCACHE" "$npm_config_cache" "$PLAYWRIGHT_BROWSERS_PATH"
     fi
     printf 'mkdir -p -- %q %q\n' "$workspace_root/.tmp" "$launch_dir"
     printf 'cd -- %q\n' "$launch_dir"
@@ -773,7 +778,7 @@ last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
 printf 'Sprite resource profile: %s CPUs; runner Make load limit -l%s; workers run at lower CPU priority than the runner.\n' "$cpu_count" "$make_load_limit"
 if [[ -n $local_root ]]; then
-    printf 'Local disk: build caches in %s; checkouts in %s.\n' "${XDG_CACHE_HOME:-$local_root/cache}" "$workspace_root"
+    printf 'Local disk: build caches in %s; checkouts in %s.\n' "$XDG_CACHE_HOME" "$workspace_root"
 fi
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
