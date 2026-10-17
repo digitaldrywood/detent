@@ -146,16 +146,20 @@ type CompletionExecution interface {
 	PrepareFinish(context.Context, string, string, *tracker.NativeTerminalFailure) error
 }
 
-func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
+func NativeCompletionSignalFromMessage(message string) (*workpad.Signal, bool) {
 	signal, reported := workpad.SignalFromComment(message, "", "")
+	if reported && signal != nil && signal.Invalid == nil && hostPublicationOnly(signal) {
+		signal.Status, signal.ReasonCode, signal.Blockers = workpad.StatusComplete, "", nil
+	}
+	return signal, reported
+}
+
+func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
+	signal, reported := NativeCompletionSignalFromMessage(message)
 	if !reported || signal == nil || signal.Invalid != nil {
 		return nil
 	}
-	status, reasonCode := signal.Status, signal.ReasonCode
-	if hostPublicationOnly(signal) {
-		status, reasonCode = workpad.StatusComplete, ""
-	}
-	return &tracker.NativeDisposition{Status: status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: reasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
+	return &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
 }
 
 // hostPublicationOnly reports a blocked disposition whose only stated cause is
@@ -163,12 +167,20 @@ func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
 // only after a complete disposition, so treating it as blocked would wait on
 // itself forever.
 func hostPublicationOnly(signal *workpad.Signal) bool {
-	if signal.Status != workpad.StatusBlocked || len(signal.Blockers) != 0 || signal.HumanAction != "" {
+	if signal.Status != workpad.StatusBlocked || signal.HumanAction != "" {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(signal.ReasonCode)) {
-	case "publication_blocked", "awaiting_host_publish", "host_publication_pending":
-		return true
+	case "publication_blocked", "awaiting_host_publish":
+		return len(signal.Blockers) == 0
+	case "host_publication_pending":
+		if len(signal.Blockers) == 0 {
+			return true
+		}
+		if len(signal.Blockers) == 1 {
+			blocker := signal.Blockers[0]
+			return blocker.Ref == "instance:tool" && blocker.Owner == workpad.BlockerOwnerInstance && blocker.Predicate == nil
+		}
 	}
 	return false
 }
