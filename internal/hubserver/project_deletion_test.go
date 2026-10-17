@@ -35,6 +35,7 @@ func TestHostedProjectDeletion(t *testing.T) {
 		{name: "pending GitHub write refused", account: "owner", update: "UPDATE github_outbox SET status='pending' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
 		{name: "processing GitHub write refused", account: "owner", update: "UPDATE github_outbox SET status='processing' WHERE issue_id IN (SELECT id FROM issues WHERE project_id=?)", status: http.StatusUnprocessableEntity},
 		{name: "organization Sprite preserved", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled',token_project_id='' WHERE token_project_id=?", status: http.StatusOK},
+		{name: "project allocation using organization token refused", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled',allocation_project_id=token_project_id,token_project_id='' WHERE token_project_id=?", status: http.StatusUnprocessableEntity},
 		{name: "provisioned Sprite using project token refused", account: "owner", update: "UPDATE organization_sprite_members SET state='enrolled' WHERE token_project_id=?", status: http.StatusUnprocessableEntity},
 	} {
 		t.Run(test.name, func(t *testing.T) {

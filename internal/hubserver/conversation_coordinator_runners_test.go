@@ -35,6 +35,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		{"admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"owner sandbox", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"sprite sandbox refused", "owner", "set_runner_tier", isolation.Sandbox, false, false, 0},
+		{"sprite sandbox after passing probe", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"sprite full access", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"sprite detected after preview", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusUnprocessableEntity},
 		{"unapproved preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, false, 0},
@@ -67,6 +68,9 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			binding := runnerauth.NewBinding()
 			r := runnerFixture{nativeFixture: nativeFixture{service: f.service, project: tracker.NativeProject{ID: f.project, OrganizationID: "org_security"}}, base: "/api/v2/organizations/org_security", enrollment: enrollment, binding: binding, redemption: runnerauth.Redemption{Binding: binding, Credential: credential, Hostname: "customer-host", DisplayName: "Runner", Capacity: 2, Version: "test"}}
 			r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted}}
+			if test.name == "sprite sandbox after passing probe" {
+				r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}
+			}
 			if test.tier == isolation.Sandbox {
 				r.redemption.IsolationTier = isolation.NativeTrusted
 			}

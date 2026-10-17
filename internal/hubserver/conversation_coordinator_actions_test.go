@@ -557,7 +557,7 @@ func TestCoordinatorProjectActions(t *testing.T) {
 					t.Fatal(err)
 				}
 				if outcome == "sandbox access" {
-					if result.Success || !strings.Contains(result.Content, "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.") {
+					if result.Success || !strings.Contains(result.Content, "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") {
 						t.Fatalf("sandbox preview refusal = %+v", result)
 					}
 					assertCoordinatorEffect(t, f, id, tool, false)

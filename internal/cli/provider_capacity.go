@@ -111,7 +111,7 @@ func runnerProviderName(backend workflowconfig.AgentBackend) string {
 }
 
 func runnerProviderCompatible(a, b workflowconfig.AgentBackend) bool {
-	if a.Kind != b.Kind || a.Protocol != b.Protocol || a.Command != b.Command || runnerProviderName(a) != runnerProviderName(b) {
+	if a.Kind != b.Kind || a.Protocol != b.Protocol || runnerProviderCommandIdentity(a) != runnerProviderCommandIdentity(b) || runnerProviderName(a) != runnerProviderName(b) {
 		return false
 	}
 	switch a.Kind {
@@ -124,6 +124,27 @@ func runnerProviderCompatible(a, b workflowconfig.AgentBackend) bool {
 	default:
 		return reflect.DeepEqual(a, b)
 	}
+}
+
+func runnerProviderCommandIdentity(backend workflowconfig.AgentBackend) string {
+	if backend.Kind != workflowconfig.AgentBackendCodex {
+		return backend.Command
+	}
+	args := strings.FieldsFunc(backend.Command, func(r rune) bool { return r == ' ' || r == '\t' })
+	if len(args) < 2 || args[0] != "codex" || args[len(args)-1] != "app-server" {
+		return backend.Command
+	}
+	for args = args[1 : len(args)-1]; len(args) > 0; args = args[2:] {
+		if len(args) < 2 || args[0] != "--config" && args[0] != "-c" {
+			return backend.Command
+		}
+		switch args[1] {
+		case "shell_environment_policy.inherit=all", "model_reasoning_effort=none", "model_reasoning_effort=minimal", "model_reasoning_effort=low", "model_reasoning_effort=medium", "model_reasoning_effort=high", "model_reasoning_effort=xhigh", "model_reasoning_effort=max":
+		default:
+			return backend.Command
+		}
+	}
+	return "codex app-server"
 }
 
 func runnerProviderConfigs(ctx context.Context, cfg globalconfig.Config) ([]workflowconfig.AgentBackend, []workflowconfig.AgentRoute) {

@@ -131,6 +131,11 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			receipt.FailureReason = "Update apply failed or was refused"
 		}
 		receipt.ObservedAt = s.cfg.Now().UTC()
+		attrs := []any{"status", receipt.Status, "request_id", request.ID, "version", request.Version, "failure_reason", receipt.FailureReason}
+		if err != nil {
+			attrs = append(attrs, "error", err)
+		}
+		s.cfg.Logger.Warn("enrolled runner update not applied", attrs...)
 		s.setEnrolledReceipt(receipt)
 		if s.persistCurrentState() != nil {
 			return nil

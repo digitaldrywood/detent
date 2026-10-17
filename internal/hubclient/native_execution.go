@@ -432,8 +432,12 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		}
 	}
 	e.preparedDisposition = nil
-	if e.ownsIssueCompletion() {
+	planning := e.role == runner.RolePlan && !e.conversationContinuation
+	if e.ownsIssueCompletion() || planning {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
+	}
+	if outcome == "succeeded" && planning && e.preparedDisposition == nil {
+		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
 	}
 	if outcome == "succeeded" && e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}

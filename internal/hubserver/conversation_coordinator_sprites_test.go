@@ -101,7 +101,7 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 			if (err == nil) != test.valid {
 				t.Fatalf("validation error=%v, valid=%t", err, test.valid)
 			}
-			if test.name == "sandbox" && (err == nil || !strings.Contains(coordinatorToolError(err).Content, "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.")) {
+			if test.name == "sandbox" && (err == nil || !strings.Contains(coordinatorToolError(err).Content, "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.")) {
 				t.Fatalf("sandbox rejection = %v", err)
 			}
 			if err != nil && strings.Contains(err.Error(), "SECRET") {

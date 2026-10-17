@@ -869,15 +869,17 @@ func TestRunnerClaimRevalidatesStaleAuthentication(t *testing.T) {
 func TestSpriteRunnerAccessRouting(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, initial string
-		tier          *string
-		sprite        bool
-		status        int
+		name, initial, report string
+		tier                  *string
+		sprite                bool
+		status                int
 	}{
-		{"machine sandbox", "native-trusted", new("sandbox"), false, http.StatusOK},
-		{"sprite sandbox refused", "native-trusted", new("sandbox"), true, http.StatusUnprocessableEntity},
-		{"legacy sprite preserved", "sandbox", nil, true, http.StatusOK},
-		{"legacy sprite full access", "sandbox", new("native-trusted"), true, http.StatusOK},
+		{"machine sandbox", "native-trusted", "", new("sandbox"), false, http.StatusOK},
+		{"sprite sandbox refused without a passing probe", "native-trusted", `{"test":["native-trusted"]}`, new("sandbox"), true, http.StatusUnprocessableEntity},
+		{"sprite sandbox refused when one backend fails the probe", "native-trusted", `{"p/codex":["native-trusted","sandbox"],"p/claude":["native-trusted"]}`, new("sandbox"), true, http.StatusUnprocessableEntity},
+		{"sprite sandbox after passing probe", "native-trusted", `{"p/codex":["native-trusted","sandbox"]}`, new("sandbox"), true, http.StatusOK},
+		{"legacy sprite preserved", "sandbox", "", nil, true, http.StatusOK},
+		{"legacy sprite full access", "sandbox", "", new("native-trusted"), true, http.StatusOK},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -887,12 +889,17 @@ func TestSpriteRunnerAccessRouting(t *testing.T) {
 				r.redemption.SpriteName = r.redemption.Hostname
 			}
 			r.enroll(t)
+			if test.report != "" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET backend_isolation_json=? WHERE id=?", test.report, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var before runnerauth.Runner
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &before)
 			request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IsolationTier: test.tier}
 			response := performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, request)
 			requireNativeStatus(t, response, test.status)
-			if test.status != http.StatusOK && !strings.Contains(response.Body.String(), "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.") {
+			if test.status != http.StatusOK && !strings.Contains(response.Body.String(), "Sandbox on a Fly Sprite needs a passing isolation probe on that runner: update the runner, then switch it to Sandbox once it reports sandbox support.") {
 				t.Fatalf("sandbox refusal=%s", response.Body.String())
 			}
 			var after runnerauth.Runner

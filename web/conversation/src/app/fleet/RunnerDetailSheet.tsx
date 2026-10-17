@@ -15,7 +15,7 @@ import { AccountError } from "../account/api.ts";
 import { RunnerProblems } from "./RunnerProblems.tsx";
 import { formatRelativeTime } from "./format.ts";
 import { parseRunnerWindow, serializeRunnerWindow, type RunnerHours } from "./runnerSchedule.ts";
-import { runnerAccessOptions, spriteSandboxUnavailableReason } from "./runnerAccess.ts";
+import { reportsSandbox, runnerAccessOptions, spriteSandboxUnavailableReason } from "./runnerAccess.ts";
 
 export interface RunnerProject {
   readonly id: string;
@@ -59,6 +59,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
   const [error, setError] = React.useState("");
   const canEdit = editable && runner.routing !== undefined && onSave !== undefined;
   const savedRouting = runnerRouting(runner);
+  const spriteSandboxBlocked = Boolean(runner.sprite) && !reportsSandbox(runner.backend_isolation);
   const knownIds = new Set(projects.map((project) => project.id));
   const unknownIds = [...new Set([...savedRouting.project_ids, ...draft.project_ids])].filter((id) => !knownIds.has(id));
   const choices = [...projects, ...unknownIds.map((id) => ({ id, name: id }))];
@@ -130,7 +131,7 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
             </div> : null}
             {runner.sprite?.wake_failed || (runner.sprite && !runner.sprite.can_wake) ? <p role="alert" className="text-warning-foreground">{runner.sprite.wake_failed ? "The Hub could not wake this Sprite. Check the Sprite and its project’s Sprites token." : "No Sprites token is set for an accessible project; the Hub cannot wake this Sprite."}</p> : null}
             <RunnerProblems runner={runner} now={now} alert />
-            {runner.problems?.some((problem) => problem.code === "tier_unavailable") && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && !(runner.sprite && tier === "sandbox") && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
+            {runner.problems?.some((problem) => problem.code === "tier_unavailable") && canEdit ? runnerAccessOptions.filter(({ tier }) => tier !== savedRouting.isolation_tier && Object.keys(runner.backend_isolation ?? {}).length > 0 && Object.values(runner.backend_isolation ?? {}).every((tiers) => tiers.includes(tier))).map(({ tier, label }) => (
               <Button key={tier} type="button" variant="outline" size="sm" disabled={saving} onClick={() => void submit(tier)}>Switch to {label}</Button>
             )) : null}
             {!canEdit ? <p role="status" className="text-sm text-muted-foreground">{runner.edit_refusal_reason || "Runner changes need manage_runner on every allowed project and every project with running work; ask an owner or admin."}</p> : null}
@@ -225,8 +226,8 @@ export function RunnerDetailSheet({ runner, projects, editable, now, onClose, on
               <Section title="Agent access">
                 {canEdit ? <RadioGroup aria-label="Agent access" value={draft.isolation_tier} onValueChange={(value) => update({ isolation_tier: String(value) })}>{runnerAccessOptions.map(({ tier, label, hint }) => (
                   <label key={tier} className="flex cursor-pointer items-start gap-2">
-                    <Radio value={tier} disabled={Boolean(runner.sprite) && tier === "sandbox"} aria-labelledby={`runner-access-${tier}`} aria-describedby={`runner-access-${tier}-hint`} className="mt-1" />
-                    <span><span id={`runner-access-${tier}`} className="block font-medium">{label}</span><span id={`runner-access-${tier}-hint`} className="text-xs text-muted-foreground">{runner.sprite && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
+                    <Radio value={tier} disabled={spriteSandboxBlocked && tier === "sandbox"} aria-labelledby={`runner-access-${tier}`} aria-describedby={`runner-access-${tier}-hint`} className="mt-1" />
+                    <span><span id={`runner-access-${tier}`} className="block font-medium">{label}</span><span id={`runner-access-${tier}-hint`} className="text-xs text-muted-foreground">{spriteSandboxBlocked && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
                   </label>
                 ))}</RadioGroup> : <p>{runnerAccessOptions.find(({ tier }) => tier === draft.isolation_tier)?.label ?? draft.isolation_tier}</p>}
                 <p className="text-xs text-muted-foreground">Changes apply on the runner’s next configuration refresh; no re-enrollment is needed.</p>

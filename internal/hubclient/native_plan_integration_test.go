@@ -28,8 +28,122 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func TestNativePlanContinuation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		report      string
+		outcome     string
+		disposition *tracker.NativeDisposition
+		candidate   bool
+	}{
+		{name: "published plan continues immediately", outcome: "succeeded", disposition: &tracker.NativeDisposition{Status: "in_progress"}, candidate: true},
+		{name: "human action remains held", outcome: "succeeded", report: "status: blocked\nhuman_action: Approve the plan", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}},
+		{name: "permission remains held", outcome: "succeeded", report: "status: blocked\nreason_code: permission_wait", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}},
+		{name: "external blocker remains held", outcome: "succeeded", report: "status: blocked\nblockers:\n  - reason: Await upstream approval", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Reason: "Await upstream approval", Owner: workpad.BlockerOwnerHuman, Unverifiable: true}}}},
+		{name: "instance cooldown is preserved", outcome: "succeeded", report: "status: blocked\nreason_code: instance_limitation", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}},
+		{name: "instance failure is not a successful plan", outcome: "failed", candidate: true},
+		{name: "incomplete plan retains its active claim"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHub(t, true)
+			held := h.createInProgress(t, "Human decision")
+			h.claim(t, held.ID)
+			owner := h.scheduler.RunExecution(held.ID).(*nativeExecution)
+			if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			owner.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c")))
+			if err := owner.PrepareFinish(t.Context(), "succeeded", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the work\n```", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.scheduler.ReleaseClaim(t.Context(), held.ID, "completed"); err != nil {
+				t.Fatal(err)
+			}
+			issue := h.createInProgress(t, "Planning continuation")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			guarded, stop, err := execution.Guard(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop()
+			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RolePlan, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c")))
+			if test.outcome != "" {
+				output := ""
+				if test.report != "" {
+					output = "```detent-status\nschema: 1\n" + test.report + "\n```"
+				}
+				if err := execution.PrepareFinish(guarded, test.outcome, output, nil); err != nil {
+					t.Fatal(err)
+				}
+				if test.outcome == "succeeded" {
+					if err := h.connector.CreateComment(guarded, issue.ID, "## Detent Plan\n\nUpdate the README and run the project checks."); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			candidates := h.candidates(t)
+			if len(candidates) != 0 && (len(candidates) != 1 || candidates[0].ID != issue.ID) {
+				t.Fatalf("planning completion unlocked another item: %+v", candidates)
+			}
+			if (len(candidates) == 1) != test.candidate {
+				evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+				t.Fatalf("immediate candidate=%v, want %v; scheduling=%+v, error=%v", len(candidates) == 1, test.candidate, evidence.Scheduling, err)
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 1 {
+				t.Fatalf("planning receipt=%+v, error=%v", recovery.Attempts, err)
+			}
+			attempt := recovery.Attempts[0]
+			if !reflect.DeepEqual(attempt.Disposition, test.disposition) || attempt.WorkItemRevision != recovery.Issue.Revision {
+				t.Fatalf("planning receipt=%+v, want disposition=%+v at revision=%d", attempt, test.disposition, recovery.Issue.Revision)
+			}
+			if test.candidate {
+				if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				implementation := h.scheduler.RunExecution(issue.ID)
+				if err := implementation.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.connector.CreateComment(guarded, issue.ID, "## Detent Plan\n\nStale plan"); err == nil {
+					t.Fatal("stale planning authority published a plan")
+				}
+				stale := tracker.NativeRunEvent{Mutation: nativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: execution.data}
+				stale.Data.Sequence++
+				stale.Data.Disposition = &tracker.NativeDisposition{Status: "in_progress"}
+				if err := h.native.AppendEvent(t.Context(), tracker.NativeWorkItemID(held.ID), stale); err == nil {
+					t.Fatal("stale planning authority unlocked a different item")
+				}
+				if candidates := h.candidates(t); len(candidates) != 0 {
+					t.Fatalf("active implementation claim or human decision lost protection: %+v", candidates)
+				}
+			}
+			comments, err := h.connector.FetchIssueComments(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPlans := 0
+			if test.outcome == "succeeded" {
+				wantPlans = 1
+			}
+			if len(comments) != wantPlans {
+				t.Fatalf("plan publications=%d, want %d", len(comments), wantPlans)
+			}
+		})
+	}
+}
 
 // Replay Cloud retiring a lease on run.finished. The real runner must leave
 // publication and the lane handoff to the orchestrator before that retirement.
