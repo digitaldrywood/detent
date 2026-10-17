@@ -37,6 +37,9 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 		}
 	}
 	boot, err := resolveBootConfig(ctx, cfg.ConfigPath, cfg.Host, cfg.Flags, opts)
+	if err == nil {
+		err = validateHubStartup(ctx, boot.Global, runtimeDeps{loadWorkflow: deps.loadWorkflow})
+	}
 	if err != nil {
 		report.Add(doctorCheck{
 			Name:   "Candidate startup",

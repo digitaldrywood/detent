@@ -154,6 +154,11 @@ func serviceRunnerForCommand(cmd *cobra.Command, configPath *string, host *strin
 	if err != nil {
 		return nil, err
 	}
+	if cmd.Name() == "start" {
+		if err := validateHubStartup(cmd.Context(), cfg, runtimeDepsFromOptions(opts)); err != nil {
+			return nil, err
+		}
+	}
 	portFlag := runtimeIntFlag{Value: pointerInt(port, -1), Set: flagChanged(cmd, "port")}
 	resolvedPort, err := resolveRuntimePort(cmd.Context(), runtimeInput{
 		Config:     &cfg,
