@@ -93,6 +93,14 @@ and the authorization code flow with S256 PKCE. Your normal Cloud sign-in,
 workspace membership, role, project grants and organization key policy apply.
 A reporter can file issues and use the same tools as with a personal key.
 
+Registration returns a sealed client ID without storing an unused client.
+Pending authorization lives in one encrypted browser cookie, expires after ten
+minutes, and creates no server rows. Registration bodies are limited to 64 KiB,
+with at most 20 redirect URIs and a 2,048-character client ID; the pending
+cookie is limited to 3,800 characters. Only authenticated consent stores the
+client, grant and single-use authorization code. Anonymous registration and
+pending requests therefore need no database quota or cleanup sweep.
+
 ### ChatGPT
 
 1. Open ChatGPT Plugins, select the plus button, then **Add custom MCP server**.
@@ -108,6 +116,10 @@ A reporter can file issues and use the same tools as with a personal key.
 
 See [OpenAI's connection steps](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 and [MCP authentication guide](https://developers.openai.com/plugins/build/auth).
+The published callbacks are
+`https://chatgpt.com/connector_platform_oauth_redirect` for issuer-aware servers
+and `https://chatgpt.com/connector/oauth/{callback_id}` for callback-specific
+connections. Detent returns the issuer on authorization responses.
 
 ### Claude (claude.ai or Claude Desktop)
 
@@ -123,7 +135,10 @@ and [MCP authentication guide](https://developers.openai.com/plugins/build/auth)
    organization and project before filing an issue. Confirm your account is
    recorded as the author.
 
-See [Claude's custom connector setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp).
+See [Claude's custom connector setup](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp)
+and [authentication requirements](https://claude.com/docs/connectors/building/authentication).
+Claude's hosted connector callback is `https://claude.ai/api/mcp/auth_callback`,
+including connections from Claude Desktop.
 
 ### Grant lifetime and disconnecting
 
