@@ -137,7 +137,7 @@ for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1100 });
     await openFleet(page);
     await page.getByText("Fleet capacity and providers", { exact: true }).click();
-    await expect(page.getByText("1 of 7 slots running work")).toBeVisible();
+    await expect(page.getByText("1 of 7 slots occupied", { exact: true })).toBeVisible();
     await expect(page.getByText("5 slots can't take work")).toBeVisible();
     const groups = page.getByTestId("runner-capacity");
     await expect(groups).toHaveCount(fleet.runners.length);

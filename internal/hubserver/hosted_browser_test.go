@@ -1298,4 +1298,5 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			}
 		}
 	}
+	drainTestNativeBoard(t, f.service)
 }
