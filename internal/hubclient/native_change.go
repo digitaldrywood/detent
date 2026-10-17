@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -378,6 +379,7 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		if version.AttemptID == "" && detail.Summary.NativeReview != "changes_requested" && (version.Policy.Gates.SecurityAudit || version.Policy.Gates.Validator || version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired) {
 			break
 		}
+		e.recoveredSource = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 		return version.ID, detail.Summary.Status == "reviewed", nil
 	}
 	if diff.HeadSHA == diff.BaseSHA || len(diff.Files) == 0 {
@@ -398,8 +400,8 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err := nativeEffectError(ctx); err != nil {
 		return "", false, err
 	}
-	version, err := client.PublishChangeVersion(ctx, item, changeID, tracker.PublishChangeVersion{
-		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":version", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
+	request := tracker.PublishChangeVersion{
+		Mutation:          tracker.Mutation{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: detail.Change.CurrentVersion,
 		SourceBundle:      bundle,
 		ChangeVersionInput: tracker.ChangeVersionInput{
@@ -411,10 +413,23 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
 			Source: source,
 		},
-	})
+	}
+	identity, err := json.Marshal(struct {
+		Project tracker.ProjectID
+		Item    tracker.NativeWorkItemID
+		Change  string
+		Request tracker.PublishChangeVersion
+	}{client.project, item, changeID, request})
+	if err != nil {
+		return "", false, fmt.Errorf("identify version publication: %w", err)
+	}
+	retryDigest := sha256.Sum256(identity)
+	request.IdempotencyKey = "version:" + hex.EncodeToString(retryDigest[:])
+	version, err := client.PublishChangeVersion(ctx, item, changeID, request)
 	if err != nil {
 		return "", false, fmt.Errorf("publish version: %w", err)
 	}
+	e.recoveredSource = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	return version.ID, acceptedOnPublish(version), nil
 }
 
