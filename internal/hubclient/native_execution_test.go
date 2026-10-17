@@ -490,6 +490,16 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				execution := scheduler.RunExecution(id).(*nativeExecution)
 				execution.preparedOutcome = "failed"
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+				cleanupCalls := 0
+				if err := execution.KeepWorker(func(context.Context) error {
+					cleanupCalls++
+					if execution.data.Outcome != "failed" || finishedEvents != 1 {
+						t.Fatal("worker ownership ended before terminal publication was acknowledged")
+					}
+					return nil
+				}, nil); err != nil {
+					t.Fatal(err)
+				}
 				if err := scheduler.ReleaseClaim(t.Context(), id, "released"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("release outage = %v", err)
 				}
@@ -504,6 +514,9 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				}
 				if finishedEvents != 1 {
 					t.Fatalf("Finish published again: %d events", finishedEvents)
+				}
+				if cleanupCalls != 1 {
+					t.Fatalf("worker cleanup repeated after a lease-release retry: %d", cleanupCalls)
 				}
 			case "release", "release_finish_lost":
 				if operation == "release_finish_lost" {

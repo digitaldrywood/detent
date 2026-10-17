@@ -11,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 type workerReleaseFixture struct {
@@ -18,6 +21,81 @@ type workerReleaseFixture struct {
 	listErr        error
 	downloadsByURL map[string]int
 	list           func()
+}
+
+func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"automatic", "explicit", "enrolled", "pending", "download failure", "protocol incompatible", "critical"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			artifacts, fixture, publish := workerArtifactFixture(t)
+			publish("1.0.0")
+			active, err := artifacts.Acquire(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := active.Release(); err != nil {
+					t.Error(err)
+				}
+			})
+			published := publish("1.0.1")
+			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.0.1", InstallSource: InstallSourceRelease}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.0.1", Binary: "verified-controller"}}
+			var drains, restarts int
+			preflight := BinaryPreflight(nil)
+			if path == "download failure" {
+				delete(fixture.downloads, published.Assets[0].BrowserDownloadURL)
+			}
+			if path == "protocol incompatible" {
+				preflight = func(context.Context, string) error { return ErrWorkerProtocolIncompatible }
+			}
+			if path == "critical" {
+				fixture.releases[len(fixture.releases)-1].Body = "[detent-critical]"
+			}
+			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, WorkerPreflight: preflight,
+				Updater: updater, Enabled: true, AutoApplyEnabled: true, CheckInterval: time.Hour,
+				StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: runnerauth.BuildEvidence{Version: "1.0.0", Commit: testPreviousCommit, OS: "linux", Architecture: "amd64"},
+				ReserveIdle:    func(context.Context) (func(), bool) { return nil, false },
+				ReserveDrain:   func(context.Context) (func(), error) { drains++; return func() {}, nil },
+				RequestRestart: func(string) bool { restarts++; return true },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch path {
+			case "automatic":
+				_, err = scheduler.CheckNow(t.Context())
+			case "pending":
+				scheduler.updateStatus(func(status *AutoStatus) { status.State, status.AvailableVersion = "pending_idle", "1.0.1" })
+				_, err = scheduler.ApplyPending(t.Context())
+			case "enrolled":
+				observed := scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
+				request := &runnerauth.UpdateRequest{ID: "update-1", Service: "detent", Release: true, FollowHub: true, Version: "1.0.1", ExpectedBuildRevision: observed.Revision, RequestedAt: time.Now().UTC()}
+				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
+				if observed.Receipt == nil || observed.Receipt.Status != "applied" || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" {
+					t.Fatalf("untruthful mixed-version update receipt: %+v", observed)
+				}
+			default:
+				_, err = scheduler.ApplyRelease(t.Context(), true)
+			}
+			if path == "download failure" {
+				if err == nil || drains != 0 || restarts != 0 {
+					t.Fatalf("artifact failure drained or appeared successful: %v, drains=%d restarts=%d", err, drains, restarts)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			} else if path == "protocol incompatible" || path == "critical" {
+				if drains != 1 || restarts != 1 || updater.applyCalls != 1 {
+					t.Fatalf("exceptional update did not use existing replacement: drains=%d restarts=%d applies=%d", drains, restarts, updater.applyCalls)
+				}
+			} else if drains != 0 || restarts != 0 || updater.applyCalls != 0 || scheduler.Status().State != "applied" {
+				t.Fatalf("routine update withheld capacity: drains=%d restarts=%d applies=%d status=%+v", drains, restarts, updater.applyCalls, scheduler.Status())
+			}
+			if _, err := os.Stat(active.Status.Binary); err != nil {
+				t.Fatalf("update removed active worker artifact: %v", err)
+			}
+		})
+	}
 }
 
 func (f *workerReleaseFixture) ListReleases(ctx context.Context) ([]Release, error) {
@@ -116,13 +194,26 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	if _, err := os.Stat(b.Status.Binary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("retired worker artifact remains: %v", err)
 	}
+	pinned, err := a1.Retain()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := a1.Release(); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := a1.Retain(); err == nil {
+		t.Fatal("released handle could acquire a new artifact owner")
 	}
 	if current, err := os.ReadFile(a1.Status.Binary); err != nil || string(current) != string(oldBytes) {
 		t.Fatalf("live old worker artifact changed: %v", err)
 	}
 	if err := a2.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pinned.Status.Binary); err != nil {
+		t.Fatalf("captured continuation lost its artifact: %v", err)
+	}
+	if err := pinned.Release(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(a1.Status.Binary); !errors.Is(err, os.ErrNotExist) {

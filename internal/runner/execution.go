@@ -33,6 +33,11 @@ type Execution interface {
 	Recovery() tracker.NativeRecovery
 }
 
+type WorkerLifetimeExecution interface {
+	KeepWorker(func(context.Context) error, func(context.Context, RunRequest) (RunResult, error)) error
+	WorkerLauncher() func(context.Context, RunRequest) (RunResult, error)
+}
+
 type NativeValidation struct {
 	SecurityAudit *NativeSecurityAuditEvidence
 	Discussion    NativeReviewDiscussion
