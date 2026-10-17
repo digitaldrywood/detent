@@ -398,6 +398,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	writeDoctorProgressDone(progressOut, configCheck)
 	report.Scope = scope
 	report.Add(configCheck)
+	if global != nil {
+		check := checkDoctorHubConnection(*global)
+		writeDoctorProgressStart(progressOut, check.Name)
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
+	}
 
 	if projectScopeCheck != nil {
 		writeDoctorProgressStart(progressOut, projectScopeCheck.Name)
