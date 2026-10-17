@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -111,6 +114,9 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		oversizedSource      bool
 		oversizedAcceptance  bool
 		oversizedHuman       bool
+		measuredShape        bool
+		historyPressure      bool
+		historicalReview     bool
 	}{
 		{name: "fresh acceptance follows source", sourceVerdict: "pass"},
 		{name: "source pass requires newer acceptance", sourceVerdict: "pass", sourceAfterValidator: true},
@@ -119,13 +125,48 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		{name: "latest acceptance wait is retained", sourceVerdict: "pass", acceptanceVerdict: "wait"},
 		{name: "latest acceptance rework is retained", sourceVerdict: "pass", acceptanceVerdict: "rework"},
 		{name: "ordinary reviews remain complete", ordinaryOnly: true},
+		{name: "measured retained review shape", sourceVerdict: "pass", measuredShape: true},
+		{name: "retained human hold outside context budget", sourceVerdict: "pass", historyPressure: true},
+		{name: "historical review keeps its own version", sourceVerdict: "pass", historicalReview: true},
 		{name: "single authoritative source remains oversized", sourceVerdict: "pass", oversizedSource: true},
 		{name: "single authoritative acceptance remains oversized", sourceVerdict: "pass", oversizedAcceptance: true},
 		{name: "ordinary human review remains oversized", sourceVerdict: "pass", oversizedHuman: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
-			version := f.publish(t, "retained-version", "", true)
+			var version, historical tracker.ChangeVersion
+			if test.historicalReview {
+				historical = f.publish(t, "historical-version", "", true)
+			}
+			if test.measuredShape {
+				cfg := config.Default()
+				cfg.Tracker.Kind = config.TrackerHubNative
+				descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("p", 48_469)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+				input := changeTestInput()
+				input.PolicyID = descriptor.ID
+				bundle := changeTestSource(t, &input)
+				input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Output: strings.Repeat("v", 64_000) + strings.Repeat("<", 450)}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "retained-version"}, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &version)
+				worker := f.worker(t, "retained-worker")
+				lease := claimNativeAttempt(t, f.nativeFixture, worker, "retained-machine", "retained-session", f.issue.WorkItemID, descriptor.ID)
+				start := nativeStartedEvent(lease)
+				itemPath := f.base + "/work-items/" + string(f.issue.WorkItemID)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", worker, start), http.StatusOK)
+				finish := start
+				finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
+				finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Command: "make check-land", HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Output: strings.Repeat("v", 64_000) + strings.Repeat("<", 1000)}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", worker, finish), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: strings.Repeat("d", 32_080)}), http.StatusOK)
+			} else {
+				version = f.publish(t, "retained-version", historical.ID, true)
+			}
 			automatic := func(id, verdict string, source bool, bytes int) tracker.ChangeReview {
 				result := &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Submitted: true, Verdict: verdict, Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("x", bytes)}}}
 				review := tracker.ChangeReview{ID: id, VersionID: version.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: version.CreatedAt}
@@ -160,6 +201,9 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				if test.oversizedSource {
 					bytes = 1 << 20
 				}
+				if test.measuredShape {
+					bytes = 579_328
+				}
 				source := automatic("review_latest_source", test.sourceVerdict, true, bytes)
 				verdict := test.acceptanceVerdict
 				if verdict == "" {
@@ -168,6 +212,9 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				bytes = 160 << 10
 				if test.oversizedAcceptance {
 					bytes = 1 << 20
+				}
+				if test.measuredShape {
+					bytes = 285_066
 				}
 				acceptance := automatic("review_latest_acceptance", verdict, false, bytes)
 				if test.sourceAfterValidator {
@@ -180,13 +227,26 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			} else {
 				history, want = []tracker.ChangeReview{human, bot}, []tracker.ChangeReview{human, bot}
 			}
+			if test.historicalReview {
+				review := bot
+				review.ID, review.VersionID, review.Decision = "review_historical", historical.ID, "changes_requested"
+				history = append(history, review)
+			}
+			if test.historyPressure {
+				for i := range 96 {
+					review := bot
+					review.ID = fmt.Sprintf("review_context_%d", i)
+					history = append(history, review)
+					want = append(want, review)
+				}
+			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
 			for _, review := range history {
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", review.ID, review); err != nil {
+				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -207,21 +267,142 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			raw := performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/projects/"+string(f.project.ID)+"/work-items/"+string(f.issue.WorkItemID)+"?view=recovery", f.token, nil)
+			t.Logf("recovery route bytes=%d reviews=%d", raw.Body.Len(), len(want))
+			var exact tracker.NativeRecovery
+			if test.measuredShape && raw.Body.Len() <= 1<<20 {
+				t.Fatal("measured retained evidence did not reproduce the response refusal")
+			}
+			decodeHubResponse(t, raw, &exact)
 			recovery, err := native.Recovery(t.Context(), f.issue.WorkItemID)
-			if test.oversizedSource || test.oversizedAcceptance || test.oversizedHuman {
-				if err == nil || !strings.Contains(err.Error(), "response exceeds 1048576 bytes") {
-					t.Fatalf("oversized authoritative evidence must remain an explicit refusal: %v", err)
+			if err != nil {
+				t.Fatalf("retained review evidence blocked Recovery: %v", err)
+			}
+			if recovery.ChangeDetail == nil || !reflect.DeepEqual(recovery.ChangeDetail.Summary, before.Summary) || !reflect.DeepEqual(recovery.Issue, exact.Issue) || !reflect.DeepEqual(recovery.Change, exact.Change) || recovery.SourceAttemptID != exact.SourceAttemptID {
+				t.Fatal("Recovery changed source or summary authority")
+			}
+			for _, version := range recovery.ChangeDetail.Versions {
+				var want tracker.ChangeVersion
+				for _, original := range before.Versions {
+					if original.ID == version.ID {
+						want = original
+					}
 				}
-			} else {
+				version.Validation, want.Validation = nil, nil
+				if !reflect.DeepEqual(version, want) {
+					t.Fatal("Recovery changed immutable source or frozen policy")
+				}
+			}
+			for _, review := range recovery.ChangeDetail.Reviews {
+				var original tracker.ChangeReview
+				for _, candidate := range want {
+					if candidate.ID == review.ID {
+						original = candidate
+					}
+				}
+				for _, pair := range [][2]*gate.ValidatorResult{{review.ImplementationReview, original.ImplementationReview}, {review.Validator, original.Validator}} {
+					if pair[0] == nil || pair[1] == nil {
+						continue
+					}
+					got, expected := *pair[0], *pair[1]
+					got.Commands, expected.Commands = nil, nil
+					if !reflect.DeepEqual(got, expected) || !pair[0].Commands[0].OutputTruncated || len(pair[0].Commands[0].Output) > 4096 {
+						t.Fatal("bounded review lost verdict, version, criteria or output provenance")
+					}
+				}
+				review.ImplementationReview, review.Validator = nil, nil
+				original.ImplementationReview, original.Validator = nil, nil
+				if !reflect.DeepEqual(review, original) {
+					t.Fatal("bounded review changed feedback identity, body or decision")
+				}
+			}
+			if !test.ordinaryOnly {
+				ids := map[string]bool{}
+				for _, review := range recovery.ChangeDetail.Reviews {
+					ids[review.ID] = true
+				}
+				if !ids["review_latest_source"] || !ids["review_latest_acceptance"] {
+					t.Fatal("bounded context lost authoritative review criteria")
+				}
+			}
+			seen := map[string]bool{}
+			var record []byte
+			cursor := ""
+			for pages := 0; ; pages++ {
+				if pages > 10*len(history)+32 {
+					t.Fatal("record continuation did not terminate")
+				}
+				page, err := native.RecoveryEvidence(t.Context(), f.issue.WorkItemID, cursor)
 				if err != nil {
-					t.Fatalf("superseded automatic review output blocked Recovery: %v", err)
+					t.Fatal(err)
 				}
-				if recovery.ChangeDetail == nil || !reflect.DeepEqual(recovery.ChangeDetail.Reviews, want) || !reflect.DeepEqual(recovery.ChangeDetail.Versions, before.Versions) || !reflect.DeepEqual(recovery.ChangeDetail.Summary, before.Summary) || recovery.Issue.WorkItemID != f.issue.WorkItemID {
-					t.Fatal("Recovery changed current review order, ordinary feedback, source or summary authority")
+				if page.Section == "complete" {
+					break
 				}
+				if page.Offset != int64(len(record)) || len(page.Data) > 256<<10 {
+					t.Fatal("record continuation lost progress or response bound")
+				}
+				record = append(record, page.Data...)
+				if int64(len(record)) == page.TotalBytes {
+					digest := sha256.Sum256(record)
+					if hex.EncodeToString(digest[:]) != page.SHA256 {
+						t.Fatal("record digest mismatch")
+					}
+					if page.Section == "reviews" {
+						var review tracker.ChangeReview
+						if err := json.Unmarshal(record, &review); err != nil {
+							t.Fatal(err)
+						}
+						for _, original := range history {
+							if original.ID == review.ID && page.VersionID == original.VersionID && reflect.DeepEqual(original, review) {
+								seen[review.ID] = true
+							}
+						}
+					}
+					if page.Section == "versions" {
+						var version tracker.ChangeVersion
+						if err := json.Unmarshal(record, &version); err != nil {
+							t.Fatal(err)
+						}
+						var original tracker.ChangeVersion
+						for _, candidate := range before.Versions {
+							if candidate.ID == version.ID {
+								original = candidate
+							}
+						}
+						if !reflect.DeepEqual(version, original) {
+							t.Fatal("retained source, policy or validation was not retrievable")
+						}
+					}
+					record = nil
+				}
+				cursor = page.NextCursor
+			}
+			if len(seen) != len(history) {
+				t.Fatal("retained reviews were not completely retrievable")
 			}
 			if after := f.detail(t); !reflect.DeepEqual(after, before) {
 				t.Fatal("Recovery altered complete durable Change evidence")
+			}
+			if test.measuredShape {
+				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "?view=recovery&limit=1"
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				if response.Body.Len() > 1<<20 {
+					t.Fatal("continued response exceeded client memory bound")
+				}
+				var page tracker.NativeRecovery
+				decodeHubResponse(t, response, &page)
+				if page.Continuation == nil || page.Continuation.NextCursor == "" || len(page.Continuation.Data) > 256<<10 {
+					t.Fatal("oversized recovery did not provide a bounded continuation")
+				}
+				cursor := url.QueryEscape(page.Continuation.NextCursor)
+				other := f.create(t, "second item")
+				otherPath := f.base + "/work-items/" + string(other.WorkItemID) + "?view=recovery&limit=1&cursor=" + cursor
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, otherPath, f.token, nil), http.StatusUnprocessableEntity)
+				otherToken := f.worker(t, "other-reader")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor="+cursor, otherToken, nil), http.StatusUnprocessableEntity)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-discussion"}, Body: "New human context"}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor="+cursor, f.token, nil), http.StatusOK)
 			}
 		})
 	}

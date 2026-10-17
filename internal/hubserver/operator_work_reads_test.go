@@ -426,6 +426,29 @@ func TestOperatorNativeWorkReads(t *testing.T) {
 			t.Fatalf("%s envelope=%s", tool, result.Content)
 		}
 	}
+	t.Run("retained recovery uses the existing cursor owner", func(t *testing.T) {
+		request := args()
+		request["view"] = "recovery"
+		result, err := call(operatortool.WorkItem, request)
+		var envelope operatortool.WorkReadResult[tracker.NativeRecoveryPage]
+		if err != nil || json.Unmarshal(result.Content, &envelope) != nil || envelope.Data.Section != "discussion" || envelope.Data.NextCursor == "" {
+			t.Fatalf("retained tool read: %s %v", result.Content, err)
+		}
+		path := itemPath + "?view=recovery&limit=1&cursor=" + url.QueryEscape(envelope.Data.NextCursor)
+		response := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var next tracker.NativeRecovery
+		decodeHubResponse(t, response, &next)
+		if next.Continuation == nil || next.Continuation.RecordID == envelope.Data.RecordID || next.Continuation.WorkItemID != first.WorkItemID {
+			t.Fatal("tool cursor did not continue through the authenticated HTTP owner")
+		}
+		request["cursor"] = envelope.Data.NextCursor
+		request["reference"] = second.WorkItemID
+		if _, err := call(operatortool.WorkItem, request); err == nil {
+			t.Fatal("retained tool accepted a foreign item cursor")
+		}
+	})
+
 	versionArgs := args()
 	versionArgs["revision"] = int64(updated.Revision)
 	version, err := call(operatortool.WorkVersion, versionArgs)

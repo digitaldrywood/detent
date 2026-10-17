@@ -2,8 +2,12 @@ package hubclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -14,10 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -555,6 +561,10 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "Read current native evidence"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": "https://cloud.detent.build/work/195"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": foreignProject.ID, "reference": foreignIssue.WorkItemID}, operatortool.ErrAccessDenied},
+		{operatortool.WorkItem, map[string]any{"project_id": foreignProject.ID, "reference": foreignIssue.WorkItemID, "view": "recovery"}, operatortool.ErrAccessDenied},
+		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": foreignIssue.WorkItemID, "view": "recovery"}, operatortool.ErrAccessDenied},
+		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": issue.ID, "view": "unsupported"}, operatortool.ErrInvalidArguments},
+		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": issue.ID, "cursor": "unsupported"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": foreignIssue.WorkItemID}, operatortool.ErrAccessDenied},
 		{operatortool.WorkItem, map[string]any{"project_id": h.project, "reference": issue.ID, "url": "https://foreign.invalid"}, operatortool.ErrInvalidArguments},
 		{operatortool.WorkComments, map[string]any{"project_id": h.project, "reference": issue.ID, "limit": 201}, operatortool.ErrInvalidArguments},
@@ -613,6 +623,14 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
 		t.Fatalf("lost execution authority: success=%t error=%v", result.Success, err)
 	}
+	retainedArgs, err := json.Marshal(map[string]string{"project_id": string(h.project), "reference": issue.ID, "view": "recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: retainedArgs})
+	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
+		t.Fatal("retained read bypassed execution authority")
+	}
 	for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
 		arguments, err := json.Marshal(map[string]string{"project_id": string(h.project), "attachment_id": "att_" + strings.Repeat("0", 32)})
 		if err != nil {
@@ -622,5 +640,198 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 		if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || result.Success {
 			t.Fatalf("lost attachment read authority: success=%t error=%v", result.Success, err)
 		}
+	}
+}
+
+func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("durable SQLite integration")
+	}
+	h := newNativeChangeHub(t, true)
+	cfg := config.Default()
+	cfg.Tracker.Kind = config.TrackerHubNative
+	descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("historical policy <\n", 6000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: descriptor}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = descriptor
+	issue := h.createInProgress(t, "Retained evidence worker")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID)
+	if execution == nil {
+		t.Fatal("claimed worker execution is missing")
+	}
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	tools, handler := execution.(runner.ToolExecution).AgentTools()
+	var schema json.RawMessage
+	for _, tool := range tools {
+		if tool.Name == operatortool.WorkItem {
+			schema = tool.InputSchema
+		}
+	}
+
+	items := []tracker.NativeWorkItemID{tracker.NativeWorkItemID(issue.ID)}
+	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Second retained item", Body: issueContractTestSections, State: "Todo"})
+	items = append(items, other.WorkItemID)
+	type evidence struct {
+		change   tracker.ChangeRequest
+		versions []tracker.ChangeVersion
+		reviews  []tracker.ChangeReview
+		comment  tracker.NativeComment
+	}
+	wants := make(map[tracker.NativeWorkItemID]evidence)
+	for i, item := range items {
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: fmt.Sprintf("Retained change %d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+		current := h.publish(t, item, change.ID, nativeChangeFixtureHead("c"), old.ID)
+		comment, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: nativeMutationKey(), Body: strings.Repeat("retained discussion <\n", 2800)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		reviews := []tracker.ChangeReview{
+			{ID: fmt.Sprintf("review_human_%d", i), VersionID: current.ID, Decision: "changes_requested", Body: strings.Repeat("human feedback <\n", 65536), Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: current.CreatedAt},
+			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
+		}
+		wants[item] = evidence{change: change, versions: []tracker.ChangeVersion{old, current}, reviews: reviews, comment: comment}
+	}
+	h.reopen(func(path string) error {
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		for _, want := range wants {
+			for _, review := range want.reviews {
+				raw, err := json.Marshal(review)
+				if err != nil {
+					return err
+				}
+				if _, err := db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, ?, 'review', ?, ?)", want.change.ID, review.VersionID, review.ID, string(raw)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	for _, item := range items {
+		t.Run(string(item), func(t *testing.T) {
+			want := wants[item]
+			seen := map[string]bool{}
+			cursor := ""
+			var record []byte
+			var identity tracker.NativeRecoveryPage
+			for pages := 0; ; pages++ {
+				if pages > 200 {
+					t.Fatal("retained traversal did not terminate")
+				}
+				args := map[string]any{"project_id": h.project, "reference": item, "view": "recovery"}
+				if cursor != "" {
+					args["cursor"] = cursor
+				}
+				raw, err := json.Marshal(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: raw})
+				var response operatortool.WorkReadResult[tracker.NativeRecoveryPage]
+				if err != nil || !result.Success || len(result.Content) > operatortool.MaxResultBytes || json.Unmarshal([]byte(result.Content), &response) != nil {
+					t.Fatalf("worker retained read: success=%t bytes=%d err=%v", result.Success, len(result.Content), err)
+				}
+				if !strings.Contains(string(schema), "view") {
+					t.Fatal("worker work_item schema cannot request retained recovery evidence")
+				}
+				page := response.Data
+				if page.WorkItemID != item || page.ProjectID != h.project || page.OrganizationID != h.organization {
+					t.Fatal("fragment lost scoped identity")
+				}
+				if page.Section == "complete" {
+					if len(record) != 0 {
+						t.Fatal("truncated final record")
+					}
+					break
+				}
+				if page.Offset != int64(len(record)) || len(page.Data) == 0 || len(page.Data) > 64<<10 || page.NextCursor == "" || page.NextCursor == cursor {
+					t.Fatal("unbounded or non-progressing fragment")
+				}
+				if page.Offset == 0 {
+					identity = page
+				} else if page.Section != identity.Section || page.RecordID != identity.RecordID || page.VersionID != identity.VersionID || page.TotalBytes != identity.TotalBytes || page.SHA256 != identity.SHA256 {
+					t.Fatal("fragment identity changed")
+				}
+				if cursor == "" {
+					foreignItem := items[0]
+					if item == foreignItem {
+						foreignItem = items[1]
+					}
+					foreignArgs, err := json.Marshal(map[string]any{"project_id": h.project, "reference": foreignItem, "view": "recovery", "cursor": page.NextCursor})
+					if err != nil {
+						t.Fatal(err)
+					}
+					refusal, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: foreignArgs})
+					if err == nil || refusal.Success {
+						t.Fatal("worker accepted another item's cursor")
+					}
+				}
+				record = append(record, page.Data...)
+				if int64(len(record)) == page.TotalBytes {
+					digest := sha256.Sum256(record)
+					if hex.EncodeToString(digest[:]) != page.SHA256 {
+						t.Fatal("retained record digest changed")
+					}
+					switch page.Section {
+					case "reviews":
+						var got tracker.ChangeReview
+						if err := json.Unmarshal(record, &got); err != nil {
+							t.Fatal(err)
+						}
+						for _, review := range want.reviews {
+							if review.ID == got.ID {
+								if page.VersionID != review.VersionID || !reflect.DeepEqual(got, review) {
+									t.Fatal("worker lost complete ordinary review or command output")
+								}
+								seen[review.ID] = true
+							}
+						}
+					case "versions":
+						var got tracker.ChangeVersion
+						if err := json.Unmarshal(record, &got); err != nil {
+							t.Fatal(err)
+						}
+						for _, version := range want.versions {
+							if version.ID == got.ID {
+								if page.VersionID != version.ID || !reflect.DeepEqual(got.Policy, version.Policy) || got.HeadSHA != version.HeadSHA || !reflect.DeepEqual(got.Source, version.Source) {
+									t.Fatal("worker lost immutable source or historical frozen policy")
+								}
+								seen[version.ID] = true
+							}
+						}
+					case "discussion":
+						var got tracker.NativeComment
+						if err := json.Unmarshal(record, &got); err != nil {
+							t.Fatal(err)
+						}
+						if got.ID == want.comment.ID {
+							if !reflect.DeepEqual(got, want.comment) {
+								t.Fatal("worker lost retained discussion")
+							}
+							seen[got.ID] = true
+						}
+					}
+					record = nil
+				}
+				cursor = page.NextCursor
+			}
+			if len(seen) != 5 {
+				t.Fatalf("worker lost retained evidence: %v", seen)
+			}
+		})
 	}
 }
