@@ -44,6 +44,13 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		{name: "replacement crosses byte budget", output: strings.Repeat("a", limit-1) + "\xff", command: "cat output.txt", truncated: true},
 		{name: "failed command preserves unicode tail", output: strings.Repeat("✓", 32*1024) + "end\n", command: "cat output.txt; exit 7", exit: 7, truncated: true},
 		{
+			name: "terminal make failure preserves preceding diagnostic",
+			output: strings.Repeat(" PASS frontend suite 世界\n", 8000) +
+				"./scripts/check-repository.sh\nRepository schema mismatch 世界\nmigrations/example.sql: missing delivery column\nexpected column: delivery_id\nactual column: legacy_id\nTOKEN=private-assignment\n/home/private/project/build.log\nmake: *** [check-repository] Error 2\nend\n",
+			command: "cat output.txt; exit 2", exit: 2, truncated: true,
+			wantDiagnostics: []string{"./scripts/check-repository.sh", "Repository schema mismatch 世界", "migrations/example.sql: missing delivery column", "expected column: delivery_id", "actual column: legacy_id", "make: *** [check-repository] Error 2"},
+		},
+		{
 			name: "early migration repository stage survives public receipt",
 			output: strings.Repeat("ok repository setup\n", 300) + "./scripts/check-migration-order.sh dev\nMIGRATION ORDERING CONFLICT DETECTED!\nmigrations/20261017090000_example.sql is below dev migration 20261017100000_other.sql\ncheck-fast-stage stage=repository exit_status=1\n" +
 				"TOKEN=private-assignment\n/home/private/project/build.log\n" +
