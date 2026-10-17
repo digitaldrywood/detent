@@ -1,7 +1,10 @@
 package hubclient
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -181,6 +184,87 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 				t.Fatalf("refresh lost current authority: reads=%d issue=%+v", reads, issue)
 			}
 			t.Logf("full attempt payload=%d bytes; refresh preserved operator hold", len(full))
+		})
+	}
+}
+
+func TestNativeRecoveryContinuationIntegrity(t *testing.T) {
+	for _, mode := range []string{"complete", "foreign item", "foreign project", "changed snapshot", "repeated offset", "early end", "corrupt bytes", "denied continuation", "unbounded response"} {
+		t.Run(mode, func(t *testing.T) {
+			want := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: "wi_test"}, Body: strings.Repeat("界<", 90_000)}}
+			if mode == "foreign item" {
+				want.Issue.WorkItemID = "wi_other"
+			}
+			if mode == "foreign project" {
+				want.Issue.ProjectID = "prj_other"
+			}
+			content, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(content)
+			sha := hex.EncodeToString(digest[:])
+			reads := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads++
+				if mode == "unbounded response" {
+					_, _ = w.Write([]byte(strings.Repeat("x", maxResponseBytes+1)))
+					return
+				}
+				start := 0
+				if cursor := r.URL.Query().Get("cursor"); cursor != "" {
+					start, err = strconv.Atoi(cursor)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				end := min(start+(128<<10), len(content))
+				page := &tracker.NativeRecoveryPage{Data: append([]byte(nil), content[start:end]...), SHA256: sha, Offset: int64(start), TotalBytes: int64(len(content))}
+				if end < len(content) {
+					page.NextCursor = strconv.Itoa(end)
+				}
+				if start > 0 {
+					switch mode {
+					case "changed snapshot":
+						page.SHA256 = strings.Repeat("0", 64)
+					case "repeated offset":
+						page.Offset = 0
+					case "early end":
+						page.NextCursor = ""
+					case "corrupt bytes":
+						page.Data[0] = 'z'
+					case "denied continuation":
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+				}
+				if err := json.NewEncoder(w).Encode(tracker.NativeRecovery{Continuation: page}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := native.Recovery(t.Context(), "wi_test")
+			if mode != "complete" {
+				if err == nil {
+					t.Fatal("invalid recovery was accepted")
+				}
+				if mode == "unbounded response" && !errors.Is(err, ErrUnavailable) {
+					t.Fatalf("unbounded response lost size refusal: %v", err)
+				}
+				return
+			}
+			if err != nil || got.Issue.Body != want.Issue.Body || got.Issue.NativeReference != want.Issue.NativeReference || reads < 2 {
+				t.Fatalf("continuation lost exact recovery: reads=%d error=%v", reads, err)
+			}
 		})
 	}
 }

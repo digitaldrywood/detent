@@ -359,7 +359,16 @@ type NativeRuntimeCapacity struct {
 	Exclusions       []string                `json:"exclusions"`
 }
 
+type NativeRecoveryPage struct {
+	Data       []byte `json:"data"`
+	SHA256     string `json:"sha256"`
+	NextCursor string `json:"next_cursor,omitempty"`
+	Offset     int64  `json:"offset"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
 type NativeRecovery struct {
+	Continuation    *NativeRecoveryPage    `json:"continuation,omitempty"`
 	SourceAttemptID string                 `json:"source_attempt_id,omitempty"`
 	Lease           NativeLease            `json:"lease"`
 	Issue           NativeIssue            `json:"issue"`

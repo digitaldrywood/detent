@@ -1619,6 +1619,18 @@ clients refresh through the existing project event stream.
 
 ### Ordered attempts and recovery
 
+`GET /work-items/{item}?view=recovery&limit=1` reads candidate recovery with
+bounded continuation. Small results retain the ordinary recovery shape. Larger
+results return `continuation` with base64 `data` (at most 256 KiB decoded),
+`offset`, `total_bytes`, `sha256` and optional `next_cursor`. Follow that cursor
+on the same scoped route and query. The chunks encode one complete recovery
+JSON document, preserving source, policy, review version identities and retained
+evidence without excerpts. Cursors use the existing credential/query binding;
+a changed recovery document refuses continuation with a conflict. Clients verify
+contiguous offsets, total bytes and the document digest before using recovery.
+The ordinary response size limit remains in force for every page and for the
+unpaginated `?view=recovery` read. No snapshot or runner-local state is stored.
+
 The `fenced_run_history` capability extends schema 1 with a positive decimal-string
 `data.sequence` and `identity: {role, backend, model}`. Identity components are
 bounded to 128 identifier characters. The server derives machine, runner and Hub

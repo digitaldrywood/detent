@@ -265,8 +265,16 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	defer cancel()
 	scope := nativeRequestScope(c)
 	if view := c.QueryParam("view"); view != "" {
-		if view != "recovery" || len(c.QueryParams()) != 1 || len(c.QueryParams()["view"]) != 1 {
+		params, err := nativeReadQuery(c)
+		if err != nil || view != "recovery" || validateNativeQuery(params, "view") != nil {
 			return s.nativeAPIError(c, nativeInvalid("view supports recovery"))
+		}
+		if params.Has("limit") || params.Has("cursor") {
+			result, err := s.readNativeRecoveryPage(ctx, scope, c.Param("item"), c.Request().URL.EscapedPath(), params)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			return c.JSON(http.StatusOK, result)
 		}
 		result, err := s.readNativeRecovery(ctx, scope, c.Param("item"))
 		if err != nil {

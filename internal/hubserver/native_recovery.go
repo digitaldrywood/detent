@@ -2,8 +2,14 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -112,4 +118,53 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 		return result, err
 	}
 	return result, tx.Commit()
+}
+
+func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {
+	const chunkBytes = 256 << 10
+	_, cursor, key, err := s.readNativePageLimit(ctx, scope, path, params, 1, 1)
+	if err != nil {
+		return tracker.NativeRecovery{}, err
+	}
+	offset := int64(0)
+	previousDigest := ""
+	if cursor.After != "" {
+		var position string
+		var found bool
+		previousDigest, position, found = strings.Cut(cursor.After, ":")
+		if !found || len(previousDigest) != 64 {
+			return tracker.NativeRecovery{}, nativeInvalid("Recovery cursor is invalid")
+		}
+		offset, err = strconv.ParseInt(position, 10, 64)
+		if err != nil || offset < 1 {
+			return tracker.NativeRecovery{}, nativeInvalid("Recovery cursor is invalid")
+		}
+	}
+	result, err := s.readNativeRecovery(ctx, scope, item)
+	if err != nil {
+		return tracker.NativeRecovery{}, err
+	}
+	result.Issue = s.nativeIssueResponse(result.Issue)
+	content, err := json.Marshal(result)
+	if err != nil {
+		return tracker.NativeRecovery{}, err
+	}
+	if offset == 0 && len(content) <= chunkBytes {
+		return result, nil
+	}
+	digest := sha256.Sum256(content)
+	sha := hex.EncodeToString(digest[:])
+	if previousDigest != "" && previousDigest != sha || offset >= int64(len(content)) {
+		return tracker.NativeRecovery{}, nativeConflict(0)
+	}
+	end := min(offset+chunkBytes, int64(len(content)))
+	page := &tracker.NativeRecoveryPage{Data: content[offset:end], Offset: offset, TotalBytes: int64(len(content)), SHA256: sha}
+	if end < int64(len(content)) {
+		cursor.After = sha + ":" + strconv.FormatInt(end, 10)
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
+		if err != nil {
+			return tracker.NativeRecovery{}, err
+		}
+	}
+	return tracker.NativeRecovery{Continuation: page}, nil
 }
