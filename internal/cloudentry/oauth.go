@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/httpratelimit"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -28,11 +30,25 @@ const oauthAccessLifetime = time.Hour
 const oauthRefreshLifetime = 30 * 24 * time.Hour
 
 func (s *Service) registerOAuth() {
+	limiter := httpratelimit.New(120, 30)
+	clientIP := echo.ExtractIPFromXFFHeader(echo.TrustLoopback(true), echo.TrustPrivateNet(false), echo.TrustLinkLocal(false))
+	throttle := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			allowed, remaining := limiter.Allow(clientIP(c.Request()), s.config.now())
+			c.Response().Header().Set("X-RateLimit-Limit", strconv.Itoa(limiter.Limit()))
+			c.Response().Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+			if !allowed {
+				c.Response().Header().Set("Retry-After", "60")
+				return oauthError(c, http.StatusTooManyRequests, "rate_limited")
+			}
+			return next(c)
+		}
+	}
 	s.echo.GET("/.well-known/oauth-protected-resource", s.oauthResourceMetadata)
 	s.echo.GET("/.well-known/oauth-protected-resource/mcp", s.oauthResourceMetadata)
 	s.echo.GET("/.well-known/oauth-authorization-server", s.oauthServerMetadata)
-	s.echo.POST("/oauth/register", s.oauthRegister)
-	s.echo.GET("/oauth/authorize", s.oauthAuthorize)
+	s.echo.POST("/oauth/register", s.oauthRegister, throttle)
+	s.echo.GET("/oauth/authorize", s.oauthAuthorize, throttle)
 	s.echo.GET("/oauth/consent/:request", s.oauthConsent)
 	s.echo.POST("/oauth/consent/:request", s.oauthApprove)
 	s.echo.POST("/oauth/token", s.oauthToken)

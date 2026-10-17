@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"reflect"
@@ -53,6 +54,87 @@ func TestOAuthAnonymousRequestsDoNotPersist(t *testing.T) {
 		if count != 0 {
 			t.Errorf("anonymous requests persisted %d rows in %s", count, table)
 		}
+	}
+}
+
+func TestOAuthAnonymousRequestThrottling(t *testing.T) {
+	for _, test := range []struct {
+		name, method, peer, forwarded string
+		status                        int
+	}{
+		{"registration direct", http.MethodPost, "192.0.2.10:1234", "", http.StatusCreated},
+		{"authorization direct", http.MethodGet, "192.0.2.10:1234", "", http.StatusSeeOther},
+		{"registration proxy", http.MethodPost, "127.0.0.1:1234", "198.51.100.1, 192.0.2.10", http.StatusCreated},
+		{"authorization proxy", http.MethodGet, "[::1]:1234", "198.51.100.1, 192.0.2.10", http.StatusSeeOther},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newEntryFixture(t)
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
+			client := registerTestOAuth(t, newBrowser(t, f.service.Handler()), "Example assistant", "none")
+			request := func(method, peer, forwarded string) *httptest.ResponseRecorder {
+				t.Helper()
+				target := "/oauth/register"
+				if method == http.MethodGet {
+					target = "/oauth/authorize?" + testOAuthQuery(client).Encode()
+				}
+				r := httptest.NewRequest(method, testPublicURL+target, strings.NewReader(`{"redirect_uris":["https://assistant.example.test/callback"]}`))
+				r.RemoteAddr = peer
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("X-Forwarded-For", forwarded)
+				r.Header.Set("X-Real-IP", "203.0.113.1")
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, r)
+				return response
+			}
+			for range 30 {
+				if response := request(test.method, test.peer, test.forwarded); response.Code != test.status {
+					t.Fatalf("burst request=%d %s", response.Code, response.Body.String())
+				}
+			}
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				for _, spoof := range []string{"203.0.113.2", "203.0.113.3"} {
+					forwarded := spoof
+					if test.forwarded != "" {
+						forwarded += ", 192.0.2.10"
+					}
+					response := request(method, test.peer, forwarded)
+					var problem struct {
+						Error string `json:"error"`
+					}
+					if response.Code != http.StatusTooManyRequests || json.Unmarshal(response.Body.Bytes(), &problem) != nil || problem.Error != "rate_limited" || response.Header().Get("Retry-After") != "60" || response.Header().Get("X-RateLimit-Limit") != "120" || response.Header().Get("X-RateLimit-Remaining") != "0" {
+						t.Fatalf("throttled request=%d %s headers=%v", response.Code, response.Body.String(), response.Header())
+					}
+				}
+			}
+			peer, forwarded := "192.0.2.2:4321", ""
+			if test.forwarded != "" {
+				peer, forwarded = test.peer, "192.0.2.2"
+			}
+			if response := request(test.method, peer, forwarded); response.Code != test.status {
+				t.Fatalf("other caller=%d %s", response.Code, response.Body.String())
+			}
+			for path, status := range map[string]int{"/.well-known/oauth-authorization-server": http.StatusOK, "/mcp": http.StatusUnauthorized} {
+				r := httptest.NewRequest(http.MethodGet, testPublicURL+path, nil)
+				r.RemoteAddr = test.peer
+				r.Header.Set("X-Forwarded-For", test.forwarded)
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, r)
+				if response.Code != status {
+					t.Fatalf("unthrottled endpoint %s=%d", path, response.Code)
+				}
+			}
+			now = now.Add(time.Minute)
+			if response := request(test.method, test.peer, test.forwarded); response.Code != test.status {
+				t.Fatalf("refilled quota=%d %s", response.Code, response.Body.String())
+			}
+			for _, table := range []string{"oauth_clients", "oauth_requests", "oauth_grants", "oauth_refresh_tokens"} {
+				var count int
+				if err := f.service.auth.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&count); err != nil || count != 0 {
+					t.Fatalf("anonymous requests in %s=%d err=%v", table, count, err)
+				}
+			}
+		})
 	}
 }
 
