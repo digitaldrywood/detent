@@ -44,9 +44,10 @@ type Options struct {
 }
 
 type AgentBackend struct {
-	options    Options
-	toolConfig string
-	toolNames  []string
+	options     Options
+	toolConfig  string
+	toolAddress string
+	toolNames   []string
 }
 
 var _ runner.AgentBackend = (*AgentBackend)(nil)
