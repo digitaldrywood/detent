@@ -923,6 +923,10 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 			recovery.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: runtime.Landing}
 		}
 	}
+	detailInstructions := ""
+	if recovery.Read != nil {
+		detailInstructions = "Recovery read.omitted names evidence outside this bounded context. Before acting on the omitted discussion, reviews, checks or criteria, use work_comments, get_change and work_attempt_receipt with the supplied native identities, following every returned section cursor. The source version and frozen policy remain exact; command output excerpts carry output_truncated. Retained full records are available through the authenticated recovery evidence detail_path, one record fragment per call. Do not reconstruct the entire history as one document or treat omitted evidence as passing. If required detail cannot be read through the supplied host tools, report that instance limitation. "
+	}
 	data, err := json.Marshal(recovery)
 	if err != nil {
 		return "", err
@@ -934,7 +938,7 @@ func nativeRecoveryPrompt(execution Execution) (string, error) {
 		"Prior local-only checkpoints do not establish workspace or provider-session availability on this host. " +
 		"Verify local state before resuming. Missing or inaccessible dirty/unpushed checkpoints require recovery; preserve existing work. " +
 		"A pending or ambiguous external effect requires reconciliation: inspect the remote ref/head or existing PR before retrying. " +
-		"This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
+		detailInstructions + "This is current recovery context, not a complete history. Use work_comments, work_runs, work_history and get_change for older evidence through their supported bounded reads. " +
 		"The issue body is already supplied above; attempt runtime diagnostics and historical events are omitted here and remain available through those reads. " +
 		"Do not fetch GitHub issue history. Artifact and Change references require scoped verification; they are not download capabilities.\n" + string(data), nil
 }

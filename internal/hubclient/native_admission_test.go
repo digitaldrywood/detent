@@ -51,7 +51,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 	}{
 		{name: "six slots", slots: 6, budget: 14, preview: true, want: 6},
 		{name: "oversized recovery preserves both candidates", slots: 2, budget: 2, preview: true, oversized: true, want: 2},
-		{name: "continuation failure releases both candidates", slots: 2, budget: 2, preview: true, oversized: true, failAfter: 2, want: 2},
+		{name: "bounded hydration failure releases both candidates", slots: 2, budget: 2, preview: true, oversized: true, failAfter: 2, want: 2},
 		{name: "project slots", slots: 2, budget: 10, preview: true, want: 2},
 		{name: "one evaluation budget", slots: 6, budget: 3, preview: true, want: 3},
 		{name: "waiting head", slots: 6, budget: 6, waiting: 4, preview: true, want: 2},
@@ -178,8 +178,36 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			}
 			if test.oversized {
 				for _, issue := range issues {
-					if issue.Description != issueContractTestSections || h.scheduler.nativeClaims[issue.ID].recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || len(h.scheduler.nativeClaims[issue.ID].recovery.Discussion) != 18 {
+					if issue.Description != issueContractTestSections || h.scheduler.nativeClaims[issue.ID].recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || len(h.scheduler.nativeClaims[issue.ID].recovery.Discussion) != 2 || h.scheduler.nativeClaims[issue.ID].recovery.Read == nil {
 						t.Fatal("oversized recovery lost exact candidate content or scope")
+					}
+					seen := map[string]bool{}
+					cursor := ""
+					for pages := 0; ; pages++ {
+						if pages > 32 {
+							t.Fatal("discussion continuation did not terminate")
+						}
+						page, err := h.native.RecoveryEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), cursor)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if page.Section == "complete" {
+							break
+						}
+						if page.Section == "discussion" {
+							var comment tracker.NativeComment
+							if err := json.Unmarshal(page.Data, &comment); err != nil {
+								t.Fatal(err)
+							}
+							if page.TotalBytes >= 64<<10 || comment.Body != strings.Repeat("x", 60<<10) || comment.WorkItemID != tracker.NativeWorkItemID(issue.ID) {
+								t.Fatal("detail read loaded aggregate history or lost scoped discussion")
+							}
+							seen[comment.ID] = true
+						}
+						cursor = page.NextCursor
+					}
+					if len(seen) != 18 {
+						t.Fatal("bounded hydration made retained discussion inaccessible")
 					}
 				}
 			}

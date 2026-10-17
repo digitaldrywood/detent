@@ -266,8 +266,19 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if view := c.QueryParam("view"); view != "" {
 		params, err := nativeReadQuery(c)
-		if err != nil || view != "recovery" || validateNativeQuery(params, "view") != nil {
+		if err != nil || view != "recovery" || validateNativeQuery(params, "view", "projection") != nil {
 			return s.nativeAPIError(c, nativeInvalid("view supports recovery"))
+		}
+		if params.Has("projection") || c.Request().Header.Get("X-Detent-Recovery-Projection") != "" {
+			if params.Get("projection") != "bounded" && c.Request().Header.Get("X-Detent-Recovery-Projection") != "bounded" || params.Has("limit") || params.Has("cursor") {
+				return s.nativeAPIError(c, nativeInvalid("Recovery projection supports bounded"))
+			}
+			result, err := s.readNativeRecovery(ctx, scope, c.Param("item"), true)
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			result.Issue = s.nativeIssueResponse(result.Issue)
+			return c.JSON(http.StatusOK, result)
 		}
 		if params.Has("limit") || params.Has("cursor") {
 			result, err := s.readNativeRecoveryPage(ctx, scope, c.Param("item"), c.Request().URL.EscapedPath(), params)

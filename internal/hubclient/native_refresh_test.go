@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -188,7 +189,7 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 	}
 }
 
-func TestNativeRecoveryContinuationIntegrity(t *testing.T) {
+func TestNativeRecoveryDoesNotReassembleEvidence(t *testing.T) {
 	for _, mode := range []string{"complete", "foreign item", "foreign project", "changed snapshot", "repeated offset", "early end", "corrupt bytes", "denied continuation", "unbounded response"} {
 		t.Run(mode, func(t *testing.T) {
 			want := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: "wi_test"}, Body: strings.Repeat("界<", 90_000)}}
@@ -253,17 +254,67 @@ func TestNativeRecoveryContinuationIntegrity(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := native.Recovery(t.Context(), "wi_test")
-			if mode != "complete" {
-				if err == nil {
-					t.Fatal("invalid recovery was accepted")
-				}
-				if mode == "unbounded response" && !errors.Is(err, ErrUnavailable) {
-					t.Fatalf("unbounded response lost size refusal: %v", err)
-				}
-				return
+			if err == nil || reads != 1 {
+				t.Fatalf("candidate hydration reassembled detail evidence: reads=%d error=%v body=%d", reads, err, len(got.Issue.Body))
 			}
-			if err != nil || got.Issue.Body != want.Issue.Body || got.Issue.NativeReference != want.Issue.NativeReference || reads < 2 {
-				t.Fatalf("continuation lost exact recovery: reads=%d error=%v", reads, err)
+			if mode == "unbounded response" && !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("unbounded response lost size refusal: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryMixedHubVersions(t *testing.T) {
+	for _, large := range []bool{false, true} {
+		t.Run(strconv.FormatBool(large), func(t *testing.T) {
+			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: "wi_test"}, Body: "exact source"}
+			full := tracker.NativeRecovery{Issue: issue}
+			if large {
+				for range 18 {
+					full.Discussion = append(full.Discussion, tracker.NativeComment{Body: strings.Repeat("x", 60<<10)})
+				}
+			}
+			var modern atomic.Bool
+			var reads atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads.Add(1)
+				upgraded := modern.Load()
+				if len(r.URL.Query()) != 1 || r.URL.Query().Get("view") != "recovery" {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					return
+				}
+				result := full
+				if upgraded && r.Header.Get("X-Detent-Recovery-Projection") == "bounded" && large {
+					result.Discussion = result.Discussion[:2]
+					result.Read = &tracker.NativeRecoveryRead{DetailPath: "scoped detail", Omitted: []string{"discussion"}}
+				}
+				if err := json.NewEncoder(w).Encode(result); err != nil && (!large || upgraded) {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native(issue.OrganizationID, issue.ProjectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, upgraded := range []bool{false, true, false} {
+				modern.Store(upgraded)
+				before := reads.Load()
+				result, err := native.Recovery(t.Context(), issue.WorkItemID)
+				if large && !upgraded {
+					if !errors.Is(err, ErrUnavailable) {
+						t.Fatalf("old Hub size refusal changed: %v", err)
+					}
+				} else if err != nil || result.Issue.Body != issue.Body {
+					t.Fatalf("mixed-version recovery lost source: %v", err)
+				}
+				if reads.Load() != before+1 {
+					t.Fatal("mixed-version recovery retried unsupported data")
+				}
 			}
 		})
 	}

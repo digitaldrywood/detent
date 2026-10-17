@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,6 +115,8 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		oversizedAcceptance  bool
 		oversizedHuman       bool
 		measuredShape        bool
+		historyPressure      bool
+		historicalReview     bool
 	}{
 		{name: "fresh acceptance follows source", sourceVerdict: "pass"},
 		{name: "source pass requires newer acceptance", sourceVerdict: "pass", sourceAfterValidator: true},
@@ -122,13 +126,18 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		{name: "latest acceptance rework is retained", sourceVerdict: "pass", acceptanceVerdict: "rework"},
 		{name: "ordinary reviews remain complete", ordinaryOnly: true},
 		{name: "measured retained review shape", sourceVerdict: "pass", measuredShape: true},
+		{name: "retained human hold outside context budget", sourceVerdict: "pass", historyPressure: true},
+		{name: "historical review keeps its own version", sourceVerdict: "pass", historicalReview: true},
 		{name: "single authoritative source remains oversized", sourceVerdict: "pass", oversizedSource: true},
 		{name: "single authoritative acceptance remains oversized", sourceVerdict: "pass", oversizedAcceptance: true},
 		{name: "ordinary human review remains oversized", sourceVerdict: "pass", oversizedHuman: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
-			var version tracker.ChangeVersion
+			var version, historical tracker.ChangeVersion
+			if test.historicalReview {
+				historical = f.publish(t, "historical-version", "", true)
+			}
 			if test.measuredShape {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
@@ -156,7 +165,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: strings.Repeat("d", 32_080)}), http.StatusOK)
 			} else {
-				version = f.publish(t, "retained-version", "", true)
+				version = f.publish(t, "retained-version", historical.ID, true)
 			}
 			automatic := func(id, verdict string, source bool, bytes int) tracker.ChangeReview {
 				result := &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Submitted: true, Verdict: verdict, Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("x", bytes)}}}
@@ -218,13 +227,26 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			} else {
 				history, want = []tracker.ChangeReview{human, bot}, []tracker.ChangeReview{human, bot}
 			}
+			if test.historicalReview {
+				review := bot
+				review.ID, review.VersionID, review.Decision = "review_historical", historical.ID, "changes_requested"
+				history = append(history, review)
+			}
+			if test.historyPressure {
+				for i := range 96 {
+					review := bot
+					review.ID = fmt.Sprintf("review_context_%d", i)
+					history = append(history, review)
+					want = append(want, review)
+				}
+			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
 			for _, review := range history {
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", review.ID, review); err != nil {
+				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -256,8 +278,108 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("retained review evidence blocked Recovery: %v", err)
 			}
-			if !reflect.DeepEqual(recovery, exact) || recovery.ChangeDetail == nil || !reflect.DeepEqual(recovery.ChangeDetail.Reviews, want) || !reflect.DeepEqual(recovery.ChangeDetail.Versions, before.Versions) || !reflect.DeepEqual(recovery.ChangeDetail.Summary, before.Summary) || recovery.Issue.WorkItemID != f.issue.WorkItemID {
-				t.Fatal("Recovery changed current review order, ordinary feedback, source or summary authority")
+			if recovery.ChangeDetail == nil || !reflect.DeepEqual(recovery.ChangeDetail.Summary, before.Summary) || !reflect.DeepEqual(recovery.Issue, exact.Issue) || !reflect.DeepEqual(recovery.Change, exact.Change) || recovery.SourceAttemptID != exact.SourceAttemptID {
+				t.Fatal("Recovery changed source or summary authority")
+			}
+			for _, version := range recovery.ChangeDetail.Versions {
+				var want tracker.ChangeVersion
+				for _, original := range before.Versions {
+					if original.ID == version.ID {
+						want = original
+					}
+				}
+				version.Validation, want.Validation = nil, nil
+				if !reflect.DeepEqual(version, want) {
+					t.Fatal("Recovery changed immutable source or frozen policy")
+				}
+			}
+			for _, review := range recovery.ChangeDetail.Reviews {
+				var original tracker.ChangeReview
+				for _, candidate := range want {
+					if candidate.ID == review.ID {
+						original = candidate
+					}
+				}
+				for _, pair := range [][2]*gate.ValidatorResult{{review.ImplementationReview, original.ImplementationReview}, {review.Validator, original.Validator}} {
+					if pair[0] == nil || pair[1] == nil {
+						continue
+					}
+					got, expected := *pair[0], *pair[1]
+					got.Commands, expected.Commands = nil, nil
+					if !reflect.DeepEqual(got, expected) || !pair[0].Commands[0].OutputTruncated || len(pair[0].Commands[0].Output) > 4096 {
+						t.Fatal("bounded review lost verdict, version, criteria or output provenance")
+					}
+				}
+				review.ImplementationReview, review.Validator = nil, nil
+				original.ImplementationReview, original.Validator = nil, nil
+				if !reflect.DeepEqual(review, original) {
+					t.Fatal("bounded review changed feedback identity, body or decision")
+				}
+			}
+			if !test.ordinaryOnly {
+				ids := map[string]bool{}
+				for _, review := range recovery.ChangeDetail.Reviews {
+					ids[review.ID] = true
+				}
+				if !ids["review_latest_source"] || !ids["review_latest_acceptance"] {
+					t.Fatal("bounded context lost authoritative review criteria")
+				}
+			}
+			seen := map[string]bool{}
+			var record []byte
+			cursor := ""
+			for pages := 0; ; pages++ {
+				if pages > 10*len(history)+32 {
+					t.Fatal("record continuation did not terminate")
+				}
+				page, err := native.RecoveryEvidence(t.Context(), f.issue.WorkItemID, cursor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if page.Section == "complete" {
+					break
+				}
+				if page.Offset != int64(len(record)) || len(page.Data) > 256<<10 {
+					t.Fatal("record continuation lost progress or response bound")
+				}
+				record = append(record, page.Data...)
+				if int64(len(record)) == page.TotalBytes {
+					digest := sha256.Sum256(record)
+					if hex.EncodeToString(digest[:]) != page.SHA256 {
+						t.Fatal("record digest mismatch")
+					}
+					if page.Section == "reviews" {
+						var review tracker.ChangeReview
+						if err := json.Unmarshal(record, &review); err != nil {
+							t.Fatal(err)
+						}
+						for _, original := range history {
+							if original.ID == review.ID && page.VersionID == original.VersionID && reflect.DeepEqual(original, review) {
+								seen[review.ID] = true
+							}
+						}
+					}
+					if page.Section == "versions" {
+						var version tracker.ChangeVersion
+						if err := json.Unmarshal(record, &version); err != nil {
+							t.Fatal(err)
+						}
+						var original tracker.ChangeVersion
+						for _, candidate := range before.Versions {
+							if candidate.ID == version.ID {
+								original = candidate
+							}
+						}
+						if !reflect.DeepEqual(version, original) {
+							t.Fatal("retained source, policy or validation was not retrievable")
+						}
+					}
+					record = nil
+				}
+				cursor = page.NextCursor
+			}
+			if len(seen) != len(history) {
+				t.Fatal("retained reviews were not completely retrievable")
 			}
 			if after := f.detail(t); !reflect.DeepEqual(after, before) {
 				t.Fatal("Recovery altered complete durable Change evidence")
@@ -280,7 +402,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				otherToken := f.worker(t, "other-reader")
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor="+cursor, otherToken, nil), http.StatusUnprocessableEntity)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "new-discussion"}, Body: "New human context"}), http.StatusOK)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor="+cursor, f.token, nil), http.StatusConflict)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"&cursor="+cursor, f.token, nil), http.StatusOK)
 			}
 		})
 	}
