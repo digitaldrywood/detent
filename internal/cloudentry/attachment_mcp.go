@@ -165,6 +165,26 @@ func (s *Service) uploadAttachmentMCP(ctx context.Context, request *http.Request
 	return buffer, nil
 }
 
+func (s *Service) readAttachmentMCP(ctx context.Context, request *http.Request, organization, name string, arguments json.RawMessage) (*attachmentResponse, error) {
+	input, err := operatortool.DecodeAttachmentOperation(name, arguments)
+	if err != nil {
+		return nil, err
+	}
+	request = request.Clone(ctx)
+	request.Method = http.MethodGet
+	request.URL.Path = "/organizations/" + organization + "/api/v2/projects/" + input.ProjectID + "/attachments/" + input.AttachmentID
+	request.URL.RawPath, request.URL.RawQuery = "", ""
+	request.Body, request.ContentLength = nil, 0
+	if name == operatortool.ReadAttachmentMetadata {
+		request.URL.Path += "/metadata"
+	} else {
+		request.URL.RawQuery = "offset=" + strconv.FormatInt(input.Offset, 10) + "&length=" + strconv.Itoa(input.Length)
+	}
+	buffer := &attachmentResponse{header: make(http.Header)}
+	s.echo.ServeHTTP(buffer, request)
+	return buffer, nil
+}
+
 func (s *Service) attachmentMCPContext(c echo.Context, buffer *attachmentResponse, input operatortool.AttachmentOperationArguments) echo.Context {
 	request := c.Request().Clone(c.Request().Context())
 	request.Method = http.MethodGet

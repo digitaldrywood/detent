@@ -1208,6 +1208,10 @@ type nativeCompletionPublisher struct {
 	validationErr error
 }
 
+func (*nativeCompletionPublisher) PrepareReview(context.Context, tracker.NativeChangeReference) error {
+	return nil
+}
+
 func (p *nativeCompletionPublisher) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
 	p.observations = append(p.observations, observation)
 	return nil
@@ -1227,4 +1231,81 @@ func (p *nativeCompletionPublisher) PrepareFinish(context.Context, string, strin
 
 func (p *nativeCompletionPublisher) NativeChange() *runpkg.NativeChange {
 	return p.change
+}
+
+type nativeReviewHostChecker string
+
+func (c nativeReviewHostChecker) WorkerHostAvailable(_ context.Context, host string) bool {
+	return host != string(c)
+}
+
+func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name              string
+		running, capacity int
+		blocked           bool
+		hosts             []string
+		previousHost      string
+		unavailableHost   string
+		wantHost          string
+	}{
+		{name: "scaled provider capacity", running: 3, capacity: 5, blocked: true},
+		{name: "below provider capacity", running: 2, capacity: 5},
+		{name: "one slot replaces restored owner", capacity: 1},
+		{name: "hard capacity", running: 1, capacity: 1, blocked: true},
+		{name: "unavailable saved host", capacity: 1, hosts: []string{"worker-a", "worker-b"}, previousHost: "worker-a", unavailableHost: "worker-a", wantHost: "worker-b"},
+		{name: "removed saved host", capacity: 1, hosts: []string{"worker-b"}, previousHost: "worker-a", wantHost: "worker-b"},
+		{name: "no live host", capacity: 1, hosts: []string{"worker-a"}, previousHost: "worker-a", unavailableHost: "worker-a", blocked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := providerWindowTestConfig()
+			cfg.MaxConcurrentAgents = test.capacity
+			cfg.WorkerHosts = test.hosts
+			if len(test.hosts) > 0 {
+				cfg.MaxConcurrentAgentsPerHost = 1
+			}
+			state := providerWindowState(cfg, test.running)
+			issue := dispatchTestIssue("review-owner", "In Progress")
+			running := Running{Issue: issue, Mode: runpkg.RunModeImplement, CompletionOwnershipReleased: true, WorkerHost: test.previousHost}
+			state.Running[issue.ID] = running
+			supervisor, err := runpkg.NewSupervisor(FakeRunner{}, runpkg.SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1)}
+			orch.workerHostChecker = nativeReviewHostChecker(test.unavailableHost)
+			source := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
+			event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: &nativeCompletionPublisher{}}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source"}}
+			err = orch.continueNativeRun(t.Context(), &state, event, running, true)
+			if test.blocked {
+				if !errors.Is(err, runpkg.ErrModelPermitUnavailable) || !state.Running[issue.ID].CompletionOwnershipReleased {
+					t.Fatalf("capacity did not retain deferred owner: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			completion := <-orch.runResults
+			<-state.Running[issue.ID].done
+			defer state.Running[issue.ID].cancel()
+			continuation := completion.Request.NativeReviewContinuation
+			if completion.Request.WorkerHost != test.wantHost || state.Running[issue.ID].WorkerHost != test.wantHost {
+				t.Fatalf("review dispatched on request host %q and running host %q, want %q", completion.Request.WorkerHost, state.Running[issue.ID].WorkerHost, test.wantHost)
+			}
+			if continuation == nil || continuation.Source.VersionID != source.VersionID || continuation.Source.HeadSHA != source.HeadSHA || continuation.FinalMessage != event.Result.FinalMessage || state.Running[issue.ID].ModelPermitExempt || state.Running[issue.ID].CompletionOwnershipReleased {
+				t.Fatal("review continuation lost source or capacity ownership")
+			}
+			if err := orch.continueNativeLandingRun(t.Context(), &state, completion, state.Running[issue.ID]); err != nil {
+				t.Fatal(err)
+			}
+			landing := <-orch.runResults
+			<-state.Running[issue.ID].done
+			defer state.Running[issue.ID].cancel()
+			if landing.Request.NativeReviewContinuation != nil || landing.Request.Mode != runpkg.RunModeMerge {
+				t.Fatal("accepted review continuation replaced native landing")
+			}
+		})
+	}
 }

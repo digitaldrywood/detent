@@ -375,6 +375,10 @@ func (e *sshNativeExecution) ReviewVersion(ctx context.Context) (NativeValidatio
 	return input, err
 }
 
+func (e *sshNativeExecution) PrepareReview(ctx context.Context, source tracker.NativeChangeReference) error {
+	return e.peer.Call(ctx, "execution.PrepareReview", nil, source)
+}
+
 func (e *sshNativeExecution) RecordReview(ctx context.Context, result gate.ValidatorResult) error {
 	return e.peer.Call(ctx, "execution.RecordReview", nil, result)
 }

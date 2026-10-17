@@ -624,8 +624,9 @@ type RunRequest struct {
 	LandingBatch     *workspace.LandingBatchTicket `json:"-"`
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
-	DeferExecutionFinish bool
-	TriageContext        string
+	DeferExecutionFinish     bool
+	NativeReviewContinuation *NativeReviewContinuation
+	TriageContext            string
 
 	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
 	ProviderReports           []providercapacity.Report
@@ -671,6 +672,11 @@ type RunRequest struct {
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	validationEvidenceSource  AttemptDiffSource
+}
+
+type NativeReviewContinuation struct {
+	Source       tracker.NativeChangeReference
+	FinalMessage string
 }
 
 type ForgeRetry struct {
