@@ -37,6 +37,16 @@ type runnerProjects struct {
 	runtime     func() globalconfig.Config
 	checkout    func(context.Context, globalconfig.Project, string) error
 	preparing   map[string]*runnerProjectPreparation
+	observed    map[string]time.Time
+}
+
+const runnerReadinessRecheck = 30 * time.Second
+
+func runnerProjectObservationDue(previous runnerauth.LocalChecks, reported bool, observedAt, now time.Time) (prepare, observe bool) {
+	if !reported || previous.Checkout != "passed" || previous.Setup != "passed" {
+		return true, false
+	}
+	return false, !previous.WorkReady() && now.Sub(observedAt) >= runnerReadinessRecheck
 }
 
 type runnerProjectPreparation struct {
@@ -106,12 +116,17 @@ func (p *runnerProjects) prepareConfiguration(ctx context.Context, cfg globalcon
 	return fmt.Errorf("runner project checkout %s is unavailable", name)
 }
 
-func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project) *runnerProjectPreparation {
+func (p *runnerProjects) startPreparation(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project, observeOnly bool) *runnerProjectPreparation {
 	ctx, cancel := context.WithCancel(ctx)
 	run := &runnerProjectPreparation{selected: selected, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(run.done)
 		defer cancel()
+		if observeOnly {
+			run.checks = runnerProjectLocalChecks(ctx, cfg, selected.ID)
+			run.checks.Setup = "passed"
+			return
+		}
 		run.err = p.prepareConfiguration(ctx, cfg, selected.ID)
 		if run.err != nil {
 			run.checks = runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending"}
@@ -192,12 +207,14 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			}
 			delete(p.checks, name)
 			delete(p.problems, name)
+			delete(p.observed, name)
 		}
 	}
 	for name := range p.checks {
 		if _, allowed := p.cfg.Client.NativeProjects[name]; !allowed {
 			delete(p.checks, name)
 			delete(p.problems, name)
+			delete(p.observed, name)
 		}
 	}
 	for _, selected := range p.cfg.Projects {
@@ -207,10 +224,11 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 			continue
 		}
 		if run == nil {
-			if reported && previous.Checkout == "passed" && previous.Setup == "passed" {
+			prepare, observe := runnerProjectObservationDue(previous, reported, p.observed[selected.ID], time.Now())
+			if !prepare && !observe {
 				continue
 			}
-			run = p.startPreparation(ctx, p.cfg, selected)
+			run = p.startPreparation(ctx, p.cfg, selected, observe)
 			p.preparing[selected.ID] = run
 			if !reported {
 				p.checks[selected.ID] = runnerauth.LocalChecks{Checkout: "pending", Setup: "pending", Doctor: "pending", Provider: "pending"}
@@ -221,6 +239,10 @@ func (p *runnerProjects) refresh(ctx context.Context, scheduler *hubclient.Sched
 		case <-run.done:
 			run.cancel()
 			delete(p.preparing, selected.ID)
+			if p.observed == nil {
+				p.observed = make(map[string]time.Time)
+			}
+			p.observed[selected.ID] = time.Now()
 			p.checks[selected.ID] = run.checks
 			delete(p.problems, selected.ID)
 			changed = changed || !reflect.DeepEqual(previous, run.checks)

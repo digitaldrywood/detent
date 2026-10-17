@@ -37,7 +37,14 @@ type spritePoolMember struct {
 	BootstrapLog        string            `json:"bootstrap_log"`
 	RunnerID            string            `json:"runner_id"`
 	IdleSince           time.Time         `json:"idle_since"`
+	Status              string            `json:"status,omitempty"`
+	WaitingFor          []spriteLoginStep `json:"waiting_for,omitempty"`
 	EnrollmentID        string            `json:"-"`
+}
+
+type spriteLoginStep struct {
+	Check   string `json:"check"`
+	Command string `json:"command"`
 }
 
 type spritePoolView struct {
@@ -92,6 +99,9 @@ func (s *Service) getSpritePool(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	view.Decision = &decision.placementDecision
+	if err := s.describeSpritePoolMembers(ctx, nativeRequestScope(c), view.Members); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	view.RunnerSetupDeclared, err = s.projectRunnerSetupDeclaration(ctx, nativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -309,15 +319,22 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 	input.Ceiling = min(input.Ceiling, max(view.MaxRunners-otherMembers, 0))
 	input.Floor = min(input.Floor, input.Ceiling)
 	idle := []spritePoolMember{}
+	retirement := map[string]int{}
 	for _, member := range view.Members {
 		if member.State == "deleted" || member.State == "deleting" || member.AllocationProjectID != scope.project {
 			continue
 		}
-		input.Count++
 		if member.State == "bootstrapping" {
+			if scope.project == "" {
+				input.Count++
+			}
 			continue
 		}
+		input.Count++
 		if member.RunnerID == "" {
+			if scope.project != "" {
+				idle = append(idle, member)
+			}
 			continue
 		}
 		runner, retained, err := s.spritePoolMemberRetention(ctx, scope, member.RunnerID)
@@ -329,13 +346,32 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope nativeScope, vie
 			if err != nil {
 				return input, nil, err
 			}
+			if scope.project != "" {
+				retirement[member.Name] = 2
+				idle = append(idle, member)
+			}
+			continue
+		}
+		if scope.project != "" {
+			ready, err := spriteAllocationRunnerAllowed(ctx, s.database.reader, scope, runner.MachineID)
+			if err != nil {
+				return input, nil, err
+			}
+			if ready {
+				retirement[member.Name] = 1
+			}
+			idle = append(idle, member)
 			continue
 		}
 		if now.Sub(member.IdleSince) >= time.Duration(view.IdleSeconds)*time.Second {
 			idle = append(idle, member)
-			input.Idle++
 		}
 	}
+	if scope.project != "" {
+		slices.Reverse(idle)
+		slices.SortStableFunc(idle, func(a, b spritePoolMember) int { return retirement[a.Name] - retirement[b.Name] })
+	}
+	input.Idle = len(idle)
 	return input, idle, nil
 }
 
@@ -375,6 +411,9 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 				return err
 			}
 			if !end.After(s.config.now()) {
+				if err := s.retirePoolSpriteReservation(ctx, scope, member.Name, "Sprite provisioning did not finish before its enrollment expired\n", true); err != nil {
+					return err
+				}
 				member.State = "deleting"
 			}
 		}
@@ -468,4 +507,95 @@ func (s *Service) maintainSpritePools(ctx context.Context) {
 	for _, scope := range scopes {
 		s.startSpriteLifecycle(scope, "")
 	}
+}
+
+func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeScope, members []spritePoolMember) error {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	now := s.config.now()
+	for i := range members {
+		member := &members[i]
+		member.Status, member.WaitingFor = member.State, nil
+		switch member.State {
+		case "bootstrapping":
+			member.Status = "provisioning"
+			continue
+		case "deleting":
+			held, err := spriteMemberHoldsWork(ctx, s.database.reader, scope.organization, member.EnrollmentID)
+			if err != nil {
+				return err
+			}
+			if held {
+				member.Status = "draining"
+			}
+			continue
+		case "enrolled":
+		default:
+			continue
+		}
+		member.Status = "unreachable"
+		if member.RunnerID == "" {
+			continue
+		}
+		runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, member.RunnerID, s.config.now)
+		if err != nil {
+			return err
+		}
+		var failed string
+		var raw sql.NullString
+		if err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(json_extract(m.capabilities_json,'$.sprite_wake_failed_at'),''),json_extract(r.local_checks_json,?) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?`, "$."+jsonPathKey(string(member.AllocationProjectID)), member.RunnerID, scope.organization).Scan(&failed, &raw); err != nil {
+			return err
+		}
+		failedAt, parseErr := parseTimeValue(failed)
+		if runner.State != "active" || runner.Health == "revoked" || runner.Health == "expired" || parseErr == nil && !failedAt.IsZero() && !failedAt.Before(runner.LastHeartbeatAt) {
+			continue
+		}
+		if member.AllocationProjectID != "" {
+			checks, observed, err := decodeSpriteMemberChecks(raw)
+			if err != nil {
+				return err
+			}
+			if member.WaitingFor = spriteLoginSteps(checks, observed, runner.Problems, member.AllocationProjectID); len(member.WaitingFor) > 0 {
+				member.Status = "awaiting_login"
+				continue
+			}
+			if !checks.WorkReady() {
+				member.Status = "awaiting_setup"
+				continue
+			}
+		}
+		member.Status = "ready"
+		if now.Sub(runner.LastHeartbeatAt) >= spriteRunnerIdle {
+			member.Status = "sleeping"
+		}
+	}
+	return nil
+}
+
+func spriteLoginSteps(checks runnerauth.LocalChecks, observed bool, problems []runnerauth.Problem, project tracker.ProjectID) []spriteLoginStep {
+	var steps []spriteLoginStep
+	if !observed || !checks.ProviderReady() {
+		for _, problem := range problems {
+			if problem.Message == "not signed in" && problem.FixCommand != "" && (problem.ProjectID == "" || problem.ProjectID == string(project)) && !slices.ContainsFunc(steps, func(step spriteLoginStep) bool { return step.Command == problem.FixCommand }) {
+				steps = append(steps, spriteLoginStep{Check: "provider", Command: problem.FixCommand})
+			}
+		}
+		if len(steps) == 0 && observed {
+			for _, kind := range checks.ProviderKinds {
+				switch kind {
+				case "codex":
+					steps = append(steps, spriteLoginStep{Check: "provider", Command: "codex login --device-auth"})
+				case "claude_code", "claude-code":
+					steps = append(steps, spriteLoginStep{Check: "provider", Command: "claude auth login"})
+				}
+			}
+		}
+		if len(steps) == 0 && len(checks.ProviderKinds) == 0 {
+			steps = append(steps, spriteLoginStep{Check: "provider", Command: "codex login --device-auth"})
+		}
+	}
+	if !observed || checks.Checkout != "passed" {
+		steps = append(steps, spriteLoginStep{Check: "github", Command: "gh auth login"}, spriteLoginStep{Check: "github", Command: "gh auth setup-git"})
+	}
+	return steps
 }

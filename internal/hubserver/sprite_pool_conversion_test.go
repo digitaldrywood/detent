@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -165,6 +166,29 @@ func TestSpritePoolConversion(t *testing.T) {
 			}
 			if activeLease != string(lease.ID) {
 				t.Fatal("pool migration interrupted active work")
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Hour)), lease.ID); err != nil {
+				t.Fatal(err)
+			}
+			var converted spritePoolMember
+			for _, member := range view.Members {
+				if member.EnrollmentID == r.enrollment.ID {
+					converted = member
+				}
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE organization_sprite_members SET state='deleting' WHERE enrollment_id=?", converted.EnrollmentID); err != nil {
+				t.Fatal(err)
+			}
+			converted.State = "deleting"
+			if err := f.service.deletePoolSprite(t.Context(), nativeScope{organization: f.project.OrganizationID}, converted); err != nil {
+				t.Fatalf("retiring a converted member with unpublished work: %v", err)
+			}
+			retained := []spritePoolMember{converted}
+			if err := f.service.describeSpritePoolMembers(t.Context(), scope, retained); err != nil {
+				t.Fatal(err)
+			}
+			if retained[0].Status != "draining" {
+				t.Fatalf("converted member with an expired unreleased lease = %s, want draining", retained[0].Status)
 			}
 			var secrets, legacyTables int
 			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM organization_secrets WHERE organization_id=?`, f.project.OrganizationID).Scan(&secrets); err != nil {

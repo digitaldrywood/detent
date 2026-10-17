@@ -37,6 +37,33 @@ import (
 	workspacepkg "github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func TestRunnerProjectObservationDue(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	signedOut := runnerauth.LocalChecks{Checkout: "passed", Setup: "passed", Doctor: "passed", Provider: "failed", ProviderKinds: []string{"codex"}}
+	ready := runnerauth.LocalChecks{Checkout: "passed", Setup: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}
+	for _, test := range []struct {
+		name              string
+		previous          runnerauth.LocalChecks
+		reported          bool
+		observedAgo       time.Duration
+		prepare, observed bool
+	}{
+		{"unreported project prepares", runnerauth.LocalChecks{}, false, 0, true, false},
+		{"failed checkout prepares again", runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending"}, true, 0, true, false},
+		{"signed-out provider is re-observed after console login", signedOut, true, runnerReadinessRecheck, false, true},
+		{"recent signed-out observation waits", signedOut, true, time.Second, false, false},
+		{"ready project is not re-observed", ready, true, time.Hour, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepare, observe := runnerProjectObservationDue(test.previous, test.reported, now.Add(-test.observedAgo), now)
+			if prepare != test.prepare || observe != test.observed {
+				t.Fatalf("prepare=%t observe=%t, want %t %t", prepare, observe, test.prepare, test.observed)
+			}
+		})
+	}
+}
+
 func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git checkout and setup-hook integration")
