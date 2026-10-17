@@ -128,6 +128,28 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	waiting := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2}
 	accepted := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", Reviewed: true, HeadSHA: head, Files: 2}
 	sourceWait := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, ImplementationReview: &gate.ValidatorResult{VersionID: "version_1", HeadSHA: head, Verdict: "wait", Commands: []gate.CommandResult{{Command: "unavailable-host-tool", HeadSHA: head, ExitCode: 127}}}}
+	chatGPTCriterion := "a real ChatGPT custom connector signs in against production"
+	claudeCriterion := "a real Claude connector signs in against production"
+	criterionChange := func(entries ...gate.CriterionEvidence) *runpkg.NativeChange {
+		change := *accepted
+		var criteria []string
+		for _, entry := range entries {
+			criteria = append(criteria, entry.Criterion)
+		}
+		change.Validator = &gate.ValidatorResult{VersionID: "version_1", Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, CriteriaEvidence: entries}
+		gate.NormalizeCriterionEvidence(change.Validator, criteria, "")
+		gate.ApplyCriterionPolicy(gate.ValidatorConfig{UnverifiedCriteria: gate.UnverifiedCriteriaRework}, change.Validator)
+		return &change
+	}
+	criterionReview := func(verdict string, score float64, findings ...gate.Finding) *runpkg.NativeChange {
+		change := criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable})
+		change.Validator.Verdict = verdict
+		change.Validator.Score = score
+		change.Validator.Findings = findings
+		gate.ApplyCriterionPolicy(gate.ValidatorConfig{}, change.Validator)
+		return change
+	}
+	connectorAction := "Rewrite each of these acceptance criteria as a pre-merge check or remove it; no repository change can satisfy them before merge:\n- " + chatGPTCriterion + "\n- " + claudeCriterion
 	deliveryErr := &runpkg.DeliverableRecoveryError{Err: &runpkg.DeliverableCommandError{OperationClass: "pull_request", Message: "pull request publication failed"}}
 	for _, test := range []struct {
 		optout        bool
@@ -137,11 +159,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		finalMessage  string
 		runErr        error
 		wantHuman     bool
+		wantQuestion  string
 		noUsage       bool
 		change        *runpkg.NativeChange
 		states        []connector.WorkflowState
 		statesErr     error
 		reviewed      *bool
+		reviewState   *connector.ChangeReview
 		updateErr     error
 		plain         bool
 		quotaWait     bool
@@ -287,6 +311,16 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "native publication authority failure is instance owned", states: workflow, runErr: errors.Join(runpkg.ErrExecutionAuthorityUnavailable, errors.New("final diff unavailable")), wantAbandoned: true},
 		{name: "a version that lost its acceptance goes to review", change: accepted, states: landing, reviewed: &no, wantState: "In Review", wantComment: "opened Change Request change_1"},
 		{name: "an accepted version lands directly without a dispatchable landing lane", change: accepted, states: undispatched, wantDirect: true},
+		{name: "unsatisfiable criterion preserves blocking finding", change: criterionReview("wait", 1, gate.Finding{Severity: "p1", Body: "Source defect"}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Source defect"}},
+		{name: "unsatisfiable criterion preserves minimum score", change: criterionReview("wait", .2), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
+		{name: "unsatisfiable criterion preserves explicit source rework", change: criterionReview("rework", 1), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
+		{name: "unsatisfiable criterion preserves published review findings", change: criterionReview("wait", 1), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}, states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "opened Change Request"},
+		{name: "unsatisfiable criterion preserves reported human action", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: strings.ReplaceAll(unfinishedReport, "human_action: null", "human_action: Approve the consumer rollout"), wantState: "Blocked", wantComment: "issue acceptance is not recorded"},
+		{name: "unsatisfiable criterion preserves prerequisite owner", change: criterionReview("wait", 1), states: unfinishedWorkflow, humanReview: &no, finalMessage: prerequisiteReport, wantState: "Blocked", wantComment: "prerequisite must finish"},
+		{name: "fixable criterion keeps Rework", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing screenshot", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes"},
+		{name: "1245 production connectors block on first validator run", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction, roundTrip: true},
+		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Blocked", wantHuman: true, wantQuestion: connectorAction},
+		{name: "rewritten connector criterion reuses retained source and passes", change: criterionChange(gate.CriterionEvidence{Criterion: "Connector sign-in covered by local regression", Kind: gate.EvidenceTest, Reference: "connector_test.go:TestSignIn", Behavior: "The local client signs in successfully"}), states: rework, sourceState: "Rework", humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
 		{name: "validator rework routes to Rework", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Changes requested", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Changes requested"}},
 		{name: "validator rework bounds long summary and retains criteria", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: strings.Repeat("界", workpad.MaxFinalSummaryBytes), NotVerified: []string{"Reject invalid input"}}}, states: customRework, reworkState: "Fixing", humanReview: &no, wantState: "Fixing", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "…"}},
 		{name: "validator rework without findings explains gate", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework"}}, states: unfinishedWorkflow, finalMessage: unfinishedReport, humanReview: &no, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"The validator requested changes"}},
@@ -397,7 +431,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.blockerState != "" {
 				tick.resolvedIssues = []connector.Issue{{ID: "prerequisite", Identifier: "prj_6d4919bebd73446798e6cd807feda10e#411", State: test.blockerState, Closed: test.blockerState == "Done"}}
 			}
-			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr, reviewed: test.reviewed}
+			var tracker connector.Connector = &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: test.states, statesErr: test.statesErr, reviewed: test.reviewed, reviewState: test.reviewState}
 			if test.plain {
 				tracker = tick
 			}
@@ -978,6 +1012,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if metadata.PermissionWait.WorkAttemptID != 42 || metadata.PermissionWait.SessionID != "native-session" || metadata.PermissionWait.Question == "" {
 					t.Fatalf("human outcome provenance = %#v", metadata.PermissionWait)
+				}
+				if test.wantQuestion != "" && (metadata.PermissionWait.Question != test.wantQuestion || blocked.Recovery.OperatorRemedy != "Record direction for this question, then move the issue to Rework: "+test.wantQuestion) {
+					t.Fatalf("criterion human action = %q, remedy = %q, want %q", metadata.PermissionWait.Question, blocked.Recovery.OperatorRemedy, test.wantQuestion)
 				}
 				if state.TokenTotals.TotalTokens != 42 || state.DiffStats[issue.ID].HeadSHA != head {
 					t.Fatalf("telemetry lost: tokens = %#v, diff = %#v", state.TokenTotals, state.DiffStats[issue.ID])
