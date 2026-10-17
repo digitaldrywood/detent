@@ -914,7 +914,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			}
 			f.service.maintainSpritePools(t.Context())
 			f.service.spriteWakeWork.Wait()
-			if a, b := read(first), read(second); a.AllocatedCount+b.AllocatedCount != 1 || a.Shortfall+b.Shortfall != 3 || a.DesiredCount != 1 || b.DesiredCount != 3 {
+			if a, b := read(first), read(second); a.AllocatedCount != 1 || b.AllocatedCount != 0 || b.Shortfall != 3 || a.DesiredCount != 1 || b.DesiredCount != 3 {
 				t.Fatalf("lowered shared ceiling first=%+v second=%+v", a, b)
 			}
 			if len(provider.created) != 3 || len(provider.deleted) != 2 {

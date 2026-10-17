@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -391,7 +392,9 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 	if err != nil {
 		return err
 	}
-	for _, project := range append([]tracker.ProjectID{""}, projects...) {
+	retirement := append([]tracker.ProjectID{""}, projects...)
+	slices.Reverse(retirement[1:])
+	for _, project := range retirement {
 		owner := scope
 		owner.project = project
 		input, idle, err := s.spritePoolSnapshot(ctx, owner, view)
@@ -401,6 +404,11 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope nativeScope, allowC
 		decision := decideSpriteScale(input)
 		for i := range decision.Delete {
 			if err := s.deletePoolSprite(ctx, owner, idle[i]); err != nil {
+				return err
+			}
+		}
+		if decision.Delete > 0 {
+			if view, err = s.readSpritePool(ctx, scope); err != nil {
 				return err
 			}
 		}
