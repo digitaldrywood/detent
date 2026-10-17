@@ -216,9 +216,14 @@ Preserve receipt identity, output and source binding. Check command, relevant
 inputs and environment applicability, and rerun only for a concrete gap or risk.
 Historical diagnosis evidence retains its original source identity and is
 assessed separately from passing candidate evidence under the repair contract.
-An assumed, skipped or unrelated check remains not verified. Any not-verified
-criterion under validator review requires rework and is named in the summary;
-minimum score and blocked finding severities remain authoritative. This setting
+An assumed, skipped or unrelated check remains not verified. A not-verified
+criterion that repository rework can satisfy requires Rework and is named in
+the summary. A criterion no rework can satisfy before merge because it depends
+on an outside system, a deployed environment, a deployment or human action sends
+the item to Blocked on that validator run, never to Rework for that reason.
+Its human_action names each unsatisfiable criterion and asks the human to
+rewrite it as a pre-merge check or remove it; mixed criteria also go to Blocked.
+Minimum score and blocked finding severities remain authoritative. This setting
 does not enable the optional validator or replace the native completion contract,
 which owns permitted post-integration handoffs and pending acceptance disclosure.
 
