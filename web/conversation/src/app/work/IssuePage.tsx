@@ -714,6 +714,17 @@ function IssueSurface({
           : "Only an owner or an administrator can invite somebody."
       }
       onComment={postComment}
+      onChangeComment={async (comment, body, deleted) => {
+        if (projectId === null || comment.revision === undefined) return;
+        try {
+          const updated = await http.updateComment({ projectId, itemId: workItemId, commentId: comment.id, key: newWorkKey("edit-comment"), expectedRevision: comment.revision, body, deleted });
+          apply((current) => current === null ? current : { ...current, comments: current.comments.map((entry) => entry.comment_id === updated.comment_id ? updated : entry) });
+          reload();
+        } catch (cause) {
+          if (cause instanceof WorkApiError && cause.conflict) reload();
+          throw cause;
+        }
+      }}
       onOpenIssue={(id) => void navigate({ to: "/work/i/$workItemId", params: { workItemId: id } })}
       onOpenConversationPage={openConversationPage}
     />,
@@ -752,6 +763,7 @@ interface IssueBodyProps {
   readonly onInvite: (() => void) | null;
   readonly inviteReason: string;
   readonly onComment: (body: string) => Promise<void>;
+  readonly onChangeComment: NonNullable<React.ComponentProps<typeof ActivityFeed>["onChangeComment"]>;
   readonly onOpenIssue: (workItemId: string) => void;
   readonly onOpenConversationPage: () => void;
   /** Opens any Change Request linked to this issue. */
@@ -1162,6 +1174,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             live={live}
             liveAt={liveAt}
             onReply={props.canWrite ? props.onComment : null}
+            onChangeComment={props.canWrite && data.project.profile === "native" ? props.onChangeComment : null}
             posting={props.posting}
           />
 
