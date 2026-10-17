@@ -1,0 +1,645 @@
+package orchestrator
+
+import (
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
+
+func (o *Orchestrator) captureConnectorAuthHealth(state *State) {
+	if reporter, ok := o.connector.(connector.AuthHealthReporter); ok {
+		if health, ok := reporter.AuthHealth(); ok {
+			state.Auth = health
+			return
+		}
+	}
+	state.Auth = connector.AuthHealth{}
+}
+
+type graphQLRateLimitCycle struct {
+	Bucket     *telemetry.RateLimitBucket
+	Cost       *telemetry.GraphQLCost
+	HasSummary bool
+}
+
+type graphQLUsageSample struct {
+	observedAt time.Time
+	queries    int64
+	cost       int64
+}
+
+type restRateLimitCycle struct {
+	Bucket     *telemetry.RateLimitBucket
+	Budgets    []telemetry.RESTBudget
+	Usage      *telemetry.RESTUsage
+	HasSummary bool
+}
+
+func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) graphQLRateLimitCycle {
+	var usage connector.GraphQLRateLimitUsage
+	if reporter, ok := o.connector.(connector.GraphQLRateLimitUsageReporter); ok {
+		usage = reporter.FlushGraphQLRateLimitUsage()
+	}
+	lastHourQueries, lastHourCost := recordGraphQLUsageWindow(state, usage, now)
+	cost := graphQLCostSummary(usage)
+	if cost == nil && (lastHourQueries > 0 || lastHourCost > 0) {
+		cost = &telemetry.GraphQLCost{}
+	}
+	if cost != nil {
+		cost.LastHourQueries = lastHourQueries
+		cost.LastHourCost = lastHourCost
+	}
+
+	var rateLimit connector.GraphQLRateLimit
+	hasRateLimit := usage.HasRateLimit
+	status := graphQLRateLimitTelemetryStatus(usage.RateLimitStatus)
+	if hasRateLimit {
+		rateLimit = usage.RateLimit
+	} else if status == "" {
+		reporter, ok := o.connector.(connector.RateLimitReporter)
+		if !ok {
+			setGraphQLCost(state, cost)
+			return graphQLRateLimitCycle{Cost: cost}
+		} else {
+			var okRateLimit bool
+			rateLimit, okRateLimit = reporter.GraphQLRateLimit()
+			if !okRateLimit {
+				setGraphQLCost(state, cost)
+				return graphQLRateLimitCycle{Cost: cost}
+			}
+			hasRateLimit = okRateLimit
+		}
+	}
+
+	bucket := gitHubGraphQLBucket(rateLimit, now, status)
+	if cost != nil {
+		bucket.Cost = cost.TotalCost
+	}
+	if state.RateLimits == nil {
+		state.RateLimits = &telemetry.RateLimits{}
+	}
+	state.RateLimits.GitHubGraphQL = bucket
+	state.RateLimits.GraphQLCost = cost
+	return graphQLRateLimitCycle{
+		Bucket:     bucket,
+		Cost:       cost,
+		HasSummary: hasRateLimit,
+	}
+}
+
+func recordGraphQLUsageWindow(state *State, usage connector.GraphQLRateLimitUsage, now time.Time) (int64, int64) {
+	if usage.TotalQueries > 0 || usage.TotalCost > 0 {
+		state.graphQLUsageSamples = append(state.graphQLUsageSamples, graphQLUsageSample{
+			observedAt: now,
+			queries:    usage.TotalQueries,
+			cost:       usage.TotalCost,
+		})
+	}
+
+	cutoff := now.Add(-time.Hour)
+	retained := state.graphQLUsageSamples[:0]
+	var queries int64
+	var cost int64
+	for _, sample := range state.graphQLUsageSamples {
+		if sample.observedAt.Before(cutoff) {
+			continue
+		}
+		retained = append(retained, sample)
+		queries += sample.queries
+		cost += sample.cost
+	}
+	state.graphQLUsageSamples = retained
+	return queries, cost
+}
+
+func setGraphQLCost(state *State, cost *telemetry.GraphQLCost) {
+	if state.RateLimits == nil {
+		if cost == nil {
+			return
+		}
+		state.RateLimits = &telemetry.RateLimits{}
+	}
+	state.RateLimits.GraphQLCost = cost
+}
+
+func (o *Orchestrator) captureConnectorRESTRateLimits(state *State, now time.Time) restRateLimitCycle {
+	reporter, ok := o.connector.(connector.RESTRateLimitUsageReporter)
+	if !ok {
+		return restRateLimitCycle{}
+	}
+	usage := reporter.FlushRESTRateLimitUsage()
+	if !usage.HasRateLimit && usage.TotalRequests == 0 && len(usage.Requests) == 0 && len(usage.Divergences) == 0 {
+		return restRateLimitCycle{}
+	}
+
+	bucket := gitHubRESTBucket(usage, now)
+	budgets := restBudgetSummaries(usage.Budgets)
+	summary := restUsageSummary(usage)
+	if state.RateLimits == nil {
+		state.RateLimits = &telemetry.RateLimits{}
+	}
+	if bucket != nil {
+		state.RateLimits.GitHubREST = bucket
+	}
+	state.RateLimits.GitHubRESTBudgets = replaceRESTConsumerBudgets(state.RateLimits.GitHubRESTBudgets, budgets, telemetry.RESTConsumerOrchestrator)
+	state.RateLimits.RESTUsage = summary
+	return restRateLimitCycle{
+		Bucket:     bucket,
+		Budgets:    budgets,
+		Usage:      summary,
+		HasSummary: true,
+	}
+}
+
+func replaceRESTConsumerBudgets(current []telemetry.RESTBudget, replacement []telemetry.RESTBudget, consumer string) []telemetry.RESTBudget {
+	out := make([]telemetry.RESTBudget, 0, len(current)+len(replacement))
+	for _, budget := range current {
+		budgetConsumer := strings.TrimSpace(budget.Consumer)
+		if budgetConsumer == "" {
+			budgetConsumer = telemetry.RESTConsumerOrchestrator
+		}
+		if budgetConsumer != consumer {
+			out = append(out, budget)
+		}
+	}
+	return append(out, replacement...)
+}
+
+func restUsageSummary(usage connector.RESTRateLimitUsage) *telemetry.RESTUsage {
+	if usage.TotalRequests == 0 && len(usage.Requests) == 0 && len(usage.Divergences) == 0 && !usage.RateLimited {
+		return nil
+	}
+
+	out := &telemetry.RESTUsage{
+		TotalRequests:       usage.TotalRequests,
+		ConditionalRequests: usage.ConditionalRequests,
+		NotModifiedRequests: usage.NotModifiedRequests,
+		BillableRequests:    usage.BillableRequests,
+		RateLimited:         usage.RateLimited,
+		ReserveHeld:         usage.ReserveHeld,
+		FanoutDeferred:      usage.FanoutDeferred,
+		Contributors:        make([]telemetry.RESTUsageContributor, 0, len(usage.Requests)),
+		Divergences:         make([]telemetry.RESTUsageDivergence, 0, len(usage.Divergences)),
+	}
+	if !usage.BackoffUntil.IsZero() {
+		backoffUntil := usage.BackoffUntil
+		out.BackoffUntil = &backoffUntil
+	}
+	for _, request := range usage.Requests {
+		contributor := telemetry.RESTUsageContributor{
+			Consumer:           telemetry.RESTConsumerOrchestrator,
+			CredentialIdentity: request.CredentialIdentity,
+			EndpointFamily:     request.EndpointFamily,
+			BudgetScope:        request.BudgetScope,
+			BudgetGate:         request.BudgetGate,
+			Count:              request.Count,
+			Conditional:        request.Conditional,
+			NotModified:        request.NotModified,
+			Billable:           request.Billable,
+			Remaining:          request.Remaining,
+			Limit:              request.Limit,
+			Resource:           request.Resource,
+			ResourceHeader:     request.ResourceHeader,
+			RateLimited:        request.RateLimited,
+			LastStatus:         request.LastStatus,
+		}
+		if !request.ResetAt.IsZero() {
+			resetAt := request.ResetAt
+			contributor.ResetAt = &resetAt
+		}
+		if request.RetryAfter > 0 {
+			contributor.RetryAfterMS = request.RetryAfter.Milliseconds()
+		}
+		out.Contributors = append(out.Contributors, contributor)
+	}
+	for _, divergence := range usage.Divergences {
+		summary := telemetry.RESTUsageDivergence{
+			CredentialIdentity:   divergence.CredentialIdentity,
+			Resource:             divergence.Resource,
+			Attribution:          divergence.Attribution,
+			ObservedRequests:     divergence.ObservedRequests,
+			DetentRequests:       divergence.DetentRequests,
+			AttributedRequests:   divergence.AttributedRequests,
+			UnattributedRequests: divergence.UnattributedRequests,
+			WarningEmitted:       divergence.WarningEmitted,
+		}
+		if !divergence.WindowStartedAt.IsZero() {
+			value := divergence.WindowStartedAt
+			summary.WindowStartedAt = &value
+		}
+		if !divergence.LastObservedAt.IsZero() {
+			value := divergence.LastObservedAt
+			summary.LastObservedAt = &value
+		}
+		if !divergence.ResetAt.IsZero() {
+			value := divergence.ResetAt
+			summary.ResetAt = &value
+		}
+		out.Divergences = append(out.Divergences, summary)
+	}
+	return out
+}
+
+func restBudgetSummaries(budgets []connector.RESTRateLimitBudget) []telemetry.RESTBudget {
+	if len(budgets) == 0 {
+		return nil
+	}
+	out := make([]telemetry.RESTBudget, 0, len(budgets))
+	for _, budget := range budgets {
+		summary := telemetry.RESTBudget{
+			Consumer:           telemetry.RESTConsumerOrchestrator,
+			CredentialIdentity: budget.CredentialIdentity,
+			EndpointFamily:     budget.EndpointFamily,
+			Resource:           budget.RateLimit.Resource,
+			ResourceHeader:     budget.RateLimit.ResourceHeader,
+			Remaining:          budget.RateLimit.Remaining,
+			Used:               budget.RateLimit.Used,
+			Limit:              budget.RateLimit.Limit,
+		}
+		if !budget.RateLimit.ResetAt.IsZero() {
+			resetAt := budget.RateLimit.ResetAt
+			summary.ResetAt = &resetAt
+		}
+		if !budget.RateLimit.UpdatedAt.IsZero() {
+			observedAt := budget.RateLimit.UpdatedAt
+			summary.ObservedAt = &observedAt
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func gitHubRESTBucket(usage connector.RESTRateLimitUsage, now time.Time) *telemetry.RateLimitBucket {
+	rateLimit := usage.RateLimit
+	if rateLimit.Resource != "" && rateLimit.Resource != "core" {
+		return nil
+	}
+	var resetAt *time.Time
+	var observedAt *time.Time
+	var resetInSeconds int64
+	if !rateLimit.ResetAt.IsZero() {
+		value := rateLimit.ResetAt
+		resetAt = &value
+	}
+	if !rateLimit.UpdatedAt.IsZero() {
+		value := rateLimit.UpdatedAt
+		observedAt = &value
+	}
+	if rateLimit.RetryAfter > 0 {
+		updatedAt := rateLimit.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
+		value := updatedAt.Add(rateLimit.RetryAfter)
+		resetAt = &value
+		resetInSeconds = int64(rateLimit.RetryAfter.Round(time.Second) / time.Second)
+	}
+	if !usage.BackoffUntil.IsZero() && usage.BackoffUntil.After(now) {
+		value := usage.BackoffUntil
+		resetAt = &value
+		resetInSeconds = int64(usage.BackoffUntil.Sub(now).Round(time.Second) / time.Second)
+	}
+
+	return &telemetry.RateLimitBucket{
+		Remaining:      rateLimit.Remaining,
+		Used:           rateLimit.Used,
+		Limit:          rateLimit.Limit,
+		Cost:           usage.BillableRequests,
+		ResetAt:        resetAt,
+		ObservedAt:     observedAt,
+		ResetInSeconds: resetInSeconds,
+	}
+}
+
+func (o *Orchestrator) logRESTRateLimitCycle(cycle restRateLimitCycle) {
+	if !cycle.HasSummary || cycle.Bucket == nil {
+		return
+	}
+
+	var resetAt time.Time
+	if cycle.Bucket.ResetAt != nil {
+		resetAt = *cycle.Bucket.ResetAt
+	}
+	totalRequests := int64(0)
+	billableRequests := int64(0)
+	notModifiedRequests := int64(0)
+	rateLimited := false
+	reserveHeld := false
+	fanoutDeferred := false
+	var contributors []telemetry.RESTUsageContributor
+	if cycle.Usage != nil {
+		totalRequests = cycle.Usage.TotalRequests
+		billableRequests = cycle.Usage.BillableRequests
+		notModifiedRequests = cycle.Usage.NotModifiedRequests
+		rateLimited = cycle.Usage.RateLimited
+		reserveHeld = cycle.Usage.ReserveHeld
+		fanoutDeferred = cycle.Usage.FanoutDeferred
+		contributors = cycle.Usage.Contributors
+	}
+
+	o.logger.Info(
+		"github rest budget summary",
+		"consumer", telemetry.RESTConsumerOrchestrator,
+		"request_count", totalRequests,
+		"billable_request_count", billableRequests,
+		"not_modified_request_count", notModifiedRequests,
+		"rate_limited", rateLimited,
+		"reserve_held", reserveHeld,
+		"fanout_deferred", fanoutDeferred,
+		"remaining", cycle.Bucket.Remaining,
+		"limit", cycle.Bucket.Limit,
+		"reset_at", resetAt,
+		"credential_budgets", cycle.Budgets,
+		"contributors", contributors,
+	)
+}
+
+func graphQLCostSummary(usage connector.GraphQLRateLimitUsage) *telemetry.GraphQLCost {
+	if usage.TotalQueries == 0 && usage.TotalCost == 0 && len(usage.QueryCosts) == 0 {
+		return nil
+	}
+
+	cost := &telemetry.GraphQLCost{
+		TotalQueries: usage.TotalQueries,
+		TotalCost:    usage.TotalCost,
+		Contributors: make([]telemetry.GraphQLCostContributor, 0, len(usage.QueryCosts)),
+	}
+	for _, contributor := range usage.QueryCosts {
+		cost.Contributors = append(cost.Contributors, telemetry.GraphQLCostContributor{
+			QueryType: contributor.QueryType,
+			Count:     contributor.Count,
+			Cost:      contributor.Cost,
+		})
+	}
+	return cost
+}
+
+func (o *Orchestrator) logGraphQLRateLimitCycle(cycle graphQLRateLimitCycle) {
+	if !cycle.HasSummary || cycle.Bucket == nil {
+		return
+	}
+
+	var resetAt time.Time
+	if cycle.Bucket.ResetAt != nil {
+		resetAt = *cycle.Bucket.ResetAt
+	}
+	cycleCost := int64(0)
+	queryCount := int64(0)
+	var contributors []telemetry.GraphQLCostContributor
+	if cycle.Cost != nil {
+		cycleCost = cycle.Cost.TotalCost
+		queryCount = cycle.Cost.TotalQueries
+		contributors = cycle.Cost.Contributors
+	}
+
+	o.logger.Debug(
+		"github graphql budget summary",
+		"cycle_cost", cycleCost,
+		"query_count", queryCount,
+		"remaining", cycle.Bucket.Remaining,
+		"limit", cycle.Bucket.Limit,
+		"reset_at", resetAt,
+		"contributors", contributors,
+	)
+
+	if cycle.Bucket.Remaining < o.cfg.GitHubGraphQLWarnRemaining {
+		o.logger.Warn(
+			"github graphql budget below warning floor",
+			"remaining", cycle.Bucket.Remaining,
+			"warning_floor", o.cfg.GitHubGraphQLWarnRemaining,
+			"limit", cycle.Bucket.Limit,
+			"reset_at", resetAt,
+		)
+	}
+}
+
+func graphQLRateLimitTelemetryStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case connector.GraphQLRateLimitStatusUnknown:
+		return telemetry.RateLimitStatusUnknown
+	case connector.GraphQLRateLimitStatusExhausted:
+		return telemetry.RateLimitStatusExhausted
+	case connector.GraphQLRateLimitStatusBackoff:
+		return telemetry.RateLimitStatusBackoff
+	default:
+		return ""
+	}
+}
+
+func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time, status string) *telemetry.RateLimitBucket {
+	var resetAt *time.Time
+	var observedAt *time.Time
+	var resetInSeconds int64
+	if !rateLimit.ResetAt.IsZero() {
+		value := rateLimit.ResetAt
+		resetAt = &value
+	}
+	if !rateLimit.UpdatedAt.IsZero() {
+		value := rateLimit.UpdatedAt
+		observedAt = &value
+	}
+	if rateLimit.RetryAfter > 0 {
+		updatedAt := rateLimit.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
+		value := updatedAt.Add(rateLimit.RetryAfter)
+		resetAt = &value
+		resetInSeconds = int64(rateLimit.RetryAfter.Round(time.Second) / time.Second)
+	}
+	if status == "" {
+		status = graphQLRateLimitStatusFromSnapshot(rateLimit)
+	}
+
+	return &telemetry.RateLimitBucket{
+		Remaining:      rateLimit.Remaining,
+		Used:           rateLimit.Used,
+		Limit:          rateLimit.Limit,
+		Cost:           rateLimit.Cost,
+		Status:         status,
+		ResetAt:        resetAt,
+		ObservedAt:     observedAt,
+		ResetInSeconds: resetInSeconds,
+	}
+}
+
+func graphQLRateLimitStatusFromSnapshot(rateLimit connector.GraphQLRateLimit) string {
+	if rateLimit.Limit > 0 && rateLimit.Remaining <= 0 {
+		return telemetry.RateLimitStatusExhausted
+	}
+	if rateLimit.RetryAfter > 0 {
+		return telemetry.RateLimitStatusBackoff
+	}
+	return ""
+}
+
+func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Duration {
+	base := o.cfg.PollInterval
+	if base <= 0 {
+		base = defaultPollInterval
+	}
+	lookupPause := githubLookupBackoffPause(state, now)
+	if backoffPause := gitHubRESTBackoffPause(state, now); !o.nativeWorkflow() && backoffPause > lookupPause {
+		return backoffPause
+	}
+	if lookupPause > 0 {
+		return lookupPause
+	}
+	if o.scheduling != nil {
+		source := state.RefreshSources[telemetry.RefreshSourceCandidates]
+		if source.Condition == schedulingUnavailableCondition && source.FailureStreak > 0 {
+			return schedulingBackoffInterval(base, source.FailureStreak)
+		}
+		return dispatchRecoveryPollInterval(state, now, o.projectRefreshInterval(state, now, base))
+	}
+	if pause := o.gitHubGraphQLPause(state, now); pause > base {
+		return pause
+	}
+	return dispatchRecoveryPollInterval(state, now, o.projectRefreshInterval(state, now, base))
+}
+
+func gitHubRESTBackoffPause(state *State, now time.Time) time.Duration {
+	if state == nil || state.RateLimits == nil || state.RateLimits.RESTUsage == nil || state.RateLimits.RESTUsage.BackoffUntil == nil {
+		return 0
+	}
+	backoffUntil := state.RateLimits.RESTUsage.BackoffUntil
+	if !backoffUntil.After(now) {
+		return 0
+	}
+	return backoffUntil.Sub(now)
+}
+
+func schedulingBackoffInterval(base time.Duration, failureStreak int) time.Duration {
+	if base <= 0 || failureStreak <= 0 {
+		return base
+	}
+	shift := min(failureStreak, 4)
+	interval := base * time.Duration(1<<shift)
+	maximum := 5 * time.Minute
+	if maximum < base {
+		maximum = base
+	}
+	if interval > maximum {
+		return maximum
+	}
+	return interval
+}
+
+func (o *Orchestrator) gitHubGraphQLPause(state *State, now time.Time) time.Duration {
+	bucket := gitHubGraphQLBucketFromState(state)
+	if bucket == nil || bucket.ResetAt == nil {
+		return 0
+	}
+	if bucket.ResetInSeconds > 0 && bucket.ResetAt.After(now) {
+		return bucket.ResetAt.Sub(now)
+	}
+	if bucket.Remaining > 0 {
+		return 0
+	}
+	if !bucket.ResetAt.After(now) {
+		return 0
+	}
+	return bucket.ResetAt.Sub(now)
+}
+
+func gitHubGraphQLBucketFromState(state *State) *telemetry.RateLimitBucket {
+	if state.RateLimits == nil {
+		return nil
+	}
+	return state.RateLimits.GitHubGraphQL
+}
+
+func gitHubGraphQLRemaining(state *State) int64 {
+	bucket := gitHubGraphQLBucketFromState(state)
+	if bucket == nil {
+		return 0
+	}
+	return bucket.Remaining
+}
+
+// projectRefreshInterval uses the existing project timer to reduce quiet reads.
+// Candidate-bearing projects and pending transitions retain their normal cadence;
+// the connector still reserves REST capacity for dispatch writes.
+func (o *Orchestrator) projectRefreshInterval(state *State, now time.Time, base time.Duration) time.Duration {
+	if state == nil || state.RateLimits == nil || tickHasActiveWork(state, state.LaneSignalCandidates) || len(state.Claimed) > 0 || len(state.deferredCompletions) > 0 {
+		return base
+	}
+	interval := base
+	pace := func(bucket *telemetry.RateLimitBucket, reserve int64) {
+		if bucket == nil || bucket.Limit <= 0 || reserve <= 0 || bucket.Remaining > reserve ||
+			(bucket.ResetAt != nil && !now.Before(*bucket.ResetAt)) {
+			return
+		}
+		// Bound the delay even when a stale snapshot reports no remaining capacity.
+		remaining := max(int64(1), bucket.Remaining)
+		multiplier := min(int64(10), max(int64(2), 1+(reserve-1)/remaining))
+		interval = max(interval, min(base*time.Duration(multiplier), max(base, 5*time.Minute)))
+	}
+	pace(state.RateLimits.GitHubGraphQL, o.cfg.GitHubGraphQLMinReserve)
+	pace(state.RateLimits.GitHubREST, o.cfg.GitHubRESTMinReserve)
+	for _, budget := range state.RateLimits.GitHubRESTBudgets {
+		if o.nativeWorkflow() && budget.Consumer != telemetry.RESTConsumerOrchestrator || budget.Resource != "" && budget.Resource != "core" {
+			continue
+		}
+		pace(&telemetry.RateLimitBucket{Limit: budget.Limit, Remaining: budget.Remaining, ResetAt: budget.ResetAt}, o.cfg.GitHubRESTMinReserve)
+	}
+	return interval
+}
+
+// A refresh flushes before dispatch for current capacity authority and after
+// maintenance for complete operation counts. Both belong to the same budget.
+func mergeRefreshRESTUsage(tail, prior *telemetry.RESTUsage) {
+	if tail == nil || prior == nil {
+		return
+	}
+	tail.TotalRequests += prior.TotalRequests
+	tail.ConditionalRequests += prior.ConditionalRequests
+	tail.NotModifiedRequests += prior.NotModifiedRequests
+	tail.BillableRequests += prior.BillableRequests
+	tail.RateLimited = tail.RateLimited || prior.RateLimited
+	tail.ReserveHeld = tail.ReserveHeld || prior.ReserveHeld
+	tail.FanoutDeferred = tail.FanoutDeferred || prior.FanoutDeferred
+	tail.Contributors = append(prior.Contributors, tail.Contributors...)
+	tail.Divergences = append(prior.Divergences, tail.Divergences...)
+	if tail.BackoffUntil == nil || (prior.BackoffUntil != nil && prior.BackoffUntil.After(*tail.BackoffUntil)) {
+		tail.BackoffUntil = prior.BackoffUntil
+	}
+}
+
+func (o *Orchestrator) captureNativeLandingRESTUsage(state *State, result runpkg.RunResult, now time.Time) {
+	if result.GitHubRESTUsage == nil {
+		return
+	}
+	usage := *result.GitHubRESTUsage
+	consumer := result.GitHubRESTConsumer
+	if consumer == "" {
+		consumer = telemetry.RESTConsumerWorker
+	}
+	budgets := restBudgetSummaries(usage.Budgets)
+	for i := range budgets {
+		budgets[i].Consumer = consumer
+	}
+	summary := restUsageSummary(usage)
+	if summary != nil {
+		for i := range summary.Contributors {
+			summary.Contributors[i].Consumer = consumer
+		}
+	}
+	state.RateLimits = mergeRateLimits(state.RateLimits, &telemetry.RateLimits{
+		GitHubRESTBudgets: budgets,
+		RESTUsage:         summary,
+	})
+	if result.NativeLanding != nil && result.NativeLanding.Landed && !usage.RateLimited {
+		key, outage, exists := githubRESTCapacityOutage(state.BackendOutages)
+		if exists && outage.Trigger != "" {
+			for _, budget := range budgets {
+				if budget.ObservedAt != nil && budget.ObservedAt.After(outage.LastObservedAt) && budget.Remaining > 0 && budget.CredentialIdentity != "" && outage.Reason == "GitHub REST "+outage.Trigger+" for credential "+budget.CredentialIdentity {
+					delete(state.BackendOutages, key)
+				}
+			}
+		}
+	}
+}

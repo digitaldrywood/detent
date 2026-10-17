@@ -1,0 +1,26 @@
+{
+  "identifier": "api-demo-review-001",
+  "title": "API seed reviewed package",
+  "description": "Review the package manifest and promote it when render_status becomes approved.",
+  "state": "Review",
+  "labels": ["content-demo", "api-seed", "review"],
+  "fields": {
+    "artifact_type": "publication_bundle",
+    "audience": "publishing",
+    "channel": "multi-channel",
+    "render_status": "pending_review",
+    "owner": "reviewer"
+  },
+  "priority": 2,
+  "deliverable": {
+    "kind": "artifact",
+    "path": "output/api-seed-reviewed-package/manifest.json",
+    "review_url": "http://127.0.0.1:4101/review/api-demo-review-001",
+    "external_id": "api-demo-review-001",
+    "metadata": {
+      "artifact_gate": "render_status",
+      "expected_format": "directory-manifest",
+      "output_directory": "output/api-seed-reviewed-package"
+    }
+  }
+}
