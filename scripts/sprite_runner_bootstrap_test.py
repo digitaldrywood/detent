@@ -44,12 +44,16 @@ elif name == "curl":
         shutil.copyfile(root / ("go.tar.gz" if "/go1." in url else url.rsplit("/", 1)[1]), dest)
         if "/sharkdp/fd/" in url and os.environ.get("FD_CORRUPT"):
             dest.write_bytes(b"corrupt archive")
+elif name == "sha256sum" and args[:1] != ["--check"]:
+    print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest() + "  " + args[0])
 elif name == "sha256sum":
     checksum, filename = sys.stdin.read().split()
     sys.exit(0 if hashlib.sha256(pathlib.Path(filename).read_bytes()).hexdigest() == checksum else 1)
 elif name == "go":
     if args == ["version"]:
         print("go version go1.26.6 linux/amd64")
+    elif os.environ.get("GO_INSTALL_FAIL"):
+        sys.exit(1)
     else:
         shutil.copy(__file__, pathlib.Path(os.environ["GOBIN"]) / "detent")
 elif name == "npm":
@@ -130,6 +134,8 @@ elif name == "detent":
         if not config.exists():
             config.write_text("client:\n  hub_url: https://hub.example\nglobal:\n  max_concurrent_agents: 2\n")
             (config.parent / "identity.json").write_text("original identity\n")
+    elif args == ["--format", "pretty", "version"]:
+        print("version: 0.117.41\ncommit: " + "a" * 40 + "\nbuild date: unknown")
     else:
         (root / "detent-cwd").write_text(os.getcwd())
         print("v0.117.41")
@@ -279,6 +285,37 @@ class SpriteBootstrapTests(unittest.TestCase):
                 else:
                     self.assertEqual(args[args.index("--isolation-tier") + 1], "sandbox")
                 self.assertNotIn(TOKEN, result.stdout + result.stderr + str(self.calls()))
+
+    def test_release_install_records_install_lock(self):
+        # Catches a release install the updater reports as an unknown source.
+        lock = self.home / ".detent/install.lock"
+        binary = self.home / ".local/bin/detent"
+        first = self.run_bootstrap()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        fields = dict(line.split("=", 1) for line in lock.read_text().splitlines())
+        self.assertEqual(set(fields), {"binary", "version", "commit", "installed_at", "sha256"})
+        self.assertEqual(fields["binary"], str(binary))
+        self.assertEqual(fields["version"], "0.117.41")
+        self.assertEqual(fields["commit"], "a" * 40)
+        self.assertEqual(fields["sha256"], hashlib.sha256(binary.read_bytes()).hexdigest())
+        self.assertRegex(fields["installed_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        lock.unlink()
+        (self.root / "calls.jsonl").unlink()
+        repair = self.run_bootstrap(enrollment="")
+        self.assertEqual(repair.returncode, 0, repair.stderr)
+        self.assertTrue(any("/v0.117.41/" in " ".join(args) for command, args in self.calls() if command == "curl"))
+        self.assertIn("binary=" + str(binary), lock.read_text().splitlines())
+        source = self.root / "source checkout"
+        source.mkdir()
+        (source / "go.mod").write_text("module fixture\ngo 1.26.6\n")
+        self.env["GO_INSTALL_FAIL"] = "1"
+        failed = self.run_bootstrap(extra=("--from-source", str(source)), enrollment="")
+        del self.env["GO_INSTALL_FAIL"]
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("binary=" + str(binary), lock.read_text().splitlines())
+        built = self.run_bootstrap(extra=("--from-source", str(source)), enrollment="")
+        self.assertEqual(built.returncode, 0, built.stderr)
+        self.assertFalse(lock.exists())
 
     def test_pressure_floor_config_merge(self):
         cases = (

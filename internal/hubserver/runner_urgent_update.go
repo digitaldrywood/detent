@@ -43,7 +43,7 @@ func readUrgentRunnerUpdate(ctx context.Context, db nativeQueryer, organization 
 func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, version string) {
 	if request := r.UpdateRequest; request != nil && request.FollowHub && r.Update != nil {
 		comparison, err := update.CompareVersions(request.Version, r.Update.Running.Version)
-		if err == nil && comparison > 0 && r.State == "active" {
+		if err == nil && comparison > 0 && r.State == "active" && !runnerUpdateRequestSettled(r, *request) {
 			r.State = "draining"
 		}
 	}
@@ -66,7 +66,7 @@ func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, v
 		}
 		return
 	}
-	if r.Update != nil && r.Update.Receipt != nil && r.Update.Receipt.Request == *urgent.Request && (r.Update.Receipt.Status == "refused" || r.Update.Receipt.Status == "uncertain" && r.Update.Receipt.FailureReason != "") {
+	if runnerUpdateRequestSettled(r, *urgent.Request) {
 		r.UpdateRequest = urgent.Request
 		return
 	}
@@ -74,6 +74,14 @@ func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, v
 		r.State = "draining"
 	}
 	r.UpdateRequest = urgent.Request
+}
+
+func runnerUpdateRequestSettled(r *runnerauth.Runner, request runnerauth.UpdateRequest) bool {
+	if r.Update == nil || r.Update.Receipt == nil || r.Update.Receipt.Request != request {
+		return false
+	}
+	receipt := r.Update.Receipt
+	return receipt.Status == "refused" || receipt.Status == "uncertain" && receipt.FailureReason != ""
 }
 
 func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeScope, request runnerauth.UpdateRequest) (bool, error) {
