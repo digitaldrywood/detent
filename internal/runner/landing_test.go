@@ -778,6 +778,8 @@ func TestNativeReviewThreadTools(t *testing.T) {
 		tool          string
 		arguments     string
 		unreviewed    bool
+		humanRoot     bool
+		unreviewable  bool
 		lostClaim     bool
 		movedAt       int
 		wantTools     bool
@@ -787,7 +789,11 @@ func TestNativeReviewThreadTools(t *testing.T) {
 	}{
 		{name: "reviewed source supports explicit bot disposition", wantTools: true, wantSuccess: true, wantMutations: 2},
 		{name: "read exposes the actual published source even before review", tool: "detent_read_review_threads", arguments: `{}`, unreviewed: true, wantTools: true, wantSuccess: true, wantContent: `"reviewed":false`},
-		{name: "unreviewed source cannot resolve feedback", unreviewed: true, wantTools: true, wantContent: "not reviewed"},
+		{name: "unreviewed source cannot resolve feedback", unreviewed: true, wantTools: true, wantContent: `"reason_code":"host_publication_pending"`},
+		{name: "unpublished repair cannot resolve unreviewed feedback", unreviewed: true, arguments: `{"head_sha":"local-repair","thread_id":"T1","disposition":"fixed","evidence":"source.go:17 correction"}`, wantTools: true, wantContent: "current published head"},
+		{name: "human-rooted conversation remains human owned", humanRoot: true, wantTools: true, wantContent: "human"},
+		{name: "wrong item authority cannot be supplied", arguments: `{"work_item_id":"wi_other"}`, wantTools: true, wantContent: "invalid review disposition arguments"},
+		{name: "non-review landing refusal is not a host review wait", unreviewable: true, wantTools: true, wantContent: "not reviewed"},
 		{name: "lost claim cannot write to GitHub", lostClaim: true, wantTools: true, wantContent: "claim lost"},
 		{name: "changed native version cannot resolve feedback", movedAt: 3, wantTools: true, wantMutations: 1, wantContent: "source changed"},
 		{name: "a stale supplied head cannot resolve feedback", arguments: `{"head_sha":"old","thread_id":"T1","disposition":"fixed","evidence":"source.go:17 correction"}`, wantTools: true, wantContent: "current published head"},
@@ -799,6 +805,10 @@ func TestNativeReviewThreadTools(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			execution := &landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_current", VersionID: "version_current", Repository: "https://github.com/example/repo", HeadSHA: head, BaseRef: "develop", GitHubPullRequest: true, External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}}}}
 			if test.unreviewed {
+				execution.targetErr = ErrLandingNotReviewed
+				execution.target.ReviewPending = true
+			}
+			if test.unreviewable {
 				execution.targetErr = ErrLandingNotReviewed
 			}
 			if test.lostClaim {
@@ -847,7 +857,11 @@ func TestNativeReviewThreadTools(t *testing.T) {
 					if input.Variables["owner"] != "example" || input.Variables["name"] != "repo" || input.Variables["number"] != float64(7) {
 						t.Fatalf("unscoped thread query: %#v", input.Variables)
 					}
-					body = fmt.Sprintf(`{"repository":{"pullRequest":{"number":7,"headRefOid":%q,"baseRefName":"develop","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"T1","isResolved":%t,"comments":{"nodes":[{"body":"P2 finding","author":{"__typename":"Bot","login":"example-bot"}}]}}]}}}}`, head, resolved)
+					authorKind := "Bot"
+					if test.humanRoot {
+						authorKind = "User"
+					}
+					body = fmt.Sprintf(`{"repository":{"pullRequest":{"number":7,"headRefOid":%q,"baseRefName":"develop","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"T1","isResolved":%t,"comments":{"nodes":[{"body":"P2 finding","author":{"__typename":%q,"login":"example-bot"}}]}}]}}}}`, head, resolved, authorKind)
 				case strings.Contains(input.Query, "addPullRequestReviewThreadReply"):
 					mutations++
 					evidence, _ := input.Variables["body"].(string)
