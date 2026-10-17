@@ -35,6 +35,7 @@ func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []he
 func TestHealthFindingLifecycle(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "health-lifecycle")
+	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	finding := newHealthFinding("every_candidate_refused", "instance", "project", string(f.project.ID), "Every candidate was refused with the same reason: runner_capacity_full.", "The runner operator corrects the reported capacity or policy refusal.", []string{string(f.project.ID)}, healthEvidence{Counts: map[string]int{"candidates": 1}})
 	var original string
@@ -90,6 +91,7 @@ func TestHealthFindingLifecycle(t *testing.T) {
 func TestHealthDetectorEmptyTenantAndObservationOnly(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "empty-health")
+	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	if err := f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now); err != nil {
 		t.Fatal(err)
@@ -137,7 +139,9 @@ func TestHealthDetectorEmptyTenantAndObservationOnly(t *testing.T) {
 func TestHealthFindingsReads(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "health-reads")
+	addHealthBacklog(t, f)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-health")
+	addHealthBacklog(t, other)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	findings := []healthFinding{}
 	for _, test := range []struct {
@@ -259,6 +263,7 @@ func TestHealthFindingsReads(t *testing.T) {
 func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "runner-health")
+	addHealthBacklog(t, f)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	f.create(t, "candidate")
@@ -313,6 +318,7 @@ func TestHealthSnapshotRunnerAndPolicyFallback(t *testing.T) {
 func TestHealthReadFailurePreservesFindingsAndTick(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "failed-health")
+	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	finding := newHealthFinding("test", "instance", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{})
 	applyTestHealth(t, f, now, []healthFinding{finding})
@@ -375,6 +381,7 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "recorded-health")
+			addHealthBacklog(t, f)
 			items := []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
 			at := now.Add(-time.Minute)
 			if test.old {
@@ -412,6 +419,7 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "wait-health")
+	addHealthBacklog(t, f)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	item := f.create(t, "waiting")
@@ -495,6 +503,7 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 func TestHealthSnapshotConversationQuestions(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "question-health")
+	addHealthBacklog(t, f)
 	item := f.create(t, "question")
 	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
 	if err != nil {
@@ -564,6 +573,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "bounded-health")
+			addHealthBacklog(t, f)
 			item := f.create(t, "bounded")
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 			finding := newHealthFinding("test", "instance", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{})
@@ -574,7 +584,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else if test.candidates > 0 {
-				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 3 UNION ALL SELECT x+1 FROM n WHERE x<?)
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 3 UNION ALL SELECT x+1 FROM n WHERE x<=?)
  INSERT INTO issues(organization_id,project_id,workflow_state_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
  SELECT i.organization_id,i.project_id,i.workflow_state_id,n.x,'candidate','','open','1',i.source_updated_at,i.synchronized_at,i.created_at,i.updated_at FROM n CROSS JOIN issues i WHERE i.native_id=?`, test.candidates, item.WorkItemID)
 				if err != nil {
@@ -629,6 +639,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 func TestHealthSnapshotRefreshObservation(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "refresh-health")
+	addHealthBacklog(t, f)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 	r.enroll(t)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
@@ -721,6 +732,7 @@ func TestHealthDetectorTicksAndStops(t *testing.T) {
 
 func TestHealthSnapshotReadsWithoutTheWriter(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "health-writer")
+	addHealthBacklog(t, f)
 	f.create(t, "candidate")
 	clearNativeFixturePolicy(t, f)
 	writer, err := f.service.database.db.Conn(t.Context())
