@@ -122,10 +122,6 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 				view = o.applyLocalBinding(ctx, *cfg, revision, p, request, view)
 				return false
 			}
-			if view.UnsettledAttempts != 0 {
-				view.Constraint = "Active or deferred work must settle through its existing completion owner before applying policy."
-				return false
-			}
 			workflow, loadErr := p.loadManagedWorkflow(ctx, request.SourceRevision)
 			if loadErr != nil {
 				view.Constraint = loadErr.Error()
@@ -141,10 +137,6 @@ func (o *ConfigurationOwner) Apply(ctx context.Context, operation string, reques
 			checker, ok := p.policyScheduling.(policyChecker)
 			if !ok || checker.CheckProjectPolicy(ctx, p.Config().ID, candidate.Config.Tracker.Repository, descriptor) != nil {
 				view.Constraint = "The selected approved-policy owner is unavailable."
-				return false
-			}
-			if err := pauseSettledConfiguration(ctx, p, view); err != nil {
-				view.Constraint = "Active or deferred work must settle through its existing completion owner before applying policy."
 				return false
 			}
 			p.configMu.Lock()

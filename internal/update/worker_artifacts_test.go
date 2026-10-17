@@ -185,6 +185,7 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	oldArchive := a.latestArchive
 	oldBytes, err := os.ReadFile(a1.Status.Binary)
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +202,7 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	intermediateArchive := a.latestArchive
 	publish("1.0.2")
 	c, err := a.Acquire(t.Context(), nil)
 	if err != nil {
@@ -214,6 +216,9 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	}
 	if _, err := os.Stat(b.Status.Binary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("retired worker artifact remains: %v", err)
+	}
+	if _, err := os.Stat(intermediateArchive); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retired archive remains: %v", err)
 	}
 	pinned, err := a1.Retain()
 	if err != nil {
@@ -234,11 +239,17 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	if _, err := os.Stat(pinned.Status.Binary); err != nil {
 		t.Fatalf("captured continuation lost its artifact: %v", err)
 	}
+	if _, err := os.Stat(oldArchive); err != nil {
+		t.Fatalf("live old archive removed: %v", err)
+	}
 	if err := pinned.Release(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(a1.Status.Binary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old artifact retained after final owner exit: %v", err)
+	}
+	if _, err := os.Stat(oldArchive); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old archive retained after final owner: %v", err)
 	}
 	if err := a2.Release(); err != nil {
 		t.Fatal(err)
@@ -248,6 +259,10 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 	}
 	if _, err := os.Stat(c.Status.Binary); err != nil {
 		t.Fatalf("latest verified artifact unavailable: %v", err)
+	}
+	archives, err := filepath.Glob(filepath.Join(a.root, "archive-*"))
+	if err != nil || len(archives) != 1 || archives[0] != a.latestArchive {
+		t.Fatalf("latest archive unavailable or obsolete archives retained: %v %v", archives, err)
 	}
 	f.listErr = errors.New("release source unavailable")
 	if _, err := a.Acquire(t.Context(), nil); err == nil {
@@ -300,6 +315,9 @@ func TestWorkerArtifactsRejectInvalidLaunch(t *testing.T) {
 				}
 			case "cached archive":
 				f.releases = f.releases[:1]
+				release = f.releases[0]
+				archive = f.downloads[release.Assets[0].BrowserDownloadURL]
+				f.downloads[release.Assets[0].BrowserDownloadURL] = []byte("corrupt source")
 				entries, err := os.ReadDir(a.root)
 				if err != nil {
 					t.Fatal(err)
@@ -326,13 +344,13 @@ func TestWorkerArtifactsRejectInvalidLaunch(t *testing.T) {
 					t.Fatalf("failed launch modified live old artifact: %v", err)
 				}
 			}
-			if failure == "download" || failure == "checksum" {
+			if failure == "download" || failure == "checksum" || failure == "cached archive" {
 				f.downloads[release.Assets[0].BrowserDownloadURL] = archive
 				retried, err := a.Acquire(t.Context(), nil)
 				if err != nil {
 					t.Fatalf("failed download poisoned subsequent verified launch: %v", err)
 				}
-				if retried.Status.LatestVersion != "1.0.1" {
+				if retried.Status.LatestVersion != strings.TrimPrefix(release.TagName, "v") {
 					t.Fatalf("replacement selected obsolete release %s", retried.Status.LatestVersion)
 				}
 				if err := retried.Release(); err != nil {
