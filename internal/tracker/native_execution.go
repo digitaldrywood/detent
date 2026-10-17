@@ -372,8 +372,15 @@ type NativeRecoveryPage struct {
 }
 
 type NativeRecoveryRead struct {
-	DetailPath string   `json:"detail_path"`
-	Omitted    []string `json:"omitted"`
+	DetailPath string                  `json:"detail_path"`
+	Omitted    []string                `json:"omitted"`
+	IssueBody  *NativeRecoveryBodyRead `json:"issue_body,omitempty"`
+}
+
+type NativeRecoveryBodyRead struct {
+	Cursor     string `json:"cursor"`
+	SHA256     string `json:"sha256"`
+	TotalBytes int64  `json:"total_bytes"`
 }
 
 type NativeRecovery struct {

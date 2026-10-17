@@ -651,7 +651,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	h := newNativeChangeHub(t, true)
 	cfg := config.Default()
 	cfg.Tracker.Kind = config.TrackerHubNative
-	descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("historical policy <\n", 6000)})
+	descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("p", 320<<10)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,6 +660,14 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	}
 	h.descriptor = descriptor
 	issue := h.createInProgress(t, "Retained evidence worker")
+	body := issueContractTestSections + strings.Repeat("<", 153<<10) + strings.Repeat("b", (256<<10)-len(issueContractTestSections)-(153<<10))
+	currentIssue, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.admin.UpdateIssue(t.Context(), currentIssue.WorkItemID, tracker.UpdateIssue{Mutation: nativeMutationKey(), ExpectedRevision: currentIssue.Revision, Body: &body}); err != nil {
+		t.Fatal(err)
+	}
 	h.claim(t, issue.ID)
 	execution := h.scheduler.RunExecution(issue.ID)
 	if execution == nil {
@@ -677,7 +685,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 	}
 
 	items := []tracker.NativeWorkItemID{tracker.NativeWorkItemID(issue.ID)}
-	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Second retained item", Body: issueContractTestSections, State: "Todo"})
+	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Second retained item", Body: body, State: "Todo"})
 	items = append(items, other.WorkItemID)
 	type evidence struct {
 		change   tracker.ChangeRequest
@@ -753,6 +761,9 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 			recovery, err := h.native.Recovery(t.Context(), item)
 			if err != nil {
 				t.Fatalf("large audit prevented worker recovery: %v", err)
+			}
+			if recovery.Issue.Body != body || recovery.Read == nil || recovery.Read.IssueBody == nil {
+				t.Fatal("combined evidence lost required instructions before worker dispatch")
 			}
 			if recovery.ChangeDetail == nil || recovery.Read == nil || !slices.Contains(recovery.Read.Omitted, "change_detail.reviews") {
 				t.Fatal("projected audit did not expose retained evidence")

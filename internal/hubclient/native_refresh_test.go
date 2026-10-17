@@ -264,6 +264,93 @@ func TestNativeRecoveryDoesNotReassembleEvidence(t *testing.T) {
 	}
 }
 
+func TestNativeRecoveryRequiredBodyFragments(t *testing.T) {
+	for _, mode := range []string{"complete", "changed revision", "foreign item", "foreign project", "changed digest", "repeated offset", "early end", "corrupt bytes", "denied continuation", "oversized record", "missing reference"} {
+		t.Run(mode, func(t *testing.T) {
+			body := strings.Repeat("<", 153<<10) + strings.Repeat("界", 20<<10)
+			content, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(content)
+			sha := hex.EncodeToString(digest[:])
+			ref := tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: "wi_test", Revision: 3}
+			reads := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads++
+				cursor := r.URL.Query().Get("cursor")
+				if cursor == "" {
+					if r.Header.Get("X-Detent-Recovery-Body") != "fragments" {
+						t.Error("required body capability missing")
+					}
+					read := &tracker.NativeRecoveryRead{Omitted: []string{"issue.body"}, IssueBody: &tracker.NativeRecoveryBodyRead{Cursor: "0", SHA256: sha, TotalBytes: int64(len(content))}}
+					if mode == "oversized record" {
+						read.IssueBody.TotalBytes = 6*(256<<10) + 3
+					}
+					if mode == "missing reference" {
+						read.IssueBody = nil
+					}
+					_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: ref}, Read: read})
+					return
+				}
+				start, err := strconv.Atoi(cursor)
+				if err != nil || start < 0 || start >= len(content) {
+					t.Errorf("bad cursor %q", cursor)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				end := min(start+(64<<10), len(content))
+				page := &tracker.NativeRecoveryPage{NativeReference: ref, Section: "issue_body", RecordID: "wi_test", SHA256: sha, Offset: int64(start), TotalBytes: int64(len(content)), Data: append([]byte(nil), content[start:end]...), NextCursor: strconv.Itoa(end)}
+				if start > 0 {
+					switch mode {
+					case "changed revision":
+						page.Revision++
+					case "foreign item":
+						page.WorkItemID = "wi_other"
+					case "foreign project":
+						page.ProjectID = "prj_other"
+					case "changed digest":
+						page.SHA256 = strings.Repeat("0", 64)
+					case "repeated offset":
+						page.Offset = 0
+					case "early end":
+						page.NextCursor = ""
+					case "corrupt bytes":
+						page.Data[0] = 'x'
+					case "denied continuation":
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+				}
+				_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Continuation: page})
+			}))
+			defer server.Close()
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native(ref.OrganizationID, ref.ProjectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := native.Recovery(t.Context(), ref.WorkItemID)
+			if mode == "complete" {
+				if err != nil || got.Issue.Body != body || got.Issue.Revision != ref.Revision {
+					t.Fatalf("required instructions lost: %v", err)
+				}
+				if reads != 1+(len(content)+(64<<10)-1)/(64<<10) {
+					t.Fatal("hydration read optional history")
+				}
+			} else if err == nil || got.Issue.WorkItemID != "" {
+				t.Fatalf("invalid required body reached dispatch: %s %v", mode, err)
+			}
+			if (mode == "oversized record" || mode == "missing reference") && reads != 1 {
+				t.Fatal("invalid body reference triggered reads")
+			}
+		})
+	}
+}
+
 func TestNativeRecoveryMixedHubVersions(t *testing.T) {
 	for _, large := range []bool{false, true} {
 		t.Run(strconv.FormatBool(large), func(t *testing.T) {

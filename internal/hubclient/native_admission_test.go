@@ -89,8 +89,14 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			if test.oversized {
 				count = 2
 			}
+			bodies := make(map[string]string)
 			for i := range count {
-				item := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: issueContractTestSections, State: "Todo"})
+				body := issueContractTestSections
+				if test.oversized && i == 0 {
+					body += strings.Repeat("<", 145<<10) + strings.Repeat("b", (240<<10)-len(body)-(145<<10))
+				}
+				item := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: fmt.Sprintf("work-%d", i), Body: body, State: "Todo"})
+				bodies[string(item.WorkItemID)] = body
 				if test.oversized {
 					for range 18 {
 						if _, err := h.admin.CreateComment(t.Context(), item.WorkItemID, tracker.CreateComment{Mutation: nativeMutationKey(), Body: strings.Repeat("x", 60<<10)}); err != nil {
@@ -151,6 +157,9 @@ func TestNativeAdmissionBatch(t *testing.T) {
 				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
 					recoveries++
 					if recoveries == test.failAfter {
+						if test.oversized && r.URL.Query().Get("cursor") == "" {
+							t.Fatal("hydration failure did not reach required body continuation")
+						}
 						return nil, errors.New("injected hydration failure")
 					}
 				}
@@ -178,8 +187,11 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			}
 			if test.oversized {
 				for _, issue := range issues {
-					if issue.Description != issueContractTestSections || h.scheduler.nativeClaims[issue.ID].recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || len(h.scheduler.nativeClaims[issue.ID].recovery.Discussion) != 2 || h.scheduler.nativeClaims[issue.ID].recovery.Read == nil {
+					if issue.Description != bodies[issue.ID] || h.scheduler.nativeClaims[issue.ID].recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) || len(h.scheduler.nativeClaims[issue.ID].recovery.Discussion) != 2 || h.scheduler.nativeClaims[issue.ID].recovery.Read == nil {
 						t.Fatal("oversized recovery lost exact candidate content or scope")
+					}
+					if len(bodies[issue.ID]) > 200<<10 && h.scheduler.nativeClaims[issue.ID].recovery.Read.IssueBody == nil {
+						t.Fatal("large first candidate did not restore required body fragments")
 					}
 					seen := map[string]bool{}
 					cursor := ""

@@ -117,6 +117,8 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		measuredShape        bool
 		historyPressure      bool
 		historicalReview     bool
+		aggregatePressure    bool
+		fragmentBody         bool
 	}{
 		{name: "fresh acceptance follows source", sourceVerdict: "pass"},
 		{name: "source pass requires newer acceptance", sourceVerdict: "pass", sourceAfterValidator: true},
@@ -125,6 +127,8 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 		{name: "latest acceptance wait is retained", sourceVerdict: "pass", acceptanceVerdict: "wait"},
 		{name: "latest acceptance rework is retained", sourceVerdict: "pass", acceptanceVerdict: "rework"},
 		{name: "ordinary reviews remain complete", ordinaryOnly: true},
+		{name: "combined legal evidence fits the aggregate response", ordinaryOnly: true, aggregatePressure: true},
+		{name: "near limit instructions are restored before dispatch", ordinaryOnly: true, aggregatePressure: true, fragmentBody: true},
 		{name: "measured retained review shape", sourceVerdict: "pass", measuredShape: true},
 		{name: "retained human hold outside context budget", sourceVerdict: "pass", historyPressure: true},
 		{name: "historical review keeps its own version", sourceVerdict: "pass", historicalReview: true},
@@ -138,14 +142,33 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			if test.historicalReview {
 				historical = f.publish(t, "historical-version", "", true)
 			}
-			if test.measuredShape {
+			if test.measuredShape || test.aggregatePressure {
 				cfg := config.Default()
 				cfg.Tracker.Kind = config.TrackerHubNative
-				descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("p", 48_469)})
+				promptBytes := 48_469
+				if test.aggregatePressure {
+					promptBytes = 320 << 10
+				}
+				descriptor, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("p", promptBytes)})
 				if err != nil {
 					t.Fatal(err)
 				}
 				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+				if test.aggregatePressure {
+					rules := f.rules
+					rules.PolicyID = descriptor.ID
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-rules"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+					body := f.issue.Body + strings.Repeat("<", (64<<10)-len(f.issue.Body))
+					if test.fragmentBody {
+						body = f.issue.Body + strings.Repeat("<", 153<<10) + strings.Repeat("b", (256<<10)-len(f.issue.Body)-(153<<10))
+					}
+					update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-body"}, ExpectedRevision: f.issue.Revision, Body: &body}
+					encoded, err := json.Marshal(update)
+					if err != nil || len(encoded) >= maxAPIRequestBodyBytes {
+						t.Fatalf("illegal issue request: %d, %v", len(encoded), err)
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, update), http.StatusOK)
+				}
 				input := changeTestInput()
 				input.PolicyID = descriptor.ID
 				bundle := changeTestSource(t, &input)
@@ -163,7 +186,9 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				finish.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", Validation: &gate.CommandResult{Command: "make check-land", HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Output: strings.Repeat("v", 64_000) + strings.Repeat("<", 1000)}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", worker, finish), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: strings.Repeat("d", 32_080)}), http.StatusOK)
+				if test.measuredShape {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "discussion"}, Body: strings.Repeat("d", 32_080)}), http.StatusOK)
+				}
 			} else {
 				version = f.publish(t, "retained-version", historical.ID, true)
 			}
@@ -253,6 +278,20 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
+			if test.aggregatePressure {
+				for i := range 3 {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("aggregate-review-%d", i)}, Decision: "commented", Body: strings.Repeat("r", 60<<10)})
+					requireNativeStatus(t, response, http.StatusOK)
+					var review tracker.ChangeReview
+					decodeHubResponse(t, response, &review)
+					history = append(history, review)
+					want = append(want, review)
+				}
+				for i := range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("aggregate-comment-%d", i)}, Body: strings.Repeat("c", 60<<10)}), http.StatusOK)
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/discussion", f.token, tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-discussion"}, VersionID: version.ID, Body: strings.Repeat("d", 50<<10)}), http.StatusOK)
+			}
 			before := f.detail(t)
 			if !reflect.DeepEqual(before.Reviews, history) {
 				t.Fatal("stored review history did not match the retained fixture")
@@ -274,6 +313,39 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				t.Fatal("measured retained evidence did not reproduce the response refusal")
 			}
 			decodeHubResponse(t, raw, &exact)
+			var bodyCursor string
+			if test.aggregatePressure {
+				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "?view=recovery"
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req.Header.Set("Authorization", "Bearer "+f.token)
+				req.Header.Set("X-Detent-Recovery-Projection", "bounded")
+				req.Header.Set("X-Detent-Recovery-Body", "fragments")
+				wire := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(wire, req)
+				requireNativeStatus(t, wire, http.StatusOK)
+				if wire.Body.Len() > 1<<20 {
+					t.Fatalf("aggregate response exceeds SDK limit: %d", wire.Body.Len())
+				}
+				var projected tracker.NativeRecovery
+				decodeHubResponse(t, wire, &projected)
+				if test.fragmentBody && (projected.Read == nil || projected.Read.IssueBody == nil || projected.Issue.Body != "") {
+					t.Fatal("near-limit body did not use required record continuation")
+				}
+				if projected.Read != nil && projected.Read.IssueBody != nil {
+					bodyCursor = projected.Read.IssueBody.Cursor
+				}
+				legacy := performHubAPIRequest(t, f.service, http.MethodGet, path+"&projection=bounded", f.token, nil)
+				if legacy.Code == http.StatusOK {
+					var oldClient tracker.NativeRecovery
+					decodeHubResponse(t, legacy, &oldClient)
+					if oldClient.Issue.Body != exact.Issue.Body || legacy.Body.Len() > 1<<20 || oldClient.Read != nil && oldClient.Read.IssueBody != nil {
+						t.Fatal("older SDK received incomplete or oversized successful recovery")
+					}
+				} else {
+					requireNativeStatus(t, legacy, http.StatusUnprocessableEntity)
+				}
+				t.Logf("legacy=%d bounded=%d bodyFragments=%t", raw.Body.Len(), wire.Body.Len(), projected.Read != nil && projected.Read.IssueBody != nil)
+			}
 			recovery, err := native.Recovery(t.Context(), f.issue.WorkItemID)
 			if err != nil {
 				t.Fatalf("retained review evidence blocked Recovery: %v", err)
@@ -287,6 +359,12 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 					if original.ID == version.ID {
 						want = original
 					}
+				}
+				if recovery.Read != nil && slices.Contains(recovery.Read.Omitted, "change_detail.versions.policy") {
+					if version.Policy.ID != want.Policy.ID || !reflect.DeepEqual(version.Policy.Gates, want.Policy.Gates) || version.Policy.SourceRevision != want.Policy.SourceRevision {
+						t.Fatal("projected policy lost identity or gates")
+					}
+					version.Policy, want.Policy = policy.Descriptor{}, policy.Descriptor{}
 				}
 				version.Validation, want.Validation = nil, nil
 				if !reflect.DeepEqual(version, want) {
@@ -383,6 +461,25 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			}
 			if after := f.detail(t); !reflect.DeepEqual(after, before) {
 				t.Fatal("Recovery altered complete durable Change evidence")
+			}
+			if test.fragmentBody {
+				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "?view=recovery&limit=1&cursor=" + url.QueryEscape(bodyCursor)
+				first := performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
+				requireNativeStatus(t, first, http.StatusOK)
+				var fragment tracker.NativeRecovery
+				decodeHubResponse(t, first, &fragment)
+				if fragment.Continuation == nil || fragment.Continuation.Revision != exact.Issue.Revision || fragment.Continuation.Section != "issue_body" {
+					t.Fatal("required body continuation lost revision binding")
+				}
+				other := f.create(t, "separate recovery item")
+				foreign := f.base + "/work-items/" + string(other.WorkItemID) + "?view=recovery&limit=1&cursor=" + url.QueryEscape(bodyCursor)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, foreign, f.token, nil), http.StatusUnprocessableEntity)
+				updated := exact.Issue.Body + "changed"
+				updated = updated[len("changed"):]
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-required-body"}, ExpectedRevision: exact.Issue.Revision, Body: &updated}), http.StatusOK)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil), http.StatusConflict)
+				next := f.base + "/work-items/" + string(f.issue.WorkItemID) + "?view=recovery&limit=1&cursor=" + url.QueryEscape(fragment.Continuation.NextCursor)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, next, f.token, nil), http.StatusConflict)
 			}
 			if test.measuredShape {
 				path := f.base + "/work-items/" + string(f.issue.WorkItemID) + "?view=recovery&limit=1"

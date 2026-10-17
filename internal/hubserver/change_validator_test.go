@@ -237,12 +237,30 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			if humanReview {
 				descriptor.Gates.HumanReview = true
 			}
+			aggregateLanding := test.name == "security audit landing large identities" || test.name == "security audit landing large blocking identities"
+			if aggregateLanding {
+				cfg := config.Default()
+				cfg.Tracker.Kind = config.TrackerHubNative
+				cfg.Gate.Validator.Enabled = false
+				cfg.Gate.SecurityAudit.Enabled = true
+				cfg.Gate.AutomatedReview = gate.AutomatedReviewOptional
+				cfg.Review.Human = false
+				resolved, err := config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: strings.Repeat("p", 320<<10)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				descriptor = resolved
+			}
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
 			issue := f.create(t, "work")
 			largeAudit := strings.HasPrefix(test.name, "security audit large")
-			if largeAudit {
-				body := issue.Body + strings.Repeat("i", (64<<10)-len(issue.Body))
+			if largeAudit || aggregateLanding {
+				fill := "i"
+				if aggregateLanding {
+					fill = "<"
+				}
+				body := issue.Body + strings.Repeat(fill, (64<<10)-len(issue.Body))
 				response := performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(issue.WorkItemID), f.token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "large-body"}, ExpectedRevision: issue.Revision, Body: &body})
 				requireNativeStatus(t, response, http.StatusOK)
 			}
@@ -491,6 +509,25 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				}
 				t.Logf("authenticated landing write bytes=%d", len(raw))
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, observation), http.StatusOK)
+				if aggregateLanding {
+					for i := range 3 {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("aggregate-review-%d", i)}, Decision: "commented", Body: strings.Repeat("r", 60<<10)}), http.StatusOK)
+					}
+					for i := range 2 {
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("aggregate-comment-%d", i)}, Body: strings.Repeat("c", 60<<10)}), http.StatusOK)
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/discussion", f.token, tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "aggregate-discussion"}, VersionID: version.ID, Body: strings.Repeat("d", 50<<10)}), http.StatusOK)
+					boundedRequest := httptest.NewRequest(http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"?view=recovery", nil)
+					boundedRequest.Header.Set("Authorization", "Bearer "+worker)
+					boundedRequest.Header.Set("X-Detent-Recovery-Projection", "bounded")
+					wire := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(wire, boundedRequest)
+					requireNativeStatus(t, wire, http.StatusOK)
+					if wire.Body.Len() > 1<<20 {
+						t.Fatalf("aggregate landing response exceeds SDK limit: %d", wire.Body.Len())
+					}
+					t.Logf("authenticated aggregate landing bytes=%d", wire.Body.Len())
+				}
 				server := httptest.NewServer(f.service.Handler())
 				t.Cleanup(server.Close)
 				client, err := hubclient.New(hubclient.Config{URL: server.URL, TokenSource: func() string { return worker }, HTTPClient: server.Client()})

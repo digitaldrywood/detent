@@ -1672,7 +1672,8 @@ clients refresh through the existing project event stream.
 
 `GET /work-items/{item}?view=recovery` with
 `X-Detent-Recovery-Projection: bounded` reads candidate recovery in one bounded
-response. Source version, frozen policy, claim/checkpoint identities, latest
+response. The complete encoded response, including JSON escaping and envelope,
+fits the existing 1 MiB SDK limit. Source version, frozen policy identity/gates, claim/checkpoint identities, latest
 implementation/acceptance criteria and hold summary retain their authority.
 Command outputs use the existing excerpts and `output_truncated`. Security audit
 summary and finding prose use bounded excerpts marked `text_truncated`, preserving
@@ -1691,6 +1692,19 @@ and ordinary Change evidence have row and byte budgets; `read.omitted` identifie
 context available through `work_comments`, `get_change`, attempt reads and the
 scoped `read.detail_path`. Recovery consumers must read omitted context needed
 for their decision through those owners and follow their cursors.
+
+If combined evidence exceeds the response budget, `read.omitted` identifies
+projected frozen policy details or further omitted evidence. Complete policy
+remains in its original version record; a projected descriptor is not a policy
+approval document. Clients advertising `X-Detent-Recovery-Body: fragments` may
+receive `read.issue_body` with an authenticated cursor, digest and encoded byte
+count instead of inline instructions. This addresses only the `issue_body`
+record through the existing continuation. Its cursor also pins the issue
+revision. The SDK verifies scope, revision, contiguous offsets, record length
+and digest, decodes at most 256 KiB of issue body, and restores it before returning
+successful recovery. Failure aborts candidate hydration. Older clients retain
+complete inline instructions or an explicit refusal, never a successful partial
+issue. Optional retained history is never automatically reconstructed.
 
 `GET /work-items/{item}?view=recovery&limit=1` explicitly reads retained evidence,
 one record fragment per response. `continuation` identifies the scoped item,

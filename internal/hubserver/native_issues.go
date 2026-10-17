@@ -278,6 +278,9 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 				return s.nativeAPIError(c, err)
 			}
 			result.Issue = s.nativeIssueResponse(result.Issue)
+			if err := s.fitNativeRecovery(ctx, scope, c.Request().URL.EscapedPath(), &result, c.Request().Header.Get("X-Detent-Recovery-Body") == "fragments"); err != nil {
+				return s.nativeAPIError(c, err)
+			}
 			return c.JSON(http.StatusOK, result)
 		}
 		if params.Has("limit") || params.Has("cursor") {

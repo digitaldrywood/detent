@@ -163,12 +163,13 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 }
 
 type recoveryEvidenceCursor struct {
-	Section int    `json:"section"`
-	After   int64  `json:"after"`
-	Offset  int64  `json:"offset"`
-	Digest  string `json:"digest,omitempty"`
-	Change  string `json:"change,omitempty"`
-	Version string `json:"version,omitempty"`
+	Section       int              `json:"section"`
+	After         int64            `json:"after"`
+	Offset        int64            `json:"offset"`
+	Digest        string           `json:"digest,omitempty"`
+	Change        string           `json:"change,omitempty"`
+	Version       string           `json:"version,omitempty"`
+	IssueRevision tracker.Revision `json:"issue_revision,omitempty"`
 }
 
 func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope, item, path string, params url.Values) (tracker.NativeRecovery, error) {
@@ -191,14 +192,17 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 	}
 	selection := recoveryEvidenceCursor{Change: change.ID, Version: change.CurrentVersion}
 	if cursor.After != "" {
-		if json.Unmarshal([]byte(cursor.After), &selection) != nil || selection.Section < 0 || selection.Section > 7 || selection.After < 0 || selection.Offset < 0 {
+		if json.Unmarshal([]byte(cursor.After), &selection) != nil || selection.Section < 0 || selection.Section > 8 || selection.After < 0 || selection.Offset < 0 {
 			return tracker.NativeRecovery{}, nativeInvalid("Recovery cursor is invalid")
 		}
 		if selection.Change != change.ID || selection.Version != change.CurrentVersion {
 			return tracker.NativeRecovery{}, nativeConflict(0)
 		}
+		if selection.IssueRevision != 0 && selection.IssueRevision != issue.Revision {
+			return tracker.NativeRecovery{}, nativeConflict(issue.Revision)
+		}
 	}
-	sections := []string{"reviews", "checks", "change_discussion", "discussion", "attempts", "versions", "change"}
+	sections := []string{"reviews", "checks", "change_discussion", "discussion", "attempts", "versions", "change", "issue_body"}
 	page := &tracker.NativeRecoveryPage{NativeReference: issue.NativeReference, Section: "complete"}
 	for selection.Section < len(sections) {
 		section := sections[selection.Section]
@@ -243,6 +247,15 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 	var id, version string
 	var value any
 	switch section {
+	case "issue_body":
+		if cursor.IssueRevision == 0 || cursor.After > 0 {
+			return 0, "", "", nil, sql.ErrNoRows
+		}
+		var body string
+		if err := query.QueryRowContext(ctx, `SELECT body FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?`, scope.organization, scope.project, item).Scan(&body); err != nil {
+			return 0, "", "", nil, err
+		}
+		value, sequence, id = body, 1, item
 	case "reviews", "checks", "change_discussion":
 		kind := map[string]string{"reviews": "review", "checks": "check", "change_discussion": "discussion"}[section]
 		var content []byte
@@ -292,6 +305,82 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 	}
 	content, err := json.Marshal(value)
 	return sequence, id, version, content, err
+}
+
+func (s *Service) fitNativeRecovery(ctx context.Context, scope nativeScope, path string, result *tracker.NativeRecovery, bodyFragments bool) error {
+	encoded, err := json.Marshal(result)
+	if err != nil || len(encoded)+1 <= 1<<20 {
+		return err
+	}
+	if result.Read == nil {
+		result.Read = &tracker.NativeRecoveryRead{DetailPath: path + "?view=recovery&limit=1"}
+	}
+	fits := func() (bool, error) {
+		slices.Sort(result.Read.Omitted)
+		result.Read.Omitted = slices.Compact(result.Read.Omitted)
+		encoded, err := json.Marshal(result)
+		return len(encoded)+1 <= 1<<20, err
+	}
+	if detail := result.ChangeDetail; detail != nil {
+		for i := range detail.Versions {
+			detail.Versions[i] = boundedChangeVersion(detail.Versions[i])
+		}
+		result.Read.Omitted = append(result.Read.Omitted, "change_detail.versions.policy")
+	}
+	if ok, err := fits(); ok || err != nil {
+		return err
+	}
+	if bodyFragments && result.Issue.Body != "" {
+		_, cursor, key, err := s.readNativePageLimit(ctx, scope, path, url.Values{"view": {"recovery"}}, 1, 1)
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(result.Issue.Body)
+		if err != nil {
+			return err
+		}
+		digest := sha256.Sum256(body)
+		sha := hex.EncodeToString(digest[:])
+		selection := recoveryEvidenceCursor{Section: 7, IssueRevision: result.Issue.Revision, Digest: sha}
+		if result.ChangeDetail != nil {
+			selection.Change, selection.Version = result.ChangeDetail.Change.ID, result.ChangeDetail.Change.CurrentVersion
+		}
+		if result.Change != nil {
+			selection.Change, selection.Version = result.Change.ChangeID, result.Change.VersionID
+		}
+		position, err := json.Marshal(selection)
+		if err != nil {
+			return err
+		}
+		cursor.After = string(position)
+		encoded, err := encodeNativeCursor(cursor, key)
+		if err != nil {
+			return err
+		}
+		result.Read.IssueBody = &tracker.NativeRecoveryBodyRead{Cursor: encoded, SHA256: sha, TotalBytes: int64(len(body))}
+		result.Issue.Body = ""
+		result.Read.Omitted = append(result.Read.Omitted, "issue.body")
+	}
+	if ok, err := fits(); ok || err != nil {
+		return err
+	}
+	result.Discussion = nil
+	result.Read.Omitted = append(result.Read.Omitted, "discussion")
+	if detail := result.ChangeDetail; detail != nil {
+		detail.Discussion, detail.Checks = nil, nil
+		result.Read.Omitted = append(result.Read.Omitted, "change_detail.discussion", "change_detail.checks")
+	}
+	if ok, err := fits(); ok || err != nil {
+		return err
+	}
+	if detail := result.ChangeDetail; detail != nil {
+		detail.Reviews = nil
+		result.Read.Omitted = append(result.Read.Omitted, "change_detail.reviews")
+	}
+	if ok, err := fits(); ok || err != nil {
+		return err
+	}
+	return nativeInvalid("Required recovery metadata exceeds the bounded response")
 }
 
 func projectNativeRecovery(result *tracker.NativeRecovery) error {
