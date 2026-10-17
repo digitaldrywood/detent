@@ -28,6 +28,15 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 	if r == nil {
 		return nil
 	}
+	if launch := r.WorkerLaunch; launch != nil {
+		digest, err := hex.DecodeString(launch.ExecutionSHA256)
+		if err != nil || len(digest) != 32 || !validCommitID(launch.ExecutionCommit) ||
+			len(launch.ExecutionVersion) == 0 || len(launch.ExecutionVersion) > 128 || len(launch.ControlVersion) == 0 || len(launch.ControlVersion) > 128 ||
+			len(launch.PolicyID) == 0 || len(launch.PolicyID) > 128 || len(launch.PolicyRevision) > 256 ||
+			launch.PID <= 0 || launch.GroupID < 0 || launch.Protocol <= 0 || launch.SelectedAt.IsZero() || launch.ProcessStart.IsZero() {
+			return nativeRejection(nativeInvalid("Invalid execution worker launch identity"), "runtime_validation", "data.runtime.worker_launch")
+		}
+	}
 	if len(r.Pipeline) > 1024 || r.PipelineDropped < 0 {
 		return nativeRejection(nativeInvalid("Invalid pipeline timing population"), "runtime_validation", "data.runtime.pipeline")
 	}

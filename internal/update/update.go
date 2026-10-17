@@ -532,74 +532,11 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		}
 	}
 
-	status.FailureReason = "Update target resolution failed"
-	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
+	status, binary, mode, err := s.prepareReleaseBinary(ctx, status, release)
 	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
 		return status, err
 	}
-	status.FailureReason = "Update download failed"
-	checksums, err := s.cfg.Client.Download(ctx, assets.Checksum.BrowserDownloadURL)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	checksumSignature, err := s.cfg.Client.Download(ctx, assets.ChecksumSignature.BrowserDownloadURL)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	status.FailureReason = "Update signature verification failed"
-	if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	status.FailureReason = "Update download failed"
-	provenanceBytes, err := s.cfg.Client.Download(ctx, assets.Provenance.BrowserDownloadURL)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	status.FailureReason = "Update provenance verification failed"
-	if err := VerifyChecksum(checksums, assets.Provenance.Name, provenanceBytes); err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	manifest, err := provenance.Parse(provenanceBytes, releaseRepository, release.TagName, "")
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	status.LatestCommit = manifest.Commit
-	status.FailureReason = "Update download failed"
-	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	status.FailureReason = "Update checksum verification failed"
-	if err := VerifyChecksum(checksums, assets.Archive.Name, archive); err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-
-	status.FailureReason = "Update installation failed"
-	binary, mode, err := ExtractBinary(archive, s.cfg.GOOS)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	identityVerifier := binaryIdentityVerifier(s.cfg.BinaryVerifier, status.LatestVersion, manifest.Commit)
+	identityVerifier := binaryIdentityVerifier(s.cfg.BinaryVerifier, status.LatestVersion, status.LatestCommit)
 	replacement := Replacement{
 		Target:         s.cfg.ExecutablePath,
 		Binary:         binary,
@@ -625,7 +562,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 				FromVersion:              status.CurrentVersion,
 				FromCommit:               s.cfg.CurrentCommit,
 				ToVersion:                status.LatestVersion,
-				ToCommit:                 manifest.Commit,
+				ToCommit:                 status.LatestCommit,
 				InstallSource:            status.InstallSource,
 				ExecutablePath:           target,
 				PreviousBinaryPath:       previous,
@@ -651,7 +588,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
 			HomeDir: s.cfg.HomeDir,
 			Env:     s.cfg.Env,
-		}, target, status.LatestVersion, manifest.Commit, hex.EncodeToString(sum[:]))
+		}, target, status.LatestVersion, status.LatestCommit, hex.EncodeToString(sum[:]))
 	}
 	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
@@ -667,9 +604,80 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 	status.FailureReason = ""
 	status.VerifiedRelease = true
 	status.Action = ActionUpdated
-	status.Asset = assets.Archive.Name
 	status.Message = updateAppliedMessage(status, s.cfg.GOOS, releaseSwap)
 	return status, nil
+}
+
+func (s *Service) prepareReleaseBinary(ctx context.Context, status Status, release Release) (Status, []byte, os.FileMode, error) {
+	status.FailureReason = "Update target resolution failed"
+	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.FailureReason = "Update download failed"
+	checksums, err := s.cfg.Client.Download(ctx, assets.Checksum.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	checksumSignature, err := s.cfg.Client.Download(ctx, assets.ChecksumSignature.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.FailureReason = "Update signature verification failed"
+	if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.FailureReason = "Update download failed"
+	provenanceBytes, err := s.cfg.Client.Download(ctx, assets.Provenance.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.FailureReason = "Update provenance verification failed"
+	if err := VerifyChecksum(checksums, assets.Provenance.Name, provenanceBytes); err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	manifest, err := provenance.Parse(provenanceBytes, releaseRepository, release.TagName, "")
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.LatestCommit = manifest.Commit
+	status.FailureReason = "Update download failed"
+	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.FailureReason = "Update checksum verification failed"
+	if err := VerifyChecksum(checksums, assets.Archive.Name, archive); err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+
+	status.FailureReason = "Update installation failed"
+	binary, mode, err := ExtractBinary(archive, s.cfg.GOOS)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, nil, 0, err
+	}
+	status.Asset = assets.Archive.Name
+	return status, binary, mode, nil
 }
 
 func (s *Service) plan(ctx context.Context) (Status, Release, error) {

@@ -28,7 +28,7 @@ type urgentRuntimeUpdater struct {
 }
 
 func (u urgentRuntimeUpdater) Check(context.Context) (detentupdate.Status, error) {
-	return detentupdate.Status{}, nil
+	return detentupdate.Status{Critical: true, LatestVersion: "1.2.4"}, nil
 }
 
 func (u urgentRuntimeUpdater) Apply(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
@@ -41,9 +41,9 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 		follow bool
 		active int
 	}{
-		{name: "urgent finishes active leases", active: 2},
-		{name: "heartbeat target finishes active leases", follow: true, active: 2},
-		{name: "heartbeat target updates idle runner", follow: true},
+		{name: "critical urgent finishes active leases", active: 2},
+		{name: "critical heartbeat target finishes active leases", follow: true, active: 2},
+		{name: "critical heartbeat target updates idle runner", follow: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			follow := test.follow
