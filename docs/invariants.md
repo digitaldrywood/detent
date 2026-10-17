@@ -409,10 +409,13 @@ tries the existing admission and exclusive consumer locks without waiting and
 yields when either is busy. It never removes recent entries while a consumer
 is active or holds admission closed waiting for that consumer. The existing
 cleanup schedule retries reclamation; continuous consumers can defer it, so the
-budget is an eventual target rather than a hard size limit. Actual low disk
-space retains its existing admission owner; already-running consumers can
-continue writing during that admission hold. Native operator caches retain
-age-only expiry.
+budget is an eventual target rather than a hard size limit. On the managed
+cache's own filesystem, low free space lets that same cleanup reclaim below
+its normal target using the existing reserve and cache budget for recovery
+headroom. Unrelated filesystem pressure does not expand reclamation. Actual
+low disk space retains its existing admission owner when reclamation is
+insufficient; already-running consumers can continue writing during that
+admission hold. Native operator caches retain age-only expiry.
 
 Explicit operator cache overrides remain native and unmanaged. Local-board and
 SSH workers retain native build caches. The old native build cache is not

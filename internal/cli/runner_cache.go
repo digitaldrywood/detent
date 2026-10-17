@@ -69,6 +69,10 @@ func (c *runnerBuildCache) observe() *toolcache.Report {
 }
 
 func (c *runnerBuildCache) trim(ctx context.Context, policy toolcache.Policy, now time.Time) error {
+	return c.trimForVolume(ctx, policy, now, runnerStorageVolume)
+}
+
+func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.Policy, now time.Time, volume func(string) (uint64, uint64, error)) error {
 	if c == nil || !c.mu.TryLock() {
 		return nil
 	}
@@ -76,14 +80,23 @@ func (c *runnerBuildCache) trim(ctx context.Context, policy toolcache.Policy, no
 	ctx = toolcache.WithWaitObserver(ctx, func(lock string, waiting bool) {
 		slog.Info("managed Go build cache maintenance wait", "path", c.root, "cache_lock", lock, "waiting", waiting)
 	})
-	freeBefore, freeBeforeErr := toolcache.FreeBytes(c.root)
+	freeBefore, capacity, freeBeforeErr := volume(c.root)
+	var pressureReclaim int64
+	if freeBeforeErr == nil {
+		reserve := toolcache.Policy{}.NormalizedForCapacity(capacity).MaxBytes
+		if freeBefore < uint64(reserve) {
+			headroom := min(policy.NormalizedForCapacity(capacity).MaxBytes, reserve)
+			pressureReclaim = reserve - int64(freeBefore) + headroom
+			policy = policy.WithReclaimBytes(pressureReclaim)
+		}
+	}
 	report, err := c.cache.Maintain(ctx, policy, now)
 	c.report.Store(&report)
 	if err == nil {
-		freeAfter, freeAfterErr := toolcache.FreeBytes(c.root)
+		freeAfter, _, freeAfterErr := volume(c.root)
 		slog.Info("managed Go build cache maintenance", "path", c.root,
 			"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
-			"size_evicted_bytes", report.SizeEvictedBytes, "free_bytes_before", freeBefore,
+			"size_evicted_bytes", report.SizeEvictedBytes, "pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
 			"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
 	}
 	return err
