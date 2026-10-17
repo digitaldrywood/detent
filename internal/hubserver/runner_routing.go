@@ -12,6 +12,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -333,7 +334,7 @@ func (s *Service) updateRunnerRouting(c echo.Context) error {
 }
 
 func validateRunnerAccess(ctx context.Context, db nativeQueryer, r runnerauth.Runner, tier string) error {
-	if tier != "sandbox" || r.IsolationTier == "sandbox" {
+	if tier != "sandbox" || r.IsolationTier == "sandbox" || reportsSandbox(r.BackendIsolation) {
 		return nil
 	}
 	var sprite bool
@@ -344,6 +345,18 @@ func validateRunnerAccess(ctx context.Context, db nativeQueryer, r runnerauth.Ru
 		return &operatortool.RequestError{Code: "invalid_request", Message: spriteSandboxUnavailableReason}
 	}
 	return nil
+}
+
+func reportsSandbox(report isolation.Report) bool {
+	if len(report) == 0 {
+		return false
+	}
+	for _, tiers := range report {
+		if !slices.Contains(tiers, isolation.Sandbox) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeScope, resource string, request runnerRoutingRequest) (any, error) {

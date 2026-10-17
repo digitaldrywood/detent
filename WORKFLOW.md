@@ -105,9 +105,9 @@ nonempty issue-body sections. Heading matching is case-insensitive; a precise
 symptom and expected behavior belong under Acceptance criteria, rather than
 substituting for that section.
 
-- **Acceptance criteria** — Checkable outcomes within the requested scope; distinguish source delivery from explicitly assigned integration or release acceptance.
+- **Acceptance criteria** — Checkable outcomes within the requested scope that the system can verify on the change before merge: tests, fixtures, source and documentation checks, and UI screenshots. A criterion never depends on an outside system (a real third-party client or service, production or any deployed environment), on deployment or on human action. Replace such a check with a source-level equivalent, such as a test client or fixture running the same flow, or leave it out. Post-deployment checks are not part of an issue; if deployed behavior is unwanted, a human files a new issue.
 - **Must not break** — Existing behavior and boundaries that the change must preserve.
-- **How we know it worked** — Observable evidence for the criteria, including applicable commands, fixtures or runtime sequences and the owner of any post-integration verification. Source changes run `make check-land`; scheduled validation remains separate.
+- **How we know it worked** — Observable pre-merge evidence for the criteria: applicable commands, tests, fixtures, runtime sequences and screenshots. It names no post-deployment, real-client or human verification step. Source changes run `make check-land`; scheduled validation remains separate.
 - **Invariants touched** — Applicable INV IDs from `docs/invariants.md` and the behavior preserved. If none applies, say why. A mechanism change must identify the removal or consolidation required by INV-3.
 - **Safety regression** — For the safety-critical paths in `CLAUDE.md`, name the preserved behavior, invariant and existing regression table or boundary fuzz seed to preserve or extend. For other work, state that no safety-critical path is touched and why.
 

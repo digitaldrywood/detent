@@ -55,8 +55,9 @@ carries the answer into the enrollment `isolation_tier` field and the
 `detent hub runner register --isolation-tier` command. Obtain enrollment tokens
 through the secure enrollment dialog, never through chat.
 
-Fly Sprites are dedicated VMs and use Full access (`native-trusted`). Sandbox
-is not yet available: the Sprite VM does not support the agent sandbox. See [Sprite runners](sprite-runners.md).
+Fly Sprites are dedicated VMs and new Sprite runners use Full access
+(`native-trusted`). A Sprite runner can switch to Sandbox once its isolation
+probe reports sandbox support. See [Sprite runners](sprite-runners.md).
 
 For an existing runner, Luna reads its selected tier, backend support and
 current problems. `tier_unavailable` means its agent backends do not support
@@ -324,7 +325,11 @@ and restarts the service. With a pasted command, `register` keeps the existing
 identity and `global.yaml`, so no second runner is created. One runner per
 Sprite is supported; do not copy its identity to another Sprite.
 
-The script ends with `sprite-env checkpoints create` and prints the ID; restore
+The script creates an installation checkpoint with `sprite-env checkpoints create`
+and prints the ID. This does not verify authentication, registration health,
+project setup or a real task. Failure output names the last completed step and
+resume command. Follow the [complete Sprite guide](sprite-runners.md) to verify
+those steps and save the final ready checkpoint. Restore
 the same Sprite with `sprite-env checkpoints restore CHECKPOINT_ID`. A failed
 checkpoint fails the script but leaves the enrollment and service in place.
 
@@ -333,11 +338,16 @@ Remaining manual steps, which the script never performs:
 - Sign in to the providers the project uses: `claude auth login`, `codex login`
   (`codex login --device-auth` without a browser), or a Sprites provider
   connector.
-- For private clones and pushes, run `gh auth login` and `gh auth setup-git`,
+- For private clones and pushes, run
+  `gh auth login --hostname github.com --git-protocol https --web` and `gh auth setup-git`,
   or set up the project's own git credentials, and set the git author.
-- Clone each project into the directory `register` printed, with its
-  `WORKFLOW.md` and `detent.yaml`, and install its dependencies.
-- Approve the project's observed repository policy in the Hub if it is pending.
+- The runner clones allowed projects into `workspace_root/PROJECT_ID` and runs
+  repository-declared `hooks.runner_setup`. Use the bootstrap’s printed absolute
+  paths and verify the checkout origin before running repository-pinned tools
+  there. Do not prepare a separate manual clone; chain directory changes and
+  dependency commands with `&&`. See [Sprite setup](sprite-runners.md#7-prepare-git-access-and-the-project-checkout).
+- Check the project's reported repository policy in the Hub; approve only if
+  offered. Policy provenance is not a recurring claims or publication gate.
 - Re-run the script with empty input, check
   `sprite-env services get detent-runner` and the Hub's runner health, then
   route a Todo issue and confirm it pushes a branch.
