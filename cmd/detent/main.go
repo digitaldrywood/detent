@@ -21,9 +21,6 @@ import (
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == cli.SSHProbeArgument {
-		if !cli.SSHWorkerReady() {
-			os.Exit(cli.ExitGeneral)
-		}
 		fmt.Fprintln(os.Stdout, runnerpkg.SSHProtocolVersion)
 		return
 	}
