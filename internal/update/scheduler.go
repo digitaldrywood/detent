@@ -176,6 +176,34 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	return scheduler, nil
 }
 
+func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
+	if s == nil || s.cfg.WorkerArtifacts == nil {
+		return nil
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	artifact, err := s.cfg.WorkerArtifacts.PrepareLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
+		if status.Critical {
+			comparison, err := CompareVersions(status.LatestVersion, status.CurrentVersion)
+			if err != nil {
+				return err
+			}
+			if comparison > 0 {
+				return ErrWorkerCriticalUpdate
+			}
+		}
+		return nil
+	})
+	if errors.Is(err, ErrWorkerCriticalUpdate) || errors.Is(err, ErrWorkerProtocolIncompatible) {
+		_, err = s.applyExceptionalWorkerUpdateLocked(ctx, s.cfg.ApplyOptions, err)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	return artifact.Release()
+}
+
 func (s *Scheduler) Run(ctx context.Context) {
 	if s == nil || !s.cfg.Enabled {
 		return
@@ -360,7 +388,7 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		status.State = "applying"
 		status.LastError = ""
 	})
-	artifact, err := s.cfg.WorkerArtifacts.AcquireLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
+	artifact, err := s.cfg.WorkerArtifacts.PrepareLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
 		if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
 			return errors.New("requested release is no longer the latest execution release")
 		}
@@ -376,20 +404,7 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		return nil
 	})
 	if errors.Is(err, ErrWorkerCriticalUpdate) || errors.Is(err, ErrWorkerProtocolIncompatible) {
-		s.cfg.Logger.Warn("exceptional execution update requires controller replacement", "reason", err, "scope", "this runner")
-		reason := ErrWorkerProtocolIncompatible.Error()
-		if errors.Is(err, ErrWorkerCriticalUpdate) {
-			reason = ErrWorkerCriticalUpdate.Error()
-		}
-		s.mu.Lock()
-		if s.enrolledReceipt != nil {
-			s.enrolledReceipt.Status, s.enrolledReceipt.DrainReason = "draining", reason
-		}
-		s.mu.Unlock()
-		if err := s.persistCurrentState(); err != nil {
-			return Status{FailureReason: "Update state persistence failed"}, err
-		}
-		return s.drainAndApplyWithOptionsLocked(ctx, opts)
+		return s.applyExceptionalWorkerUpdateLocked(ctx, opts, err)
 	}
 	if err != nil {
 		return Status{FailureReason: "Execution release preparation failed"}, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
@@ -416,6 +431,23 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 	})
 	s.recordEnrolledApplied(applied, true)
 	return applied, s.persistCurrentState()
+}
+
+func (s *Scheduler) applyExceptionalWorkerUpdateLocked(ctx context.Context, opts ApplyOptions, err error) (Status, error) {
+	s.cfg.Logger.Warn("exceptional execution update requires controller replacement", "reason", err, "scope", "this runner")
+	reason := ErrWorkerProtocolIncompatible.Error()
+	if errors.Is(err, ErrWorkerCriticalUpdate) {
+		reason = ErrWorkerCriticalUpdate.Error()
+	}
+	s.mu.Lock()
+	if s.enrolledReceipt != nil {
+		s.enrolledReceipt.Status, s.enrolledReceipt.DrainReason = "draining", reason
+	}
+	s.mu.Unlock()
+	if err := s.persistCurrentState(); err != nil {
+		return Status{FailureReason: "Update state persistence failed"}, err
+	}
+	return s.drainAndApplyWithOptionsLocked(ctx, opts)
 }
 
 func (s *Scheduler) applyWhenIdle(ctx context.Context) (Status, error) {

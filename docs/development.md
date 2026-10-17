@@ -181,22 +181,22 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full contributor workflow.
 ## Ephemeral execution workers
 
 A release-installed controller launches local work through the existing private
-worker transport. Every attempt resolves the release list again. At the launch
-selection boundary, the release response is snapshotted and the effective
-workflow and its policy revision are captured before downloading or starting the
-worker. The policy must match the existing claim; a mismatch refuses this launch
+worker transport. Startup and the existing update scheduler prepare verified
+execution artifacts. At the launch selection boundary, the latest prepared
+compatible artifact and the effective workflow and policy revision are captured. The policy must match the existing claim; a mismatch refuses this launch
 through instance failure handling so a retry can acquire the current policy.
 This is a recorded local selection, not a transaction spanning release and policy
-publication. Publications after selection affect the next attempt. A retry
+publication. Releases prepared after selection affect the next attempt. A retry
 selects again; inline phases of the same attempt retain and verify its original
 artifact and workflow, including after newer releases or policies appear.
 
 Checksums, signatures, release provenance, binary identity and the host platform
 are verified before a child starts. Verified archives are reused locally, but
-metadata and verification remain required for a new attempt. If release discovery,
-download, signature verification, platform selection or policy resolution fails,
-that launch fails as instance infrastructure; active workers continue. An
-unavailable release source does not authorize a cached older release fallback.
+release discovery belongs to startup and the existing update lifecycle. Attempts
+verify the selected binary digest and protocol without querying release metadata.
+A discovery outage preserves the prepared selection; missing prepared artifacts
+and explicit critical or incompatible updates refuse launch. Verification failures
+never install an unverified candidate. Active workers retain their artifacts.
 Retaining an artifact for an existing attempt checks its captured binary digest
 without selecting a different release.
 Corrupt cached archives are evicted and fetched through the same signature and
