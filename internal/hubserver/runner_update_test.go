@@ -120,7 +120,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	for _, test := range []struct {
 		name, hub, runner, prior, wantVersion  string
 		supported, manual, unpublished, failed bool
-		witnessed                              bool
+		witnessed, artifact                    bool
 		want                                   bool
 	}{
 		{name: "older runner", hub: "v1.2.4", runner: "1.2.3", supported: true, want: true},
@@ -139,6 +139,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "refused older request superseded", hub: "v1.2.4", runner: "1.2.1", prior: "refused", supported: true, want: true},
 		{name: "uncertain newer operator request retained", hub: "v1.2.4", runner: "1.2.1", prior: "uncertain", wantVersion: "1.2.5", supported: true, manual: true, want: true},
 		{name: "draining older request retained", hub: "v1.2.4", runner: "1.2.1", prior: "draining", wantVersion: "1.2.2", supported: true, want: true},
+		{name: "execution artifact permits newer follow-Hub target", hub: "v1.2.4", runner: "1.2.1", prior: "applied", artifact: true, supported: true, want: true},
 		{name: "applied older request awaits restart", hub: "v1.2.4", runner: "1.2.1", prior: "applied", wantVersion: "1.2.2", supported: true, want: true},
 		{name: "historical applied request superseded after external update", hub: "v1.2.4", runner: "1.2.1", prior: "applied", witnessed: true, supported: true, want: true},
 		{name: "historical newer operator request retained", hub: "v1.2.4", runner: "1.2.1", prior: "applied", witnessed: true, wantVersion: "1.2.5", supported: true, manual: true, want: true},
@@ -190,6 +191,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 					applied.SHA256 = strings.Repeat("d", 64)
 					applied.VerifiedRelease = true
 					report.Receipt.Applied = &applied
+					report.Receipt.ExecutionArtifact = test.artifact
 					report.Receipt.FailureReason = ""
 					if test.witnessed {
 						witnessed := applied
@@ -212,9 +214,6 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			}
 			request := snapshot.Routing.UpdateRequest
 			wantState := "active"
-			if test.want && !test.manual {
-				wantState = "draining"
-			}
 			if (request != nil) != test.want || snapshot.Routing.State != wantState {
 				t.Fatalf("routing=%+v", snapshot)
 			}
@@ -380,6 +379,34 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	if got := read(); got.Status != "applied" || got.Observation.Running.Version == got.Desired.Version {
 		t.Fatalf("premature running receipt=%+v", got)
 	}
+	report.AvailableVersion = "1.2.5"
+	report.Revision = report.BuildRevision()
+	snapshot = send(report, 2)
+	next := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.5", Release: true, Confirm: true, IdempotencyKey: "next-execution-release"}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, next), http.StatusConflict)
+	report.Receipt.ExecutionArtifact = true
+	snapshot = send(report, 2)
+	next.ExpectedRevision = snapshot.Revision
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, r.identityPath()+"/update/apply", testHubAdminToken, next), http.StatusAccepted)
+	view = read()
+	if view.Desired == nil || view.Desired.Version != "1.2.5" || view.Observation.Running.Version != "1.2.3" {
+		t.Fatalf("prepared artifact blocked subsequent ordinary request: %+v", view)
+	}
+	applied.Version = "1.2.5"
+	report.Receipt = &runnerauth.UpdateReceipt{Request: *view.Desired, Status: "applied", Applied: &applied, ExecutionArtifact: true, ObservedAt: now}
+	f.service.config.Version = "v1.2.6"
+	f.service.runnerPublishedReleases.Store("v1.2.6/linux/amd64", true)
+	snapshot = send(report, 2)
+	if snapshot.Routing.UpdateRequest == nil || !snapshot.Routing.UpdateRequest.FollowHub || snapshot.Routing.UpdateRequest.Version != "1.2.6" || snapshot.Routing.State != "active" {
+		t.Fatalf("prepared artifact blocked subsequent follow-Hub request: %+v", snapshot)
+	}
+	view = read()
+	applied.Version = "1.2.6"
+	report.Receipt = &runnerauth.UpdateReceipt{Request: *view.Desired, Status: "applied", Applied: &applied, ExecutionArtifact: true, ObservedAt: now}
+	send(report, 2)
+	if got := read(); got.Observation.Running.Version != "1.2.3" || !got.Observation.Receipt.ExecutionReady() {
+		t.Fatalf("artifact preparation changed controller build: %+v", got)
+	}
 	report.Running = applied
 	report.Receipt.Status = "running"
 	report.Revision = report.BuildRevision()
@@ -392,12 +419,12 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "1.2.4", "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": json.RawMessage(raw)}), http.StatusUnprocessableEntity)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": report.Running.Version, "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": json.RawMessage(raw)}), http.StatusUnprocessableEntity)
 	report.Receipt.Request.ID = view.Desired.ID
 	report.Running.Source = "private_patched_source"
 	report.Running.VerifiedRelease = false
 	report.Revision = report.BuildRevision()
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": "1.2.4", "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": report}), http.StatusUnprocessableEntity)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"display_name": "runner", "capacity": 2, "version": report.Running.Version, "os": "linux", "architecture": "amd64", "protocol_major": 2, "update": report}), http.StatusUnprocessableEntity)
 	send(nil, 1)
 	if got := read(); got.Status != "unavailable" || got.Observation != nil {
 		t.Fatalf("older runner owner=%+v", got)
@@ -410,7 +437,7 @@ func TestRunnerUpdateApplication(t *testing.T) {
 		t.Fatalf("active lease changed: %+v error=%v", stored.Leases, err)
 	}
 	var events int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE operation=?", "runner_update "+r.binding.RunnerID).Scan(&events); err != nil || events != 1 {
+	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE operation=?", "runner_update "+r.binding.RunnerID).Scan(&events); err != nil || events != 2 {
 		t.Fatalf("audit count=%d error=%v", events, err)
 	}
 }

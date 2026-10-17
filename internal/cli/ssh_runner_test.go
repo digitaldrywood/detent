@@ -285,6 +285,9 @@ func TestSSHWorkerLifecycle(t *testing.T) {
 		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) { testSSHWorkerLifecycle(t, false, native) })
 	}
 	t.Run("native source producer parse failure", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, true) })
+	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
+		t.Run("local ephemeral execution", func(t *testing.T) { testSSHWorkerLifecycle(t, false, true, false, true) })
+	}
 }
 
 func TestSSHLocalTargetIntegration(t *testing.T) {
@@ -454,6 +457,15 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure .
 		updatesMu.Unlock()
 		return nil
 	}}
+	local := len(producerFailure) > 1 && producerFailure[1]
+	if local {
+		artifacts, publish, _ := localWorkerArtifacts(t, true)
+		publish("1.0.0")
+		run.artifacts = artifacts
+		request.WorkerHost = "local"
+		t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("DETENT_SSH_TEST_HELPER", "worker")
+	}
 	var probe *sshNativeProbe
 	if native {
 		probe = &sshNativeProbe{producerFailure: failingReview}
@@ -483,6 +495,21 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, producerFailure .
 		}
 		probe.mu.Unlock()
 		request.Execution = nil
+	}
+	if local {
+		for _, marker := range []string{"after-create", "before-run", "after-run", "gate"} {
+			if _, err := os.Stat(filepath.Join(localHome, marker)); err != nil {
+				t.Fatalf("local worker did not finish %s: %v", marker, err)
+			}
+		}
+		if got := git(root, "--git-dir", bare, "show", result.WorkspaceBranch+":feature.txt"); got != "remote worker" {
+			t.Fatalf("local worker publication = %q", got)
+		}
+		active, err := sessions.ListActiveWorkerProcesses(ctx)
+		if err != nil || len(active) != 0 {
+			t.Fatalf("local provider process journal was not cleaned: %+v %v", active, err)
+		}
+		return
 	}
 	for _, marker := range []string{"after-create", "before-run", "after-run", "gate"} {
 		if _, err := os.Stat(filepath.Join(remoteHome, marker)); err != nil {
