@@ -445,6 +445,23 @@ describe("the Enroll dialog", () => {
     expect(screen.queryByRole("button", { name: "Copy the register command" })).toBeNull();
   });
 
+  it("falls back to SPRITE_ORG while the token check for a new selection is pending", async () => {
+    await mountDialog(["project_build"], false, [], undefined, true);
+    fireEvent.click(screen.getByLabelText("A Fly Sprite"));
+    await waitFor(() => expect(screen.queryByText("Checking Sprites tokens…")).toBeNull());
+    const respond = vi.mocked(globalThis.fetch).getMockImplementation()!;
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) =>
+      String(input).endsWith("/secrets/fly_sprites_token") ? new Promise<Response>(() => undefined) : respond(input, init));
+    fireEvent.click(projectBox("project_release"));
+    fireEvent.click(projectBox("project_build"));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "build-host" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create command" }));
+    const instructions = await screen.findByRole("list", { name: "Sprite setup instructions" });
+    const organization = '"${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}"';
+    expect(instructions.textContent).toContain(`sprite create -o ${organization} build-host`);
+    expect(instructions.textContent).not.toContain("-o preview");
+  });
+
   it("shows the server reason when a Sprites token check fails", async () => {
     await mountDialog(["project_build"]);
     vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ code: "secret_unavailable", message: "The Sprites token could not be read" }), { status: 400 }));

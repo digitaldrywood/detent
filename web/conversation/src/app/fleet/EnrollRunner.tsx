@@ -256,7 +256,9 @@ export function EnrollRunnerDialog({
     }));
   }, [api, open, location, selectedKey, scope]);
   const canWake = sprites.value?.length === (scope === "organization" ? 1 : selected.length) && sprites.value.every((entry) => entry.present === true);
-  const spriteOrganizations = [...new Set(sprites.value?.filter((entry) => entry.present).map((entry) => entry.organization))];
+  const spriteScope = scope === "organization" ? [""] : selected;
+  const currentSprites = !sprites.loading && sprites.error === null && sprites.value?.length === spriteScope.length && sprites.value.every((entry, index) => entry.id === spriteScope[index]) ? sprites.value : [];
+  const spriteOrganizations = [...new Set(currentSprites.filter((entry) => entry.present).map((entry) => entry.organization))];
   const spriteOrganization = spriteOrganizations.length === 1 ? spriteOrganizations[0] : undefined;
   const spriteOrganizationArgument = spriteOrganization ? shellArgument(spriteOrganization) : '"${SPRITE_ORG:?Set SPRITE_ORG to your Fly organization}"';
   const publishedVersion = fleet.value?.current ?? bootstrap?.version ?? "";
