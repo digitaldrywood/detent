@@ -236,7 +236,7 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 				}
 			}
 		}
-		settings, err := IsolationSettings(policy)
+		settings, err := isolationSettings(policy, b.toolAddress)
 		if err != nil {
 			return nil, nil, err
 		}
