@@ -140,11 +140,14 @@ type OperatorChatArguments struct {
 }
 
 type StopRunArguments struct {
-	ProjectID   string `json:"project_id"`
-	Identifier  string `json:"identifier"`
-	Destination string `json:"destination"`
-	Priority    int    `json:"priority"`
-	Reason      string `json:"reason"`
+	ExpectedRevision tracker.Revision     `json:"expected_revision,string,omitempty"`
+	LeaseID          tracker.LeaseID      `json:"lease_id,omitempty"`
+	FencingToken     tracker.FencingToken `json:"fencing_token,omitempty"`
+	ProjectID        string               `json:"project_id"`
+	Identifier       string               `json:"identifier"`
+	Destination      string               `json:"destination"`
+	Priority         int                  `json:"priority"`
+	Reason           string               `json:"reason"`
 }
 
 type CheckoutArguments struct {

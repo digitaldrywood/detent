@@ -16,6 +16,19 @@ project-scoped reads or `work_list` cursors to continue inventory reads.
 `eligibility_tool` (`explain_item`) for current native admission evidence,
 including human ownership, dependencies and registered-runner conditions.
 
+Native Hub operators can call `stop_run` directly with `project_id`, `request_id`,
+`identifier`, `expected_revision` (a decimal string), `lease_id`, `fencing_token`
+(an integer), and `destination` (`Blocked`, `Backlog`, `Cancelled`, or `Todo`).
+Use the current item revision and exact active lease/fence from the supported
+work-item and attempt reads. Optional `priority` uses ranks 1–4; `reason` accepts
+up to 280 bytes. The existing stop owner checks current write access,
+revision, workflow transition and lease fence atomically, preserves retained
+source, and releases only that attempt. The returned `action_id` is readable
+through `action_result`; its result records the released lease/fence and the
+item's resulting state and revision. Reuse the same `request_id` and arguments
+for a retry. This operation requires no conversation or coordinator turn and
+does not grant access to private conversations.
+
 On an enrolled runner host, discover the `local_projects` toolset on the
 runner's authenticated `/mcp` connection. `local_project_configuration` reads the actual
 local revision and redacted selected/effective policy. Its admin commands apply
