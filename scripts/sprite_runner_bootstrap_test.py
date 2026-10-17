@@ -72,7 +72,7 @@ elif name == "go":
 elif name == "npm" and args == ["--version"]:
     print(os.environ.get("FIXTURE_NPM_VERSION", "11.6.2"))
 elif name == "npm" and args[:3] == ["config", "get", "cache"]:
-    print(os.path.join(os.getcwd(), os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE") or os.path.join(os.environ["HOME"], ".npm")))
+    print(os.path.join(os.getcwd(), os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE") or os.environ.get("FIXTURE_NPMRC_CACHE") or os.path.join(os.environ["HOME"], ".npm")))
 elif name == "npm" and args[:2] == ["cache", "verify"]:
     (pathlib.Path(os.environ.get("npm_config_cache") or os.path.join(os.environ["HOME"], ".npm")) / "_cacache").mkdir(parents=True, exist_ok=True)
 elif name == "npm":
@@ -471,7 +471,19 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertEqual(operator.returncode, 0, operator.stderr)
         exports = [shlex.split(line) for line in launcher.read_text().splitlines()]
         self.assertIn(["export", f"GOMODCACHE={operator_modules}"], exports)
-        self.assertIn(["export", f"npm_config_cache={operator_npm}"], exports)
+        self.assertIn(["export", f"NPM_CONFIG_CACHE={operator_npm}"], exports)
+        self.assertNotIn("npm_config_cache", [entry[1].split("=")[0] for entry in exports if entry[:1] == ["export"]])
+        go_env = self.home / ".config/go/env"
+        go_env.parent.mkdir(parents=True, exist_ok=True)
+        go_env.write_text("GOMODCACHE=/operator/go-mod\n")
+        self.env["FIXTURE_NPMRC_CACHE"] = str(operator_npm)
+        native = self.run_bootstrap(enrollment="")
+        del self.env["FIXTURE_NPMRC_CACHE"]
+        self.assertEqual(native.returncode, 0, native.stderr)
+        exported = [line.split()[1].split("=")[0] for line in launcher.read_text().splitlines() if line.startswith("export ")]
+        self.assertNotIn("GOMODCACHE", exported)
+        self.assertNotIn("npm_config_cache", exported)
+        self.assertIn("XDG_CACHE_HOME", exported)
         config = self.home / ".config/detent-runner/global.yaml"
         for name, root, want in (
             ("legacy default", self.home / "detent-runner", local / "work"),

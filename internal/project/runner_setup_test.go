@@ -151,6 +151,15 @@ func TestRunnerSetupLifecycle(t *testing.T) {
 			}
 			assertRuns(7)
 			if ref {
+				if err := os.Remove(filepath.Join(root, ".git", "detent-runner-setup")); err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := first.Prepare(t.Context(), cfg); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertRuns(8)
 				return
 			}
 			moved := t.TempDir()
