@@ -764,7 +764,7 @@ chmod 700 "$launcher"
 # upgrades and finished manual setup take effect.
 existing_service=false
 if sprite-env services get detent-runner >/dev/null 2>&1; then existing_service=true; fi
-sprite-env services create detent-runner --cmd "$launcher" --dir "$launch_dir" --no-stream
+sprite-env services create detent-runner --cmd "$launcher" --dir "$HOME" --no-stream
 if [[ $existing_service == true ]]; then
     sprite-env curl -X POST 'http://sprite/v1/services/detent-runner/restart?duration=1s'
 fi

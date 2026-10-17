@@ -382,7 +382,9 @@ class SpriteBootstrapTests(unittest.TestCase):
                 result = self.run_bootstrap(extra=("--config", str(config)), enrollment="" if original is not None else None)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 service = json.loads((self.root / "service-detent-runner.json").read_text())
-                self.assertEqual(service[service.index("--dir") + 1], preserved.get("workspace_root", str(self.home / "detent-runner")))
+                self.assertEqual(service[service.index("--dir") + 1], str(self.home))
+                launch = preserved.get("workspace_root", str(self.home / "detent-runner"))
+                self.assertIn(["cd", "--", launch], [shlex.split(line) for line in (self.home / ".local/lib/detent-sprite-runner/start").read_text().splitlines()])
                 self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
                 parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
                                          "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(JSON.stringify(YAML.parse(fs.readFileSync(process.argv[2], 'utf8'))));",
@@ -426,7 +428,7 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertIn(f"Managed checkout root: {root}\n", result.stdout)
                 self.assertIn(f"New managed checkout for prj_example: {root / 'prj_example'}", result.stderr)
                 service = json.loads((self.root / "service-detent-runner.json").read_text())
-                self.assertEqual(service[service.index("--dir") + 1], str(launch_dir))
+                self.assertEqual(service[service.index("--dir") + 1], str(self.home))
                 launcher = (self.home / ".local/lib/detent-sprite-runner/start").read_text()
                 self.assertIn(["cd", "--", str(launch_dir)], [shlex.split(line) for line in launcher.splitlines()])
                 self.assertTrue((root / ".tmp").is_dir())
@@ -456,6 +458,11 @@ class SpriteBootstrapTests(unittest.TestCase):
             "PLAYWRIGHT_BROWSERS_PATH": str(self.home / ".cache/ms-playwright"),
         })
         self.assertIn(f"Local disk: build caches in {local / 'cache'}", first.stdout)
+        shutil.rmtree(local)
+        (self.root / "detent-cwd").unlink()
+        lost = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(lost.returncode, 0, lost.stderr)
+        self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
         operator_modules = self.root / "operator-modules"
         self.env["GOMODCACHE"] = str(operator_modules)
         operator = self.run_bootstrap(enrollment="")
