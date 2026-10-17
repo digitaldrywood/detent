@@ -358,8 +358,8 @@ fi
 install_lock="$HOME/.detent/install.lock"
 if [[ -n $source_root ]]; then
     printf 'Building Detent from %s\n' "$source_root"
-    if grep -qxF "binary=$bin_dir/detent" "$install_lock" 2>/dev/null; then rm -f "$install_lock"; fi
     (cd "$source_root" && GOBIN="$bin_dir" go install ./cmd/detent)
+    if grep -qxF "binary=$bin_dir/detent" "$install_lock" 2>/dev/null; then rm -f "$install_lock"; fi
 elif [[ $(detent --version 2>/dev/null || true) != "$version" ]] || ! grep -qxF "binary=$bin_dir/detent" "$install_lock" 2>/dev/null; then
     printf 'Installing pinned Detent %s\n' "$version"
     release=${version#v}

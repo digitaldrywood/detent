@@ -52,6 +52,8 @@ elif name == "sha256sum":
 elif name == "go":
     if args == ["version"]:
         print("go version go1.26.6 linux/amd64")
+    elif os.environ.get("GO_INSTALL_FAIL"):
+        sys.exit(1)
     else:
         shutil.copy(__file__, pathlib.Path(os.environ["GOBIN"]) / "detent")
 elif name == "npm":
@@ -306,6 +308,11 @@ class SpriteBootstrapTests(unittest.TestCase):
         source = self.root / "source checkout"
         source.mkdir()
         (source / "go.mod").write_text("module fixture\ngo 1.26.6\n")
+        self.env["GO_INSTALL_FAIL"] = "1"
+        failed = self.run_bootstrap(extra=("--from-source", str(source)), enrollment="")
+        del self.env["GO_INSTALL_FAIL"]
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("binary=" + str(binary), lock.read_text().splitlines())
         built = self.run_bootstrap(extra=("--from-source", str(source)), enrollment="")
         self.assertEqual(built.returncode, 0, built.stderr)
         self.assertFalse(lock.exists())
