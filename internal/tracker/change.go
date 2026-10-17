@@ -142,6 +142,7 @@ type PublishChangeVersion struct {
 }
 
 type SecurityAuditReview struct {
+	RunOmitted    bool                   `json:"run_omitted,omitempty"`
 	TextTruncated bool                   `json:"text_truncated,omitempty"`
 	VersionID     string                 `json:"version_id,omitempty"`
 	Landing       bool                   `json:"landing,omitempty"`

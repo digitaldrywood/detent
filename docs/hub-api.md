@@ -1680,6 +1680,12 @@ audit identity, verdict and every retained finding's ID, status and severity.
 If mandatory review identities alone exceed the review budget, reviews are omitted
 as a group and the exact hold summary and `read.omitted` remain authoritative;
 consume the original records through continuation before acting on that evidence.
+Landing audits share a 64 KiB budget across version and attempt receipt copies.
+An audit that exceeds the remaining budget retains its identity and verdict but
+marks `run_omitted` and omits the run. That incomplete run
+cannot satisfy audit validity; the precomputed hold summary and receipt gate
+result remain authoritative. `read.omitted` names each affected landing path;
+continuation retains the complete original run, including all finding states.
 Discussion
 and ordinary Change evidence have row and byte budgets; `read.omitted` identifies
 context available through `work_comments`, `get_change`, attempt reads and the

@@ -684,6 +684,7 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		versions []tracker.ChangeVersion
 		reviews  []tracker.ChangeReview
 		comment  tracker.NativeComment
+		landing  *tracker.SecurityAuditReview
 	}
 	wants := make(map[tracker.NativeWorkItemID]evidence)
 	for i, item := range items {
@@ -711,7 +712,21 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 			audit.Run.Findings = []securityaudit.Finding{{ID: "blocking", Severity: "p2", Body: strings.Repeat("finding <\n", 90_000)}, {ID: "resolved", Severity: "p1", Status: "resolved", Body: "Already addressed"}}
 		}
 		reviews = append(reviews, tracker.ChangeReview{ID: fmt.Sprintf("review_audit_%d", i), VersionID: current.ID, Decision: decision, SecurityAudit: audit, Actor: tracker.Actor{Kind: "runner", PrincipalID: "audit-worker"}, CreatedAt: current.CreatedAt})
-		wants[item] = evidence{change: change, versions: []tracker.ChangeVersion{old, current}, reviews: reviews, comment: comment}
+		var landing *tracker.SecurityAuditReview
+		if i == 0 {
+			retained := *audit
+			retained.Landing = true
+			retained.Run.Summary = "All findings resolved"
+			for finding := range 6000 {
+				retained.Run.Findings = append(retained.Run.Findings, securityaudit.Finding{ID: fmt.Sprintf("finding-%06d-%s", finding, strings.Repeat("i", 64)), Status: "resolved", Severity: "p1", Body: "Resolved"})
+			}
+			landing = &retained
+			observation := tracker.NativeRuntimeObservation{Phase: "merging", Landing: &tracker.NativeLandingReceipt{SecurityAudit: landing, ChangeID: change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, GateFailed: true, ObservedAt: now}}
+			if err := execution.(runner.RuntimeExecution).ObserveRuntime(t.Context(), observation); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wants[item] = evidence{change: change, versions: []tracker.ChangeVersion{old, current}, reviews: reviews, comment: comment, landing: landing}
 	}
 	h.reopen(func(path string) error {
 		db, err := sql.Open("sqlite", path)
@@ -741,6 +756,22 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 			}
 			if recovery.ChangeDetail == nil || recovery.Read == nil || !slices.Contains(recovery.Read.Omitted, "change_detail.reviews") {
 				t.Fatal("projected audit did not expose retained evidence")
+			}
+			if want.landing != nil {
+				copies := []*tracker.NativeLandingReceipt{recovery.ChangeDetail.Versions[0].Landing}
+				for _, attempt := range recovery.Attempts {
+					if attempt.Runtime != nil && attempt.Runtime.Landing != nil {
+						copies = append(copies, attempt.Runtime.Landing)
+					}
+				}
+				if len(copies) != 2 {
+					t.Fatal("worker lost a landing copy")
+				}
+				for _, receipt := range copies {
+					if receipt == nil || receipt.SecurityAudit == nil || !receipt.SecurityAudit.RunOmitted || receipt.SecurityAudit.SessionID != want.landing.SessionID || receipt.SecurityAudit.Verdict != want.landing.Verdict || !receipt.GateFailed {
+						t.Fatal("worker lost bounded landing identity or gate result")
+					}
+				}
 			}
 			original := want.reviews[len(want.reviews)-1]
 			var projected tracker.ChangeReview
@@ -862,8 +893,22 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 								if page.VersionID != version.ID || !reflect.DeepEqual(got.Policy, version.Policy) || got.HeadSHA != version.HeadSHA || !reflect.DeepEqual(got.Source, version.Source) {
 									t.Fatal("worker lost immutable source or historical frozen policy")
 								}
+								if want.landing != nil && version.ID == want.versions[len(want.versions)-1].ID && (got.Landing == nil || !reflect.DeepEqual(got.Landing.SecurityAudit, want.landing)) {
+									t.Fatal("worker lost exact version landing audit")
+								}
 								seen[version.ID] = true
 							}
+						}
+					case "attempts":
+						var got tracker.NativeAttempt
+						if err := json.Unmarshal(record, &got); err != nil {
+							t.Fatal(err)
+						}
+						if want.landing != nil && got.Runtime != nil && got.Runtime.Landing != nil {
+							if !reflect.DeepEqual(got.Runtime.Landing.SecurityAudit, want.landing) || !got.Runtime.Landing.GateFailed {
+								t.Fatal("worker lost exact attempt landing audit")
+							}
+							seen[page.RecordID] = true
 						}
 					case "discussion":
 						var got tracker.NativeComment
@@ -881,7 +926,11 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 				}
 				cursor = page.NextCursor
 			}
-			if len(seen) != 6 {
+			expectedRecords := 6
+			if want.landing != nil {
+				expectedRecords++
+			}
+			if len(seen) != expectedRecords {
 				t.Fatalf("worker lost retained evidence: %v", seen)
 			}
 		})

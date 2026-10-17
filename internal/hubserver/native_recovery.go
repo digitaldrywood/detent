@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -294,10 +295,38 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 }
 
 func projectNativeRecovery(result *tracker.NativeRecovery) error {
+	landingBudget := 64 << 10
+	var landings []*tracker.NativeLandingReceipt
+	if result.ChangeDetail != nil {
+		for _, version := range result.ChangeDetail.Versions {
+			landings = append(landings, version.Landing)
+		}
+	}
+	for _, attempt := range result.Attempts {
+		if attempt.Runtime != nil {
+			landings = append(landings, attempt.Runtime.Landing)
+		}
+	}
+	for _, landing := range landings {
+		if landing != nil && landing.SecurityAudit != nil {
+			reference, err := json.Marshal(omittedRecoveryAudit(landing.SecurityAudit))
+			if err != nil {
+				return err
+			}
+			landingBudget -= len(reference)
+		}
+	}
 	if detail := result.ChangeDetail; detail != nil {
 		for i := range detail.Versions {
 			detail.Versions[i].Validation = boundedChangeCommand(detail.Versions[i].Validation)
-			detail.Versions[i].Landing = boundedRecoveryLanding(detail.Versions[i].Landing)
+			landing, omitted, err := boundedRecoveryLanding(detail.Versions[i].Landing, &landingBudget)
+			if err != nil {
+				return err
+			}
+			detail.Versions[i].Landing = landing
+			if omitted {
+				result.Read.Omitted = append(result.Read.Omitted, "change_detail.versions.landing.security_audit.run")
+			}
 		}
 		for i := range detail.Reviews {
 			detail.Reviews[i].SecurityAudit = boundedRecoveryAudit(detail.Reviews[i].SecurityAudit)
@@ -332,7 +361,14 @@ func projectNativeRecovery(result *tracker.NativeRecovery) error {
 	for i := range result.Attempts {
 		if runtime := result.Attempts[i].Runtime; runtime != nil {
 			runtime.Validation = boundedChangeCommand(runtime.Validation)
-			runtime.Landing = boundedRecoveryLanding(runtime.Landing)
+			landing, omitted, err := boundedRecoveryLanding(runtime.Landing, &landingBudget)
+			if err != nil {
+				return err
+			}
+			runtime.Landing = landing
+			if omitted {
+				result.Read.Omitted = append(result.Read.Omitted, "attempts.runtime.landing.security_audit.run")
+			}
 		}
 	}
 	if len(result.Attempts) > 0 {
@@ -375,12 +411,37 @@ func boundedRecoveryAudit(audit *tracker.SecurityAuditReview) *tracker.SecurityA
 	return &result
 }
 
-func boundedRecoveryLanding(landing *tracker.NativeLandingReceipt) *tracker.NativeLandingReceipt {
+func boundedRecoveryLanding(landing *tracker.NativeLandingReceipt, budget *int) (*tracker.NativeLandingReceipt, bool, error) {
 	result := boundedChangeLanding(landing)
-	if result != nil {
-		result.SecurityAudit = boundedRecoveryAudit(result.SecurityAudit)
+	if result == nil || result.SecurityAudit == nil {
+		return result, false, nil
 	}
-	return result
+	result.SecurityAudit = boundedRecoveryAudit(result.SecurityAudit)
+	encoded, err := json.Marshal(result.SecurityAudit)
+	if err != nil {
+		return nil, false, err
+	}
+	reference := omittedRecoveryAudit(result.SecurityAudit)
+	referenceBytes, err := json.Marshal(reference)
+	if err != nil {
+		return nil, false, err
+	}
+	additional := max(0, len(encoded)-len(referenceBytes))
+	omitted := additional > *budget
+	if omitted {
+		result.SecurityAudit = reference
+	} else {
+		*budget -= additional
+	}
+	return result, omitted, nil
+}
+
+func omittedRecoveryAudit(audit *tracker.SecurityAuditReview) *tracker.SecurityAuditReview {
+	result := *audit
+	result.RunOmitted = true
+	result.TextTruncated = true
+	result.Run = securityaudit.Run{}
+	return &result
 }
 
 func boundedRecoveryRecords[T any](records []T, budget int) ([]T, bool, error) {
