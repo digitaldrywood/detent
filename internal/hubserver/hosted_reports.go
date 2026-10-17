@@ -139,6 +139,10 @@ func (s *Service) hostedReports(c echo.Context) error {
 	}
 	params := c.QueryParams()
 	project := params.Get("project")
+	scope := params.Get("scope")
+	if scope != "" && (scope != "organization" || project != reportsAllProjects) {
+		return s.nativeAPIError(c, nativeInvalid("Organization report scope requires all projects"))
+	}
 	selected, found, err := s.reportsReadableProjects(ctx, credential, project)
 	if err != nil {
 		return s.usageCredentialError(c, err)
@@ -157,6 +161,22 @@ func (s *Service) hostedReports(c echo.Context) error {
 	compare := params.Get("compare")
 	if compare != "" && compare != "prior" && compare != "off" {
 		return s.nativeAPIError(c, nativeInvalid("compare must be prior or off"))
+	}
+	if scope == "organization" {
+		if !w.From.Equal(w.From.Truncate(time.Hour)) || !w.To.Equal(w.To.Truncate(time.Hour)) {
+			return s.nativeAPIError(c, nativeInvalid("Organization report windows use complete UTC hours"))
+		}
+		projectFilter := reportsQueryValues(params, "projects")
+		if len(projectFilter) > reportsMaxFilterValues || len(strings.Join(projectFilter, "\x00")) > 4096 {
+			return s.nativeAPIError(c, nativeInvalid("Report project filter accepts at most 32 values"))
+		}
+		selected = filterProductivityProjects(selected, projectFilter)
+		report, err := s.readOrganizationProductivity(ctx, selected, w, filter)
+		if err != nil {
+			s.config.Logger.Warn("read organization reports", "error", err)
+			return s.hostedJSONError(c, http.StatusServiceUnavailable, "Reports are temporarily unavailable")
+		}
+		return c.JSON(http.StatusOK, report)
 	}
 	var report hostedReportsReport
 	if project == reportsAllProjects {
@@ -178,8 +198,6 @@ func (s *Service) hostedReports(c echo.Context) error {
 	return c.JSON(http.StatusOK, report)
 }
 
-// readOrganizationReport reads every project's report, a few at a time under
-// one deadline, and combines them into organization totals.
 func (s *Service) readOrganizationReport(ctx context.Context, credential apiCredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter) (hostedReportsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, reportsAllProjectsTime)
 	defer cancel()

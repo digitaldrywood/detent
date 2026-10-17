@@ -108,6 +108,34 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				}
 			})
 		}
+		t.Run(grant+"/organization reports", func(t *testing.T) {
+			for _, filter := range []bool{false, true} {
+				args := map[string]any{"scope": "organization", "range": "24h"}
+				if filter {
+					args["projects"] = []string{string(f.project), "prj_ungranted"}
+					args["types"] = []string{"bug"}
+				}
+				response, raw := call(user, operatortool.Reports, args)
+				var report organizationProductivity
+				if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.OrganizationID != "org_security" {
+					t.Fatalf("organization response=%s err=%v", response.Body.String(), err)
+				}
+				want := 1
+				if grant == "both" && !filter {
+					want = 2
+				}
+				if grant == "github" && filter {
+					want = 0
+				}
+				if len(report.Projects) != want {
+					t.Fatalf("project count=%d want=%d", len(report.Projects), want)
+				}
+				if grant == "native" && strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) || strings.Contains(string(raw), "prj_ungranted") {
+					t.Fatalf("organization leaked project: %s", raw)
+				}
+				assertProductivitySums(t, report)
+			}
+		})
 		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
 			t.Run(grant+"/"+name, func(t *testing.T) {
 				response, raw := call(user, name, map[string]any{})

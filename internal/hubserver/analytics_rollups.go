@@ -374,6 +374,9 @@ func refreshAnalyticsIssue(ctx context.Context, tx *sql.Tx, statements analytics
 	if err := refreshAnalyticsLeaseSnapshots(ctx, tx, organization, project, id, now); err != nil {
 		return err
 	}
+	if err := refreshProductivitySummary(ctx, tx, nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(project)}, id); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_rollup_positions WHERE work_item_id=? AND (organization_id<>? OR project_id<>?)", id, organization, project); err != nil {
 		return err
 	}
@@ -422,6 +425,9 @@ func rebuildAnalyticsRollups(ctx context.Context, tx *sql.Tx, scope nativeScope,
 			return err
 		}
 		if err := refreshAnalyticsResidence(ctx, tx, scope, id, 0); err != nil {
+			return err
+		}
+		if err := refreshProductivitySummary(ctx, tx, scope, id); err != nil {
 			return err
 		}
 	}
