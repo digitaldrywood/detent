@@ -12,6 +12,7 @@ let transcriber: Promise<AutomaticSpeechRecognitionPipeline> | undefined;
 self.onmessage = async (event: MessageEvent<{ audio?: Float32Array }>) => {
   try {
     transcriber ??= pipeline<"automatic-speech-recognition">("automatic-speech-recognition", "onnx-community/whisper-tiny", {
+      revision: "ff4177021cc41f7db950912b73ea4fdf7d01d8e7",
       device: "wasm",
       dtype: "q8",
     });
