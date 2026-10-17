@@ -126,6 +126,7 @@ func TestOrganizationProductivity(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, f.service)
 	for _, project := range projects {
 		rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: org, project: project})
 	}
@@ -255,6 +256,51 @@ func TestOrganizationProductivity(t *testing.T) {
 	b, _ := json.Marshal(after)
 	if string(a) != string(b) {
 		t.Fatal("read depends on live attempt payloads")
+	}
+	for _, tt := range []struct {
+		name, runner, kind, displayName string
+	}{
+		{"resolved final runner", "runner_browser_preview_shared", "runner", "Shared runner"},
+		{"unknown final runner", "", "unknown", ""},
+	} {
+		t.Run("completion attribution/"+tt.name, func(t *testing.T) {
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			exec := func(query string, args ...any) {
+				t.Helper()
+				if _, err := tx.ExecContext(t.Context(), query, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, name := range []string{"runner completed", "human completed"} {
+				id := ids[name]
+				lease := "lease_final_" + id
+				exec(`INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,issue_id,machine_id,?,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id=?`, lease, lease, "lease_"+id)
+				if tt.runner != "" {
+					exec(`INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, lease, tt.runner)
+				}
+				exec(`INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) SELECT ?,organization_id,project_id,work_item_id,?,(SELECT max(fencing_token)+1 FROM native_attempts),run_id,2,'succeeded','{}',?,? FROM native_attempts WHERE id=?`, "attempt_final_"+id, lease, formatHubTime(to.Add(-4*time.Hour)), formatHubTime(to.Add(-3*time.Hour)), "attempt_"+id)
+				project := projects[1]
+				wantKind, wantID, wantName := tt.kind, tt.runner, tt.displayName
+				if name == "human completed" {
+					project = projects[0]
+					wantKind, wantID, wantName = "people", "person_one", ""
+				}
+				if err := refreshProductivitySummary(t.Context(), tx, nativeScope{organization: org, project: project}, id); err != nil {
+					t.Fatal(err)
+				}
+				var kind, runner, displayName string
+				if err := tx.QueryRowContext(t.Context(), `SELECT completed_kind,completed_id,completed_name FROM report_issue_summaries WHERE organization_id=? AND project_id=? AND work_item_id=?`, org, project, id).Scan(&kind, &runner, &displayName); err != nil {
+					t.Fatal(err)
+				}
+				if kind != wantKind || runner != wantID || displayName != wantName {
+					t.Fatalf("%s attribution=(%q,%q,%q) want=(%q,%q,%q)", name, kind, runner, displayName, wantKind, wantID, wantName)
+				}
+			}
+		})
 	}
 }
 
