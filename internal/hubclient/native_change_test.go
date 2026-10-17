@@ -48,6 +48,7 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	leaseHolds      atomic.Int64
 	reopen          func(func(string) error)
 	sourceDirectory string
 	review          string
@@ -60,6 +61,11 @@ type nativeChangeHub struct {
 	scheduler       *Scheduler
 	failChanges     *changeFailingTransport
 	otherWorker     func(*testing.T) *NativeClient
+}
+
+func (h *nativeChangeHub) leaseHold(context.Context) (func(), error) {
+	h.leaseHolds.Add(1)
+	return func() {}, nil
 }
 
 // changeFailingTransport refuses Change Request creation when armed, which is
@@ -274,6 +280,7 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
 		Machine:           Machine{ID: "machine-native-change", Hostname: "host", Capacity: 1, Version: "test"},
 		HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
+		LeaseHold: h.leaseHold,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1267,7 +1274,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				saved := before.CompletionState()
 				stop()
-				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1292,7 +1299,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}
 				saved := before.CompletionState()
 				machine := h.scheduler.machine
-				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1539,7 +1546,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						if test.restoreRefusal == "policy" {
 							h.repolicy(t)
 						}
-						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -1894,7 +1901,7 @@ func TestNativeExecutionResumedVersionPublication(t *testing.T) {
 					t.Fatal(err)
 				}
 				saved, attempt := e.CompletionState(), e.data.AttemptID
-				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: h.scheduler.machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2009,6 +2016,9 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				h := newNativeChangeHub(t, true)
 				issue := h.createInProgress(t, "Native change")
 				candidate := h.claim(t, issue.ID)
+				if got := h.leaseHolds.Load(); got != 1 {
+					t.Fatalf("claim acquired %d fixture lease holds, want 1", got)
+				}
 				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 				originalTransport := h.native.client.httpClient.Transport
 				var offline atomic.Bool
@@ -2085,12 +2095,15 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 					h.native.client.httpClient.Transport = originalTransport
 					h.failChanges.failEvents.Store(false)
 					machine := h.scheduler.machine
-					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 					if err != nil {
 						t.Fatal(err)
 					}
 					if _, err := h.scheduler.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, Repository: nativeChangeRepository}, candidate, saved); err != nil {
 						t.Fatal(err)
+					}
+					if got := h.leaseHolds.Load(); got != 2 {
+						t.Fatalf("completion restore acquired %d fixture lease holds, want 2", got)
 					}
 					execution = h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 					restoredPending, err := json.Marshal(execution.pending)
@@ -2413,7 +2426,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if h.native, err = client.Native(h.organization, h.project); err != nil {
 					t.Fatal(err)
 				}
-				if h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second}); err != nil {
+				if h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold}); err != nil {
 					t.Fatal(err)
 				}
 				if h.scheduler.client.runner == nil {
@@ -3105,7 +3118,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatalf("capture mixed prepared completion evidence into live run data: %+v finalization=%+v", decoded.Data, decoded.PreparedFinalization)
 					}
 					machine := h.scheduler.machine
-					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+					h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -3157,7 +3170,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 							saved = owner.CompletionState()
 						}
 						machine := h.scheduler.machine
-						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+						h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -3213,7 +3226,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal(err)
 					}
 					machine := h.scheduler.machine
-					h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+					h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -3605,7 +3618,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if test.publicationFault == "foreign_source" {
 					machineID = "foreign-machine"
 				}
-				h.scheduler, err = NewScheduler(h.scheduler.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
+				h.scheduler, err = NewScheduler(h.scheduler.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: machineID, Hostname: "host", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, LeaseHold: h.leaseHold})
 				if err != nil {
 					t.Fatal(err)
 				}
