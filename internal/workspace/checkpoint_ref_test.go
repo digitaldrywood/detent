@@ -66,6 +66,8 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			t.Parallel()
 			remote := initBareRemote(t)
 			first, second := initSourceRepo(t), initSourceRepo(t)
+			runGit(t, first, "config", "gc.autoDetach", "false")
+			runGit(t, first, "config", "maintenance.autoDetach", "false")
 			runGit(t, first, "remote", "add", "origin", remote)
 			runGit(t, first, "push", "-u", "origin", "main")
 			runGit(t, second, "remote", "add", "origin", remote)
