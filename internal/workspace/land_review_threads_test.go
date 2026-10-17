@@ -10,14 +10,16 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type reviewThreadClient struct {
-	pages     []string
-	readErr   error
-	failReply string
-	cursors   []any
-	mutations []string
+	pages       []string
+	readErr     error
+	failReply   string
+	failResolve string
+	cursors     []any
+	mutations   []string
 }
 
 func (c *reviewThreadClient) REST(context.Context, string, string, any, any) error {
@@ -38,7 +40,13 @@ func (c *reviewThreadClient) GraphQL(_ context.Context, query string, variables 
 	}
 	kind := "reply"
 	if strings.Contains(query, "resolveReviewThread") {
+		if thread == c.failResolve {
+			return errors.New("resolution refused")
+		}
 		kind = "resolve"
+		if err := json.Unmarshal([]byte(`{"resolveReviewThread":{"thread":{"id":"`+thread+`","isResolved":true}}}`), out); err != nil {
+			return err
+		}
 	} else if strings.Contains(variables["body"].(string), "detent:surfaced") {
 		kind = "surface"
 	}
@@ -69,15 +77,69 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 	for i := range overflowPages {
 		overflowPages[i] = reviewThreadsPage(strconv.Itoa(i))
 	}
+	boundPage := func(value string) string {
+		return strings.Replace(value, `"pullRequest":{`, `"pullRequest":{"number":7,"headRefOid":"`+head+`","baseRefName":"develop","headRepository":{"nameWithOwner":"example/repo"},"repository":{"nameWithOwner":"example/repo"},`, 1)
+	}
+	openBot := boundPage(reviewThreadsPage("", reviewThreadNode("T1", false, "example-bot", "Bot", "Preserve the accepted source", surfacedEarlier), reviewThreadNode("T2", false, "example-user", "User", "Human finding")))
+	resolvedBot := boundPage(reviewThreadsPage("", reviewThreadNode("T1", true, "example-bot", "Bot", "Preserve the accepted source"), reviewThreadNode("T2", false, "example-user", "User", "Human finding")))
 	for _, test := range []struct {
-		name          string
-		refusal       error
-		client        *reviewThreadClient
-		wantReason    []string
-		wantMutations []string
-		wantCursors   int
-		wantRework    bool
+		name           string
+		refusal        error
+		client         *reviewThreadClient
+		wantReason     []string
+		wantMutations  []string
+		wantCursors    int
+		wantRework     bool
+		resolve        bool
+		disposition    string
+		evidence       string
+		thread         string
+		authorityError bool
+		wantSuccess    bool
 	}{
+		{
+			name:    "explicit fixed evidence resolves only the selected bot conversation",
+			resolve: true, disposition: "fixed", evidence: "Published source.go:17 now retains the accepted head; existing regression passes on this head.", thread: "T1", wantSuccess: true,
+			client:        &reviewThreadClient{pages: []string{openBot, openBot, resolvedBot}},
+			wantMutations: []string{"reply:T1", "resolve:T1"}, wantCursors: 3,
+		},
+		{
+			name:    "explicit dismissal can resolve an unchanged reviewed source",
+			resolve: true, disposition: "dismissed", evidence: "source.go:17 already checks the immutable head; the finding assumes a different code path.", thread: "T1", wantSuccess: true,
+			client:        &reviewThreadClient{pages: []string{openBot, openBot, resolvedBot}},
+			wantMutations: []string{"reply:T1", "resolve:T1"}, wantCursors: 3,
+		},
+		{
+			name:    "surfacing alone is never disposition evidence",
+			resolve: true, disposition: "fixed", thread: "T1", client: &reviewThreadClient{},
+			wantReason: []string{"requires a thread"},
+		},
+		{
+			name:    "human conversations remain protected from the bot resolution operation",
+			resolve: true, disposition: "fixed", evidence: "A claimed correction", thread: "T2", client: &reviewThreadClient{pages: []string{openBot}}, wantCursors: 1,
+			wantReason: []string{"human review owner"},
+		},
+		{
+			name:    "an unrelated conversation ID cannot be resolved",
+			resolve: true, disposition: "dismissed", evidence: "A claimed dismissal", thread: "OTHER", client: &reviewThreadClient{pages: []string{openBot}}, wantCursors: 1,
+			wantReason: []string{"not part of the reviewed pull request"},
+		},
+		{
+			name:    "lost current source authority performs no review operation",
+			resolve: true, disposition: "fixed", evidence: "A claimed correction", thread: "T1", authorityError: true, client: &reviewThreadClient{},
+			wantReason: []string{"source authority lost"},
+		},
+		{
+			name:    "a moved head after the reply cannot resolve the conversation",
+			resolve: true, disposition: "fixed", evidence: "A correction on the original published head", thread: "T1", client: &reviewThreadClient{pages: []string{openBot, strings.ReplaceAll(openBot, head, earlier)}}, wantCursors: 2,
+			wantMutations: []string{"reply:T1"}, wantReason: []string{"no longer belong"},
+		},
+		{
+			name:    "resolution rejection does not report success",
+			resolve: true, disposition: "fixed", evidence: "A correction on the published head", thread: "T1", client: &reviewThreadClient{pages: []string{openBot, openBot}, failResolve: "T1"}, wantCursors: 2,
+			wantMutations: []string{"reply:T1"}, wantReason: []string{"resolution refused"},
+		},
+
 		{
 			name:          "preflight uses the existing actionable bot refusal and surfacing owner",
 			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "example-bot", "Bot", "P2 finding"))}},
@@ -123,11 +185,13 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			client:  &reviewThreadClient{},
 		},
 		{
-			name:        "a bot finding surfaced at an earlier head stays actionable without disposition proof",
-			refusal:     conversation,
-			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P2 finding", surfacedEarlier), reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", "done"))}},
-			wantReason:  []string{"operator disposition", "explicitly resume", "P2 finding"},
-			wantCursors: 1,
+			name:          "a bot finding surfaced at an earlier head stays actionable without disposition proof",
+			refusal:       conversation,
+			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P2 finding", surfacedEarlier), reviewThreadNode("T0", true, "chatgpt-codex-connector", "Bot", "done"))}},
+			wantReason:    []string{ReviewConversationsRefusalText, "P2 finding"},
+			wantMutations: []string{"surface:T1"},
+			wantCursors:   1,
+			wantRework:    true,
 		},
 		{
 			name:          "a bot finding never surfaced is surfaced, not resolved",
@@ -142,8 +206,9 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			name:        "a bot finding already surfaced at this head stays actionable without another reply",
 			refusal:     conversation,
 			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Still open", surfacedNow))}},
-			wantReason:  []string{"operator disposition", "explicitly resume", "Still open"},
+			wantReason:  []string{ReviewConversationsRefusalText, "Still open"},
 			wantCursors: 1,
+			wantRework:  true,
 		},
 		{
 			name:          "a new bot finding keeps Rework available alongside a prior surfaced finding",
@@ -184,8 +249,9 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			name:        "an earlier surfacing marker does not resolve a finding already surfaced at this head",
 			refusal:     conversation,
 			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "P1 finding", surfacedEarlier, surfacedNow))}},
-			wantReason:  []string{"operator disposition", "explicitly resume", "P1 finding"},
+			wantReason:  []string{ReviewConversationsRefusalText, "P1 finding"},
 			wantCursors: 1,
+			wantRework:  true,
 		},
 		{
 			name:        "a failed surface reply keeps the finding and reports the error",
@@ -204,13 +270,27 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := resolveLandingReviewThreads(context.Background(), test.client, "example/repo", 7, head, test.refusal)
-			var refusal *LandRefusal
-			if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
-				t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)
-			}
-			if got := ReviewConversationsRefusal(refusal.Reason); got != test.wantRework {
-				t.Fatalf("ReviewConversationsRefusal(%q) = %t, want %t", refusal.Reason, got, test.wantRework)
+			var err error
+			if test.resolve {
+				opts := LandOptions{Repository: "https://github.com/example/repo", HeadSHA: head, TargetBranch: "develop", External: &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: "https://github.com/example/repo/pull/7"}, Authorize: func(context.Context) error {
+					if test.authorityError {
+						return errors.New("source authority lost")
+					}
+					return nil
+				}}
+				err = ResolveReviewConversation(t.Context(), test.client, opts, test.thread, test.disposition, test.evidence)
+				if (err == nil) != test.wantSuccess {
+					t.Fatalf("ResolveReviewConversation()=%v, success=%t", err, test.wantSuccess)
+				}
+			} else {
+				err = resolveLandingReviewThreads(context.Background(), test.client, "example/repo", 7, head, test.refusal)
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
+					t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)
+				}
+				if got := ReviewConversationsRefusal(refusal.Reason); got != test.wantRework {
+					t.Fatalf("ReviewConversationsRefusal(%q) = %t, want %t", refusal.Reason, got, test.wantRework)
+				}
 			}
 			for _, want := range test.wantReason {
 				if !strings.Contains(err.Error(), want) {
@@ -223,7 +303,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			if len(test.client.cursors) != test.wantCursors {
 				t.Fatalf("pages read = %d, want %d", len(test.client.cursors), test.wantCursors)
 			}
-			if test.wantCursors == 2 && test.client.cursors[1] != "c1" {
+			if !test.resolve && test.wantCursors == 2 && test.client.cursors[1] != "c1" {
 				t.Fatalf("second page cursor = %v, want c1", test.client.cursors[1])
 			}
 		})
