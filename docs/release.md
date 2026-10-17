@@ -8,14 +8,35 @@ install that exact release and restart. A newer release replaces an update that
 was refused or interrupted. Older runners keep taking work during the update: the
 Hub refuses claims only from runners below its minimum supported runner version,
 which changes only with a release that breaks runner and Hub compatibility.
-A failed update is reported on the next heartbeat and the runner card requests
-human help with the manual reinstall command:
+A failed update is reported on the next heartbeat. For a current release with
+missing signature evidence, run `detent update --check --json`: `repair_available`
+identifies a same-version repair without claiming a newer version exists.
+Run `detent update --yes` to fetch and verify the signed checksums, provenance and
+platform archive with the pinned trust key, then atomically reinstall it. When
+a local service is running, the existing update owner drains active work and
+requests its coordinated restart. Capacity, routing, credentials and workspaces
+are preserved. The install marker references a content-addressed cache of the
+release archive, signed checksums and provenance. Verification rechecks the pinned-key
+signature, checksums, platform, version, commit and extracted binary digest before
+reporting a verified running build. Marker fields and cached update receipts alone
+cannot establish verification. Losing or changing the cache leaves the build
+unverified; the signed updater can recreate it. The compressed archive is read as a bounded snapshot so filesystem changes
+cannot race its checksum and extraction; the expanded binary is hashed as a stream.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
-```
+The Hub's heartbeat update owner also selects its published release for a
+same-version unverified release install. An obsolete refused request is
+superseded with a request bound to the current observed revision. The replacement
+receipt retains the previous failure. After restart, the heartbeat reports the
+exact verified running build. A verified CLI repair also supersedes a stale
+refusal in the current Hub view while retaining the original receipt.
 
-Restart the runner service after a manual reinstall.
+Older updaters that report only `up_to_date` for an unverified current release do
+not support same-version repair. Upgrade the updater to a release containing
+this support first. The bootstrap installer's checksum check alone does not
+supply pinned-key signature evidence; a bootstrap reinstall is not proof of
+verification. Unsupported platforms, unavailable signed assets and invalid
+signatures or checksums remain refused. Do not edit verification metadata or
+force a restart to clear that state.
 
 Runners on 0.117.50 and earlier need a one-time manual reinstall of the release
 that introduces heartbeat updates if their scheduled updater has stalled. Run

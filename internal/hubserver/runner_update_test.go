@@ -120,7 +120,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 	for _, test := range []struct {
 		name, hub, runner, prior, wantVersion  string
 		supported, manual, unpublished, failed bool
-		witnessed                              bool
+		witnessed, verified, external          bool
 		want                                   bool
 	}{
 		{name: "older runner", hub: "v1.2.4", runner: "1.2.3", supported: true, want: true},
@@ -129,9 +129,12 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 		{name: "unpublished release", hub: "v1.2.4", runner: "1.2.3", supported: true, unpublished: true},
 		{name: "update failed", hub: "v1.2.4", runner: "1.2.3", supported: true, failed: true, want: true},
 		{name: "operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.3", supported: true, want: true},
-		{name: "matching operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.4-op.abcdef123456", supported: true},
+		{name: "matching operator prerelease", hub: "v1.2.4-op.abcdef123456", runner: "1.2.4-op.abcdef123456", supported: true, verified: true},
 		{name: "stable release supersedes operator prerelease", hub: "v1.2.4", runner: "1.2.4-op.abcdef123456", supported: true, want: true},
-		{name: "matching release", hub: "v1.2.4", runner: "1.2.4", supported: true},
+		{name: "matching verified release", hub: "v1.2.4", runner: "1.2.4", supported: true, verified: true},
+		{name: "matching unverified release repaired", hub: "v1.2.4", runner: "1.2.4", supported: true, want: true},
+		{name: "stale refused update superseded after manual install", hub: "v1.2.4", runner: "1.2.3", supported: true, external: true, want: true},
+		{name: "verified CLI repair supersedes stale refusal", hub: "v1.2.4", runner: "1.2.3", supported: true, external: true, verified: true, want: true},
 		{name: "development Hub", hub: "dev", runner: "1.2.3", supported: true},
 		{name: "missing update owner", hub: "v1.2.4", runner: "1.2.3"},
 		{name: "operator request retained", hub: "v1.2.4", runner: "1.2.3", supported: true, manual: true, want: true},
@@ -149,7 +152,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.enroll(t)
 			now := service.config.now()
-			build := runnerauth.BuildEvidence{Version: test.runner, Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+			build := runnerauth.BuildEvidence{Version: test.runner, VerifiedRelease: test.verified, Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: test.supported, Running: build, ObservedAt: now}
 			report.Revision = report.BuildRevision()
 			send := func() runnerauth.RoutingSnapshot {
@@ -203,7 +206,32 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 				service.runnerPublishedReleases.Store(test.hub+"/linux/amd64", true)
 			}
 			service.config.Version = test.hub
+			var previous *runnerauth.UpdateRequest
+			if test.external {
+				previous = send().Routing.UpdateRequest
+				if previous == nil {
+					t.Fatal("missing initial update request")
+				}
+				report.Receipt = &runnerauth.UpdateReceipt{Request: *previous, Status: "refused", FailureReason: "Requested update target is not applicable to the observed runner state", ObservedAt: now}
+				report.Running.Version = strings.TrimPrefix(test.hub, "v")
+				report.Revision = report.BuildRevision()
+			}
 			snapshot := send()
+			if previous != nil {
+				stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, service.config.now())
+				if err != nil || stored.Update.Receipt.Status != "refused" || stored.Update.Receipt.Request != *previous {
+					t.Fatalf("lost historical refusal: %+v %v", stored.Update, err)
+				}
+				if test.verified {
+					if stored.UpdateView(service.config.now()).Status != "running" || *snapshot.Routing.UpdateRequest != *previous {
+						t.Fatalf("verified CLI repair retained current refusal: %+v", stored.UpdateView(service.config.now()))
+					}
+					return
+				}
+				if snapshot.Routing.UpdateRequest.ID == previous.ID || snapshot.Routing.UpdateRequest.ExpectedBuildRevision != report.Revision {
+					t.Fatal("stale refused request was not replaced with the current build revision")
+				}
+			}
 			if snapshot.TargetRunnerVersion != strings.TrimPrefix(test.hub, "v") && !test.unpublished && strings.HasPrefix(test.hub, "v") {
 				t.Fatalf("heartbeat target = %q", snapshot.TargetRunnerVersion)
 			}
@@ -212,7 +240,7 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			}
 			request := snapshot.Routing.UpdateRequest
 			wantState := "active"
-			if test.want && !test.manual {
+			if test.want && !test.manual && report.Running.Version != strings.TrimPrefix(test.hub, "v") {
 				wantState = "draining"
 			}
 			if (request != nil) != test.want || snapshot.Routing.State != wantState {
@@ -254,6 +282,9 @@ func TestRunnerAutomaticallyFollowsHub(t *testing.T) {
 			send()
 			observedAt := service.config.now()
 			stored, err := readRunner(t.Context(), service.database.db, f.project.OrganizationID, r.binding.RunnerID, observedAt)
+			if previous != nil && (err != nil || stored.Update.Receipt.PreviousFailure == nil || stored.Update.Receipt.PreviousFailure.Request != *previous || stored.Update.Receipt.PreviousFailure.FailureReason != "Requested update target is not applicable to the observed runner state") {
+				t.Fatalf("Hub lost refusal history without a runner cache: %+v %v", stored.Update, err)
+			}
 			if test.manual {
 				if err != nil || stored.UpdateRequest == nil || stored.UpdateRequest.FollowHub || stored.UpdateRequest.Version != "1.2.5" {
 					t.Fatalf("completed operator request suppressed Hub following: %+v %v", stored.UpdateRequest, err)
@@ -306,6 +337,45 @@ func TestRunnerUpdateApplication(t *testing.T) {
 	view := read()
 	if view.Status != "ready" || view.Observation.Running.Source != "private_patched_source" || view.Observation.Running.VerifiedRelease {
 		t.Fatalf("initial view=%+v", view)
+	}
+	for _, test := range []struct {
+		name                    string
+		staleRunner, staleBuild bool
+		prefixed                bool
+	}{
+		{name: "current same-version repair"},
+		{name: "prefixed same-version repair", prefixed: true},
+		{name: "prefixed stale runner revision", prefixed: true, staleRunner: true},
+		{name: "prefixed stale build revision", prefixed: true, staleBuild: true},
+		{name: "stale runner revision", staleRunner: true},
+		{name: "stale build revision", staleBuild: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repairRunner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, r.binding.RunnerID, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			repair := *repairRunner.Update
+			repair.Running.Source = "release"
+			if test.prefixed {
+				repair.Running.Version = "v" + repair.Running.Version
+			}
+			repair.AvailableVersion = ""
+			repair.Discovery = "up_to_date"
+			repair.Revision = repair.BuildRevision()
+			repairRunner.Update = &repair
+			request := runnerUpdateChange{ExpectedRevision: repairRunner.Revision, ExpectedBuildRevision: repair.Revision, Service: "detent", Version: strings.TrimPrefix(repair.Running.Version, "v"), Release: true}
+			if test.staleRunner {
+				request.ExpectedRevision++
+			}
+			if test.staleBuild {
+				request.ExpectedBuildRevision = strings.Repeat("e", 64)
+			}
+			err = runnerUpdateReady(repairRunner, request, f.service.config.now())
+			if (err != nil) != (test.staleRunner || test.staleBuild) {
+				t.Fatalf("same-version repair selection: %v", err)
+			}
+		})
 	}
 	request := runnerUpdateChange{ExpectedRevision: snapshot.Revision, ExpectedBuildRevision: report.Revision, Service: "detent", Version: "1.2.4", Release: true, Confirm: true, IdempotencyKey: "selected-release"}
 	staleBuild := request

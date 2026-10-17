@@ -335,7 +335,7 @@ func restorePendingInstallLock(pending PendingUpdate, goos string, opts Detectio
 		return removePendingReleaseInstallLock(path, pending, goos)
 	}
 	if pending.InstallSource == InstallSourceRelease {
-		return writeReleaseInstallLock(goos, opts, pending.ExecutablePath, pending.FromVersion, pending.FromCommit)
+		return writeReleaseInstallLock(goos, opts, pending.ExecutablePath, pending.FromVersion, pending.FromCommit, "")
 	}
 	resolved, ok := installLockPath(goos, opts)
 	if !ok {

@@ -544,6 +544,12 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		urgent          bool
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "same version CLI repair", current: "1.2.4"},
+		{name: "same version Hub repair", current: "1.2.4", follow: true},
+		{name: "same version signature failure", current: "1.2.4", follow: true, failureStage: "signature", failureReason: "Update signature verification failed"},
+		{name: "same version checksum failure", current: "1.2.4", follow: true, failureStage: "checksum", failureReason: "Update checksum verification failed"},
+		{name: "same version unsupported platform", current: "1.2.4", follow: true, failureStage: "platform", failureReason: "Update target resolution failed"},
+		{name: "same version partial install rolls back", current: "1.2.4", follow: true, failureStage: "partial_install", failureReason: "Update installation failed"},
 		{name: "signed operator prerelease", current: "1.2.3", version: "1.2.4-op.abcdef123456", follow: true},
 		{name: "stable supersedes signed operator prerelease", current: "1.2.4-op.abcdef123456", follow: true},
 		{name: "target failure restores drain", current: "1.2.3", failureStage: "target", failureReason: "Update target resolution failed"},
@@ -696,8 +702,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			})
 
 			if !test.follow {
-				if _, err := service.Check(t.Context()); err != nil {
+				if checked, err := service.Check(t.Context()); err != nil {
 					t.Fatal(err)
+				} else if test.current == version && (!checked.RepairAvailable || checked.UpdateAvailable || checked.VerifiedRelease) {
+					t.Fatalf("same version check hid repair: %+v", checked)
 				}
 			}
 			if test.brew {
@@ -730,7 +738,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			}
 			if test.failureStage != "" {
 				now := time.Now().UTC()
-				running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				running := runnerauth.BuildEvidence{Version: test.current, Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 				draining, drains := false, 0
 				config := SchedulerConfig{CheckInterval: time.Hour, Updater: service, RunningBuild: running, StatePath: filepath.Join(tmp, "scheduler.json"), ApplyOptions: applyOptions, Now: func() time.Time { return now },
 					ReserveDrain: func(context.Context) (func(), error) {
@@ -745,7 +753,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(err)
 				}
 				initial := owner.EnrolledUpdate(t.Context(), running, nil)
-				request := runnerauth.UpdateRequest{RequestedAt: now, ID: "failed-update", Service: "detent", Version: version, Release: true, ExpectedBuildRevision: initial.Revision, Urgent: test.urgent}
+				request := runnerauth.UpdateRequest{RequestedAt: now, ID: "failed-update", Service: "detent", Version: version, Release: true, ExpectedBuildRevision: initial.Revision, Urgent: test.urgent, FollowHub: test.follow}
 				if test.urgent {
 					request.ExpectedBuildRevision = ""
 				}
@@ -762,7 +770,17 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 						return recorder.Result(), nil
 					})
 				case "signature":
-					service.cfg.ChecksumSignatureVerifier = func(context.Context, []byte, []byte) error { return errors.New("private/token=secret") }
+					signature[0] ^= 1
+				case "platform":
+					service.cfg.GOOS = "plan9"
+				case "partial_install":
+					verify := service.cfg.BinaryVerifier
+					service.cfg.BinaryVerifier = func(ctx context.Context, path string) (string, error) {
+						if path == binary {
+							return "", errors.New("invalid installed identity")
+						}
+						return verify(ctx, path)
+					}
 				case "provenance":
 					provenanceBytes = []byte("invalid provenance")
 					provenanceSum = sha256.Sum256(provenanceBytes)
@@ -859,8 +877,8 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if status.Action != ActionUpdated {
 				t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
 			}
-			if !status.UpdateAvailable {
-				t.Fatal("UpdateAvailable = false, want true")
+			if status.UpdateAvailable != (test.current != version) {
+				t.Fatalf("UpdateAvailable = %t for %s -> %s", status.UpdateAvailable, test.current, version)
 			}
 			expectedBinarySum := sha256.Sum256([]byte("updated"))
 			if status.BinarySHA256 != hex.EncodeToString(expectedBinarySum[:]) || !status.VerifiedRelease || status.LatestCommit != testUpdatedCommit {
@@ -872,6 +890,118 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			}
 			if strings.TrimSpace(string(raw)) != "updated" {
 				t.Fatalf("updated binary = %q, want updated", raw)
+			}
+			evidenceOptions := DetectionOptions{CurrentVersion: version, ExecutablePath: binary, GOOS: "linux", GOARCH: "amd64", HomeDir: legacyHome, Env: installEnv}
+			if !InstalledReleaseVerified(t.Context(), evidenceOptions, testUpdatedCommit, status.BinarySHA256) || InstalledReleaseVerified(t.Context(), evidenceOptions, testPreviousCommit, status.BinarySHA256) || InstalledReleaseVerified(t.Context(), evidenceOptions, testUpdatedCommit, strings.Repeat("0", 64)) {
+				t.Fatal("install evidence did not bind the verified binary and commit")
+			}
+			wrongVersion := evidenceOptions
+			wrongVersion.CurrentVersion = "9.9.9"
+			if InstalledReleaseVerified(t.Context(), wrongVersion, testUpdatedCommit, status.BinarySHA256) {
+				t.Fatal("install evidence accepted a different version")
+			}
+			if test.name == "same version CLI repair" {
+				for _, platform := range []string{"darwin", "windows"} {
+					t.Run("cached evidence supports "+platform, func(t *testing.T) {
+						options := evidenceOptions
+						options.GOOS = platform
+						lock := filepath.Join(t.TempDir(), "install.lock")
+						options.Env = map[string]string{"DETENT_INSTALL_LOCK": lock}
+						cachedArchive := archive
+						if platform == "windows" {
+							cachedArchive = detentWindowsUpdateArchive(t, "updated")
+						}
+						name := archiveAssetNames("v"+version, platform, "amd64")[0]
+						archiveSum := sha256.Sum256(cachedArchive)
+						checksums := fmt.Appendf(nil, "%x  %s\n%x  %s\n", archiveSum, name, provenanceSum, provenanceAssetName)
+						signature := testMinisignSignature(t, privateKey, keyID, checksums, "detent checksums v"+version)
+						proof := releaseEvidence{Schema: 1, ArchiveName: name, Checksums: checksums, Signature: signature, Provenance: provenanceBytes}
+						key, err := writeReleaseEvidence(lock, proof, cachedArchive)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := writeInstallLock(lock, binary, version, testUpdatedCommit, key, time.Now()); err != nil {
+							t.Fatal(err)
+						}
+						if !InstalledReleaseVerified(t.Context(), options, testUpdatedCommit, status.BinarySHA256) {
+							t.Fatal("trusted platform artifact was not verified")
+						}
+						options.GOARCH = "arm64"
+						if InstalledReleaseVerified(t.Context(), options, testUpdatedCommit, status.BinarySHA256) {
+							t.Fatal("different platform accepted cached evidence")
+						}
+					})
+				}
+				for _, kind := range []string{"signature", "untrusted key", "checksums", "provenance", "archive", "platform", "marker only", "missing cache", "oversized header"} {
+					t.Run("cached evidence refuses "+kind, func(t *testing.T) {
+						forgedLock := filepath.Join(t.TempDir(), "install.lock")
+						evidence := releaseEvidence{Schema: 1, ArchiveName: archiveName, Checksums: []byte(checksums), Signature: append([]byte(nil), signature...), Provenance: append([]byte(nil), provenanceBytes...)}
+						cachedArchive := archive
+						options := evidenceOptions
+						options.Env = map[string]string{"DETENT_INSTALL_LOCK": forgedLock}
+						switch kind {
+						case "signature":
+							evidence.Signature[0] ^= 1
+						case "untrusted key":
+							_, otherKey, err := ed25519.GenerateKey(nil)
+							if err != nil {
+								t.Fatal(err)
+							}
+							evidence.Signature = testMinisignSignature(t, otherKey, keyID, evidence.Checksums, "detent checksums v"+version)
+						case "checksums":
+							evidence.Checksums = append(evidence.Checksums, 'x')
+						case "provenance":
+							evidence.Provenance = []byte("untrusted provenance")
+						case "archive":
+							cachedArchive = detentUpdateArchive(t, "unsigned replacement")
+						case "platform":
+							options.GOARCH = "arm64"
+						}
+						key, err := writeReleaseEvidence(forgedLock, evidence, cachedArchive)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := writeInstallLock(forgedLock, binary, version, testUpdatedCommit, key, time.Now()); err != nil {
+							t.Fatal(err)
+						}
+						switch kind {
+						case "marker only":
+							raw := fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\nsha256=%s\n", binary, version, testUpdatedCommit, status.BinarySHA256)
+							if err := os.WriteFile(forgedLock, []byte(raw), 0o600); err != nil {
+								t.Fatal(err)
+							}
+						case "missing cache":
+							if err := os.Remove(filepath.Join(forgedLock+".releases", key)); err != nil {
+								t.Fatal(err)
+							}
+						case "oversized header":
+							if err := os.WriteFile(filepath.Join(forgedLock+".releases", key), []byte{255, 255, 255, 255}, 0o600); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if InstalledReleaseVerified(t.Context(), options, testUpdatedCommit, status.BinarySHA256) {
+							t.Fatalf("%s cached evidence granted verification", kind)
+						}
+					})
+				}
+			}
+			service.cfg.CurrentVersion = version
+			service.cfg.CurrentCommit = testUpdatedCommit
+			checked, err := service.Check(t.Context())
+			if err != nil || !checked.VerifiedRelease || checked.RepairAvailable {
+				t.Fatalf("new process lost verified installation: %+v %v", checked, err)
+			}
+			if test.current == version {
+				if err := os.WriteFile(binary, []byte("tampered"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				changed, err := service.Check(t.Context())
+				if err != nil || changed.VerifiedRelease || !changed.UpdateAvailable && !changed.RepairAvailable {
+					t.Fatalf("changed binary retained release verification: %+v %v", changed, err)
+				}
+				if err := os.WriteFile(binary, []byte("updated"), 0o755); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if preflightPath == "" || preflightPath == binary {
 				t.Fatalf("preflight path = %q, want staged candidate", preflightPath)
