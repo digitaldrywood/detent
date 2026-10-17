@@ -71,6 +71,12 @@ limitation through the existing workflow; do not silently write to another
 tracker. Do not invent endpoints, project IDs, credentials or routing, or
 extract credentials from hidden browser state or raw runtime databases.
 
+Write acceptance criteria the system can satisfy before merge: tests, fixtures,
+source and documentation checks, and UI screenshots. Never require an outside
+system, a deployed environment or human action, and add no post-deployment
+verification step; a human files a new issue if deployed behavior is unwanted.
+See the Issue Contract in WORKFLOW.md.
+
 Under [INV-15](docs/invariants.md#inv-15--visible-ui-changes-require-a-human-authored-issue),
 an agent that believes a visible UI addition is needed describes it in its outcome
 or files a Backlog issue for a human to author or rewrite; it does not build it.
