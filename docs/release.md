@@ -15,8 +15,13 @@ Run `detent update --yes` to fetch and verify the signed checksums, provenance a
 platform archive with the pinned trust key, then atomically reinstall it. When
 a local service is running, the existing update owner drains active work and
 requests its coordinated restart. Capacity, routing, credentials and workspaces
-are preserved. The verified digest is recorded in the existing install marker;
-only a matching binary, version and commit can report verified release evidence.
+are preserved. The install marker references a content-addressed cache of the
+release archive, signed checksums and provenance. Verification rechecks the pinned-key
+signature, checksums, platform, version, commit and extracted binary digest before
+reporting a verified running build. Marker fields and cached update receipts alone
+cannot establish verification. Losing or changing the cache leaves the build
+unverified; the signed updater can recreate it. The compressed archive is read as a bounded snapshot so filesystem changes
+cannot race its checksum and extraction; the expanded binary is hashed as a stream.
 
 The Hub's heartbeat update owner also selects its published release for a
 same-version unverified release install. An obsolete refused request is

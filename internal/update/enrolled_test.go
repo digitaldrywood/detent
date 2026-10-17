@@ -164,8 +164,10 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			if observed.Receipt.Applied != nil {
 				resumedRunning = *observed.Receipt.Applied
 			}
-			resumedRunning.VerifiedRelease = false
-			resumedRunning.Source = "unknown"
+			resumedRunning.VerifiedRelease = observed.Receipt.Applied != nil || observed.Receipt.VerifiedTarget != nil
+			if resumedRunning.VerifiedRelease {
+				resumedRunning.Source = "release"
+			}
 			config.RunningBuild = resumedRunning
 			resumed, err := NewScheduler(config)
 			if err != nil {
@@ -210,6 +212,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 				}
 				mismatched := resumedRunning
 				mismatched.SHA256 = strings.Repeat("f", 64)
+				mismatched.VerifiedRelease = false
 				if report := resumed.EnrolledUpdate(t.Context(), mismatched, nil); report.Receipt.Status == "running" || report.Running.VerifiedRelease {
 					t.Fatalf("mismatched artifact claimed verified running release: %+v", report)
 				}
@@ -220,8 +223,12 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 
 func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 	now := time.Now().UTC()
-	running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: "none", Source: "unknown", OS: "linux", Architecture: "amd64", ObservedAt: now}
+	running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", OS: "linux", Architecture: "amd64", ObservedAt: now}
 	request := runnerauth.UpdateRequest{RequestedAt: now, ID: "interrupted", Service: "detent", ExpectedBuildRevision: strings.Repeat("a", 64), Version: "1.2.4", Release: true}
+	sameVersionRequest := request
+	sameVersionRequest.Version = running.Version
+	forged := running
+	forged.VerifiedRelease = true
 	path := filepath.Join(t.TempDir(), "scheduler.json")
 	updater := &schedulerUpdaterStub{}
 	config := SchedulerConfig{CheckInterval: time.Hour, StatePath: path, Updater: updater, RunningBuild: running, Now: func() time.Time { return now }}
@@ -230,6 +237,9 @@ func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 		receipt runnerauth.UpdateReceipt
 		reason  string
 	}{
+		{name: "unsigned running receipt cannot verify running build", receipt: runnerauth.UpdateReceipt{Request: sameVersionRequest, Status: "running", Applied: &forged, Running: &forged, ObservedAt: now}, reason: "Update did not restart into the verified build"},
+		{name: "unsigned target receipt cannot verify running build", receipt: runnerauth.UpdateReceipt{Request: sameVersionRequest, Status: "uncertain", VerifiedTarget: &forged, ObservedAt: now}, reason: "Update did not restart into the verified build"},
+		{name: "unsigned applied receipt cannot verify running build", receipt: runnerauth.UpdateReceipt{Request: sameVersionRequest, Status: "applied", Applied: &forged, ObservedAt: now}, reason: "Update did not restart into the verified build"},
 		{name: "interrupted drain", receipt: runnerauth.UpdateReceipt{Request: request, Status: "draining", ObservedAt: now}, reason: "Update was interrupted before completion"},
 		{name: "restart returned old build", receipt: runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &runnerauth.BuildEvidence{Version: "1.2.4", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}, ObservedAt: now}, reason: "Update did not restart into the verified build"},
 		{name: "detached replacement returned old build", receipt: runnerauth.UpdateReceipt{Request: request, Status: "uncertain", VerifiedTarget: &runnerauth.BuildEvidence{Version: "1.2.4", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}, ObservedAt: now}, reason: "Update did not restart into the verified build"},
@@ -242,8 +252,8 @@ func TestSchedulerEnrolledInterruptedReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			report := scheduler.EnrolledUpdate(t.Context(), running, &request)
-			if report == nil || report.Receipt.Status != "uncertain" || report.Receipt.FailureReason != test.reason || updater.applyCalls != 0 {
+			report := scheduler.EnrolledUpdate(t.Context(), running, &test.receipt.Request)
+			if report == nil || report.Running.VerifiedRelease || report.Receipt.Status != "uncertain" || report.Receipt.FailureReason != test.reason || updater.applyCalls != 0 {
 				t.Fatalf("interrupted receipt=%+v", report)
 			}
 			persisted, found, err := loadSchedulerState(path)

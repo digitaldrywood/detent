@@ -78,7 +78,9 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			installed = observed.Receipt.VerifiedTarget
 		}
 	}
-	if !retry && observed.Supported && request.Release && installed != nil && installed.VerifiedRelease && request.Version == installed.Version {
+	state := s.Status().State
+	installedCurrent := observed.Running.VerifiedRelease || state == "restart_requested" || state == "applied" || state == "applied_restart_deferred"
+	if !retry && observed.Supported && request.Release && installedCurrent && installed != nil && installed.VerifiedRelease && request.Version == installed.Version {
 		return observed
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: enrolledTargetRefusal, ObservedAt: s.cfg.Now().UTC()}
@@ -156,23 +158,19 @@ func (s *Scheduler) enrolledObservation(running runnerauth.BuildEvidence) *runne
 	now := s.cfg.Now().UTC()
 	running.ObservedAt = now
 	if receipt != nil {
-		if receipt.Applied == nil && receipt.VerifiedTarget != nil && running.Matches(*receipt.VerifiedTarget) {
+		if receipt.Applied == nil && receipt.VerifiedTarget != nil && running.VerifiedRelease && running.Matches(*receipt.VerifiedTarget) {
 			applied := *receipt.VerifiedTarget
 			applied.ObservedAt = now
 			receipt.Applied = &applied
 		}
-		if receipt.Applied != nil && running.Matches(*receipt.Applied) {
+		if receipt.Applied != nil && running.VerifiedRelease && running.Matches(*receipt.Applied) {
 			receipt.Status = "running"
 			receipt.FailureReason = ""
-			running.VerifiedRelease = receipt.Applied.VerifiedRelease
-			if running.VerifiedRelease {
-				running.Source = "release"
-			}
 			if receipt.Running == nil {
 				witnessed := running
 				receipt.Running = &witnessed
 			}
-		} else if receipt.Running != nil {
+		} else if receipt.Running != nil && receipt.FailureReason == "" {
 			receipt.Status = "applied"
 		} else if receipt.Applied != nil && status.State == "restart_requested" {
 			receipt.Status = "restart_requested"

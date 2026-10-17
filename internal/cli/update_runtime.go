@@ -55,6 +55,7 @@ func (r *RestartRequest) set(binary string) {
 }
 
 func newRuntimeUpdateScheduler(
+	ctx context.Context,
 	cfg BootConfig,
 	logger *slog.Logger,
 	reserveIdle func(context.Context) (func(), bool),
@@ -73,7 +74,7 @@ func newRuntimeUpdateScheduler(
 		ReserveDrain:     reserveDrain,
 		Logger:           logger,
 		StatePath:        runtimeUpdateStatePath(cfg),
-		RunningBuild:     runnerRunningBuild(cfg.Build, cfg.Version),
+		RunningBuild:     runnerRunningBuild(ctx, cfg.Build, cfg.Version),
 		ApplyOptions: detentupdate.ApplyOptions{
 			Preflight:         candidateStartupPreflight(cfg),
 			RecoveryStatePath: detentupdate.RecoveryStatePath(cfg.Global.Path),
@@ -263,7 +264,7 @@ func requestUpdateRestart(controller *ShutdownController, restart *RestartReques
 	})
 }
 
-func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvidence {
+func runnerRunningBuild(ctx context.Context, info buildinfo.Info, version string) runnerauth.BuildEvidence {
 	if info.Version == "" {
 		info.Version = version
 	}
@@ -298,7 +299,7 @@ func runnerRunningBuild(info buildinfo.Info, version string) runnerauth.BuildEvi
 	if patched {
 		build.Source = "private_patched_source"
 	} else if err == nil {
-		build.VerifiedRelease = detentupdate.InstalledReleaseVerified(detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS}, info.Commit, build.SHA256)
+		build.VerifiedRelease = detentupdate.InstalledReleaseVerified(ctx, detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, info.Commit, build.SHA256)
 		if build.VerifiedRelease {
 			build.Source = "release"
 		}

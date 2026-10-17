@@ -116,11 +116,11 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 	if err != nil {
 		cfg.Logger.Warn("load automatic update state failed", "path", cfg.StatePath, "error", err)
 	}
-	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && receipt.Running == nil {
+	if receipt := loadedState.EnrolledReceipt; receipt != nil && receipt.FailureReason == "" && cfg.RunningBuild.Validate() == nil && (receipt.Running == nil || !cfg.RunningBuild.VerifiedRelease) {
 		switch {
 		case receipt.Status == "draining":
 			receipt.FailureReason = "Update was interrupted before completion"
-		case receipt.Applied != nil && !cfg.RunningBuild.Matches(*receipt.Applied), receipt.VerifiedTarget != nil && !cfg.RunningBuild.Matches(*receipt.VerifiedTarget):
+		case receipt.Applied != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.Applied)), receipt.VerifiedTarget != nil && (!cfg.RunningBuild.VerifiedRelease || !cfg.RunningBuild.Matches(*receipt.VerifiedTarget)):
 			receipt.FailureReason = "Update did not restart into the verified build"
 		}
 		if receipt.FailureReason != "" {
