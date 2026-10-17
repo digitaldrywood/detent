@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,12 +97,10 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 		t.Fatalf("low free disk did not constrain capacity: %q", got)
 	}
 	for _, active := range []int{2, 1, 0} {
-		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-		err := managed.trim(ctx, toolcache.Policy{MaxBytes: 1000}, time.Now())
-		cancel()
+		err := managed.trim(t.Context(), toolcache.Policy{MaxBytes: 1000}, time.Now())
 		if active > 0 {
-			if !errors.Is(err, context.DeadlineExceeded) {
-				t.Errorf("maintenance with %d active consumers: %v", active, err)
+			if err != nil {
+				t.Fatalf("maintenance with %d active consumers did not yield: %v", active, err)
 			}
 			if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
 				t.Fatalf("active cache changed: bytes=%d err=%v", len(data), err)

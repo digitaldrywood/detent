@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/toolcache"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -43,8 +42,8 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			t.Fatalf("cache infrastructure failure = %v, provider calls = %d", err, backend.calls)
 		}
 	})
-	for _, cancelWaiting := range []bool{false, true} {
-		t.Run(fmt.Sprintf("cancel_waiting=%t", cancelWaiting), func(t *testing.T) {
+	for _, cancelSecondTurn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel_second_turn=%t", cancelSecondTurn), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			root := t.TempDir()
@@ -75,10 +74,8 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			}
 			first := newRunner(firstWorkspace, &cacheAdmissionBackend{fakeCodexClient: &fakeCodexClient{}, started: buildStarted, finish: finishBuild})
 			secondBackend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: "Work completed."}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}
-			second := newRunner(secondWorkspace, secondBackend)
-			execution := &cacheAdmissionExecution{waiting: make(chan tracker.NativeRuntimeObservation, 1)}
-			waits := make(chan struct{}, 2)
-			second.logger = slog.New(cacheWaitHandler{Handler: slog.NewTextHandler(io.Discard, nil), waits: waits})
+			secondTurn := &cacheAdmissionBackend{fakeCodexClient: secondBackend, started: make(chan struct{}), finish: make(chan struct{})}
+			second := newRunner(secondWorkspace, secondTurn)
 			firstDone := make(chan error, 1)
 			go func() {
 				_, err := first.Run(ctx, RunRequest{Issue: connector.Issue{ID: "first", Identifier: "owner/repository#1"}})
@@ -94,22 +91,8 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			maintenanceWaiting := make(chan struct{}, 1)
-			maintenanceCtx := toolcache.WithWaitObserver(ctx, func(lock string, waiting bool) {
-				if lock == "consumers" && waiting {
-					maintenanceWaiting <- struct{}{}
-				}
-			})
-			maintenanceDone := make(chan error, 1)
-			go func() {
-				_, err := cache.Maintain(maintenanceCtx, toolcache.Policy{MaxBytes: 1024}, time.Now())
-				maintenanceDone <- err
-			}()
-			defer func() { cancel(); <-maintenanceDone }()
-			select {
-			case <-maintenanceWaiting:
-			case <-ctx.Done():
-				t.Fatal("maintenance did not wait for the active build")
+			if report, err := cache.Maintain(ctx, toolcache.Policy{MaxBytes: 1024}, time.Now()); err != nil || report.SizeEvictedBytes != 0 || report.RetainedBytes < 2048 {
+				t.Fatalf("maintenance did not yield to the active build: %+v, %v", report, err)
 			}
 			if _, err := os.Stat(entry); err != nil {
 				t.Fatalf("maintenance evicted protected build entry: %v", err)
@@ -117,54 +100,40 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			secondCtx, cancelSecond := context.WithCancel(ctx)
 			defer cancelSecond()
 			secondDone := make(chan error, 1)
-			started := time.Now()
 			go func() {
-				_, err := second.Run(secondCtx, RunRequest{Issue: connector.Issue{ID: "second", Identifier: "owner/repository#2"}, WorkAttemptID: 2, Generation: 3, Execution: execution})
+				_, err := second.Run(secondCtx, RunRequest{Issue: connector.Issue{ID: "second", Identifier: "owner/repository#2"}, WorkAttemptID: 2, Generation: 3})
 				secondDone <- err
 			}()
 			defer func() { cancel(); <-secondDone }()
 			select {
 			case <-secondWorkspace.created:
-				t.Logf("second worker reached workspace setup after %s while first build remained protected", time.Since(started))
-			case <-time.After(time.Second):
-				t.Fatal("second worker stalled before workspace setup behind whole-attempt cache admission")
+			case <-ctx.Done():
+				t.Fatal("second worker stalled before workspace setup behind cache admission")
 			}
 			select {
-			case <-waits:
+			case <-secondTurn.started:
 			case <-ctx.Done():
-				t.Fatal("worker cache admission wait was not observable")
+				t.Fatal("second provider turn stalled behind unrelated protected work")
 			}
-			select {
-			case observation := <-execution.waiting:
-				if observation.Phase != "waiting_cache_admission" || observation.LocalAttemptID != 2 || observation.Generation != 3 || !observation.Identity.IsZero() || observation.Activity != nil {
-					t.Fatalf("cache wait misrepresented provider progress: %+v", observation)
-				}
-			case <-ctx.Done():
-				t.Fatal("cache wait missing from native runtime diagnostics")
-			}
-			if cancelWaiting {
+			if cancelSecondTurn {
 				cancelSecond()
 				select {
 				case err := <-secondDone:
 					secondDone <- err
 					if !errors.Is(err, context.Canceled) {
-						t.Fatalf("waiting worker cancellation: %v", err)
+						t.Fatalf("second worker cancellation: %v", err)
 					}
 				case <-ctx.Done():
-					t.Fatal("waiting worker did not cancel")
+					t.Fatal("second worker did not cancel")
 				}
 				if secondBackend.calls != 0 {
-					t.Fatal("waiting worker started provider work")
+					t.Fatal("canceled worker continued provider work")
 				}
 				if _, err := os.Stat(entry); err != nil {
 					t.Fatalf("canceled worker released another consumer's protection: %v", err)
 				}
-				select {
-				case err := <-maintenanceDone:
-					maintenanceDone <- err
-					t.Fatalf("maintenance passed the still-active build: %v", err)
-				default:
-				}
+			} else {
+				close(secondTurn.finish)
 			}
 			close(finishBuild)
 			select {
@@ -173,27 +142,22 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 				t.Fatal(ctx.Err())
 			}
 			select {
-			case err := <-maintenanceDone:
-				maintenanceDone <- err
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-ctx.Done():
-				t.Fatal("maintenance waited for the original attempt's non-build epilogue")
-			}
-			if _, err := os.Stat(entry); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("unprotected over-budget entry retained: %v", err)
-			}
-			select {
 			case err := <-secondDone:
 				secondDone <- err
-				if err != nil && (!cancelWaiting || !errors.Is(err, context.Canceled)) {
+				if err != nil && (!cancelSecondTurn || !errors.Is(err, context.Canceled)) {
 					t.Fatal(err)
 				}
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			if cancelWaiting {
+			report, err := cache.Maintain(ctx, toolcache.Policy{MaxBytes: 1024}, time.Now())
+			if err != nil || report.RetainedBytes > 1024 || report.SizeEvictedBytes != 2048 {
+				t.Fatalf("idle maintenance waited for non-build epilogue or failed to reclaim: %+v, %v", report, err)
+			}
+			if _, err := os.Stat(entry); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unprotected over-budget entry retained: %v", err)
+			}
+			if cancelSecondTurn {
 				third := newRunner(&fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, &fakeCodexClient{})
 				if _, err := third.Run(ctx, RunRequest{Issue: connector.Issue{ID: "third", Identifier: "owner/repository#3"}}); err != nil {
 					t.Fatalf("subsequent worker could not start: %v", err)
@@ -201,35 +165,6 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			}
 		})
 	}
-}
-
-type cacheAdmissionExecution struct {
-	testExecution
-	waiting chan tracker.NativeRuntimeObservation
-}
-
-func (e *cacheAdmissionExecution) ObserveRuntime(_ context.Context, observation tracker.NativeRuntimeObservation) error {
-	if strings.HasPrefix(observation.Phase, "waiting_cache_") {
-		e.waiting <- observation
-	}
-	return nil
-}
-
-type cacheWaitHandler struct {
-	slog.Handler
-	waits chan struct{}
-}
-
-func (h cacheWaitHandler) Handle(ctx context.Context, record slog.Record) error {
-	if record.Message == "worker_cache_wait" {
-		record.Attrs(func(attr slog.Attr) bool {
-			if attr.Key == "waiting" && attr.Value.Bool() {
-				h.waits <- struct{}{}
-			}
-			return true
-		})
-	}
-	return h.Handler.Handle(ctx, record)
 }
 
 type cacheAdmissionWorkspace struct {

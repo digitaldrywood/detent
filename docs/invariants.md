@@ -396,11 +396,15 @@ Workers inherit the host's native toolchain caches, except that an enrolled
 local Cloud runner may use one runner-owned Go build cache shared across its
 projects and daemon generations. That cache is bound to one canonical runtime
 store. The existing cache cleanup expires old entries and reclaims recent
-managed entries, oldest first, to meet its retained-size budget. Size eviction
-holds the existing admission and exclusive consumer locks, allowing active
-consumers to finish before removal and admitting new consumers afterward.
-Native operator caches retain age-only expiry. The cache budget is not an
-admission limit; actual low disk space retains its existing admission owner.
+managed entries, oldest first, toward its retained-size budget. Size eviction
+tries the existing admission and exclusive consumer locks without waiting and
+yields when either is busy. It never removes recent entries while a consumer
+is active or holds admission closed waiting for that consumer. The existing
+cleanup schedule retries reclamation; continuous consumers can defer it, so the
+budget is an eventual target rather than a hard size limit. Actual low disk
+space retains its existing admission owner; already-running consumers can
+continue writing during that admission hold. Native operator caches retain
+age-only expiry.
 
 Explicit operator cache overrides remain native and unmanaged. Local-board and
 SSH workers retain native build caches. The old native build cache is not
