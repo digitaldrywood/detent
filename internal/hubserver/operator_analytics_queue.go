@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -39,7 +40,10 @@ AND json_extract(c.data_json,'$.decision.source')='native_claim' AND json_extrac
 AND julianday(c.recorded_at)>=julianday(?) AND julianday(c.recorded_at)<julianday(?)
 ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 
-	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", statement, scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To))
+	visibility, visibilityArgs := reportsIssueClause(ctx, "c.work_item_id")
+	statement = strings.Replace(statement, "ORDER BY c.recorded_at,c.id", visibility+" ORDER BY c.recorded_at,c.id", 1)
+	args := append([]any{scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To)}, visibilityArgs...)
+	rows, err := queryAnalyticsPopulation(ctx, q, "capacity", statement, args...)
 	if err != nil {
 		return err
 	}

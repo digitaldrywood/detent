@@ -906,7 +906,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				t.Fatalf("other installation receipt = %q, error = %v", legacyRaw, legacyErr)
 			}
 			metadata, ok := readInstallLock(lockPath)
-			if !ok || metadata.commit != testUpdatedCommit {
+			if !ok || metadata.commit != testUpdatedCommit || metadata.sha256 != status.BinarySHA256 {
 				t.Fatalf("install lock = %#v, found = %t, want updated full commit", metadata, ok)
 			}
 		})

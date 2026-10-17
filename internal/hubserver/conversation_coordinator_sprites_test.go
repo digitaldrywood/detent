@@ -57,7 +57,7 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 		name, tool, arguments string
 		valid                 bool
 	}{
-		{"sandbox", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"sandbox"}`, true},
+		{"sandbox", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"sandbox"}`, false},
 		{"full access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"native-trusted"}`, true},
 		{"invalid access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"user"}`, false},
 		{"null access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":null}`, false},
@@ -100,6 +100,9 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 			_, err := decodeCoordinatorSpriteArguments(test.tool, json.RawMessage(test.arguments))
 			if (err == nil) != test.valid {
 				t.Fatalf("validation error=%v, valid=%t", err, test.valid)
+			}
+			if test.name == "sandbox" && (err == nil || !strings.Contains(coordinatorToolError(err).Content, "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.")) {
+				t.Fatalf("sandbox rejection = %v", err)
 			}
 			if err != nil && strings.Contains(err.Error(), "SECRET") {
 				t.Fatal("argument error exposed a credential")

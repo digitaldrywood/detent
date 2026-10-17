@@ -231,11 +231,21 @@ func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeSc
 		return observation, operatortool.ErrAccessDenied
 	}
 	if item != "" {
+		if err := requireReporterItem(ctx, s.database.reader, scope, item); err != nil {
+			return observation, err
+		}
 		if err := s.database.reader.QueryRowContext(ctx, "SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&observation.Sequence); err != nil {
 			return observation, err
 		}
 	} else {
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&observation.Sequence); err != nil {
+		statement := "SELECT COALESCE(MAX(rowid),0) FROM collaboration_events WHERE organization_id = ? AND project_id = ?"
+		args := []any{scope.organization, scope.project}
+		if scope.credential.HostedRole == "reporter" {
+			visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+			statement += " AND work_item_id IN (SELECT i.native_id FROM issues i WHERE (" + visibility + "))"
+			args = append(args, visibilityArgs...)
+		}
+		if err := s.database.reader.QueryRowContext(ctx, statement, args...).Scan(&observation.Sequence); err != nil {
 			return observation, err
 		}
 	}

@@ -25,7 +25,7 @@ import { AccountError } from "../account/api.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useMutation, useResource, type Resource } from "../account/useResource.ts";
 import { SettingsRow } from "../settings/settingsLayout.tsx";
-import { runnerAccessOptions, type RunnerAccessTier } from "./runnerAccess.ts";
+import { runnerAccessOptions, spriteSandboxUnavailableReason, type RunnerAccessTier } from "./runnerAccess.ts";
 
 /** The operations a runner needs to take issue runs and coordinator turns. */
 const ENROLLMENT_OPERATIONS = ["read", "collaborate", "claim", "heartbeat", "events"] as const;
@@ -228,7 +228,8 @@ export function EnrollRunnerDialog({
   const [location, setLocation] = React.useState<"machine" | "sprite">("machine");
   const [platform, setPlatform] = React.useState(runnerInstallPlatform);
   const [capacityText, setCapacityText] = React.useState("1");
-  const [isolationTier, setIsolationTier] = React.useState<RunnerAccessTier | null>(null);
+  const [machineIsolationTier, setMachineIsolationTier] = React.useState<RunnerAccessTier | null>(null);
+  const isolationTier = location === "sprite" ? "native-trusted" : machineIsolationTier;
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
   // the next opening's command.
@@ -274,7 +275,7 @@ export function EnrollRunnerDialog({
     generation.current += 1;
     setName(initialName);
     setCapacityText("1");
-    setIsolationTier(null);
+    setMachineIsolationTier(null);
     setService(true);
     setLocation("machine");
     setPlatform(runnerInstallPlatform());
@@ -423,11 +424,11 @@ export function EnrollRunnerDialog({
             <fieldset disabled={enrollment !== null} className="flex flex-col gap-4">
               <fieldset className="flex flex-col gap-2 text-[13px]">
                 <legend id="enroll-agent-access" className="pb-1 font-medium">Agent access</legend>
-                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setIsolationTier(value as RunnerAccessTier)}>
+                <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setMachineIsolationTier(value as RunnerAccessTier)}>
                   {runnerAccessOptions.map(({ tier, label, hint }) => (
                     <label key={tier} className="flex cursor-pointer items-start gap-2">
-                      <Radio value={tier} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
-                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{hint}</span></span>
+                      <Radio value={tier} disabled={location === "sprite" && tier === "sandbox"} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
+                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{location === "sprite" && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
                     </label>
                   ))}
                 </RadioGroup>

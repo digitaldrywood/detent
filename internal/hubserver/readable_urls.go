@@ -372,6 +372,9 @@ func (s *Service) readablePage(ctx context.Context, credential apiCredential, pa
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND number=?", scope.organization, scope.project, number).Scan(&id); err != nil {
 		return "", "", "", err
 	}
+	if err := requireReporterItem(ctx, s.database.reader, scope, id); err != nil {
+		return "", "", "", err
+	}
 	canonical = issueBrowserPath(orgSlug, projectSlug, number)
 	if len(parts) == 5 {
 		var count int
@@ -432,6 +435,9 @@ func (s *Service) readableShellPath(c echo.Context) (string, bool, error) {
 		}
 		scope := nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), project: tracker.ProjectID(project), credential: credential}
 		if err := s.requireHostedProject(c.Request().Context(), s.database.reader, scope, false); err != nil {
+			return "", false, err
+		}
+		if err := requireReporterItem(c.Request().Context(), s.database.reader, scope, id); err != nil {
 			return "", false, err
 		}
 		target, err := s.issueBrowserURL(c.Request().Context(), id)

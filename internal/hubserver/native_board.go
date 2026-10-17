@@ -331,6 +331,27 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 				return frame, err
 			}
 		}
+		if delta.Previous != nil && !scope.reporterOwns(delta.Previous.Issue.Actor) {
+			delta.Previous = nil
+		}
+		if delta.Current != nil && !scope.reporterOwns(delta.Current.Issue.Actor) {
+			delta.Current = nil
+		}
+		if delta.Previous == nil && delta.Current == nil {
+			continue
+		}
+		if scope.credential.HostedRole == "reporter" {
+			for _, card := range []*tracker.NativeBoardCard{delta.Previous, delta.Current} {
+				if card == nil || card.Change == nil {
+					continue
+				}
+				if _, err := readChange(ctx, q, scope, string(card.Issue.WorkItemID), card.Change.ID); isNativeNotFound(err) {
+					card.Change = nil
+				} else if err != nil {
+					return frame, err
+				}
+			}
+		}
 		if delta.Previous != nil {
 			if err := readNativeDependencyDetails(ctx, q, scope, &delta.Previous.Issue); errors.Is(err, sql.ErrNoRows) {
 				delta.Previous = nil
@@ -344,6 +365,12 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 			} else if err != nil {
 				return frame, err
 			}
+		}
+		if delta.Previous != nil {
+			delta.Previous.Issue = scope.reporterIssue(delta.Previous.Issue)
+		}
+		if delta.Current != nil {
+			delta.Current.Issue = scope.reporterIssue(delta.Current.Issue)
 		}
 		redactNativeBoardCard(delta.Previous, grants)
 		redactNativeBoardCard(delta.Current, grants)

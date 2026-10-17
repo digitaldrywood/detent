@@ -1027,7 +1027,9 @@ negotiation fails without switching tracker or scheduler.
 
 A person-filed native issue that enters Done gets `verification: {"state": "pending"}`, and its filer's issue email asks them to verify it. Worker, service-key, imported and origin-stamped issues never enter `pending`. The filer, or a member and above, answers with `POST /work-items/{id}/verification` or MCP `verify_fix`; a Reporter may answer only on issues they filed, which is a Reporter's only path out of Done. `verified` records `verified_by` and `verified_at` and keeps the issue in Done. `not_fixed` adds the required comment and moves the issue from Done to Todo with reason `user_requested`, so quality analytics count the reopen exactly as a manual one. Leaving Done clears the state. `GET /work-items` accepts `verification=pending` or `verified`. Verification never dispatches, blocks or lands work.
 
-Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type; Reporters cannot edit issue fields. Type edits appear in issue history, and labels remain independent of the type.
+Native issue `type` is required when a Reporter files and optional for other roles, including workers and machine reports. Untyped issues omit the field in reads. Members may edit the type. Reporters may edit only the title, body and attachment references on their own issues while in Triage; labels, priority, assignees, state and type remain refused. Once an issue leaves Triage, the response explains that it is already with the team and a comment can add details. Reporter edits do not confirm engineering issue-contract sections. Type edits appear in issue history, and labels remain independent of the type.
+
+Reporter REST, SSE and MCP reads are restricted to issues whose actor principal matches the caller's human principal, including personal keys and OAuth clients. Lists, search, exports, board counts and board deltas use the same ownership boundary. Other filers' issues return not found; dependencies, related links and attachment references to those issues are omitted. Reporter issue resources include `reporter_status`: Triage is `submitted`; Backlog and Todo are `planned`; In Progress, In Review, Rework, Merging and Blocked are `in_progress`; Done is `done`; Cancelled is `cancelled`. Cancelling an own issue still uses `move_item` to Cancelled. Filing, comments and `verify_fix` retain their reporter contracts.
 
 The following paths are relative to
 `/api/v2/organizations/{organization_id}/projects/{project_id}`. Worker and
@@ -2488,11 +2490,26 @@ this delegation.
 
 The Hub requires the authenticated source author `github-actions[bot]`, a source
 repository equal to the configured checkout repository, and the existing
-importer's independent verification of `.github/workflows/ci.yml`. It verifies
-the run attempt, repository and head repository, `develop` or `release/v*`
-branch, scheduled/push/manual event, tested head SHA and completed failed or
-timed-out job. The approved policy and checkout binding are rechecked during
-creation, and Todo must be dispatchable, nonterminal and not operator-only.
+importer's independent verification of the repository's CI workflow and branch.
+The approved repair contract may instead select one exact workflow and branch
+with this authorization sentence before its five subsections:
+
+> New verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority.
+
+This selection comes only from the operator-approved project workflow, never
+from the imported report, labels or webhook payload. Paths must name a single
+YAML file directly under `.github/workflows/`; wildcards are not supported.
+The original authorization sentence retains `.github/workflows/ci.yml` on
+`develop` or `release/v*`. An explicit selection replaces those defaults and
+requires both the named path and branch to match exactly. For example,
+`example-org/example-project` may select `ci.yaml` on `dev` through its approved
+`WORKFLOW.md`; the same run remains ineligible without that selection.
+The approved contract and configured checkout repository binding are always
+required. The importer verifies
+the run attempt, repository and head repository, scheduled/push/manual event,
+tested head SHA and completed failed or timed-out job. The approved policy and
+checkout binding are rechecked during creation, and Todo must be dispatchable,
+nonterminal and not operator-only.
 Only then does a new report receive Todo, native priority `0` (Urgent), and
 confirmation of the bounded approved sections. Source diagnostics remain quoted
 as untrusted evidence. Labels such as `detent:todo` and `hotfix` confer no

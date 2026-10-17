@@ -163,15 +163,15 @@ func TestNativeIssueVerificationAnswers(t *testing.T) {
 	}{
 		{name: "filer verifies", filer: "reporter", answerer: "reporter", result: "verified", status: http.StatusOK, state: "Done", verified: true},
 		{name: "member verifies", filer: "reporter", answerer: "member", result: "verified", status: http.StatusOK, state: "Done", verified: true},
-		{name: "other Reporter verifies", filer: "reporter", answerer: "tester", result: "verified", status: http.StatusForbidden, state: "Done"},
-		{name: "Reporter on member issue", filer: "member", answerer: "reporter", result: "verified", status: http.StatusForbidden, state: "Done"},
+		{name: "other Reporter verifies", filer: "reporter", answerer: "tester", result: "verified", status: http.StatusNotFound, state: "Done"},
+		{name: "Reporter on member issue", filer: "member", answerer: "reporter", result: "verified", status: http.StatusNotFound, state: "Done"},
 		{name: "not fixed without comment", filer: "reporter", answerer: "reporter", result: "not_fixed", status: http.StatusUnprocessableEntity, state: "Done"},
 		{name: "not fixed blank comment", filer: "reporter", answerer: "reporter", result: "not_fixed", comment: "   ", status: http.StatusUnprocessableEntity, state: "Done"},
 		{name: "unknown result", filer: "reporter", answerer: "reporter", result: "maybe", status: http.StatusUnprocessableEntity, state: "Done"},
 		{name: "filer not fixed", filer: "reporter", answerer: "reporter", result: "not_fixed", comment: "Saving still loses the change.", status: http.StatusOK, state: "Todo"},
 		{name: "member not fixed", filer: "reporter", answerer: "member", result: "not_fixed", comment: "Still reproduces on staging.", status: http.StatusOK, state: "Todo"},
 		{name: "archived not fixed", filer: "reporter", answerer: "reporter", result: "not_fixed", comment: "Still broken after auto-archive.", status: http.StatusOK, state: "Todo", archived: true},
-		{name: "other Reporter not fixed", filer: "reporter", answerer: "tester", result: "not_fixed", comment: "Not mine to answer.", status: http.StatusForbidden, state: "Done"},
+		{name: "other Reporter not fixed", filer: "reporter", answerer: "tester", result: "not_fixed", comment: "Not mine to answer.", status: http.StatusNotFound, state: "Done"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := v.file(t, test.filer, "answer-"+test.name, nil, "")

@@ -838,6 +838,7 @@ test("shares project scope between the sidebar and Work across reloads", async (
   await page.reload();
   await expectProject(projects[1]);
   await page.getByTestId("nav-chat").click();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
   await page.getByTestId("nav-work").click();
   await expectProject(projects[1]);
   await selectScope(projects[0].name);
@@ -862,6 +863,7 @@ test("shares project scope between the sidebar and Work across reloads", async (
   await page.reload();
   await expectAll();
   await page.getByTestId("nav-chat").click();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
   await page.reload();
   await page.getByTestId("nav-work").click();
   await expectAll();

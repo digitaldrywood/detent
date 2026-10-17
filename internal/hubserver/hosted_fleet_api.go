@@ -208,12 +208,23 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
+	if credential.HostedRole == "reporter" {
+		visibleIssues, err := reporterIssueIDs(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+		if err != nil {
+			return hostedFleetResponse{}, err
+		}
+		for index := range runners {
+			runners[index].Leases = slices.DeleteFunc(runners[index].Leases, func(lease hostedFleetLease) bool { return !visibleIssues[string(lease.WorkItemID)] })
+		}
+	}
 	var projects int
 	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
 		return hostedFleetResponse{}, err
 	}
-	if len(readable) < projects {
+	if credential.HostedRole == "reporter" || len(readable) < projects {
 		scopeHostUsage(runners)
+	}
+	if len(readable) < projects {
 		reservations, err := s.hostedVisibleReservations(ctx, visible)
 		if err != nil {
 			return hostedFleetResponse{}, err

@@ -38,6 +38,9 @@ func resolveNativeDuplicatesTx(ctx context.Context, tx *sql.Tx, scope nativeScop
 		window = " AND ((ws.terminal = 0 AND i.archived = 0) OR (ws.terminal = 1 AND julianday(COALESCE(" + nativeTerminalEnteredAt + ", i.native_created_at)) >= julianday(?)))"
 		args = append(args, formatHubTime(now.AddDate(0, 0, -30)))
 	}
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	window += " AND (" + visibility + ")"
+	args = append(args, visibilityArgs...)
 	var matches []possibleDuplicate
 	if _, stamped := issueorigin.Parse(request.Body); stamped {
 		rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.number, i.title, ws.detent_state,

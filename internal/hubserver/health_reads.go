@@ -73,10 +73,19 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		return page, err
 	}
 	resolved := state == "resolved"
+	visibility := ""
+	args := []any{scope.project, scope.organization, state, resolved, scope.project, state, since, since, since, after}
+	if scope.credential.HostedRole == "reporter" {
+		condition, visibilityArgs := scope.issueVisibilitySQL("i")
+		visibility = " AND EXISTS(SELECT 1 FROM health_finding_issues fi JOIN issues i ON i.native_id=fi.work_item_id WHERE fi.finding_id=health_findings.id AND i.organization_id=? AND i.project_id=? AND (" + condition + "))"
+		args = append(args, scope.organization, scope.project)
+		args = append(args, visibilityArgs...)
+	}
+	args = append(args, limit+1)
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
  COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
  WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
- AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>? ORDER BY rowid LIMIT ?`, scope.project, scope.organization, state, resolved, scope.project, state, since, since, since, after, limit+1)
+ AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>?`+visibility+` ORDER BY rowid LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}

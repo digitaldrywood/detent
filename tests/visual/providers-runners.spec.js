@@ -394,7 +394,10 @@ test("Sprite pool row saves its limits without exposing setup fields on the list
   await openFleet(page, fleet, "", false, { ...spritePool, min_runners: 0, max_runners: 0, members: [] });
   const row = page.getByTestId("sprite-pool-row");
   await expect(row).toContainText("Not set up. Sprites start runners for every project when work is queued.");
-  await expect(row.getByRole("link", { name: "Set up Sprites", exact: true })).toHaveAttribute("href", "/settings/integrations#sprites");
+  await row.getByRole("button", { name: "Set up Sprites", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Organization Sprite pool" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Organization Sprite pool" })).toHaveCount(0);
   await expect(row.getByRole("link", { name: "Set a Sprites token" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Needs attention 1" })).toBeVisible();
   await page.getByRole("link", { name: "Needs attention 1" }).click();

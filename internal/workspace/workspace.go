@@ -49,6 +49,8 @@ var (
 	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
 )
 
+var nativeIdentifierPattern = regexp.MustCompile(`^(prj_[a-z0-9]+)#[1-9][0-9]*$`)
+
 var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
 // autoBranchPrefix is the namespace every branch this backend creates lives
@@ -657,7 +659,25 @@ func SafeKey(identifier string) string {
 	return key
 }
 
+func nativeProjectID(issue Issue) string {
+	if !strings.HasPrefix(issue.ID, "wi_") {
+		return ""
+	}
+	parts := nativeIdentifierPattern.FindStringSubmatch(issue.Identifier)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
+}
+
 func issueKey(issue Issue) string {
+	if project := nativeProjectID(issue); project != "" {
+		issue.ProjectID = project
+	}
+	return legacyIssueKey(issue)
+}
+
+func legacyIssueKey(issue Issue) string {
 	identifierKey := SafeKey(issue.Identifier)
 	projectKey := SafeKey(issue.ProjectID)
 	if strings.TrimSpace(issue.ProjectID) == "" {
@@ -698,8 +718,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
-		if checkpoint.transaction != nil && (!issue.NativeRework || checkpoint.transaction.Branch != info.Branch) {
-			return Info{}, fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
+			return Info{}, err
 		}
 		issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		exists, isDir, err := pathExists(info.Path)
@@ -951,12 +971,7 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-
-	return Info{
-		Path:   path,
-		Key:    key,
-		Branch: l.branchName(issue, key),
-	}, nil
+	return Info{Path: path, Key: key, Branch: l.branchName(issue, key)}, nil
 }
 
 // Existing reports the worktree this backend keeps for issue without creating

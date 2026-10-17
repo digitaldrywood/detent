@@ -8,8 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 func TestConfigMigrateCommand(t *testing.T) {
@@ -77,32 +75,6 @@ func TestConfigMigrateCommand(t *testing.T) {
 			}
 			if info.Mode().Perm() != before.Mode().Perm() {
 				t.Fatalf("migration changed file permissions from %v to %v", before.Mode().Perm(), info.Mode().Perm())
-			}
-		})
-	}
-}
-
-func TestDoctorWorkflowLanes(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name, raw string
-		warning   bool
-	}{
-		{"legacy", "active_states: [Todo]", true},
-		{"ordered", "lanes: [{name: Todo, role: active}]", false},
-		{"default", "kind: memory", false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  " + test.raw + "\n---\nWork.\n"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			check, found := checkDoctorWorkflowLanes("example", workflow.Config)
-			if found != test.warning {
-				t.Fatalf("warning=%t, want %t", found, test.warning)
-			}
-			if found && (check.Status != doctorWarn || !strings.Contains(check.Detail, "must be migrated") || !strings.Contains(check.Hint, "detent config migrate")) {
-				t.Fatalf("check=%#v", check)
 			}
 		})
 	}

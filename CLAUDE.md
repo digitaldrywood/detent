@@ -104,6 +104,7 @@ as other stages. A project turns it off with `gate.security_audit.enabled: false
 
 - Follow [docs/diagnosis.md](docs/diagnosis.md) before making causal claims about runtime behavior.
 - Throughput, concurrency, regressions, and slowdowns require recorded history; `/api/v1/state` is only a point-in-time snapshot.
+- Follow the [recovery operating procedure](docs/diagnosis.md#recovery-operating-procedure) through post-rollout delivery verification and explicit monitoring handoff; a release or occupied slots alone do not establish recovery.
 
 ## Tooling
 

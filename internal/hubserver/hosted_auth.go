@@ -414,6 +414,9 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 			return nativeNotFound()
 		}
 		if scope.credential.HostedRole == "reporter" && scope.actionItem != "" {
+			if err := requireReporterItem(ctx, tx, *scope, scope.actionItem); err != nil {
+				return err
+			}
 			switch scope.action {
 			case operatortool.MoveItem:
 				issue, _, err := readNativeIssue(ctx, tx, *scope, scope.actionItem)

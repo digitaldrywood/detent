@@ -146,7 +146,14 @@ func (r *StartupRecovery) MarkHealthy(ctx context.Context) error {
 			}
 			r.state.PendingUpdate = nil
 		default:
-			return fmt.Errorf("running Detent version %q matches neither pending update version %q nor previous version %q", r.cfg.CurrentVersion, pending.ToVersion, pending.FromVersion)
+			if err := r.confirmSupersedingInstall(ctx, pending); err != nil {
+				return fmt.Errorf("running Detent version %q cannot supersede pending update %q: %w", r.cfg.CurrentVersion, pending.ToVersion, err)
+			}
+			if err := r.removePreviousBinary(pending.PreviousBinaryPath); err != nil {
+				return err
+			}
+			r.state.PendingUpdate = nil
+			r.state.Schema = startupRecoveryStateSchema
 		}
 	}
 
@@ -178,6 +185,38 @@ func (r *StartupRecovery) HandleFailure(ctx context.Context, cause error) {
 	}
 	r.signalCrashLoop(ctx)
 	r.waitBeforeRetry(ctx)
+}
+
+func (r *StartupRecovery) confirmSupersedingInstall(ctx context.Context, pending *PendingUpdate) error {
+	for _, previous := range []string{pending.FromVersion, pending.ToVersion} {
+		comparison, err := CompareVersions(r.cfg.CurrentVersion, previous)
+		if err != nil || comparison <= 0 {
+			return errors.New("running version is not newer than the pending installation")
+		}
+	}
+	if r.cfg.ExecutablePath == "" || !samePath(r.cfg.ExecutablePath, pending.ExecutablePath, r.cfg.GOOS) {
+		return errors.New("running executable differs from the pending installation")
+	}
+	path, found := installLockPath(r.cfg.GOOS, DetectionOptions{HomeDir: r.cfg.HomeDir, Env: r.cfg.Env})
+	if !found {
+		return errors.New("verified release installation receipt is unavailable")
+	}
+	receipt, found := readInstallLock(path)
+	if !found || !samePath(receipt.binary, pending.ExecutablePath, r.cfg.GOOS) || receipt.version != r.cfg.CurrentVersion || !sameExactCommit(receipt.commit, r.cfg.CurrentCommit) || receipt.sha256 == "" {
+		return errors.New("verified release installation receipt does not match the running build")
+	}
+	verify := binaryIdentityVerifier(r.cfg.BinaryVerifier, r.cfg.CurrentVersion, r.cfg.CurrentCommit)
+	if _, err := verify(ctx, pending.ExecutablePath); err != nil {
+		return fmt.Errorf("confirm superseding Detent installation: %w", err)
+	}
+	installed, err := os.ReadFile(pending.ExecutablePath)
+	if err != nil {
+		return fmt.Errorf("read superseding Detent installation: %w", err)
+	}
+	if !strings.EqualFold(receipt.sha256, fmt.Sprintf("%x", sha256.Sum256(installed))) {
+		return errors.New("superseding executable differs from the verified release installation")
+	}
+	return nil
 }
 
 func (r *StartupRecovery) recordFailure(cause error) (StartupFailure, *PendingUpdate, bool, error) {
@@ -335,7 +374,7 @@ func restorePendingInstallLock(pending PendingUpdate, goos string, opts Detectio
 		return removePendingReleaseInstallLock(path, pending, goos)
 	}
 	if pending.InstallSource == InstallSourceRelease {
-		return writeReleaseInstallLock(goos, opts, pending.ExecutablePath, pending.FromVersion, pending.FromCommit)
+		return writeReleaseInstallLock(goos, opts, pending.ExecutablePath, pending.FromVersion, pending.FromCommit, "")
 	}
 	resolved, ok := installLockPath(goos, opts)
 	if !ok {

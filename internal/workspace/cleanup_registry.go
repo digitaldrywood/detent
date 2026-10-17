@@ -63,7 +63,7 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 	if record.Key != filepath.Base(path) {
 		return fmt.Errorf("cleanup ownership key %q does not match workspace path %q", record.Key, path)
 	}
-	if record.Identifier != "" && issueKey(issue) != record.Key {
+	if record.Identifier != "" && !issueOwnsKey(issue, record.Key) {
 		return fmt.Errorf("cleanup ownership issue does not match workspace key %q", record.Key)
 	}
 	_, err = l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(path))
@@ -205,7 +205,7 @@ func (l *LocalGit) validOwnershipRecord(ctx context.Context, relativePath string
 	if cleanupOwnershipRecordRelativePath(path) != relativePath {
 		return false
 	}
-	if record.Identifier != "" && issueKey(Issue{ProjectID: record.ProjectID, Identifier: record.Identifier}) != record.Key {
+	if record.Identifier != "" && !issueOwnsKey(Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier}, record.Key) {
 		return false
 	}
 	sourceCommonDir, err := gitCommonDir(ctx, l.sourceRoot)
@@ -220,6 +220,7 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 	activeKeys := make(map[string]struct{}, len(activeIssues))
 	for _, issue := range activeIssues {
 		activeKeys[issueKey(issue)] = struct{}{}
+		activeKeys[legacyIssueKey(issue)] = struct{}{}
 	}
 	result := ReconcileResult{}
 	seen := map[string]bool{}
@@ -244,7 +245,7 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 		if cleanupBatchExhausted(ctx) {
 			break
 		}
-		if _, active := activeKeys[record.Key]; active {
+		if _, active := activeKeys[record.Key]; active || nativeOwnershipActive(record, activeIssues) {
 			result.ActiveSkipped++
 			continue
 		}
@@ -365,4 +366,17 @@ func (l *LocalGit) unrecordedWorkspaces(ctx context.Context, recorded map[string
 		records = append(records, cleanupOwnershipRecord{Path: path, Key: key, Branch: branch})
 	}
 	return records, nil
+}
+
+func issueOwnsKey(issue Issue, key string) bool {
+	return issueKey(issue) == key || nativeProjectID(issue) != "" && legacyIssueKey(issue) == key
+}
+
+func nativeOwnershipActive(record cleanupOwnershipRecord, issues []Issue) bool {
+	for _, issue := range issues {
+		if nativeProjectID(issue) != "" && record.IssueID == issue.ID && record.Identifier == issue.Identifier {
+			return true
+		}
+	}
+	return false
 }

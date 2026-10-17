@@ -687,3 +687,57 @@ func TestSpritePoolSettingsValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestSpritePoolAccessSettings(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		tier   *string
+		legacy bool
+		status int
+		want   string
+	}{
+		{"default", nil, false, http.StatusOK, "native-trusted"},
+		{"full access", new("native-trusted"), false, http.StatusOK, "native-trusted"},
+		{"sandbox refused", new("sandbox"), false, http.StatusUnprocessableEntity, "native-trusted"},
+		{"legacy omitted", nil, true, http.StatusOK, "sandbox"},
+		{"legacy sandbox refused", new("sandbox"), true, http.StatusUnprocessableEntity, "sandbox"},
+		{"legacy switch approved", new("native-trusted"), true, http.StatusOK, "native-trusted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			path := f.base + "/sprite-pool"
+			var before spritePoolView
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), &before)
+			if test.legacy {
+				response := performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, map[string]any{"min_runners": 0, "max_runners": 0, "revision": before.Revision})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &before)
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE organization_sprite_pools SET isolation_tier='sandbox' WHERE organization_id=?", f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			input := map[string]any{"min_runners": 0, "max_runners": 0, "revision": before.Revision}
+			if test.tier != nil {
+				input["isolation_tier"] = *test.tier
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, path, testHubAdminToken, input)
+			requireNativeStatus(t, response, test.status)
+			if test.status != http.StatusOK && !strings.Contains(response.Body.String(), "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox.") {
+				t.Fatalf("sandbox rejection = %s", response.Body.String())
+			}
+			var after spritePoolView
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), &after)
+			wantRevision := before.Revision
+			if test.status == http.StatusOK {
+				wantRevision++
+			}
+			if after.IsolationTier != test.want || after.Revision != wantRevision {
+				t.Fatalf("pool = %+v, want tier %s revision %d", after, test.want, wantRevision)
+			}
+			if test.want == "sandbox" && after.IsolationTierUnavailableReason != "Not available on Fly Sprites yet: the Sprite VM does not support the agent sandbox." {
+				t.Fatalf("legacy pool reason = %q", after.IsolationTierUnavailableReason)
+			}
+		})
+	}
+}

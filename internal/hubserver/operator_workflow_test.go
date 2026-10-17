@@ -509,10 +509,13 @@ func assertPolicyInputSchema(t *testing.T, schema map[string]any, value any, pat
 }
 
 func TestWorkflowExecutionFailureProjection(t *testing.T) {
+	direction := &operatortool.RequestError{Code: "invalid_request", Message: "Use the linked issue conversation continuation owner"}
 	for _, test := range []struct {
 		name, message string
 		err, safe     error
 	}{
+		{"continuation direction", direction.Message, direction, operatortool.ErrInvalidArguments},
+		{"active claim", operatortool.ErrServiceUnavailable.Error(), tracker.ErrLeaseConflict, operatortool.ErrServiceUnavailable},
 		{"graph", "Workflow transition is not allowed", &nativeError{Code: "transition_not_allowed", Message: "credential-secret", Details: map[string]any{"private": "credential-secret"}, status: http.StatusUnprocessableEntity}, operatortool.ErrInvalidArguments},
 		{"revision", "Resource has changed", &nativeError{Code: "revision_conflict", Message: "credential-secret", CurrentRevision: 9, status: http.StatusConflict}, mutation.ErrConflict},
 		{"foreign graph", operatortool.ErrAccessDenied.Error(), &nativeError{Code: "transition_not_allowed", Message: "credential-secret", status: http.StatusForbidden}, operatortool.ErrAccessDenied},

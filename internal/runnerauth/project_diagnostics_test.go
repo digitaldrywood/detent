@@ -31,6 +31,45 @@ func TestRunnerDiagnosticPages(t *testing.T) {
 			}
 		})
 	}
+	for _, test := range []struct {
+		name, value, want string
+		operation         string
+		code              string
+		pending           bool
+		unavailable       bool
+	}{
+		{"known", "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]", "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]", "append.run.observed", "invalid_request", true, false},
+		{"unknown category", "publication rejected: category=sentinel-secret field=data.runtime.activity [private error text omitted]", "[private error text omitted]", "append.run.observed", "invalid_request", true, true},
+		{"forged field", "publication rejected: category=runtime_validation field=sentinel-secret [private error text omitted]", "[private error text omitted]", "append.run.observed", "invalid_request", true, true},
+		{"prefix", "sentinel-secret publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted]", "[private error text omitted]", "append.run.observed", "invalid_request", true, true},
+		{"suffix", "publication rejected: category=runtime_validation field=data.runtime.activity [private error text omitted] sentinel-secret", "[private error text omitted]", "append.run.observed", "invalid_request", true, true},
+		{"unclassified", "sentinel-secret", "[private error text omitted]", "append.run.observed", "invalid_request", false, true},
+		{"unavailable publication", "sentinel-secret", "[private error text omitted]", "native.publishVersion", "unavailable", true, true},
+		{"started publication", "sentinel-secret", "[private error text omitted]", "append.run.started", "unavailable", true, true},
+		{"checkpoint publication", "sentinel-secret", "[private error text omitted]", "append.run.checkpointed", "unavailable", true, true},
+		{"finished publication", "sentinel-secret", "[private error text omitted]", "append.run.finished", "unavailable", true, true},
+		{"finalize timeout", "context deadline exceeded sentinel-secret", "context deadline exceeded [private error text omitted]", "workspace.finalize_native_work", "context_deadline_exceeded", true, false},
+		{"settle transport", "connection refused sentinel-secret", "connection refused [private error text omitted]", "native.settle", "unavailable", true, false},
+		{"prepare finish", "sentinel-secret", "[private error text omitted]", "native.prepare_finish", "unavailable", true, false},
+		{"post diff invalid", "sentinel-secret", "[private error text omitted]", "native.postDiff", "invalid_request", true, false},
+		{"unknown operation", "sentinel-secret", "[private error text omitted]", "", "invalid_request", true, false},
+		{"publication without failure", "", "", "native.publishVersion", "", true, false},
+		{"settled publication", "sentinel-secret", "[private error text omitted]", "native.publishVersion", "unavailable", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := &ProjectDiagnostics{Records: []DiagnosticAttempt{{LatestErrorCode: test.code, LatestError: test.value, HostOperation: test.operation, OperationPending: test.pending}}}
+			snapshot.Redact()
+			snapshot.Redact()
+			r := snapshot.Records[0]
+			if r.LatestError != test.want {
+				t.Fatalf("error = %q", r.LatestError)
+			}
+			if got := r.Unavailable["publication_rejection"] == "unavailable"; got != test.unavailable {
+				t.Fatalf("publication rejection unavailable = %t, want %t", got, test.unavailable)
+			}
+		})
+	}
+
 	seen := map[string]bool{}
 	cursor := ""
 	for {

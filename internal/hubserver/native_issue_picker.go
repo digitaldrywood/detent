@@ -15,12 +15,13 @@ import (
 const nativeIssuePickerFields = "picker"
 
 type nativeIssuePickerItem struct {
-	WorkItemID tracker.NativeWorkItemID `json:"work_item_id"`
-	Number     int                      `json:"number"`
-	Title      string                   `json:"title"`
-	State      string                   `json:"state"`
-	Terminal   bool                     `json:"terminal"`
-	Priority   *int                     `json:"priority,omitempty"`
+	WorkItemID     tracker.NativeWorkItemID `json:"work_item_id"`
+	Number         int                      `json:"number"`
+	Title          string                   `json:"title"`
+	State          string                   `json:"state"`
+	ReporterStatus string                   `json:"reporter_status,omitempty"`
+	Terminal       bool                     `json:"terminal"`
+	Priority       *int                     `json:"priority,omitempty"`
 }
 
 type nativeIssuePickerPage struct {
@@ -47,12 +48,13 @@ func nativeIssuePickerResponse(page tracker.NativeIssuePage) nativeIssuePickerPa
 	items := make([]nativeIssuePickerItem, 0, len(page.Items))
 	for _, issue := range page.Items {
 		items = append(items, nativeIssuePickerItem{
-			WorkItemID: issue.WorkItemID,
-			Number:     issue.Number,
-			Title:      issue.Title,
-			State:      issue.State,
-			Terminal:   issue.Terminal,
-			Priority:   issue.Priority,
+			WorkItemID:     issue.WorkItemID,
+			Number:         issue.Number,
+			Title:          issue.Title,
+			State:          issue.State,
+			ReporterStatus: issue.ReporterStatus,
+			Terminal:       issue.Terminal,
+			Priority:       issue.Priority,
 		})
 	}
 	return nativeIssuePickerPage{Items: items, NextCursor: page.NextCursor, Total: page.Total}
@@ -92,7 +94,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id IN (`+placehold
 			value := int(priority.Int64)
 			issue.Priority = &value
 		}
-		found[id] = issue
+		found[id] = scope.reporterIssue(issue)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read picker rows: %w", err)
