@@ -195,8 +195,10 @@ it.each(["no repository", "configuration needed", "policy pending", "policy repo
     await user.click(screen.getByRole("radio", { name: "Create configuration files" }));
     await user.click(screen.getByRole("button", { name: "Save configuration choice" }));
     expect(screen.queryByRole("button", { name: "Approve settings" })).toBeNull();
-    const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
-    expect((await saved.json()).progress.repository).toBe("generate");
+    await waitFor(async () => {
+      const saved = await fetch(`${client!.http.origin}${client!.http.apiBase}/projects/proj_beta/onboarding`);
+      expect((await saved.json()).progress.repository).toBe("generate");
+    });
     expect(approveRequests).toEqual([]);
     return;
   }

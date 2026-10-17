@@ -410,7 +410,16 @@ export default defineConfig({
   // `?worker` suffix. Rollup refuses the default `iife` worker format once the
   // graph code-splits, which this one does, so the workers are ES modules —
   // which every browser that can run the rest of this bundle supports.
-  worker: { format: "es", rollupOptions: { output: { hashCharacters: "hex" } } },
+  worker: {
+    format: "es",
+    rollupOptions: {
+      output: {
+        hashCharacters: "hex",
+        assetFileNames: (asset) => asset.names?.some((name) => name.endsWith(".mjs"))
+          ? "assets/[name]-[hash].js" : "assets/[name]-[hash][extname]",
+      },
+    },
+  },
   build: {
     outDir: "../../static/app/conversation",
     emptyOutDir: true,
