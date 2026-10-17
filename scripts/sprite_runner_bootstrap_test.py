@@ -452,44 +452,42 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "detent-env.json").read_text()), {
             "MAKEFLAGS": "-l2",
             "TMPDIR": str(local / "work/.tmp"),
-            "XDG_CACHE_HOME": str(local / "cache"),
-            "GOMODCACHE": str(local / "cache/go-mod"),
-            "npm_config_cache": str(local / "cache/npm"),
-            "PLAYWRIGHT_BROWSERS_PATH": str(self.home / ".cache/ms-playwright"),
+            "XDG_CACHE_HOME": None,
+            "GOMODCACHE": None,
+            "npm_config_cache": None,
+            "PLAYWRIGHT_BROWSERS_PATH": None,
         })
-        self.assertIn(f"Local disk: build caches in {local / 'cache'}", first.stdout)
+        native = {
+            self.home / ".cache/go-build": local / "cache/go-build",
+            self.home / ".cache/detent": local / "cache/detent",
+            self.home / ".cache/golangci-lint": local / "cache/golangci-lint",
+            self.home / "go/pkg/mod": local / "cache/go-mod",
+            self.home / ".npm": local / "cache/npm",
+        }
+        for link, target in native.items():
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(pathlib.Path(os.readlink(link)), target)
+        self.assertFalse((self.home / ".cache/ms-playwright").is_symlink())
+        self.assertIn(f"Local disk: checkouts in {local / 'work'}; native caches linked into {local / 'cache'}", first.stdout)
         shutil.rmtree(local)
         (self.root / "detent-cwd").unlink()
         lost = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
         self.assertEqual(lost.returncode, 0, lost.stderr)
         self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
-        operator_modules = self.root / "operator-modules"
-        operator_npm = self.root / "operator-npm"
-        self.env.update(GOMODCACHE=str(operator_modules), NPM_CONFIG_CACHE=str(operator_npm))
+        for link in native:
+            self.assertTrue(link.resolve().is_dir(), link)
+        for link in (self.home / "go/pkg/mod", self.home / ".npm"):
+            link.unlink()
+        (self.home / ".npm").mkdir()
+        (self.home / ".npm/_cacache").mkdir()
+        self.env.update(GOMODCACHE=str(self.root / "operator-modules"))
         operator = self.run_bootstrap(enrollment="")
-        del self.env["GOMODCACHE"], self.env["NPM_CONFIG_CACHE"]
+        del self.env["GOMODCACHE"]
         self.assertEqual(operator.returncode, 0, operator.stderr)
-        exports = [shlex.split(line) for line in launcher.read_text().splitlines()]
-        self.assertIn(["export", f"GOMODCACHE={operator_modules}"], exports)
-        self.assertIn(["export", f"NPM_CONFIG_CACHE={operator_npm}"], exports)
-        self.assertNotIn("npm_config_cache", [entry[1].split("=")[0] for entry in exports if entry[:1] == ["export"]])
-        go_env = self.home / ".config/go/env"
-        go_env.parent.mkdir(parents=True, exist_ok=True)
-        go_env.write_text("GOMODCACHE=/operator/go-mod\n")
-        self.env["FIXTURE_NPMRC_CACHE"] = str(operator_npm)
-        native = self.run_bootstrap(enrollment="")
-        del self.env["FIXTURE_NPMRC_CACHE"]
-        self.assertEqual(native.returncode, 0, native.stderr)
-        exported = [line.split()[1].split("=")[0] for line in launcher.read_text().splitlines() if line.startswith("export ")]
-        self.assertNotIn("GOMODCACHE", exported)
-        self.assertNotIn("npm_config_cache", exported)
-        self.assertIn("XDG_CACHE_HOME", exported)
-        go_env.unlink()
-        self.env["GOPATH"] = str(self.root / "operator-gopath")
-        gopath = self.run_bootstrap(enrollment="")
-        del self.env["GOPATH"]
-        self.assertEqual(gopath.returncode, 0, gopath.stderr)
-        self.assertNotIn("GOMODCACHE", [line.split()[1].split("=")[0] for line in launcher.read_text().splitlines() if line.startswith("export ")])
+        self.assertFalse((self.home / "go/pkg/mod").exists())
+        self.assertFalse((self.home / ".npm").is_symlink())
+        self.assertIn(f"Native cache {self.home / '.npm'} already has content", operator.stderr)
+        self.assertNotIn("GOMODCACHE", launcher.read_text())
         (self.home / ".config/detent-runner/global.yaml").write_text("workspace_root: custom-relative\n")
         relative = self.run_bootstrap(enrollment="")
         self.assertEqual(relative.returncode, 0, relative.stderr)

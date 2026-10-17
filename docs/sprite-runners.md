@@ -307,25 +307,29 @@ it writes on every run:
 | `MAKEFLAGS=-l<CPUs/4>`, at least 1 (`-l2` on 8 vCPUs) | Service launcher | GNU Make starts no further parallel job while the load average is above the limit, including recipes with an explicit `-j`. Linux counts tasks waiting on disk in the load average, so the limit also spaces out I/O bursts. Every target still runs. |
 | Go build budget | Existing `global.cpu.go_build_budget` | Go compile, link and vet processes in a Go module workspace queue for host-wide slots, with `-p` and `GOMAXPROCS` at a quarter of the budget. |
 | Lower worker CPU priority | Existing worker process owner | Agent processes and everything they start run five nice levels below the runner, so heartbeats, lease renewal and provider probes win CPU contention. |
-| Local disk for checkouts and caches | Bootstrap default workspace root and Service launcher | When `/tmp` is its own ext4, XFS or Btrfs mount, new registrations use `/tmp/detent-runner/work` as the workspace root, and the launcher sets `XDG_CACHE_HOME`, `GOMODCACHE` and `npm_config_cache` under `/tmp/detent-runner/cache`. The Go build cache, Detent's managed build cache and the golangci-lint cache follow `XDG_CACHE_HOME`. `PLAYWRIGHT_BROWSERS_PATH` keeps the installed Chromium where the bootstrap put it. |
+| Local disk for checkouts and caches | Bootstrap default workspace root and native cache layout | When `/tmp` is its own ext4, XFS or Btrfs mount, new registrations use `/tmp/detent-runner/work` as the workspace root. Native cache directories that are still at their default location and empty (`~/.cache/go-build`, Detent's managed `~/.cache/detent`, `~/.cache/golangci-lint`, `~/go/pkg/mod` and `~/.npm`) become links into `/tmp/detent-runner/cache`. |
 
 Gate builds and tests write heavily to checkouts, temporary directories and
 caches. On the network block device that traffic starves the runner's probes
 and can make the device disconnect, which restarts every process in the
 Sprite. On the local disk it does not. The runner store, identity,
-configuration, provider sign-ins and installed tools stay in the home
-directory.
+configuration, provider sign-ins, installed tools and Playwright's Chromium
+stay in the home directory.
 
-An explicit `--workspace-root`, an operator-chosen `workspace_root` in the
-configuration, and `XDG_CACHE_HOME`, `GOMODCACHE`, `npm_config_cache` or
-`NPM_CONFIG_CACHE` set when the bootstrap runs are kept. A rerun moves a configuration still on the
-old default, `~/detent-runner`, to the local disk; checkouts left at the old
-path can be deleted. Checkouts and caches are disposable: the Service starts
-from the home directory and the launcher recreates the local directories, the
-runner clones a missing checkout, `hooks.runner_setup` runs again for a moved
-or recreated checkout, and missing caches are rebuilt at the cost of a slower
-next build. `/tmp` keeps its contents while the Sprite is idle. Cache settings
-from `go env -w` or `.npmrc` are kept as well. The 20 GB local disk fits only a few
+The runner sets no cache variables: tools keep their native default paths, and
+only the directories behind them move. Operator cache settings, whether from
+the environment, `go env -w` or `.npmrc`, are left alone, and a native cache
+that already has content stays where it is. An explicit `--workspace-root` and
+an operator-chosen `workspace_root` in the configuration are kept. A rerun
+moves a configuration still on the old default, `~/detent-runner`, to the
+local disk; checkouts left at the old path can be deleted.
+
+Checkouts and caches are disposable. The Service starts from the home
+directory, and its launcher recreates the local checkout and cache directories
+before starting the runner. The runner clones a missing checkout,
+`hooks.runner_setup` runs again for a moved or recreated checkout, and missing
+caches are rebuilt at the cost of a slower next build. `/tmp` keeps its
+contents while the Sprite is idle. The 20 GB local disk fits only a few
 checkouts with their caches, so keep **Concurrency** at `1`.
 
 The bootstrap prints the profile in its closing summary. It rewrites the
@@ -410,7 +414,7 @@ Default locations are:
 | Runner configuration | `~/.config/detent-runner/global.yaml` |
 | Private runner identity | `~/.config/detent-runner/identity.json` |
 | Project checkouts | `/tmp/detent-runner/work/PROJECT_ID` on the local disk, otherwise `~/detent-runner/PROJECT_ID` |
-| Build caches | `/tmp/detent-runner/cache` on the local disk, otherwise `~/.cache` |
+| Native build caches | Default paths; on the local disk they link into `/tmp/detent-runner/cache` |
 | Service launcher | `~/.local/lib/detent-sprite-runner/start` |
 
 Keep the paths printed by registration if you selected custom paths. The

@@ -395,16 +395,6 @@ for tool in curl tar sha256sum npm node apt-get apt-cache dpkg-query; do
     command -v "$tool" >/dev/null || die "$tool is required (preinstalled in fresh Sprites)"
 done
 [[ -z $setup_manifest ]] || check_setup_manifest
-if [[ -n $local_root ]]; then
-    export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}
-    export XDG_CACHE_HOME=${XDG_CACHE_HOME:-$local_root/cache}
-    if [[ -z ${GOMODCACHE:-}${GOPATH:-} ]] && ! grep -Eqs '^(GOMODCACHE|GOPATH)=' "${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}"; then
-        export GOMODCACHE=$local_root/cache/go-mod
-    fi
-    if [[ -z ${npm_config_cache:-}${NPM_CONFIG_CACHE:-} && $(npm config get cache 2>/dev/null || true) == "$HOME/.npm" ]]; then
-        export npm_config_cache=$local_root/cache/npm
-    fi
-fi
 
 umask 077
 bin_dir="$HOME/.local/bin"
@@ -655,6 +645,31 @@ elif [[ $(detent --version 2>/dev/null || true) != "$version" ]] || ! grep -qxF 
 fi
 detent --version
 last_completed='Detent installed'
+local_caches=()
+link_local_cache() {
+    local native=$1 target=$local_root/cache/$2
+    local_caches+=("$target")
+    if [[ -L $native ]]; then
+        return
+    fi
+    if [[ -e $native && ! -d $native ]] || [[ -d $native && -n $(ls -A -- "$native") ]]; then
+        printf 'Native cache %s already has content; it stays on the persistent disk.\n' "$native" >&2
+        return
+    fi
+    mkdir -p -- "$target" "$(dirname -- "$native")"
+    rmdir -- "$native" 2>/dev/null || true
+    ln -s -- "$target" "$native"
+}
+if [[ -n $local_root ]]; then
+    native_cache_home=${XDG_CACHE_HOME:-$HOME/.cache}
+    if [[ -z ${GOCACHE:-} && $(go env GOCACHE) == "$native_cache_home/go-build" ]]; then
+        link_local_cache "$native_cache_home/go-build" go-build
+        link_local_cache "$native_cache_home/detent" detent
+    fi
+    [[ -n ${GOLANGCI_LINT_CACHE:-} ]] || link_local_cache "$native_cache_home/golangci-lint" golangci-lint
+    [[ $(go env GOMODCACHE) != "$HOME/go/pkg/mod" ]] || link_local_cache "$HOME/go/pkg/mod" go-mod
+    [[ $(npm config get cache) != "$HOME/.npm" ]] || link_local_cache "$HOME/.npm" npm
+fi
 prepare_setup_revision
 last_completed='setup revision recorded'
 
@@ -764,13 +779,9 @@ launcher="$lib_dir/start"
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'
     printf 'export HOME=%q\nexport PATH=%q\nexport TMPDIR=%q\n' "$HOME" "$PATH" "$workspace_root/.tmp"
     printf 'export MAKEFLAGS=%q\n' "-l$make_load_limit"
-    if [[ -n $local_root ]]; then
-        printf 'export XDG_CACHE_HOME=%q\nexport PLAYWRIGHT_BROWSERS_PATH=%q\n' "$XDG_CACHE_HOME" "$PLAYWRIGHT_BROWSERS_PATH"
-        [[ -z ${GOMODCACHE:-} ]] || printf 'export GOMODCACHE=%q\n' "$GOMODCACHE"
-        [[ -z ${npm_config_cache:-} ]] || printf 'export npm_config_cache=%q\n' "$npm_config_cache"
-        [[ -z ${NPM_CONFIG_CACHE:-} ]] || printf 'export NPM_CONFIG_CACHE=%q\n' "$NPM_CONFIG_CACHE"
-    fi
-    printf 'mkdir -p -- %q %q\n' "$workspace_root/.tmp" "$launch_dir"
+    printf 'mkdir -p --'
+    printf ' %q' "$workspace_root/.tmp" "$launch_dir" "${local_caches[@]}"
+    printf '\n'
     printf 'cd -- %q\n' "$launch_dir"
     printf 'exec %q --config %q --headless\n' "$bin_dir/detent" "$config_path"
 } > "$launcher"
@@ -788,7 +799,7 @@ last_completed='runner Service configured; verify running state'
 printf '\n%s\n' "$pressure_status"
 printf 'Sprite resource profile: %s CPUs; runner Make load limit -l%s; workers run at lower CPU priority than the runner.\n' "$cpu_count" "$make_load_limit"
 if [[ -n $local_root ]]; then
-    printf 'Local disk: build caches in %s; checkouts in %s.\n' "$XDG_CACHE_HOME" "$workspace_root"
+    printf 'Local disk: checkouts in %s; native caches linked into %s.\n' "$workspace_root" "$local_root/cache"
 fi
 printf '\nManual setup still required before dispatch:\n'
 if ! claude auth status >/dev/null 2>&1; then
