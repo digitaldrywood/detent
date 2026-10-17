@@ -166,6 +166,8 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		publication    string
 		terminal       bool
 		readAdmission  bool
+		moveRefusal    bool
+		moveGuidance   bool
 		exclusion      string
 		fullHost       bool
 		aged           bool
@@ -192,7 +194,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 		{name: "unaccepted completed custom Rework remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, wantCandidate: true},
 		{name: "accepted completion remains answered", disposition: &tracker.NativeDisposition{Status: "complete"}, accepted: true},
 		{name: "unaccepted completed dirty source remains claimable", disposition: &tracker.NativeDisposition{Status: "complete"}, worktreeState: "dirty", wantCandidate: true},
-		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, readAdmission: true, exclusion: "external_blocker"},
+		{name: "explicit blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, readAdmission: true, exclusion: "external_blocker", moveRefusal: true, moveGuidance: true},
+		{name: "nondispatchable blocker move retains ordinary refusal", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, manualHold: true, readAdmission: true, moveRefusal: true},
+		{name: "terminal blocker move retains ordinary refusal", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, terminal: true, readAdmission: true, moveRefusal: true},
 		{name: "dirty external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true}, worktreeState: "dirty"},
 		{name: "unfinished external blocker keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", Blockers: true}},
 		{name: "unfinished human action keeps the answer", disposition: &tracker.NativeDisposition{Status: "in_progress", HumanAction: true}},
@@ -287,6 +291,16 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Fixing') WHERE native_id=?`, f.project.ID, f.issue.WorkItemID)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.moveRefusal {
+				states := append(append([]tracker.NativeState(nil), f.project.States...), tracker.NativeState{Name: "Fixing", Dispatchable: !test.manualHold, Terminal: test.terminal, Transitions: []string{"Blocked"}})
+				raw, err := marshalNative(states)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", raw, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			revision := f.reload(t).Revision
 			f.finish(t, test.disposition)
@@ -472,6 +486,53 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				}
 				ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 				call := hostedContextProtocol(t, f.service, ctx, "http")
+				if test.moveRefusal {
+					before := f.reload(t)
+					attemptPath := f.base + "/work-items/" + string(f.issue.WorkItemID) + "/attempts/" + f.attempt
+					response := performHubAPIRequest(t, f.service, http.MethodGet, attemptPath, f.worker, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var beforeAttempt tracker.NativeAttempt
+					decodeHubResponse(t, response, &beforeAttempt)
+					for _, move := range []struct {
+						name, identifier string
+						denied           bool
+					}{
+						{"same state", string(f.issue.WorkItemID), false},
+						{"foreign scope", "prj_foreign#1", true},
+					} {
+						reply := call("tools/call", operatortool.MoveItem, map[string]any{"project_id": string(f.project.ID), "request_id": move.name, "identifier": move.identifier, "expected_revision": strconv.FormatInt(int64(before.Revision), 10), "target_state": before.State})
+						raw := hostedContextData(t, reply, true)
+						if move.denied || !test.moveGuidance {
+							want := operatortool.ErrInvalidArguments.Error()
+							if move.denied {
+								want = operatortool.ErrAccessDenied.Error()
+							}
+							var result struct {
+								Content []struct{ Text string } `json:"content"`
+							}
+							if err := json.Unmarshal(reply.Result, &result); err != nil || len(result.Content) != 1 || result.Content[0].Text != want || len(raw) != 0 {
+								t.Fatalf("%s refusal changed: %s %s", move.name, reply.Result, reply.Error)
+							}
+							continue
+						}
+						var refusal operatortool.RequestError
+						if err := json.Unmarshal(raw, &refusal); err != nil || refusal.Code != "invalid_request" {
+							t.Fatalf("%s refusal=%s result=%s rpc_error=%s err=%v", move.name, raw, reply.Result, reply.Error, err)
+						}
+						for _, direction := range []string{"linked issue conversation", "continue", "/conversations/{conversation}/commands", "expected.attempt_id", "explain_item", "snapshot", "recorded owners", "external prerequisite", "resume_local_project"} {
+							if !strings.Contains(refusal.Message, direction) {
+								t.Fatalf("%s recovery direction %q: %s", move.name, direction, raw)
+							}
+						}
+					}
+					response = performHubAPIRequest(t, f.service, http.MethodGet, attemptPath, f.worker, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var after tracker.NativeAttempt
+					decodeHubResponse(t, response, &after)
+					if !reflect.DeepEqual(f.reload(t), before) || !reflect.DeepEqual(after, beforeAttempt) || f.candidate(t) {
+						t.Fatal("refused move changed item, retained source, blocker or dispatch authority")
+					}
+				}
 				for _, name := range []string{operatortool.ExplainItem, operatortool.BoardSession} {
 					data := hostedContextData(t, call("tools/call", name, map[string]any{"project_id": string(f.project.ID), "reference": strconv.Itoa(f.issue.Number)}), false)
 					var projected tracker.NativeRuntimeEvidence
