@@ -16,6 +16,91 @@ uses a rolling 24-hour interval sweep of `work_attempts` and shows fleet-wide
 and per-project median, p90, and maximum concurrency. Use the queries below
 when the dashboard needs corroboration or a different window.
 
+## Recovery operating procedure
+
+Recovery is an operator responsibility through verification and handoff. A tag,
+green CI, installed binary, occupied slot, claim or lease heartbeat proves only
+its own boundary. None establishes that affected projects are delivering work.
+Keep monitoring after deployment; use scoped claims such as “installed” or
+“landing path verified” until the delivery evidence supports a broader result.
+This procedure adds no runtime gate, polling service or automatic lane writer.
+
+### Establish a comparable baseline
+
+Choose closed UTC windows of equal length before and after the intervention.
+Record project scope, window bounds, deployed builds, available routing and
+workload differences. Separate autonomous delivery from operator merges and
+state corrections. Do not compare an incomplete current window with a complete
+baseline or pool unlike projects into an unexplained fleet average.
+
+| Measure | Evidence and limits |
+| --- | --- |
+| Landings | Confirm the Change's landed record or the configured repository's actual merge, then reconcile tracker completion. Deduplicate by delivered Change, not successful merge attempts, repeated events or release cherry-picks. Report missing completion separately. |
+| Repeated work | Count attempts, first failures and retries by issue and reproduced root cause. Separate source, test, provider, host/setup, policy, publication and operator-action failures; preserve infrastructure attribution. An eventual pass does not erase the first failure. |
+| Stage time | Report setup, implementation, source publication, security review, validation/acceptance and landing p50/p90 with completed sample counts, time units and coverage. Separate command runtime, queue wait and unfinished lower bounds. Missing timing is unknown; overlapping work cannot be summed into wall time. |
+| Blocked work | Group current reasons into genuine human/product holds, dependencies, policy/access, source custody, infrastructure and outdated state. Cite the actual owner and latest evidence; a lane count alone does not explain eligibility. |
+| Capacity | Map each project's eligible runners, pool and lane limits, policy, provider availability and host pressure. Distinguish configured/effective capacity, claims, live providers and finalization. Free organization slots may be ineligible; fully occupied productive slots are healthy. |
+
+Use existing supported API/MCP projections, aggregates and bounded histories.
+Start with summaries, then fetch receipts for the affected cohort. Follow
+cursors only until the selected window or question is covered; retain that
+cursor and reuse the captured evidence instead of repeatedly downloading large
+histories. Declare partial, omitted and unavailable data. A partial page with
+no landing is not evidence of zero landings. Never bypass application scope or
+permissions by copying tenant databases or inspecting hidden credentials.
+
+### Repair and verify the failing path
+
+1. Reproduce the current failure on its actual source/build and name the
+   existing owner. Match an existing issue or failure fingerprint before
+   filing. Simplify that owner or remove the unnecessary restriction before
+   adding checks. Preserve live work, published source and genuine human holds;
+   use supported revision-aware operations for authorized historical corrections.
+2. For this repository, resume an active, unshipped frozen candidate instead
+   of starting a competing release. With no active candidate, if the prior
+   series has shipped and a new full release is requested, cut the next
+   `release/vX.Y` from current develop once and freeze it. Fixes land on develop
+   first, then reviewed `cherry-pick -x` PRs reach the release. Its green full
+   suite permits an immutable tag, staging smoke and production smoke. Follow
+   [the release contract](branching.md#release-branches); other projects retain
+   their chosen contract. Do not restart successful validation or chase a moving
+   candidate instead of stabilizing the active one.
+3. Verify the installed Hub and every relevant runner's version, commit and
+   observation time. Requested, downloaded or saved updates are not applied
+   updates. Check terminal operation receipts and fresh readback. Track offline
+   runners as exceptions; on return, verify their build, current lease generation
+   and publication custody before relying on them. Do not clear live leases or
+   discard work to make occupancy look correct.
+4. Follow formerly failing work after rollout from its exact retained or fresh
+   source through publication, security audit, validation/acceptance and actual
+   landing. Identify each receipt's version/base/head and producing build. A new unrelated
+   issue landing does not prove the repaired path, and a pre-rollout failure does
+   not establish a current regression. If a required stage is not observed,
+   leave that part of verification pending.
+5. Compare the equal windows again: delivered changes, repeat failure classes,
+   stage distributions and outstanding holds. Explain changes in workload,
+   topology or evidence coverage before attributing improvement to the repair.
+   A higher slot count without more landings can be more waiting or repeated work.
+
+Reuse applicable exact-source host receipts only where the project's existing
+completion contract permits it. Stop duplicate validation caused solely by
+polling, restarts or a new operator session; a changed source, landing base or
+required environment still needs its applicable checks. Keep diagnostics focused
+and process budgets coordinated across the host. Retain the original failure
+and every check's scope rather than presenting a short gate as a full suite.
+
+### Continue or hand off explicitly
+
+Publish observations, source identities, decisions, cursors and evidence links
+to the selected tracker or Change/PR, never a repository incident notebook.
+Report what is verified, what remains unknown, and each known exception's owner,
+next action and observation trigger. Continue the existing monitoring cadence
+or hand it to an accepting operator; deployment alone does not end recovery.
+Keep unrelated projects moving. A genuine hold or one offline runner does not
+make the whole fleet blocked, and successful work elsewhere does not clear it.
+Use [project delivery guidance](project-delivery.md#review-delivery-then-tune)
+when changing a project's gates, concurrency or release policy.
+
 ## Authority by question
 
 | Question | Authoritative surface | Common trap |
