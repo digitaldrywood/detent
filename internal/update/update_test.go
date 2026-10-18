@@ -542,10 +542,12 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		failureStage    string
 		failureReason   string
 		urgent          bool
+		busyRepair      bool
 	}{
 		{name: "selected release", current: "1.2.3"},
 		{name: "same version CLI repair", current: "1.2.4"},
 		{name: "same version Hub repair", current: "1.2.4", follow: true},
+		{name: "same version busy Hub repair resumes when idle", current: "1.2.4", follow: true, busyRepair: true},
 		{name: "same version signature failure", current: "1.2.4", follow: true, failureStage: "signature", failureReason: "Update signature verification failed"},
 		{name: "same version checksum failure", current: "1.2.4", follow: true, failureStage: "checksum", failureReason: "Update checksum verification failed"},
 		{name: "same version unsupported platform", current: "1.2.4", follow: true, failureStage: "platform", failureReason: "Update target resolution failed"},
@@ -656,7 +658,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				switch r.URL.Path {
 				case "/releases":
 					releases := []Release{release}
-					if test.follow {
+					if test.follow && !test.busyRepair {
 						releases = append(releases, Release{TagName: "v9.0.0"})
 					}
 					if err := json.NewEncoder(w).Encode(releases); err != nil {
@@ -830,7 +832,79 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				return
 			}
 			var status Status
-			if test.explicit {
+			if test.busyRepair {
+				now := time.Now().UTC()
+				running := runnerauth.BuildEvidence{Version: version, Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				artifacts, err := NewWorkerArtifacts(service, filepath.Join(tmp, "workers"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				active, err := artifacts.Acquire(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := active.Release(); err != nil {
+						t.Error(err)
+					}
+				}()
+				idle, restarts := false, 0
+				config := SchedulerConfig{Updater: service, WorkerArtifacts: artifacts, CheckInterval: time.Hour, StatePath: filepath.Join(tmp, "scheduler.json"), RunningBuild: running, ApplyOptions: applyOptions, Now: func() time.Time { return now },
+					ReserveIdle: func(context.Context) (func(), bool) { return func() {}, idle },
+					ReserveDrain: func(context.Context) (func(), error) {
+						t.Fatal("compatible repair drained active workers")
+						return nil, ErrRefused
+					},
+					RequestRestart: func(string) bool { restarts++; return true },
+				}
+				owner, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				initial := owner.EnrolledUpdate(t.Context(), running, nil)
+				request := runnerauth.UpdateRequest{ID: "busy-repair", Service: "detent", Version: version, Release: true, FollowHub: true, ExpectedBuildRevision: initial.Revision, RequestedAt: now}
+				for range 2 {
+					observed := owner.EnrolledUpdate(t.Context(), running, &request)
+					contents, err := os.ReadFile(binary)
+					if err != nil || string(contents) != "old" || restarts != 0 || observed.Running.VerifiedRelease || observed.Receipt == nil || !observed.Receipt.ExecutionReady() {
+						t.Fatalf("busy repair replaced controller: %+v binary=%q err=%v restarts=%d", observed, contents, err, restarts)
+					}
+				}
+				owner, err = NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				idle = true
+				unavailableConfig := config
+				unavailableConfig.RequestRestart = nil
+				unavailable, err := NewScheduler(unavailableConfig)
+				if err != nil {
+					t.Fatal(err)
+				}
+				report := unavailable.EnrolledUpdate(t.Context(), running, &request)
+				contents, err := os.ReadFile(binary)
+				if err != nil || string(contents) != "old" || report.Supported || restarts != 0 {
+					t.Fatalf("retained receipt bypassed unavailable restart owner: %+v binary=%q err=%v", report, contents, err)
+				}
+				observed := owner.EnrolledUpdate(t.Context(), running, &request)
+				if restarts != 1 || observed.Receipt.Status != "restart_requested" || observed.Receipt.ExecutionArtifact || observed.Running.VerifiedRelease {
+					t.Fatalf("idle repair did not replace controller: %+v restarts=%d", observed, restarts)
+				}
+				if _, err := os.Stat(active.Status.Binary); err != nil {
+					t.Fatalf("repair removed retained worker: %v", err)
+				}
+				running = *observed.Receipt.Applied
+				running.VerifiedRelease = InstalledReleaseVerified(t.Context(), DetectionOptions{ExecutablePath: binary, CurrentVersion: version, GOOS: "linux", GOARCH: "amd64", Env: installEnv}, testUpdatedCommit, running.SHA256)
+				config.RunningBuild = running
+				resumed, err := NewScheduler(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if heartbeat := resumed.EnrolledUpdate(t.Context(), running, &request); !heartbeat.Running.VerifiedRelease || heartbeat.Receipt.Status != "running" || heartbeat.Validate() != nil || restarts != 1 {
+					t.Fatalf("fresh controller lost verified repair: %+v", heartbeat)
+				}
+				status = Status{Action: ActionUpdated, LatestVersion: version, LatestCommit: testUpdatedCommit, BinarySHA256: running.SHA256, VerifiedRelease: true}
+			} else if test.explicit {
 				reservations, restarts, releases := 0, 0, 0
 				scheduler, schedulerErr := NewScheduler(SchedulerConfig{
 					CheckInterval: time.Hour, Updater: service, ApplyOptions: applyOptions,

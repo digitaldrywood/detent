@@ -81,6 +81,16 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && observed.Receipt.FailureReason != enrolledTargetRefusal && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
+		if observed.Supported && observed.Receipt.Request == *request && observed.Receipt.ExecutionReady() && !running.VerifiedRelease && running.Source == "release" && strings.TrimPrefix(request.Version, "v") == strings.TrimPrefix(running.Version, "v") && s.cfg.ReserveIdle != nil {
+			releaseIdle, idle := s.cfg.ReserveIdle(ctx)
+			if idle {
+				return s.applyEnrolledRequestLocked(ctx, running, observed.Receipt, releaseIdle)
+			}
+			if releaseIdle != nil {
+				releaseIdle()
+			}
+			return observed
+		}
 		if !retry || s.cfg.Now().Before(observed.Receipt.ObservedAt.Add(s.cfg.CheckInterval)) {
 			return observed
 		}
@@ -132,10 +142,18 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		}
 		return s.enrolledObservation(running)
 	}
+	return s.applyEnrolledRequestLocked(ctx, running, receipt, nil)
+}
+
+func (s *Scheduler) applyEnrolledRequestLocked(ctx context.Context, running runnerauth.BuildEvidence, receipt *runnerauth.UpdateReceipt, releaseIdle func()) *runnerauth.UpdateObservation {
+	request := &receipt.Request
 	receipt.Status = "applying"
 	receipt.FailureReason = ""
 	s.setEnrolledReceipt(receipt)
 	if s.persistCurrentState() != nil {
+		if releaseIdle != nil {
+			releaseIdle()
+		}
 		return nil
 	}
 	opts := s.cfg.ApplyOptions
@@ -143,7 +161,13 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	opts.FromRelease = request.FromRelease
 	opts.Urgent = request.Urgent
 	opts.FollowHub = request.FollowHub
-	applied, err := s.applyRequestedLocked(ctx, opts)
+	var applied Status
+	var err error
+	if releaseIdle != nil {
+		applied, err = s.applyWithOptionsLocked(ctx, releaseIdle, opts)
+	} else {
+		applied, err = s.applyRequestedLocked(ctx, opts)
+	}
 	if err != nil || applied.Action != ActionUpdated || applied.FailureReason != "" {
 		receipt.Status = "refused"
 		if applied.Action == ActionUpdated {
