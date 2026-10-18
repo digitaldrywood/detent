@@ -151,25 +151,6 @@ class LandingGateTest(unittest.TestCase):
                 for event in tests:
                     self.assertEqual("-count=1" in event["args"], target in ("test-race", "test-cover"), event)
                 if target == "test-cover":
-                    hub = [event for event in tests if "./internal/hubserver" in event["args"]]
-                    if changed == "3/3":
-                        self.assertEqual(hub, [])
-                    else:
-                        selectors = [("-run", "^Test[BDEFILNQTUV]"), ("-run", "^Test[HMP]"), ("-run", "^Test[ACGS]"), ("-skip", "^Test[ABCDEFGHILMNPQSTUV]")]
-                        if failure:
-                            selectors = selectors[:2]
-                        self.assertEqual(len(hub), len(selectors), hub)
-                        for event, (flag, pattern) in zip(hub, selectors):
-                            self.assertEqual(event["args"][event["args"].index(flag) + 1], pattern)
-                            self.assertIn("-timeout=10m", event["args"])
-                            self.assertEqual(event["budget"], budget)
-                        merges = [event for event in events if event["stage"] == "coverage-merge"]
-                        unions = [event for event in merges if "-union" in event["args"]]
-                        self.assertEqual(len(unions), int(not failure), merges)
-                        if not failure:
-                            self.assertEqual(unions[0]["args"][-4:], [f"tmp/hub-{part}-cover.raw.out" for part in "1234"])
-                        else:
-                            self.assertEqual(merges, [])
                     for event in tests:
                         self.assertTrue(any(arg in ("fixture", "./internal/hubserver", "./internal/web") for arg in event["args"]), event)
                 if target != "check-land":

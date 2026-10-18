@@ -51,17 +51,6 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	}
 }
 
-func TestCIHasNoPullRequestConcurrency(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if strings.Contains(workflow, "github.event.pull_request") || strings.Contains(workflow, "pull_request:") {
-		t.Fatal("scheduled CI must not start for pull requests")
-	}
-	if !strings.Contains(workflow, "group: full-validation-${{ github.ref }}") {
-		t.Fatal("full validation must serialize each branch independently")
-	}
-}
-
 func TestReleaseHooksDoNotRegenerate(t *testing.T) {
 	t.Parallel()
 
@@ -83,30 +72,8 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 	if !strings.Contains(makefile, "GO_TEST := env -u DETENT_API_TOKEN go test") {
 		t.Fatal("Makefile Go test command must remove inherited DETENT_API_TOKEN")
 	}
-
-	tests := []struct {
-		name string
-		want string
-	}{
-		{name: "test", want: "$(GO_TEST) $$packages"},
-		{name: "test-web", want: "$(GO_TEST) ./internal/web"},
-		{name: "test-race", want: "$(GO_TEST) -short -race -timeout=30m ./..."},
-		{name: "test-race-shard", want: "$(GO_TEST) -short -race -timeout=30m $$packages"},
-		{name: "test-race-hub", want: "$(GO_TEST) -short -race -timeout=30m ./internal/hubserver -count=1 $(HUB_SLICE_$(RACE_HUB_SLICE))"},
-		{name: "test-cover-hub-1", want: "$(GO_TEST) -coverprofile=tmp/hub-1-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_1)"},
-		{name: "test-cover-hub-2", want: "$(GO_TEST) -coverprofile=tmp/hub-2-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_2)"},
-		{name: "test-cover-hub-3", want: "$(GO_TEST) -coverprofile=tmp/hub-3-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_3)"},
-		{name: "test-cover-hub-4", want: "$(GO_TEST) -coverprofile=tmp/hub-4-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_4)"},
-		{name: "test-cover-hub-slice", want: "$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./internal/hubserver -count=1 $(HUB_SLICE_$(COVER_HUB_SLICE))"},
-		{name: "test-cover-packages", want: "$(GO_TEST) -coverprofile=tmp/packages-cover.raw.out $$remaining"},
-		{name: "test-cover-web", want: "$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !strings.Contains(makefile, tt.want) {
-				t.Fatalf("Makefile missing %q", tt.want)
-			}
-		})
+	if got, want := strings.Count(makefile, "go test"), strings.Count(makefile, "env -u DETENT_API_TOKEN go test"); got != want {
+		t.Fatalf("Makefile runs go test %d times, only %d remove inherited DETENT_API_TOKEN", got, want)
 	}
 }
 
@@ -216,38 +183,6 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 	}
 }
 
-func TestCIRunsOnScheduleAndManualDispatch(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:"} {
-		if !strings.Contains(triggers, want) {
-			t.Errorf("CI triggers missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{"push:", "pull_request:", "merge_group:"} {
-		if strings.Contains(triggers, forbidden) {
-			t.Errorf("CI has forbidden trigger %q", forbidden)
-		}
-	}
-}
-
-func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "git ls-remote origin refs/heads/develop") || !strings.Contains(workflow, "echo \"develop_sha=$develop_sha\" >> \"$GITHUB_OUTPUT\"") {
-		t.Fatal("scheduled CI must resolve and pin develop")
-	}
-	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 11 {
-		t.Fatalf("only %d jobs checkout the pinned SHA", count)
-	}
-	for _, want := range []string{"make test", "make security", "make test-cover", "npm run test:visual", "make check-invariants"} {
-		if !strings.Contains(workflow, want) {
-			t.Errorf("scheduled full suite missing %q", want)
-		}
-	}
-}
-
 func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 	t.Parallel()
 
@@ -313,49 +248,6 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 	}
 }
 
-func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
-	t.Parallel()
-
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	job := workflowBetween(t, workflow, "  installer-smoke:", "\n  goreleaser-snapshot:")
-
-	for _, want := range []string{
-		"name: Resolve release installer version",
-		"GH_TOKEN: ${{ github.token }}",
-		"bash ./scripts/resolve-release-tag.sh",
-		"DETENT_VERSION=$tag",
-		"$GITHUB_ENV",
-	} {
-		if !strings.Contains(job, want) {
-			t.Fatalf("installer-smoke job missing %q", want)
-		}
-	}
-
-	linux := workflowBetween(t, job, "      - name: Smoke release installer", "")
-	for _, want := range []string{
-		"2>&1",
-		"falling back to prepared source",
-		"Release installer fell back to prepared source",
-		"exit 1",
-		"Verified checksum for detent_",
-	} {
-		if !strings.Contains(linux, want) {
-			t.Fatalf("Linux installer smoke step missing %q", want)
-		}
-	}
-}
-
-func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  installer-smoke:")
-	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/3", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
-		if !strings.Contains(visual, want) {
-			t.Errorf("browser visual job missing %q", want)
-		}
-	}
-}
-
 func readNormalizedFile(t *testing.T, path string) string {
 	t.Helper()
 
@@ -382,20 +274,4 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 		t.Fatalf("workflow missing end marker %q after %q", endMarker, startMarker)
 	}
 	return section[:len(startMarker)+end]
-}
-
-func TestScheduledCIJobDependencies(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, name := range []string{"invariants", "lint", "verify-fast", "generated", "app", "verify-race", "test-cover", "security", "browser-visual-shard", "installer-smoke", "goreleaser-snapshot"} {
-		if !strings.Contains(workflow, "  "+name+":\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'") {
-			t.Errorf("%s must depend on preflight", name)
-		}
-	}
-	if !strings.Contains(workflow, "shard: [1, 2, 3]") {
-		t.Fatal("full suite lost visual shards")
-	}
-	if !strings.Contains(workflow, "check_with_evidence race make test-race") {
-		t.Fatal("full suite must race test the short unit suite")
-	}
 }

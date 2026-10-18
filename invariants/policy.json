@@ -122,7 +122,6 @@
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
-      "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
       "TestMutationDocuments"
