@@ -18,6 +18,13 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	implementationReview := request.ImplementationReview != nil
 	audit := request.SecurityAudit != nil
 	landingAudit := audit && request.SecurityAudit.Landing
+	invalid := func(message, field string) error {
+		err := nativeInvalid(message)
+		if worker && request.Validator != nil && !implementationReview && !audit {
+			return nativeRejection(err, "acceptance_validation", field)
+		}
+		return err
+	}
 	if implementationReview && request.Validator != nil || audit && (implementationReview || request.Validator != nil) {
 		return "", nativeInvalid("implementation review and acceptance validation must be separate results")
 	}
@@ -51,7 +58,28 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 				return "", nativeInvalid("security audit evidence is incomplete: run.head_sha differs from the immutable version")
 			}
 		}
-		return "", nativeInvalid("validator review must identify the current immutable version and a fresh validator session")
+		field := "review"
+		switch {
+		case !required:
+			field = "policy.validator"
+		case change.CurrentVersion != version.ID || result.VersionID != version.ID:
+			field = "validator.version_id"
+		case !result.Submitted:
+			field = "validator.submitted"
+		case result.SessionID <= 0:
+			field = "validator.session_id"
+		case result.Repository != version.Repository:
+			field = "validator.repository"
+		case result.BaseSHA != version.BaseSHA:
+			field = "validator.base_sha"
+		case result.HeadSHA != version.HeadSHA:
+			field = "validator.head_sha"
+		case !changerequest.ValidHash(result.DiffDigest, 64):
+			field = "validator.diff_digest"
+		case math.IsNaN(result.Score) || math.IsInf(result.Score, 0) || result.Score < 0 || result.Score > 1:
+			field = "validator.score"
+		}
+		return "", invalid("validator review must identify the current immutable version and a fresh validator session", field)
 	}
 	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
 	if err != nil {
@@ -92,6 +120,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 			return "", nativeInvalid("security audit verdict differs from the configured gate")
 		}
 	}
+	originalVerdict := result.Verdict
 	if !implementationReview && !audit {
 		gate.NormalizeCriterionEvidence(result, contract.AcceptanceCriteria(issue.Body), tree)
 		gate.ApplyCriterionPolicy(workflow.Config.Gate.Validator, result)
@@ -106,7 +135,11 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		decision = "commented"
 	}
 	if decision == "" || decision != request.Decision {
-		return "", nativeInvalid("validator verdict does not match the review decision")
+		field := "decision"
+		if originalVerdict != result.Verdict {
+			field = "validator.criteria_evidence"
+		}
+		return "", invalid("validator verdict does not match the review decision", field)
 	}
 	var raw string
 	err = tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, change.WorkItemID, version.AttemptID).Scan(&raw)
@@ -118,7 +151,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return "", err
 	}
 	if source.RunID != version.RunID || source.PolicyID != version.PolicyID || source.Identity == nil || (source.Identity.Role != "code" && source.Identity.Role != "rework") || source.Runtime == nil || source.Runtime.Activity == nil || source.Runtime.Activity.SessionID <= 0 {
-		return "", nativeInvalid("validator review requires the implementing session's recorded identity")
+		return "", invalid("validator review requires the implementing session's recorded identity", "source.identity")
 	}
 	var current tracker.NativeRunData
 	if err := tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND lease_id=?", scope.organization, scope.project, change.WorkItemID, request.LeaseID).Scan(&raw); err != nil {
@@ -132,7 +165,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		validSession = current.Identity != nil && current.Identity.Role == "merge"
 	}
 	if current.FencingToken != request.FencingToken || !validSession || current.MachineID == source.MachineID && source.Runtime.Activity.SessionID == result.SessionID {
-		return "", nativeInvalid("validator review must come from a session separate from the implementing session under its active execution authority")
+		return "", invalid("validator review must come from a session separate from the implementing session under its active execution authority", "validator.session_id")
 	}
 	reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
 	if err != nil {
@@ -155,11 +188,11 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 			return "", nativeInvalid("security audit requires a separate session")
 		}
 		if other != nil && review.SessionMachineID == current.MachineID && other.SessionID == result.SessionID {
-			return "", nativeInvalid("implementation review and acceptance validation require separate sessions")
+			return "", invalid("implementation review and acceptance validation require separate sessions", "validator.session_id")
 		}
 	}
 	if !implementationReview && !audit && !implementationReviewed {
-		return "", nativeInvalid("acceptance validation requires a passing implementation review before acceptance")
+		return "", invalid("acceptance validation requires a passing implementation review before acceptance", "implementation_review")
 	}
 	return current.MachineID, nil
 }

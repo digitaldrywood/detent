@@ -2,6 +2,7 @@ package hubclient
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -268,7 +269,8 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 						t.Fatalf("fresh acceptance did not receive source-review command evidence: %+v", acceptance.Commands)
 					}
 					validator := execution.(runner.NativeValidatorExecution)
-					if err := validator.RecordValidator(ctx, result); err == nil || !strings.Contains(err.Error(), "separate sessions") {
+					var rejection *APIError
+					if err := validator.RecordValidator(ctx, result); !errors.As(err, &rejection) || rejection.Rejection == nil || rejection.Rejection.Category != "acceptance_validation" || rejection.Rejection.Field != "validator.session_id" {
 						t.Fatalf("source-review session could also authorize acceptance: %v", err)
 					}
 					if test.unsatisfiable {

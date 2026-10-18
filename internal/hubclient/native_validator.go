@@ -246,7 +246,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change == nil || e.change.VersionID != result.VersionID {
-		return errors.New("native validator result differs from the published version")
+		return &APIError{Status: 422, Code: "invalid_request", Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}}
 	}
 	decision := "commented"
 	switch result.Verdict {

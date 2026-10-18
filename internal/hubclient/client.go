@@ -159,10 +159,20 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return "Hub request failed"
 	}
+	if e.Code == "invalid_request" && e.Rejection != nil && e.Rejection.Valid() {
+		return e.Rejection.DiagnosticError()
+	}
 	if e.Code == "" {
 		return fmt.Sprintf("Hub request failed with status %d", e.Status)
 	}
 	return fmt.Sprintf("Hub request failed with status %d (%s): %s", e.Status, e.Code, e.Message)
+}
+
+func (e *APIError) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	if e != nil && e.Code == "invalid_request" && e.Rejection != nil && e.Rejection.Valid() && e.Rejection.Category == "acceptance_validation" {
+		return tracker.NativeTerminalFailure{Rejection: e.Rejection}
+	}
+	return tracker.NativeTerminalFailure{}
 }
 
 func New(config Config) (*Client, error) {

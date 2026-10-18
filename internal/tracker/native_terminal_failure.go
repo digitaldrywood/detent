@@ -8,22 +8,23 @@ import (
 )
 
 type NativeTerminalFailure struct {
-	Error            string    `json:"error,omitempty"`
-	Stage            string    `json:"stage,omitempty"`
-	Attribution      string    `json:"attribution,omitempty"`
-	ErrorClass       string    `json:"error_class,omitempty"`
-	TurnStartRefused bool      `json:"turn_start_refused,omitempty"`
-	ObservedAt       time.Time `json:"observed_at"`
-	Source           string    `json:"source"`
-	Coverage         string    `json:"coverage"`
-	Unavailable      []string  `json:"unavailable"`
-	Provider         string    `json:"provider,omitempty"`
-	Operation        string    `json:"operation,omitempty"`
-	RPCCode          *int      `json:"rpc_code,omitempty"`
-	ProviderCode     string    `json:"provider_code,omitempty"`
-	MaxChars         *int64    `json:"max_chars,omitempty"`
-	ActualChars      *int64    `json:"actual_chars,omitempty"`
-	Summary          string    `json:"summary"`
+	Rejection        *PublicationRejection `json:"rejection,omitempty"`
+	Error            string                `json:"error,omitempty"`
+	Stage            string                `json:"stage,omitempty"`
+	Attribution      string                `json:"attribution,omitempty"`
+	ErrorClass       string                `json:"error_class,omitempty"`
+	TurnStartRefused bool                  `json:"turn_start_refused,omitempty"`
+	ObservedAt       time.Time             `json:"observed_at"`
+	Source           string                `json:"source"`
+	Coverage         string                `json:"coverage"`
+	Unavailable      []string              `json:"unavailable"`
+	Provider         string                `json:"provider,omitempty"`
+	Operation        string                `json:"operation,omitempty"`
+	RPCCode          *int                  `json:"rpc_code,omitempty"`
+	ProviderCode     string                `json:"provider_code,omitempty"`
+	MaxChars         *int64                `json:"max_chars,omitempty"`
+	ActualChars      *int64                `json:"actual_chars,omitempty"`
+	Summary          string                `json:"summary"`
 }
 
 var nativeFailureAssignment = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
@@ -33,18 +34,26 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery":
+	case "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication":
 	default:
 		f.ErrorClass = ""
 	}
 	switch f.Stage {
-	case "pre_provider", "workspace_preparation":
+	case "pre_provider", "workspace_preparation", "acceptance_publication":
 	default:
 		f.Stage = ""
 	}
+	if f.Rejection != nil && f.Rejection.Valid() && f.Rejection.Category == "acceptance_validation" {
+		rejection := *f.Rejection
+		f.Rejection = &rejection
+		f.Error = rejection.DiagnosticError()
+		f.Stage, f.ErrorClass = "acceptance_publication", "acceptance_publication"
+	} else {
+		f.Rejection = nil
+	}
 	f.Attribution = ""
 	switch f.ErrorClass {
-	case "backend_startup", "protocol", "workspace_hook":
+	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication":
 		f.Attribution = "instance"
 	case "issue_configuration", "source_recovery":
 		f.Attribution = "issue"

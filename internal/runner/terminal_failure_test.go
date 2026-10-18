@@ -21,6 +21,7 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		want  string
 	}{
 		{"absent", nil, "", ""},
+		{"acceptance rejection", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, acceptanceRejectionError{}), "acceptance_publication", "publication rejected: category=acceptance_validation field=validator.session_id [private error text omitted]"},
 		{"ordinary", errors.New("count 116 failed\nprivate continuation"), "", "count 116 failed"},
 		{"workspace", fmt.Errorf("%w: /private/worktree token=secret-value", ErrWorkspacePreparation), "workspace_hook", "workspace preparation failed: [redacted] [redacted]"},
 		{"hook diagnostic", &workspace.HookError{Hook: "after_create", Command: "SECRET=private-value missing-script", Dir: "/private/worktree", ExitCode: 127, Output: "script not found token=secret-value WORKSPACE_VALUE=private-value\nprivate continuation"}, "workspace_hook", "workspace hook after_create failed (exit status 127)"},
@@ -46,6 +47,9 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 			}
 			if (test.name == "issue configuration" || test.name == "source recovery") && (got.Attribution != "issue" || got.Stage != "") {
 				t.Fatalf("issue-owned error acquired workspace attribution: %#v", got)
+			}
+			if test.name == "acceptance rejection" && (got.Stage != "acceptance_publication" || got.Attribution != "instance" || got.Rejection == nil || got.Rejection.Field != "validator.session_id") {
+				t.Fatalf("acceptance rejection lost: %+v", got)
 			}
 			if public := got.Public(); public.Error != got.Error || public.ErrorClass != got.ErrorClass {
 				t.Fatalf("publication changed signature evidence: %#v", public)
@@ -77,4 +81,12 @@ func (signatureProviderError) BackendErrorMessage() string {
 func (signatureProviderError) NativeTerminalFailure() tracker.NativeTerminalFailure {
 	code := -32602
 	return tracker.NativeTerminalFailure{Provider: "codex", Operation: "turn/start", RPCCode: &code}
+}
+
+type acceptanceRejectionError struct{}
+
+func (acceptanceRejectionError) Error() string { return "private-payload token=private-credential" }
+
+func (acceptanceRejectionError) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return tracker.NativeTerminalFailure{Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.session_id"}}
 }
