@@ -32,14 +32,16 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name          string
-		updatePolicy  bool
-		republish     bool
-		transferDirty bool
-		transfer      bool
-		transferCode  bool
+		name            string
+		updatePolicy    bool
+		republish       bool
+		transferDirty   bool
+		transfer        bool
+		transferCode    bool
+		workerOwnership bool
 	}{
 		{name: "same policy"},
+		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
 		{name: "operator republished same tree", republish: true},
 		{name: "operator republished same tree with policy update", republish: true, updatePolicy: true},
@@ -141,6 +143,21 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 				return result
 			}
 			candidateA := h.claim(t, issue.ID)
+			owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			writerStopped := false
+			if test.workerOwnership {
+				if err := owner.KeepWorker(func(context.Context) error {
+					if owner.data.Outcome != "succeeded" {
+						t.Error("worker cleanup preceded acknowledged completion")
+					}
+					if !writerStopped {
+						return errors.New("fixture writer remains active")
+					}
+					return nil
+				}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
 			providerA := &committingAgent{staged: true, validator: "pass", complete: true}
 			first := run(sourceA, providerA, candidateA, h.scheduler.RunExecution(issue.ID))
 			oldHead := first.NativeChange.HeadSHA
@@ -151,7 +168,32 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			if err != nil || old.Versions[0].Source == nil || len(old.Reviews) != 1 {
 				t.Fatalf("reviewed source was not retained: %+v, %v", old, err)
 			}
+			if test.workerOwnership {
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err == nil {
+					t.Fatal("claim released while its writer remained active")
+				}
+				_, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: item, MachineID: owner.claim.lease.MachineID, SessionID: "competing-writer", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+				var conflict *APIError
+				if !errors.Is(err, ErrNoClaimableWork) && (!errors.As(err, &conflict) || conflict.Status != http.StatusConflict || conflict.Code != "lease_conflict") {
+					t.Fatalf("competing writer was not fenced: %v", err)
+				}
+				evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
+				if err != nil || evidence.CurrentLease == nil || evidence.CurrentLease.ID != owner.claim.lease.ID || !owner.hasWorkers() {
+					t.Fatalf("cleanup refusal lost the current execution owner: %+v, %v", evidence.CurrentLease, err)
+				}
+				var source tracker.NativeSourceRecovery
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &source); err != nil || source.Quiesced || source.VersionID != first.NativeChange.VersionID || source.HeadSHA != oldHead {
+					t.Fatalf("active writer lost retained source or became transferable: %+v, %v", source, err)
+				}
+				writerStopped = true
+			}
 			h.complete(t, issue.ID, first.NativeChange)
+			if test.workerOwnership {
+				var source tracker.NativeSourceRecovery
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &source); err != nil || !source.Quiesced || !source.Available || source.VersionID != first.NativeChange.VersionID || source.HeadSHA != oldHead {
+					t.Fatalf("completed writer did not release exact recoverable source: %+v, %v", source, err)
+				}
+			}
 			versionCount := 2
 			if test.republish {
 				nativeChangeGit(t, providerA.workspace, "commit", "--amend", "-m", "operator recovers the same tree")

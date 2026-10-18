@@ -184,7 +184,7 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 		return identity, nil
 	})
 	var privateOwner sync.Mutex
-	for _, mode := range []string{"confirmed", "retained branch", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
+	for _, mode := range []string{"confirmed", "nested callback", "retained branch", "wrong head", "wrong base", "wrong repository", "wrong branch", "wrong version", "stale invocation", "merge", "cancelled", "lost authority", "ambiguous", "disconnect"} {
 		t.Run("publication/"+mode, func(t *testing.T) {
 			identity.Branch = "detent/rework"
 			if mode == "retained branch" {
@@ -205,6 +205,15 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 				return nil
 			}, PublicationEffect: func(_ context.Context, kind, state string, value workspace.GitHubPublication) error {
 				effects.Add(1)
+				if mode == "nested callback" {
+					var result int
+					if err := central.Call(ctx, "nested", &result); err != nil {
+						return err
+					}
+					if result != 42 {
+						return errors.New("publication checkpoint lost its nested worker callback")
+					}
+				}
 				if kind == "pr_create" && state == "confirmed" && value.External.ID != "7" {
 					t.Error("PR identity was dropped")
 				}
@@ -272,7 +281,7 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 			privateOwner.Lock()
 			result, err := publicationOwner.publicationSource(ctx, version, opts)
 			privateOwner.Unlock()
-			if mode == "confirmed" || mode == "retained branch" {
+			if mode == "confirmed" || mode == "nested callback" || mode == "retained branch" {
 				if err != nil || result.External.ID != "7" || effects.Load() != 2 {
 					t.Fatalf("SSH held publication=%s effects=%d error=%v", result.External.ID, effects.Load(), err)
 				}

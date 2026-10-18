@@ -17,23 +17,24 @@ import (
 // If the channel ends before FinishSession arrives, the owner closes precisely
 // the sessions it opened on that channel using usage already received.
 type SSHCallbacks struct {
-	local                *Runner
-	issue                connector.Issue
-	publicationMu        sync.Mutex
-	publicationSequence  uint64
-	publicationAuthorize func(uint64, string, workspace.GitHubPublication) error
-	publicationEffect    func(uint64, string, workspace.GitHubPublication, string, string, workspace.GitHubPublication) error
-	landingBatch         *workspace.LandingBatchTicket
-	batchLander          *sshBatchLander
-	batchAudits          []func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
-	batchValidations     []func(context.Context) error
-	handle               func(context.Context, string, []json.RawMessage) (any, error)
-	store                SessionStore
-	execution            Execution
-	mu                   sync.Mutex
-	wg                   sync.WaitGroup
-	closed               bool
-	active               map[int64]UsageUpdate
+	local                 *Runner
+	issue                 connector.Issue
+	publicationMu         sync.Mutex
+	publicationCallbackMu sync.Mutex
+	publicationSequence   uint64
+	publicationAuthorize  func(uint64, string, workspace.GitHubPublication) error
+	publicationEffect     func(uint64, string, workspace.GitHubPublication, string, string, workspace.GitHubPublication) error
+	landingBatch          *workspace.LandingBatchTicket
+	batchLander           *sshBatchLander
+	batchAudits           []func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
+	batchValidations      []func(context.Context) error
+	handle                func(context.Context, string, []json.RawMessage) (any, error)
+	store                 SessionStore
+	execution             Execution
+	mu                    sync.Mutex
+	wg                    sync.WaitGroup
+	closed                bool
+	active                map[int64]UsageUpdate
 }
 
 func (r *Runner) LocalRunCallbacks(request RunRequest) *SSHCallbacks {
@@ -61,15 +62,21 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 	case "local.processes", "local.register", "local.reaped":
 		result, err = c.handleLocalProcess(ctx, method, args)
 	case "publication.authorize", "publication.effect":
+		c.publicationCallbackMu.Lock()
 		c.mu.Lock()
+		authorize, effect := c.publicationAuthorize, c.publicationEffect
 		if c.closed {
 			err = errors.New("SSH publication channel is closed")
-		} else if method == "publication.authorize" {
-			result, err = invokeSSHMethod(ctx, c.publicationAuthorize, "", args)
-		} else {
-			result, err = invokeSSHMethod(ctx, c.publicationEffect, "", args)
 		}
 		c.mu.Unlock()
+		if err == nil {
+			if method == "publication.authorize" {
+				result, err = invokeSSHMethod(ctx, authorize, "", args)
+			} else {
+				result, err = invokeSSHMethod(ctx, effect, "", args)
+			}
+		}
+		c.publicationCallbackMu.Unlock()
 	case "landing.submit", "landing.finish", "landing.validate", "landing.audit":
 		result, err = c.handleLandingBatch(ctx, method, args)
 	default:
