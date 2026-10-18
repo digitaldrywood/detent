@@ -47,7 +47,9 @@ func TestHealthRatePersistedObservations(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	f := newNativeFixture(t, nil, "", "health-rate-observations")
+	addHealthBacklog(t, f)
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-rate-other")
+	addHealthBacklog(t, other)
 	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 	r.enroll(t)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
