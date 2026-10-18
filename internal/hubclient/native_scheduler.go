@@ -667,7 +667,7 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 		if pending || !execution.mu.TryLock() {
 			return true, nil
 		}
-		pending = execution.pending != nil || execution.data.Outcome != ""
+		pending = execution.pending != nil || execution.preparedOutcome != "" || execution.data.Outcome != ""
 		if execution.data.Runtime != nil {
 			runtime := *execution.data.Runtime
 			observation = &runtime
@@ -677,6 +677,12 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 			return true, nil
 		}
 		localWorker = execution.hasWorkers()
+		execution.cancelMu.Lock()
+		controller := execution.cancel != nil
+		execution.cancelMu.Unlock()
+		if observation != nil && observation.Phase == "completed" && (controller || localWorker) {
+			return true, nil
+		}
 	}
 	if observation == nil {
 		for _, attempt := range claim.recovery.Attempts {
