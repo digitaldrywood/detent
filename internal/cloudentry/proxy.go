@@ -323,7 +323,7 @@ func (s *Service) proxy(c echo.Context) error {
 		if err != nil {
 			defer s.logProxied(c, organization.ID, verification, started)
 			if c.Get("readable_url") == true {
-				return readableNotFound(c)
+				return s.readableSignIn(c, organization, status)
 			}
 			if status == http.StatusUnauthorized && strings.HasSuffix(request.URL.Path, "/mcp") {
 				return s.oauthChallenge(c)
