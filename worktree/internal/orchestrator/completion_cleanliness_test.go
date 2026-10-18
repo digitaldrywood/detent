@@ -1,0 +1,528 @@
+package orchestrator
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+func TestEvaluateCompletionCleanliness(t *testing.T) {
+	t.Parallel()
+
+	previousRejected := store.WorkAttempt{
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			completionCleanlinessMetadataKey: completionCleanlinessRecord{Outcome: completionCleanlinessRejected},
+		}),
+	}
+	resolvedIssue := func(resolution string) connector.Issue {
+		return connector.Issue{WorkpadSignal: &workpad.Signal{
+			Source: workpad.SourceStructured,
+			Status: workpad.StatusComplete,
+			Fields: map[string]string{
+				workpad.FieldCompletionAttempt:               "2147",
+				workpad.FieldCompletionGeneration:            "7",
+				workpad.FieldCompletionCleanlinessResolution: resolution,
+			},
+		}}
+	}
+	blockedIssue := func(resolution string) connector.Issue {
+		issue := resolvedIssue(resolution)
+		issue.WorkpadSignal.Status = workpad.StatusBlocked
+		issue.WorkpadSignal.HumanAction = "approve the worker merge tool"
+		issue.WorkpadSignal.Blockers = []workpad.Blocker{{Reason: "waiting for merge-tool approval"}}
+		return issue
+	}
+	tests := []struct {
+		name           string
+		evidence       DiffStats
+		history        []store.WorkAttempt
+		historyErr     error
+		issue          connector.Issue
+		wantOutcome    string
+		wantResolution string
+		wantRejected   int
+		wantBlock      bool
+		withoutLane    bool
+		wantWarning    bool
+		wantSkipped    bool
+		wantReason     string
+	}{
+		{
+			name:           "clean tree",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "head"},
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+		},
+		{
+			name:           "tracked modifications",
+			evidence:       DiffStats{FilesChanged: 1, AddedLines: 4, RemovedLines: 2, TrackedPaths: []string{"internal/worker.go"}, Status: "changed"},
+			wantOutcome:    completionCleanlinessRejected,
+			wantResolution: "required",
+			wantRejected:   1,
+		},
+		{
+			name:           "untracked files",
+			evidence:       DiffStats{FilesChanged: 1, AddedLines: 8, UntrackedPaths: []string{"debug.log"}, Status: "changed"},
+			wantOutcome:    completionCleanlinessRejected,
+			wantResolution: "required",
+			wantRejected:   1,
+		},
+		{
+			name:        "filesystem artifact output",
+			evidence:    DiffStats{FilesChanged: 1, Fingerprint: "artifact-fingerprint", Status: "changed"},
+			wantSkipped: true,
+		},
+		{
+			name: "unpushed commits without pull request",
+			evidence: DiffStats{
+				UnpushedCommits:    1,
+				UnpushedCommitRefs: []string{"abc123 fix: retain work"},
+				HeadSHA:            "abc123",
+				Status:             "clean",
+			},
+			wantOutcome:    completionCleanlinessRejected,
+			wantResolution: "required",
+			wantRejected:   1,
+		},
+		{
+			name:           "committed after rejection",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected},
+			issue:          resolvedIssue(completionCleanlinessCommitted),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessCommitted,
+		},
+		{
+			name:           "discarded after rejection",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "original-head"},
+			history:        []store.WorkAttempt{previousRejected},
+			issue:          resolvedIssue(completionCleanlinessDiscarded),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessDiscarded,
+		},
+		{
+			name:           "clean retry without explicit resolution",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected, previousRejected},
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+		},
+		{
+			name:           "clean retry with unrelated blocked approval",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected, previousRejected},
+			issue:          blockedIssue(""),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+		},
+		{
+			name:           "blocked committed retry without another completion declaration",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "resolved-head"},
+			history:        []store.WorkAttempt{previousRejected, previousRejected},
+			issue:          blockedIssue(completionCleanlinessCommitted),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+			withoutLane:    true,
+		},
+		{
+			name:           "blocked discarded retry without another completion declaration",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "original-head"},
+			history:        []store.WorkAttempt{previousRejected},
+			issue:          blockedIssue(completionCleanlinessDiscarded),
+			wantOutcome:    completionCleanlinessAccepted,
+			wantResolution: completionCleanlinessClean,
+			withoutLane:    true,
+		},
+		{
+			name:        "blocked approval with absent recovery evidence after rejection",
+			history:     []store.WorkAttempt{previousRejected},
+			issue:       blockedIssue(""),
+			withoutLane: true,
+			wantSkipped: true,
+		},
+		{
+			name:         "blocked approval with unavailable recovery evidence",
+			evidence:     DiffStats{Status: "clean", RecoveryStateExpected: true},
+			issue:        blockedIssue(""),
+			wantOutcome:  completionCleanlinessRejected,
+			wantRejected: 1,
+			wantReason:   "workspace_recovery_state_unavailable",
+		},
+		{
+			name:         "blocked approval with unavailable recovery evidence after rejection",
+			evidence:     DiffStats{Status: "clean", RecoveryStateExpected: true},
+			history:      []store.WorkAttempt{previousRejected},
+			issue:        blockedIssue(""),
+			wantOutcome:  completionCleanlinessEscalated,
+			wantRejected: 2,
+			wantBlock:    true,
+			wantReason:   dirtyCompletionEscalationReason,
+			withoutLane:  true,
+		},
+		{
+			name:         "blocked approval with audit history failure",
+			evidence:     DiffStats{Status: "clean", HeadSHA: "head"},
+			historyErr:   errors.New("history unavailable"),
+			issue:        blockedIssue(""),
+			wantOutcome:  completionCleanlinessEscalated,
+			wantRejected: 1,
+			wantBlock:    true,
+			wantWarning:  true,
+		},
+		{
+			name:     "blocked unpublished remainder after rejection",
+			evidence: DiffStats{Status: "clean", HeadSHA: "unpublished-head", UnpushedCommits: 1},
+			history:  []store.WorkAttempt{previousRejected},
+			issue: connector.Issue{WorkpadSignal: &workpad.Signal{
+				Source:      workpad.SourceStructured,
+				Status:      workpad.StatusBlocked,
+				HumanAction: "preserve the unpublished commit for operator inspection",
+			}},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: completionCleanlinessIntentionallyLeft,
+			wantRejected:   2,
+			wantBlock:      true,
+			withoutLane:    true,
+		},
+		{
+			name:           "repeated unpushed completion escalates",
+			evidence:       DiffStats{Status: "clean", HeadSHA: "head", UnpushedCommits: 1},
+			history:        []store.WorkAttempt{previousRejected},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: "required",
+			wantRejected:   2,
+			wantBlock:      true,
+		},
+		{
+			name: "recovery evidence unavailable",
+			evidence: DiffStats{
+				Status:                "clean",
+				RecoveryStateExpected: true,
+			},
+			wantOutcome:  completionCleanlinessRejected,
+			wantRejected: 1,
+		},
+		{
+			name:         "audit history unavailable escalates",
+			evidence:     DiffStats{Status: "clean", HeadSHA: "head"},
+			historyErr:   errors.New("history unavailable"),
+			wantOutcome:  completionCleanlinessEscalated,
+			wantRejected: 1,
+			wantBlock:    true,
+			wantWarning:  true,
+		},
+		{
+			name:           "repeated dirty completion escalates",
+			evidence:       DiffStats{FilesChanged: 1, UntrackedPaths: []string{"debug.log"}, Status: "changed"},
+			history:        []store.WorkAttempt{previousRejected},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: "required",
+			wantRejected:   2,
+			wantBlock:      true,
+		},
+		{
+			name:     "intentional remainder escalates",
+			evidence: DiffStats{FilesChanged: 1, TrackedPaths: []string{"fixture.patch"}, Status: "changed"},
+			issue: connector.Issue{WorkpadSignal: &workpad.Signal{
+				Source:      workpad.SourceStructured,
+				Status:      workpad.StatusBlocked,
+				HumanAction: "preserve fixture.patch for operator inspection",
+			}},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: completionCleanlinessIntentionallyLeft,
+			wantRejected:   1,
+			wantBlock:      true,
+		},
+		{
+			name:     "intentional remainder resolves prior rejection without another completion declaration",
+			evidence: DiffStats{FilesChanged: 1, TrackedPaths: []string{"fixture.patch"}, Status: "changed"},
+			history:  []store.WorkAttempt{previousRejected},
+			issue: connector.Issue{WorkpadSignal: &workpad.Signal{
+				Source:      workpad.SourceStructured,
+				Status:      workpad.StatusBlocked,
+				HumanAction: "preserve fixture.patch for operator inspection",
+			}},
+			wantOutcome:    completionCleanlinessEscalated,
+			wantResolution: completionCleanlinessIntentionallyLeft,
+			wantRejected:   2,
+			wantBlock:      true,
+			withoutLane:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			attempts := &implementProgressAttemptStore{history: tt.history, historyErr: tt.historyErr}
+			orch := &Orchestrator{
+				cfg:          normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}}),
+				workAttempts: attempts,
+			}
+			issue := tt.issue
+			issue.ID = "issue-2147"
+			issue.Identifier = "digitaldrywood/detent#2147"
+			completionLane := "In Progress"
+			if tt.withoutLane {
+				completionLane = ""
+			}
+			evidence := tt.evidence
+			if !tt.wantSkipped && !evidence.RecoveryStateExpected {
+				evidence.RecoveryStateExpected = true
+				evidence.RecoveryStateAvailable = true
+			}
+			decision := orch.evaluateCompletionCleanliness(t.Context(), Running{
+				Issue:          issue,
+				Mode:           runpkg.RunModeImplement,
+				WorkAttemptID:  2147,
+				Generation:     7,
+				CompletionLane: completionLane,
+			}, issue, evidence)
+
+			if tt.wantSkipped {
+				if decision.Attempted || completionCleanlinessMetadata(decision) != nil {
+					t.Fatalf("evaluateCompletionCleanliness() = %#v, want skipped", decision)
+				}
+				return
+			}
+
+			if !decision.Attempted || decision.Outcome != tt.wantOutcome || decision.Resolution != tt.wantResolution || decision.ConsecutiveRejections != tt.wantRejected || decision.Block != tt.wantBlock {
+				t.Fatalf("evaluateCompletionCleanliness() = %#v", decision)
+			}
+			if (decision.Warning != "") != tt.wantWarning {
+				t.Fatalf("evaluateCompletionCleanliness().Warning = %q", decision.Warning)
+			}
+			if tt.wantReason != "" && decision.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", decision.Reason, tt.wantReason)
+			}
+			if tt.wantOutcome == completionCleanlinessAccepted && (decision.Reason != "" || decision.Statement != "") {
+				t.Fatalf("clean acceptance retained dirty classification: %#v", decision)
+			}
+			metadata := completionCleanlinessMetadata(decision)
+			persisted := store.WorkAttempt{WorkerMetadataJSON: marshalWorkAttemptJSON(metadata)}
+			record, ok := completionCleanlinessRecordFromAttempt(persisted)
+			if !ok || record.Outcome != tt.wantOutcome || record.Resolution != tt.wantResolution || record.ConsecutiveRejections != tt.wantRejected {
+				t.Fatalf("persisted completion cleanliness = %#v, ok=%t", record, ok)
+			}
+			if tt.wantResolution == completionCleanlinessCommitted || tt.wantResolution == completionCleanlinessDiscarded {
+				if record.Declaration != tt.wantResolution {
+					t.Fatalf("persisted declaration = %q, want %q", record.Declaration, tt.wantResolution)
+				}
+			}
+			if len(tt.evidence.UntrackedPaths) > 0 && len(record.Evidence.UntrackedPaths) == 0 {
+				t.Fatalf("persisted evidence = %#v, want untracked paths", record.Evidence)
+			}
+		})
+	}
+}
+
+func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	previousRejected := store.WorkAttempt{
+		TerminalState: store.WorkAttemptTerminalSuccess,
+		WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{
+			completionCleanlinessMetadataKey: completionCleanlinessRecord{Outcome: completionCleanlinessRejected},
+		}),
+	}
+	tests := []struct {
+		name         string
+		history      []store.WorkAttempt
+		wantTerminal store.WorkAttemptTerminalState
+		wantRetry    bool
+		wantBlocked  bool
+		intentional  bool
+	}{
+		{name: "first rejection returns to agent", wantTerminal: store.WorkAttemptTerminalSuccess, wantRetry: true},
+		{name: "second rejection parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true},
+		{name: "intentional remainder parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true, intentional: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := connector.Issue{ID: "issue-2147", Identifier: "digitaldrywood/detent#2147", State: "In Progress"}
+			completionLane := ""
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"2147\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
+			if tt.intentional {
+				completionLane = ""
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: preserve debug.log for operator inspection\n```",
+				}}
+			}
+			tracker := &implementProgressConnector{refreshed: issue}
+			attempts := &implementProgressAttemptStore{history: tt.history}
+			cfg := normalizeConfig(Config{
+				Project:                scheduler.ProjectCandidate{ID: "detent"},
+				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
+				ObservedStates:         []string{"Blocked"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Minute,
+			})
+			orch := &Orchestrator{
+				cfg:          cfg,
+				connector:    tracker,
+				workAttempts: attempts,
+				logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			state := newState(cfg)
+			state.Running[issue.ID] = Running{
+				Issue:          issue,
+				Attempt:        1,
+				WorkAttemptID:  2147,
+				Generation:     7,
+				Mode:           runpkg.RunModeImplement,
+				CompletionLane: completionLane,
+				StartedAt:      base.Add(-time.Minute),
+			}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: base.Add(-time.Minute)}
+			diff := DiffStats{
+				FilesChanged:           2,
+				AddedLines:             9,
+				RemovedLines:           3,
+				TrackedPaths:           []string{"internal/worker.go"},
+				UntrackedPaths:         []string{"debug.log"},
+				RecoveryStateExpected:  true,
+				RecoveryStateAvailable: true,
+				Fingerprint:            "dirty-fingerprint",
+				Status:                 "changed",
+			}
+
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+				IssueID:     issue.ID,
+				CompletedAt: base,
+				Request:     runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: 2147, Generation: 7},
+				Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, DiffStats: diff},
+			})
+
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != tt.wantTerminal {
+				t.Fatalf("work attempt completions = %#v, want %q", attempts.completions, tt.wantTerminal)
+			}
+			var metadata struct {
+				CompletionCleanliness completionCleanlinessRecord `json:"completion_cleanliness"`
+			}
+			if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+				t.Fatalf("decode work attempt metadata: %v", err)
+			}
+			if metadata.CompletionCleanliness.Outcome == "" || len(metadata.CompletionCleanliness.Evidence.UntrackedPaths) != 1 {
+				t.Fatalf("completion cleanliness metadata = %#v", metadata.CompletionCleanliness)
+			}
+			_, retrying := state.Retry[issue.ID]
+			_, blocked := state.Blocked[issue.ID]
+			if retrying != tt.wantRetry || blocked != tt.wantBlocked {
+				t.Fatalf("state = retry %t blocked %t, want retry %t blocked %t", retrying, blocked, tt.wantRetry, tt.wantBlocked)
+			}
+			if len(tracker.comments) == 0 {
+				t.Fatal("expected a completion rejection or escalation comment")
+			}
+			comment := tracker.comments[len(tracker.comments)-1].body
+			for _, want := range []string{"2 files, +9/-3", "internal/worker.go", "debug.log"} {
+				if !strings.Contains(comment, want) {
+					t.Fatalf("comment missing %q:\n%s", want, comment)
+				}
+			}
+			if !tt.intentional {
+				for _, want := range []string{"completion_cleanliness_resolution", "committed", "discarded", "under `fields:`"} {
+					if !strings.Contains(comment, want) {
+						t.Fatalf("comment missing %q:\n%s", want, comment)
+					}
+				}
+			} else if !strings.Contains(comment, "preserve debug.log for operator inspection") {
+				t.Fatalf("comment missing intentional-left statement:\n%s", comment)
+			}
+		})
+	}
+}
+
+func TestHandleRunResultCleanRetryUsesPRGate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		rejections int
+		blocked    bool
+		resolution string
+	}{
+		{name: "after one rejection", rejections: 1},
+		{name: "after two rejections", rejections: 2},
+		{name: "blocked approval after two rejections", rejections: 2, blocked: true},
+		{name: "blocked committed retry", rejections: 2, blocked: true, resolution: completionCleanlinessCommitted},
+		{name: "blocked discarded retry", rejections: 1, blocked: true, resolution: completionCleanlinessDiscarded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := completionTransitionIssue("In Progress", "OPEN")
+			issue.PullRequest = &connector.PullRequest{Number: 2493, State: "OPEN", CIStatus: "pass", UnresolvedReviewThreads: []connector.PullRequestReviewThread{{Path: "worker.go", Line: 1}}}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
+			if tt.blocked {
+				issue.PullRequest.HeadSHA = "head"
+				issue.PullRequest.UnresolvedReviewThreads = nil
+				issue.Comments[0].Body = fmt.Sprintf("## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\n  completion_cleanliness_resolution: %q\nblockers: []\nhuman_action: approve the worker merge tool\n```", tt.resolution)
+				if tt.resolution == "" {
+					issue.Comments[0].Body = strings.ReplaceAll(issue.Comments[0].Body, "  completion_cleanliness_resolution: \"\"\n", "")
+				}
+			}
+			originalWorkpad := issue.Comments[0].Body
+			history := make([]store.WorkAttempt, tt.rejections)
+			for i := range history {
+				history[i] = store.WorkAttempt{TerminalState: store.WorkAttemptTerminalSuccess, WorkerMetadataJSON: marshalWorkAttemptJSON(completionCleanlinessMetadata(completionCleanlinessDecision{Attempted: true, Outcome: completionCleanlinessRejected}))}
+			}
+			attempts := &implementProgressAttemptStore{history: history}
+			tracker := &implementProgressConnector{refreshed: issue, hydrated: issue}
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindHumanReview}}})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			state := newState(cfg)
+			now := time.Date(2026, 9, 11, 15, 0, 0, 0, time.UTC)
+			state.Running[issue.ID] = Running{Issue: issue, Attempt: 1, WorkAttemptID: 2493, Generation: 7, Mode: runpkg.RunModeImplement, StartedAt: now.Add(-time.Minute)}
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeImplement, WorkAttemptID: 2493, Generation: 7}, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, DiffStats: DiffStats{Status: "clean", HeadSHA: "head", RecoveryStateExpected: true, RecoveryStateAvailable: true}}})
+			if tt.blocked {
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Blocked" {
+					t.Fatalf("updates = %#v, want independent Workpad blocker", tracker.updates)
+				}
+				blocked, ok := state.Blocked[issue.ID]
+				if !ok || blocked.Reason != workpadBlockedUnactionedReason || blocked.Issue.WorkpadSignal == nil || blocked.Issue.WorkpadSignal.Status != workpad.StatusBlocked || blocked.Issue.WorkpadSignal.HumanAction != "approve the worker merge tool" {
+					t.Fatalf("blocked = %#v, want preserved human action", blocked)
+				}
+				if len(blocked.Issue.Comments) != 1 || blocked.Issue.Comments[0].Body != originalWorkpad {
+					t.Fatal("independent blocked Workpad was changed")
+				}
+			} else {
+				if _, blocked := state.Blocked[issue.ID]; blocked {
+					t.Fatal("clean retry was parked")
+				}
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
+					t.Fatalf("updates = %#v, want Rework", tracker.updates)
+				}
+				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "unresolved review thread") {
+					t.Fatalf("comments = %#v, want PR gate reason", tracker.comments)
+				}
+			}
+			if len(attempts.completions) != 1 {
+				t.Fatalf("completions = %#v", attempts.completions)
+			}
+			if tt.blocked && (attempts.completions[0].TerminalState != store.WorkAttemptTerminalNoProgress || state.Completed[issue.ID].FinalState != runpkg.FinalStateNoProgress) {
+				t.Fatalf("human-blocked work was recorded as successful acceptance: %#v", attempts.completions[0])
+			}
+			record, ok := completionCleanlinessRecordFromAttempt(store.WorkAttempt{WorkerMetadataJSON: attempts.completions[0].WorkerMetadataJSON})
+			if !ok || record.Outcome != completionCleanlinessAccepted || record.Resolution != completionCleanlinessClean || record.Reason != "" || record.ConsecutiveRejections != 0 || record.Statement != "" {
+				t.Fatalf("cleanliness = %#v", record)
+			}
+		})
+	}
+}

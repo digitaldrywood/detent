@@ -1,0 +1,139 @@
+package github
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+)
+
+var (
+	ErrAuthenticationFailed        = errors.New("github authentication failed")
+	ErrGraphQLErrors               = errors.New("github graphql errors")
+	ErrInvalidEndpoint             = errors.New("github endpoint is invalid")
+	ErrInvalidPrivateKey           = errors.New("github app private key is invalid")
+	ErrInvalidResponse             = errors.New("github response is invalid")
+	ErrMissingAppConfig            = errors.New("github app configuration is incomplete")
+	ErrMissingProject              = errors.New("github project is required")
+	ErrMissingRepository           = errors.New("github repository is required")
+	ErrMissingToken                = errors.New("github token is required")
+	ErrNotFound                    = errors.New("github resource not found")
+	ErrAssigneeNotFound            = errors.New("github assignee not found")
+	ErrAssigneeUpdateFailed        = errors.New("github assignee update failed")
+	ErrCommentCreateFailed         = errors.New("github comment create failed")
+	ErrIssueFieldUpdateFailed      = errors.New("github issue field update failed")
+	ErrIssueDependencyUpdateFailed = errors.New("github issue dependency update failed")
+	ErrIssueCloseFailed            = errors.New("github issue close failed")
+	ErrProjectItemNotFound         = errors.New("github project item not found")
+	ErrProjectItemsTruncated       = errors.New("github project item scan truncated")
+	ErrProjectItemRemoveFailed     = errors.New("github project item remove failed")
+	ErrProjectFieldNotFound        = errors.New("github project field not found")
+	ErrProjectFieldOptionNotFound  = errors.New("github project field option not found")
+	ErrProjectFieldUpdateFailed    = errors.New("github project field update failed")
+	ErrProjectNotFound             = errors.New("github project not found")
+	ErrRateLimited                 = connector.NewRetryableError("github rate limited")
+	ErrResourceExhausted           = fmt.Errorf("github resource exhausted: %w", connector.ErrResourceExhausted)
+	ErrRESTFanoutDeferred          = connector.NewRetryableError("github rest fanout deferred")
+	ErrRESTBudgetReserved          = connector.NewRetryableError("github rest budget reserved")
+	ErrStatusFieldNotFound         = errors.New("github status field not found")
+	ErrStatusOptionNotFound        = errors.New("github status option not found")
+	ErrStatusUpdateFailed          = errors.New("github status update failed")
+	ErrTransient                   = connector.NewRetryableError("github transient error")
+	ErrUnexpectedStatus            = errors.New("github unexpected status")
+)
+
+type GraphQLError struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+}
+
+type GraphQLErrorList struct {
+	Errors []GraphQLError
+	Err    error
+}
+
+func (e *GraphQLErrorList) Error() string {
+	if len(e.Errors) == 0 {
+		return e.Err.Error()
+	}
+
+	messages := make([]string, 0, len(e.Errors))
+	for _, err := range e.Errors {
+		if strings.TrimSpace(err.Message) != "" {
+			messages = append(messages, err.Message)
+		}
+	}
+	if len(messages) == 0 {
+		return e.Err.Error()
+	}
+
+	return fmt.Sprintf("%s: %s", e.Err, strings.Join(messages, "; "))
+}
+
+func (e *GraphQLErrorList) Unwrap() error {
+	return e.Err
+}
+
+type StatusError struct {
+	CredentialIdentity string
+	ObservedAt         time.Time
+	RateLimit          connector.RESTRateLimit
+	StatusCode         int
+	Body               string
+	Err                error
+	RateLimitKind      string
+	RetryAfter         time.Duration
+	ResetAt            time.Time
+}
+
+func (e *StatusError) HTTPStatus() int { return e.StatusCode }
+
+type RESTFanoutDeferralError struct {
+	EndpointFamily string
+	BudgetScope    string
+	FanoutCount    float64
+	FanoutCap      int64
+	RetryAfter     time.Duration
+}
+
+func (e *RESTFanoutDeferralError) Error() string {
+	if e == nil {
+		return ErrRESTFanoutDeferred.Error()
+	}
+	return fmt.Sprintf("%s: rest fanout cap %d reached (shared across endpoint families; refused: %s)", ErrRESTFanoutDeferred, e.FanoutCap, strings.TrimSpace(e.EndpointFamily))
+}
+
+func (e *RESTFanoutDeferralError) Unwrap() error {
+	return ErrRESTFanoutDeferred
+}
+
+func (e *RESTFanoutDeferralError) LocalDeferral() connector.LocalDeferral {
+	if e == nil {
+		return connector.LocalDeferral{}
+	}
+	return connector.LocalDeferral{
+		Reason:     connector.LocalDeferralReasonRESTFanoutCap,
+		Scope:      e.BudgetScope,
+		RetryAfter: e.RetryAfter,
+	}
+}
+
+func (e *StatusError) Error() string {
+	if strings.TrimSpace(e.Body) == "" {
+		return fmt.Sprintf("%s: status %d", e.Err, e.StatusCode)
+	}
+	return fmt.Sprintf("%s: status %d: %s", e.Err, e.StatusCode, e.Body)
+}
+
+func (e *StatusError) Unwrap() error {
+	return e.Err
+}
+
+func (e *StatusError) RetryAfterDuration() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.RetryAfter
+}

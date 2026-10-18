@@ -1,0 +1,232 @@
+package backendcapacity
+
+import (
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestStartupEvidenceSnapshotsAreIndependent(t *testing.T) {
+	t.Parallel()
+	for _, beforeCleanup := range []bool{false, true} {
+		name := "after cleanup"
+		if beforeCleanup {
+			name = "before cleanup"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Now().UTC()
+			process := StartupProcessEvidence{StartedAt: &now, ReadyAt: &now, ExitedAt: &now, SentMessages: 3}
+			evidence := &StartupEvidence{Process: process, BeforeCleanup: &process}
+			err := NewError(Scope{}, Details{Startup: evidence}, errors.New("startup failed"))
+			first, ok := As(err)
+			if !ok {
+				t.Fatal("missing capacity error")
+			}
+			selected := &first.Details.Startup.Process
+			if beforeCleanup {
+				selected = first.Details.Startup.BeforeCleanup
+			}
+			*selected.StartedAt = time.Time{}
+			*selected.ReadyAt = time.Time{}
+			*selected.ExitedAt = time.Time{}
+			selected.SentMessages = 0
+			second, _ := As(err)
+			for _, snapshot := range []*StartupProcessEvidence{&second.Details.Startup.Process, second.Details.Startup.BeforeCleanup, &evidence.Process, evidence.BeforeCleanup} {
+				if !snapshot.StartedAt.Equal(now) || !snapshot.ReadyAt.Equal(now) || !snapshot.ExitedAt.Equal(now) || snapshot.SentMessages != 3 {
+					t.Fatalf("consumer mutated original snapshot: %+v", snapshot)
+				}
+			}
+		})
+	}
+}
+
+func TestClassify(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
+	wantReset := now.Add(44 * time.Minute)
+	tests := []struct {
+		name      string
+		text      string
+		fallback  *time.Time
+		wantOK    bool
+		wantReset time.Time
+	}{
+		{
+			name:      "structured epoch reset",
+			text:      `{"error":{"type":"usageLimitExceeded","resetAt":1783651140}}`,
+			wantOK:    true,
+			wantReset: time.Unix(1783651140, 0).UTC(),
+		},
+		{
+			name:      "telemetry fallback",
+			text:      `{"error":{"type":"usageLimitExceeded"}}`,
+			fallback:  &wantReset,
+			wantOK:    true,
+			wantReset: wantReset,
+		},
+		{
+			name:   "ordinary backend failure",
+			text:   `{"error":{"type":"invalid_request_error"}}`,
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			details, ok := Classify(tt.text, tt.fallback, now, Rules{Kinds: []string{"usageLimitExceeded"}})
+			if ok != tt.wantOK {
+				t.Fatalf("Classify() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if details.ResetAt == nil || !details.ResetAt.Equal(tt.wantReset) {
+				t.Fatalf("Classify() ResetAt = %v, want %v", details.ResetAt, tt.wantReset)
+			}
+		})
+	}
+}
+
+func TestScopeHosted(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		provider string
+		want     bool
+	}{
+		{provider: "openai", want: true},
+		{provider: "", want: true},
+		{provider: "local_ollama", want: false},
+		{provider: "ollama", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			t.Parallel()
+
+			if got := (Scope{Provider: tt.provider}).Hosted(); got != tt.want {
+				t.Fatalf("Hosted() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyTransientOverload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		text     string
+		wantKind string
+		want     bool
+	}{
+		{name: "provider kind", text: `{"codexErrorInfo":"serverOverloaded"}`, wantKind: "serverOverloaded", want: true},
+		{name: "model capacity phrase", text: "Selected model is at capacity", wantKind: "selectedmodelisatcapacity", want: true},
+		{name: "http 529", text: "provider request failed: HTTP 529", wantKind: "http_529", want: true},
+		{name: "status code 503", text: "provider request failed with status code 503", wantKind: "http_503", want: true},
+		{name: "json status code", text: `{"status_code":502}`, wantKind: "http_502", want: true},
+		{name: "unrelated number", text: "model context window is 500 tokens", want: false},
+	}
+	rules := Rules{
+		Kinds:   []string{"serverOverloaded"},
+		Phrases: []string{"selected model is at capacity"},
+		HTTP5xx: true,
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			details, ok := ClassifyTransientOverload(tt.text, rules)
+			if ok != tt.want {
+				t.Fatalf("ClassifyTransientOverload() ok = %v, want %v", ok, tt.want)
+			}
+			if !tt.want {
+				return
+			}
+			if details.Type != ErrorTypeTransientOverload || details.Kind != tt.wantKind || details.ResetAt != nil {
+				t.Fatalf("details = %#v, want transient overload kind %q without reset", details, tt.wantKind)
+			}
+		})
+	}
+}
+
+func TestClassifyUsageLimitCanRequireReset(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 12, 15, 0, 0, 0, time.UTC)
+	rules := Rules{Kinds: []string{"RESOURCE_EXHAUSTED"}, RequireReset: true}
+	if _, ok := Classify(`{"status":"RESOURCE_EXHAUSTED"}`, nil, now, rules); ok {
+		t.Fatal("Classify() accepted reset-free usage limit")
+	}
+	resetAt := now.Add(time.Hour)
+	details, ok := Classify(`{"status":"RESOURCE_EXHAUSTED"}`, &resetAt, now, rules)
+	if !ok || details.Type != ErrorTypeUsageLimit || details.ResetAt == nil || !details.ResetAt.Equal(resetAt) {
+		t.Fatalf("Classify() = %#v, %v, want reset-bearing usage limit", details, ok)
+	}
+}
+
+func TestResetFromText(t *testing.T) {
+	t.Parallel()
+
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		text string
+		now  time.Time
+		want time.Time
+	}{
+		{
+			name: "try again at local time",
+			text: "You've hit your limit. Try again at 9:39 PM",
+			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, chicago),
+			want: time.Date(2026, 8, 16, 2, 39, 0, 0, time.UTC),
+		},
+		{
+			name: "resets at local time",
+			text: "resets at 4:10pm",
+			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, chicago),
+			want: time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC),
+		},
+		{
+			name: "resets in explicit IANA timezone",
+			text: "resets 4:10pm (America/Chicago)",
+			now:  time.Date(2026, 8, 15, 20, 47, 49, 0, time.UTC),
+			want: time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC),
+		},
+		{
+			name: "resets in single-component IANA timezone",
+			text: "resets 4:10pm (UTC)",
+			now:  time.Date(2026, 8, 15, 15, 47, 49, 0, time.UTC),
+			want: time.Date(2026, 8, 15, 16, 10, 0, 0, time.UTC),
+		},
+		{
+			name: "reported September subscription reset",
+			text: "usageLimitExceeded: try again at Sep 22nd, 2026 11:27 AM",
+			now:  time.Date(2026, 9, 18, 5, 47, 0, 0, time.UTC),
+			want: time.Date(2026, 9, 22, 11, 27, 0, 0, time.UTC),
+		},
+		{
+			name: "subscription reset with date",
+			text: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 20th, 2026 10:27 AM.",
+			now:  time.Date(2026, 8, 19, 11, 28, 34, 0, chicago),
+			want: time.Date(2026, 8, 20, 15, 27, 0, 0, time.UTC),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resetFromText(tt.text, tt.now)
+			if got == nil || !got.Equal(tt.want) {
+				t.Fatalf("resetFromText() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
