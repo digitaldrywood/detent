@@ -30,10 +30,13 @@ func TestNativeSourceTransfer(t *testing.T) {
 		status                                                               int
 		sameRunner, advanced                                                 bool
 		hosted                                                               bool
-		replacement                                                          bool
+		replacement, stopped, acknowledged                                   bool
 	}{
 		{name: "transfer retains a nondispatchable lane and human label", held: true, released: true, status: http.StatusOK},
 		{name: "transfer and duplicate request", released: true, status: http.StatusOK},
+		{name: "operator stop retains live source refusal", running: true, stopped: true, status: http.StatusUnprocessableEntity},
+		{name: "operator stop followed by terminal acknowledgment", running: true, stopped: true, acknowledged: true, status: http.StatusOK},
+		{name: "operator stop acknowledgment after replacement failure", running: true, stopped: true, acknowledged: true, replacement: true, status: http.StatusOK},
 		{name: "new publication retains stale transfer selection", advanced: true, released: true, status: http.StatusOK},
 		{name: "same runner version-bound recovery", released: true, dirty: true, sameRunner: true, status: http.StatusOK},
 		{name: "cancel explicit routing", released: true, cancel: true, status: http.StatusOK},
@@ -55,8 +58,8 @@ func TestNativeSourceTransfer(t *testing.T) {
 		{name: "stale revision", stale: true, released: true, status: http.StatusConflict},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			now := time.Now().UTC()
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+			clock := &leaseTestClock{value: time.Now().UTC()}
+			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now}))
 			var diagnostics bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewTextHandler(&diagnostics, nil))
 			a := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
@@ -66,6 +69,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 			b.enroll(t)
 			if test.sameRunner {
 				b = a
+			}
+			if test.stopped {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: f.issue.WorkItemID, MachineID: a.binding.MachineID, SessionID: "source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
@@ -120,7 +128,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
-			if test.replacement {
+			if test.replacement || test.stopped {
 				event.IdempotencyKey, event.Data.Sequence = "published-checkpoint", 3
 				event.Data.Handoff.WorktreeState = "clean"
 				event.Data.Handoff.ExternalEffect, event.Data.Handoff.EffectState = "pr_create", "confirmed"
@@ -133,14 +141,26 @@ func TestNativeSourceTransfer(t *testing.T) {
 				finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome, finish.Data.Handoff = "run.finished", "finished", 3, "succeeded", nil
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, finish), http.StatusOK)
 			}
+			if test.stopped {
+				credential, _, err := f.service.authenticateAPIToken(t.Context(), testHubAdminToken, "", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				current := readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+				_, err = f.service.stopNativeRunCommand(t.Context(), nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}, "stop-source", coordinatorStopRunArguments{ProjectID: string(f.project.ID), RequestID: "stop-source", Identifier: string(f.issue.WorkItemID), ExpectedRevision: current.Revision, LeaseID: lease.ID, FencingToken: lease.FencingToken, Destination: "Todo"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.issue = readWorkItem(t, f.nativeFixture, f.issue.WorkItemID, "")
+			}
 			if test.released && !test.replacement {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			if test.expired {
-				now = now.Add(91 * time.Second)
+				clock.Advance(91 * time.Second)
 			}
 			if test.replacement {
-				now = now.Add(91 * time.Second)
+				clock.Advance(91 * time.Second)
 				claim.SessionID = "replacement"
 				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)
 				requireNativeStatus(t, response, http.StatusOK)
@@ -157,10 +177,35 @@ func TestNativeSourceTransfer(t *testing.T) {
 				failure.Type, failure.IdempotencyKey = "run.finished", "replacement-failed"
 				failure.Data.Identity, failure.Data.Outcome = nil, "failed"
 				failure.Data.SessionID = ""
-				failure.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 2, Generation: 2, Phase: "completed", HeartbeatAt: now}
-				failure.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: now, Stage: "pre_provider", Attribution: "issue", ErrorClass: "source_recovery", Error: "native checkpoint requires recovery"}
+				failure.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 2, Generation: 2, Phase: "completed", HeartbeatAt: clock.Now()}
+				failure.Data.TerminalFailure = &tracker.NativeTerminalFailure{ObservedAt: clock.Now(), Stage: "pre_provider", Attribution: "issue", ErrorClass: "source_recovery", Error: "native checkpoint requires recovery"}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, failure), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			}
+			if test.acknowledged {
+				ack := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "terminated"}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: event.Data.AttemptID, RunID: event.Data.RunID, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: event.Data.PolicyID, Identity: event.Data.Identity, Sequence: event.Data.Sequence + 1, Outcome: "cancelled"}}
+				for _, invalid := range []string{"fence", "owner", "success", "evidence"} {
+					stale := ack
+					stale.IdempotencyKey = "rejected-" + invalid
+					credential := a.redemption.Credential
+					switch invalid {
+					case "fence":
+						stale.Data.FencingToken++
+					case "owner":
+						credential = b.redemption.Credential
+					case "success":
+						stale.Data.Outcome = "succeeded"
+					case "evidence":
+						stale.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: clock.Now()}
+					}
+					response := performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", credential, stale)
+					if response.Code < 400 || response.Code >= 500 {
+						t.Fatalf("invalid %s acknowledgment: %d %s", invalid, response.Code, response.Body.String())
+					}
+				}
+				for range 2 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, itemPath+"/events", a.redemption.Credential, ack), http.StatusOK)
+				}
 			}
 			if test.held {
 				labels := []string{"human-owned"}
@@ -176,7 +221,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			requireNativeStatus(t, recoveryRead, http.StatusOK)
 			var observed sourceRecoveryView
 			decodeHubResponse(t, recoveryRead, &observed)
-			if test.replacement && (observed.AttemptID != event.Data.AttemptID || observed.VersionID != version.ID || observed.HeadSHA != input.HeadSHA || !observed.Available || observed.Quiesced) {
+			if test.replacement && !test.acknowledged && (observed.AttemptID != event.Data.AttemptID || observed.VersionID != version.ID || observed.HeadSHA != input.HeadSHA || !observed.Available || observed.Quiesced) {
 				t.Fatalf("replacement erased source identity or treated interruption as completion: %+v", observed)
 			}
 			if test.historical && (!observed.Quiesced || observed.AttemptID != event.Data.AttemptID) {
@@ -351,7 +396,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", b.redemption.Credential, claim), http.StatusOK)
 				request.IdempotencyKey, request.ExpectedRevision, request.DestinationRunnerID = "cancel-active", view.Revision, ""
 				for _, advance := range []time.Duration{0, 91 * time.Second} {
-					now = now.Add(advance)
+					clock.Advance(advance)
 					response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/source-recovery", f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					decodeHubResponse(t, response, &observed)

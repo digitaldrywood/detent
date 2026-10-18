@@ -353,10 +353,11 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
 		}
-		retain := false
+		retain, interrupted := false, false
 		if native.execution != nil {
 			native.execution.mu.Lock()
 			data := native.execution.data
+			interrupted = data.Outcome == "interrupted"
 			finalization := data.Finalization
 			completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
 				finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
@@ -367,6 +368,15 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		if native.execution != nil {
 			if err := native.execution.closeWorkers(ctx); err != nil {
 				return errors.Join(finishErr, err)
+			}
+		}
+		if native.execution != nil && (finishErr != nil || interrupted) {
+			acknowledged, err := native.execution.acknowledgeTermination(ctx)
+			if err != nil {
+				return errors.Join(finishErr, err)
+			}
+			if acknowledged {
+				finishErr = nil
 			}
 		}
 		if !retain {
