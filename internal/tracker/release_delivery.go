@@ -7,7 +7,7 @@ type ReleasePickInput struct {
 	SourceChangeID string           `json:"source_change_id"`
 	SourceMergeSHA string           `json:"source_merge_sha"`
 	Repository     string           `json:"repository"`
-	PRNumber       int              `json:"pr_number"`
+	PRNumber       int              `json:"pr_number,omitempty"`
 	HeadRef        string           `json:"head_ref"`
 	HeadSHA        string           `json:"head_sha"`
 	BaseRef        string           `json:"base_ref"`
@@ -19,6 +19,18 @@ type AssociateReleasePick struct {
 	Mutation
 	ReleasePickInput
 	ExpectedRevision Revision `json:"expected_revision,string"`
+}
+
+type PublishReleasePick struct {
+	Mutation
+	ReleasePickInput
+	ExpectedRevision Revision `json:"expected_revision,string"`
+}
+
+type ReleasePickPublication struct {
+	ReleasePickInput
+	WorkItemID NativeWorkItemID `json:"work_item_id"`
+	URL        string           `json:"url"`
 }
 
 type ReleaseDelivery struct {
