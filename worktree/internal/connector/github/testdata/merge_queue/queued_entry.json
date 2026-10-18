@@ -1,0 +1,29 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR_42",
+        "mergeStateStatus": "BLOCKED",
+        "mergeQueueEntry": {
+          "headCommit": {
+            "oid": "group-head"
+          },
+          "baseCommit": {
+            "oid": "group-base"
+          },
+          "id": "MQE_42",
+          "state": "AWAITING_CHECKS",
+          "position": 2,
+          "estimatedTimeToMerge": 420,
+          "enqueuedAt": "2026-07-13T18:00:00Z",
+          "mergeQueue": {
+            "url": "https://github.test/example/repo/queue/main",
+            "entries": {
+              "totalCount": 5
+            }
+          }
+        }
+      }
+    }
+  }
+}
