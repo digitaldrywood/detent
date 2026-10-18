@@ -369,6 +369,7 @@ type Orchestrator struct {
 	capacityClearMu         sync.Mutex
 	dispatchStarts          int
 	dispatchStartsDone      chan struct{}
+	dispatchDiscoveryCancel context.CancelFunc
 	dispatchClosed          atomic.Bool
 	localIntakeDisabled     atomic.Bool
 	projectID               string
@@ -1469,6 +1470,9 @@ func (o *Orchestrator) BeginDrain() {
 	if o.dispatchClosed.Swap(true) {
 		o.dispatchLifecycleMu.Unlock()
 		return
+	}
+	if o.dispatchDiscoveryCancel != nil {
+		o.dispatchDiscoveryCancel()
 	}
 	o.dispatchLifecycleMu.Unlock()
 	if o.globalDispatchGate != nil {

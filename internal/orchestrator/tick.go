@@ -499,11 +499,35 @@ func (o *Orchestrator) fetchTickIssues(
 	reserve githubBudgetReserveDecision,
 	timing *refreshTiming,
 ) (tickFetchedIssues, bool) {
+	if o.scheduling == nil {
+		o.dispatchLifecycleMu.Lock()
+		if o.dispatchQuiesced() {
+			o.dispatchLifecycleMu.Unlock()
+			return tickFetchedIssues{}, false
+		}
+		discoveryCtx, cancel := context.WithCancel(ctx)
+		ctx = discoveryCtx
+		o.dispatchDiscoveryCancel = cancel
+		o.dispatchLifecycleMu.Unlock()
+		defer func() {
+			cancel()
+			o.dispatchLifecycleMu.Lock()
+			o.dispatchDiscoveryCancel = nil
+			o.dispatchLifecycleMu.Unlock()
+		}()
+	}
+
 	if scanner, ok := o.connector.(connector.RefreshScanSerializer); ok {
 		timing.step("wait_for_scan")
 		finishWait := o.tickWatchdog.excludeScanWait()
 		release, err := scanner.BeginRefreshScan(ctx)
 		wait := finishWait()
+		if ctx.Err() != nil {
+			if release != nil {
+				release()
+			}
+			return tickFetchedIssues{}, false
+		}
 		if timing != nil {
 			timing.phases = append(timing.phases, "tracker_scan_wait_duration", wait)
 		}
@@ -526,6 +550,9 @@ func (o *Orchestrator) fetchTickIssues(
 
 	timing.step("fetch_candidates")
 	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
+	if ctx.Err() != nil {
+		return tickFetchedIssues{}, false
+	}
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceCandidates, err, now)
@@ -560,6 +587,9 @@ func (o *Orchestrator) fetchTickIssues(
 	if !canRefresh && !tickHasActiveWork(state, candidateIssues) {
 		timing.step("probe_observed_work")
 		exists, probeErr := o.observedWorkExists(ctx, observedStates)
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
 		if probeErr != nil {
 			o.logger.Warn("fetch observed status probe failed", "error", probeErr)
 			recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, probeErr, now)
@@ -591,6 +621,9 @@ func (o *Orchestrator) fetchTickIssues(
 	} else {
 		statusIssues, statusErr = o.fetchObservedIssuesByStates(ctx, observedStates)
 	}
+	if ctx.Err() != nil {
+		return tickFetchedIssues{}, false
+	}
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, statusErr, now)
@@ -604,6 +637,9 @@ func (o *Orchestrator) fetchTickIssues(
 	fetched.statusOK = true
 	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
@@ -632,6 +668,9 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 		observedStates,
 		o.refreshFilterHint(),
 	)
+	if ctx.Err() != nil {
+		return tickFetchedIssues{}, false
+	}
 	if result.CandidateError != nil {
 		err := result.CandidateError
 		o.logger.Warn("fetch candidate issues failed", "error", err)
@@ -664,6 +703,9 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	fetched.statusOK = true
 	timing.step("hydrate_plan_comments")
 	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
+		if ctx.Err() != nil {
+			return tickFetchedIssues{}, false
+		}
 		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
 		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -695,9 +696,14 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	t.Parallel()
 
-	runningIssue := testIssue("issue-running", "digitaldrywood/detent#11", "In Progress")
-	nextIssue := testIssue("issue-next", "digitaldrywood/detent#12", "Todo")
-	tracker := newFakeConnector(runningIssue, nextIssue)
+	runningIssue := testIssue("issue-running", "owner/repository#11", "In Progress")
+	nextIssue := testIssue("issue-next", "owner/repository#12", "Todo")
+	tracker := &pendingDispatchConnector{
+		fakeConnector: newFakeConnector(runningIssue, nextIssue),
+		started:       make(chan struct{}),
+		release:       make(chan struct{}),
+		passFirst:     true,
+	}
 	runner := newBlockingRunner()
 
 	orch, err := orchestrator.New(orchestrator.Config{
@@ -716,10 +722,17 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	}
 	stop := runOrchestrator(t, orch)
 	defer stop()
+	defer close(tracker.release)
 
 	started := receiveRunRequest(t, runner.started)
 	if started.Issue.ID != runningIssue.ID {
 		t.Fatalf("RunRequest.Issue.ID = %q, want %q", started.Issue.ID, runningIssue.ID)
+	}
+
+	select {
+	case <-tracker.started:
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not block while implementation was active")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -734,6 +747,13 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	}
 	if !state.Draining {
 		t.Fatal("State().Draining = false, want true")
+	}
+
+	if _, ok := state.Running[runningIssue.ID]; !ok {
+		t.Fatal("drain cancelled the active implementation")
+	}
+	if _, ok := state.Claimed[runningIssue.ID]; !ok {
+		t.Fatal("drain dropped the active implementation claim")
 	}
 
 	close(runner.release)
@@ -761,90 +781,155 @@ func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 
 func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		releaseRead bool
+		blockStates bool
+		combined    bool
+		blockScan   bool
+	}{
+		{name: "released candidate read", releaseRead: true},
+		{name: "pending candidate read"},
+		{name: "released status read", releaseRead: true, blockStates: true},
+		{name: "pending status read", blockStates: true},
+		{name: "pending combined read", combined: true},
+		{name: "pending serialized scan", blockScan: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := testIssue("issue-pending-shutdown", "owner/repository#1546", "Merging")
+			issue.PullRequest = &connector.PullRequest{
+				Number:         1546,
+				URL:            "https://github.test/owner/repository/pull/1546",
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
+			}
+			issue.PRRepository = "owner/repository"
+			tracker := &pendingDispatchConnector{
+				fakeConnector: newFakeConnector(issue),
+				started:       make(chan struct{}),
+				release:       make(chan struct{}),
+				blockStates:   tc.blockStates,
+				combined:      tc.combined,
+				blockScan:     tc.blockScan,
+			}
+			tracker.stateIssues = []connector.Issue{issue}
+			runner := newBlockingRunner()
+			var logs bytes.Buffer
+			global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
 
-	issue := testIssue("issue-pending-shutdown", "digitaldrywood/detent#1546", "Merging")
-	issue.PullRequest = &connector.PullRequest{
-		Number:         1546,
-		URL:            "https://github.test/digitaldrywood/detent/pull/1546",
-		State:          "OPEN",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	}
-	issue.PRRepository = "digitaldrywood/detent"
-	tracker := &pendingDispatchConnector{
-		fakeConnector: newFakeConnector(issue),
-		started:       make(chan struct{}),
-		release:       make(chan struct{}),
-	}
-	tracker.stateIssues = []connector.Issue{issue}
-	runner := newBlockingRunner()
-	var logs bytes.Buffer
-	global := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
+			orch, err := orchestrator.New(orchestrator.Config{
+				Project:              scheduler.ProjectCandidate{ID: "selected"},
+				PollInterval:         time.Hour,
+				MergeFastPathEnabled: true,
+				MaxConcurrentAgents:  1,
+				MaxConcurrentAgentsByState: map[string]int{
+					"Merging": 1,
+				},
+				ActiveStates:           []string{"Merging"},
+				ObservedStates:         []string{"Merging"},
+				TerminalStates:         []string{"Done", "Cancelled"},
+				ContinuationRetryDelay: time.Second,
+			}, orchestrator.Dependencies{
+				GlobalDispatchGate: global,
+				Connector:          tracker,
+				Runner:             runner,
+				Logger:             slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			stop := runOrchestrator(t, orch)
+			defer stop()
+			defer func() {
+				if !tc.releaseRead {
+					close(tracker.release)
+				}
+			}()
 
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:         time.Hour,
-		MergeFastPathEnabled: true,
-		MaxConcurrentAgents:  1,
-		MaxConcurrentAgentsByState: map[string]int{
-			"Merging": 1,
-		},
-		ActiveStates:           []string{"Merging"},
-		ObservedStates:         []string{"Merging"},
-		TerminalStates:         []string{"Done", "Cancelled"},
-		ContinuationRetryDelay: time.Second,
-	}, orchestrator.Dependencies{
-		GlobalDispatchGate: global,
-		Connector:          tracker,
-		Runner:             runner,
-		Logger:             slog.New(slog.NewTextHandler(&logs, nil)),
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
+			select {
+			case <-tracker.started:
+			case <-time.After(time.Second):
+				t.Fatal("dispatch tick did not reach pending tracker fetch")
+			}
 
-	select {
-	case <-tracker.started:
-	case <-time.After(time.Second):
-		t.Fatal("dispatch tick did not reach pending tracker fetch")
-	}
+			orch.BeginDrain()
+			if tc.releaseRead {
+				close(tracker.release)
+			}
+			slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+			if err != nil || !acquired {
+				t.Fatalf("selected drain stopped unrelated dispatch: acquired=%t decision=%+v error=%v", acquired, decision, err)
+			}
+			if err := global.Release(slot); err != nil {
+				t.Fatal(err)
+			}
 
-	orch.BeginDrain()
-	slot, acquired, decision, err := global.TryAcquireWithDecision(t.Context(), scheduler.ProjectCandidate{ID: "unrelated"}, scheduler.SlotRequest{State: "Todo"}, time.Now())
-	if err != nil || !acquired {
-		t.Fatalf("selected drain stopped unrelated dispatch: acquired=%t decision=%+v error=%v", acquired, decision, err)
-	}
-	if err := global.Release(slot); err != nil {
-		t.Fatal(err)
-	}
-	close(tracker.release)
+			otherIssue := testIssue("unrelated-issue", "owner/repository#2", "Todo")
+			otherRunner := newBlockingRunner()
+			other, err := orchestrator.New(orchestrator.Config{
+				Project:             scheduler.ProjectCandidate{ID: "unrelated"},
+				PollInterval:        time.Hour,
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done", "Cancelled"},
+			}, orchestrator.Dependencies{
+				GlobalDispatchGate: global,
+				Connector:          newFakeConnector(otherIssue),
+				Runner:             otherRunner,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stopOther := runOrchestrator(t, other)
+			defer stopOther()
+			if started := receiveRunRequest(t, otherRunner.started); started.Issue.ID != otherIssue.ID {
+				t.Fatalf("unrelated dispatch = %q, want %q", started.Issue.ID, otherIssue.ID)
+			}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := orch.Drain(ctx); err != nil {
-		t.Fatalf("Drain() error = %v", err)
-	}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := orch.Drain(ctx); err != nil {
+				t.Fatalf("Drain() error = %v", err)
+			}
 
-	state, err := orch.State(ctx)
-	if err != nil {
-		t.Fatalf("State() error = %v", err)
-	}
-	if !state.Draining {
-		t.Fatal("State().Draining = false, want true")
-	}
-	if len(state.Running) != 0 {
-		t.Fatalf("State().Running = %#v, want no work started", state.Running)
-	}
-	select {
-	case request := <-runner.started:
-		t.Fatalf("unexpected dispatch after drain began = %#v", request)
-	default:
-	}
-	for _, event := range []string{"merge_worker_pickup", "merge_worker_slot_acquired"} {
-		if strings.Contains(logs.String(), event) {
-			t.Fatalf("logs contain %q after drain began:\n%s", event, logs.String())
-		}
+			otherState, err := other.State(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if otherState.Draining || len(otherState.Running) != 1 {
+				t.Fatalf("unrelated project changed during selected drain: %#v", otherState)
+			}
+			close(otherRunner.release)
+			waitForState(t, other, func(state orchestrator.State) bool {
+				_, completed := state.Completed[otherIssue.ID]
+				return completed
+			})
+
+			state, err := orch.State(ctx)
+			if err != nil {
+				t.Fatalf("State() error = %v", err)
+			}
+			if !state.Draining {
+				t.Fatal("State().Draining = false, want true")
+			}
+			if state.LastRefreshError != "" {
+				t.Fatalf("drain cancellation recorded a tracker failure: %s", state.LastRefreshError)
+			}
+			if len(state.Running) != 0 {
+				t.Fatalf("State().Running = %#v, want no work started", state.Running)
+			}
+			select {
+			case request := <-runner.started:
+				t.Fatalf("unexpected dispatch after drain began = %#v", request)
+			default:
+			}
+			for _, event := range []string{"merge_worker_pickup", "merge_worker_slot_acquired", "fetch candidate issues failed", "fetch observed status issues failed"} {
+				if strings.Contains(logs.String(), event) {
+					t.Fatalf("logs contain %q after drain began:\n%s", event, logs.String())
+				}
+			}
+		})
 	}
 }
 
@@ -3071,9 +3156,14 @@ type fakeConnector struct {
 
 type pendingDispatchConnector struct {
 	*fakeConnector
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	passFirst   bool
+	fetches     atomic.Int64
+	blockStates bool
+	combined    bool
+	blockScan   bool
+	started     chan struct{}
+	release     chan struct{}
+	once        sync.Once
 }
 
 type dispatchStartBlockingConnector struct {
@@ -3095,7 +3185,45 @@ func (c *dispatchStartBlockingConnector) SetField(ctx context.Context, issueID s
 	}
 }
 
+func (c *pendingDispatchConnector) CombinedRefreshEnabled() bool {
+	return c.combined
+}
+
+func (c *pendingDispatchConnector) FetchRefreshIssues(ctx context.Context, _, states []string, _ connector.IssueFilterHint) connector.RefreshIssueResult {
+	candidates, err := c.waitForRead(ctx)
+	if err != nil {
+		return connector.RefreshIssueResult{CandidateError: err}
+	}
+	statuses, err := c.fakeConnector.FetchIssuesByStates(ctx, states)
+	return connector.RefreshIssueResult{Candidates: candidates, Statuses: statuses, StatusError: err}
+}
+
+func (c *pendingDispatchConnector) BeginRefreshScan(ctx context.Context) (func(), error) {
+	if c.blockScan {
+		if _, err := c.waitForRead(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return func() {}, nil
+}
+
 func (c *pendingDispatchConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.blockStates || (c.passFirst && c.fetches.Add(1) == 1) {
+		return c.fakeConnector.FetchCandidateIssues(ctx)
+	}
+	return c.waitForRead(ctx)
+}
+
+func (c *pendingDispatchConnector) FetchIssuesByStates(ctx context.Context, states []string) ([]connector.Issue, error) {
+	if c.blockStates && slices.Contains(states, "Merging") {
+		if _, err := c.waitForRead(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return c.fakeConnector.FetchIssuesByStates(ctx, states)
+}
+
+func (c *pendingDispatchConnector) waitForRead(ctx context.Context) ([]connector.Issue, error) {
 	c.once.Do(func() {
 		close(c.started)
 	})

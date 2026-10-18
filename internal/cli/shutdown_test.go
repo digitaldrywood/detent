@@ -941,103 +941,123 @@ func TestRunWithShutdownForceReapsOwnedWorkerGroupWithinHardDeadline(t *testing.
 
 func TestRunWithShutdownPublishesDrainStatusDuringBlockedConnectorRefresh(t *testing.T) {
 	t.Parallel()
-
-	refreshStarted := make(chan struct{}, 1)
-	releaseRefresh := make(chan struct{})
-	project := newRefreshProjectWithConnector(t, "detent", shutdownBlockingConnector{
-		started: refreshStarted,
-		release: releaseRefresh,
-	})
-	if err := project.Start(context.Background()); err != nil {
-		t.Fatalf("Project.Start() error = %v", err)
-	}
-	t.Cleanup(func() {
-		select {
-		case <-releaseRefresh:
-		default:
-			close(releaseRefresh)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
-			t.Fatalf("Project.Stop() error = %v", err)
-		}
-	})
-
-	select {
-	case <-refreshStarted:
-	case <-time.After(time.Second):
-		t.Fatal("connector refresh did not start")
-	}
-
-	registry := projectpkg.NewRegistry()
-	mustSetProject(t, registry, project)
-	requestedAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	snapshotHub := hub.New[telemetry.Snapshot]()
-	if err := snapshotHub.Publish(telemetry.Snapshot{
-		GeneratedAt: requestedAt.Add(-time.Second),
-		Running: []telemetry.Running{{
-			Issue: telemetry.Issue{
-				ID:         "issue-1484",
-				Identifier: "digitaldrywood/detent#1484",
-			},
-		}},
-		Counts: telemetry.Counts{Running: 1},
-	}); err != nil {
-		t.Fatalf("SnapshotHub.Publish() error = %v", err)
-	}
-
-	controller := NewShutdownController()
-	serveStarted := make(chan struct{})
-	errs := make(chan error, 1)
-	go func() {
-		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
-			Controller:  controller,
-			Registry:    registry,
-			SnapshotHub: snapshotHub,
-			HardTimeout: 100 * time.Millisecond,
-			Now:         func() time.Time { return requestedAt },
-		}, func(ctx context.Context) error {
-			close(serveStarted)
-			<-ctx.Done()
-			return ctx.Err()
-		})
-	}()
-
-	select {
-	case <-serveStarted:
-	case <-time.After(time.Second):
-		t.Fatal("server did not start")
-	}
-	controller.RequestDrain()
-
-	deadline := time.NewTimer(250 * time.Millisecond)
-	defer deadline.Stop()
-	for {
-		snapshot, ok := snapshotHub.Latest()
-		if ok && snapshot.Shutdown.Draining {
-			if snapshot.Shutdown.SessionsRemaining != 0 {
-				t.Fatalf("SessionsRemaining = %d, want 0 from live initializing runtime", snapshot.Shutdown.SessionsRemaining)
+	for _, tc := range []struct {
+		name          string
+		releaseRead   bool
+		updateRestart bool
+	}{
+		{name: "released read", releaseRead: true},
+		{name: "pending read"},
+		{name: "update restart with pending read", updateRestart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refreshStarted := make(chan struct{}, 1)
+			releaseRefresh := make(chan struct{})
+			project := newRefreshProjectWithConnector(t, "selected", shutdownBlockingConnector{
+				started: refreshStarted,
+				release: releaseRefresh,
+			})
+			if err := project.Start(context.Background()); err != nil {
+				t.Fatalf("Project.Start() error = %v", err)
 			}
-			break
-		}
-		select {
-		case <-deadline.C:
-			close(releaseRefresh)
-			<-errs
-			t.Fatal("drain status was not published while connector refresh was blocked")
-		case <-time.After(time.Millisecond):
-		}
-	}
+			t.Cleanup(func() {
+				select {
+				case <-releaseRefresh:
+				default:
+					close(releaseRefresh)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+					t.Fatalf("Project.Stop() error = %v", err)
+				}
+			})
 
-	close(releaseRefresh)
-	select {
-	case err := <-errs:
-		if err != nil {
-			t.Fatalf("runWithShutdown() error = %v, want nil", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for shutdown")
+			select {
+			case <-refreshStarted:
+			case <-time.After(time.Second):
+				t.Fatal("connector refresh did not start")
+			}
+
+			registry := projectpkg.NewRegistry()
+			mustSetProject(t, registry, project)
+			requestedAt := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+			snapshotHub := hub.New[telemetry.Snapshot]()
+			if err := snapshotHub.Publish(telemetry.Snapshot{
+				GeneratedAt: requestedAt.Add(-time.Second),
+				Running: []telemetry.Running{{
+					Issue: telemetry.Issue{
+						ID:         "issue-1484",
+						Identifier: "owner/repository#1484",
+					},
+				}},
+				Counts: telemetry.Counts{Running: 1},
+			}); err != nil {
+				t.Fatalf("SnapshotHub.Publish() error = %v", err)
+			}
+
+			controller := NewShutdownController()
+			serveStarted := make(chan struct{})
+			errs := make(chan error, 1)
+			go func() {
+				errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+					Controller:  controller,
+					Registry:    registry,
+					SnapshotHub: snapshotHub,
+					HardTimeout: 100 * time.Millisecond,
+					Now:         func() time.Time { return requestedAt },
+				}, func(ctx context.Context) error {
+					close(serveStarted)
+					<-ctx.Done()
+					return ctx.Err()
+				})
+			}()
+
+			select {
+			case <-serveStarted:
+			case <-time.After(time.Second):
+				t.Fatal("server did not start")
+			}
+			if tc.updateRestart {
+				restart := NewRestartRequest()
+				if !requestUpdateRestart(controller, restart, "detent-test") || restart.Binary() != "detent-test" {
+					t.Fatal("coordinated update restart did not acquire shutdown ownership")
+				}
+			} else {
+				controller.RequestDrain()
+			}
+
+			deadline := time.NewTimer(250 * time.Millisecond)
+			defer deadline.Stop()
+			for {
+				snapshot, ok := snapshotHub.Latest()
+				if ok && snapshot.Shutdown.Draining {
+					if snapshot.Shutdown.SessionsRemaining != 0 {
+						t.Fatalf("SessionsRemaining = %d, want 0 from live initializing runtime", snapshot.Shutdown.SessionsRemaining)
+					}
+					break
+				}
+				select {
+				case <-deadline.C:
+					close(releaseRefresh)
+					<-errs
+					t.Fatal("drain status was not published while connector refresh was blocked")
+				case <-time.After(time.Millisecond):
+				}
+			}
+
+			if tc.releaseRead {
+				close(releaseRefresh)
+			}
+			select {
+			case err := <-errs:
+				if err != nil {
+					t.Fatalf("runWithShutdown() error = %v, want nil", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for shutdown")
+			}
+		})
 	}
 }
 
@@ -1580,14 +1600,24 @@ func TestShutdownDrainBudget(t *testing.T) {
 					ctx, cancel = context.WithTimeout(ctx, tc.parentTimeout)
 					defer cancel()
 				}
-				started := make(chan struct{}, 1)
 				release := make(chan struct{})
-				p := newRefreshProjectWithConnector(t, "detent", shutdownBlockingConnector{started: started, release: release})
+				runner := &shutdownBlockingRunner{
+					started:  make(chan struct{}, 1),
+					canceled: make(chan struct{}, 1),
+					release:  release,
+				}
+				p := newShutdownRuntimeProject(t, "selected", []connector.Issue{{
+					ID:               "active-issue",
+					Identifier:       "owner/repository#1",
+					Title:            "active implementation",
+					State:            "Todo",
+					AssignedToWorker: true,
+				}}, runner)
 				if err := p.Start(ctx); err != nil {
 					t.Fatal(err)
 				}
 				defer p.Close()
-				<-started
+				<-runner.started
 				registry := projectpkg.NewRegistry()
 				mustSetProject(t, registry, p)
 				controller := NewShutdownController()
@@ -1604,6 +1634,16 @@ func TestShutdownDrainBudget(t *testing.T) {
 				synctest.Wait()
 				time.Sleep(6 * time.Second)
 				synctest.Wait()
+				select {
+				case err := <-done:
+					t.Fatalf("shutdown finished before active work: %v", err)
+				default:
+				}
+				select {
+				case <-runner.canceled:
+					t.Fatal("active work was cancelled before the drain budget")
+				default:
+				}
 				failedEarly := strings.Contains(logs.String(), "drain projects during shutdown failed")
 				close(release)
 				synctest.Wait()
