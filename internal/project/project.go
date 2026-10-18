@@ -24,8 +24,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
-	"github.com/digitaldrywood/detent/internal/connector/local"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/coordination"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/hub"
@@ -2190,9 +2188,7 @@ func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workf
 	if workdir == "" {
 		return workflow
 	}
-	if workflow.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
-		workflow.Tracker.LocalSQLite.Path = projectRelativePath(workdir, workflow.Tracker.LocalSQLite.Path)
-	}
+
 	workflow.Workspace.Root = projectRelativePath(workdir, workflow.Workspace.Root)
 	workflow.Workspace.SourceRoot = projectRelativePath(workdir, workflow.Workspace.SourceRoot)
 	if workflow.Workspace.Kind == workflowconfig.WorkspaceLocalGit && workflow.Workspace.SourceRoot == "" {
@@ -2416,22 +2412,10 @@ func defaultSchedulerFactory(cfg workflowconfig.Config) (scheduler.Scheduler, er
 	return projectScheduler, nil
 }
 
-func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, error) {
-	return defaultConnectorFactoryWithRefresh(cfg, nil)
-}
-
 func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHubToken func(context.Context) (string, error)) (connector.Connector, error) {
 	return factory.NewFromConfig(factory.Config{
-		Kind:   cfg.Tracker.Kind,
-		Memory: memory.Config{Issues: cfg.Tracker.Issues},
-		LocalSQLite: local.Config{
-			Path:           cfg.Tracker.LocalSQLite.Path,
-			ProjectID:      cfg.Tracker.LocalSQLite.ProjectID,
-			Issues:         cfg.Tracker.Issues,
-			ActiveStates:   cfg.Tracker.ActiveStates,
-			ObservedStates: cfg.Tracker.ObservedStates,
-			TerminalStates: cfg.Tracker.TerminalStates,
-		},
+		Kind: cfg.Tracker.Kind,
+
 		Endpoint:                    cfg.Tracker.Endpoint,
 		APIKey:                      cfg.Tracker.APIKey,
 		GitHubTokenRefresh:          refreshGitHubToken,
@@ -2560,7 +2544,7 @@ func normalizeWorkflow(workflow workflowconfig.Workflow) workflowconfig.Workflow
 	}
 
 	workflow.Config = workflowconfig.Default()
-	workflow.Config.Tracker.Kind = workflowconfig.TrackerMemory
+	workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
 	return workflow
 }
 

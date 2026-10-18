@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -211,8 +212,8 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg := workflowconfig.Default()
-		cfg.Tracker.Kind = workflowconfig.TrackerMemory
-		tracked, err := project.New(project.Config{Project: globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, project.Dependencies{WorkAttempts: runtimeStore})
+		cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+		tracked, err := projectfixture.New(project.Config{Project: globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1}, Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."}}, project.Dependencies{WorkAttempts: runtimeStore})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -468,7 +469,7 @@ func TestDrainCeilingIncludesSelectedSessionLevels(t *testing.T) {
 	for _, hours := range []int{12, 24} {
 		t.Run((time.Duration(hours) * time.Hour).String(), func(t *testing.T) {
 			cfg := workflowconfig.Default()
-			cfg.Tracker.Kind = workflowconfig.TrackerMemory
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 			duration := hours * 60 * 60 * 1000
 			cfg.Agents.ModelSelection.Levels = map[string]workflowconfig.ModelSelectionDefaults{"high": {MaxSessionDurationMS: &duration}}
 			tracked := newShutdownRuntimeProjectWithConfig(t, "fixture", cfg, orchestrator.FakeRunner{})

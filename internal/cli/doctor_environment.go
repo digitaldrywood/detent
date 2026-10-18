@@ -164,56 +164,6 @@ func expandDoctorWorkspacePath(path string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-func checkDoctorLocalSQLiteTracker(
-	ctx context.Context,
-	id string,
-	project globalconfig.Project,
-	cfg workflowconfig.Config,
-	deps doctorDeps,
-) doctorCheck {
-	name := "Project " + id + " local SQLite tracker"
-	path := strings.TrimSpace(cfg.Tracker.LocalSQLite.Path)
-	if path == "" {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorFail,
-			Detail: "tracker.local_sqlite.path is not configured",
-			Hint:   "Set tracker.local_sqlite.path to a SQLite database path for local work items.",
-		}
-	}
-	resolved, err := resolveDoctorProjectPath(project, path)
-	if err != nil {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorFail,
-			Detail: fmt.Sprintf("%s: %v", path, err),
-			Hint:   "Set tracker.local_sqlite.path to an absolute, home-relative, or project workdir-relative path.",
-		}
-	}
-	db, err := deps.openSQLite(ctx, resolved)
-	if err != nil {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorFail,
-			Detail: fmt.Sprintf("%s: %v", resolved, err),
-			Hint:   "Check local SQLite directory permissions and database integrity.",
-		}
-	}
-	if err := db.Close(); err != nil {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorFail,
-			Detail: fmt.Sprintf("%s close failed: %v", resolved, err),
-			Hint:   "Check for filesystem or SQLite errors, then rerun detent doctor.",
-		}
-	}
-	return doctorCheck{
-		Name:   name,
-		Status: doctorOK,
-		Detail: resolved + " is reachable",
-	}
-}
-
 func checkDoctorFilesystemWorkspace(id string, cfg workflowconfig.Config) doctorCheck {
 	name := "Project " + id + " filesystem workspace"
 	root := strings.TrimSpace(cfg.Workspace.Root)

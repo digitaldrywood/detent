@@ -36,12 +36,8 @@ import (
 )
 
 const (
-	TrackerGitHub      = "github"
-	TrackerLinear      = "linear"
-	TrackerMemory      = "memory"
-	TrackerLocalSQLite = "local_sqlite"
-	TrackerGitHubLocal = "github_local"
-	TrackerHubNative   = "hub_native"
+	TrackerGitHub    = "github"
+	TrackerHubNative = "hub_native"
 
 	GitHubStatusSourceProjectV2  = "project_v2"
 	GitHubStatusSourceIssueField = "issue_field"
@@ -63,10 +59,8 @@ const (
 	DependencySourceMerged              = "merged"
 	DependencySourceNativeOnly          = "native_only"
 
-	defaultLinearEndpoint      = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint      = "https://api.github.com/graphql"
 	defaultGitHubStatusPageURL = "https://www.githubstatus.com"
-	defaultLinearStatusPageURL = "https://linearstatus.com"
 
 	DefaultAgentBackendID    = "codex"
 	AgentBackendCodex        = "codex"
@@ -1511,7 +1505,6 @@ func Default() Config {
 	return Config{
 		Recovery: Recovery{TerminalAttemptRetryLimit: new(3)},
 		Tracker: Tracker{
-			Endpoint:                    defaultLinearEndpoint,
 			HTTPMaxIdleConns:            100,
 			HTTPMaxIdleConnsPerHost:     32,
 			HTTPIdleConnTimeoutMS:       90000,
@@ -1775,8 +1768,8 @@ func (c *Config) Validate() error {
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
 	c.Release.validate("release", &problems)
-	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerGitHubLocal {
-		problems = append(problems, "release.enabled requires tracker.kind github or github_local")
+	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub {
+		problems = append(problems, "release.enabled requires tracker.kind github")
 	}
 	if c.Release.Enabled && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository must be owner/name when release.enabled is true")
@@ -1801,15 +1794,15 @@ func (c *Config) Validate() error {
 	}
 	c.Retro.Normalize()
 	problems = append(problems, c.Retro.Validate("retro", states)...)
-	if c.Retro.Enabled && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
-		problems = append(problems, "retro.enabled requires tracker.kind github or memory")
+	if c.Retro.Enabled && c.Tracker.Kind != TrackerGitHub {
+		problems = append(problems, "retro.enabled requires tracker.kind github")
 	}
 	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for retro")
 	}
 	problems = append(problems, ValidateRoutines("routines", c.Routines, states)...)
-	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
-		problems = append(problems, "routines requires tracker.kind github or memory")
+	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub {
+		problems = append(problems, "routines requires tracker.kind github")
 	}
 	if len(c.Routines) > 0 && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository is required for routines")
@@ -1921,7 +1914,7 @@ func (c *Config) normalize() {
 	c.Identity.Normalize()
 	c.ActiveHours = c.ActiveHours.Normalize()
 	c.Tracker.Kind = strings.ToLower(strings.TrimSpace(c.Tracker.Kind))
-	if (c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal) && c.Tracker.Endpoint == defaultLinearEndpoint {
+	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == "" {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
 	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
@@ -2036,7 +2029,7 @@ func (c *Config) normalize() {
 
 func (c Config) NormalizedScheduleOwnership() scheduleowner.Config {
 	endpoint := ""
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
+	if c.Tracker.Kind == TrackerGitHub {
 		endpoint = c.Tracker.Endpoint
 	}
 	repository := c.Tracker.Repository
@@ -2072,20 +2065,12 @@ func (c *Config) validateTracker(problems *[]string) {
 	switch c.Tracker.Kind {
 	case "":
 		*problems = append(*problems, "tracker.kind is required")
-	case TrackerLinear:
-		validateRequired("tracker.api_key", c.Tracker.APIKey, " for linear", problems)
-		validateRequired("tracker.project_slug", c.Tracker.ProjectSlug, " for linear", problems)
 	case TrackerGitHub:
 		c.Tracker.validateGitHubAuth(problems)
 		c.Tracker.validateGitHubStatusSource(problems)
-	case TrackerGitHubLocal:
-		c.Tracker.validateGitHubLocal(problems)
-	case TrackerMemory:
 	case TrackerHubNative:
-	case TrackerLocalSQLite:
-		*problems = append(*problems, c.Tracker.LocalSQLite.Validate("tracker.local_sqlite")...)
 	default:
-		*problems = append(*problems, "tracker.kind must be one of github, github_local, hub_native, linear, memory, local_sqlite")
+		*problems = append(*problems, "tracker.kind must be one of github, hub_native; migrate retired trackers to hub_native")
 	}
 
 	if c.Tracker.Lanes != nil {
@@ -2126,10 +2111,8 @@ func normalizeStatusPageURL(kind string, value string) string {
 		return value
 	}
 	switch kind {
-	case TrackerGitHub, TrackerGitHubLocal:
+	case TrackerGitHub:
 		return defaultGitHubStatusPageURL
-	case TrackerLinear:
-		return defaultLinearStatusPageURL
 	default:
 		return ""
 	}
@@ -2249,18 +2232,6 @@ func (t *Tracker) validateGitHubAuthFor(kind string, problems *[]string) {
 	validateRequired("tracker.github_app_installation_id", t.GitHubAppInstallationID, " for github app", problems)
 	if strings.TrimSpace(t.GitHubAppPrivateKey) == "" && strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
 		*problems = append(*problems, "tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app")
-	}
-}
-
-func (t *Tracker) validateGitHubLocal(problems *[]string) {
-	t.validateGitHubAuthFor(TrackerGitHubLocal, problems)
-	validateRequired("tracker.repository", t.Repository, " for github_local", problems)
-	if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
-		*problems = append(*problems, "tracker.repository must be owner/name")
-	}
-	*problems = append(*problems, t.LocalSQLite.Validate("tracker.local_sqlite")...)
-	if t.gitHubStatusSourceSet {
-		*problems = append(*problems, "tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite")
 	}
 }
 
@@ -4041,7 +4012,7 @@ func (c Config) WithRuntimeGitHubToken(token string) Config {
 	if token == "" {
 		return c
 	}
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal || c.ScheduleOwnership.Enabled {
+	if c.Tracker.Kind == TrackerGitHub || c.ScheduleOwnership.Enabled {
 		c.Tracker.APIKey = token
 	}
 	if strings.TrimSpace(c.Worker.GitHubToken) == "" && c.Tracker.Kind != TrackerHubNative {

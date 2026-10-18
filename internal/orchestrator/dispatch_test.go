@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -28,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestRunningWorkAttemptMetadataJSONPersistsPullRequestFingerprint(t *testing.T) {
@@ -1995,7 +1995,7 @@ func TestMemoryConnectorOrchestratorsPartitionSharedIssuesByAuthorization(t *tes
 					},
 				},
 			}, Dependencies{
-				Connector: memory.New(memory.Config{Issues: sharedIssues}),
+				Connector: fakehub.New(fakehub.Config{Issues: sharedIssues}),
 				Runner:    runner,
 			})
 			if err != nil {

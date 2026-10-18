@@ -10,7 +10,7 @@ import (
 
 func TestRepositoryNativeWorkflowProjection(t *testing.T) {
 	t.Parallel()
-	definition := "tracker:\n  kind: memory\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Plan Review\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Rework\n      role: active\n    - name: Merging\n      role: active\n    - name: Done\n      role: terminal\n    - name: Cancelled\n      role: terminal\nplan:\n  enabled: true\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Cancelled]\n"
+	definition := "tracker:\n  kind: hub_native\n  lanes:\n    - name: Backlog\n      role: holding\n    - name: Blocked\n      role: holding\n    - name: Human Review\n      role: holding\n    - name: Plan Review\n      role: holding\n    - name: Todo\n      role: active\n    - name: In Progress\n      role: active\n    - name: Rework\n      role: active\n    - name: Merging\n      role: active\n    - name: Done\n      role: terminal\n    - name: Cancelled\n      role: terminal\nplan:\n  enabled: true\nserver:\n  kanban:\n    allowed_transitions:\n      Todo: [In Progress, Cancelled]\n"
 	var resolved []policy.State
 	for _, test := range []struct {
 		name, workflow, config, source string

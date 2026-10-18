@@ -13,7 +13,7 @@ func TestHumanReviewProjectSetting(t *testing.T) {
 		{name: "explicit enabled", setting: "review:\n  human: true\n", want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n" + tt.setting + "---\nWork.\n"))
+			workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n" + tt.setting + "---\nWork.\n"))
 			if err != nil {
 				t.Fatal(err)
 			}

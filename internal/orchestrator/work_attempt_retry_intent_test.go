@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
@@ -41,7 +41,7 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 			issue.State, issue.Title = "Blocked", "Correct invalid effort"
 			issue.Description = "```detent-agent\nschema: 1\neffort: low\n```"
 			issue.AssignedToWorker = true
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			runner := newClaimBlockingRunner()
 			newHost := func() *Orchestrator {
 				host, err := New(Config{PollInterval: time.Hour, MaxConcurrentAgents: 1,
@@ -516,7 +516,7 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	issue.Title = "Fix invalid override"
 	issue.AssignedToWorker = true
 	issue.Description = "```detent-agent\nschema: 2\n```"
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	runner := newClaimBlockingRunner()
 	host, err := New(Config{MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}}, Dependencies{Connector: tracker, Runner: runner, WorkAttempts: db, WorkflowMetrics: db})
 	if err != nil {
