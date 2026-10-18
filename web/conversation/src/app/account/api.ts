@@ -1,5 +1,5 @@
 import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, OAuthGrants, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
-import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
+import { CloudModelSelection, type CloudSelection, type RunnerRouting } from "../../contracts/account.ts";
 import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
 //
@@ -489,6 +489,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     setRunnerRouting: (input: {
       scope?: "projects" | "organization";
       projectRanks?: Readonly<Record<string, number>>;
+      projectCapacityLimits?: Readonly<Record<string, number>> | null;
+      idempotencyKey?: string;
       runner: string;
       revision: number;
       displayName: string;
@@ -498,7 +500,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       projectIds: readonly string[];
       isolationTier?: string;
       hostServices?: readonly string[];
-      availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
+      availability?: RunnerRouting["availability"];
     }) =>
       send(Schema.Unknown, "PUT", `${base}/runners/${encodeURIComponent(input.runner)}/routing`, {
         expected_revision: input.revision,
@@ -509,6 +511,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         project_ids: input.projectIds,
         ...(input.scope !== undefined ? { scope: input.scope } : {}),
         ...(input.projectRanks !== undefined ? { project_ranks: input.projectRanks } : {}),
+        ...(input.projectCapacityLimits != null ? { project_capacity_limits: input.projectCapacityLimits, idempotency_key: input.idempotencyKey ?? crypto.randomUUID() } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),
